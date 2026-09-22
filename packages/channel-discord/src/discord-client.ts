@@ -101,7 +101,9 @@ class DiscordJsClient implements DiscordClientLike {
       };
       if (typeof anyI?.isButton === "function" && anyI.isButton()) {
         const customId = typeof anyI.customId === "string" ? anyI.customId : "";
-        if (!customId || !customId.startsWith("xacpx-perm:")) return;
+        // Both interaction namespaces are delivered; the channel routes on
+        // prefix. Filtering to one here would silently drop the other family.
+        if (!customId || (!customId.startsWith("xacpx-perm:") && !customId.startsWith("xacpx-elicit:"))) return;
         const channelId = anyI.channelId ?? anyI.channel?.id;
         const userId = anyI.user?.id ?? anyI.member?.user?.id;
         if (!channelId || !userId) return;

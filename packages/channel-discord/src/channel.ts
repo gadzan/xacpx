@@ -4,6 +4,9 @@ import type {
   ChannelStartInput,
   ChannelPermissionDecision,
   ChannelPermissionRequest,
+  ChannelElicitationDecision,
+  ChannelElicitationRequest,
+  ChannelElicitationValue,
   ConversationExecutor,
   CoordinatorMessageInput,
   CreateChannelDeps,
@@ -32,6 +35,20 @@ import {
   terminalPermissionText,
   type PendingDiscordPermission,
 } from "./permission-ui.js";
+import { checkElicitationRenderability } from "./elicitation-limits.js";
+import {
+  buildElicitationFieldCard,
+  buildElicitationOpening,
+  buildElicitationReviewCard,
+  createElicitationToken,
+  ELICITATION_CUSTOM_ID_PREFIX,
+  handleElicitationClick,
+  parseElicitationCustomId,
+  type ElicitationClickOutcome,
+  type ElicitationUiAction,
+} from "./elicitation-ui.js";
+import type { PendingDiscordElicitation } from "./elicitation-state.js";
+import { trySettle } from "./elicitation-state.js";
 import { createDiscordClient } from "./discord-client.js";
 import { MessageDedup, isMessageExpired } from "./message-dedup.js";
 import {
@@ -143,6 +160,16 @@ function parseChatKeyToTarget(chatKey: string): DeliveryTarget | null {
 export class DiscordChannel implements MessageChannelRuntime {
   readonly id = "discord";
   readonly nativeSessionListFormat: "cards" | "table" = "cards";
+  /**
+   * Form renderer only, declared because it is implemented (see
+   * `requestElicitation` below). Core advertises elicitation support only when
+   * a channel both declares a mode and implements the method, so a missing
+   * implementation would advertise a capability the broker then fails on.
+   *
+   * URL mode is deliberately absent: this renderer collects form values and
+   * has no URL dispatch, and `ChannelElicitationRequest` carries form data only.
+   */
+  readonly elicitationModes = ["form"] as const;
 
   private readonly accounts: Map<string, AccountRuntime> = new Map();
   private dedup: MessageDedup;
@@ -157,6 +184,7 @@ export class DiscordChannel implements MessageChannelRuntime {
   private readonly executor: ConversationExecutor = createConversationExecutor();
   private readonly activeTasks: Map<string, ActiveTask[]> = new Map();
   private readonly pendingPermissions: Map<string, PendingDiscordPermission> = new Map();
+  private readonly pendingElicitations: Map<string, PendingDiscordElicitation> = new Map();
   private readonly config: DiscordChannelConfig;
   private readonly deps: DiscordChannelDeps;
 
@@ -182,6 +210,7 @@ export class DiscordChannel implements MessageChannelRuntime {
 
   async logout(): Promise<void> {
     this.invalidateAllPendingPermissions("cancelled");
+    this.invalidateAllPendingElicitations("cancelled");
     await this.abortAllActiveTasks();
     for (const runtime of this.accounts.values()) {
       try {
@@ -197,9 +226,11 @@ export class DiscordChannel implements MessageChannelRuntime {
   async stop(_reason?: string): Promise<void> {
     // Abort in-flight turns while the clients are still alive, so a preview
     // message can still be deleted; the turns themselves are not awaited.
-    // Pending permission UI is invalidated first so no stale button can
-    // resolve after shutdown.
+    // Pending permission UI and elicitation wizards are invalidated first so no
+    // stale button can resolve after shutdown. For elicitation this also means
+    // no stale wizard step can commit an answer after the turn is gone.
     this.invalidateAllPendingPermissions("cancelled");
+    this.invalidateAllPendingElicitations("cancelled");
     await this.abortAllActiveTasks();
     for (const runtime of this.accounts.values()) {
       try {
@@ -330,6 +361,13 @@ export class DiscordChannel implements MessageChannelRuntime {
             });
           },
           onButton: (interaction) => {
+            // Routed by custom-id namespace so the two interaction families
+            // cannot collide: an elicitation id must never reach the permission
+            // handler (whose `allowed` outcomes would reject it) and vice versa.
+            if (interaction.customId.startsWith(ELICITATION_CUSTOM_ID_PREFIX)) {
+              void this.handleElicitationButton(interaction).catch(() => {});
+              return;
+            }
             void this.handlePermissionButton(interaction).catch(() => {});
           },
         },
@@ -559,6 +597,286 @@ export class DiscordChannel implements MessageChannelRuntime {
       return decision;
     } finally {
       cleanup();
+    }
+  }
+
+  /**
+   * Render a form Elicitation for the authenticated initiator and resolve the
+   * exact prompt turn.
+   *
+   * The wizard is: opening card (agent identity + message + Start / Decline /
+   * Cancel), one card per field, then a mandatory review page where Edit /
+   * Submit / Decline / Cancel decide. `Submit` is the only path to `accept`,
+   * so no value the user never saw is committed.
+   *
+   * Cancel sources are kept apart, exactly as the plugin contract requires:
+   * a human clicking Decline or Cancel produces an authenticated user decision;
+   * everything external (timeout, `request.signal` abort, channel stop,
+   * unrenderable form) rejects and lets core settle the terminal `cancel`
+   * itself. None of them invents a `responderId`.
+   */
+  async requestElicitation(request: ChannelElicitationRequest): Promise<ChannelElicitationDecision> {
+    const route = parseDiscordChatKey(request.chatKey);
+    if (!route) throw new Error(`cannot route Discord elicitation to non-Discord chatKey: ${request.chatKey}`);
+    const runtime = this.accounts.get(route.accountId);
+    if (!runtime) throw new Error(`discord account "${route.accountId}" is not started`);
+
+    // Renderability is decided before anything is posted: a form Discord cannot
+    // show faithfully cancels with no partial card on screen.
+    const verdict = checkElicitationRenderability(request.fields);
+    if (!verdict.renderable) {
+      await this.logger?.warn("discord.elicitation.unsupported", "cancelled unrenderable elicitation", {
+        requestId: request.requestId,
+        reason: verdict.reason ?? "unknown",
+        detail: verdict.detail ?? "",
+      });
+      throw new Error(`elicitation form is not renderable on Discord: ${verdict.reason ?? "unknown"}`);
+    }
+
+    const target: DeliveryTarget = { channelId: route.channelId, ...(route.guildId ? { guildId: route.guildId } : {}) };
+    const token = createElicitationToken();
+    const opening = buildElicitationOpening(request, token);
+
+    let settle: (decision: ChannelElicitationDecision) => void = () => {};
+    let rejectPromise: (error: Error) => void = () => {};
+    const done = new Promise<ChannelElicitationDecision>((resolve, reject) => {
+      settle = resolve;
+      rejectPromise = reject;
+    });
+    // Same reasoning as requestPermission: abort/expiry/stop may reject while
+    // the send is still in flight, so the rejection needs a handler attached.
+    void done.catch(() => {});
+
+    const entry: PendingDiscordElicitation = {
+      token,
+      requestId: request.requestId,
+      requesterId: request.requester.senderId,
+      accountId: route.accountId,
+      target,
+      request,
+      values: {},
+      settled: false,
+      resolve: settle,
+      reject: rejectPromise,
+    };
+    this.pendingElicitations.set(token, entry);
+
+    const cleanup = (): void => {
+      this.pendingElicitations.delete(token);
+      clearTimeout(expiryTimer);
+      request.signal.removeEventListener("abort", onAbort);
+    };
+    const onAbort = (): void => {
+      if (!trySettle(entry)) return;
+      entry.terminalState = "cancelled";
+      cleanup();
+      void this.renderElicitationInert(entry, getMessages().elicitationCancelled).catch(() => {});
+      // Reject, never resolve: an external abort is not a user decision and
+      // must not carry a responderId.
+      entry.reject(new Error("elicitation request aborted"));
+    };
+    const eagerSettle = (terminal: "expired" | "cancelled", reason: string): void => {
+      if (!trySettle(entry)) return;
+      entry.terminalState = terminal;
+      cleanup();
+      void this.renderElicitationInert(entry, getMessages().elicitationCancelled).catch(() => {});
+      entry.reject(new Error(reason));
+    };
+    const msUntilExpiry = Math.max(0, request.expiresAt - Date.now());
+    const expiryTimer = setTimeout(() => {
+      eagerSettle("expired", "elicitation request expired");
+    }, msUntilExpiry);
+    if (typeof expiryTimer.unref === "function") expiryTimer.unref();
+
+    if (request.signal.aborted) {
+      // Dead on arrival: settle without ever posting a card.
+      onAbort();
+      throw new Error("elicitation request aborted");
+    }
+    request.signal.addEventListener("abort", onAbort, { once: true });
+
+    try {
+      const sent = await runtime.client.sendMessage(target, {
+        content: opening.content,
+        // Pings are disabled at send time: agent-controlled text is not trusted
+        // to be mention-free, and the card is a private form for one user.
+        allowedMentions: { parse: [] },
+        components: opening.components,
+      });
+      entry.messageId = sent.messageId;
+      // Send race: the request may have settled while the send was in flight.
+      if (entry.settled && entry.terminalState) {
+        void withdrawUi(getMessages().elicitationCancelled);
+      }
+      void this.logger?.info("discord.elicitation.sent", "sent discord elicitation request", {
+        requestId: request.requestId,
+      });
+    } catch (error) {
+      eagerSettle("cancelled", "elicitation send failed");
+      await this.logger?.warn("discord.elicitation.send_failed", "failed to send elicitation request", {
+        requestId: request.requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+
+    try {
+      const decision = await done;
+      void this.logger?.info("discord.elicitation.resolved", "discord elicitation resolved", {
+        requestId: request.requestId,
+        action: decision.action,
+      });
+      return decision;
+    } finally {
+      cleanup();
+    }
+  }
+
+  /**
+   * Advance the wizard for one interaction and re-render the card in place.
+   *
+   * Kept separate from `requestElicitation` because it must never settle the
+   * request: only a control that produced an authenticated terminal decision
+   * (Submit / Decline / Cancel) resolves, and those go through
+   * `handleElicitationClick` with the responder id attached.
+   */
+  private async handleElicitationButton(interaction: DiscordButtonInteraction): Promise<void> {
+    const parsed = parseElicitationCustomId(interaction.customId);
+    if (!parsed) return;
+    const entry = this.pendingElicitations.get(parsed.token);
+    if (!entry) return;
+    const runtime = (entry.accountId ? this.accounts.get(entry.accountId) : undefined)
+      ?? [...this.accounts.values()][0];
+    if (!runtime) return;
+
+    const outcome: ElicitationClickOutcome = await handleElicitationClick({
+      interaction,
+      pending: this.pendingElicitations,
+      onSettled: (settledEntry, decision) => {
+        settledEntry.resolve(decision);
+        void this.renderElicitationTerminal(settledEntry, decision);
+      },
+      log: (event, message, fields) => {
+        void this.logger?.warn(event, message, fields);
+      },
+    });
+    if (outcome.decided) return;
+    if (!outcome.rerender) return;
+    await this.rerenderElicitationCard(entry, runtime, parsed.action);
+  }
+
+  /** Re-render the current wizard step in place, without settling. */
+  private async rerenderElicitationCard(
+    entry: PendingDiscordElicitation,
+    runtime: AccountRuntime,
+    action: ElicitationUiAction,
+  ): Promise<void> {
+    const messageId = entry.messageId;
+    if (!messageId || entry.settled) return;
+    let card: { content: string; components: DiscordActionRow[] };
+    switch (action) {
+      case "start": {
+        entry.currentField = entry.request.fields[0]?.key;
+        if (entry.currentField === undefined) {
+          // A zero-field form has nothing to ask: the review page is honest
+          // only if there is at least one field, so treat it as unrenderable.
+          return;
+        }
+        const field = entry.request.fields.find((f) => f.key === entry.currentField);
+        card = field
+          ? buildElicitationFieldCard(entry.request, entry.token, field, 1, entry.values[field.key])
+          : buildElicitationOpening(entry.request, entry.token);
+        break;
+      }
+      case "field":
+      case "edit": {
+        if (entry.currentField === undefined) entry.currentField = entry.request.fields[0]?.key;
+        const field = entry.request.fields.find((f) => f.key === entry.currentField);
+        if (!field) return;
+        card = buildElicitationFieldCard(
+          entry.request,
+          entry.token,
+          field,
+          entry.request.fields.indexOf(field) + 1,
+          entry.values[field.key],
+        );
+        break;
+      }
+      case "review":
+      default:
+        card = buildElicitationReviewCard(entry.request, entry.token, entry.values);
+        break;
+    }
+    try {
+      await runtime.client.editMessage(entry.target, messageId, {
+        content: card.content,
+        allowedMentions: { parse: [] },
+        components: card.components,
+      });
+    } catch (error) {
+      await this.logger?.warn("discord.elicitation.edit_failed", "failed to update elicitation message", {
+        requestId: entry.requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Show the inert terminal card after a user decision. */
+  private async renderElicitationTerminal(
+    entry: PendingDiscordElicitation,
+    decision: ChannelElicitationDecision,
+  ): Promise<void> {
+    const messages = getMessages();
+    const text = decision.action === "accept"
+      ? messages.elicitationAccepted
+      : decision.action === "decline"
+        ? messages.elicitationDeclined
+        : messages.elicitationCancelled;
+    await this.renderElicitationInert(entry, text);
+  }
+
+  /** Disable the controls and show a bounded terminal line. */
+  private async renderElicitationInert(
+    entry: PendingDiscordElicitation,
+    text: string,
+  ): Promise<void> {
+    const messageId = entry.messageId;
+    if (!messageId) return;
+    const runtime = (entry.accountId ? this.accounts.get(entry.accountId) : undefined)
+      ?? [...this.accounts.values()][0];
+    if (!runtime) return;
+    try {
+      await runtime.client.editMessage(entry.target, messageId, {
+        content: `${getMessages().elicitationTitle}\n\n${text}`,
+        allowedMentions: { parse: [] },
+        // Strip controls: a terminal card must be visibly inert.
+        components: [],
+      });
+    } catch (error) {
+      await this.logger?.warn("discord.elicitation.edit_failed", "failed to update elicitation message", {
+        requestId: entry.requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  private invalidateAllPendingElicitations(terminal: "expired" | "cancelled"): void {
+    if (this.pendingElicitations.size === 0) return;
+    const entries = [...this.pendingElicitations.values()];
+    this.pendingElicitations.clear();
+    const messages = getMessages();
+    for (const entry of entries) {
+      if (!trySettle(entry)) continue;
+      entry.terminalState = terminal;
+      try {
+        entry.reject(new Error("elicitation channel stopped"));
+      } catch {}
+      // Rendered directly rather than through the decision renderer: a channel
+      // stop is not a user action, so there is no responderId to carry.
+      void this.renderElicitationInert(
+        entry,
+        terminal === "expired" ? messages.elicitationExpired : messages.elicitationCancelled,
+      ).catch(() => {});
     }
   }
 

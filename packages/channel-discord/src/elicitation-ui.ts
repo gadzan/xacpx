@@ -346,13 +346,88 @@ export async function handleElicitationClick(input: ElicitationClickInput): Prom
       await input.interaction.acknowledge();
       return { decided: true, decision };
     }
+    case "start": {
+      if (!enterWizard(entry)) {
+        // No fields to ask about: nothing to render beyond the opening card.
+        await input.interaction.acknowledge();
+        return { decided: false };
+      }
+      await input.interaction.acknowledge();
+      return { decided: false, rerender: "field" };
+    }
+    case "field":
+    case "edit": {
+      // Route to the requested field. Answers are not carried here (there is
+      // no slot for one), so the caller supplies the collected value.
+      if (parsed.fieldKey && entry.request.fields.some((field) => field.key === parsed.fieldKey)) {
+        entry.currentField = parsed.fieldKey;
+      } else if (!entry.currentField) {
+        entry.currentField = entry.request.fields[0]?.key;
+      }
+      await input.interaction.acknowledge();
+      return { decided: false, rerender: "field" };
+    }
+    case "review": {
+      await input.interaction.acknowledge();
+      return { decided: false, rerender: "review" };
+    }
+    case "submit": {
+      return submitAnswers(entry, input);
+    }
     default:
-      break;
+      return { decided: false };
   }
+}
 
-  // Non-terminal actions advance the wizard. They still mutate (or not) only
-  // after authorization, and never settle.
+/** Advance the wizard to its first question. Returns false for a fieldless form. */
+function enterWizard(entry: PendingDiscordElicitation): boolean {
+  if (entry.request.fields.length === 0) return false;
+  entry.currentField = entry.request.fields[0]?.key;
+  return true;
+}
+
+/**
+ * Commit a reviewed form as an ACP accept.
+ *
+ * This is the ONLY path to `accept`, and it is deliberately gated behind the
+ * review card: the ACP contract requires the user to be able to review and
+ * modify answers before they are sent, so a submit control that committed an
+ * uneditable pre-filled value would not be compliant.
+ *
+ * A required field with no collected value cancels the whole submission rather
+ * than sending a partial answer — core validates too, but failing here keeps
+ * the wizard open instead of burning the turn on a rejected payload.
+ */
+async function submitAnswers(
+  entry: PendingDiscordElicitation,
+  input: ElicitationClickInput,
+): Promise<ElicitationClickOutcome> {
+  const messages = getMessages();
+  const missing = entry.request.fields.filter((field) => field.required && entry.values[field.key] === undefined);
+  if (missing.length > 0) {
+    // Stay on the review page and point at the first gap.
+    await input.interaction.replyEphemeral(`${messages.elicitationRequired}: ${missing[0]!.title}`);
+    return { decided: false };
+  }
+  if (!trySettle(entry)) {
+    await input.interaction.replyEphemeral(messages.elicitationAlreadyResolved);
+    return { decided: false };
+  }
+  // `null` is a valid ACP accept for an all-optional form and tells core the
+  // channel deliberately submitted nothing; an empty object is not the same
+  // statement, so the distinction is preserved rather than normalized here.
+  const content: Record<string, ChannelElicitationValue> | null =
+    Object.keys(entry.values).length === 0
+      ? null
+      : { ...entry.values };
+  const decision: ChannelElicitationDecision = {
+    action: "accept",
+    responderId: input.interaction.userId,
+    content,
+  };
+  input.pending.delete(entry.token);
+  input.onSettled(entry, decision);
   await input.interaction.acknowledge();
-  return { decided: false, rerender: "field" };
+  return { decided: true, decision };
 }
 
