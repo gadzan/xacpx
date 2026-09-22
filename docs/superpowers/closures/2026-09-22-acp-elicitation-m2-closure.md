@@ -60,7 +60,8 @@ Cancel). `Submit` is the only path to `accept`.
 | `discord-elicitation-ui.test.ts` | 12 |
 | `discord-elicitation-channel.test.ts` | 15 |
 | `discord-elicitation-accept-path.test.ts` | 9 |
-| **Total** | **46** |
+| `discord-elicitation-renderer.test.ts` | 12 |
+| **Total** | **58** |
 | E2E (`runtime-discord-elicitation-e2e.test.ts`) | 3 (accept / decline / cancel) |
 
 ## Verification
@@ -92,12 +93,11 @@ permission and WeChat login paths). Verified identical rather than assumed.
 
 | Gap | Status |
 |---|---|
-| Discord String Select / modal interactions | **not implemented** — buttons only; field answers are collected through the handler, selects/modals are the remaining renderer work |
-| Multi-page pagination | each field is its own card; not paginated within a field |
-| `select` multi-select `min_values`/`max_values` | validated for renderability, not rendered as a select |
-| Feishu renderer (M4) | not started |
+| Field renderers | **closed** (commit `ae49c5a8`): single/multi-select as String Select, boolean as Yes/No Select, number as modal Text Input |
+| Multi-page pagination | each field is its own card; not paginated within a field. Bounded by the 5-button row on the review page (per-field Edit controls are truncated to 2 of 5). |
+| WeChat / other channels | Feishu (M4) not started |
 | Relay Web Conversation integration (M3) | blocked on #350 |
-| Channel plugin *registration* of `requestElicitation` | the daemon capability probe requires a channel object with both the method and the mode; that end-to-end wiring is covered by `tests/unit/channels/channel-elicitation-capability.test.ts` in M1 |
+| **Root typecheck does not cover `packages/`** | found while verifying this work; `tsconfig.json` includes `src/**/*.ts` only. Every package change MUST also run `npx tsc -p packages/<pkg>/tsconfig.json --noEmit`. Not fixed here (repo-wide tsconfig decision, not a Discord-local one). |
 
 ## Next-milestone readiness
 
