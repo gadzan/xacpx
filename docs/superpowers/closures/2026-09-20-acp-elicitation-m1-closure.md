@@ -3,7 +3,7 @@
 ```text
 Milestone: M1 Core Foundation
 Base:      e98cb68e (main, "feat(relay-web): sticky agent avatar with working quip chip and unified send/cancel (#353)")
-Head:      e48cbe9389624729f673894170b049a0bf226ab7 (after review round 14)
+Head:      56a82efc6b36c3a97f8fcc02ff7ca790af2a057a + round-15 revert (post-review)
 PR:        #355 "feat(elicitation): ACP Elicitation M1 core foundation" (OPEN, mergeable)
 ```
 
@@ -900,7 +900,58 @@ Blocking dependency:
   dependency reinstall.
 - M3 remains blocked on PR #350 (still open).
 
-## Review round 14 (head `e48cbe93`)
+## Review round 15 (head `56a82efc`) — round 14's fix REVERTED
+
+0 new findings, but the round-14 fix itself was a **Blocking defect in its own
+regression**: the `{ action: "cancel" }` withdrawal variant was unreachable on a
+real abort, and its only reachable effect was a security regression.
+
+### What round 14 actually did
+
+A real external abort never reaches the new branch, because the `aborted`
+Promise.race rejects first, and if a renderer's decision won that race the
+post-decision `controller.signal.aborted` check already routes it to
+`settleStale`. So the variant was only reachable on a **live** request — where
+its entire effect was to let a renderer or control-path bug settle a user
+`cancel` **without the authenticated responder a user dismissal must carry**.
+
+Result: still `cancel` (fail closed), actor boundary bypassed.
+
+### The revert
+
+`{ action: "cancel" }` removed from `ChannelElicitationDecision`; the
+`isWithdrawal` branch removed from the broker; the `withdrawn` log event gone.
+The doc contradiction is fixed too — the union doc no longer says external
+cancellation "never enters this union" and then instructs a renderer to return
+that union's withdrawal member.
+
+The contract is now: **external abort is not a decision.** The renderer
+withdraws its UI and rejects/throws (or never settles); core's abort race and
+post-decision checks settle `cancel`. Every union member requires
+`responderId`, so the type itself prevents the bypass.
+
+### The regression that now guards it
+
+| Mutation | Result |
+|---|---|
+| anonymous cancel accepted again | "a cancel without a responder id is rejected on a live request" fails |
+| responder-free variant re-added (type) | NOT caught — `tsconfig.json` includes only `src/**`, so `tests/` is untypechecked; documented in the test |
+
+The runtime guard is the one that matters, and it is the one that round 14 was
+missing: round 14's test asserted an outcome (`cancel`) that was identical
+whether or not the fix worked. The rule the suite now follows: a regression
+must fail when the fix is disabled.
+
+## Final totals after round 15
+
+M1 unit suites 350/350 green; real-acpx E2E 25/26 (pre-existing `PR9-A`).
+No net test-count change from round 14's 219.
+
+## Review round 14 (head `e48cbe93`) — SUPERSEDED BY round 15
+
+Kept for the audit trail: the Medium/Low findings were real and their fixes
+survive, but round 14's *primary* change (the responder-free withdrawal variant)
+was reverted as a Blocking defect. See "Review round 15" above.
 
 0 Blocking, 2 findings (1 Medium, 1 Low).
 

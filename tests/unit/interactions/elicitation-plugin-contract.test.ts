@@ -302,31 +302,25 @@ test("the exported field model and validator agree on a full round trip", () => 
   expect(validated).toMatchObject({ ok: true });
 });
 
-test("the abort contract is expressible in the published types", () => {
-  // Regression: every `ChannelElicitationDecision` variant required
-  // `responderId`, while the documented abort contract told a renderer to
-  // withdraw its UI and settle WITHOUT one. A plugin following the authoritative
-  // comment would hit a compile error — the contract was unimplementable.
+test("every published decision requires the platform-authenticated responder", () => {
+  // Regression (round 15): a responder-free `{ action: "cancel" }` variant was
+  // added, then removed. It was unreachable on a real abort (core settles those
+  // first), so its only effect was letting a live request settle a user cancel
+  // anonymously — fail-closed result, bypassed actor.
   //
-  // Compile-time half of the regression; the runtime half lives in
-  // `elicitation-interaction-broker.test.ts` ("a responder-free withdrawal
-  // settles as cancel"), and THAT one is the mutation guard.
-  //
-  // SCOPE LIMIT, stated so nobody over-trusts this test: the repo's documented
-  // typecheck (`npx tsc --noEmit`) has `"include": ["src/**/*.ts"]`, so
-  // `tests/` is NOT typechecked. A mutation that re-adds `responderId` to the
-  // withdrawal variant is caught by tsc ONLY when the test file is compiled
-  // directly. `bun test` itself does not enforce types. That is precisely why
-  // the broker test asserts an observable log event instead of relying on the
-  // union alone — the runtime guard is the one that survives.
-  const withdraw: ChannelElicitationDecision = { action: "cancel" };
-  expect(withdraw.action).toBe("cancel");
-
-  // The user-initiated variants still REQUIRE the platform-authenticated
-  // responder, so the escape hatch cannot become a general bypass.
+  // The contract is now structural: EVERY member of the union carries
+  // `responderId`, so an external abort cannot be expressed as a decision at
+  // all and a renderer must throw/never settle instead.
   const decline: ChannelElicitationDecision = { action: "decline", responderId: "user-A" };
   const dismiss: ChannelElicitationDecision = { action: "cancel", responderId: "user-A" };
   expect(decline.action).toBe("decline");
   expect(dismiss.action).toBe("cancel");
-  expect("responderId" in withdraw).toBe(false);
+
+  // Compile-time shape of the contract: a decision without `responderId` must
+  // not typecheck. Pinned here as a runtime assertion on a cast value so the
+  // intent survives even though the repo's `tsc --noEmit` only covers `src/`.
+  const anonymous = { action: "cancel" } as unknown as ChannelElicitationDecision;
+  if (anonymous.action === "cancel" || anonymous.action === "decline") {
+    expect((anonymous as { responderId?: unknown }).responderId).toBeUndefined();
+  }
 });

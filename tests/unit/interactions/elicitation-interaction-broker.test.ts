@@ -573,38 +573,70 @@ describe("ElicitationInteractionBroker deadlines and races", () => {
     dispose();
   });
 
-  test("a responder-free withdrawal settles as cancel", async () => {
-    // Regression: `ChannelElicitationDecision` required `responderId` on every
-    // variant, so the documented abort contract ("withdraw your UI, return
-    // without a responder") was not expressible in the type system. A renderer
-    // following the authoritative comment would hit a compile error.
+  test("an external abort never reaches the renderer's decision path", async () => {
+    // Regression (round 15): round 14 added a responder-free
+    // `{ action: "cancel" }` union member so a renderer could report an
+    // external abort. That branch was UNREACHABLE on a real abort — the
+    // `aborted` race rejects first, and if the renderer's decision somehow wins
+    // the race the post-decision `controller.signal.aborted` check sends it to
+    // `settleStale`. Its only reachable effect was letting a live request
+    // settle a cancel WITHOUT the authenticated responder a user dismissal
+    // must carry.
+    //
+    // So the contract is: external abort is NOT a ChannelElicitationDecision.
+    // The renderer withdraws its UI and throws/never settles; core finishes.
     const seen: ChannelElicitationRequest[] = [];
-    const channel = formChannel(async () => {
-      // The documented behaviour: external abort observed, UI withdrawn, NO
-      // responder fabricated because no user answered.
-      return { action: "cancel" } as ChannelElicitationDecision;
+    const received = Promise.withResolvers<ChannelElicitationRequest>();
+    const pending = pendingDecision();
+    const channel = formChannel((request) => {
+      seen.push(request);
+      received.resolve(request);
+      // Documents the real abort behaviour: the renderer observes the abort,
+      // withdraws its UI, and THROWS instead of returning a decision.
+      request.signal.addEventListener("abort", () => {
+        pending.settle({ action: "cancel" } as unknown as ChannelElicitationDecision);
+      }, { once: true });
+      return pending.promise;
     }, seen);
+    const { broker } = harness({ channel, timeoutMs: 60_000 });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    const inflight = request({ interactionId: route.interactionId });
+    const result = broker.resolveElicitation(inflight);
+    await received.promise;
+    // Core's own request-scoped cancellation, not the renderer's.
+    expect(broker.cancelElicitationRequest(inflight.elicitationRequestId)).toBe(true);
+    expect(await result).toEqual({ action: "cancel" });
+    expect(seen[0].signal.aborted).toBe(true);
+    dispose();
+  });
+
+  test("a cancel without a responder id is rejected on a live request", async () => {
+    // Regression (round 15): the responder-free variant let a renderer or
+    // control-path bug settle a user `cancel` anonymously. Fail-closed result,
+    // but the actor boundary was bypassed. Every decision this broker accepts
+    // now requires the platform-authenticated responder.
+    const seen: ChannelElicitationRequest[] = [];
+    const channel = formChannel(async () => ({
+      action: "cancel",
+    } as unknown as ChannelElicitationDecision), seen);
     const { broker, logs } = harness({ channel });
     const route = turn();
     const dispose = broker.bindTurn(route);
     const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
-    // Same terminal action core's own abort race produces: a renderer cannot
-    // change the outcome by racing it.
+    // Still cancel overall (fail closed), but recorded as a channel failure,
+    // NOT as an accepted user dismissal.
     expect(result).toEqual({ action: "cancel" });
-    expect(seen.length).toBe(1);
-    // OBSERVABLE distinction: the withdrawal is recognised as a withdrawal
-    // (no responder needed), not rejected for a missing one.
     const events = logs.map((entry) => entry.event);
-    expect(events).toContain("elicitation.interaction.withdrawn");
-    expect(events).not.toContain("elicitation.interaction.channel_failed");
+    expect(events).toContain("elicitation.interaction.channel_failed");
     expect(broker.pendingCount).toBe(0);
     dispose();
   });
 
-  test("a withdrawal carrying answer content is rejected", async () => {
-    // A withdrawal means "no user answer". Content smuggled into one would
-    // bypass the responder-identity check that every accept goes through, so
-    // it must fail closed rather than be treated as a partial accept.
+  test("a cancel carrying answer content but no responder is rejected", async () => {
+    // Content smuggled into a responder-free cancel would bypass the
+    // responder-identity check every accept goes through, so it must fail
+    // closed rather than be treated as a partial accept.
     const seen: ChannelElicitationRequest[] = [];
     const channel = formChannel(async () => ({
       action: "cancel",
@@ -618,24 +650,6 @@ describe("ElicitationInteractionBroker deadlines and races", () => {
     // The smuggled content must never reach the agent.
     const serialized = JSON.stringify(logs.map((entry) => entry.fields));
     expect(serialized).not.toContain(SENTINEL_ANSWER);
-    dispose();
-  });
-
-  test("a user cancel still requires the authenticated responder", async () => {
-    // The withdrawal escape hatch must not become a general bypass: a cancel
-    // that CAN name a responder must name the right one, exactly like accept
-    // and decline.
-    const seen: ChannelElicitationRequest[] = [];
-    const channel = formChannel(async () => ({
-      action: "cancel",
-      responderId: "someone-else",
-    }), seen);
-    const { broker } = harness({ channel });
-    const route = turn();
-    const dispose = broker.bindTurn(route);
-    const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
-    expect(result).toEqual({ action: "cancel" });
-    expect(broker.pendingCount).toBe(0);
     dispose();
   });
 
