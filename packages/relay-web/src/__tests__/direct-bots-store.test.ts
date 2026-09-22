@@ -338,6 +338,50 @@ describe("useDirectBotsStore", () => {
       expect(store.activeTopicId).toBe("top_B");
       expect(store.messages.every((m) => m.topicId === "top_B")).toBe(true);
     });
+    it("keeps rev3 summary and detail when a deferred rev2 list lands late", async () => {
+      const store = useDirectBotsStore();
+      const rev3 = {
+        id: "bot_1",
+        name: "Rev Three",
+        agent: "codex",
+        workspace: "repo",
+        enabled: false,
+        profileRevision: 3,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        updatedAt: "2026-09-18T00:02:00.000Z",
+      };
+      const rev2 = {
+        id: "bot_1",
+        name: "Rev Two",
+        agent: "codex",
+        workspace: "repo",
+        enabled: true,
+        profileRevision: 2,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        updatedAt: "2026-09-18T00:01:00.000Z",
+      };
+      const { promise: listGate, resolve: resolveList } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.list") return listGate;
+        if (type === "control.bots.get") {
+          return Promise.resolve({ bot: rev3 });
+        }
+        return Promise.resolve({});
+      });
+      // L1 starts at server rev2 and hangs; the rev3 list + detail converge
+      // first (e.g. remote update's bots-changed), then the stale L1 lands.
+      store.botsByInstance["inst_1"] = [rev3 as never];
+      const listCall = store.loadBots("inst_1");
+      const detail = await store.loadBotDetail("inst_1", "bot_1");
+      expect(detail.profileRevision).toBe(3);
+      expect(store.botDetails["inst_1:bot_1"]).toEqual(rev3);
+      // The stale rev2 snapshot lands last: it must neither replace the rev3
+      // sidebar row nor delete the newer detail via fieldsDiffer.
+      resolveList({ bots: [rev2] });
+      await listCall;
+      expect(store.botsByInstance["inst_1"]).toEqual([rev3]);
+      expect(store.botDetails["inst_1:bot_1"]).toEqual(rev3);
+    });
     it("deletes a bot and removes it from state", async () => {
       const store = useDirectBotsStore();
       store.botsByInstance["inst_1"] = [

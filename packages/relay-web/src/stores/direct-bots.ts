@@ -494,11 +494,36 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // older than it. Field comparison alone cannot catch instructions-only
       // updates (instructions never appear on the summary); the monotonic
       // profileRevision covers those. Either signal invalidates.
+      // Revision-monotonic merge: a row older than the proven revision (e.g.
+      // a deferred list snapshot from rev2 landing after detail already
+      // converged rev3) is stale — keep the local row and never let its
+      // fieldsDiffer check delete the newer detail. Freshness is symmetric
+      // with the mutation path: newer state always wins, regardless of which
+      // response lands last.
       const nextDetails = { ...botDetails.value };
       const prevSummaries: Record<string, BotSummaryDto | undefined> = {};
       for (const b of prevList) prevSummaries[b.id] = b;
+      const mergedRows: BotSummaryDto[] = [];
+      const present = new Set<string>();
       for (const b of res.bots) {
         const detailKey = `${targetInstanceId}:${b.id}`;
+        // Presence is snapshot membership, not adoption: a stale row for a
+        // still-existing Bot proves presence (clears tombstones) even though
+        // its fields are too old to merge.
+        present.add(detailKey);
+        const proven = botProvenRevision[detailKey];
+        if (
+          typeof b.profileRevision === "number"
+          && proven !== undefined
+          && b.profileRevision < proven
+        ) {
+          // Stale snapshot row: the server took this snapshot before newer
+          // state we already converged. Keep the local row untouched —
+          // details, generations, tombstones, and proven revision all stay.
+          const prev = prevSummaries[b.id];
+          if (prev) mergedRows.push(prev);
+          continue;
+        }
         const prev = prevSummaries[b.id];
         // A newer summary revision proves any in-flight detail for an older
         // revision stale — even when no detail is cached yet (sidebar Edit on
@@ -513,23 +538,30 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
         }
         const cached = nextDetails[detailKey];
-        if (!cached) continue;
-        const revisionStale =
-          typeof cached.profileRevision === "number"
-          && typeof b.profileRevision === "number"
-          && b.profileRevision > cached.profileRevision;
-        const fieldsDiffer =
-          cached.name !== b.name
-          || cached.agent !== b.agent
-          || cached.workspace !== b.workspace
-          || (cached.model ?? undefined) !== (b.model ?? undefined)
-          || (cached.effort ?? undefined) !== (b.effort ?? undefined)
-          || cached.enabled !== b.enabled
-          || (cached.avatar ?? undefined) !== (b.avatar ?? undefined)
-          || (cached.role ?? undefined) !== (b.role ?? undefined);
-        if (revisionStale || fieldsDiffer) {
-          delete nextDetails[detailKey];
-          botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
+        if (cached) {
+          const revisionStale =
+            typeof cached.profileRevision === "number"
+            && typeof b.profileRevision === "number"
+            && b.profileRevision > cached.profileRevision;
+          const fieldsDiffer =
+            cached.name !== b.name
+            || cached.agent !== b.agent
+            || cached.workspace !== b.workspace
+            || (cached.model ?? undefined) !== (b.model ?? undefined)
+            || (cached.effort ?? undefined) !== (b.effort ?? undefined)
+            || cached.enabled !== b.enabled
+            || (cached.avatar ?? undefined) !== (b.avatar ?? undefined)
+            || (cached.role ?? undefined) !== (b.role ?? undefined);
+          if (revisionStale || fieldsDiffer) {
+            delete nextDetails[detailKey];
+            botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
+          }
+        }
+        mergedRows.push(
+          prevRuntime[b.id] && !b.hasRuntime ? { ...b, hasRuntime: true as const } : b,
+        );
+        if (typeof b.profileRevision === "number") {
+          botProvenRevision[detailKey] = Math.max(proven ?? -1, b.profileRevision);
         }
       }
       // Tombstone maintenance on an authoritative snapshot: present ids are
@@ -538,7 +570,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // deleted — tombstone them so a late mutation response cannot resurrect
       // the row, and drop their cached details. First loads prove nothing:
       // with no previously known ids the absent set is empty by construction.
-      const present = new Set(res.bots.map((b) => `${targetInstanceId}:${b.id}`));
+      // (`present` is raw snapshot membership: stale rows that kept their
+      // local row still prove the Bot exists and clear tombstones.)
       const knownKeys = new Set<string>();
       for (const b of prevList) knownKeys.add(`${targetInstanceId}:${b.id}`);
       for (const key of Object.keys(nextDetails)) {
@@ -567,20 +600,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       botDetails.value = nextDetails;
       botsByInstance.value = {
         ...botsByInstance.value,
-        [targetInstanceId]: res.bots.map((b) =>
-          prevRuntime[b.id] && !b.hasRuntime ? { ...b, hasRuntime: true as const } : b,
-        ),
+        [targetInstanceId]: mergedRows,
       };
       botsLoaded.value = {
         ...botsLoaded.value,
         [targetInstanceId]: true,
       };
-      for (const b of res.bots) {
-        if (typeof b.profileRevision === "number") {
-          const key = `${targetInstanceId}:${b.id}`;
-          botProvenRevision[key] = Math.max(botProvenRevision[key] ?? -1, b.profileRevision);
-        }
-      }
       return res.bots;
     } catch (err: unknown) {
       // A failed refresh leaves no fresh cache: invalidate so the next Bots
