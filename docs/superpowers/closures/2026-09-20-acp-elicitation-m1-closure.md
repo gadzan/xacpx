@@ -574,6 +574,109 @@ and confirming a test fails:
 | R9 | preflight moved after validation | oversized-URI ordering test |
 | R10 | length guard moved after canonicalisation | 3 array-admission tests |
 
+## Review round 12 / full re-sweep (head `b67c6a52`, merge commit `ed4c51f6`)
+
+Three findings, all fixed and mutation-verified.
+
+### 1. [Blocking] `$/cancel_request` for one elicitation now propagates end-to-end
+
+The worker's abort handler cleared its own pending map and rejected the local
+promise and did nothing else, so a withdraw of a single `elicitation/create`
+left the daemon broker — and the renderer — collecting input until the 120s
+deadline even though nobody would read the answer.
+
+```text
+acpx aborts context.signal
+  -> worker emits `elicitation.cancel`
+  -> host worker client aborts its in-flight propagation map
+  -> RuntimeEngine cancels the daemon RPC (already-supported `requestDaemon(signal)`)
+  -> bridge sends `cancelRpcId`
+  -> daemon drops the pending bridge RPC
+  -> broker aborts THIS request's controller -> renderer stops
+```
+
+The cancellation is **request-scoped, not turn-scoped**: the worker's
+`elicitation.cancel` method and the new host `inflightElicitations` map both
+carry `promptRequestId` + `workerGeneration` fencing exactly like the decision
+path, and the turn route stays bound so an agent can withdraw one question and
+ask another.
+
+A real-acpx E2E test drives this with a mock ACP agent that asks twice per turn
+and withdraws only the first question (JSON-RPC `$/cancel_request`). The host
+handler receives q1 with a live propagation that then aborts — it loses a race
+against its own 2s hold — and q2 still reaches and is answered. The mock takes
+the cancel via a delayed `setTimeout`, not the same write batch, because acpx
+dispatches the handler synchronously from the JSON-RPC callback and a
+same-batch notification would cancel the request before the host ever saw it
+(which is a different, non-buggy path).
+
+### 2. [Blocking] Two-digit years cannot borrow a real leap date
+
+`toUtcLeapInstant` used `Date.UTC(y, m - 1, d + dayShift)`. That constructor
+maps years 0..99 onto 1900+, so `0072-06-30T23:59:60Z` was evaluated as the
+**1972-06-30** leap date and wrongly accepted. Replaced with Howard Hinnant's
+proleptic-Gregorian day-number arithmetic (`daysFromCivil` / `civilFromDays`),
+plus an explicit `y < 1972` guard since no leap second exists before the first.
+
+The regression proves the original bug: reverting to `Date.UTC` while **keeping**
+the `y < 1972` guard still passes, so only restoring the full pre-fix state
+kills the tests — that mutation fails 2 tests.
+
+### 3. [Medium] `default` is an annotation, not a validity constraint
+
+Per JSON Schema vocabulary and ACP's pre-fill semantics a default the form
+cannot safely pre-fill must not reject the form. Previously all of these
+produced `malformed_schema`:
+
+- enum/single-select default not among the offered options;
+- numeric default outside `minimum`/`maximum`;
+- non-string default for a text field (and non-boolean for a boolean field);
+- default longer than `maxDefaultValueLength`;
+- multi-select default with duplicates or non-offered entries.
+
+They are now dropped (multi-select is filtered to the legal, deduplicated
+subset), the form still renders, and the human's answer is validated against
+`enum`/`pattern`/`minLength`/etc. exactly as before. Four existing tests pinned
+the rejection and were **replaced** with annotation-semantics tests; a new test
+asserts legal defaults still carry through so the fix is not "drop everything".
+
+### Non-blocking item also fixed
+
+`src/main.ts` still carried the round-7 "ensure identity" comment on
+`agentName`. The code was already correct; the comment now matches and names the
+round-7 finding so it cannot be reintroduced by a reader.
+
+## Cumulative mutation-verification table (round 12 additions)
+
+| Round | Mutation | Caught by |
+|---|---|---|
+| R11 | `typeof length === "number"` guard removed | 2 proxy-length tests |
+| R11 | tombstone split removed | retention regression |
+| R12 | broker `cancelElicitationRequest` disabled | 2 broker tests |
+| R12 | broker external-signal chaining removed | 1 broker test |
+| R12 | worker `elicitation.cancel` frame removed | cancel E2E (2/2 runs) |
+| R12 | string default rejection restored | 3 schema tests |
+| R12 | multi-select default filter removed | 1 schema test |
+| R12 | `Date.UTC` leap-date mapping restored | 2 leap tests |
+
+## Final totals after round 12
+
+| Suite | Tests |
+|---|---|
+| `turn-interaction-registry.test.ts` | 13 |
+| `elicitation-schema.test.ts` | 129 |
+| `elicitation-interaction-broker.test.ts` | 49 |
+| `elicitation-plugin-contract.test.ts` | 6 |
+| `channel-elicitation-capability.test.ts` | 9 |
+| `acpx-bridge-client.test.ts` | 47 |
+| `runtime-adapter-elicitation.test.ts` (real acpx) | 4 |
+| `runtime-elicitation-agent-identity.test.ts` (real worker) | 3 |
+| `runtime-elicitation-listener-balance.test.ts` | 6 |
+| `runtime-elicitation-cancel-e2e.test.ts` (real acpx) | 1 |
+
+Total new: **213**. M1 unit suites 345/345 green; real-acpx E2E 25/26 (the one
+failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
+
 ## Review round 11 / full re-sweep (head `879ef13b`, merge commit `ed4c51f6`)
 
 One Blocking and one Medium, both fixed and mutation-verified.
