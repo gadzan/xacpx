@@ -68,7 +68,7 @@ useModalA11y(dialog, () => emit("close"));
         <div class="thin-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
           <section v-if="step.detail" class="mb-5 rounded-xl border border-border bg-bg/60 p-3">
             <p class="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-muted">{{ $t("tools.delegatedTask") }}</p>
-            <ToolDetail :detail="step.detail" />
+            <ToolDetail :detail="step.detail" :headline="step.title" />
           </section>
           <section v-if="outputText" data-test="subagent-dialog-report" class="mb-5 rounded-xl border border-border bg-bg/60 p-3">
             <p class="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-fg-muted">{{ $t("tools.report") }}</p>

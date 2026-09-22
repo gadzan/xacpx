@@ -119,7 +119,7 @@ function rowElapsed(s: ToolStepDto): string {
           <AlertTriangle v-else data-test="step-status-error" :size="11" class="text-danger" />
         </button>
         <div v-if="expanded.has(s.toolCallId) && s.detail" class="pl-3 py-1">
-          <ToolDetail :detail="s.detail" />
+          <ToolDetail :detail="s.detail" :headline="s.title" />
         </div>
       </li>
     </ul>

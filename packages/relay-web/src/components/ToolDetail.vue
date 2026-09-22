@@ -5,7 +5,7 @@ import ExpandableBlock from "./ExpandableBlock.vue";
 import CopyButton from "./CopyButton.vue";
 import { diffLines } from "../lib/line-diff";
 
-const props = defineProps<{ detail: ToolDetailDto }>();
+const props = defineProps<{ detail: ToolDetailDto; headline?: string }>();
 
 // Line-level diff of the two blobs, with old/new line numbers and true +/− counts.
 const parsedDiff = computed(() =>
@@ -41,25 +41,13 @@ const outputMeta = computed(() => {
   if ((d.type === "command" || d.type === "search") && d.truncated === true) parts.push("truncated");
   return parts.join(" · ");
 });
-// Drawer headline: the per-type bodies deliberately omit the header-echoing
-// command/path/query, so the full headline lives here as selectable,
-// copyable text (touch users have no hover tooltip).
-const headline = computed(() => {
-  const d = props.detail;
-  if (d.type === "diff") return d.path;
-  if (d.type === "read") return d.path;
-  if (d.type === "command") return d.command;
-  if (d.type === "search") return d.query;
-  if (d.type === "fields") return d.fields.map((f) => f.value).filter((v) => v.trim()).join(" · ") || d.output?.split("\n")[0] || "";
-  return d.text;
-});
 </script>
 
 <template>
   <div class="mt-1 space-y-1 text-xs">
     <div v-if="headline" class="flex min-w-0 items-start gap-2" data-test="detail-headline">
       <p class="min-w-0 flex-1 font-mono text-[11px] text-fg break-all whitespace-pre-wrap select-text">{{ headline }}</p>
-      <CopyButton :text="headline" />
+      <CopyButton :text="headline ?? ''" />
     </div>
     <template v-if="detail.type === 'diff'">
       <p

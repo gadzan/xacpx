@@ -152,7 +152,7 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
         </div>
         <p v-else-if="step.terminalId && !detailOutput" data-test="tool-step-terminal-only"
            class="py-1 text-fg-muted">{{ $t("tools.terminalOutputNotReported") }}</p>
-        <ToolDetail v-if="step.detail" :detail="step.detail" />
+        <ToolDetail v-if="step.detail" :detail="step.detail" :headline="step.title" />
       </template>
     </div>
   </div>

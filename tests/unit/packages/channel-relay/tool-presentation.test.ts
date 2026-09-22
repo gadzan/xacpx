@@ -187,6 +187,17 @@ test("read withholds titleIsPath for a prose summary echoing the path", () => {
   expect(step.titleIsPath).toBeUndefined();
 });
 
+test("execute keeps a divergent progress summary while the detail carries the real command", () => {
+  const step = toolUseEventToStepDto({
+    toolCallId: "t-exec-div", toolName: "bash", kind: "execute", status: "success",
+    summary: "Running: ls packages/relay-web/src --with --many --flags --that --overflows",
+    rawInput: { command: "ls packages/relay-web/src" },
+    rawOutput: { stdout: "a.ts" },
+  });
+  expect(step.title).toBe("Running: ls packages/relay-web/src --with --many --flags --that --overflows");
+  expect(step.detail).toMatchObject({ type: "command", command: "ls packages/relay-web/src" });
+});
+
 test("search shows the parsed_cmd query in the header without a drawer until output lands", () => {
   const step = toolUseEventToStepDto({
     toolCallId: "t4", toolName: "Search", kind: "search", status: "success",

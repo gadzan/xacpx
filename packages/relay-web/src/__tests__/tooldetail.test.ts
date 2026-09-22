@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import ToolDetail from "../components/ToolDetail.vue";
 import type { ToolDetailDto } from "@ganglion/xacpx-relay-protocol";
 
-function render(detail: ToolDetailDto) {
-  return mount(ToolDetail, { props: { detail } });
+function render(detail: ToolDetailDto, headline?: string) {
+  return mount(ToolDetail, { props: { detail, ...(headline !== undefined ? { headline } : {}) } });
 }
 
 describe("ToolDetail", () => {
@@ -14,8 +14,8 @@ describe("ToolDetail", () => {
     expect(w.find('[data-test="diff-add"]').text()).toContain("const a = 2");
   });
 
-  it("renders a diff with the path as a copyable headline above the body", () => {
-    const w = render({ type: "diff", path: "src/x.ts", oldText: "a\nb", newText: "a\nb\nc\nd" });
+  it("renders a diff with the step title as a copyable headline above the body", () => {
+    const w = render({ type: "diff", path: "src/x.ts", oldText: "a\nb", newText: "a\nb\nc\nd" }, "src/x.ts");
     expect(w.find('[data-test="diff-add"]').text()).toContain("c");
     expect(w.find('[data-test="detail-headline"]').text()).toContain("src/x.ts");
   });
@@ -32,22 +32,22 @@ describe("ToolDetail", () => {
     expect(w.find('[data-test="diff-add"]').text()).toContain("new");
   });
 
-  it("renders a command headline with copyable text above output and exit code", () => {
-    const w = render({ type: "command", command: "npm test", output: "12 passed", exitCode: 0 });
+  it("renders the step title as a copyable headline above output and exit code", () => {
+    const w = render({ type: "command", command: "npm test", output: "12 passed", exitCode: 0 }, "npm test");
     expect(w.find('[data-test="cmd-output"]').text()).toContain("12 passed");
     expect(w.text()).toContain("exit 0");
     expect(w.find('[data-test="detail-headline"]').text()).toContain("npm test");
     expect(w.find('[data-test="copy-button"]').exists()).toBe(true);
   });
 
-  it("renders a read with the path headline plus the line range", () => {
-    const w = render({ type: "read", path: "src/a.ts", lines: "1–20" });
+  it("renders a read with the step title headline plus the line range", () => {
+    const w = render({ type: "read", path: "src/a.ts", lines: "1–20" }, "src/a.ts");
     expect(w.find('[data-test="read-lines"]').text()).toContain("1–20");
     expect(w.find('[data-test="detail-headline"]').text()).toContain("src/a.ts");
   });
 
-  it("renders search matches with the query as a copyable headline", () => {
-    const w = render({ type: "search", query: "rg foo", output: "a.ts:1\na.ts:2" });
+  it("renders search matches with the step title as a copyable headline", () => {
+    const w = render({ type: "search", query: "rg foo", output: "a.ts:1\na.ts:2" }, "rg foo");
     expect(w.find('[data-test="search-output"]').text()).toContain("a.ts:1");
     expect(w.find('[data-test="search-count"]').text()).toContain("2 lines");
     expect(w.find('[data-test="detail-headline"]').text()).toContain("rg foo");
@@ -59,6 +59,11 @@ describe("ToolDetail", () => {
     expect(w.find('[data-test="search-output"]').text()).toContain("4 matches");
   });
 
+  it("omits the headline row when no title is passed", () => {
+    const w = render({ type: "command", command: "npm test", output: "ok" });
+    expect(w.find('[data-test="detail-headline"]').exists()).toBe(false);
+    expect(w.find('[data-test="cmd-output"]').text()).toContain("ok");
+  });
   it("renders fields as a labeled list, not JSON", () => {
     const w = render({ type: "fields", fields: [{ label: "name", value: "thing" }], output: "ok" });
     expect(w.find('[data-test="field-name"]').text()).toContain("thing");

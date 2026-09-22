@@ -125,6 +125,21 @@ describe("ToolStepCard error banner de-duplication", () => {
     expect(w.find('[data-test="detail-headline"]').text()).toContain("a-very-long-command --with --many --flags --that --overflows");
   });
 
+  it("shows the divergent adapter summary — not the detail command — in the drawer", async () => {
+    // Connector keeps a non-degraded summary as `title` while the real
+    // command rides in `detail.command`; the drawer must echo the truncated
+    // header text, which the derived command alone cannot recover.
+    const summary = "Running: ls packages/relay-web/src --with --many --flags --that --overflows";
+    const w = card({
+      kind: "execute",
+      status: "success",
+      title: summary,
+      detail: { type: "command", command: "ls packages/relay-web/src", output: "a.ts", exitCode: 0 },
+    });
+    await w.find('[data-test="tool-step-header"]').trigger("click");
+    expect(w.find('[data-test="detail-headline"]').text()).toBe(summary);
+  });
+
   it("head-truncates stamped path titles so the filename stays visible", () => {
     // dir=rtl moves the ellipsis to the head (…tail): the filename — the part
     // users scan for — survives truncation. Full path stays in the tooltip.
