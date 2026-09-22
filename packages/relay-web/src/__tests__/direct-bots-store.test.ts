@@ -305,14 +305,18 @@ describe("useDirectBotsStore", () => {
       const olderA = store.loadOlder();
       await flushPromises();
       expect(store.loadingOlder).toBe(true);
-      // Switch to B (newest load converges), then paginate B immediately:
-      // B's request must go out without waiting for A's deferred page.
+      // Switch to B (newest load converges): navigation retires A's request
+      // AND releases the UI spinner, so the Load Older button is enabled on
+      // B even while A's page is still deferred.
       await store.switchTopic("top_B");
       for (let i = 0; i < 10; i += 1) {
         await flushPromises();
       }
       expect(store.activeTopicId).toBe("top_B");
       expect(store.hasMoreBefore).toBe(true);
+      expect(store.loadingOlder).toBe(false);
+      // Paginate B immediately: B's request must go out without waiting for
+      // A's deferred page.
       const olderB = store.loadOlder();
       for (let i = 0; i < 10; i += 1) {
         await flushPromises();

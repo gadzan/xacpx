@@ -298,6 +298,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // requests exit via the view fence and only the owner clears the flag.
   let olderRequestToken = 0;
   let olderRequestOwner = "";
+  // Release the UI spinner on navigation: the stale owner's view fence
+  // already blocks transcript writes, and its finally is token+owner
+  // checked, so clearing here cannot drop a new owner's spinner. Without
+  // this the Load Older button stays disabled on the new Topic until the
+  // old page settles, even though store.loadOlder() could take over.
+  function retireOlderRequest(): void {
+    olderRequestToken += 1;
+    olderRequestOwner = "";
+    loadingOlder.value = false;
+  }
   const historyError = ref<DirectBotHistoryErrorCode | null>(null);
   const historyErrorDetail = ref<string | null>(null);
   // Fail-closed admission gate: false from topic selection until durable run
@@ -1531,7 +1541,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
     discoverySequence += 1;
-    olderRequestToken += 1;
+    retireOlderRequest();
     touchTranscript();
     topicReady.value = false;
     instanceId.value = targetInstanceId;
@@ -1606,7 +1616,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
     discoverySequence += 1;
-    olderRequestToken += 1;
+    retireOlderRequest();
     touchTranscript();
     topicReady.value = false;
     activeTopicId.value = topicId;
@@ -1643,7 +1653,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     currentSelectionGeneration++;
     historyRequestSequence += 1;
     discoverySequence += 1;
-    olderRequestToken += 1;
+    retireOlderRequest();
     touchTranscript();
     topicReady.value = true;
     instanceId.value = null;

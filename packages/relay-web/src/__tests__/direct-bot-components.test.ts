@@ -1393,6 +1393,82 @@ describe("Direct Bot Components", () => {
       expect(wrapper.emitted("loadOlder")).toBeTruthy();
     });
 
+    it("enables the Load Older button after a topic switch retires a deferred page", async () => {
+      // Store-level UI contract: navigation releases loadingOlder so the
+      // button is clickable on the new Topic while the old page still hangs.
+      const directBots = useDirectBotsStore();
+      directBots.instanceId = "inst_1";
+      directBots.selectedBotId = "bot_1";
+      directBots.activeConversationId = "conv_1";
+      directBots.activeTopicId = "top_A";
+      const { api } = await import("../api/client");
+      const { promise: pageAGate } = Promise.withResolvers<unknown>();
+      const olderCalls: string[] = [];
+      const apiSpy = vi.spyOn(api, "rpc").mockImplementation(async (iid: string, type: string, payload?: unknown) => {
+        if (type === "control.conversation.history") {
+          const pl = payload as { beforeSeq?: number; topicId: string; limit?: number; direction?: string } | undefined;
+          if (pl?.beforeSeq !== undefined) {
+            olderCalls.push(pl.topicId);
+            if (pl.topicId === "top_A") return pageAGate as never;
+            return {
+              conversationId: "conv_1", topicId: "top_B", messages: [],
+              hasMoreBefore: false, hasMoreAfter: true,
+            } as never;
+          }
+          const topicId = pl?.topicId ?? "top_A";
+          return {
+            conversationId: "conv_1", topicId,
+            messages: Array.from({ length: 5 }, (_, i) => ({
+              id: `msg_${topicId}_${i}`, conversationId: "conv_1", topicId,
+              seq: 100 + i, role: "human", content: "m", createdAt: "now",
+            })),
+            oldestSeq: 100, newestSeq: 104, hasMoreBefore: true, hasMoreAfter: false,
+          } as never;
+        }
+        if (type === "control.runs.list") {
+          return { conversationId: "conv_1", topicId: (payload as { topicId: string }).topicId, runs: [] } as never;
+        }
+        return {} as never;
+      });
+      const msgA = (seq: number) => ({
+        id: `msg_top_A_${seq}`, conversationId: "conv_1", topicId: "top_A",
+        seq, role: "human", content: "m", createdAt: "now",
+      });
+      directBots.messages = Array.from({ length: 5 }, (_, i) => msgA(100 + i)) as never;
+      directBots.oldestSeq = 100;
+      directBots.hasMoreBefore = true;
+      void directBots.loadOlder();
+      await flushPromises();
+      expect(directBots.loadingOlder).toBe(true);
+      await directBots.switchTopic("top_B");
+      for (let i = 0; i < 10; i += 1) {
+        await flushPromises();
+      }
+      // Spinner released by navigation: the button binds this prop.
+      expect(directBots.loadingOlder).toBe(false);
+      const wrapper = mount(ConversationMessageList, {
+        props: {
+          messages: [],
+          liveTurn: null,
+          activeRun: null,
+          activeMemberTurn: null,
+          runParts: {},
+          hasMoreOlder: true,
+          loadingOlder: directBots.loadingOlder,
+          loadOlder: () => directBots.loadOlder(),
+        },
+        global: {
+          plugins: [i18n],
+        },
+      });
+      const btn = wrapper.find('[data-test="load-older-button"]');
+      expect(btn.exists()).toBe(true);
+      expect((btn.element as HTMLButtonElement).disabled).toBe(false);
+      await btn.trigger("click");
+      await flushPromises();
+      expect(olderCalls).toContain("top_B");
+      apiSpy.mockRestore();
+    });
     it("awaits async loadOlder prop and preserves scroll distance from bottom", async () => {
       const messages: ConversationMessageDto[] = [
         { id: "m2", conversationId: "c1", topicId: "t1", seq: 2, role: "human", content: "Second", createdAt: "now" },
