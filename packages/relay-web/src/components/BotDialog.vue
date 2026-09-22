@@ -217,10 +217,12 @@ async function submit(): Promise<void> {
         model?: string | null;
         effort?: string | null;
         enabled?: boolean | null;
-        // Name is always sent: it is required, identity-visible, and the
-        // validation above already gates on it. Everything else is
-        // dirty-gated so untouched rev1 rows cannot clobber a remote rev2.
-      } = { name: trimmedName };
+        // Every field is dirty-gated: required-ness is enforced by the
+        // validation above (empty name never reaches the patch), so an
+        // untouched name must not go out either — otherwise a remote rename
+        // (rev2) would be rolled back by a stale rev1 name on save.
+      } = {};
+      if (nameDirty.value) patch.name = trimmedName;
       if (avatarDirty.value) patch.avatar = avatar.value.trim() || null;
       if (roleDirty.value) patch.role = role.value.trim() || null;
       if (instructionsDirty.value) patch.instructions = instructions.value.trim() || null;

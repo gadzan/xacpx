@@ -660,6 +660,79 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // owner handoff below re-runs discovery instead of trusting a background
   // transcript refresh, so a queued next Run can never hide behind an open
   // gate. Transcript paging stays seq-cursor driven.
+  // Merge one newest-bounded page into the loaded window, preserving the
+  // already-loaded left edge and newest cursor. Loaded rows win on id
+  // conflict (same id with locally-merged stream state).
+  function mergeHistoryPage(
+    res: ConversationHistoryResponseDto,
+    merged: Record<string, ConversationMessageDto>,
+  ): void {
+    for (const m of res.messages) {
+      merged[m.id] = m;
+    }
+    for (const m of messages.value) {
+      merged[m.id] = m;
+    }
+    messages.value = Object.values(merged).sort((a, b) => a.seq - b.seq);
+    transcriptRevision += 1;
+    const prevOldest = oldestSeq.value;
+    if (res.oldestSeq !== undefined && (prevOldest === undefined || res.oldestSeq < prevOldest)) {
+      oldestSeq.value = res.oldestSeq;
+      hasMoreBefore.value = res.hasMoreBefore;
+    }
+    newestSeq.value = res.newestSeq ?? newestSeq.value;
+    hasMoreAfter.value = res.hasMoreAfter;
+  }
+  // Fill an interior seq hole between the previously loaded newest row and a
+  // bounded newest tail (e.g. >50 durable messages arrived while offline).
+  // Pages forward with afterSeq until the cursor reaches the tail: each page
+  // must strictly advance the cursor, so a wedged server terminates instead
+  // of spinning. Returns false when the view switched, a newer reload
+  // started, or a page failed to advance — the caller must then NOT claim a
+  // complete recovery.
+  async function fillHistoryGap(
+    iId: string,
+    cId: string,
+    tId: string,
+    requestSequence: number,
+    fromNewest: number,
+    tailOldest: number,
+    tailNewest: number | undefined,
+    merged: Record<string, ConversationMessageDto>,
+  ): Promise<boolean> {
+    let cursor = fromNewest;
+    for (;;) {
+      const gapRes = unwrapRpc(
+        await api.rpc<ConversationHistoryResponseDto>(iId, MSG.conversationHistory, {
+          conversationId: cId,
+          topicId: tId,
+          afterSeq: cursor,
+          limit: 50,
+        }),
+      );
+      if (
+        instanceId.value !== iId ||
+        activeConversationId.value !== cId ||
+        activeTopicId.value !== tId ||
+        requestSequence !== historyRequestSequence
+      ) {
+        return false;
+      }
+      if (gapRes.messages.length === 0) return true;
+      for (const m of gapRes.messages) {
+        merged[m.id] = m;
+      }
+      messages.value = Object.values(merged).sort((a, b) => a.seq - b.seq);
+      touchTranscript();
+      const pageNewest = Math.max(...gapRes.messages.map((m) => m.seq));
+      // Strict progress: a page that does not move past the cursor (empty,
+      // duplicate, or rewound) ends the fill instead of looping forever.
+      if (pageNewest <= cursor) return false;
+      cursor = pageNewest;
+      if (cursor >= tailOldest - 1) return true;
+      if (tailNewest !== undefined && cursor >= tailNewest) return true;
+    }
+  }
   async function loadHistory(
     targetInstanceId?: string,
     convId?: string,
@@ -717,75 +790,38 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
       // Merge the canonical newest page into the loaded window instead of
       // replacing it: the user may have paged back (loadOlder) and be reading
-      // older rows. Iteration order is newest-first, so seed the merge with
-      // the fresh page first, then overlay already-loaded rows (loaded rows
-      // win on id conflict — same id with locally-merged stream state).
+      // older rows.
       const prevNewestBeforeMerge = newestSeq.value;
       const merged: Record<string, ConversationMessageDto> = {};
-      for (const m of res.messages) {
-        merged[m.id] = m;
-      }
-      for (const m of messages.value) {
-        merged[m.id] = m;
-      }
-      messages.value = Object.values(merged).sort((a, b) => a.seq - b.seq);
-      transcriptRevision += 1;
-      // The fresh page is newest-bounded (limit 50): its oldestSeq/hasMoreBefore
-      // describe the page, not the merged window. Keep the already-loaded left
-      // edge: extend only when the fresh page actually reaches older rows.
-      const prevOldest = oldestSeq.value;
-      if (res.oldestSeq !== undefined && (prevOldest === undefined || res.oldestSeq < prevOldest)) {
-        oldestSeq.value = res.oldestSeq;
-        hasMoreBefore.value = res.hasMoreBefore;
-      }
-      newestSeq.value = res.newestSeq ?? newestSeq.value;
+      mergeHistoryPage(res, merged);
+      hasMoreAfter.value = res.hasMoreAfter;
       // Gap fill: when the newest tail starts strictly after the previously
       // loaded newest row (e.g. >50 durable messages arrived while offline),
       // the merge above leaves an interior seq hole (1..50 + 71..120). Page
       // forward from the previous newest until the tail is reached so the
       // merged window stays contiguous; Load Older alone cannot repair it
-      // because the hole is in the middle, not at either edge.
+      // because the hole is in the middle, not at either edge. Unbounded
+      // with strict per-page progress: only a page that fails to advance the
+      // cursor ends the fill, and then recovery below must NOT claim success.
       const tailOldest = res.messages.length > 0
         ? Math.min(...res.messages.map((m) => m.seq))
         : undefined;
+      let gapComplete = true;
       if (
         tailOldest !== undefined &&
         prevNewestBeforeMerge !== undefined &&
         tailOldest > prevNewestBeforeMerge + 1
       ) {
-        let cursor = prevNewestBeforeMerge;
-        // Bounded loop: each iteration advances the cursor; break on empty
-        // pages, view switches, or newer reloads so a wedged server cannot
-        // spin this forever.
-        for (let guard = 0; guard < 8; guard += 1) {
-          const gapRes = unwrapRpc(
-            await api.rpc<ConversationHistoryResponseDto>(iId, MSG.conversationHistory, {
-              conversationId: cId,
-              topicId: tId,
-              afterSeq: cursor,
-              limit: 50,
-            }),
-          );
-          if (
-            instanceId.value !== iId ||
-            activeConversationId.value !== cId ||
-            activeTopicId.value !== tId ||
-            requestSequence !== historyRequestSequence
-          ) {
-            return;
-          }
-          if (gapRes.messages.length === 0) break;
-          for (const m of gapRes.messages) {
-            merged[m.id] = m;
-          }
-          messages.value = Object.values(merged).sort((a, b) => a.seq - b.seq);
-          touchTranscript();
-          const pageNewest = Math.max(...gapRes.messages.map((m) => m.seq));
-          cursor = Math.max(cursor, pageNewest);
-          if (res.newestSeq !== undefined && cursor >= res.newestSeq) break;
-          if (tailOldest !== undefined && cursor >= tailOldest - 1) break;
-          if (gapRes.messages.length < 50 && gapRes.newestSeq !== undefined && cursor >= gapRes.newestSeq) break;
-        }
+        gapComplete = await fillHistoryGap(
+          iId,
+          cId,
+          tId,
+          requestSequence,
+          prevNewestBeforeMerge,
+          tailOldest,
+          res.newestSeq,
+          merged,
+        );
         newestSeq.value = res.newestSeq ?? newestSeq.value;
       }
       // If any bot message in history corresponds to an active run, converge liveTurn
@@ -803,7 +839,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // passed so a superseded load cannot let its slow recovery overwrite a
       // newer one. Admission opens only on proven discovery (active candidate
       // or authoritative no-candidate): a runs.list failure leaves the gate
-      // closed so a prompt cannot take wrong ownership of an unseen Run.
+      // closed so a prompt cannot take wrong ownership of an unseen Run. An
+      // incomplete gap fill likewise keeps the gate closed with a retryable
+      // history error instead of presenting a holed transcript as recovered.
+      if (!gapComplete) {
+        historyError.value = "discoveryFailed";
+        historyErrorDetail.value = `history gap ${prevNewestBeforeMerge}..${tailOldest} did not converge; retry to complete recovery`;
+        return;
+      }
       const discovered = await recoverActiveRun(
         iId,
         cId,
@@ -1011,22 +1054,38 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         }
         // Same merge as loadHistory: never drop already-loaded older rows the
         // user paged back to read when the bounded newest page refreshes.
+        const prevNewestBeforeMerge = newestSeq.value;
         const merged: Record<string, ConversationMessageDto> = {};
-        for (const m of res.messages) {
-          merged[m.id] = m;
-        }
-        for (const m of messages.value) {
-          merged[m.id] = m;
-        }
-        messages.value = Object.values(merged).sort((a, b) => a.seq - b.seq);
-        transcriptRevision += 1;
-        const prevOldest = oldestSeq.value;
-        if (res.oldestSeq !== undefined && (prevOldest === undefined || res.oldestSeq < prevOldest)) {
-          oldestSeq.value = res.oldestSeq;
-          hasMoreBefore.value = res.hasMoreBefore;
-        }
-        newestSeq.value = res.newestSeq ?? newestSeq.value;
+        mergeHistoryPage(res, merged);
         hasMoreAfter.value = res.hasMoreAfter;
+        // Same interior-gap repair as loadHistory: a reused-completed accept
+        // can land while >50 durable messages arrived, leaving the same
+        // middle hole Load Older cannot reach.
+        const tailOldest = res.messages.length > 0
+          ? Math.min(...res.messages.map((m) => m.seq))
+          : undefined;
+        if (
+          tailOldest !== undefined &&
+          prevNewestBeforeMerge !== undefined &&
+          tailOldest > prevNewestBeforeMerge + 1
+        ) {
+          const gapComplete = await fillHistoryGap(
+            targetInstanceId,
+            convId,
+            topId,
+            requestSequence,
+            prevNewestBeforeMerge,
+            tailOldest,
+            res.newestSeq,
+            merged,
+          );
+          newestSeq.value = res.newestSeq ?? newestSeq.value;
+          if (!gapComplete) {
+            historyError.value = "discoveryFailed";
+            historyErrorDetail.value = `history gap ${prevNewestBeforeMerge}..${tailOldest} did not converge; retry to complete recovery`;
+            return;
+          }
+        }
         if (activeRun.value) {
           const canonicalBotMsg = messages.value.find(
             (m) => m.role === "bot" && m.runId === activeRun.value?.id,

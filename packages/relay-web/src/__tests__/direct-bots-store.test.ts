@@ -5313,6 +5313,89 @@ describe("useDirectBotsStore", () => {
       // Tail + one gap page: no unbounded paging.
       expect(historyCalls).toBe(2);
     });
+    it("fills a gap larger than the old 400-message cap without claiming partial recovery", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      // Previously loaded window: contiguous seq 1..50; offline grows the
+      // durable tail to 600, so the newest tail is 551..600 (550 missing).
+      const loaded = Array.from({ length: 50 }, (_, i) => ({
+        id: `msg_${i + 1}`,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        seq: i + 1,
+        role: "human",
+        content: `m${i + 1}`,
+        createdAt: "now",
+      }));
+      store.messages = loaded as never;
+      store.oldestSeq = 1;
+      store.newestSeq = 50;
+      store.hasMoreBefore = false;
+      const msg = (seq: number) => ({
+        id: `msg_${seq}`,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        seq,
+        role: "human",
+        content: `m${seq}`,
+        createdAt: "now",
+      });
+      mockRpc.mockImplementation((instId: string, type: string, payload?: unknown) => {
+        if (type === "control.bots.list") {
+          return Promise.resolve({ bots: store.botsByInstance["inst_1"] });
+        }
+        if (type === "control.bots.get") {
+          return Promise.resolve({ bot: { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, profileRevision: 1, createdAt: "now", updatedAt: "now" } });
+        }
+        if (type === "control.topics.list") {
+          return Promise.resolve({ topics: [{ id: "top_1", conversationId: "conv_1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" }] });
+        }
+        if (type === "control.conversation.history") {
+          const p = payload as { afterSeq?: number; beforeSeq?: number; limit?: number } | undefined;
+          if (p?.afterSeq !== undefined) {
+            // Faithful 50-row forward pages from the cursor.
+            const start = p.afterSeq + 1;
+            const end = Math.min(start + 49, 600);
+            const messages = Array.from({ length: Math.max(0, end - start + 1) }, (_, i) => msg(start + i));
+            return Promise.resolve({
+              conversationId: "conv_1",
+              topicId: "top_1",
+              messages,
+              oldestSeq: messages[0]?.seq,
+              newestSeq: messages[messages.length - 1]?.seq,
+              hasMoreBefore: true,
+              hasMoreAfter: end < 600,
+            });
+          }
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: Array.from({ length: 50 }, (_, i) => msg(551 + i)),
+            oldestSeq: 551,
+            newestSeq: 600,
+            hasMoreBefore: true,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", runs: [] });
+        }
+        return Promise.resolve({});
+      });
+      await store.reconcileOnReconnect();
+      await flushPromises();
+      expect(store.messages.map((m) => m.seq)).toEqual(Array.from({ length: 600 }, (_, i) => i + 1));
+      expect(store.oldestSeq).toBe(1);
+      expect(store.newestSeq).toBe(600);
+      expect(store.topicReady).toBe(true);
+      expect(store.historyError).toBeNull();
+    });
     it("clears a sticky offline banner on online event and on selection reset", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

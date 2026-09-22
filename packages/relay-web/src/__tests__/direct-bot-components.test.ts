@@ -356,6 +356,69 @@ describe("Direct Bot Components", () => {
       expect(patch).not.toHaveProperty("agent");
       expect(patch).not.toHaveProperty("workspace");
     });
+    it("does not roll back a remote rename when only other fields are touched", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+        } as never,
+      ];
+      vi.spyOn(instances, "loadFormOptions").mockResolvedValue(undefined);
+      const directBots = useDirectBotsStore();
+      // Hydrate at rev1 name="Existing Bot"; a remote client renames to
+      // "Remote Name" (rev2). The local user only toggles enabled.
+      vi.spyOn(directBots, "loadBotDetail").mockResolvedValue({
+        id: "bot_1", name: "Existing Bot", agent: "codex", workspace: "repo",
+        enabled: true, profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      const updateSpy = vi.spyOn(directBots, "updateBot").mockResolvedValue({
+        id: "bot_1",
+        name: "Remote Name",
+        agent: "codex",
+        workspace: "repo",
+        enabled: false,
+        profileRevision: 3,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      const existingBot: BotSummaryDto = {
+        id: "bot_1",
+        name: "Existing Bot",
+        agent: "codex",
+        workspace: "repo",
+        enabled: true,
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(BotDialog, {
+        props: {
+          instanceId: "i1",
+          instanceName: "Local",
+          bot: existingBot,
+        },
+        global: {
+          plugins: [i18n],
+        },
+      });
+      await flushPromises();
+      await flushPromises();
+      // Touch only enabled: name input keeps its hydrated value but is NOT
+      // dirty, so the patch must not carry the stale rev1 name.
+      const enabledCheckbox = wrapper.find('input[type="checkbox"]');
+      await enabledCheckbox.setValue(false);
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      const patch = updateSpy.mock.calls[0]?.[2] as Record<string, unknown>;
+      expect(patch).not.toHaveProperty("name");
+      expect(patch.enabled).toBe(false);
+    });
 
     it("locks agent/workspace once authoritative detail resolves hasRuntime=true", async () => {
       const instances = useInstancesStore();
