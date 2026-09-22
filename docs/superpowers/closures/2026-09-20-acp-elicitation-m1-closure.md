@@ -3,7 +3,7 @@
 ```text
 Milestone: M1 Core Foundation
 Base:      e98cb68e (main, "feat(relay-web): sticky agent avatar with working quip chip and unified send/cancel (#353)")
-Head:      e6649c5210ca453962fc1bc69e57c90e7520d0ab + round-18 fixes (post-review)
+Head:      447ecdf74ddac124f97464659965862501141a92 + round-19 fixes (post-review)
 PR:        #355 "feat(elicitation): ACP Elicitation M1 core foundation" (OPEN, mergeable)
 ```
 
@@ -1282,8 +1282,6 @@ Total new: **224**. M1 unit suites 360/360 green; real-acpx E2E 25/26
 undercount it fixes is 1280 chars against a 256k cap, so no input can distinguish
 the two behaviors. Documented in the code rather than claimed as covered.
 
-## Review round 18 (head `e6649c52`) — root-type reader semantics
-
 1 Medium, no Blocking.
 
 ### [Medium] The round-17 root-`type` distinction does not exist
@@ -1337,3 +1335,57 @@ suites 360/360 green; real-acpx E2E 25/26 (pre-existing `PR9-A`);
 | R17 | strict root-type check restored | root-tolerance regression |
 | R18 | wrong root `type` rejected again | 2 root-tolerance regressions |
 
+
+## Review round 19 (head `447ecdf7`) — presentation-metadata salvage
+
+1 Medium, no Blocking.
+
+### [Medium] Optional presentation metadata rejected where the ACP reader salvages
+
+Every OPTIONAL presentation string in the pinned
+`@agentclientprotocol/sdk` 1.4.0 — `requestedSchema.title`,
+`requestedSchema.description`, each property's `title`/`description`, an
+`EnumOption`'s optional `description`, and `default`/`_meta` — is declared as:
+
+```ts
+defaultOnError(z.string().nullish(), () => undefined)
+```
+
+and `defaultOnError` is `schema.catch(fallback)`. Confirmed empirically against
+the installed package: `title: 7`, `description: false`, `title: {}` and an
+option `description: 5` all parse to `undefined`, so the ACP reader normalises a
+non-string to **absent** before xacpx's normalizer runs. xacpx was instead
+failing the whole form as `malformed_schema`.
+
+Added `readSalvagedMetadataString()` — non-string ⇒ absent, present string still
+subject to xacpx's own length cap — and switched the five presentation sites to
+it. Verified from the SDK source that this is **not** a general relaxation:
+
+| Member | SDK declaration | xacpx behavior |
+|---|---|---|
+| `title` / `description` (schema + property) | `defaultOnError(...)` | salvaged |
+| `EnumOption.description` | `defaultOnError(...)` | salvaged |
+| `pattern` | `z.string().nullish()` — **no catch** | still rejected |
+| `EnumOption.const` / `title` | `z.string()` — required | still rejected |
+
+| Mutation | Caught by |
+|---|---|
+| metadata salvage removed | "malformed presentation metadata is salvaged" fails |
+| `pattern` wrongly salvaged | "a malformed pattern is still rejected" fails |
+
+## Final totals after round 19
+
+| Suite | Tests |
+|---|---|
+| `elicitation-schema.test.ts` | 143 |
+
+Total new: **228**. M1 unit suites 364/364 green; real-acpx E2E 25/26
+(pre-existing `PR9-A`); `npx tsc --noEmit` 0 errors.
+
+### Cumulative mutation-verification table (round 19 addition)
+
+| Round | Mutation | Caught by |
+|---|---|---|
+| R18 | wrong root `type` rejected again | 2 root-tolerance regressions |
+| R19 | metadata salvage removed | metadata-salvage regression |
+| R19 | `pattern` wrongly salvaged | pattern-strictness regression |

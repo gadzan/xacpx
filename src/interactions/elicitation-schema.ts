@@ -139,6 +139,42 @@ function readOptionalBoundedString(
 }
 
 /**
+ * OPTIONAL PRESENTATION METADATA with the ACP reader's salvage semantics.
+ *
+ * Distinct from `readOptionalBoundedString`, and the difference is deliberate:
+ * the pinned `@agentclientprotocol/sdk` 1.4.0 declares every presentation
+ * string (`requestedSchema.title`, `.description`, each property's `title` /
+ * `description`, `default`, and an `EnumOption`'s optional `description`) as
+ *
+ *     defaultOnError(z.string().nullish(), () => undefined)
+ *
+ * and `defaultOnError` is `schema.catch(fallback)`. So a NON-STRING value is
+ * normalised to absent before xacpx's normalizer ever sees it — verified
+ * empirically against the installed package. Rejecting the whole form for a
+ * malformed title would reject input the ACP reader layer has already salvaged,
+ * which is the same failure mode as rounds 16/18.
+ *
+ * NOT a general relaxation, and deliberately not applied to `pattern`: the SDK
+ * declares `pattern: z.string().nullish()` with no catch, so a malformed
+ * pattern really does fail upstream and must keep failing here.
+ *
+ * A present, in-range string is still subject to xacpx's OWN length cap: salvage
+ * applies to the value's TYPE, not to xacpx's resource policy.
+ */
+function readSalvagedMetadataString(
+  holder: Plain,
+  key: string,
+  max: number,
+): { ok: true; value?: string } | { ok: false } {
+  const value = holder[key];
+  // Only the type is salvaged. Absent stays absent; `null` is a valid "absent".
+  if (value === undefined || value === null) return { ok: true };
+  if (typeof value !== "string") return { ok: true };
+  if (value.length > max) return { ok: false };
+  return { ok: true, value };
+}
+
+/**
  * A REQUIRED bounded string. Unlike the optional reader, ABSENCE is a failure
  * — used where ACP marks the member mandatory (EnumOption.title). A present
  * empty string is still legal: missing and empty are different things, and
@@ -203,9 +239,9 @@ function normalizeField(
   if (key.length > ELICITATION_SCHEMA_LIMITS.maxFieldKeyLength) {
     return { ok: false, detail: `field key too long: ${key.length}` };
   }
-  const title = readOptionalBoundedString(property, "title", ELICITATION_SCHEMA_LIMITS.maxFieldTitleLength);
+  const title = readSalvagedMetadataString(property, "title", ELICITATION_SCHEMA_LIMITS.maxFieldTitleLength);
   if (!title.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid title` };
-  const description = readOptionalBoundedString(
+  const description = readSalvagedMetadataString(
     property,
     "description",
     ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength,
@@ -540,7 +576,7 @@ function readTitledOptions(
       "title",
       ELICITATION_SCHEMA_LIMITS.maxOptionLabelLength,
     );
-    const description = readOptionalBoundedString(option, "description", ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength);
+    const description = readSalvagedMetadataString(option, "description", ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength);
     if (!label.ok || !description.ok) return undefined;
     return {
       value: optionValue,
@@ -629,13 +665,13 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
   }
   // ACP schema-level presentation metadata. Bounded like every other string,
   // and carried through because plugins never see the raw ACP object.
-  const schemaTitle = readOptionalBoundedString(
+  const schemaTitle = readSalvagedMetadataString(
     schema,
     "title",
     ELICITATION_SCHEMA_LIMITS.maxFieldTitleLength,
   );
   if (!schemaTitle.ok) return fail("malformed_schema", "requestedSchema.title is invalid");
-  const schemaDescription = readOptionalBoundedString(
+  const schemaDescription = readSalvagedMetadataString(
     schema,
     "description",
     ELICITATION_SCHEMA_LIMITS.maxFieldDescriptionLength,

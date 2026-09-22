@@ -529,6 +529,83 @@ describe("normalizeAcpElicitationForm rejections", () => {
     }
   });
 
+  test("malformed presentation metadata is salvaged, not rejected", () => {
+    // Regression: the pinned ACP SDK declares every OPTIONAL presentation
+    // string (`requestedSchema.title`, `.description`, each property's
+    // `title`/`description`, and an EnumOption's optional `description`) as
+    //
+    //     defaultOnError(z.string().nullish(), () => undefined)
+    //
+    // i.e. `schema.catch(fallback)`. A NON-STRING value is normalised to absent
+    // upstream of xacpx, verified empirically against the installed package.
+    // Rejecting the form here rejects input the ACP reader already salvaged —
+    // the same failure mode as rounds 16/18.
+    for (const bad of [7, false, {}, [], true]) {
+      const root = normalizeAcpElicitationForm(formRequest({
+        requestedSchema: { type: "object", title: bad, properties: { a: { type: "string" } } },
+      }));
+      expect(root.ok).toBe(true);
+
+      const fieldTitle = normalizeAcpElicitationForm(formRequest({
+        requestedSchema: { type: "object", properties: { a: { type: "string", title: bad } } },
+      }));
+      expect(fieldTitle.ok).toBe(true);
+
+      const fieldDescription = normalizeAcpElicitationForm(formRequest({
+        requestedSchema: { type: "object", properties: { a: { type: "string", description: bad } } },
+      }));
+      expect(fieldDescription.ok).toBe(true);
+
+      const optionDescription = normalizeAcpElicitationForm(formRequest({
+        requestedSchema: {
+          type: "object",
+          properties: { a: { type: "string", oneOf: [{ const: "x", title: "X", description: bad }] } },
+        },
+      }));
+      expect(optionDescription.ok).toBe(true);
+    }
+  });
+
+  test("a malformed pattern is still rejected, because the SDK does not salvage it", () => {
+    // The salvage rule is NOT a general relaxation. The pinned SDK declares
+    // `pattern: z.string().nullish()` with no `defaultOnError`, so a malformed
+    // pattern genuinely fails upstream — and it must keep failing here, since
+    // `pattern` is carried to the renderer as display metadata.
+    for (const bad of [7, false, {}]) {
+      const result = normalizeAcpElicitationForm(formRequest({
+        requestedSchema: { type: "object", properties: { a: { type: "string", pattern: bad } } },
+      }));
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  test("an oversized metadata string is still rejected, though salvaged non-strings are not", () => {
+    // Salvage applies to the value's TYPE, not to xacpx's resource policy: a
+    // present, in-range-ish-but-too-long string is still over the cap.
+    const tooLong = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        properties: { a: { type: "string", title: "t".repeat(ELICITATION_SCHEMA_LIMITS.maxFieldTitleLength + 1) } },
+      },
+    }));
+    expect(tooLong.ok).toBe(false);
+  });
+
+  test("valid metadata is still carried through", () => {
+    // Salvaging must not become dropping: a legitimate title reaches the field.
+    const result = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: {
+        type: "object",
+        title: "Root title",
+        properties: { a: { type: "string", title: "Field title", description: "Field desc" } },
+      },
+    }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.form.schemaTitle).toBe("Root title");
+    expect(result.form.fields[0]).toMatchObject({ title: "Field title", description: "Field desc" });
+  });
+
   test("an unknown string format is preserved as an annotation, not rejected", () => {
     // ACP elicitation RFD: "Known formats include email, uri, date and
     // date-time. Other string format values are annotations. Implementations
