@@ -3,8 +3,8 @@
 ```text
 Milestone: M1 Core Foundation
 Base:      e98cb68e (main, "feat(relay-web): sticky agent avatar with working quip chip and unified send/cancel (#353)")
-Head:      uncommitted working tree (no PR yet)
-PR:        —
+Head:      3295504952374a524d10500c5c41e7dece1546fe (after review round 12)
+PR:        #355 "feat(elicitation): ACP Elicitation M1 core foundation" (OPEN, mergeable)
 ```
 
 ## Implemented
@@ -28,7 +28,11 @@ PR:        —
   promptRequestId, elicitationRequestId, interactionId?, acpRequestId,
   request, workerGeneration }` and `RuntimeElicitationDecision`
   (`accept`/`decline`/`cancel`). Removed `policyGeneration`, `mode`,
-  `message`, `elicitationId`, `submit`, and the `elicitation.cancel` method.
+  `message`, `elicitationId`, `submit`, and the original `elicitation.cancel`
+  method. **A request-scoped `elicitation.cancel` was added back in review
+  round 12** (M1 as-first-shipped had none), so an agent's
+  `$/cancel_request` propagates instead of leaving the renderer live until the
+  120s deadline; see "Review round 12" below.
 - `src/bridge/engine/runtime/runtime-worker-main.ts` — handler signature
   `(request, { requestId, signal })`, `randomUUID()` correlation ids,
   125s watchdog (was 30s), abort/deadline fencing, generation + promptRequestId
@@ -646,10 +650,103 @@ asserts legal defaults still carry through so the fix is not "drop everything".
 `agentName`. The code was already correct; the comment now matches and names the
 round-7 finding so it cannot be reintroduced by a reader.
 
-## Cumulative mutation-verification table (round 12 additions)
+## Review round 13 / full re-sweep (head `32955049`, merge commit `4098fbaa`)
+
+0 Blocking, 2 Medium. Both Mediums fixed.
+
+### 1. [Medium] The published plugin contract was missing two ACP MUSTs
+
+ACP's User Interaction Requirements (`docs/rfds/elicitation.mdx`) say a form
+client MUST provide clear decline **and** cancel controls, and MUST let users
+review and modify responses before sending. `requestElicitation`'s MUST list in
+`src/interactions/elicitation-types.ts` and `src/channels/types.ts` had neither,
+so a renderer could comply with xacpx's published contract and still violate
+ACP — and M1 is the foundation every later renderer builds on.
+
+The contract now states, as core-enforced-in-contract (not core-enforceable):
+
+- expose clear, **separate** Decline and Cancel controls (ACP MUST);
+- allow review and modification of responses before Accept (ACP MUST);
+- present `request.message` (ACP SHOULD);
+- display `request.agent.name`, never substitute agent text for identity.
+
+Terminal-action origin is now explicit, because the old wording
+("settle ... on `signal` abort by returning `{ action: "cancel", responderId }`")
+was **unsatisfiable**: agent `$/cancel_request`, timeout, turn disposal and
+shutdown have no responder. Core owns those paths (round 12's request-scoped
+cancellation), so the renderer's contract on abort is to withdraw/disable its UI
+immediately and stop collecting input — not to fabricate an identity.
+
+Also corrected the header comment: the runtime freeze covers the **form
+presentation graph** (`fields`, `options`, multi-select `defaultValue`), not the
+request wrapper (`requester`/`agent`/`signal`). Authentication reads core's
+private route, so the wrapper adds nothing when frozen.
+
+### 2. [Medium] `package-lock.json` still classified Ajv as a peer dependency
+
+Round 11 added `ajv`/`ajv-formats` as root direct dependencies but deliberately
+surgical-edited the lock because local npm **10.9.3** also flipped ~13 unrelated
+`peer: true` flags. That left `"node_modules/ajv": { peer: true }` inconsistent
+with a root production edge.
+
+Regenerated with `npx npm@11` (CI runs Node 24, which ships npm 11) instead of
+hand-editing. The diff is **only** 24 `peer: true` flag removals and 5
+`optional`/`version` key-order changes — verified programmatically that the lock
+is identical once `peer`/`optional` are normalised, and `npm ci --dry-run`
+installs cleanly. If a future npm major changes more than flags, the answer is
+to pin the lockfile-generating npm version, not to keep a known-wrong flag.
+
+### Also fixed (non-blocking cleanups from the same sweep)
+
+- **Unified pre-fill policy.** `default` is dropped when the field's own
+  constraints would reject it (`minLength`, `maxLength`, `format`), so a
+  renderer can never show a value core is guaranteed to reject if the user
+  submits it unchanged. Previously `{minLength: 3, default: "x"}` passed "x"
+  through while the multi-select path already filtered. `pattern` is
+  deliberately NOT enforced here — core never executes agent regex
+  (resource-exhaustion vector, same reason `validateFieldValue` does not).
+- Closure report header updated from "uncommitted working tree (no PR yet)" to
+  the real PR #355 + head, and the early "removed `elicitation.cancel`" note now
+  cross-references its round-12 reintroduction instead of contradicting it.
+- PR body test count 207 → 215.
+
+### Deferred to M2
+
+- Reusable timeout constants (`ELICITATION_RPC_TIMEOUT_MS`) still live in the
+  broker module, which drags `elicitation-schema.ts` → Ajv into the runtime
+  worker's import graph. Moving them to a lightweight constants/protocol module
+  is a mechanical cleanup with no behaviour change; deferred because it needs
+  real memory/startup measurements to justify.
+
+## Final totals after round 13
+
+| Suite | Tests |
+|---|---|
+| `turn-interaction-registry.test.ts` | 13 |
+| `elicitation-schema.test.ts` | 130 |
+| `elicitation-interaction-broker.test.ts` | 49 |
+| `elicitation-plugin-contract.test.ts` | 6 |
+| `channel-elicitation-capability.test.ts` | 9 |
+| `acpx-bridge-client.test.ts` | 47 |
+| `runtime-adapter-elicitation.test.ts` (real acpx) | 4 |
+| `runtime-elicitation-agent-identity.test.ts` (real worker) | 3 |
+| `runtime-elicitation-listener-balance.test.ts` | 6 |
+| `runtime-elicitation-cancel-e2e.test.ts` (real acpx) | 1 |
+
+Total new: **215**. M1 unit suites 347/347 green; real-acpx E2E 25/26 (the one
+failure is the pre-existing `PR9-A E2E`); `npx tsc --noEmit` 0 errors.
+
+### Cumulative mutation-verification table
 
 | Round | Mutation | Caught by |
 |---|---|---|
+| R7 | decision accessor / double read | 3 decision tests |
+| R8 | no-op `abort.release()` in helper | 2 listener tests |
+| R8 | worker's `abort.release()` removed | structural guard |
+| R9 | array canonicalisation disabled | 2 accessor tests |
+| R9 | offset range check removed | 2 offset tests |
+| R9 | preflight moved after validation | oversized-URI ordering test |
+| R10 | length guard moved after canonicalisation | 3 array-admission tests |
 | R11 | `typeof length === "number"` guard removed | 2 proxy-length tests |
 | R11 | tombstone split removed | retention regression |
 | R12 | broker `cancelElicitationRequest` disabled | 2 broker tests |
@@ -658,6 +755,7 @@ round-7 finding so it cannot be reintroduced by a reader.
 | R12 | string default rejection restored | 3 schema tests |
 | R12 | multi-select default filter removed | 1 schema test |
 | R12 | `Date.UTC` leap-date mapping restored | 2 leap tests |
+| R13 | pre-fill policy relaxed to size-only | prefill regression |
 
 ## Final totals after round 12
 

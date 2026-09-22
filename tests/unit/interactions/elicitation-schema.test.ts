@@ -448,6 +448,38 @@ describe("normalizeAcpElicitationForm rejections", () => {
     expect("defaultValue" in (result.form.fields[0] as object)).toBe(false);
   });
 
+  test("a default the field's own constraints would reject is never pre-filled", () => {
+    // Pre-fill policy: core hands a renderer only a default it would itself
+    // ACCEPT as a submitted answer. Showing `{minLength:3, default:"x"}` would
+    // trap the user — submit unchanged and core rejects. Same for maxLength and
+    // a format the value does not satisfy.
+    const short = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { a: { type: "string", minLength: 3, default: "x" } } },
+    }));
+    expect(short.ok).toBe(true);
+    if (short.ok) expect("defaultValue" in (short.form.fields[0] as object)).toBe(false);
+
+    const long = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { a: { type: "string", maxLength: 2, default: "xyz" } } },
+    }));
+    expect(long.ok).toBe(true);
+    if (long.ok) expect("defaultValue" in (long.form.fields[0] as object)).toBe(false);
+
+    const notEmail = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { a: { type: "string", format: "email", default: "not-an-email" } } },
+    }));
+    expect(notEmail.ok).toBe(true);
+    if (notEmail.ok) expect("defaultValue" in (notEmail.form.fields[0] as object)).toBe(false);
+
+    // ...and an in-bounds, format-satisfying default still pre-fills, so the
+    // policy removes traps rather than all pre-fill.
+    const good = normalizeAcpElicitationForm(formRequest({
+      requestedSchema: { type: "object", properties: { a: { type: "string", format: "email", default: "a@b.co" } } },
+    }));
+    expect(good.ok).toBe(true);
+    if (good.ok) expect(good.form.fields[0]).toMatchObject({ defaultValue: "a@b.co" });
+  });
+
   test("a legal default is still carried through", () => {
     // Dropping must not become dropping-everything: a usable pre-fill hint is
     // what a renderer needs to pre-populate the control.

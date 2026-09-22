@@ -234,15 +234,23 @@ function normalizeField(
         return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an unsupported format` };
       }
       // `default` is an ANNOTATION (JSON Schema vocabulary + ACP pre-fill
-      // hint), not a validity constraint. A value that cannot be safely
-      // pre-filled is dropped, never turned into `malformed_schema`: the form
-      // still renders, the human answers for real, and that answer is
-      // validated against `enum`/`pattern`/`minLength` etc. exactly as before.
+      // hint), not a validity constraint: a value that cannot be safely
+      // pre-filled is dropped, never turned into `malformed_schema`.
+      //
+      // PREFILL POLICY (core-safe, uniform across all field kinds): core only
+      // hands a renderer a default it would itself ACCEPT as a submitted
+      // answer. A default violating `minLength`/`maxLength`/`pattern`/`format`
+      // is therefore dropped rather than passed through — otherwise the
+      // renderer would show a value core is guaranteed to reject if the user
+      // submits it unmodified, which traps the user.
       const defaultRaw = property.default;
-      const defaultValue = typeof defaultRaw === "string"
+      const defaultUsable = typeof defaultRaw === "string"
         && defaultRaw.length <= ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength
-        ? defaultRaw
-        : undefined;
+        && !(minLength.value !== undefined && defaultRaw.length < minLength.value)
+        && !(maxLength.value !== undefined && defaultRaw.length > maxLength.value)
+        && patternMatches(pattern.value, defaultRaw)
+        && formatMatches(format === null ? undefined : format, defaultRaw);
+      const defaultValue = defaultUsable ? defaultRaw : undefined;
 
       const enumValues = readOptionalStringArray(property, "enum", ELICITATION_SCHEMA_LIMITS.maxOptionsPerField);
       if (!enumValues.ok) return { ok: false, detail: `field "${boundedKeyLabel(key)}" has an invalid enum` };
@@ -800,6 +808,34 @@ function isEmail(value: string): boolean {
 
 function isUri(value: string): boolean {
   return formatValidator.uri(value);
+}
+
+/**
+ * Would core ACCEPT `value` as a submitted answer for a field carrying this
+ * `format`? Used only by the pre-fill policy: a default core would reject is
+ * dropped instead of shown to the user.
+ */
+function formatMatches(format: string | undefined, value: string): boolean {
+  switch (format) {
+    case "email": return isEmail(value);
+    case "uri": return isUri(value);
+    case "date": return isDate(value);
+    case "date-time": return isDateTime(value);
+    default: return true;
+  }
+}
+
+/**
+ * Pre-fill policy helper for string `pattern`.
+ *
+ * Deliberately ALWAYS TRUE: core does not execute agent-provided patterns, for
+ * the same reason `validateFieldValue` does not — unbounded JS regex
+ * evaluation on agent-controlled input is a resource-exhaustion vector. So a
+ * default is never rejected for violating a pattern; the agent remains
+ * responsible for pattern validation of its own pre-fill hint.
+ */
+function patternMatches(_pattern: string | undefined, _value: string): boolean {
+  return true;
 }
 
 
