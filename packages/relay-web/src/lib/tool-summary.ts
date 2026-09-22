@@ -55,6 +55,17 @@ export function stripTruncationMarks(value: string): string {
   return out.trim();
 }
 
+/** True when a step title is a bare file path (`src/a.ts`, `C:\work\f.ts`).
+ *  Path previews ellipsis at the head (…tail) so the filename — the part the
+ *  user scans for — stays visible; commands, queries, and prose keep the
+ *  default tail ellipsis. Only read/edit/delete titles are connector-derived
+ *  paths, and anything with whitespace is prose (e.g. a move's `a → b`). */
+export function isPathTitle(kind: ToolStepKind, title: string): boolean {
+  if (kind !== "read" && kind !== "edit" && kind !== "delete") return false;
+  if (!/[/\\]/.test(title)) return false;
+  return !/\s/.test(title);
+}
+
 export function diffStatsOf(detail: { type: string; oldText?: string; newText?: string } | undefined): DiffStats | null {
   if (!detail || detail.type !== "diff") return null;
   const { oldText = "", newText = "" } = detail;

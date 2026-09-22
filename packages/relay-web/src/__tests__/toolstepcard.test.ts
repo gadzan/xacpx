@@ -108,7 +108,7 @@ describe("ToolStepCard error banner de-duplication", () => {
     expect(w.find('[data-test="tool-step-header"]').text()).toContain("a.ts");
   });
 
-  it("expands a truncated header title to its full text", async () => {
+  it("keeps a truncated header title single-line after expanding the detail", async () => {
     const w = card({
       status: "success",
       title: "a-very-long-command --with --many --flags --that --overflows",
@@ -118,9 +118,33 @@ describe("ToolStepCard error banner de-duplication", () => {
     expect(header.find("span.min-w-0").classes()).toContain("truncate");
     await header.trigger("click");
     expect(header.attributes("aria-expanded")).toBe("true");
-    expect(header.find("span.min-w-0").classes()).not.toContain("truncate");
+    // The full command/output lives in the detail drawer; the header stays a
+    // single-line preview (full text remains available via the title tooltip).
+    expect(header.find("span.min-w-0").classes()).toContain("truncate");
     expect(header.find("span.min-w-0").attributes("title")).toContain("a-very-long-command");
     expect(w.find('[data-test="tool-step-detail"]').exists()).toBe(true);
+  });
+
+  it("head-truncates path titles so the filename stays visible", () => {
+    // dir=rtl moves the ellipsis to the head (…tail): the filename — the part
+    // users scan for — survives truncation. Full path stays in the tooltip.
+    const path = card({
+      kind: "read",
+      status: "success",
+      title: "packages/relay-web/src/components/ToolStepCard.vue",
+      detail: { type: "read", path: "packages/relay-web/src/components/ToolStepCard.vue", preview: "body" },
+    });
+    const pathTitle = path.find('[data-test="tool-step-header"] span.min-w-0');
+    expect(pathTitle.attributes("dir")).toBe("rtl");
+    expect(pathTitle.attributes("title")).toContain("ToolStepCard.vue");
+    // Commands keep head text (the verb/flags) with the default tail ellipsis.
+    const cmd = card({
+      kind: "execute",
+      status: "success",
+      title: "bun run build --filter relay-web",
+      detail: { type: "command", command: "bun run build --filter relay-web", output: "ok", exitCode: 0 },
+    });
+    expect(cmd.find('[data-test="tool-step-header"] span.min-w-0').attributes("dir")).toBeUndefined();
   });
 
   it("wraps a header-only long title without an expandable drawer", () => {

@@ -30,6 +30,21 @@ describe("ToolCallPanel", () => {
     expect(w.find('[data-test="cmd-output"]').text()).toContain("passed");
   });
 
+  it("head-truncates path rows so the filename stays visible", async () => {
+    const w = mount(ToolCallPanel, {
+      props: {
+        steps: [
+          { toolCallId: "p1", toolName: "Read", kind: "read", status: "success", title: "packages/relay-web/src/components/ToolStepCard.vue", detail: { type: "read", path: "packages/relay-web/src/components/ToolStepCard.vue", preview: "body" } },
+          { toolCallId: "c1", toolName: "Bash", kind: "execute", status: "success", title: "bun run build", detail: { type: "command", command: "bun run build", output: "ok" } },
+        ],
+      },
+    });
+    await w.find("button").trigger("click");
+    const rows = w.findAll('[data-test="tool-row"]');
+    expect(rows[0].find("span.min-w-0").attributes("dir")).toBe("rtl");
+    expect(rows[1].find("span.min-w-0").attributes("dir")).toBeUndefined();
+  });
+
   it("marks a running step distinctly from a successful one", async () => {
     const w = mount(ToolCallPanel, { props: { steps } });
     await w.find("button").trigger("click");
