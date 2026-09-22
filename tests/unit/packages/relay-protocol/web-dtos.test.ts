@@ -393,6 +393,25 @@ test("accepts a deep-valid state snapshot and rejects mismatched or malformed ro
   expect(roundtrip({ ...snapshot, commands: [{ ...snapshot.commands[0], commands: [{ name: "compact", hasInput: "yes" }] }] })).toBeNull();
 });
 
+test("accepts a truncated state-snapshot turn and rejects a junk truncated flag", () => {
+  const snapshot = {
+    kind: "state-snapshot", instanceId: "i1",
+    turns: [{
+      instanceId: "i1", sessionAlias: "backend", status: "streaming", startedAt: 10,
+      parts: [{ type: "text", text: "capped prefix" }],
+      truncated: true,
+    }],
+    usage: [],
+    commands: [],
+  };
+  const parsed = roundtrip(snapshot);
+  expect(parsed).not.toBeNull();
+  expect((parsed as { turns: { truncated?: boolean }[] }).turns[0]?.truncated).toBe(true);
+  expect(roundtrip({ ...snapshot, turns: [{ ...snapshot.turns[0] }] })).not.toBeNull();
+  expect(roundtrip({ ...snapshot, turns: [{ ...snapshot.turns[0], truncated: "yes" }] })).toBeNull();
+  expect(roundtrip({ ...snapshot, turns: [{ ...snapshot.turns[0], truncated: 1 }] })).toBeNull();
+});
+
 test("rejects a tool-event step with an unknown detail tag", () => {
   expect(roundtrip({
     kind: "control-event", instanceId: "i1",

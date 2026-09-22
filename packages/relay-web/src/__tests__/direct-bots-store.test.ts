@@ -4514,6 +4514,157 @@ describe("useDirectBotsStore", () => {
       expect(store.promptError).toBe("connectorOutdated");
       expect(store.promptErrorDetail).toBeNull();
     });
+    it("never certifies a hub-truncated snapshot trace, even after turn-finished", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.runs.get") {
+          return Promise.resolve({ run: { id: "run_A", conversationId: "conv_1", topicId: "top_1", requestMessageId: "m", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now", memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+      // Hub-capped snapshot: the trace is gappy, flagged truncated.
+      store.applyEvent({
+        kind: "state-snapshot",
+        instanceId: "inst_1",
+        turns: [
+          {
+            instanceId: "inst_1",
+            sessionAlias: "brt_hidden",
+            parts: [{ type: "text", text: "capped prefix" }],
+            status: "streaming",
+            startedAt: 1234,
+            truncated: true,
+            conversation: {
+              conversationId: "conv_1",
+              topicId: "top_1",
+              botId: "bot_1",
+              runId: "run_A",
+              memberTurnId: "m_A",
+            },
+          },
+        ],
+        usage: [],
+        commands: [],
+      } as never);
+      expect(store.runParts["run_A"]).toHaveLength(1);
+      expect(store.completeRunParts["run_A"]).toBeUndefined();
+      // Live deltas append post-cap content onto the capped base...
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "turn-output",
+          chatKey: "rk",
+          sessionAlias: "brt_hidden",
+          chunk: " tail",
+          conversation: { conversationId: "conv_1", topicId: "top_1", botId: "bot_1", runId: "run_A", memberTurnId: "m_A" },
+        } as never,
+      });
+      // ...and the stream's turn-finished arrives. The merged trace still
+      // must not certify the durable final answer.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "turn-finished",
+          chatKey: "rk",
+          sessionAlias: "brt_hidden",
+          conversation: { conversationId: "conv_1", topicId: "top_1", botId: "bot_1", runId: "run_A", memberTurnId: "m_A" },
+        } as never,
+      });
+      expect(store.completeRunParts["run_A"]).toBeUndefined();
+      // The durable canonical row arrives: FULL ANSWER must render, not the
+      // capped trace.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "conversation-message",
+          message: { id: "msg_full", conversationId: "conv_1", topicId: "top_1", seq: 9, role: "bot", runId: "run_A", content: "FULL ANSWER", createdAt: "now" },
+        } as never,
+      });
+      expect(store.messages.some((m) => m.content === "FULL ANSWER")).toBe(true);
+      expect(store.completeRunParts["run_A"]).toBeUndefined();
+    });
+    it("recovers the topic gate when reconnect catalog refresh rejects", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.topicReady = true;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        // Transient catalog failure: must not strand the gate or skip
+        // durable recovery.
+        if (type === "control.bots.list") return Promise.reject(new Error("catalog blip"));
+        if (type === "control.bots.get") {
+          return Promise.resolve({ bot: { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, profileRevision: 1, createdAt: "now", updatedAt: "now" } });
+        }
+        if (type === "control.topics.list") {
+          return Promise.resolve({ topics: [{ id: "top_1", conversationId: "conv_1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" }] });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", runs: [] });
+        }
+        return Promise.resolve({});
+      });
+      await store.reconcileOnReconnect();
+      for (let i = 0; i < 10; i += 1) {
+        await flushPromises();
+      }
+      // Durable discovery still ran and proved no-candidate: the gate reopens
+      // instead of wedging at topicReady=false with no visible error.
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.conversation.history", expect.anything());
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.list", {
+        conversationId: "conv_1",
+        topicId: "top_1",
+      });
+      expect(store.topicReady).toBe(true);
+      expect(store.historyError).toBeNull();
+    });
+    it("keeps per-instance bots spinners independent under concurrent first loads", async () => {
+      const store = useDirectBotsStore();
+      const { promise: gateA, resolve: resolveA } = Promise.withResolvers<unknown>();
+      const { promise: gateB, resolve: resolveB } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.list") {
+          if (instId === "inst_A") return gateA;
+          if (instId === "inst_B") return gateB;
+        }
+        return Promise.resolve({});
+      });
+      const callA = store.loadBots("inst_A");
+      const callB = store.loadBots("inst_B");
+      await Promise.resolve();
+      expect(store.loadingBotsByInstance["inst_A"]).toBe(1);
+      expect(store.loadingBotsByInstance["inst_B"]).toBe(1);
+      expect(store.loadingBots).toBe(true);
+      // A resolves first: only A's counter clears; B still spins.
+      resolveA({ bots: [] });
+      await callA;
+      expect(store.loadingBotsByInstance["inst_A"]).toBeUndefined();
+      expect(store.loadingBotsByInstance["inst_B"]).toBe(1);
+      expect(store.loadingBots).toBe(true);
+      resolveB({ bots: [] });
+      await callB;
+      expect(store.loadingBots).toBe(false);
+    });
     it("directly converges to terminal state and loads history when prompt RPC returns reused completed run", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

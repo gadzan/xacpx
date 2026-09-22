@@ -524,7 +524,7 @@ const rowSwipes = computed(() => {
 
         <!-- BOTS MODE -->
         <div v-if="inst.online && modeFor(inst.id) === 'bots'" class="space-y-px">
-          <div v-if="directBotsStore.loadingBots && !directBotsStore.botsLoaded[inst.id]"
+          <div v-if="(directBotsStore.loadingBotsByInstance[inst.id] ?? 0) > 0 && !directBotsStore.botsLoaded[inst.id]"
                data-test="bots-loading"
                class="py-1 pl-2.5 text-[11px] text-fg-muted">
             {{ $t("instance.loading") }}

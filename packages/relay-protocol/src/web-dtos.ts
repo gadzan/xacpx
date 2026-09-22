@@ -107,6 +107,12 @@ export interface LiveTurnSnapshotDto {
    * to a Conversation Run. Additive; `sessionAlias` remains legacy plumbing.
    */
   conversation?: ConversationTurnCorrelationDto;
+  /**
+   * True when the hub capped this snapshot at STATE_SYNC_TEXT_CAP: content
+   * after the cap is lost, so the trace must never certify the durable final
+   * answer. Additive; absence means untruncated (old hubs never truncated).
+   */
+  truncated?: boolean;
 }
 
 /** The latest context-usage meter retained per session, handed to a (re)connecting web
@@ -449,7 +455,8 @@ function validStateSnapshot(candidate: Record<string, unknown>): boolean {
       && c.parts.every(validTurnPart)
       && (c.status === "working" || c.status === "streaming")
       && finiteNonNegative(c.startedAt)
-      && optNonNegInt(c.slotAfterId);
+      && optNonNegInt(c.slotAfterId)
+      && (c.truncated === undefined || typeof c.truncated === "boolean");
   })) return false;
   if (!Array.isArray(candidate.usage) || !candidate.usage.every((usage) => {
     if (typeof usage !== "object" || usage === null) return false;

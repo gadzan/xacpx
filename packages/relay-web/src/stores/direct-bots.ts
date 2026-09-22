@@ -232,7 +232,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // Bots state
   const botsByInstance = ref<Record<string, BotSummaryDto[]>>({});
   const botDetails = ref<Record<string, BotDetailDto>>({});
-  const loadingBots = ref<boolean>(false);
+  // Per-instance in-flight counters: concurrent first-loads on two
+  // instances must not clear each other's sidebar spinner (a global boolean
+  // cleared by A's finally would flash "No bots" on still-pending B).
+  const loadingBotsByInstance = ref<Record<string, number>>({});
+  const loadingBots = computed<boolean>(() =>
+    Object.values(loadingBotsByInstance.value).some((n) => n > 0),
+  );
   const botsLoaded = ref<Record<string, boolean>>({});
   // Freshness fences for the Bot catalog: overlapping bots-list/detail
   // refreshes (e.g. back-to-back bots-changed events) must converge on the
@@ -297,12 +303,17 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // turn-finished may keep its cached parts. A partial snapshot (stream cut
   // by disconnect) must never shadow the durable final row recovered later.
   const runPartsComplete = ref<Record<string, true>>({});
-  // Finished-row rendering must only use traces proven complete by their own
-  // stream's turn-finished. DirectBotPane binds this (never raw runParts).
+  // Truncation evidence: a state-sync snapshot the hub capped at
+  // STATE_SYNC_TEXT_CAP stays gappy even after its stream's turn-finished —
+  // later live deltas append post-cap content to the capped base, so the
+  // merged trace must never certify the durable final answer.
+  const runPartsTruncated = ref<Record<string, true>>({});
+  // Finished-row rendering must only use traces proven complete AND untruncated
+  // by their own stream. DirectBotPane binds this (never raw runParts).
   const completeRunParts = computed<Record<string, TurnPartDto[]>>(() => {
     const out: Record<string, TurnPartDto[]> = {};
     for (const [id, parts] of Object.entries(runParts.value)) {
-      if (parts.length && runPartsComplete.value[id]) out[id] = parts;
+      if (parts.length && runPartsComplete.value[id] && !runPartsTruncated.value[id]) out[id] = parts;
     }
     return out;
   });
@@ -421,7 +432,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   async function loadBots(targetInstanceId: string): Promise<BotSummaryDto[]> {
     const seq = (botsListSeq[targetInstanceId] ?? 0) + 1;
     botsListSeq[targetInstanceId] = seq;
-    loadingBots.value = true;
+    loadingBotsByInstance.value = {
+      ...loadingBotsByInstance.value,
+      [targetInstanceId]: (loadingBotsByInstance.value[targetInstanceId] ?? 0) + 1,
+    };
     try {
       const res = unwrapRpc(
         await api.rpc<{ bots: BotSummaryDto[] }>(targetInstanceId, MSG.botsList, {}),
@@ -508,7 +522,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       }
       throw err;
     } finally {
-      loadingBots.value = false;
+      // Only this instance's counter decrements; a stale (superseded) A must
+      // not clear B's spinner. Clamp at zero against double-decrement.
+      const remaining = Math.max(0, (loadingBotsByInstance.value[targetInstanceId] ?? 1) - 1);
+      if (remaining === 0) {
+        const { [targetInstanceId]: _done, ...rest } = loadingBotsByInstance.value;
+        loadingBotsByInstance.value = rest;
+      } else {
+        loadingBotsByInstance.value = { ...loadingBotsByInstance.value, [targetInstanceId]: remaining };
+      }
     }
   }
 
@@ -718,9 +740,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // must not shadow it — drop it so the canonical content renders.
   function pruneIncompleteTraces(): void {
     const completeFlags = runPartsComplete.value;
+    const truncatedFlags = runPartsTruncated.value;
     let prunedParts: Record<string, TurnPartDto[]> | null = null;
     for (const m of messages.value) {
-      if (m.runId && runParts.value[m.runId]?.length && !completeFlags[m.runId]) {
+      // Unproven OR hub-truncated: neither may shadow the durable final row.
+      if (m.runId && runParts.value[m.runId]?.length && (!completeFlags[m.runId] || truncatedFlags[m.runId])) {
         if (!prunedParts) prunedParts = { ...runParts.value };
         delete prunedParts[m.runId];
       }
@@ -1964,28 +1988,40 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       historyRequestSequence += 1;
       discoverySequence += 1;
     }
+    // Catalog refresh is best-effort: a transient bots.list failure must
+    // never strand the Topic gate closed with no recovery path. Only durable
+    // owner discovery (loadHistory + runs.list) controls topicReady; the
+    // catalog decides ghost-selection only, on whatever it managed to load.
+    let bots: BotSummaryDto[] | null = null;
     try {
-      const bots = await loadBots(iId);
-      // The reconcile started before this await: the user may have selected
-      // a different Bot while it was in flight. A stale reconcile must keep
-      // its catalog refresh but never clear a selection it no longer owns.
-      if (
-        generation !== currentSelectionGeneration ||
-        instanceId.value !== iId ||
-        selectedBotId.value !== bId
-      ) {
-        return;
-      }
-      // The selected Bot may have been deleted on another client while this
-      // page was offline/closed. Drop the ghost selection (plus cached detail
-      // and persisted key) instead of restoring a pane that can only fail.
-      if (bId && !bots.some((b) => b.id === bId)) {
-        dropBotDetail(iId, bId);
-        clearSelection();
-        return;
-      }
+      bots = await loadBots(iId);
+    } catch {
+      // Fall through to durable recovery below: the dirty barrier already
+      // marked catalogs stale, so the next Bots tab entry retries the list.
+    }
+    // The reconcile started before this await: the user may have selected
+    // a different Bot while it was in flight. A stale reconcile must keep
+    // its catalog refresh but never clear a selection it no longer owns.
+    if (
+      generation !== currentSelectionGeneration ||
+      instanceId.value !== iId ||
+      selectedBotId.value !== bId
+    ) {
+      return;
+    }
+    // The selected Bot may have been deleted on another client while this
+    // page was offline/closed. Drop the ghost selection (plus cached detail
+    // and persisted key) instead of restoring a pane that can only fail.
+    // Only a successful catalog load may prove deletion: a failed refresh
+    // proves nothing and must fall through to durable recovery.
+    if (bots && bId && !bots.some((b) => b.id === bId)) {
+      dropBotDetail(iId, bId);
+      clearSelection();
+      return;
+    }
 
-      if (bId) {
+    if (bId) {
+      try {
         await loadBotDetail(iId, bId).catch(() => {});
         if (generation !== currentSelectionGeneration || instanceId.value !== iId || selectedBotId.value !== bId) return;
 
@@ -1998,10 +2034,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             if (generation !== currentSelectionGeneration || activeTopicId.value !== tId) return;
           }
         }
+      } catch (err: unknown) {
+        console.warn("reconcileOnReconnect error:", err);
       }
+    }
 
-      // Check active run if we believed one was active (same predicate as
-      // isRunActive: queued/running/waiting-human).
+    // Check active run if we believed one was active (same predicate as
+    // isRunActive: queued/running/waiting-human).
       if (rId && activeRun.value?.id === rId && isActiveRunState(activeRun.value.state)) {
         try {
           const res = unwrapRpc(
@@ -2043,9 +2082,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           }
         }
       }
-    } catch (err: unknown) {
-      console.warn("reconcileOnReconnect error:", err);
-    }
   }
 
   // Handle server WebSocket events
@@ -2106,6 +2142,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             if (runPartsComplete.value[matchingRunId]) {
               const { [matchingRunId]: _dropped, ...rest } = runPartsComplete.value;
               runPartsComplete.value = rest;
+            }
+            // A hub-capped snapshot stays gappy: later deltas append onto the
+            // capped base, so the merged trace can never become complete.
+            if (matchingTurn.truncated) {
+              runPartsTruncated.value = { ...runPartsTruncated.value, [matchingRunId]: true };
+            } else if (runPartsTruncated.value[matchingRunId]) {
+              const { [matchingRunId]: _dropped, ...rest } = runPartsTruncated.value;
+              runPartsTruncated.value = rest;
             }
 
             const targetInstId = event.instanceId;
@@ -2544,6 +2588,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     botsByInstance,
     botDetails,
     loadingBots,
+    loadingBotsByInstance,
     botsLoaded,
     conversationsByInstance,
     conversationDetails,

@@ -346,6 +346,9 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         startedAt: a.startedAt,
         ...(typeof a.slotAfterId === "number" ? { slotAfterId: a.slotAfterId } : {}),
         ...(a.conversation ? { conversation: a.conversation } : {}),
+        // A mirror-capped turn stays capped: web must never certify its
+        // partial trace as the complete final answer.
+        ...(a.truncated ? { truncated: true } : {}),
       });
     }
     return out;
