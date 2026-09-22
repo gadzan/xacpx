@@ -202,6 +202,7 @@ export function buildElicitationFieldCard(
     lines.push(escapeDiscordLiteralText(`_${displayValue(field.defaultValue)}_`));
   }
   const components = actionRow([
+    { label: messages.elicitationNext, customId: elicitationCustomId(token, "review"), style: 2 },
     { label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 },
     { label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 },
   ]);
