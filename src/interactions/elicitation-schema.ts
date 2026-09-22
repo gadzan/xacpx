@@ -595,22 +595,37 @@ export function normalizeAcpElicitationForm(request: unknown): ElicitationNormal
   }
   const schema = asPlain(record.requestedSchema);
   if (!schema) return fail("malformed_schema", "requestedSchema is not an object");
-  // ACP "Restricted JSON Schema": senders MUST include both `type: "object"`
-  // and `properties`. For compatibility, ACP READERS tolerate an omitted,
-  // `null`, or malformed `type` by treating it as `"object"`, and tolerate
-  // omitted `properties` by treating it as an empty map; `null` is NOT valid
-  // for `properties`. "This reader tolerance does not relax the sender
-  // requirements" — so core accepts the tolerated shapes rather than cancelling
-  // a form the agent sent in good faith, but still rejects what the spec calls
-  // invalid.
+  // ACP "Restricted JSON Schema": senders MUST include `type: "object"` and
+  // `properties`, but READERS "tolerate an omitted, null, or malformed `type`
+  // by treating it as 'object', and tolerate omitted `properties` by treating it
+  // as an empty map; `null` is not valid for `properties`". Reader tolerance
+  // does not relax the sender requirement — core accepts what the RFD says to
+  // accept and still rejects what it calls invalid.
+  //
+  // The `type` tolerance is TOTAL, and it must be: the pinned
+  // `@agentclientprotocol/sdk` 1.4.0 declares this field as
+  //
+  //     type: defaultOnError(z.literal("object").optional().default("object"),
+  //                          () => "object")
+  //
+  // and `defaultOnError` is `schema.catch(fallback)`. So EVERY value that fails
+  // the `"object"` literal — `"array"`, `"string"`, `7`, an object — is salvaged
+  // to `"object"` before xacpx sees it. Verified empirically against the
+  // installed package: all five wrong shapes arrive as `"object"`.
+  //
+  // Round 17 distinguished "malformed" (tolerate) from "well-formed string
+  // naming another type" (reject). That distinction does not exist: the RFD's
+  // "malformed" has no such carve-out, and the SDK salvages either way.
+  // Rejecting would reject forms the ACP reader layer already normalised, and
+  // the test that pinned the rejection was cementing the deviation — the same
+  // failure mode as round 16's unknown `format`.
   const schemaType = schema.type;
-  // A non-string `type` is MALFORMED and tolerated (read as `"object"`); a
-  // string naming a different type is a real mismatch and still rejected. The
-  // RFD separates the two, and so must the check — otherwise "tolerate malformed
-  // type" would silently accept `type: "array"`, which is exactly what the
-  // sender requirement forbids.
-  if (typeof schemaType === "string" && schemaType !== "object") {
-    return fail("malformed_schema", 'requestedSchema.type must be "object"');
+  if (schemaType !== undefined && schemaType !== null && schemaType !== "object") {
+    // Tolerated, not rejected. Kept as an explicit branch rather than deleted so
+    // the reader-tolerance rule stays visible at the site, and so a future ACP
+    // revision that stops salvaging does not silently start rejecting: flip this
+    // to `fail(...)` and the regressions below will catch it.
+    void schemaType;
   }
   // ACP schema-level presentation metadata. Bounded like every other string,
   // and carried through because plugins never see the raw ACP object.

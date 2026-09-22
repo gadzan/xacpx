@@ -3,7 +3,7 @@
 ```text
 Milestone: M1 Core Foundation
 Base:      e98cb68e (main, "feat(relay-web): sticky agent avatar with working quip chip and unified send/cancel (#353)")
-Head:      860b2adede563878a0ee702df44a6f7cf04eca3a + round-17 fixes (post-review)
+Head:      e6649c5210ca453962fc1bc69e57c90e7520d0ab + round-18 fixes (post-review)
 PR:        #355 "feat(elicitation): ACP Elicitation M1 core foundation" (OPEN, mergeable)
 ```
 
@@ -1281,4 +1281,59 @@ Total new: **224**. M1 unit suites 360/360 green; real-acpx E2E 25/26
 **Explicitly NOT mutation-guarded:** the `measureFieldChars` `format` term. The
 undercount it fixes is 1280 chars against a 256k cap, so no input can distinguish
 the two behaviors. Documented in the code rather than claimed as covered.
+
+## Review round 18 (head `e6649c52`) — root-type reader semantics
+
+1 Medium, no Blocking.
+
+### [Medium] The round-17 root-`type` distinction does not exist
+
+Round 17 kept rejecting a **string** `type` naming a different type on the theory
+that "malformed" meant non-string. That distinction is not real, and the reviewer
+caught it by reading the pinned dependency rather than the RFD alone.
+
+The installed `@agentclientprotocol/sdk@1.4.0` declares the field as:
+
+```js
+type: defaultOnError(z.llicitationSchemaType.optional().default("object"), () => "object")
+```
+
+with `zElicitationSchemaType = z.literal("object")` and
+`export function defaultOnError(schema, fallback) { return schema.catch(fallback); }`.
+
+So `.catch(...)` salvages **every** value that fails the literal — including
+`"array"` — to `"object"` before xacpx's normalizer runs. Verified empirically by
+parsing `{type: "array"|"string"|7|null|{…}}` through the installed schema: all
+five arrive as `"object"`, and `properties: null` still throws (correct —
+round 17's fix there stands).
+
+Consequence: the only "type mismatch" core could ever observe is one the ACP
+reader layer has already normalised away. Rejecting it rejects a form the agent
+sent in good faith, and the test pinning the rejection was cementing the
+deviation — the same failure mode as round 16's unknown `format`.
+
+The tolerant branch is kept (rather than deleted) so the reader-tolerance rule
+stays visible at the site and a future ACP revision that stops salvaging does not
+silently start rejecting: flipping it to `fail(...)` fails 2 regressions.
+
+The `properties: null` rejection from round 17 is unchanged — the SDK's
+`z.record(...).optional().default({})` has no catch, so `null` genuinely fails
+upstream too.
+
+| Mutation | Caught by |
+|---|---|
+| wrong root `type` rejected again | 2 root-tolerance regressions |
+
+## Final totals after round 18
+
+No net test-count change (224); `elicitation-schema.test.ts` 139 → 139. M1 unit
+suites 360/360 green; real-acpx E2E 25/26 (pre-existing `PR9-A`);
+`npx tsc --noEmit` 0 errors.
+
+### Cumulative mutation-verification table (round 18 addition)
+
+| Round | Mutation | Caught by |
+|---|---|---|
+| R17 | strict root-type check restored | root-tolerance regression |
+| R18 | wrong root `type` rejected again | 2 root-tolerance regressions |
 

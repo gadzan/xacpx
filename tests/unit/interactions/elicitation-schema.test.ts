@@ -268,9 +268,22 @@ describe("normalizeAcpElicitationForm rejections", () => {
     expect(result.ok).toBe(false);
   });
 
-  test("non-object root schema is rejected", () => {
+  test("a wrong root type is tolerated as object, yielding an empty form", () => {
+    // Regression (round 18): the pinned ACP SDK declares `requestedSchema.type`
+    // as `defaultOnError(z.literal("object")..., () => "object")` — i.e.
+    // `schema.catch(fallback)` — so `"array"` is salvaged to `"object"` upstream
+    // of xacpx. Verified empirically against the installed package. Rejecting it
+    // here would reject a form the ACP reader layer already normalised, and the
+    // RFD's reader tolerance has no carve-out for well-formed strings naming
+    // another type.
+    //
+    // Only `requestedSchema` itself not being an object is a real rejection.
     const result = normalizeAcpElicitationForm(formRequest({ requestedSchema: { type: "array" } }));
-    expect(result.ok).toBe(false);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.form.fields).toEqual([]);
+
+    const notAnObject = normalizeAcpElicitationForm(formRequest({ requestedSchema: "nope" }));
+    expect(notAnObject.ok).toBe(false);
   });
 
   test("unsupported property type is rejected", () => {
@@ -468,11 +481,20 @@ describe("normalizeAcpElicitationForm rejections", () => {
     }));
     expect(malformed.ok).toBe(true);
 
-    // A DIFFERENT declared type is still a real mismatch, not a tolerated one.
+    // A DIFFERENT declared type is ALSO tolerated. Round 17 tried to keep
+    // rejecting `"array"` on the theory that "malformed" meant non-string, but
+    // that distinction does not exist: the pinned SDK's `.catch(() => "object")`
+    // salvages `"array"` too, so the only "mismatch" core can observe is one the
+    // ACP reader layer already normalised away. Rejecting would reject a form
+    // the agent sent in good faith.
     const wrongType = normalizeAcpElicitationForm(formRequest({
       requestedSchema: { type: "array", properties: { a: { type: "string" } } },
     }));
-    expect(wrongType.ok).toBe(false);
+    expect(wrongType.ok).toBe(true);
+    if (wrongType.ok) {
+      // The form is served, not merely accepted-and-emptied.
+      expect(wrongType.form.fields).toHaveLength(1);
+    }
   });
 
   test("omitted properties renders an empty form and still checks required", () => {
