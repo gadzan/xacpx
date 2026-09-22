@@ -301,3 +301,32 @@ test("the exported field model and validator agree on a full round trip", () => 
   const validated = validateElicitationAnswer(fields, decision.content);
   expect(validated).toMatchObject({ ok: true });
 });
+
+test("the abort contract is expressible in the published types", () => {
+  // Regression: every `ChannelElicitationDecision` variant required
+  // `responderId`, while the documented abort contract told a renderer to
+  // withdraw its UI and settle WITHOUT one. A plugin following the authoritative
+  // comment would hit a compile error — the contract was unimplementable.
+  //
+  // Compile-time half of the regression; the runtime half lives in
+  // `elicitation-interaction-broker.test.ts` ("a responder-free withdrawal
+  // settles as cancel"), and THAT one is the mutation guard.
+  //
+  // SCOPE LIMIT, stated so nobody over-trusts this test: the repo's documented
+  // typecheck (`npx tsc --noEmit`) has `"include": ["src/**/*.ts"]`, so
+  // `tests/` is NOT typechecked. A mutation that re-adds `responderId` to the
+  // withdrawal variant is caught by tsc ONLY when the test file is compiled
+  // directly. `bun test` itself does not enforce types. That is precisely why
+  // the broker test asserts an observable log event instead of relying on the
+  // union alone — the runtime guard is the one that survives.
+  const withdraw: ChannelElicitationDecision = { action: "cancel" };
+  expect(withdraw.action).toBe("cancel");
+
+  // The user-initiated variants still REQUIRE the platform-authenticated
+  // responder, so the escape hatch cannot become a general bypass.
+  const decline: ChannelElicitationDecision = { action: "decline", responderId: "user-A" };
+  const dismiss: ChannelElicitationDecision = { action: "cancel", responderId: "user-A" };
+  expect(decline.action).toBe("decline");
+  expect(dismiss.action).toBe("cancel");
+  expect("responderId" in withdraw).toBe(false);
+});

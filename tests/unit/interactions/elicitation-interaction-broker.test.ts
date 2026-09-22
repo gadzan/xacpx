@@ -573,6 +573,72 @@ describe("ElicitationInteractionBroker deadlines and races", () => {
     dispose();
   });
 
+  test("a responder-free withdrawal settles as cancel", async () => {
+    // Regression: `ChannelElicitationDecision` required `responderId` on every
+    // variant, so the documented abort contract ("withdraw your UI, return
+    // without a responder") was not expressible in the type system. A renderer
+    // following the authoritative comment would hit a compile error.
+    const seen: ChannelElicitationRequest[] = [];
+    const channel = formChannel(async () => {
+      // The documented behaviour: external abort observed, UI withdrawn, NO
+      // responder fabricated because no user answered.
+      return { action: "cancel" } as ChannelElicitationDecision;
+    }, seen);
+    const { broker, logs } = harness({ channel });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+    // Same terminal action core's own abort race produces: a renderer cannot
+    // change the outcome by racing it.
+    expect(result).toEqual({ action: "cancel" });
+    expect(seen.length).toBe(1);
+    // OBSERVABLE distinction: the withdrawal is recognised as a withdrawal
+    // (no responder needed), not rejected for a missing one.
+    const events = logs.map((entry) => entry.event);
+    expect(events).toContain("elicitation.interaction.withdrawn");
+    expect(events).not.toContain("elicitation.interaction.channel_failed");
+    expect(broker.pendingCount).toBe(0);
+    dispose();
+  });
+
+  test("a withdrawal carrying answer content is rejected", async () => {
+    // A withdrawal means "no user answer". Content smuggled into one would
+    // bypass the responder-identity check that every accept goes through, so
+    // it must fail closed rather than be treated as a partial accept.
+    const seen: ChannelElicitationRequest[] = [];
+    const channel = formChannel(async () => ({
+      action: "cancel",
+      content: { note: SENTINEL_ANSWER },
+    } as unknown as ChannelElicitationDecision), seen);
+    const { broker, logs } = harness({ channel });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+    expect(result).toEqual({ action: "cancel" });
+    // The smuggled content must never reach the agent.
+    const serialized = JSON.stringify(logs.map((entry) => entry.fields));
+    expect(serialized).not.toContain(SENTINEL_ANSWER);
+    dispose();
+  });
+
+  test("a user cancel still requires the authenticated responder", async () => {
+    // The withdrawal escape hatch must not become a general bypass: a cancel
+    // that CAN name a responder must name the right one, exactly like accept
+    // and decline.
+    const seen: ChannelElicitationRequest[] = [];
+    const channel = formChannel(async () => ({
+      action: "cancel",
+      responderId: "someone-else",
+    }), seen);
+    const { broker } = harness({ channel });
+    const route = turn();
+    const dispose = broker.bindTurn(route);
+    const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
+    expect(result).toEqual({ action: "cancel" });
+    expect(broker.pendingCount).toBe(0);
+    dispose();
+  });
+
   test("turn disposal (prompt settled) cancels the pending request", async () => {
     const seen: ChannelElicitationRequest[] = [];
     const received = Promise.withResolvers<ChannelElicitationRequest>();

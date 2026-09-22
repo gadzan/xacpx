@@ -286,8 +286,9 @@ export interface MessageChannelRuntime {
    *   - settle exactly once: the first terminal decision wins — user
    *     decline/cancel carries an authenticated `responderId`;
    *   - on `signal` abort / expiry: withdraw the UI IMMEDIATELY and stop
-   *     collecting input. Core owns that terminal cancellation; do not
-   *     fabricate a `responderId` for it.
+   *     collecting input, then settle with `{ action: "cancel" }` and NO
+   *     `responderId` — the type has a dedicated variant for exactly this.
+   *     Core owns that terminal cancellation, so do not fabricate an identity.
    */
   requestElicitation?(
     request: ChannelElicitationRequest,

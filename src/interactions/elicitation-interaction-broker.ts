@@ -431,6 +431,34 @@ export class ElicitationInteractionBroker {
       const decisionAction = readOwnDataProperty(decision, "action");
       const decisionResponderId = readOwnDataProperty(decision, "responderId");
       const decisionContent = readOwnDataProperty(decision, "content");
+
+      // Withdrawal: the renderer observed an external abort and returned
+      // `{ action: "cancel" }` with NO responderId, because no user answered.
+      // This is the contract's type-level escape hatch — accepting it here is
+      // what makes "do not fabricate an identity" implementable. It maps to
+      // exactly the same terminal action core's own abort race produces, so a
+      // renderer racing core cannot change the outcome.
+      const isWithdrawal = decisionAction === "cancel" && decisionResponderId === undefined;
+      if (isWithdrawal) {
+        if (decisionContent !== undefined) {
+          await this.log("elicitation.interaction.channel_failed", "withdrawal carried answer content", {
+            requestId,
+            ...this.describe(fields),
+          });
+          unsubscribeTurnAbort();
+          return this.settleStale(requestId, fields, startedAt);
+        }
+        await this.log("elicitation.interaction.withdrawn", "renderer withdrew after external abort", {
+          requestId,
+          ...this.describe(fields),
+        });
+        unsubscribeTurnAbort();
+        return this.commit(requestId, { action: "cancel" }, fields, startedAt);
+      }
+
+      // Platform-authenticated identity for every USER-initiated settle. A
+      // wrong responder is never accepted, and never becomes `decline` either
+      // (fail closed cancel).
       if (typeof decisionResponderId !== "string" || decisionResponderId !== route.senderId) {
         await this.log("elicitation.interaction.channel_failed", "responder is not the turn initiator", {
           requestId,

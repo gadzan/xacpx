@@ -145,20 +145,23 @@ export interface ChannelElicitationRequest {
  * WHO CAN PRODUCE WHICH ACTION IS PART OF THE CONTRACT, not a style choice:
  *
  *   accept  — user reviewed the form, optionally edited answers, and submitted
+ *             (always carries an authenticated `responderId`)
  *   decline — user explicitly signalled "I won't answer" (ACP MUST provide a
- *             clear decline control)
+ *             clear decline control; carries an authenticated `responderId`)
  *   cancel  — user dismissed / abandoned the form (ACP MUST provide a clear
- *             cancel control), OR the renderer observed `signal` abort /
- *             expiry and withdrew its UI
+ *             cancel control; carries an authenticated `responderId`)
  *
- * User-initiated decline/cancel and externally-forced cancellation are both
- * `cancel` from ACP's point of view but they are NOT the same from the
- * renderer's: the first has a responder, the second has none. Core keeps that
- * distinction by owning the external paths itself (timeout, turn disposal,
- * agent `$/cancel_request`, shutdown) and by treating the renderer's
- * signal-abort path as a withdrawal, not as a user answer — a renderer that
- * cannot name a responder MUST withdraw its UI and return without one rather
- * than fabricating an identity. See the MUST list on `requestElicitation`.
+ * Externally-forced cancellation (timeout, turn disposal, agent
+ * `$/cancel_request`, shutdown) is NOT a user decision and never enters this
+ * union: core owns those paths and settles them itself. A renderer that
+ * observes `request.signal` abort therefore MUST NOT fabricate a `responderId`
+ * — it withdraws its UI and returns this decision WITHOUT one, which means
+ * "no user answer happened here". Core resolves it as cancel.
+ *
+ * `responderId?` is optional on the terminal variants precisely so that
+ * withdrawal is expressible in the type system rather than requiring a
+ * fabricated identity; core rejects any decision that supplies neither an
+ * action nor a non-empty responder for a user-initiated settle.
  */
 export type ChannelElicitationDecision =
   | {
@@ -176,6 +179,15 @@ export type ChannelElicitationDecision =
   | {
       action: "decline" | "cancel";
       responderId: string;
+    }
+  | {
+      /**
+       * Withdrawal after an external abort: no user answer exists, so no
+       * `responderId` is supplied (and MUST NOT be invented). Core maps this
+       * to `cancel` — the same terminal action its own abort race produces,
+       * so a renderer racing core cannot produce a different outcome.
+       */
+      action: "cancel";
     };
 
 /** ACP elicitation modes. v1 supports form only; url is never advertised. */
@@ -223,11 +235,13 @@ export interface MessageChannelElicitationRuntime {
    *
    *   - user dismisses → return `{ action: "cancel", responderId }`;
    *   - user declines → return `{ action: "decline", responderId }`;
-   *   - `request.signal` aborts (timeout, turn disposal, agent
-   *     `$/cancel_request`, shutdown) → core owns the terminal
-   *     cancellation. The renderer MUST withdraw/disable its UI IMMEDIATELY
-   *     and stop collecting input, then return without inventing a
-   *     `responderId`; core settles the request itself.
+   *   - on `request.signal` abort (timeout, turn disposal, agent
+   *     `$/cancel_request`, shutdown) → withdraw/disable your UI IMMEDIATELY
+   *     and stop collecting input, then settle with `{ action: "cancel" }` and
+   *     NO `responderId`. Do not fabricate an identity for a cancellation the
+   *     user did not cause. Core owns the terminal cancellation and will
+   *     resolve it as `cancel` itself; your withdrawal simply confirms the UI
+   *     is gone.
    */
   requestElicitation?(
     request: ChannelElicitationRequest,

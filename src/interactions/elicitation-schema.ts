@@ -239,16 +239,22 @@ function normalizeField(
       //
       // PREFILL POLICY (core-safe, uniform across all field kinds): core only
       // hands a renderer a default it would itself ACCEPT as a submitted
-      // answer. A default violating `minLength`/`maxLength`/`pattern`/`format`
-      // is therefore dropped rather than passed through — otherwise the
-      // renderer would show a value core is guaranteed to reject if the user
-      // submits it unmodified, which traps the user.
+      // answer. A default violating `minLength`/`maxLength`/`format` is
+      // therefore dropped rather than passed through — otherwise the renderer
+      // would show a value core is guaranteed to reject if the user submits it
+      // unmodified, which traps the user.
+      //
+      // `pattern` is deliberately NOT enforced here. Core never executes
+      // agent-supplied regex anywhere (unbounded evaluation on agent-controlled
+      // input is a resource-exhaustion vector, which is also why
+      // `validateFieldValue` skips it), so a pattern-violating default is
+      // neither rejected nor filtered — it is carried through for the agent's
+      // own final validation.
       const defaultRaw = property.default;
       const defaultUsable = typeof defaultRaw === "string"
         && defaultRaw.length <= ELICITATION_SCHEMA_LIMITS.maxDefaultValueLength
         && !(minLength.value !== undefined && defaultRaw.length < minLength.value)
         && !(maxLength.value !== undefined && defaultRaw.length > maxLength.value)
-        && patternMatches(pattern.value, defaultRaw)
         && formatMatches(format === null ? undefined : format, defaultRaw);
       const defaultValue = defaultUsable ? defaultRaw : undefined;
 
@@ -823,19 +829,6 @@ function formatMatches(format: string | undefined, value: string): boolean {
     case "date-time": return isDateTime(value);
     default: return true;
   }
-}
-
-/**
- * Pre-fill policy helper for string `pattern`.
- *
- * Deliberately ALWAYS TRUE: core does not execute agent-provided patterns, for
- * the same reason `validateFieldValue` does not — unbounded JS regex
- * evaluation on agent-controlled input is a resource-exhaustion vector. So a
- * default is never rejected for violating a pattern; the agent remains
- * responsible for pattern validation of its own pre-fill hint.
- */
-function patternMatches(_pattern: string | undefined, _value: string): boolean {
-  return true;
 }
 
 

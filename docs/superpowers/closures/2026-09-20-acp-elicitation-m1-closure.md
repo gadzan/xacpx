@@ -3,7 +3,7 @@
 ```text
 Milestone: M1 Core Foundation
 Base:      e98cb68e (main, "feat(relay-web): sticky agent avatar with working quip chip and unified send/cancel (#353)")
-Head:      3295504952374a524d10500c5c41e7dece1546fe (after review round 12)
+Head:      e48cbe9389624729f673894170b049a0bf226ab7 (after review round 14)
 PR:        #355 "feat(elicitation): ACP Elicitation M1 core foundation" (OPEN, mergeable)
 ```
 
@@ -899,3 +899,90 @@ Blocking dependency:
 - None for M2 (Discord). The pre-existing `tsc` blocker is resolved by the
   dependency reinstall.
 - M3 remains blocked on PR #350 (still open).
+
+## Review round 14 (head `e48cbe93`)
+
+0 Blocking, 2 findings (1 Medium, 1 Low).
+
+### 1. [Medium] The abort contract was still unimplementable in the type system
+
+Round 13 fixed the prose but not the type: `ChannelElicitationDecision`
+still forced `responderId: string` on every variant, so "withdraw your UI, then
+settle without a responder" could not be written by a renderer following the
+authoritative comment. M2's Discord renderer would have hit the contradiction
+directly.
+
+Added a dedicated terminal variant:
+
+```ts
+| { action: "cancel" }   // withdrawal: no user answer, so no responderId
+```
+
+Core resolves it to `cancel` — the same action its own abort race produces, so a
+renderer racing core cannot change the outcome. A withdrawal carrying answer
+`content` is rejected (that content would bypass the responder-identity check
+every accept goes through).
+
+**Important scope finding, recorded so it is not over-trusted:** the repo's
+documented typecheck (`npx tsc --noEmit`) has `"include": ["src/**/*.ts"]`, so
+`tests/` is **not** typechecked, and `bun test` does not enforce types. A
+mutation re-adding `responderId` to the withdrawal variant is therefore caught
+by tsc only when the test file is compiled directly. That is why the guard is
+the **runtime** test asserting an observable `elicitation.interaction.withdrawn`
+log event, not the type union: the first version of the test passed with the
+withdrawal path fully disabled, because cancel is also the fail-closed result.
+Disabling `isWithdrawal` now fails the test.
+
+### 2. [Low] The pre-fill comment contradicted the actual policy
+
+The round-13 comment claimed a `pattern`-violating default would be dropped,
+while `patternMatches()` unconditionally returned `true` — core deliberately
+never executes agent regex (resource-exhaustion vector). Runtime behaviour was
+correct; only the comment and a permanently-true helper were wrong, and both
+invited a future maintainer to "fix" the helper by reintroducing agent regex
+execution. Comment corrected, helper deleted, call site removed.
+
+## Final totals after round 14
+
+| Suite | Tests |
+|---|---|
+| `turn-interaction-registry.test.ts` | 13 |
+| `elicitation-schema.test.ts` | 130 |
+| `elicitation-interaction-broker.test.ts` | 52 |
+| `elicitation-plugin-contract.test.ts` | 7 |
+| `channel-elicitation-capability.test.ts` | 9 |
+| `acpx-bridge-client.test.ts` | 47 |
+| `runtime-adapter-elicitation.test.ts` (real acpx) | 4 |
+| `runtime-elicitation-agent-identity.test.ts` (real worker) | 3 |
+| `runtime-elicitation-listener-balance.test.ts` | 6 |
+| `runtime-elicitation-cancel-e2e.test.ts` (real acpx) | 1 |
+
+Total new: **219**. M1 unit suites 350/350 green; `npx tsc --noEmit` 0 errors.
+
+### Cumulative mutation-verification table
+
+| Round | Mutation | Caught by |
+|---|---|---|
+| R7 | decision accessor / double read | 3 decision tests |
+| R8 | no-op `abort.release()` in helper | 2 listener tests |
+| R8 | worker's `abort.release()` removed | structural guard |
+| R9 | array canonicalisation disabled | 2 accessor tests |
+| R9 | offset range check removed | 2 offset tests |
+| R9 | preflight moved after validation | oversized-URI ordering test |
+| R10 | length guard moved after canonicalisation | 3 array-admission tests |
+| R11 | `typeof length === "number"` guard removed | 2 proxy-length tests |
+| R11 | tombstone split removed | retention regression |
+| R12 | broker `cancelElicitationRequest` disabled | 2 broker tests |
+| R12 | broker external-signal chaining removed | 1 broker test |
+| R12 | worker `elicitation.cancel` frame removed | cancel E2E (2/2 runs) |
+| R12 | string default rejection restored | 3 schema tests |
+| R12 | multi-select default filter removed | 1 schema test |
+| R12 | `Date.UTC` leap-date mapping restored | 2 leap tests |
+| R13 | pre-fill policy relaxed to size-only | prefill regression |
+| R14 | withdrawal path (`isWithdrawal`) disabled | withdrawal regression |
+
+**R14 additionally documents a guard that does NOT catch its mutation:** the
+type-level variant removal is invisible to `npx tsc --noEmit` because the
+tsconfig excludes `tests/`. Recorded in the test itself rather than left as a
+silent gap.
+
