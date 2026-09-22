@@ -1036,6 +1036,11 @@ export const useChatStore = defineStore("chat", () => {
       finishedTurns.add(k);
       if (!terminalAlreadyInHistory) {
         flushTurn(event.instanceId, e.sessionAlias, status, e.errorMessage);
+      } else if (status === "error" && selected) {
+        // flushTurn normally owns the selected-session error banner; when the
+        // authoritative row is already present and local flush is intentionally
+        // skipped for dedupe, preserve that user-visible terminal error.
+        error.value = e.errorMessage ?? "turn-failed";
       }
       // Keep the immediate live flush for responsiveness, then converge on the
       // persisted rows. Starting this request invalidates any older history read,

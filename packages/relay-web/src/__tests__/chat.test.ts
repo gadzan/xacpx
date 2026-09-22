@@ -1054,6 +1054,32 @@ it("late finish after cancelled:false stays deduplicated when the follow-up hist
   expect(chat.messages.at(-1)).toMatchObject({ id: 2, text: "done" });
 });
 
+it("deduped late error finish still surfaces the terminal error banner", async () => {
+  rpc.mockResolvedValueOnce({ cancelled: false });
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    messages: [
+      { id: 1, instanceId: "inst", sessionAlias: "A", direction: "in", text: "prompt", createdAt: new Date(1).toISOString() },
+      { id: 2, instanceId: "inst", sessionAlias: "A", direction: "out", text: "failed", createdAt: new Date(2).toISOString(), startedAt: 10, slotAfterId: 1 },
+    ],
+    hasMore: false,
+  }), { status: 200 })));
+
+  const chat = useChatStore();
+  chat.select("inst", "A");
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-started", chatKey: "c", sessionAlias: "A", startedAt: 10, slotAfterId: 1 } } as never);
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-output", chatKey: "c", sessionAlias: "A", chunk: "partial" } } as never);
+
+  await chat.cancel();
+  await vi.waitFor(() => {
+    expect(chat.messages.at(-1)).toMatchObject({ id: 2, text: "failed" });
+  });
+
+  chat.applyEvent({ kind: "control-event", instanceId: "inst", event: { type: "turn-finished", chatKey: "c", sessionAlias: "A", ok: false, errorMessage: "boom" } } as never);
+
+  expect(chat.error).toBe("boom");
+  expect(chat.messages.filter((message) => message.direction === "out")).toHaveLength(1);
+});
+
 it("cancel surfaces an error code on failure", async () => {
   rpc.mockRejectedValueOnce(new ApiError("instance-offline", 503));
   const chat = useChatStore();
