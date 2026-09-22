@@ -30,13 +30,34 @@ export interface DirectBotLiveTurn {
   status: "working" | "streaming";
   startedAt: number;
 }
-
+export type DirectBotErrorCode =
+  | "connectorOutdated"
+  | "discoveryFailed"
+  | "ownershipUnconfirmed"
+  | "ownershipChecking"
+  | "topicRecovering"
+  | "botDisabled"
+  | "runInProgress"
+  | "cancelUnknown"
+  | "instanceOffline";
+export type DirectBotPromptErrorCode = "topicRecovering" | "botDisabled" | "runInProgress";
+export type DirectBotCancelErrorCode = "ownershipUnconfirmed" | "ownershipChecking" | "cancelUnknown";
+export type DirectBotHistoryErrorCode = "discoveryFailed";
+export type DirectBotGeneralErrorCode = "instanceOffline";
+class DirectBotRpcError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message || code);
+    this.name = "DirectBotRpcError";
+    this.code = code;
+  }
+}
 function unwrapRpc<T>(result: T | { error: { code: string; message: string } }): T {
   if (isErrorPayload(result)) {
     if (result.error.code === "unknown-type") {
-      throw new Error("This feature needs a newer connector — rebuild and reconnect the relay channel on that instance.");
+      throw new DirectBotRpcError(result.error.code, "connectorOutdated");
     }
-    throw new Error(result.error.message || result.error.code);
+    throw new DirectBotRpcError(result.error.code, result.error.message || result.error.code);
   }
   return result;
 }
@@ -228,7 +249,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const hasMoreAfter = ref<boolean>(false);
   const loadingHistory = ref<boolean>(false);
   const loadingOlder = ref<boolean>(false);
-  const historyError = ref<string | null>(null);
+  const historyError = ref<DirectBotHistoryErrorCode | null>(null);
+  const historyErrorDetail = ref<string | null>(null);
   // Fail-closed admission gate: false from topic selection until durable run
   // discovery (history + runs.list recovery) completes. Prevents sending a
   // prompt — and wrongly owning a second Run — while the authoritative active
@@ -254,10 +276,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const currentDraftRequestId = ref<string | null>(null);
   const lastPromptText = ref<string>("");
   const promptInFlight = ref<boolean>(false);
-  const promptError = ref<string | null>(null);
+  const promptError = ref<DirectBotPromptErrorCode | string | null>(null);
+  const promptErrorDetail = ref<string | null>(null);
   // Cancel-outcome uncertainty is tracked separately from prompt submission errors:
   // a failed `runs.cancel` transport does not mean the durable Run terminated.
-  const cancelError = ref<string | null>(null);
+  const cancelError = ref<DirectBotCancelErrorCode | null>(null);
   const cancelUncertaintyRunId = ref<string | null>(null);
   function resolveCancelUncertainty(runId: string): void {
     if (cancelUncertaintyRunId.value === runId) {
@@ -274,6 +297,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
   // General error feedback
   const generalError = ref<string | null>(null);
+  const generalErrorCode = ref<DirectBotGeneralErrorCode | null>(null);
 
   // Computed views
   const isBotSelected = computed(() => !!instanceId.value && !!selectedBotId.value);
@@ -686,11 +710,19 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         return;
       }
 
-      const deduplicated = new Map<string, ConversationMessageDto>();
+      // Merge the canonical newest page into the loaded window instead of
+      // replacing it: the user may have paged back (loadOlder) and be reading
+      // older rows. Iteration order is newest-first, so seed the merge with
+      // the fresh page first, then overlay already-loaded rows (loaded rows
+      // win on id conflict — same id with locally-merged stream state).
+      const merged: Record<string, ConversationMessageDto> = {};
       for (const m of res.messages) {
-        deduplicated.set(m.id, m);
+        merged[m.id] = m;
       }
-      messages.value = [...deduplicated.values()].sort((a, b) => a.seq - b.seq);
+      for (const m of messages.value) {
+        merged[m.id] = m;
+      }
+      messages.value = Object.values(merged).sort((a, b) => a.seq - b.seq);
       transcriptRevision += 1;
       oldestSeq.value = res.oldestSeq;
       newestSeq.value = res.newestSeq;
@@ -735,10 +767,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         activeConversationId.value === cId &&
         activeTopicId.value === tId
       ) {
-        historyError.value = "Run discovery failed. History loaded, but the live Run owner is unknown — retry to confirm before sending.";
+        historyError.value = "discoveryFailed";
+        historyErrorDetail.value = null;
         if (activeRun.value && !isTerminalRunState(activeRun.value.state)) {
           ownershipUncertain.value = true;
-          cancelError.value = "Ownership unconfirmed due to discovery failure. Retry discovery to confirm active run.";
+          cancelError.value = "ownershipUnconfirmed";
         }
       }
     } catch (err: unknown) {
@@ -750,7 +783,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         activeConversationId.value === cId &&
         activeTopicId.value === tId
       ) {
-        historyError.value = err instanceof Error ? err.message : String(err);
+        historyError.value = "discoveryFailed";
+        historyErrorDetail.value = err instanceof Error ? err.message : String(err);
       }
     } finally {
       loadingHistory.value = false;
@@ -916,11 +950,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           void refreshTranscriptOnly(targetInstanceId, convId, topId);
           return;
         }
-        const deduplicated = new Map<string, ConversationMessageDto>();
+        // Same merge as loadHistory: never drop already-loaded older rows the
+        // user paged back to read when the bounded newest page refreshes.
+        const merged: Record<string, ConversationMessageDto> = {};
         for (const m of res.messages) {
-          deduplicated.set(m.id, m);
+          merged[m.id] = m;
         }
-        messages.value = [...deduplicated.values()].sort((a, b) => a.seq - b.seq);
+        for (const m of messages.value) {
+          merged[m.id] = m;
+        }
+        messages.value = Object.values(merged).sort((a, b) => a.seq - b.seq);
         transcriptRevision += 1;
         oldestSeq.value = res.oldestSeq;
         newestSeq.value = res.newestSeq;
@@ -1179,19 +1218,19 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // not completed, the authoritative active Run is unknown. Sending now
     // could queue behind an unseen Run and take wrong ownership of it.
     if (!topicReady.value) {
-      promptError.value = "Topic is still recovering. Wait for history to finish loading before sending.";
+      promptError.value = "topicRecovering";
       return;
     }
     const bot = currentBot.value;
     if (bot && !bot.enabled) {
-      promptError.value = "Bot is disabled. Enable it before sending messages.";
+      promptError.value = "botDisabled";
       return;
     }
     // Fence the slow accept RPC against a recovered durable Run: if recovery
     // adopted an active Run while this prompt was being composed, refuse to
     // send a second prompt into the same Topic.
     if (isRunActive.value) {
-      promptError.value = "A run is already in progress. Wait for it to finish or cancel it.";
+      promptError.value = "runInProgress";
       return;
     }
     const targetInstId = instanceId.value;
@@ -1248,8 +1287,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // An HTTP accept proves the accepted Run is durable — never that it is
       // the topic-wide owner. A different-id nonterminal Run tracked locally
       // (adopted via authoritative discovery or an earlier accept) stays the
-      // owner; the accept response only converges transcript + lifecycle, and
-      // ownership is re-confirmed below via authoritative discovery.
+      // owner; the prompt's authoritative owner row (read atomically with the
+      // accept) wins over the optimistic accept row: when it names a
+      // different nonterminal Run, adopt it so Stop targets the true owner.
+      const promptOwner = res.activeRun && !isTerminalRunState(res.activeRun.state)
+        ? res.activeRun
+        : undefined;
       const acceptOverwritesOwner =
         !activeRun.value ||
         activeRun.value.id === res.run.id ||
@@ -1257,7 +1300,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // Track active run and member turn without regressing already-advanced state
       const priorRunId = activeRun.value?.id;
       const priorRunActive = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
-      if (acceptOverwritesOwner) {
+      if (promptOwner && promptOwner.id !== res.run.id) {
+        // The Topic owner differs from the accepted Run (B durable before C):
+        // adopt the authoritative owner, not the optimistic accept row. Stop
+        // then targets B with the exact runId — never C.
+        activeRun.value = mergeRun(null, promptOwner);
+        activeMemberTurn.value = null;
+        liveTurn.value = null;
+        latestPlanRunId.value = promptOwner.id;
+      } else if (acceptOverwritesOwner) {
         activeRun.value = mergeRun(activeRun.value, res.run);
         if (res.run.id !== activeRun.value.id) {
           activeMemberTurn.value = res.memberTurn;
@@ -1277,6 +1328,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // (the accept response carries no topic-wide ownership). Converge the
       // transcript, then re-discover the owner exactly like a terminal event:
       // adopt queued B blocked, or open the gate on no-candidate.
+      const ownerAdoptedFromPrompt = !!promptOwner && promptOwner.id !== res.run.id;
       if (isTerminalRunState(adoptedRun.state)) {
         liveTurn.value = null;
         if (targetInstId && targetConvId && targetTopicId) {
@@ -1286,7 +1338,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             void refreshTranscriptOnly(targetInstId, targetConvId, targetTopicId);
           }
         }
-      } else if (acceptOverwritesOwner) {
+      } else if (acceptOverwritesOwner && !ownerAdoptedFromPrompt) {
         const isFreshRun = adoptedRun.id === res.run.id && adoptedRun.id !== priorRunId;
         const existingParts = isFreshRun || (adoptedRun.id === priorRunId && liveTurn.value?.parts.length)
           ? (liveTurn.value?.parts.length ? liveTurn.value.parts : [])
@@ -1310,7 +1362,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // latestPlanRunId follows the tracked owner only: when the accept did
       // not overwrite (a different-id nonterminal owner stayed), keep the
       // owner's plan context instead of pointing at the unowned accept row.
-      if (acceptOverwritesOwner) {
+      if (acceptOverwritesOwner && !ownerAdoptedFromPrompt) {
         latestPlanRunId.value = res.run.id;
       }
     } catch (err: unknown) {
@@ -1319,10 +1371,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // retry identity). A late HTTP failure must not rewrite that success.
       if (isCurrent() && currentDraftRequestId.value === reqId) {
         promptError.value = err instanceof Error ? err.message : String(err);
-      } else if (isCurrent() && promptError.value === "A run is already in progress. Wait for it to finish or cancel it.") {
+        promptErrorDetail.value = promptError.value;
+      } else if (isCurrent() && promptError.value === "runInProgress") {
         // The blocked Prompt C was never sent and its Run is now durable:
         // drop the transient gate error instead of pinning a stale banner.
         promptError.value = null;
+        promptErrorDetail.value = null;
       }
       // Retain currentDraftRequestId so a retry uses the exact same requestId
     } finally {
@@ -1413,7 +1467,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         activeTopicId.value === targetTopicId
       ) {
         ownershipUncertain.value = true;
-        cancelError.value = "Ownership unconfirmed due to discovery failure. Retry discovery to confirm active run.";
+        cancelError.value = "ownershipUnconfirmed";
       }
       return false;
     }
@@ -1476,7 +1530,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // and query instance state.
       if (isCurrent() && activeRun.value && activeRun.value.id === runId) {
         cancelUncertaintyRunId.value = runId;
-        cancelError.value = "Cancellation outcome unknown. Waiting for instance state...";
+        cancelError.value = "cancelUnknown";
         void api
           .rpc<{ run: ConversationRunDetailDto }>(targetInstId, MSG.runsGet, { runId })
           .then((getRes) => {
@@ -1614,7 +1668,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   function applyEvent(event: WebServerEvent): void {
     if (event.kind === "instance-status") {
       if (event.instanceId === instanceId.value && !event.online) {
-        generalError.value = "Instance is offline";
+        generalErrorCode.value = "instanceOffline";
+        generalError.value = null;
       }
       return;
     }
@@ -1906,7 +1961,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             // ownership as uncertain until authority resolves, closing the
             // cancellation door on the old local owner.
             ownershipUncertain.value = true;
-            cancelError.value = "Ownership unconfirmed. Checking active run...";
+            cancelError.value = "ownershipChecking";
             void retryDiscovery();
           }
           if (isOwnDraft) {
@@ -2091,6 +2146,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     loadingHistory,
     loadingOlder,
     historyError,
+    historyErrorDetail,
     topicReady,
     activeRun,
     activeMemberTurn,
@@ -2103,8 +2159,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     lastPromptText,
     promptInFlight,
     promptError,
+    promptErrorDetail,
     cancelError,
     generalError,
+    generalErrorCode,
     ownershipUncertain,
     ownerUnconfirmed,
     retryDiscovery,

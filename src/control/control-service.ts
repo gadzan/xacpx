@@ -2003,6 +2003,11 @@ export class ControlService {
         ...(input.target?.botId ? { targetBotId: input.target.botId } : {}),
         ...(parsedIngress ? { humanIngress: parsedIngress } : {}),
       });
+      // Topic-wide authoritative owner as of accept: executing, else oldest
+      // queued (same selector as listTopicRuns). Read inside the same
+      // mutation so the owner row is atomic with the accept transaction —
+      // no interleaving accept can slip between the two reads.
+      const listed = runtime.runs.listTopicRuns(input.conversationId, input.topicId);
       return {
         reused: accepted.reused,
         conversationId: accepted.run.conversationId,
@@ -2011,6 +2016,8 @@ export class ControlService {
         run: toConversationRun(accepted.run),
         message: toConversationMessage(accepted.message),
         memberTurn: toMemberTurnSummary(accepted.memberTurn),
+        ...(listed.activeRunId ? { activeRunId: listed.activeRunId } : {}),
+        ...(listed.activeRun ? { activeRun: toConversationRun(listed.activeRun) } : {}),
       };
     });
   }

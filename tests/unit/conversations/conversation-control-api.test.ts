@@ -401,6 +401,22 @@ test("topic runs list prefers the executing Run and otherwise the oldest queued 
   expect(afterComplete.activeRunId).toBe(second.run.id);
 });
 
+test("prompt accept returns the topic-wide owner, not just the accepted Run", async () => {
+  const { control } = await wire({ autoKick: false });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  const first = await control.promptConversation({ conversationId, topicId, requestId: "req-first", text: "first" });
+  const second = await control.promptConversation({ conversationId, topicId, requestId: "req-second", text: "second" });
+  // Both accepts are queued, so the oldest durable Run still owns the Topic:
+  // the second accept must name the first Run as the topic-wide owner.
+  expect(first.activeRunId).toBe(first.run.id);
+  expect(first.activeRun?.id).toBe(first.run.id);
+  expect(second.run.id).not.toBe(first.run.id);
+  expect(second.activeRunId).toBe(first.run.id);
+  expect(second.activeRun?.id).toBe(first.run.id);
+});
+
 test("topic runs list bounds the returned page while keeping durable active selection", async () => {
   const { control } = await wire({ autoKick: false });
   const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });

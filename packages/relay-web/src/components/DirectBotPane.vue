@@ -14,6 +14,7 @@ import {
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useInstancesStore } from "../stores/instances";
 import { confirm } from "../lib/use-confirm";
+import { useModalA11y } from "../lib/use-modal-a11y";
 import AgentIcon from "./AgentIcon.vue";
 import ConversationMessageList from "./ConversationMessageList.vue";
 import ConversationPromptInput from "./ConversationPromptInput.vue";
@@ -37,6 +38,8 @@ const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
 const newTopicTitle = ref("");
 const creatingTopic = ref(false);
+const newTopicDialogEl = ref<HTMLElement | null>(null);
+useModalA11y(newTopicDialogEl, () => { newTopicDialogOpen.value = false; });
 
 const botHasRuntime = computed(() =>
   (bot.value && "hasRuntime" in bot.value && bot.value.hasRuntime) === true,
@@ -62,7 +65,14 @@ async function handleDeleteBot(): Promise<void> {
   try {
     await directBotsStore.deleteBot(directBotsStore.instanceId, bot.value.id);
   } catch (err: unknown) {
-    directBotsStore.generalError = err instanceof Error ? err.message : String(err);
+    // A Bot with only a persisted Conversation row (topic created, never run)
+    // has hasRuntime=false yet still fails closed backend-side (bot_in_use).
+    // Map that code to the explanatory deleteBlocked copy instead of a raw
+    // backend message.
+    const code = err instanceof Error && "code" in err ? String(err.code ?? "") : "";
+    directBotsStore.generalError = code === "bot_in_use"
+      ? t("bot.lifecycle.deleteBlocked")
+      : err instanceof Error ? err.message : String(err);
   }
 }
 
@@ -189,9 +199,9 @@ async function handleCreateTopic(): Promise<void> {
     </div>
 
     <!-- Error Banner if any general error -->
-    <div v-if="directBotsStore.generalError" class="flex items-center justify-between border-b border-danger/20 bg-danger/10 px-4 py-2 text-xs text-danger">
-      <span>{{ directBotsStore.generalError }}</span>
-      <button type="button" @click="directBotsStore.generalError = null">
+    <div v-if="directBotsStore.generalErrorCode || directBotsStore.generalError" class="flex items-center justify-between border-b border-danger/20 bg-danger/10 px-4 py-2 text-xs text-danger">
+      <span>{{ directBotsStore.generalErrorCode ? $t(`bot.errors.${directBotsStore.generalErrorCode}`) : directBotsStore.generalError }}</span>
+      <button type="button" @click="directBotsStore.generalError = null; directBotsStore.generalErrorCode = null">
         <X :size="14" />
       </button>
     </div>
@@ -224,7 +234,7 @@ async function handleCreateTopic(): Promise<void> {
       reloads the topic (history + durable run discovery). -->
     <div v-if="directBotsStore.historyError && directBotsStore.activeTopicId && !directBotsStore.topicReady"
          class="flex items-center justify-between border-t border-danger/20 bg-danger/10 px-4 py-2 text-xs text-danger">
-      <span>{{ directBotsStore.historyError }}</span>
+      <span>{{ $t(`bot.errors.${directBotsStore.historyError}`) }}</span>
       <button type="button"
               class="rounded bg-danger/20 px-2 py-0.5 font-medium hover:bg-danger/30 transition-colors"
               @click="directBotsStore.instanceId && directBotsStore.activeConversationId && directBotsStore.loadHistory(directBotsStore.instanceId, directBotsStore.activeConversationId, directBotsStore.activeTopicId)">
@@ -243,8 +253,8 @@ async function handleCreateTopic(): Promise<void> {
     <!-- New Topic Modal -->
     <div v-if="newTopicDialogOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
          @click.self="newTopicDialogOpen = false">
-      <div role="dialog" aria-modal="true" class="w-full max-w-sm rounded-xl border border-border bg-surface p-4 shadow-xl">
-        <h3 class="text-sm font-semibold mb-2">{{ $t("bot.topic.createTitle") }}</h3>
+      <div ref="newTopicDialogEl" role="dialog" aria-modal="true" aria-labelledby="new-topic-title" tabindex="-1" class="w-full max-w-sm rounded-xl border border-border bg-surface p-4 shadow-xl">
+        <h3 id="new-topic-title" class="text-sm font-semibold mb-2">{{ $t("bot.topic.createTitle") }}</h3>
         <p class="text-xs text-fg-muted mb-3">{{ $t("bot.topic.createHint") }}</p>
         <form @submit.prevent="handleCreateTopic">
           <input
@@ -254,7 +264,6 @@ async function handleCreateTopic(): Promise<void> {
             maxlength="60"
             :placeholder="$t('bot.topic.titlePlaceholder')"
             class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent mb-4"
-            autofocus
           />
           <div class="flex items-center justify-end gap-2">
             <button

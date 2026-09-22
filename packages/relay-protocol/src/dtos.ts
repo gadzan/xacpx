@@ -393,6 +393,13 @@ export interface ConversationPromptResponseDto {
   run: ConversationRunDto;
   message: ConversationMessageDto;
   memberTurn: MemberTurnSummaryDto;
+  /** Topic-wide authoritative owner as of accept (executing, else oldest
+   *  queued). Lets the caller adopt the true owner without a second
+   *  runs.list round trip: an HTTP accept proves only the accepted Run is
+   *  durable, never that it owns the Topic. Optional for wire compat with
+   *  older connectors. */
+  activeRunId?: string;
+  activeRun?: ConversationRunDto;
 }
 
 export interface ConversationHistoryResponseDto {

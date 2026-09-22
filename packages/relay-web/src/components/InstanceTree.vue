@@ -90,8 +90,9 @@ async function deleteBotWithConfirm(instanceId: string, bot: BotSummaryDto): Pro
   if (!confirmed) return;
   try {
     await directBotsStore.deleteBot(instanceId, bot.id);
-  } catch {
-    pushToast("error", "bot.delete.failedTitle");
+  } catch (err: unknown) {
+    const code = err instanceof Error && "code" in err ? String(err.code ?? "") : "";
+    pushToast("error", code === "bot_in_use" ? "bot.lifecycle.deleteBlocked" : "bot.delete.failedTitle");
   }
 }
 

@@ -160,13 +160,19 @@ describe("useDirectBotsStore", () => {
       expect(store.botsByInstance["inst_1"]).toEqual([]);
     });
 
+    it("surfaces bot_in_use as a coded error for delete mapping", async () => {
+      const store = useDirectBotsStore();
+      mockRpc.mockResolvedValueOnce({ error: { code: "bot_in_use", message: 'bot "bot_1" still has durable conversation work' } });
+      await expect(store.deleteBot("inst_1", "bot_1")).rejects.toMatchObject({ code: "bot_in_use" });
+    });
+
     it("unwraps instance error and surfaces upgrade hint on unknown-type", async () => {
       const store = useDirectBotsStore();
       mockRpc.mockResolvedValueOnce({
         error: { code: "unknown-type", message: "unsupported rpc type: control.bots.list" },
       });
 
-      await expect(store.loadBots("inst_1")).rejects.toThrow("needs a newer connector");
+      await expect(store.loadBots("inst_1")).rejects.toMatchObject({ code: "unknown-type", message: "connectorOutdated" });
     });
   });
 
@@ -423,7 +429,7 @@ describe("useDirectBotsStore", () => {
       ];
       store.selectedBotId = "bot_1";
       await store.sendPrompt("second prompt while recovered run active");
-      expect(store.promptError).toContain("already in progress");
+      expect(store.promptError).toBe("runInProgress");
     });
 
     it("drops a stale recovery when a newer recovery supersedes it", async () => {
@@ -652,9 +658,9 @@ describe("useDirectBotsStore", () => {
       await flushPromises();
       // The stale seq-1 page never clobbers the newer transcript. The live
       // seq-10 row arrived while the first page was in flight, so the first
-      // request convergently retries; a later authoritative page re-merges it.
-      // Here the retry's seq-9 page wins over the stale seq-1 page.
-      expect(store.messages.map((m) => m.seq)).toEqual([9]);
+      // request convergently retries; a later authoritative page merges with
+      // it. Here the retry's seq-9 page merges with the live seq-10 row.
+      expect(store.messages.map((m) => m.seq)).toEqual([9, 10]);
       expect(store.hasMoreBefore).toBe(true);
     });
 
@@ -717,6 +723,49 @@ describe("useDirectBotsStore", () => {
       expect(store.messages.map((m) => m.seq)).toEqual([1, 2, 3]);
       expect(store.oldestSeq).toBe(1);
       expect(store.hasMoreBefore).toBe(false);
+    });
+    it("keeps loadOlder pages when a terminal handoff reloads the newest tail", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      // Loaded window: user paged back to seq 1..3 (newest tail is seq 3).
+      store.messages = [
+        { id: "msg_1", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "one", createdAt: "now" },
+        { id: "msg_2", conversationId: "conv_1", topicId: "top_1", seq: 2, role: "bot", content: "two", createdAt: "now" },
+        { id: "msg_3", conversationId: "conv_1", topicId: "top_1", seq: 3, role: "human", content: "three", createdAt: "now" },
+      ];
+      store.oldestSeq = 1;
+      store.newestSeq = 3;
+      store.hasMoreBefore = false;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.history") {
+          // Bounded newest-first tail: only the newest rows come back.
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [
+              { id: "msg_3", conversationId: "conv_1", topicId: "top_1", seq: 3, role: "human", content: "three", createdAt: "now" },
+              { id: "msg_4", conversationId: "conv_1", topicId: "top_1", seq: 4, role: "bot", content: "four", createdAt: "now" },
+            ],
+            oldestSeq: 3,
+            newestSeq: 4,
+            hasMoreBefore: true,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", runs: [] });
+        }
+        return Promise.resolve({});
+      });
+      await store.loadHistory("inst_1", "conv_1", "top_1");
+      // Older rows survive the terminal-handoff reload; the new tail merges in.
+      expect(store.messages.map((m) => m.seq)).toEqual([1, 2, 3, 4]);
+      expect(store.hasMoreBefore).toBe(true);
     });
   });
 
@@ -861,7 +910,7 @@ describe("useDirectBotsStore", () => {
       expect(store.promptInFlight).toBe(true);
 
       await store.sendPrompt("Prompt C");
-      expect(store.promptError).toContain("already in progress");
+      expect(store.promptError).toBe("runInProgress");
       expect(store.activeRun?.id).toBe("run_B");
 
       // The HTTP prompt ultimately fails, but the durable Run B must survive.
@@ -895,7 +944,7 @@ describe("useDirectBotsStore", () => {
         "control.conversation.prompt",
         expect.anything(),
       );
-      expect(store.promptError).toContain("still recovering");
+      expect(store.promptError).toBe("topicRecovering");
 
       store.topicReady = true;
       mockRpc.mockResolvedValueOnce({
@@ -939,8 +988,8 @@ describe("useDirectBotsStore", () => {
 
       store.topicReady = false;
       await store.loadHistory("inst_1", "conv_1", "top_1");
-      expect(store.historyError).toContain("history offline");
-      expect(store.topicReady).toBe(false);
+      expect(store.historyError).toBe("discoveryFailed");
+      expect(store.historyErrorDetail).toContain("history offline");
 
       await store.sendPrompt("must not send");
       expect(mockRpc).not.toHaveBeenCalledWith(
@@ -948,7 +997,7 @@ describe("useDirectBotsStore", () => {
         "control.conversation.prompt",
         expect.anything(),
       );
-      expect(store.promptError).toContain("still recovering");
+      expect(store.promptError).toBe("topicRecovering");
     });
     it("keeps admission closed when runs.list discovery fails after history success", async () => {
       const store = useDirectBotsStore();
@@ -978,7 +1027,7 @@ describe("useDirectBotsStore", () => {
       await store.loadHistory("inst_1", "conv_1", "top_1");
       // History rendered, but the owner is unproven: admission stays closed
       // with a discovery error, not a silent open gate.
-      expect(store.historyError).toContain("Run discovery failed");
+      expect(store.historyError).toBe("discoveryFailed");
       expect(store.topicReady).toBe(false);
 
       await store.sendPrompt("must not own an unseen run");
@@ -987,7 +1036,7 @@ describe("useDirectBotsStore", () => {
         "control.conversation.prompt",
         expect.anything(),
       );
-      expect(store.promptError).toContain("still recovering");
+      expect(store.promptError).toBe("topicRecovering");
     });
     it("does NOT mark the bot identity-locked on queued HTTP accept; execution-started row converges it", async () => {
       const store = useDirectBotsStore();
@@ -2073,7 +2122,7 @@ describe("useDirectBotsStore", () => {
         topicId: "top_1",
       });
       await store.sendPrompt("prompt C while B queued");
-      expect(store.promptError).toContain("already in progress");
+      expect(store.promptError).toBe("runInProgress");
       expect(store.activeRun?.id).toBe("run_B");
       expect(mockRpc).not.toHaveBeenCalledWith(
         "inst_1",
@@ -2186,7 +2235,7 @@ describe("useDirectBotsStore", () => {
       expect(store.isRunActive).toBe(true);
       expect(store.topicReady).toBe(true);
       await store.sendPrompt("prompt C while foreign B queued");
-      expect(store.promptError).toContain("already in progress");
+      expect(store.promptError).toBe("runInProgress");
       expect(store.activeRun?.id).toBe("run_B");
       expect(mockRpc).not.toHaveBeenCalledWith(
         "inst_1",
@@ -2270,7 +2319,7 @@ describe("useDirectBotsStore", () => {
       expect(store.isRunActive).toBe(true);
       expect(store.topicReady).toBe(true);
       await store.sendPrompt("prompt D while B owns the topic");
-      expect(store.promptError).toContain("already in progress");
+      expect(store.promptError).toBe("runInProgress");
       expect(mockRpc).not.toHaveBeenCalledWith(
         "inst_1",
         "control.conversation.prompt",
@@ -2539,7 +2588,7 @@ describe("useDirectBotsStore", () => {
       expect(store.isRunActive).toBe(true);
       expect(store.topicReady).toBe(true);
       await store.sendPrompt("prompt D while B owns the topic");
-      expect(store.promptError).toContain("already in progress");
+      expect(store.promptError).toBe("runInProgress");
       expect(mockRpc).not.toHaveBeenCalledWith(
         "inst_1",
         "control.conversation.prompt",
@@ -2704,6 +2753,82 @@ describe("useDirectBotsStore", () => {
       expect(store.activeRun?.id).toBe("run_B");
       expect(store.isRunActive).toBe(true);
       expect(store.topicReady).toBe(true);
+    });
+    it("adopts the prompt-carried owner so Stop never cancels the wrong Run", async () => {
+      // B durable before C: the prompt RPC returns C as the accepted Run and
+      // B as the topic-wide owner (read atomically with the accept). The UI
+      // must adopt B immediately — even before B's WS event arrives — so an
+      // immediate Stop targets B with the exact runId, never C.
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const runBQueued = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_foreign_B",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") {
+          return Promise.resolve({
+            reused: false,
+            conversationId: "conv_1",
+            topicId: "top_1",
+            requestId: store.currentDraftRequestId!,
+            message: { id: "msg_C", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "prompt C after B", createdAt: "now" },
+            run: { id: "run_C", conversationId: "conv_1", topicId: "top_1", requestMessageId: "msg_C", requestId: "req_C", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" },
+            memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "queued", createdAt: "now" },
+            activeRunId: "run_B",
+            activeRun: runBQueued,
+          });
+        }
+        if (type === "control.runs.cancel") {
+          return Promise.resolve({
+            ok: true,
+            run: { ...runBQueued, state: "cancelled", memberTurns: [] },
+          });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            runs: [runBQueued],
+            activeRunId: "run_B",
+            activeRun: runBQueued,
+          });
+        }
+        if (type === "control.runs.get") {
+          return Promise.resolve({ run: { ...runBQueued, memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+
+      await store.sendPrompt("prompt C after B");
+      // Owner adopted from the accept itself: B, not the optimistic C row —
+      // with no WS event received yet and no extra runs.list round trip.
+      expect(store.activeRun?.id).toBe("run_B");
+      await store.cancelCurrentRun();
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_B" });
+      expect(mockRpc).not.toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_C" });
     });
     it("adopts authoritative owner B when successive foreign events arrive and B is not the trigger", async () => {
       // Successive foreign newcomers:
@@ -2938,7 +3063,7 @@ describe("useDirectBotsStore", () => {
       expect(store.ownershipUncertain).toBe(true);
       expect(store.ownerUnconfirmed).toBe(true);
       expect(store.activeRun?.id).toBe("run_C");
-      expect(store.cancelError).toContain("Ownership unconfirmed");
+      expect(store.cancelError).toBe("ownershipUnconfirmed");
 
       // 2. member-turn-started(B) arrives while local owner is C
       store.applyEvent({
@@ -3497,7 +3622,7 @@ describe("useDirectBotsStore", () => {
 
       await store.sendPrompt("Hello");
       expect(mockRpc).not.toHaveBeenCalled();
-      expect(store.promptError).toContain("Bot is disabled");
+      expect(store.promptError).toBe("botDisabled");
     });
 
     it("does not pollute switched Bot/Topic when in-flight sendPrompt resolves late", async () => {
@@ -3584,7 +3709,7 @@ describe("useDirectBotsStore", () => {
 
       await store.sendPrompt("Second prompt while running");
       expect(mockRpc).not.toHaveBeenCalled();
-      expect(store.promptError).toContain("already in progress");
+      expect(store.promptError).toBe("runInProgress");
     });
 
     it("preserves live stream parts that arrived before prompt RPC resolved", async () => {
@@ -4242,13 +4367,13 @@ describe("useDirectBotsStore", () => {
 
       expect(store.activeRun?.state).toBe("running");
       expect(store.isRunActive).toBe(true);
-      expect(store.cancelError).toContain("Cancellation outcome unknown");
+      expect(store.cancelError).toBe("cancelUnknown");
       expect(store.promptError).toBeNull();
 
       // Because isRunActive is still true, user CANNOT send a second prompt
       await store.sendPrompt("Second prompt while cancel pending");
-      expect(store.promptError).toContain("already in progress");
-      expect(store.cancelError).toContain("Cancellation outcome unknown");
+      expect(store.promptError).toBe("runInProgress");
+      expect(store.cancelError).toBe("cancelUnknown");
 
       // Now background runs.get resolves with server authoritative cancelled state
       resolveRunsGet({
@@ -4352,7 +4477,7 @@ describe("useDirectBotsStore", () => {
 
       await store.cancelCurrentRun();
       await flushPromises();
-      expect(store.cancelError).toContain("Cancellation outcome unknown");
+      expect(store.cancelError).toBe("cancelUnknown");
       expect(store.activeRun?.state).toBe("running");
 
       await store.cancelCurrentRun();
@@ -4445,7 +4570,7 @@ describe("useDirectBotsStore", () => {
       await flushPromises();
 
       expect(store.activeRun?.state).toBe("running");
-      expect(store.cancelError).toContain("Cancellation outcome unknown");
+      expect(store.cancelError).toBe("cancelUnknown");
       store.applyEvent({
         kind: "control-event",
         instanceId: "inst_1",

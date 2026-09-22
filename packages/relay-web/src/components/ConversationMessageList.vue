@@ -119,8 +119,24 @@ watch(
   },
 );
 
+// Stream revision: parts.length misses in-place text growth (appendText does
+// last.text += chunk), so also track the last part's text length plus the
+// tool-step count. Any token that extends the visible transcript re-fires the
+// follow, while the atBottom guard still protects manual scroll-up reading.
+const liveStreamRevision = computed(() => {
+  const parts = props.liveTurn?.parts;
+  if (!parts || parts.length === 0) return 0;
+  let revision = parts.length * 1000003;
+  const last = parts[parts.length - 1];
+  if (last?.type === "text" || last?.type === "reasoning") {
+    revision += last.text.length;
+  } else if (last?.type === "tool") {
+    revision += last.step.toolCallId.length;
+  }
+  return revision;
+});
 watch(
-  () => props.liveTurn?.parts.length,
+  liveStreamRevision,
   () => {
     if (atBottom.value) {
       void nextTick(() => scrollToBottom(false));
@@ -275,7 +291,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
               <Loader2 v-if="activeRun?.state === 'running'" :size="11" class="animate-spin" />
               <Clock v-else-if="activeRun?.state === 'queued'" :size="11" />
               <AlertCircle v-else-if="activeRun?.state === 'waiting-human'" :size="11" />
-              <span>{{ activeRun?.state ?? 'running' }}</span>
+              <span>{{ activeRun?.state === 'queued' ? $t("bot.run.queued") : activeRun?.state === 'running' ? $t("bot.run.running") : activeRun?.state === 'waiting-human' ? $t("bot.run.waitingHuman") : activeRun?.state ?? $t("bot.run.running") }}</span>
               <span v-if="liveElapsedLabel" class="tabular-nums font-mono opacity-80">· {{ liveElapsedLabel }}</span>
             </div>
 

@@ -1061,7 +1061,7 @@ describe("Direct Bot Components", () => {
       });
 
       expect(wrapper.find('[data-test="live-turn-container"]').exists()).toBe(true);
-      expect(wrapper.text()).toContain("running");
+      expect(wrapper.text()).toContain("Running");
       expect(wrapper.text()).toContain("Analyzing code...");
 
       const stopBtn = wrapper.find('[data-test="stop-turn-hud-button"]');
@@ -1172,6 +1172,41 @@ describe("Direct Bot Components", () => {
       // After prepending, scrollHeight is 800, so new scrollTop = 800 - 400 = 400.
       expect(scrollerEl.scrollTop).toBe(400);
     });
+    it("follows in-place text growth inside one part while at bottom", async () => {
+      const textPart = { type: "text", text: "Hello" } as { type: "text"; text: string };
+      const liveTurn = {
+        parts: [textPart],
+        status: "streaming",
+        startedAt: Date.now(),
+      } as never;
+      const activeRun = {
+        id: "run_1", conversationId: "c1", topicId: "t1", requestMessageId: "m1",
+        requestId: "r1", mode: "explicit", state: "running", profileRevision: 1,
+        createdAt: "now",
+      } as never;
+      const wrapper = mount(ConversationMessageList, {
+        props: {
+          messages: [],
+          liveTurn,
+          activeRun,
+          activeMemberTurn: null,
+          runParts: {},
+        },
+        global: {
+          plugins: [i18n],
+        },
+      });
+      const scrollerEl = wrapper.element as HTMLElement;
+      let scrollCalls = 0;
+      const recordScroll: typeof scrollerEl.scrollTo = () => { scrollCalls += 1; };
+      scrollerEl.scrollTo = recordScroll;
+      // In-place growth: same part object extended (store appendText mutates
+      // last.text), so parts.length stays 1 while the transcript grows.
+      textPart.text = "Hello world, streaming more tokens";
+      await wrapper.setProps({ liveTurn: { ...liveTurn, parts: [...liveTurn.parts] } });
+      await flushPromises();
+      expect(scrollCalls).toBeGreaterThan(0);
+    });
   });
 
   describe("DirectBotPane.vue", () => {
@@ -1219,6 +1254,46 @@ describe("Direct Bot Components", () => {
 
       await topicPills[1]?.trigger("click");
       expect(switchTopicSpy).toHaveBeenCalledWith("t2");
+    });
+    it("traps focus and closes the New Topic modal on Escape", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      directBots.instanceId = "i1";
+      directBots.selectedBotId = "b1";
+      directBots.activeConversationId = "c1";
+      directBots.activeTopicId = "t1";
+      directBots.botsByInstance["i1"] = [
+        { id: "b1", name: "ReviewerBot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      directBots.topicsByConversation["i1:c1"] = [
+        { id: "t1", conversationId: "c1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" },
+      ];
+      const wrapper = mount(DirectBotPane, {
+        attachTo: document.body,
+        global: {
+          plugins: [i18n],
+        },
+      });
+      await wrapper.find('[data-test="new-topic-button"]').trigger("click");
+      await flushPromises();
+      const dialog = wrapper.find('[role="dialog"]');
+      expect(dialog.exists()).toBe(true);
+      expect(dialog.attributes("aria-modal")).toBe("true");
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      await flushPromises();
+      expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+      wrapper.unmount();
     });
   });
 

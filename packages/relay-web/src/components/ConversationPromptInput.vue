@@ -74,14 +74,14 @@ function onInput(): void {
     <!-- Cancellation uncertainty (separate from prompt errors; no retry target) -->
     <div v-else-if="directBotsStore.cancelError" class="mb-2 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning">
       <AlertCircle :size="14" class="shrink-0" />
-      <span class="truncate">{{ directBotsStore.cancelError }}</span>
+      <span class="truncate">{{ $t(`bot.errors.${directBotsStore.cancelError}`) }}</span>
     </div>
 
     <!-- Error Banner & Retry -->
     <div v-else-if="directBotsStore.promptError" class="mb-2 flex items-center justify-between gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs text-danger">
       <div class="flex items-center gap-2 min-w-0">
         <AlertCircle :size="14" class="shrink-0" />
-        <span class="truncate">{{ directBotsStore.promptError }}</span>
+        <span class="truncate">{{ directBotsStore.promptErrorDetail ?? $t(`bot.errors.${directBotsStore.promptError}`) }}</span>
       </div>
       <button
         type="button"
