@@ -740,6 +740,7 @@ describe("useDirectBotsStore", () => {
       ];
       store.oldestSeq = 1;
       store.newestSeq = 3;
+      store.contiguousNewestSeq = 3;
       store.hasMoreBefore = false;
       mockRpc.mockImplementation((instId: string, type: string) => {
         if (type === "control.conversation.history") {
@@ -5245,6 +5246,7 @@ describe("useDirectBotsStore", () => {
       store.messages = loaded as never;
       store.oldestSeq = 1;
       store.newestSeq = 50;
+      store.contiguousNewestSeq = 50;
       store.hasMoreBefore = false;
       const tail = Array.from({ length: 50 }, (_, i) => ({
         id: `msg_${71 + i}`,
@@ -5336,6 +5338,7 @@ describe("useDirectBotsStore", () => {
       store.messages = loaded as never;
       store.oldestSeq = 1;
       store.newestSeq = 50;
+      store.contiguousNewestSeq = 50;
       store.hasMoreBefore = false;
       const msg = (seq: number) => ({
         id: `msg_${seq}`,
@@ -5393,6 +5396,276 @@ describe("useDirectBotsStore", () => {
       expect(store.messages.map((m) => m.seq)).toEqual(Array.from({ length: 600 }, (_, i) => i + 1));
       expect(store.oldestSeq).toBe(1);
       expect(store.newestSeq).toBe(600);
+      expect(store.topicReady).toBe(true);
+      expect(store.historyError).toBeNull();
+    });
+    it("retries a failed gap page off the contiguous cursor, not the tail max", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      // Loaded 1..50; durable tail is 551..600 (pages of 50).
+      const loaded = Array.from({ length: 50 }, (_, i) => ({
+        id: `msg_${i + 1}`,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        seq: i + 1,
+        role: "human",
+        content: `m${i + 1}`,
+        createdAt: "now",
+      }));
+      store.messages = loaded as never;
+      store.oldestSeq = 1;
+      store.newestSeq = 50;
+      store.contiguousNewestSeq = 50;
+      store.hasMoreBefore = false;
+      const msg = (seq: number) => ({
+        id: `msg_${seq}`,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        seq,
+        role: "human",
+        content: `m${seq}`,
+        createdAt: "now",
+      });
+      let gapAttempts = 0;
+      mockRpc.mockImplementation((instId: string, type: string, payload?: unknown) => {
+        if (type === "control.bots.list") {
+          return Promise.resolve({ bots: store.botsByInstance["inst_1"] });
+        }
+        if (type === "control.bots.get") {
+          return Promise.resolve({ bot: { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, profileRevision: 1, createdAt: "now", updatedAt: "now" } });
+        }
+        if (type === "control.topics.list") {
+          return Promise.resolve({ topics: [{ id: "top_1", conversationId: "conv_1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" }] });
+        }
+        if (type === "control.conversation.history") {
+          const p = payload as { afterSeq?: number; beforeSeq?: number } | undefined;
+          if (p?.afterSeq !== undefined) {
+            gapAttempts += 1;
+            // First fill: page 51..100 lands, then the network drops. The
+            // merged window is 1..100 + 551..600 with newestSeq already at the
+            // tail max — the cursor must NOT follow it.
+            if (gapAttempts === 1) {
+              return Promise.resolve({
+                conversationId: "conv_1",
+                topicId: "top_1",
+                messages: Array.from({ length: 50 }, (_, i) => msg(51 + i)),
+                oldestSeq: 51,
+                newestSeq: 100,
+                hasMoreBefore: true,
+                hasMoreAfter: true,
+              });
+            }
+            if (gapAttempts === 2) {
+              return Promise.reject(new Error("gap page network drop"));
+            }
+            const start = p.afterSeq + 1;
+            const end = Math.min(start + 49, 600);
+            const messages = Array.from({ length: Math.max(0, end - start + 1) }, (_, i) => msg(start + i));
+            return Promise.resolve({
+              conversationId: "conv_1",
+              topicId: "top_1",
+              messages,
+              oldestSeq: messages[0]?.seq,
+              newestSeq: messages[messages.length - 1]?.seq,
+              hasMoreBefore: true,
+              hasMoreAfter: end < 600,
+            });
+          }
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: Array.from({ length: 50 }, (_, i) => msg(551 + i)),
+            oldestSeq: 551,
+            newestSeq: 600,
+            hasMoreBefore: true,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", runs: [] });
+        }
+        return Promise.resolve({});
+      });
+      await store.reconcileOnReconnect();
+      for (let i = 0; i < 20; i += 1) {
+        await flushPromises();
+      }
+      // Failed fill: gate stays closed with a retryable error, and the
+      // contiguous cursor did NOT jump to the tail max.
+      expect(store.topicReady).toBe(false);
+      expect(store.historyError).toBe("discoveryFailed");
+      expect(store.contiguousNewestSeq).toBe(50);
+      expect(store.newestSeq).toBe(600);
+      // Retry re-runs the whole load: tail + gap pages from the contiguous
+      // cursor, then converges contiguously. The second attempt must still
+      // see a hole (tail 551 > contiguous 50 + 1) and fill it. Gap fill is
+      // multi-page; flush until the fill's trailing pages settle. The retry
+      // itself is async-fire-and-observe: await the loadHistory promise AND
+      // flush, because the gap pages resolve across microtasks.
+      const retryCall = store.loadHistory("inst_1", "conv_1", "top_1");
+      await retryCall;
+      for (let i = 0; i < 30; i += 1) {
+        await flushPromises();
+      }
+      expect(store.messages.map((m) => m.seq)).toEqual(Array.from({ length: 600 }, (_, i) => i + 1));
+      expect(store.contiguousNewestSeq).toBe(600);
+      expect(store.newestSeq).toBe(600);
+      expect(store.topicReady).toBe(true);
+      expect(store.historyError).toBeNull();
+    });
+    it("keeps a live message that lands mid-fill instead of dropping or rewinding it", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const loaded = Array.from({ length: 50 }, (_, i) => ({
+        id: `msg_${i + 1}`,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        seq: i + 1,
+        role: "human",
+        content: `m${i + 1}`,
+        createdAt: "now",
+      }));
+      store.messages = loaded as never;
+      store.oldestSeq = 1;
+      store.newestSeq = 50;
+      store.contiguousNewestSeq = 50;
+      store.hasMoreBefore = false;
+      const msg = (seq: number) => ({
+        id: `msg_${seq}`,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        seq,
+        role: "human",
+        content: `m${seq}`,
+        createdAt: "now",
+      });
+      const { promise: secondPageGate, resolve: resolveSecondPage } = Promise.withResolvers<unknown>();
+      let secondPageUsed = false;
+      let historyCalls = 0;
+      mockRpc.mockImplementation((instId: string, type: string, payload?: unknown) => {
+        if (type === "control.bots.list") {
+          return Promise.resolve({ bots: store.botsByInstance["inst_1"] });
+        }
+        if (type === "control.bots.get") {
+          return Promise.resolve({ bot: { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, profileRevision: 1, createdAt: "now", updatedAt: "now" } });
+        }
+        if (type === "control.topics.list") {
+          return Promise.resolve({ topics: [{ id: "top_1", conversationId: "conv_1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" }] });
+        }
+        if (type === "control.conversation.history") {
+          const p = payload as { afterSeq?: number; beforeSeq?: number } | undefined;
+          if (p?.afterSeq !== undefined) {
+            historyCalls += 1;
+            if (historyCalls === 1) {
+              return Promise.resolve({
+                conversationId: "conv_1",
+                topicId: "top_1",
+                messages: Array.from({ length: 50 }, (_, i) => msg(51 + i)),
+                oldestSeq: 51,
+                newestSeq: 100,
+                hasMoreBefore: true,
+                hasMoreAfter: true,
+              });
+            }
+            if (!secondPageUsed) {
+              secondPageUsed = true;
+              return secondPageGate;
+            }
+            // Retry fill after the live race: faithful forward pages.
+            const start = p.afterSeq + 1;
+            const end = Math.min(start + 49, 601);
+            const messages = Array.from({ length: Math.max(0, end - start + 1) }, (_, i) => msg(start + i));
+            return Promise.resolve({
+              conversationId: "conv_1",
+              topicId: "top_1",
+              messages,
+              oldestSeq: messages[0]?.seq,
+              newestSeq: messages[messages.length - 1]?.seq,
+              hasMoreBefore: true,
+              hasMoreAfter: end < 601,
+            });
+          }
+          if (liveArrived) {
+            return Promise.resolve({
+              conversationId: "conv_1",
+              topicId: "top_1",
+              messages: [...Array.from({ length: 50 }, (_, i) => msg(551 + i)), msg(601)],
+              oldestSeq: 551,
+              newestSeq: 601,
+              hasMoreBefore: true,
+              hasMoreAfter: false,
+            });
+          }
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: Array.from({ length: 50 }, (_, i) => msg(551 + i)),
+            oldestSeq: 551,
+            newestSeq: 600,
+            hasMoreBefore: true,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", runs: [] });
+        }
+        return Promise.resolve({});
+      });
+      let liveArrived = false;
+      const reconcileCall = store.reconcileOnReconnect();
+      // First gap page lands; second page is deferred in flight.
+      await flushPromises();
+      await flushPromises();
+      // Live message 601 arrives mid-fill: it must survive the fill and the
+      // display cursor must never rewind below it.
+      liveArrived = true;
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "conversation-message",
+          message: { id: "msg_601", conversationId: "conv_1", topicId: "top_1", seq: 601, role: "human", content: "live", createdAt: "now" },
+        },
+      } as never);
+      resolveSecondPage({
+        conversationId: "conv_1",
+        topicId: "top_1",
+        messages: Array.from({ length: 50 }, (_, i) => msg(101 + i)),
+        oldestSeq: 101,
+        newestSeq: 150,
+        hasMoreBefore: true,
+        hasMoreAfter: true,
+      });
+      await reconcileCall;
+      // The live-race retry is fire-and-forget (void): poll until the window
+      // converges instead of guessing a flush count.
+      for (let i = 0; i < 200; i += 1) {
+        await flushPromises();
+        if (store.messages.length >= 201 && store.contiguousNewestSeq === 601) break;
+      }
+      // The live race forces a same-view retry instead of a clobber: the
+      // retried load re-reads the tail (now including 601 via forward pages)
+      // and converges with 601 present and no cursor rewind. The retried tail
+      // still starts at 551 while the window now holds 601 live, so the retry
+      // itself gap-fills 151..550 before converging.
+      expect(store.messages.some((m) => m.seq === 601)).toBe(true);
+      expect(store.newestSeq).toBe(601);
+      expect(store.contiguousNewestSeq).toBe(601);
+      // The live-race retry refills the whole hole, not just the pages the
+      // aborted fill had reached: full 1..601, contiguous, live row kept.
+      expect(store.messages.map((m) => m.seq)).toEqual(Array.from({ length: 601 }, (_, i) => i + 1));
       expect(store.topicReady).toBe(true);
       expect(store.historyError).toBeNull();
     });

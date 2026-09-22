@@ -250,6 +250,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const messages = ref<ConversationMessageDto[]>([]);
   const oldestSeq = ref<number | undefined>(undefined);
   const newestSeq = ref<number | undefined>(undefined);
+  // Highest seq proven contiguous from the loaded window: gap retry decisions
+  // must key on this, never on newestSeq (which the newest tail advances even
+  // when an interior hole is still unfilled — retrying off newestSeq would
+  // conclude "no gap" and present a holed transcript as recovered).
+  const contiguousNewestSeq = ref<number | undefined>(undefined);
   const hasMoreBefore = ref<boolean>(false);
   const hasMoreAfter = ref<boolean>(false);
   const loadingHistory = ref<boolean>(false);
@@ -680,57 +685,105 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       oldestSeq.value = res.oldestSeq;
       hasMoreBefore.value = res.hasMoreBefore;
     }
-    newestSeq.value = res.newestSeq ?? newestSeq.value;
+    // Monotonic max: a live message that arrived mid-load may already have
+    // pushed newestSeq past this page's tail — never roll it back.
+    if (res.newestSeq !== undefined && (newestSeq.value === undefined || res.newestSeq > newestSeq.value)) {
+      newestSeq.value = res.newestSeq;
+    }
     hasMoreAfter.value = res.hasMoreAfter;
   }
   // Fill an interior seq hole between the previously loaded newest row and a
   // bounded newest tail (e.g. >50 durable messages arrived while offline).
   // Pages forward with afterSeq until the cursor reaches the tail: each page
   // must strictly advance the cursor, so a wedged server terminates instead
-  // of spinning. Returns false when the view switched, a newer reload
-  // started, or a page failed to advance — the caller must then NOT claim a
-  // complete recovery.
+  // of spinning. Four-state result: "complete" (window is contiguous),
+  // "incomplete" (transport/progress failure — retryable), "superseded"
+  // (view switched or a newer reload started — silent exit, never a stale
+  // error write), "live-race" (a live message landed mid-fill — the caller
+  // convergent-retries the whole load like the single-page fence does).
   async function fillHistoryGap(
     iId: string,
     cId: string,
     tId: string,
     requestSequence: number,
+    revision: number,
     fromNewest: number,
     tailOldest: number,
     tailNewest: number | undefined,
     merged: Record<string, ConversationMessageDto>,
-  ): Promise<boolean> {
+  ): Promise<"complete" | "incomplete" | "superseded" | "live-race"> {
     let cursor = fromNewest;
+    // Claim contiguity only through the chained window: walk up from the
+    // proven cursor through actually-present seqs (tail rows merged before
+    // the fill plus live rows that chained onto the tail). Never jump to the
+    // tail max — it may sit above an unfilled hole.
+    const markComplete = (): "complete" => {
+      const seqs = new Set<number>();
+      for (const m of messages.value) seqs.add(m.seq);
+      let c = cursor;
+      while (seqs.has(c + 1)) c += 1;
+      if (contiguousNewestSeq.value === undefined || c > contiguousNewestSeq.value) {
+        contiguousNewestSeq.value = c;
+      }
+      return "complete" as const;
+    };
+    // Transcript revision the fill itself last produced: the fence below must
+    // only fire on EXTERNAL mutations (live messages), not on the fill's own
+    // merges. Re-anchor after every own write.
+    let expectedRevision = revision;
     for (;;) {
-      const gapRes = unwrapRpc(
-        await api.rpc<ConversationHistoryResponseDto>(iId, MSG.conversationHistory, {
-          conversationId: cId,
-          topicId: tId,
-          afterSeq: cursor,
-          limit: 50,
-        }),
-      );
+      let gapRes: ConversationHistoryResponseDto;
+      try {
+        gapRes = unwrapRpc(
+          await api.rpc<ConversationHistoryResponseDto>(iId, MSG.conversationHistory, {
+            conversationId: cId,
+            topicId: tId,
+            afterSeq: cursor,
+            limit: 50,
+          }),
+        );
+      } catch {
+        // Transport failure mid-fill: keep the partial window (already merged
+        // above) but report incomplete so the caller keeps the gate closed
+        // with a retryable error. The retry keys off the contiguous cursor,
+        // not the tail max, so the hole is re-attempted.
+        return "incomplete";
+      }
       if (
         instanceId.value !== iId ||
         activeConversationId.value !== cId ||
         activeTopicId.value !== tId ||
         requestSequence !== historyRequestSequence
       ) {
-        return false;
+        return "superseded";
       }
-      if (gapRes.messages.length === 0) return true;
+      // A live message mutated the transcript while this page was in flight:
+      // its rows are not in this page's snapshot, so adopting the page would
+      // drop them. Report live-race so the caller convergent-retries the
+      // whole load (same discovery id semantics as the single-page fence).
+      if (expectedRevision !== transcriptRevision) {
+        return "live-race";
+      }
+      if (gapRes.messages.length === 0) return markComplete();
       for (const m of gapRes.messages) {
         merged[m.id] = m;
       }
+      // Re-merge live rows on top: a conversation-message that landed while
+      // this page was in flight is newer than the page snapshot and must not
+      // be clobbered by the write below.
+      for (const m of messages.value) {
+        if (m.seq > cursor) merged[m.id] = m;
+      }
       messages.value = Object.values(merged).sort((a, b) => a.seq - b.seq);
       touchTranscript();
+      expectedRevision = transcriptRevision;
       const pageNewest = Math.max(...gapRes.messages.map((m) => m.seq));
       // Strict progress: a page that does not move past the cursor (empty,
       // duplicate, or rewound) ends the fill instead of looping forever.
-      if (pageNewest <= cursor) return false;
+      if (pageNewest <= cursor) return "incomplete";
       cursor = pageNewest;
-      if (cursor >= tailOldest - 1) return true;
-      if (tailNewest !== undefined && cursor >= tailNewest) return true;
+      if (cursor >= tailOldest - 1) return markComplete();
+      if (tailNewest !== undefined && cursor >= tailNewest) return markComplete();
     }
   }
   async function loadHistory(
@@ -790,39 +843,50 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
       // Merge the canonical newest page into the loaded window instead of
       // replacing it: the user may have paged back (loadOlder) and be reading
-      // older rows.
-      const prevNewestBeforeMerge = newestSeq.value;
+      // older rows. newestSeq tracks the max seen (display cursor);
+      // contiguousNewestSeq tracks the max proven contiguous — the gap
+      // decision and retry below must key on the latter, or a failed fill
+      // would leave newestSeq at the tail max and the retry would conclude
+      // "no gap" over a still-holed window.
+      const prevContiguousBeforeMerge = contiguousNewestSeq.value;
       const merged: Record<string, ConversationMessageDto> = {};
       mergeHistoryPage(res, merged);
       hasMoreAfter.value = res.hasMoreAfter;
       // Gap fill: when the newest tail starts strictly after the previously
-      // loaded newest row (e.g. >50 durable messages arrived while offline),
-      // the merge above leaves an interior seq hole (1..50 + 71..120). Page
-      // forward from the previous newest until the tail is reached so the
-      // merged window stays contiguous; Load Older alone cannot repair it
-      // because the hole is in the middle, not at either edge. Unbounded
-      // with strict per-page progress: only a page that fails to advance the
-      // cursor ends the fill, and then recovery below must NOT claim success.
+      // proven-contiguous row (e.g. >50 durable messages arrived while
+      // offline), the merge above leaves an interior seq hole (1..50 +
+      // 71..120). Page forward from the contiguous cursor until the tail is
+      // reached so the merged window stays contiguous; Load Older alone
+      // cannot repair it because the hole is in the middle, not at either
+      // edge. Unbounded with strict per-page progress: only a page that
+      // fails to advance the cursor ends the fill, and then recovery below
+      // must NOT claim success.
       const tailOldest = res.messages.length > 0
         ? Math.min(...res.messages.map((m) => m.seq))
         : undefined;
-      let gapComplete = true;
+      let gapStatus: "complete" | "incomplete" | "superseded" | "live-race" = "complete";
       if (
         tailOldest !== undefined &&
-        prevNewestBeforeMerge !== undefined &&
-        tailOldest > prevNewestBeforeMerge + 1
+        prevContiguousBeforeMerge !== undefined &&
+        tailOldest > prevContiguousBeforeMerge + 1
       ) {
-        gapComplete = await fillHistoryGap(
+        gapStatus = await fillHistoryGap(
           iId,
           cId,
           tId,
           requestSequence,
-          prevNewestBeforeMerge,
+          transcriptRevision,
+          prevContiguousBeforeMerge,
           tailOldest,
           res.newestSeq,
           merged,
         );
-        newestSeq.value = res.newestSeq ?? newestSeq.value;
+        // Contiguous claim (if any) was made inside the fill; nothing to do.
+      } else if (res.newestSeq !== undefined) {
+        // No hole: the tail extends (or re-states) a contiguous window.
+        if (contiguousNewestSeq.value === undefined || res.newestSeq > contiguousNewestSeq.value) {
+          contiguousNewestSeq.value = res.newestSeq;
+        }
       }
       // If any bot message in history corresponds to an active run, converge liveTurn
       if (activeRun.value) {
@@ -842,9 +906,24 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // closed so a prompt cannot take wrong ownership of an unseen Run. An
       // incomplete gap fill likewise keeps the gate closed with a retryable
       // history error instead of presenting a holed transcript as recovered.
-      if (!gapComplete) {
+      // A superseded fill (view switch / newer reload) exits silently: the
+      // newer load owns the transcript now, so this stale one must not paint
+      // an error over it. A live-race fill convergent-retries the whole load
+      // against the same view (same discovery id, so its own recovery is not
+      // invalidated), exactly like the single-page revision fence above.
+      if (gapStatus === "superseded") {
+        return;
+      }
+      if (gapStatus === "live-race") {
+        void loadHistory(iId, cId, tId, {
+          reuseDiscoveryId: discoveryId,
+          ...(opts?.harvestTerminalHandoff ? { harvestTerminalHandoff: opts.harvestTerminalHandoff } : {}),
+        });
+        return;
+      }
+      if (gapStatus === "incomplete") {
         historyError.value = "discoveryFailed";
-        historyErrorDetail.value = `history gap ${prevNewestBeforeMerge}..${tailOldest} did not converge; retry to complete recovery`;
+        historyErrorDetail.value = `history gap ${prevContiguousBeforeMerge}..${tailOldest} did not converge; retry to complete recovery`;
         return;
       }
       const discovered = await recoverActiveRun(
@@ -1054,7 +1133,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         }
         // Same merge as loadHistory: never drop already-loaded older rows the
         // user paged back to read when the bounded newest page refreshes.
-        const prevNewestBeforeMerge = newestSeq.value;
+        const prevContiguousBeforeMerge = contiguousNewestSeq.value;
         const merged: Record<string, ConversationMessageDto> = {};
         mergeHistoryPage(res, merged);
         hasMoreAfter.value = res.hasMoreAfter;
@@ -1064,27 +1143,40 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         const tailOldest = res.messages.length > 0
           ? Math.min(...res.messages.map((m) => m.seq))
           : undefined;
+        let gapStatus: "complete" | "incomplete" | "superseded" | "live-race" = "complete";
         if (
           tailOldest !== undefined &&
-          prevNewestBeforeMerge !== undefined &&
-          tailOldest > prevNewestBeforeMerge + 1
+          prevContiguousBeforeMerge !== undefined &&
+          tailOldest > prevContiguousBeforeMerge + 1
         ) {
-          const gapComplete = await fillHistoryGap(
+          gapStatus = await fillHistoryGap(
             targetInstanceId,
             convId,
             topId,
             requestSequence,
-            prevNewestBeforeMerge,
+            transcriptRevision,
+            prevContiguousBeforeMerge,
             tailOldest,
             res.newestSeq,
             merged,
           );
-          newestSeq.value = res.newestSeq ?? newestSeq.value;
-          if (!gapComplete) {
-            historyError.value = "discoveryFailed";
-            historyErrorDetail.value = `history gap ${prevNewestBeforeMerge}..${tailOldest} did not converge; retry to complete recovery`;
-            return;
+          // Contiguous claim (if any) was made inside the fill; nothing to do.
+        } else if (res.newestSeq !== undefined) {
+          if (contiguousNewestSeq.value === undefined || res.newestSeq > contiguousNewestSeq.value) {
+            contiguousNewestSeq.value = res.newestSeq;
           }
+        }
+        if (gapStatus === "superseded") {
+          return;
+        }
+        if (gapStatus === "live-race") {
+          void refreshTranscriptOnly(targetInstanceId, convId, topId);
+          return;
+        }
+        if (gapStatus === "incomplete") {
+          historyError.value = "discoveryFailed";
+          historyErrorDetail.value = `history gap ${prevContiguousBeforeMerge}..${tailOldest} did not converge; retry to complete recovery`;
+          return;
         }
         if (activeRun.value) {
           const canonicalBotMsg = messages.value.find(
@@ -1203,6 +1295,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     messages.value = [];
     oldestSeq.value = undefined;
     newestSeq.value = undefined;
+    contiguousNewestSeq.value = undefined;
     hasMoreBefore.value = false;
     hasMoreAfter.value = false;
     activeRun.value = null;
@@ -1270,6 +1363,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     messages.value = [];
     oldestSeq.value = undefined;
     newestSeq.value = undefined;
+    contiguousNewestSeq.value = undefined;
     hasMoreBefore.value = false;
     hasMoreAfter.value = false;
     activeRun.value = null;
@@ -1308,6 +1402,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     messages.value = [];
     oldestSeq.value = undefined;
     newestSeq.value = undefined;
+    contiguousNewestSeq.value = undefined;
     hasMoreBefore.value = false;
     hasMoreAfter.value = false;
     activeMemberTurn.value = null;
@@ -1414,6 +1509,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         messages.value = [...messages.value, res.message].sort((a, b) => a.seq - b.seq);
         touchTranscript();
         newestSeq.value = Math.max(newestSeq.value ?? 0, res.message.seq);
+        contiguousNewestSeq.value = Math.max(contiguousNewestSeq.value ?? 0, res.message.seq);
       }
 
       // An HTTP accept proves the accepted Run is durable — never that it is
@@ -2045,6 +2141,19 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           messages.value = [...messages.value, msg].sort((a, b) => a.seq - b.seq);
           touchTranscript();
           newestSeq.value = Math.max(newestSeq.value ?? 0, msg.seq);
+          // Advance the proven-contiguous cursor only when the live row chains
+          // onto it (msg.seq <= contiguous+1). A live row above a hole (e.g.
+          // 601 while 101..600 are still missing) must NOT jump the cursor —
+          // otherwise the next load would conclude "no gap" over a holed
+          // window. newestSeq above still tracks the display max.
+          if (
+            contiguousNewestSeq.value !== undefined &&
+            msg.seq === contiguousNewestSeq.value + 1
+          ) {
+            contiguousNewestSeq.value = msg.seq;
+          } else if (contiguousNewestSeq.value === undefined) {
+            contiguousNewestSeq.value = msg.seq;
+          }
         }
         // If this message belongs to the active run and is from the bot, converge liveTurn
         if (msg.role === "bot" && activeRun.value && msg.runId === activeRun.value.id) {
@@ -2332,6 +2441,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     messages,
     oldestSeq,
     newestSeq,
+    contiguousNewestSeq,
     hasMoreBefore,
     hasMoreAfter,
     loadingHistory,
