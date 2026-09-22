@@ -1055,3 +1055,33 @@ test("public promptConversation cannot mint human ingress; kernel stamp can", as
   });
   await runtime.shutdown();
 });
+test("group CRUD, topic lifecycle, and teardown flow through public Control", async () => {
+  const { control, runtime } = await wire({ autoKick: false });
+  const botA = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const botB = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const group = await control.createGroup({ title: "Release Team", botIds: [botA.id, botB.id], leadBotId: botA.id });
+  expect(group.kind).toBe("group");
+  expect(group.botIds).toEqual([botA.id, botB.id]);
+  expect(group.leadBotId).toBe(botA.id);
+  const renamed = await control.updateGroup(group.id, { title: "Release Team 2" });
+  expect(renamed.title).toBe("Release Team 2");
+  const detail = control.getGroup(group.id);
+  expect(detail.topics).toEqual([]);
+  const topic = await control.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  expect(topic.conversationId).toBe(group.id);
+  expect(topic.executionTarget).toEqual({ workspace: "backend", isolation: "shared-single-writer" });
+  expect(control.getGroup(group.id).topics.map((t) => t.id)).toContain(topic.id);
+  const archived = await control.archiveGroupTopic(group.id, topic.id);
+  expect(archived.status).toBe("archived");
+  // Member binding materializes on the group topic, isolated from direct bindings.
+  const member = await runtime.botRuntime.getOrCreateGroupMemberSession({
+    botId: botA.id, conversationId: group.id, topicId: topic.id,
+  });
+  expect(member.scope).toBe("group-member");
+  await control.teardownGroupTopic(group.id, topic.id);
+  expect(control.getGroup(group.id).topics.map((t) => t.id)).not.toContain(topic.id);
+  await runtime.shutdown();
+});

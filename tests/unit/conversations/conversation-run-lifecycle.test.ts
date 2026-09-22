@@ -42,6 +42,21 @@ import type { ChatRequest, ChatResponse } from "../../../src/weixin/agent/interf
 
 const NOW = "2026-09-15T12:00:00.000Z";
 const BOT_ID = "bot_reviewer";
+const TESTER_ID = "bot_tester";
+
+function seedTesterBot(state: AppState): void {
+  state.bots[TESTER_ID] = {
+    id: TESTER_ID,
+    name: "Tester",
+    agent: "codex",
+    workspace: "backend",
+    enabled: true,
+    profileRevision: 1,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+}
+
 const HUMAN_INGRESS = {
   chatKey: "relay:acct",
   senderId: "acct",
@@ -1716,4 +1731,72 @@ test("materialize high -> bot edit to default -> accept run A (snapshot effort=u
   // Run A completed successfully
   expect(fakeRunner(first.runner).runs).toHaveLength(1);
   expect(first.store.getRun(acceptedA.run.id)?.state).toBe("completed");
+});
+
+test("group topic lifecycle validates target, archives, and rejects direct paths", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID], leadBotId: reviewer.id });
+  // Unknown workspace and isolation fail closed.
+  await expect(
+    first.service.createGroupTopic(group.id, "Bad ws", { workspace: "nope", isolation: "shared" }),
+  ).rejects.toMatchObject({ code: "workspace_not_registered" });
+  await expect(
+    first.service.createGroupTopic(group.id, "Bad iso", { workspace: "backend", isolation: "mesh" as never }),
+  ).rejects.toMatchObject({ code: "invalid-isolation" });
+  // Direct conversation id is rejected on the group path.
+  const directConv = (await import("../../../src/domain/ids")).createDirectConversationId(reviewer.id);
+  await expect(
+    first.service.createGroupTopic(directConv, "Wrong kind", { workspace: "backend", isolation: "shared" }),
+  ).rejects.toMatchObject({ code: "conversation_not_group" });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  expect(topic.conversationId).toBe(group.id);
+  expect(topic.executionTarget).toEqual({ workspace: "backend", isolation: "shared-single-writer" });
+  expect(first.state.conversation_topics[topic.id]?.executionTarget?.isolation).toBe("shared-single-writer");
+  const listed = first.service.listTopics(group.id);
+  expect(listed.some((t) => t.id === topic.id)).toBe(true);
+  const archived = await first.service.archiveGroupTopic(group.id, topic.id);
+  expect(archived.status).toBe("archived");
+  // Archiving twice is idempotent.
+  const again = await first.service.archiveGroupTopic(group.id, topic.id);
+  expect(again.status).toBe("archived");
+});
+
+test("group topic teardown releases member bindings and rows, retryable on release failure", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const memberA = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  const memberB = await first.runtime.getOrCreateGroupMemberSession({
+    botId: TESTER_ID, conversationId: group.id, topicId: topic.id,
+  });
+  // Injected release failure leaves everything in place for retry.
+  first.physical.fail = true;
+  await expect(first.service.teardownGroupTopic(group.id, topic.id)).rejects.toMatchObject({
+    code: "session_release_failed",
+  });
+  expect(first.state.conversation_topics[topic.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[memberA.id]).toBeDefined();
+  first.physical.fail = false;
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[memberA.id]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[memberB.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(memberA.sessionAlias) ?? undefined).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(memberB.sessionAlias) ?? undefined).toBeUndefined();
+  // Group record itself survives topic teardown.
+  expect(first.state.conversations[group.id]?.kind).toBe("group");
 });

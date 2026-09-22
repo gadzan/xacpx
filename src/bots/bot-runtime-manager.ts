@@ -3,8 +3,12 @@ import {
   classifyDirectBotBindingSessionLink,
   classifyDirectBotRuntimeBindingOwnership,
   classifyDirectBotSessionOwnership,
+  classifyGroupMemberBindingOwnership,
+  classifyGroupMemberBindingSessionLink,
+  classifyGroupMemberSessionOwnership,
   type BotService,
   type DirectBotRuntimeBinding,
+  type GroupMemberRuntimeBinding,
 } from "./bot-service";
 import type { BotProfile, BotProfileExecution, BotRuntimeBinding } from "./bot-types";
 import { planDirectConversation } from "../conversations/direct-conversation";
@@ -14,14 +18,16 @@ import {
   createDirectConversationId,
   createDirectTopicId,
   createScopedDirectBindingId,
+  createScopedGroupMemberBindingId,
   ownedDirectSessionAlias,
+  ownedGroupMemberSessionAlias,
 } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
 import type { StateStore } from "../state/state-store";
-import { createBotDirectOwner, type AppState, type LogicalSession } from "../state/types";
+import { createBotDirectOwner, createGroupMemberOwner, type AppState, type LogicalSession } from "../state/types";
 
 export interface BotRuntimeManagerOptions {
   now?: () => Date;
@@ -80,6 +86,27 @@ export class BotRuntimeManager {
     // Do not coalesce onto another caller's authorization promise: a later
     // generation must re-check dispatch/owner/generation/lease and deleting.
     return await this.bots.runLifecycle(input.botId, () => this.materializeDirectSession(input));
+  }
+
+  /**
+   * PR6 Group member binding. Mirrors the direct path but scopes to an
+   * explicit Group Conversation/Topic and a member Bot: the Conversation must
+   * be kind=group, the Bot must belong to its membership, and the Topic must
+   * belong to the Conversation. The member Bot must be enabled. No Router or
+   * controller session is created here — PR7 routing calls this per selected
+   * member. Execution resolves from the member Bot profile (PR6 has no
+   * per-member execution override); the Topic ExecutionTarget workspace is
+   * validated for registration but does not override the Bot's agent.
+   */
+  async getOrCreateGroupMemberSession(input: {
+    botId: string;
+    conversationId: string;
+    topicId: string;
+    execution?: BotProfileExecution;
+    assertStillDispatchable?: () => void;
+  }): Promise<BotRuntimeBinding> {
+    this.requireEnabledBot(input.botId);
+    return await this.bots.runLifecycle(input.botId, () => this.materializeGroupMemberSession(input));
   }
 
   private assertAcceptedStickyIdentity(bot: BotProfile, execution?: BotProfileExecution): void {
@@ -206,6 +233,49 @@ export class BotRuntimeManager {
     return await this.publishDirectRuntime(bot, session, scopedId, scope);
   }
 
+  private async materializeGroupMemberSession(input: {
+    botId: string;
+    conversationId: string;
+    topicId: string;
+    execution?: BotProfileExecution;
+    assertStillDispatchable?: () => void;
+  }): Promise<BotRuntimeBinding> {
+    input.assertStillDispatchable?.();
+    const bot = this.requireEnabledBot(input.botId);
+    this.assertAcceptedStickyIdentity(bot, input.execution);
+    const scope = this.resolveGroupMemberScope(bot.id, input.conversationId, input.topicId);
+    const scopedId = createScopedGroupMemberBindingId(scope.conversationId, scope.topicId, bot.id);
+    const existing = this.findScopedGroupMemberBinding(scope.conversationId, scope.topicId, bot.id);
+    if (existing && this.groupMemberBindingSessionIsLive(existing)) {
+      await this.alignGroupMemberSessionRuntime(existing, input.execution ?? bot);
+      return existing;
+    }
+    const session = await this.ensureGroupMemberOwnedSession(bot, scopedId, scope, input.execution);
+    return await this.publishGroupMemberRuntime(bot, session, scopedId, scope);
+  }
+
+  private resolveGroupMemberScope(
+    botId: string,
+    conversationId: string,
+    topicId: string,
+  ): { conversationId: string; topicId: string; topic: ConversationTopic } {
+    const conversation = this.state.conversations[conversationId];
+    if (!conversation || conversation.kind !== "group") {
+      throw new BotError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
+    }
+    if (!conversation.botIds.includes(botId)) {
+      throw new BotError("group_member_not_member", `bot "${botId}" is not a member of group "${conversationId}"`);
+    }
+    const topic = this.state.conversation_topics[topicId];
+    if (!topic || topic.conversationId !== conversationId) {
+      throw new BotError("topic_not_found", `topic "${topicId}" does not belong to group "${conversationId}"`);
+    }
+    const target = topic.executionTarget;
+    if (target) {
+      this.bots.assertWorkspaceRegistered(target.workspace);
+    }
+    return { conversationId, topicId, topic };
+  }
   private requireEnabledBot(botId: string): BotProfile {
     const bot = this.bots.getBot(botId);
     if (!bot.enabled) {
@@ -346,6 +416,223 @@ export class BotRuntimeManager {
       throw new BotError("session_missing", `failed to persist owned session for bot "${bot.id}"`);
     }
     return record;
+  }
+  private async ensureGroupMemberOwnedSession(
+    bot: BotProfile,
+    bindingId: string,
+    scope: { conversationId: string; topicId: string },
+    execution?: BotProfileExecution,
+  ): Promise<LogicalSession> {
+    const alias = ownedGroupMemberSessionAlias(bindingId);
+    const current = this.findOwnedGroupMemberSession(bindingId, bot.id, scope.conversationId, scope.topicId);
+    if (current) {
+      return current;
+    }
+    const occupant = this.sessions.getLogicalSessionRecord(alias);
+    if (occupant) {
+      const ownership = classifyGroupMemberSessionOwnership(
+        occupant,
+        bot.id,
+        bindingId,
+        scope.conversationId,
+        scope.topicId,
+      );
+      if (ownership !== "owned" || occupant.owner?.bindingId !== bindingId) {
+        throw this.groupMemberOwnershipConflict(bot.id, alias, bindingId, scope.conversationId, occupant);
+      }
+    }
+    const target = execution ?? bot;
+    if (!occupant) {
+      await this.sessions.createSession(alias, target.agent, target.workspace, {
+        owner: createGroupMemberOwner({
+          bindingId,
+          botId: bot.id,
+          conversationId: scope.conversationId,
+          topicId: scope.topicId,
+        }),
+        ...(target.model ? { model: target.model } : {}),
+        ...(target.effort ? { effort: target.effort } : {}),
+      });
+    }
+    const record = this.findOwnedGroupMemberSession(bindingId, bot.id, scope.conversationId, scope.topicId);
+    if (!record) {
+      throw new BotError("session_missing", `failed to persist owned session for bot "${bot.id}"`);
+    }
+    return record;
+  }
+
+  private async publishGroupMemberRuntime(
+    bot: BotProfile,
+    session: LogicalSession,
+    bindingId: string,
+    scope: { conversationId: string; topicId: string; topic: ConversationTopic },
+  ): Promise<BotRuntimeBinding> {
+    return await this.stateMutex.run(async () => {
+      const live = this.findScopedGroupMemberBinding(scope.conversationId, scope.topicId, bot.id);
+      if (live && this.groupMemberBindingSessionIsLive(live)) {
+        return live;
+      }
+      const timestamp = this.now().toISOString();
+      const binding: BotRuntimeBinding = {
+        id: bindingId,
+        scope: "group-member",
+        conversationId: scope.conversationId,
+        topicId: scope.topicId,
+        botId: bot.id,
+        logicalSessionId: session.logical_session_id,
+        sessionAlias: session.alias,
+        createdAt: live?.createdAt ?? timestamp,
+        updatedAt: timestamp,
+      };
+      const next = structuredClone(this.state);
+      next.bot_runtime_bindings[bindingId] = binding;
+      if (typeof this.stateStore.saveNow === "function") {
+        await this.stateStore.saveNow(next);
+      } else {
+        await this.stateStore.save(next);
+      }
+      replaceRuntimeState(this.state, next);
+      const published = this.state.bot_runtime_bindings[bindingId]!;
+      try {
+        this.onRuntimeMaterialized?.(bot.id);
+      } catch {
+        // Product projection must not affect dispatch fencing.
+      }
+      return published;
+    });
+  }
+
+  private findScopedGroupMemberBinding(
+    conversationId: string,
+    topicId: string,
+    botId: string,
+  ): GroupMemberRuntimeBinding | undefined {
+    const scopedId = createScopedGroupMemberBindingId(conversationId, topicId, botId);
+    const scoped = this.state.bot_runtime_bindings[scopedId];
+    if (!scoped) {
+      return undefined;
+    }
+    if (scoped.scope !== "group-member") {
+      throw this.groupMemberBindingConflict(botId, scoped);
+    }
+    if (classifyGroupMemberBindingOwnership(scoped, botId, conversationId, topicId) !== "owned") {
+      throw this.groupMemberBindingConflict(botId, scoped);
+    }
+    return scoped;
+  }
+
+  private findOwnedGroupMemberSession(
+    bindingId: string,
+    botId: string,
+    conversationId: string,
+    topicId: string,
+  ): LogicalSession | undefined {
+    for (const session of Object.values(this.state.sessions)) {
+      if (session.owner?.kind !== "group-member" || session.owner.bindingId !== bindingId) {
+        continue;
+      }
+      const ownership = classifyGroupMemberSessionOwnership(
+        session,
+        botId,
+        bindingId,
+        conversationId,
+        topicId,
+      );
+      if (ownership === "conflict") {
+        throw this.groupMemberOwnershipConflict(botId, session.alias, bindingId, conversationId, session);
+      }
+      if (ownership === "owned") {
+        return session;
+      }
+    }
+    return undefined;
+  }
+
+  private groupMemberBindingSessionIsLive(binding: GroupMemberRuntimeBinding): boolean {
+    this.assertGroupMemberBindingIdentity(binding);
+    const byId = this.sessions.getLogicalSessionById(binding.logicalSessionId);
+    const byAlias = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
+    if (!byId && !byAlias) {
+      return false;
+    }
+    if (
+      !byId
+      || !byAlias
+      || byId.logical_session_id !== byAlias.logical_session_id
+      || byId.alias !== byAlias.alias
+    ) {
+      throw this.groupMemberBindingConflict(binding.botId, binding);
+    }
+    this.assertGroupMemberBindingOwnsSession(binding, byAlias);
+    return true;
+  }
+
+  private async alignGroupMemberSessionRuntime(
+    binding: GroupMemberRuntimeBinding,
+    bot: { model?: string; effort?: string },
+  ): Promise<void> {
+    const session = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
+    if (!session) {
+      return;
+    }
+    this.assertGroupMemberBindingOwnsSession(binding, session);
+    if (session.model !== bot.model) {
+      await this.sessions.setSessionModel(binding.sessionAlias, bot.model);
+    }
+    if (session.effort !== bot.effort) {
+      await this.sessions.setSessionEffort(binding.sessionAlias, bot.effort);
+    }
+  }
+
+  private assertGroupMemberBindingIdentity(binding: GroupMemberRuntimeBinding): void {
+    if (
+      classifyGroupMemberBindingOwnership(
+        binding,
+        binding.botId,
+        binding.conversationId,
+        binding.topicId,
+      ) !== "owned"
+    ) {
+      throw this.groupMemberBindingConflict(binding.botId, binding);
+    }
+  }
+
+  private assertGroupMemberBindingOwnsSession(binding: GroupMemberRuntimeBinding, session: LogicalSession): void {
+    this.assertGroupMemberBindingIdentity(binding);
+    if (
+      classifyGroupMemberBindingSessionLink(
+        binding,
+        session,
+        binding.id,
+        binding.botId,
+        binding.conversationId,
+        binding.topicId,
+      ) !== "owned"
+    ) {
+      throw this.groupMemberOwnershipConflict(binding.botId, session.alias, binding.id, binding.conversationId, session);
+    }
+  }
+
+  private groupMemberBindingConflict(botId: string, binding: BotRuntimeBinding): BotError {
+    return new BotError(
+      "runtime_ownership_conflict",
+      "group member runtime binding ownership metadata is contradictory",
+      { botId, binding },
+    );
+  }
+
+  private groupMemberOwnershipConflict(
+    botId: string,
+    alias: string,
+    bindingId: string,
+    conversationId: string,
+    session: LogicalSession,
+  ): BotError {
+    return new BotError(
+      "runtime_ownership_conflict",
+      `group member runtime ownership for session "${alias}" is contradictory`,
+      { botId, binding: { bindingId, conversationId }, owner: session.owner },
+    );
   }
 
   private async publishAdoptedBinding(

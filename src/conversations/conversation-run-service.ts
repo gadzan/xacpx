@@ -5,6 +5,8 @@ import {
   classifyDirectBotBindingSessionLink,
   classifyDirectBotRuntimeBindingOwnership,
   classifyDirectBotSessionOwnership,
+  classifyGroupMemberBindingOwnership,
+  classifyGroupMemberBindingSessionLink,
   type BotService,
   type DirectBotRuntimeBinding,
 } from "../bots/bot-service";
@@ -29,8 +31,10 @@ import type {
   ConversationRecord,
   ConversationRun,
   ConversationTopic,
+  ExecutionTarget,
   HumanIngressContext,
   MemberTurnRecord,
+  WorkspaceIsolationPolicy,
 } from "./conversation-types";
 
 export interface ConversationRunServiceOptions {
@@ -243,6 +247,10 @@ export class ConversationRunService {
 
   listConversations(filter?: { botId?: string }): ConversationRecord[] {
     this.assertOpen();
+    // Direct-only by design: Group Conversations are invisible to the PR5
+    // direct list (and its Web consumer). PR7 adds a separate group listing;
+    // never merge kinds here — a group row would break the direct presenter
+    // below, which assumes exactly one Bot.
     const byId = new Map<string, ConversationRecord>();
     for (const conversation of Object.values(this.state.conversations)) {
       if (conversation.kind !== "bot") {
@@ -276,6 +284,12 @@ export class ConversationRunService {
       .map((topic) => this.presentDefaultTopic(topic, conversation));
     if (topics.length > 0) {
       return topics;
+    }
+    // Group Conversations have no synthetic default Topic: an empty group
+    // lists zero topics until createGroupTopic persists one. Only direct
+    // Conversations synthesize their deterministic default.
+    if (conversation.kind !== "bot") {
+      return [];
     }
     const botId = this.resolveDirectBotId(conversationId);
     const bot = this.bots.getBot(botId);
@@ -383,6 +397,99 @@ export class ConversationRunService {
   async createTopic(conversationId: string, title: string): Promise<ConversationTopic> {
     return this.createDirectTopic(this.resolveDirectBotId(conversationId), title);
   }
+  /**
+   * PR6 Group Topic lifecycle. Creates a Topic under a group Conversation
+   * with an explicit ExecutionTarget. The workspace must be registered; the
+   * isolation policy is validated against the known enum. worktree-per-member
+   * persists as a value but has no provisioning yet (PR10): callers must not
+   * assume an isolated tree exists. Direct Conversations keep resolving
+   * execution from the owning Bot profile and never take this path.
+   */
+  async createGroupTopic(
+    conversationId: string,
+    title: string,
+    target: { workspace: string; cwd?: string; isolation: WorkspaceIsolationPolicy },
+  ): Promise<ConversationTopic> {
+    this.assertOpen();
+    const conversation = this.requireConversation(conversationId);
+    if (conversation.kind !== "group") {
+      throw new ConversationError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
+    }
+    const executionTarget = this.requireExecutionTarget(target);
+    const timestamp = this.now().toISOString();
+    const created = await this.stateMutex.run(async () => {
+      this.assertConversationNotDeleting(conversationId);
+      const topic: ConversationTopic = {
+        id: this.nextTopicId(),
+        conversationId,
+        title: title.trim() || "Topic",
+        status: "active",
+        executionTarget,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      const next = structuredClone(this.state);
+      next.conversation_topics[topic.id] = topic;
+      await this.persist(next);
+      return topic;
+    });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: created });
+    return created;
+  }
+
+  async archiveGroupTopic(conversationId: string, topicId: string): Promise<ConversationTopic> {
+    this.assertOpen();
+    const archived = await this.stateMutex.run(async () => {
+      const topic = this.requireGroupTopic(conversationId, topicId);
+      if (topic.status !== "active") {
+        return topic;
+      }
+      const next = structuredClone(this.state);
+      next.conversation_topics[topicId] = {
+        ...topic,
+        status: "archived",
+        updatedAt: this.now().toISOString(),
+      };
+      await this.persist(next);
+      return next.conversation_topics[topicId]!;
+    });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: archived });
+    return archived;
+  }
+
+  private requireGroupTopic(conversationId: string, topicId: string): ConversationTopic {
+    const conversation = this.requireConversation(conversationId);
+    if (conversation.kind !== "group") {
+      throw new ConversationError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
+    }
+    const topic = this.state.conversation_topics[topicId];
+    if (!topic || topic.conversationId !== conversationId) {
+      throw new BotError("topic_not_found", `topic "${topicId}" does not belong to this Group`);
+    }
+    return topic;
+  }
+  private requireExecutionTarget(target: {
+    workspace: string;
+    cwd?: string;
+    isolation: WorkspaceIsolationPolicy;
+  }): ExecutionTarget {
+    if (!target || typeof target.workspace !== "string" || !target.workspace) {
+      throw new BotError("workspace_not_registered", "group Topic workspace must be a registered workspace");
+    }
+    this.bots.assertWorkspaceRegistered(target.workspace);
+    if (target.isolation !== "shared"
+      && target.isolation !== "shared-single-writer"
+      && target.isolation !== "worktree-per-member") {
+      throw new ConversationError("invalid-isolation", `unknown isolation policy "${target.isolation}"`);
+    }
+    return {
+      workspace: target.workspace,
+      ...(target.cwd !== undefined ? { cwd: target.cwd } : {}),
+      isolation: target.isolation,
+    };
+  }
 
   async cancelRun(runId: string): Promise<void> {
     this.assertOpen();
@@ -453,6 +560,139 @@ export class ConversationRunService {
       });
       this.store.deleteConversationRows(conversationId);
     });
+  }
+  /**
+   * PR6 Group Topic teardown (§9.7): mark deleting → stop/settle active Runs
+   * → release all member runtimes → remove bindings → remove
+   * Conversation-store rows → remove Topic metadata. Failure at any step
+   * leaves the deleting barrier in place so teardown is retryable. No Router
+   * or controller session exists in PR6; only group-member bindings are
+   * released. A contradictory binding/session link fails closed and leaves
+   * everything in place for retry.
+   */
+  async teardownGroupTopic(conversationId: string, topicId: string): Promise<void> {
+    this.assertOpen();
+    this.requireGroupTopic(conversationId, topicId);
+    const timestamp = this.now().toISOString();
+    this.store.markTopicDeleting(topicId, conversationId, timestamp);
+    await this.markGroupTopicDeleting(conversationId, topicId, timestamp);
+    await this.afterTeardownMarkedDeleting?.();
+
+    const runs = this.store.listRuns(conversationId, topicId);
+    for (const run of runs) {
+      if (run.state === "queued" || run.state === "running" || run.state === "waiting-human") {
+        await this.dispatcher.cancelRun(run.id);
+      }
+    }
+    this.store.recoverExpiredClaims(this.now().toISOString());
+    const remaining = this.store.listRuns(conversationId, topicId);
+    const indeterminate = remaining.filter((run) => run.state === "indeterminate");
+    if (indeterminate.length > 0) {
+      throw new ConversationError("conversation_indeterminate", "topic has indeterminate work", {
+        runIds: indeterminate.map((run) => run.id),
+      });
+    }
+
+    for (const alias of this.groupMemberAliases(conversationId, topicId)) {
+      if (this.sessions.getLogicalSessionRecord(alias)) {
+        await this.releaseAlias(alias);
+      }
+    }
+
+    await this.stateMutex.run(async () => {
+      await this.beforeTeardownFinalize?.();
+      for (const alias of this.groupMemberAliases(conversationId, topicId)) {
+        if (this.sessions.getLogicalSessionRecord(alias)) {
+          await this.releaseAlias(alias);
+        }
+      }
+      const next = structuredClone(this.state);
+      for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
+        if (
+          binding.scope === "group-member"
+          && binding.conversationId === conversationId
+          && binding.topicId === topicId
+        ) {
+          delete next.bot_runtime_bindings[id];
+        }
+      }
+      this.store.deleteTopicRows(conversationId, topicId);
+      delete next.conversation_topics[topicId];
+      await this.persist(next);
+    });
+  }
+
+  private async markGroupTopicDeleting(
+    conversationId: string,
+    topicId: string,
+    timestamp: string,
+  ): Promise<void> {
+    await this.stateMutex.run(async () => {
+      const topic = this.state.conversation_topics[topicId];
+      if (!topic || topic.conversationId !== conversationId || topic.status !== "active") {
+        return;
+      }
+      const next = structuredClone(this.state);
+      next.conversation_topics[topicId] = { ...topic, status: "deleting", updatedAt: timestamp };
+      await this.persist(next);
+    });
+  }
+
+  /**
+   * Owned member aliases for one Group Topic. Every binding/session signal
+   * must agree: a contradictory link fails closed (throws) instead of
+   * releasing the wrong session. Stale bindings with no live session are
+   * harmless and removed by finalization.
+   */
+  private groupMemberAliases(conversationId: string, topicId: string): string[] {
+    const aliases = new Set<string>();
+    for (const binding of Object.values(this.state.bot_runtime_bindings)) {
+      if (
+        binding.scope !== "group-member"
+        || binding.conversationId !== conversationId
+        || binding.topicId !== topicId
+      ) {
+        continue;
+      }
+      const ownership = classifyGroupMemberBindingOwnership(
+        binding,
+        binding.botId,
+        conversationId,
+        topicId,
+      );
+      if (ownership === "conflict") {
+        throw new ConversationError(
+          "runtime_ownership_conflict",
+          "group member binding ownership metadata is contradictory",
+          { binding },
+        );
+      }
+      if (ownership !== "owned") {
+        continue;
+      }
+      const byAlias = this.state.sessions[binding.sessionAlias];
+      if (!byAlias) {
+        continue;
+      }
+      if (
+        classifyGroupMemberBindingSessionLink(
+          binding,
+          byAlias,
+          binding.id,
+          binding.botId,
+          conversationId,
+          topicId,
+        ) !== "owned"
+      ) {
+        throw new ConversationError(
+          "runtime_ownership_conflict",
+          "group member binding/session link is contradictory",
+          { binding, sessionAlias: byAlias.alias },
+        );
+      }
+      aliases.add(byAlias.alias);
+    }
+    return [...aliases];
   }
 
   private emitAcceptProjection(accepted: AcceptRequestResult): void {

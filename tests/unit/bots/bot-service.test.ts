@@ -238,3 +238,118 @@ test("deleteBot fails closed when ConversationStore still has durable work", asy
   await expect(service.deleteBot("bot_fixed")).rejects.toMatchObject({ code: "bot_in_use" });
   expect(state.bots.bot_fixed).toBeDefined();
 });
+
+test("createGroup validates membership, lead, and opaque identity", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  const service = new BotService(
+    {
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    },
+    state,
+    store,
+    { now: () => new Date(NOW) },
+  );
+  const a = await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const b = await service.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  // min two members
+  await expect(service.createGroup({ title: "Solo", botIds: [a.id] })).rejects.toMatchObject({
+    code: "group_membership_min",
+  });
+  // duplicate members
+  await expect(service.createGroup({ title: "Dup", botIds: [a.id, a.id] })).rejects.toMatchObject({
+    code: "group_membership_duplicate",
+  });
+  // missing bot
+  await expect(service.createGroup({ title: "Ghost", botIds: [a.id, "bot_missing"] })).rejects.toMatchObject({
+    code: "bot_not_found",
+  });
+  // lead outside membership
+  await expect(
+    service.createGroup({ title: "Bad lead", botIds: [a.id, b.id], leadBotId: "bot_missing" }),
+  ).rejects.toMatchObject({ code: "group_lead_not_member" });
+  const group = await service.createGroup({
+    title: "Release Team",
+    description: "Ships it",
+    botIds: [a.id, b.id],
+    leadBotId: a.id,
+  });
+  expect(group.kind).toBe("group");
+  expect(group.botIds).toEqual([a.id, b.id]);
+  expect(group.leadBotId).toBe(a.id);
+  expect(group.id.startsWith("conversation_")).toBe(true);
+  expect(group.id).not.toContain("Release");
+  expect(state.conversations[group.id]?.kind).toBe("group");
+  // update: remove lead, shrink membership fails closed
+  const noLead = await service.updateGroup(group.id, { leadBotId: null });
+  expect(noLead.leadBotId).toBeUndefined();
+  await expect(service.updateGroup(group.id, { botIds: [a.id] })).rejects.toMatchObject({
+    code: "group_membership_min",
+  });
+  await service.deleteGroup(group.id);
+  expect(state.conversations[group.id]).toBeUndefined();
+});
+
+test("deleteBot stays fail-closed while Group membership references the Bot", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  let n = 0;
+  const service = new BotService(
+    {
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    },
+    state,
+    store,
+    { now: () => new Date(NOW), createId: () => `bot_${(n += 1)}` },
+  );
+  const a = await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const b = await service.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const group = await service.createGroup({ title: "Release Team", botIds: [a.id, b.id] });
+  await expect(service.deleteBot(a.id)).rejects.toMatchObject({ code: "bot_in_group" });
+  expect(state.bots[a.id]).toBeDefined();
+  await service.deleteGroup(group.id);
+  // Still fail-closed on direct runtime refs path (no runtime here, so delete succeeds).
+  await service.deleteBot(a.id);
+  expect(state.bots[a.id]).toBeUndefined();
+});
+test("group member classifiers prove exact triple ownership and fail closed on mismatch", async () => {
+  const { classifyGroupMemberBindingOwnership, classifyGroupMemberSessionOwnership } =
+    await import("../../../src/bots/bot-service");
+  const { createScopedGroupMemberBindingId } = await import("../../../src/domain/ids");
+  const binding = {
+    id: createScopedGroupMemberBindingId("conv_g", "topic_t", "bot_a"),
+    scope: "group-member" as const,
+    conversationId: "conv_g",
+    topicId: "topic_t",
+    botId: "bot_a",
+    logicalSessionId: "11111111-1111-4111-8111-111111111111",
+    sessionAlias: "brt_group_x",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  expect(classifyGroupMemberBindingOwnership(binding, "bot_a", "conv_g", "topic_t")).toBe("owned");
+  // Wrong Bot for the triple is a conflict, not silently foreign.
+  expect(classifyGroupMemberBindingOwnership(binding, "bot_b", "conv_g", "topic_t")).toBe("conflict");
+  // Wrong conversation is foreign (different scope entirely).
+  expect(classifyGroupMemberBindingOwnership(binding, "bot_a", "conv_other", "topic_t")).toBe("foreign");
+  // Direct scope never counts as member ownership.
+  expect(classifyGroupMemberBindingOwnership({ ...binding, scope: "bot-direct" }, "bot_a", "conv_g", "topic_t")).toBe(
+    "foreign",
+  );
+  const session = {
+    owner: {
+      kind: "group-member" as const,
+      bindingId: binding.id,
+      botId: "bot_a",
+      conversationId: "conv_g",
+      topicId: "topic_t",
+    },
+  };
+  expect(classifyGroupMemberSessionOwnership(session, "bot_a", binding.id, "conv_g", "topic_t")).toBe("owned");
+  expect(classifyGroupMemberSessionOwnership(session, "bot_b", binding.id, "conv_g", "topic_t")).toBe("conflict");
+  expect(
+    classifyGroupMemberSessionOwnership({ owner: { kind: "bot-direct", bindingId: binding.id } }, "bot_a", binding.id, "conv_g", "topic_t"),
+  ).toBe("foreign");
+});

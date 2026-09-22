@@ -1,10 +1,12 @@
 import type { AppConfig } from "../config/types";
 import {
   createBotId,
+  createConversationId,
   createDirectBindingId,
   createDirectConversationId,
   createDirectTopicId,
   createScopedDirectBindingId,
+  createScopedGroupMemberBindingId,
 } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { StateStore } from "../state/state-store";
@@ -13,6 +15,7 @@ import type { AppState, LogicalSession } from "../state/types";
 import { BotError } from "./bot-error";
 import { BotLifecycleGate } from "./bot-lifecycle-gate";
 import type { BotProfile, BotRuntimeBinding } from "./bot-types";
+import type { ConversationRecord } from "../conversations/conversation-types";
 
 const NAME_MAX = 80;
 const TEXT_MAX = 16_384;
@@ -41,10 +44,25 @@ export interface UpdateBotInput {
   enabled?: boolean | null;
 }
 
+export interface CreateGroupInput {
+  title: string;
+  description?: string;
+  botIds: string[];
+  leadBotId?: string;
+}
+
+export interface UpdateGroupInput {
+  title?: string;
+  description?: string | null;
+  botIds?: string[];
+  leadBotId?: string | null;
+}
+
 export type BotLifecycleMutation = "update" | "delete";
 
 export type DirectBotSessionOwnership = "owned" | "foreign" | "conflict";
 export type DirectBotRuntimeBinding = Extract<BotRuntimeBinding, { scope: "bot-direct" }>;
+export type GroupMemberRuntimeBinding = Extract<BotRuntimeBinding, { scope: "group-member" }>;
 
 export function classifyDirectBotRuntimeBindingOwnership(
   binding: BotRuntimeBinding,
@@ -120,6 +138,90 @@ export function sessionOwnedByDirectBot(
   ownedBindingIds: ReadonlySet<string>,
 ): boolean {
   return classifyDirectBotSessionOwnership(session, botId, ownedBindingIds) === "owned";
+}
+
+/**
+ * Group-member mirror of the direct classifiers. Ownership is exact triple
+ * (conversationId × topicId × botId) plus the deterministic scoped binding
+ * id — never a display name, alias prefix, or Bot-count heuristic. A binding
+ * or session that claims group membership for the wrong triple is a conflict,
+ * not silently foreign: teardown and dispatch must fail closed on it.
+ */
+export function classifyGroupMemberBindingOwnership(
+  binding: BotRuntimeBinding,
+  botId: string,
+  conversationId: string,
+  topicId: string,
+): DirectBotSessionOwnership {
+  if (binding.scope !== "group-member") {
+    return "foreign";
+  }
+  if (binding.conversationId !== conversationId || binding.topicId !== topicId) {
+    return "foreign";
+  }
+  if (binding.botId !== botId) {
+    return "conflict";
+  }
+  return binding.id === createScopedGroupMemberBindingId(conversationId, topicId, botId)
+    ? "owned"
+    : "conflict";
+}
+
+export function classifyGroupMemberSessionOwnership(
+  session: Pick<LogicalSession, "owner">,
+  botId: string,
+  bindingId: string,
+  conversationId: string,
+  topicId: string,
+): DirectBotSessionOwnership {
+  const owner = session.owner;
+  if (owner?.kind !== "group-member") {
+    return "foreign";
+  }
+  if (owner.bindingId !== bindingId) {
+    return "foreign";
+  }
+  if (owner.botId !== undefined && owner.botId !== botId) {
+    return "conflict";
+  }
+  if (owner.conversationId !== undefined && owner.conversationId !== conversationId) {
+    return "conflict";
+  }
+  if (owner.topicId !== undefined && owner.topicId !== topicId) {
+    return "conflict";
+  }
+  return "owned";
+}
+
+/** A persisted member binding may drive physical teardown only when its
+ *  cross-record link resolves to exactly the same owned LogicalSession. */
+export function classifyGroupMemberBindingSessionLink(
+  binding: GroupMemberRuntimeBinding,
+  session: LogicalSession,
+  bindingId: string,
+  botId: string,
+  conversationId: string,
+  topicId: string,
+): "owned" | "conflict" {
+  const ownership = classifyGroupMemberSessionOwnership(
+    session,
+    botId,
+    bindingId,
+    conversationId,
+    topicId,
+  );
+  const owner = session.owner;
+  if (
+    ownership !== "owned"
+    || session.alias !== binding.sessionAlias
+    || session.logical_session_id !== binding.logicalSessionId
+    || owner?.kind !== "group-member"
+    || owner.bindingId !== binding.id
+    || (owner.topicId !== undefined && owner.topicId !== binding.topicId)
+  ) {
+    return "conflict";
+  }
+  return "owned";
 }
 
 /** A persisted binding may drive physical teardown only when its cross-record
@@ -331,6 +433,149 @@ export class BotService {
       });
     });
   }
+  /**
+   * PR6 Group metadata. A Group is a durable membership record only: no
+   * execution, routing, or member sessions happen here. Membership stores Bot
+   * ids that must exist at write time; enabled-ness is NOT checked here (a
+   * temporary disable must not destroy Group shape, and a write-time enabled
+   * check would be TOCTOU anyway). PR7 explicit routing refuses disabled or
+   * missing members at dispatch time. The lead, when set, must belong to
+   * membership. Group identity is a random opaque id — never derived from
+   * title or member names.
+   */
+  async createGroup(input: CreateGroupInput): Promise<ConversationRecord> {
+    this.assertOpen();
+    return await this.mutate(async () => {
+      this.assertOpen();
+      const membership = this.requireGroupMembership(input.botIds);
+      const leadBotId = this.requireGroupLead(input.leadBotId, membership);
+      const title = this.requireGroupTitle(input.title);
+      const description = this.optionalGroupDescription(input.description);
+      const timestamp = this.now().toISOString();
+      const id = createConversationId();
+      const record: ConversationRecord = {
+        id,
+        kind: "group",
+        title,
+        ...(description ? { description } : {}),
+        botIds: membership,
+        ...(leadBotId ? { leadBotId } : {}),
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      };
+      const next = structuredClone(this.state);
+      next.conversations[id] = record;
+      await this.persist(next);
+      return record;
+    });
+  }
+
+  async updateGroup(id: string, patch: UpdateGroupInput): Promise<ConversationRecord> {
+    this.assertOpen();
+    return await this.mutate(async () => {
+      this.assertOpen();
+      const existing = this.getGroup(id);
+      const membership = patch.botIds !== undefined ? this.requireGroupMembership(patch.botIds) : existing.botIds;
+      const leadBotId = patch.leadBotId !== undefined
+        ? this.requireGroupLead(patch.leadBotId, membership)
+        : this.requireGroupLead(existing.leadBotId, membership);
+      const title = patch.title !== undefined ? this.requireGroupTitle(patch.title) : existing.title;
+      const description = patch.description !== undefined
+        ? this.optionalGroupDescription(patch.description)
+        : existing.description;
+      const next: ConversationRecord = {
+        ...existing,
+        title,
+        ...(description ? { description } : {}),
+        botIds: membership,
+        ...(leadBotId ? { leadBotId } : {}),
+        updatedAt: this.now().toISOString(),
+      };
+      if (!leadBotId) {
+        delete next.leadBotId;
+      }
+      if (!description) {
+        delete next.description;
+      }
+      const nextState = structuredClone(this.state);
+      nextState.conversations[id] = next;
+      await this.persist(nextState);
+      return next;
+    });
+  }
+
+  async deleteGroup(id: string): Promise<void> {
+    this.assertOpen();
+    return await this.mutate(async () => {
+      this.assertOpen();
+      this.getGroup(id);
+      const next = structuredClone(this.state);
+      delete next.conversations[id];
+      await this.persist(next);
+    });
+  }
+
+  getGroup(id: string): ConversationRecord {
+    const record = this.state.conversations[id];
+    if (!record || record.kind !== "group") {
+      throw new BotError("group_not_found", `group "${id}" does not exist`);
+    }
+    return record;
+  }
+
+  private requireGroupTitle(title: string): string {
+    if (typeof title !== "string" || !title.trim()) {
+      throw new BotError("title_required", "group title must be a non-empty string");
+    }
+    const trimmed = title.trim();
+    if (trimmed.length > NAME_MAX) {
+      throw new BotError("title_too_long", `group title must be at most ${NAME_MAX} characters`);
+    }
+    return trimmed;
+  }
+
+  private optionalGroupDescription(description: string | null | undefined): string | undefined {
+    if (description === undefined || description === null) {
+      return undefined;
+    }
+    if (typeof description !== "string") {
+      throw new BotError("description_required", "group description must be a string");
+    }
+    const trimmed = description.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    if (trimmed.length > TEXT_MAX) {
+      throw new BotError("description_too_long", `group description must be at most ${TEXT_MAX} characters`);
+    }
+    return trimmed;
+  }
+
+  private requireGroupMembership(botIds: string[]): string[] {
+    if (!Array.isArray(botIds) || botIds.length < 2) {
+      throw new BotError("group_membership_min", "group requires at least two member Bots");
+    }
+    if (new Set(botIds).size !== botIds.length) {
+      throw new BotError("group_membership_duplicate", "group member Bots must be unique");
+    }
+    for (const botId of botIds) {
+      if (typeof botId !== "string" || !botId) {
+        throw new BotError("bot_not_found", "group member Bot id must be a non-empty string");
+      }
+      this.getBot(botId);
+    }
+    return [...botIds];
+  }
+
+  private requireGroupLead(leadBotId: string | null | undefined, membership: string[]): string | undefined {
+    if (leadBotId === undefined || leadBotId === null) {
+      return undefined;
+    }
+    if (typeof leadBotId !== "string" || !membership.includes(leadBotId)) {
+      throw new BotError("group_lead_not_member", "group lead must belong to group membership");
+    }
+    return leadBotId;
+  }
 
   private nextId(): string {
     const id = this.createId();
@@ -352,6 +597,14 @@ export class BotService {
       throw new BotError("workspace_not_registered", `workspace "${input.workspace}" is not registered`);
     }
     return { name, agent: input.agent, workspace: input.workspace };
+  }
+  /** PR6 seam: Group Topics resolve their ExecutionTarget workspace against
+   *  the same registry Bot identity uses. No Bot is involved; the caller
+   *  owns membership validation. */
+  assertWorkspaceRegistered(workspace: string): void {
+    if (typeof workspace !== "string" || !this.config.workspaces[workspace]) {
+      throw new BotError("workspace_not_registered", `workspace "${workspace}" is not registered`);
+    }
   }
 
   private requirePatchString(value: string | undefined, fallback: string, field: "name" | "agent" | "workspace"): string {
