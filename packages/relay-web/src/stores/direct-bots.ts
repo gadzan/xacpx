@@ -720,6 +720,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // older rows. Iteration order is newest-first, so seed the merge with
       // the fresh page first, then overlay already-loaded rows (loaded rows
       // win on id conflict — same id with locally-merged stream state).
+      const prevNewestBeforeMerge = newestSeq.value;
       const merged: Record<string, ConversationMessageDto> = {};
       for (const m of res.messages) {
         merged[m.id] = m;
@@ -738,8 +739,55 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         hasMoreBefore.value = res.hasMoreBefore;
       }
       newestSeq.value = res.newestSeq ?? newestSeq.value;
-      hasMoreAfter.value = res.hasMoreAfter;
-
+      // Gap fill: when the newest tail starts strictly after the previously
+      // loaded newest row (e.g. >50 durable messages arrived while offline),
+      // the merge above leaves an interior seq hole (1..50 + 71..120). Page
+      // forward from the previous newest until the tail is reached so the
+      // merged window stays contiguous; Load Older alone cannot repair it
+      // because the hole is in the middle, not at either edge.
+      const tailOldest = res.messages.length > 0
+        ? Math.min(...res.messages.map((m) => m.seq))
+        : undefined;
+      if (
+        tailOldest !== undefined &&
+        prevNewestBeforeMerge !== undefined &&
+        tailOldest > prevNewestBeforeMerge + 1
+      ) {
+        let cursor = prevNewestBeforeMerge;
+        // Bounded loop: each iteration advances the cursor; break on empty
+        // pages, view switches, or newer reloads so a wedged server cannot
+        // spin this forever.
+        for (let guard = 0; guard < 8; guard += 1) {
+          const gapRes = unwrapRpc(
+            await api.rpc<ConversationHistoryResponseDto>(iId, MSG.conversationHistory, {
+              conversationId: cId,
+              topicId: tId,
+              afterSeq: cursor,
+              limit: 50,
+            }),
+          );
+          if (
+            instanceId.value !== iId ||
+            activeConversationId.value !== cId ||
+            activeTopicId.value !== tId ||
+            requestSequence !== historyRequestSequence
+          ) {
+            return;
+          }
+          if (gapRes.messages.length === 0) break;
+          for (const m of gapRes.messages) {
+            merged[m.id] = m;
+          }
+          messages.value = Object.values(merged).sort((a, b) => a.seq - b.seq);
+          touchTranscript();
+          const pageNewest = Math.max(...gapRes.messages.map((m) => m.seq));
+          cursor = Math.max(cursor, pageNewest);
+          if (res.newestSeq !== undefined && cursor >= res.newestSeq) break;
+          if (tailOldest !== undefined && cursor >= tailOldest - 1) break;
+          if (gapRes.messages.length < 50 && gapRes.newestSeq !== undefined && cursor >= gapRes.newestSeq) break;
+        }
+        newestSeq.value = res.newestSeq ?? newestSeq.value;
+      }
       // If any bot message in history corresponds to an active run, converge liveTurn
       if (activeRun.value) {
         const canonicalBotMsg = messages.value.find(
@@ -994,7 +1042,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           activeConversationId.value === convId &&
           activeTopicId.value === topId
         ) {
-          historyError.value = err instanceof Error ? err.message : String(err);
+          historyError.value = "discoveryFailed";
+          historyErrorDetail.value = err instanceof Error ? err.message : String(err);
         }
       } finally {
         loadingHistory.value = false;
@@ -1107,9 +1156,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     ownershipUncertain.value = false;
     promptInFlight.value = false;
     promptError.value = null;
+    promptErrorDetail.value = null;
     currentDraftRequestId.value = null;
     lastPromptText.value = "";
     generalError.value = null;
+    generalErrorCode.value = null;
     try {
       const bots = await loadBots(targetInstanceId);
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedBotId.value !== botId) {
@@ -1172,9 +1223,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     ownershipUncertain.value = false;
     promptInFlight.value = false;
     promptError.value = null;
+    promptErrorDetail.value = null;
     currentDraftRequestId.value = null;
     lastPromptText.value = "";
     generalError.value = null;
+    generalErrorCode.value = null;
     if (instanceId.value && activeConversationId.value) {
       await loadHistory(instanceId.value, activeConversationId.value, topicId);
       if (generation !== currentSelectionGeneration || activeTopicId.value !== topicId) {
@@ -1209,9 +1262,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     ownershipUncertain.value = false;
     promptInFlight.value = false;
     promptError.value = null;
+    promptErrorDetail.value = null;
     currentDraftRequestId.value = null;
     lastPromptText.value = "";
     generalError.value = null;
+    generalErrorCode.value = null;
     persistBotSelection(null, null);
   }
   function preparePromptRequestId(text: string): string {
@@ -1233,11 +1288,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // could queue behind an unseen Run and take wrong ownership of it.
     if (!topicReady.value) {
       promptError.value = "topicRecovering";
+      promptErrorDetail.value = null;
       return;
     }
     const bot = currentBot.value;
     if (bot && !bot.enabled) {
       promptError.value = "botDisabled";
+      promptErrorDetail.value = null;
       return;
     }
     // Fence the slow accept RPC against a recovered durable Run: if recovery
@@ -1245,6 +1302,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // send a second prompt into the same Topic.
     if (isRunActive.value) {
       promptError.value = "runInProgress";
+      promptErrorDetail.value = null;
       return;
     }
     const targetInstId = instanceId.value;
@@ -1262,6 +1320,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const reqId = preparePromptRequestId(trimmed);
     promptInFlight.value = true;
     promptError.value = null;
+    promptErrorDetail.value = null;
 
     try {
       const res = unwrapRpc(
@@ -1721,9 +1780,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // Handle server WebSocket events
   function applyEvent(event: WebServerEvent): void {
     if (event.kind === "instance-status") {
-      if (event.instanceId === instanceId.value && !event.online) {
-        generalErrorCode.value = "instanceOffline";
-        generalError.value = null;
+      if (event.instanceId === instanceId.value) {
+        if (!event.online) {
+          generalErrorCode.value = "instanceOffline";
+          generalError.value = null;
+        } else if (generalErrorCode.value === "instanceOffline") {
+          generalErrorCode.value = null;
+        }
       }
       return;
     }
@@ -2027,6 +2090,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             // row does not prove the hidden runtime materialized: execution
             // evidence below converges hasRuntime.
             promptError.value = null;
+            promptErrorDetail.value = null;
             currentDraftRequestId.value = null;
             lastPromptText.value = "";
           }
@@ -2078,6 +2142,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
               markBotHasRuntime(instanceId.value, selectedBotId.value);
             }
             promptError.value = null;
+            promptErrorDetail.value = null;
             currentDraftRequestId.value = null;
             lastPromptText.value = "";
           } else {
@@ -2167,6 +2232,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             ...planByRunId.value,
             [corr.runId]: e.entries,
           };
+          // PlanPanel lives in the same scroll container: a first or growing
+          // plan extends page height, so bump the presentation revision even
+          // when no text/tool token arrives on the same frame.
+          bumpStream();
         }
       } else if (e.type === "turn-finished") {
         liveTurn.value.status = "working";

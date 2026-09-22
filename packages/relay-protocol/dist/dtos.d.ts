@@ -228,7 +228,13 @@ export interface QueueItemDto {
      *  (snapshot-first item). Additive and backward compatible. */
     kind?: "interrupt";
 }
-/** Exact join from a live turn event onto ConversationRun / MemberTurn. */
+/**
+ * Exact join from a live turn event onto ConversationRun / MemberTurn.
+ *
+ * When this field is present on a Control event, `sessionAlias` is legacy
+ * transport plumbing for old clients. Product liveness, ownership, and
+ * routing use these ids — never the hidden session alias.
+ */
 export interface ConversationTurnCorrelationDto {
     conversationId: string;
     topicId: string;
@@ -247,6 +253,18 @@ export interface BotSummaryDto {
     effort?: string;
     enabled: boolean;
     updatedAt: string;
+    /** Monotonic per-Bot revision, bumped on every update. Lets the Web order
+     *  summary snapshots against cached details: a summary with a newer
+     *  revision than the cached detail proves the detail is stale (including
+     *  instructions-only updates that change no other summary field).
+     *  Optional to stay wire-compatible with older connectors that predate
+     *  it; the Web treats a missing revision as unknown (field comparison
+     *  still applies). */
+    profileRevision?: number;
+    /** True once the Bot materialized an actual direct runtime binding/session.
+     *  Identity lock follows this only; a persisted Direct Conversation alone
+     *  keeps delete fail-closed via bot_in_use but does not lock identity. */
+    hasRuntime?: boolean;
 }
 export interface BotDetailDto extends BotSummaryDto {
     instructions?: string;
@@ -348,6 +366,14 @@ export interface ConversationPromptResponseDto {
     run: ConversationRunDto;
     message: ConversationMessageDto;
     memberTurn: MemberTurnSummaryDto;
+    /** Topic-wide authoritative owner as of accept (executing, else oldest
+     *  queued). Lets the caller adopt the true owner without a second
+     *  runs.list round trip: an HTTP accept proves only the accepted Run is
+     *  durable, never that it owns the Topic. Optional for wire compat with
+     *  older connectors; when absent the caller must treat the accepted Run
+     *  as unconfirmed and re-run discovery before cancelling it. */
+    activeRunId?: string;
+    activeRun?: ConversationRunDto;
 }
 export interface ConversationHistoryResponseDto {
     conversationId: string;
@@ -357,6 +383,13 @@ export interface ConversationHistoryResponseDto {
     newestSeq?: number;
     hasMoreBefore: boolean;
     hasMoreAfter: boolean;
+}
+export interface ConversationRunsListDto {
+    conversationId: string;
+    topicId: string;
+    runs: ConversationRunDto[];
+    activeRunId?: string;
+    activeRun?: ConversationRunDto;
 }
 /** Wire mirror of src/control ControlEvent (tool-event carries the NORMALIZED step). */
 export type ControlEventDto = {

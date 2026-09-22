@@ -202,17 +202,34 @@ async function submit(): Promise<void> {
 
   try {
     if (isEditing.value && props.bot) {
-      const updated = await directBotsStore.updateBot(props.instanceId, props.bot.id, {
-        name: trimmedName,
-        avatar: avatar.value.trim() || null,
-        role: role.value.trim() || null,
-        instructions: instructions.value.trim() || null,
-        agent: agent.value,
-        workspace: workspace.value,
-        model: model.value.trim() || null,
-        effort: effort.value.trim() || null,
-        enabled: enabled.value,
-      });
+      // Dirty-only patch: the dialog may have hydrated at rev1 while a remote
+      // client moved the Bot to rev2 (instructions/model changed elsewhere).
+      // Sending every field would overwrite the remote rev2 rows with stale
+      // rev1 values the user never touched. Only touched fields go out; the
+      // backend merges the patch and bumps the revision.
+      const patch: {
+        name?: string;
+        avatar?: string | null;
+        role?: string | null;
+        instructions?: string | null;
+        agent?: string;
+        workspace?: string;
+        model?: string | null;
+        effort?: string | null;
+        enabled?: boolean | null;
+        // Name is always sent: it is required, identity-visible, and the
+        // validation above already gates on it. Everything else is
+        // dirty-gated so untouched rev1 rows cannot clobber a remote rev2.
+      } = { name: trimmedName };
+      if (avatarDirty.value) patch.avatar = avatar.value.trim() || null;
+      if (roleDirty.value) patch.role = role.value.trim() || null;
+      if (instructionsDirty.value) patch.instructions = instructions.value.trim() || null;
+      if (agentDirty.value) patch.agent = agent.value;
+      if (workspaceDirty.value) patch.workspace = workspace.value;
+      if (modelDirty.value) patch.model = model.value.trim() || null;
+      if (effortDirty.value) patch.effort = effort.value.trim() || null;
+      if (enabledDirty.value) patch.enabled = enabled.value;
+      const updated = await directBotsStore.updateBot(props.instanceId, props.bot.id, patch);
       emit("saved", updated);
       emit("close");
     } else {

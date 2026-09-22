@@ -163,6 +163,7 @@ var MSG = {
   conversationPrompt: "control.conversation.prompt",
   conversationHistory: "control.conversation.history",
   runsGet: "control.runs.get",
+  runsList: "control.runs.list",
   runsCancel: "control.runs.cancel"
 };
 function errorPayload(code, message) {
@@ -618,7 +619,7 @@ function validInstanceStateSync(p) {
     if (typeof f !== "object" || f === null)
       return false;
     const finished = f;
-    return typeof finished.sessionAlias === "string" && typeof finished.ok === "boolean" && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && optStr(finished.queueItemId) && optStr(finished.recoveryId) && optStr(finished.promptRequestId) && validScheduledOrigin(finished.scheduled) && (finished.cancelled === undefined || typeof finished.cancelled === "boolean") && (finished.truncated === undefined || typeof finished.truncated === "boolean") && (finished.startedAt === undefined || finiteNonNegative(finished.startedAt)) && optNonNegInt(finished.startedAfterSeq);
+    return typeof finished.sessionAlias === "string" && typeof finished.ok === "boolean" && optStr(finished.errorMessage) && optStr(finished.text) && optStr(finished.prompt) && optStr(finished.queueItemId) && optStr(finished.recoveryId) && optStr(finished.promptRequestId) && validScheduledOrigin(finished.scheduled) && (finished.cancelled === undefined || typeof finished.cancelled === "boolean") && (finished.truncated === undefined || typeof finished.truncated === "boolean") && (finished.startedAt === undefined || finiteNonNegative(finished.startedAt)) && optNonNegInt(finished.startedAfterSeq) && validConversationCorrelation(finished.conversation);
   });
 }
 function validNotice(n) {
@@ -1001,11 +1002,21 @@ var validateConversationPrompt = (p) => {
 };
 var validateConversationHistory = (p) => {
   const o = fields(p);
-  return o && isStr(o.conversationId) && isStr(o.topicId) && optNum(o.afterSeq) && optNum(o.beforeSeq) && optNum(o.limit) ? o : null;
+  if (!o)
+    return null;
+  const directionOk = o.direction === undefined || o.direction === "oldest-first" || o.direction === "newest-first";
+  const cursorAndDirection = directionOk && o.direction !== undefined && (o.afterSeq !== undefined || o.beforeSeq !== undefined);
+  if (cursorAndDirection)
+    return null;
+  return isStr(o.conversationId) && isStr(o.topicId) && optNum(o.afterSeq) && optNum(o.beforeSeq) && optNum(o.limit) && directionOk ? o : null;
 };
 var validateRunsGet = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? o : null;
+};
+var validateRunsList = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.topicId) && optNum(o.limit) ? o : null;
 };
 var validateRunsCancel = (p) => {
   const o = fields(p);
@@ -1076,6 +1087,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationPrompt]: validateConversationPrompt,
   [MSG.conversationHistory]: validateConversationHistory,
   [MSG.runsGet]: validateRunsGet,
+  [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel
 };
 function parseControlPayload(type, payload) {
@@ -1149,62 +1161,62 @@ function parseTerminalEventPayload(type, payload) {
   return validate(payload);
 }
 export {
-  webEventEnvelope,
-  webClientEnvelope,
-  validInstanceStateSync,
-  validControlEvent,
-  parseWebServerEvent,
-  parseWebClientMessage,
-  parseTerminalEventPayload,
-  parseControlPayload,
-  parseCanonicalBase64,
-  optStr,
-  optNum,
-  optNonNegInt,
-  optBool,
-  normalizeCapabilities,
-  maxBase64EncodedLength,
-  isStr,
-  isObj,
-  isNonNegInt,
-  isIntInRange,
-  isErrorPayload,
-  isBoundedStr,
-  errorPayload,
-  encodeEnvelope,
-  decodeEnvelope,
-  WEB_EVENT_TYPE,
-  WEB_CLIENT_TYPE,
-  TERMINAL_RPC_TIMEOUT_MS,
-  TERMINAL_REBASE_CHUNK_BYTES,
-  TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
-  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
-  TERMINAL_EVENT_PAYLOAD_VALIDATORS,
-  TERMINAL_ERROR_CODES,
-  STATE_SYNC_TEXT_CAP,
-  STATE_SYNC_PARTS_CAP,
-  RELAY_PROTOCOL_VERSION,
-  RELAY_CAPABILITIES,
-  RECOVERY_RETENTION_MS,
-  REASONING_CAP,
-  MSG,
-  MIN_TERMINAL_ROWS,
-  MIN_TERMINAL_COLS,
-  MAX_WEB_INSTANCE_ID_LENGTH,
-  MAX_TOOL_STEPS,
-  MAX_TERMINAL_VIEWER_ID_LENGTH,
-  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
-  MAX_TERMINAL_ROWS,
-  MAX_TERMINAL_REQUEST_ID_LENGTH,
-  MAX_TERMINAL_REBASE_TOTAL_BYTES,
-  MAX_TERMINAL_INPUT_BYTES,
-  MAX_TERMINAL_ID_LENGTH,
-  MAX_TERMINAL_GENERATION_LENGTH,
-  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
-  MAX_TERMINAL_COLS,
-  MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
-  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
-  MAX_CAPABILITY_LENGTH,
+  CONTROL_PAYLOAD_VALIDATORS,
   MAX_CAPABILITIES,
-  CONTROL_PAYLOAD_VALIDATORS
+  MAX_CAPABILITY_LENGTH,
+  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
+  MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
+  MAX_TERMINAL_GENERATION_LENGTH,
+  MAX_TERMINAL_ID_LENGTH,
+  MAX_TERMINAL_INPUT_BYTES,
+  MAX_TERMINAL_REBASE_TOTAL_BYTES,
+  MAX_TERMINAL_REQUEST_ID_LENGTH,
+  MAX_TERMINAL_ROWS,
+  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
+  MAX_TERMINAL_VIEWER_ID_LENGTH,
+  MAX_TOOL_STEPS,
+  MAX_WEB_INSTANCE_ID_LENGTH,
+  MIN_TERMINAL_COLS,
+  MIN_TERMINAL_ROWS,
+  MSG,
+  REASONING_CAP,
+  RECOVERY_RETENTION_MS,
+  RELAY_CAPABILITIES,
+  RELAY_PROTOCOL_VERSION,
+  STATE_SYNC_PARTS_CAP,
+  STATE_SYNC_TEXT_CAP,
+  TERMINAL_ERROR_CODES,
+  TERMINAL_EVENT_PAYLOAD_VALIDATORS,
+  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
+  TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
+  TERMINAL_REBASE_CHUNK_BYTES,
+  TERMINAL_RPC_TIMEOUT_MS,
+  WEB_CLIENT_TYPE,
+  WEB_EVENT_TYPE,
+  decodeEnvelope,
+  encodeEnvelope,
+  errorPayload,
+  isBoundedStr,
+  isErrorPayload,
+  isIntInRange,
+  isNonNegInt,
+  isObj,
+  isStr,
+  maxBase64EncodedLength,
+  normalizeCapabilities,
+  optBool,
+  optNonNegInt,
+  optNum,
+  optStr,
+  parseCanonicalBase64,
+  parseControlPayload,
+  parseTerminalEventPayload,
+  parseWebClientMessage,
+  parseWebServerEvent,
+  validControlEvent,
+  validInstanceStateSync,
+  webClientEnvelope,
+  webEventEnvelope
 };

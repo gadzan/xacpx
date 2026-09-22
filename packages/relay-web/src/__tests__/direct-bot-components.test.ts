@@ -8,6 +8,8 @@ import type {
   ConversationRunDto,
   MemberTurnSummaryDto,
   TopicSummaryDto,
+  ToolStepDto,
+  TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
 import { useInstancesStore } from "../stores/instances";
@@ -288,6 +290,72 @@ describe("Direct Bot Components", () => {
       }));
       expect(wrapper.emitted("saved")).toBeTruthy();
     });
+    it("sends only touched fields on edit so a remote rev2 is not clobbered", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+        } as never,
+      ];
+      vi.spyOn(instances, "loadFormOptions").mockResolvedValue(undefined);
+      const directBots = useDirectBotsStore();
+      // Hydrate at rev1 with stale instructions; a remote client then moves
+      // the Bot to rev2 (new instructions + model) via bots-changed.
+      vi.spyOn(directBots, "loadBotDetail").mockResolvedValue({
+        id: "bot_1", name: "Existing Bot", agent: "codex", workspace: "repo",
+        instructions: "rev1 instructions", model: "rev1-model",
+        enabled: true, profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      const updateSpy = vi.spyOn(directBots, "updateBot").mockResolvedValue({
+        id: "bot_1",
+        name: "Renamed Bot",
+        agent: "codex",
+        workspace: "repo",
+        enabled: true,
+        profileRevision: 3,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      const existingBot: BotSummaryDto = {
+        id: "bot_1",
+        name: "Existing Bot",
+        agent: "codex",
+        workspace: "repo",
+        enabled: true,
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(BotDialog, {
+        props: {
+          instanceId: "i1",
+          instanceName: "Local",
+          bot: existingBot,
+        },
+        global: {
+          plugins: [i18n],
+        },
+      });
+      await flushPromises();
+      await flushPromises();
+      // Local user touches only the name; remote rev2 rows must not go out.
+      await wrapper.find("#bot-name").setValue("Renamed Bot");
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(updateSpy).toHaveBeenCalledTimes(1);
+      const patch = updateSpy.mock.calls[0]?.[2] as Record<string, unknown>;
+      expect(patch.name).toBe("Renamed Bot");
+      expect(patch).not.toHaveProperty("instructions");
+      expect(patch).not.toHaveProperty("model");
+      expect(patch).not.toHaveProperty("effort");
+      expect(patch).not.toHaveProperty("agent");
+      expect(patch).not.toHaveProperty("workspace");
+    });
 
     it("locks agent/workspace once authoritative detail resolves hasRuntime=true", async () => {
       const instances = useInstancesStore();
@@ -535,15 +603,15 @@ describe("Direct Bot Components", () => {
       await flushPromises();
       await flushPromises();
 
-      // Hydrated: Save is enabled and preserves the backend instructions.
+      // Hydrated: Save is enabled and shows the backend instructions.
       expect((saveBtn!.element as HTMLButtonElement).disabled).toBe(false);
       expect((wrapper.find("#bot-instructions").element as HTMLTextAreaElement).value).toBe("Review races");
       await wrapper.find("form").trigger("submit.prevent");
       await flushPromises();
-      expect(updateSpy).toHaveBeenCalledWith("i1", "bot_1", expect.objectContaining({
-        name: "Renamed",
-        instructions: "Review races",
-      }));
+      // Dirty-only submit: only the touched name goes out. The hydrated
+      // instructions stay visible in the form but are NOT resent, so a
+      // concurrent remote edit cannot be clobbered by this save.
+      expect(updateSpy).toHaveBeenCalledWith("i1", "bot_1", { name: "Renamed" });
     });
 
     it("hydrates every untouched field from the authoritative rev2 detail", async () => {
@@ -595,12 +663,10 @@ describe("Direct Bot Components", () => {
       await wrapper.find("#bot-name").setValue("Renamed");
       await wrapper.find("form").trigger("submit.prevent");
       await flushPromises();
-      // Save keeps rev2 model/enabled instead of rolling back to rev1.
-      expect(updateSpy).toHaveBeenCalledWith("i1", "bot_1", expect.objectContaining({
-        name: "Renamed",
-        model: "new",
-        enabled: false,
-      }));
+      // Dirty-only submit: rev2 model/enabled stay displayed but are NOT
+      // resent — only the touched name goes out, so this save cannot roll
+      // the remote rev2 rows back to the open-time rev1 values.
+      expect(updateSpy).toHaveBeenCalledWith("i1", "bot_1", { name: "Renamed" });
     });
 
     it("keeps a touched-then-reverted model when the authoritative detail resolves", async () => {
@@ -1049,6 +1115,7 @@ describe("Direct Bot Components", () => {
             parts: [{ type: "text", text: "Analyzing code..." }],
             status: "streaming",
             startedAt: Date.now(),
+            revision: 1,
           },
           activeRun,
           activeMemberTurn: null,
@@ -1174,12 +1241,12 @@ describe("Direct Bot Components", () => {
     });
     it("follows in-place text growth inside one part while at bottom", async () => {
       const textPart = { type: "text", text: "Hello" } as { type: "text"; text: string };
-      const liveTurn = {
+      const liveTurn: { parts: { type: "text"; text: string }[]; status: "streaming"; startedAt: number; revision: number } = {
         parts: [textPart],
         status: "streaming",
         startedAt: Date.now(),
         revision: 1,
-      } as never;
+      };
       const activeRun = {
         id: "run_1", conversationId: "c1", topicId: "t1", requestMessageId: "m1",
         requestId: "r1", mode: "explicit", state: "running", profileRevision: 1,
@@ -1205,21 +1272,19 @@ describe("Direct Bot Components", () => {
       // last.text), so parts.length stays 1 while the transcript grows; the
       // store bumps revision, which is what the follower watches.
       textPart.text = "Hello world, streaming more tokens";
-      await wrapper.setProps({ liveTurn: { ...liveTurn, parts: [...liveTurn.parts], revision: 2 } });
+      await wrapper.setProps({ liveTurn: { parts: [textPart], status: "streaming", startedAt: liveTurn.startedAt, revision: 2 } });
       await flushPromises();
       expect(scrollCalls).toBeGreaterThan(0);
     });
     it("follows in-place tool updates with an unchanged toolCallId while at bottom", async () => {
-      const toolPart = {
-        type: "tool",
-        step: { toolCallId: "call_1", status: "running" },
-      } as unknown as { type: "tool"; step: { toolCallId: string; status: string; output?: string } };
-      const liveTurn = {
+      const toolStep = { toolCallId: "call_1", toolName: "bash", kind: "command", status: "running", title: "ls" } as unknown as ToolStepDto;
+      const toolPart = { type: "tool", step: toolStep } as TurnPartDto;
+      const liveTurn: { parts: TurnPartDto[]; status: "streaming"; startedAt: number; revision: number } = {
         parts: [toolPart],
         status: "streaming",
         startedAt: Date.now(),
         revision: 1,
-      } as never;
+      };
       const activeRun = {
         id: "run_1", conversationId: "c1", topicId: "t1", requestMessageId: "m1",
         requestId: "r1", mode: "explicit", state: "running", profileRevision: 1,
@@ -1241,11 +1306,10 @@ describe("Direct Bot Components", () => {
       let scrollCalls = 0;
       const recordScroll: typeof scrollerEl.scrollTo = () => { scrollCalls += 1; };
       scrollerEl.scrollTo = recordScroll;
-      // Same toolCallId, new status/output (store upsertTool replaces the row):
+      // Same toolCallId, new status (store upsertTool replaces the row):
       // the old toolCallId.length heuristic never fired; revision does.
-      toolPart.step.status = "success";
-      toolPart.step.output = "long output that extends the transcript";
-      await wrapper.setProps({ liveTurn: { ...liveTurn, parts: [...liveTurn.parts], revision: 2 } });
+      toolStep.status = "success";
+      await wrapper.setProps({ liveTurn: { parts: [toolPart], status: "streaming", startedAt: liveTurn.startedAt, revision: 2 } });
       await flushPromises();
       expect(scrollCalls).toBeGreaterThan(0);
     });

@@ -2871,7 +2871,7 @@ describe("useDirectBotsStore", () => {
       store.botsByInstance["inst_1"] = [
         { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
       ];
-      const runBQueued = {
+      const runBQueued: { id: string; conversationId: string; topicId: string; requestMessageId: string; requestId: string; mode: "explicit"; state: "queued"; profileRevision: number; createdAt: string } = {
         id: "run_B",
         conversationId: "conv_1",
         topicId: "top_1",
@@ -4036,6 +4036,9 @@ describe("useDirectBotsStore", () => {
       });
 
       expect(store.planEntries).toHaveLength(1);
+      // PlanPanel shares the scroll container: the plan must bump the stream
+      // revision so bottom-follow fires even with no text/tool token.
+      expect(store.liveTurn?.revision ?? 0).toBeGreaterThan(0);
 
       // Prompt RPC resolves
       resolvePrompt({
@@ -4632,7 +4635,7 @@ describe("useDirectBotsStore", () => {
         profileRevision: 1,
         createdAt: "now",
       };
-      store.liveTurn = { parts: [], status: "working", startedAt: Date.now() };
+      store.liveTurn = { parts: [], status: "working", startedAt: Date.now(), revision: 0 };
 
       mockRpc.mockImplementation((instId: string, type: string) => {
         if (type === "control.conversations.list") {
@@ -5219,6 +5222,144 @@ describe("useDirectBotsStore", () => {
       expect(store.liveTurn).toBeNull();
       expect(store.messages).toHaveLength(1);
       expect(store.messages[0]?.content).toBe("Finished answer");
+    });
+    it("fills the interior seq gap when reconnect lands more than a page of new messages", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      // Previously loaded window: contiguous seq 1..50.
+      const loaded = Array.from({ length: 50 }, (_, i) => ({
+        id: `msg_${i + 1}`,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        seq: i + 1,
+        role: i % 2 === 0 ? "human" : "bot",
+        content: `m${i + 1}`,
+        createdAt: "now",
+      }));
+      store.messages = loaded as never;
+      store.oldestSeq = 1;
+      store.newestSeq = 50;
+      store.hasMoreBefore = false;
+      const tail = Array.from({ length: 50 }, (_, i) => ({
+        id: `msg_${71 + i}`,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        seq: 71 + i,
+        role: "human",
+        content: `m${71 + i}`,
+        createdAt: "now",
+      }));
+      const gap = Array.from({ length: 20 }, (_, i) => ({
+        id: `msg_${51 + i}`,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        seq: 51 + i,
+        role: "human",
+        content: `m${51 + i}`,
+        createdAt: "now",
+      }));
+      let historyCalls = 0;
+      mockRpc.mockImplementation((instId: string, type: string, payload?: unknown) => {
+        if (type === "control.bots.list") {
+          return Promise.resolve({ bots: store.botsByInstance["inst_1"] });
+        }
+        if (type === "control.bots.get") {
+          return Promise.resolve({ bot: { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, profileRevision: 1, createdAt: "now", updatedAt: "now" } });
+        }
+        if (type === "control.topics.list") {
+          return Promise.resolve({ topics: [{ id: "top_1", conversationId: "conv_1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" }] });
+        }
+        if (type === "control.conversation.history") {
+          historyCalls += 1;
+          const p = payload as { afterSeq?: number; beforeSeq?: number } | undefined;
+          if (p?.afterSeq !== undefined) {
+            // Gap page: everything after seq 50 up to the tail.
+            return Promise.resolve({
+              conversationId: "conv_1",
+              topicId: "top_1",
+              messages: gap,
+              oldestSeq: 51,
+              newestSeq: 70,
+              hasMoreBefore: true,
+              hasMoreAfter: true,
+            });
+          }
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: tail,
+            oldestSeq: 71,
+            newestSeq: 120,
+            hasMoreBefore: true,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_1", topicId: "top_1", runs: [] });
+        }
+        return Promise.resolve({});
+      });
+      await store.reconcileOnReconnect();
+      await flushPromises();
+      expect(store.messages.map((m) => m.seq)).toEqual(Array.from({ length: 120 }, (_, i) => i + 1));
+      expect(store.oldestSeq).toBe(1);
+      expect(store.newestSeq).toBe(120);
+      // Tail + one gap page: no unbounded paging.
+      expect(historyCalls).toBe(2);
+    });
+    it("clears a sticky offline banner on online event and on selection reset", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.applyEvent({ kind: "instance-status", instanceId: "inst_1", online: false } as never);
+      expect(store.generalErrorCode).toBe("instanceOffline");
+      // Online event for the current instance clears it without a click.
+      store.applyEvent({ kind: "instance-status", instanceId: "inst_1", online: true } as never);
+      expect(store.generalErrorCode).toBeNull();
+      // Offline again, then switching selection also clears it.
+      store.applyEvent({ kind: "instance-status", instanceId: "inst_1", online: false } as never);
+      expect(store.generalErrorCode).toBe("instanceOffline");
+      store.clearSelection();
+      expect(store.generalErrorCode).toBeNull();
+      expect(store.generalError).toBeNull();
+    });
+    it("does not leak a stale network detail into a later coded prompt error", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      // First send fails at transport: raw detail is kept for display.
+      mockRpc.mockRejectedValueOnce(new Error("Network timeout"));
+      await store.sendPrompt("Help me debug");
+      expect(store.promptErrorDetail).toBe("Network timeout");
+      // A later coded gate (run already in progress) must not show the stale
+      // network text.
+      store.activeRun = {
+        id: "run_1",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_1",
+        requestId: "req_1",
+        mode: "explicit",
+        state: "running",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      await store.sendPrompt("second while running");
+      expect(store.promptError).toBe("runInProgress");
+      expect(store.promptErrorDetail).toBeNull();
     });
   });
 });
