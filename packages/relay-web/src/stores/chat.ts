@@ -336,6 +336,24 @@ export const useChatStore = defineStore("chat", () => {
     return live.startedAt === snapshot.startedAt;
   }
 
+  /** True only for a Hub-persisted out row that represents this exact live turn.
+   *  Local optimistic/live-flushed rows have no id and must not suppress a later
+   *  authoritative finish. Durable slotAfterId + startedAt is preferred; legacy
+   *  rows without an anchor fall back to startedAt, matching snapshot identity. */
+  function hasAuthoritativeTurnRow(turn: LiveTurn): boolean {
+    return messages.value.some((message) => {
+      if (message.direction !== "out" || typeof message.id !== "number") return false;
+      if (
+        typeof turn.slotAfterId === "number"
+        && typeof message.slotAfterId === "number"
+      ) {
+        return message.slotAfterId === turn.slotAfterId
+          && message.startedAt === turn.startedAt;
+      }
+      return message.startedAt === turn.startedAt;
+    });
+  }
+
   function removePendingCancelRow(id: string, alias: string, k: string, pending: PendingCancel): void {
     const cancelledIndex = pending.optimisticRow
       ? messages.value.indexOf(pending.optimisticRow)
@@ -1001,17 +1019,24 @@ export const useChatStore = defineStore("chat", () => {
       // buffered turn (including late hidden deltas) before flushing the real status.
       // This converges immediately even if the follow-up history request fails.
       const pending = pendingCancels.get(k);
+      let terminalAlreadyInHistory = false;
       if (pending) {
         pendingCancels.delete(k);
         removePendingCancelRow(event.instanceId, e.sessionAlias, k, pending);
-        if (!liveTurns.value[k] && pending.turn) {
+        terminalAlreadyInHistory = selected
+          && pending.turn !== undefined
+          && hasAuthoritativeTurnRow(pending.turn);
+        if (!terminalAlreadyInHistory && !liveTurns.value[k] && pending.turn) {
           liveTurns.value[k] = pending.turn;
         }
       }
       // Mark finished so a late active-turns HTTP seed cannot resurrect the turn after
-      // this ordered event.
+      // this ordered event. If cancelled:false already converged authoritative history,
+      // do not synthesize the same terminal row a second time.
       finishedTurns.add(k);
-      flushTurn(event.instanceId, e.sessionAlias, status, e.errorMessage);
+      if (!terminalAlreadyInHistory) {
+        flushTurn(event.instanceId, e.sessionAlias, status, e.errorMessage);
+      }
       // Keep the immediate live flush for responsiveness, then converge on the
       // persisted rows. Starting this request invalidates any older history read,
       // so HTTP/WS arrival order cannot delete or permanently duplicate the final.
