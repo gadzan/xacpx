@@ -403,6 +403,7 @@ function validToolStep(s: unknown): boolean {
   if (c.durationMs !== undefined && !finiteNonNegative(c.durationMs)) return false;
   if (c.startedAt !== undefined && !finiteNonNegative(c.startedAt)) return false;
   if (!optStr(c.error)) return false;
+  if ((c as Record<string, unknown>).titleIsPath !== undefined && typeof (c as Record<string, unknown>).titleIsPath !== "boolean") return false;
   if (!optStr(c.terminalId)) return false;
   if (!optStr(c.agentMessageId)) return false;
   if (c.detail !== undefined) {

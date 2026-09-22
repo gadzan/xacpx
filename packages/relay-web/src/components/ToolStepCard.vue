@@ -4,7 +4,8 @@ import { useI18n } from "vue-i18n";
 import type { ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Loader2 } from "lucide-vue-next";
 import ToolDetail from "./ToolDetail.vue";
-import { KIND_ICON, diffStatsOf, stripTruncationMarks } from "../lib/tool-summary";
+import DetailHeadline from "./DetailHeadline.vue";
+import { KIND_ICON, diffStatsOf, isPathTitle, stripTruncationMarks } from "../lib/tool-summary";
 import { formatStepDuration, useLiveElapsed } from "../lib/use-live-elapsed";
 
 const props = defineProps<{ step: ToolStepDto; ensureFull?: () => Promise<void> }>();
@@ -76,6 +77,10 @@ const fileExt = computed(() => {
   const raw = cleanBasename.slice(dot + 1).toUpperCase();
   return raw.length <= 4 ? raw : "";
 });
+
+// Path titles ellipsis at the head (…tail) so the filename stays visible in
+// the one-line preview; the full path remains in the tooltip and the detail.
+const pathTitle = computed(() => isPathTitle(props.step));
 // The text the detail body already prints below (so we don't repeat it in the banner).
 const detailOutput = computed(() => {
   const d = props.step.detail;
@@ -120,7 +125,7 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
             :class="hasDetail ? 'group-hover:text-fg' : ''">{{ kindLabel }}</span>
       <span v-if="fileExt" data-test="file-ext-badge" class="shrink-0 rounded bg-accent/10 px-1 py-0.5 text-[9px] font-semibold text-accent/80 font-mono leading-none">{{ fileExt }}</span>
       <span class="min-w-0 font-mono text-[11.5px] text-fg-muted/90 break-all"
-            :class="[(hasDetail ? 'group-hover:text-fg' : ''), (hasDetail && !open) ? 'truncate' : '']" :title="step.title">{{ step.title }}</span>
+            :class="[(hasDetail ? 'group-hover:text-fg' : ''), hasDetail ? 'truncate' : '']" :title="step.title" :dir="hasDetail && pathTitle ? 'rtl' : undefined">{{ step.title }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-1.5">
         <span v-if="diffStats" data-test="step-diff-stats" class="flex items-center gap-1 font-mono text-[11px]">
           <span v-if="diffStats.add" class="text-run font-medium">+{{ diffStats.add }}</span>
@@ -136,6 +141,7 @@ const runningElapsed = computed(() => formatStepDuration(liveElapsed.elapsedMs()
       </span>
     </component>
     <div v-if="hasDetail && open" data-test="tool-step-detail" class="ml-2.5 my-1.5 border-l-2 border-border/50 pl-3 space-y-1">
+      <DetailHeadline :text="step.title" />
       <div v-if="hydrating" data-test="tool-step-hydrating" class="flex items-center gap-1.5 py-1 text-fg-muted">
         <Loader2 :size="13" class="animate-spin motion-reduce:animate-none" />
         <span>{{ $t("tools.loadingDetails") }}</span>

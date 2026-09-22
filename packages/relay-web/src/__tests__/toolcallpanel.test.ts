@@ -22,12 +22,45 @@ describe("ToolCallPanel", () => {
     expect(w.find("button").attributes("aria-expanded")).toBe("false");
   });
 
-  it("expands a row to show its detail on click", async () => {
+  it("expands a row to show its detail with the full command as rendered text", async () => {
     const w = mount(ToolCallPanel, { props: { steps } });
     expect(w.find('[data-test="cmd-output"]').exists()).toBe(false);
     await w.find("button").trigger("click");
     await w.findAll('[data-test="tool-row"]')[0].trigger("click");
     expect(w.find('[data-test="cmd-output"]').text()).toContain("passed");
+    expect(w.find('[data-test="detail-headline"]').text()).toContain("npm test");
+  });
+
+  it("head-truncates path rows so the filename stays visible", async () => {
+    const w = mount(ToolCallPanel, {
+      props: {
+        steps: [
+          { toolCallId: "p1", toolName: "Read", kind: "read", status: "success", title: "packages/relay-web/src/components/ToolStepCard.vue", titleIsPath: true, detail: { type: "read", path: "packages/relay-web/src/components/ToolStepCard.vue", preview: "body" } },
+          { toolCallId: "c1", toolName: "Bash", kind: "execute", status: "success", title: "bun run build", detail: { type: "command", command: "bun run build", output: "ok" } },
+        ],
+      },
+    });
+    await w.find("button").trigger("click");
+    const rows = w.findAll('[data-test="tool-row"]');
+    expect(rows[0].find("span.min-w-0").attributes("dir")).toBe("rtl");
+    expect(rows[1].find("span.min-w-0").attributes("dir")).toBeUndefined();
+  });
+
+  it("shows the full title for a title-only row with no detail", async () => {
+    // Header-only steps carry no detail; expanding must still surface the
+    // full title as rendered text — previously it unwrapped the header.
+    const long = "packages/relay-web/src/very/deeply/nested/title-only-file-that-overflows.ts";
+    const w = mount(ToolCallPanel, {
+      props: {
+        steps: [
+          { toolCallId: "h1", toolName: "Read", kind: "read", status: "success", title: long },
+        ],
+      },
+    });
+    await w.find("button").trigger("click");
+    await w.findAll('[data-test="tool-row"]')[0].trigger("click");
+    expect(w.find('[data-test="detail-headline"]').text()).toBe(long);
+    expect(w.find('[data-test="copy-button"]').exists()).toBe(true);
   });
 
   it("marks a running step distinctly from a successful one", async () => {

@@ -55,6 +55,25 @@ export function stripTruncationMarks(value: string): string {
   return out.trim();
 }
 
+/** True when a step title is a bare file path (`src/a.ts`, `C:\work\f.ts`).
+ *  Path previews ellipsis at the head (…tail) so the filename — the part the
+ *  user scans for — stays visible; commands, queries, and prose keep the
+ *  default tail ellipsis. The connector stamps `titleIsPath` when it resolved
+ *  the title from the tool's own arguments/location; that provenance wins
+ *  because `detail.path` alone proves nothing (a path-less read echoes the
+ *  adapter summary into `path`, e.g. `List files in 'relay-web'`). Without
+ *  the stamp, only a separator-bearing title-only step (no structured path)
+ *  counts; anything with a structured path that didn't earn the stamp is
+ *  prose the connector derived, not a bare path. */
+export function isPathTitle(step: ToolStepDto): boolean {
+  const { kind, title } = step;
+  if (kind !== "read" && kind !== "edit" && kind !== "delete") return false;
+  if (step.titleIsPath === true) return true;
+  const d = step.detail;
+  if (d && (d.type === "diff" || d.type === "read")) return false;
+  return /[/\\]/.test(title);
+}
+
 export function diffStatsOf(detail: { type: string; oldText?: string; newText?: string } | undefined): DiffStats | null {
   if (!detail || detail.type !== "diff") return null;
   const { oldText = "", newText = "" } = detail;

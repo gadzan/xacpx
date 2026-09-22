@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { ToolDetailDto, ToolStepDto } from "@ganglion/xacpx-relay-protocol";
 import { AlertTriangle, Bot, Check, ChevronDown, ChevronRight, ExternalLink, Loader2 } from "lucide-vue-next";
-import { KIND_ICON } from "../lib/tool-summary";
+import { KIND_ICON, isPathTitle } from "../lib/tool-summary";
 import { resolveSubagentStatus } from "../lib/subagent-status";
 import { subagentDetailOutput } from "../lib/subagent-trace";
 import SubagentTraceDialog from "./SubagentTraceDialog.vue";
@@ -145,7 +145,7 @@ onBeforeUnmount(() => {
         <div v-if="currentActivity" :key="currentActivity.toolCallId" class="flex min-w-0 items-center gap-2">
           <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="currentActivity.status === 'running' ? 'bg-accent' : currentActivity.status === 'error' ? 'bg-danger' : 'bg-run'" />
           <component :is="KIND_ICON[currentActivity.kind]" :size="12" class="shrink-0 text-fg-muted" />
-          <span class="truncate font-mono text-[10.5px] text-fg-muted">{{ currentActivity.title }}</span>
+          <span class="truncate font-mono text-[10.5px] text-fg-muted" :title="currentActivity.title" :dir="isPathTitle(currentActivity) ? 'rtl' : undefined">{{ currentActivity.title }}</span>
           <span v-if="activity.length > 1" class="ml-auto shrink-0 font-mono text-[9.5px] tabular-nums text-fg-muted/70">
             {{ activityIndex % activity.length + 1 }}/{{ activity.length }}
           </span>
@@ -175,7 +175,7 @@ onBeforeUnmount(() => {
             <span class="h-1.5 w-1.5 rounded-full" :class="child.status === 'running' ? 'bg-accent' : child.status === 'error' ? 'bg-danger' : 'bg-run'" />
           </span>
           <component :is="KIND_ICON[child.kind]" :size="12" class="shrink-0 text-fg-muted" />
-          <span class="truncate font-mono text-[10.5px] text-fg-muted">{{ child.title }}</span>
+          <span class="truncate font-mono text-[10.5px] text-fg-muted" :title="child.title" :dir="isPathTitle(child) ? 'rtl' : undefined">{{ child.title }}</span>
         </li>
       </ol>
       <template v-else>
