@@ -2004,9 +2004,10 @@ export class ControlService {
         ...(parsedIngress ? { humanIngress: parsedIngress } : {}),
       });
       // Topic-wide authoritative owner as of accept: executing, else oldest
-      // queued (same selector as listTopicRuns). Read inside the same
-      // mutation so the owner row is atomic with the accept transaction —
-      // no interleaving accept can slip between the two reads.
+      // queued (same selector as listTopicRuns). Read after the accept
+      // transaction so it reflects this accept plus every durable accept
+      // before it; it is ordered after the accept but not locked against a
+      // concurrent accept on another path.
       const listed = runtime.runs.listTopicRuns(input.conversationId, input.topicId);
       return {
         reused: accepted.reused,

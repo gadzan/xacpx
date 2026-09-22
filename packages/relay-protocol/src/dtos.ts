@@ -397,7 +397,8 @@ export interface ConversationPromptResponseDto {
    *  queued). Lets the caller adopt the true owner without a second
    *  runs.list round trip: an HTTP accept proves only the accepted Run is
    *  durable, never that it owns the Topic. Optional for wire compat with
-   *  older connectors. */
+   *  older connectors; when absent the caller must treat the accepted Run
+   *  as unconfirmed and re-run discovery before cancelling it. */
   activeRunId?: string;
   activeRun?: ConversationRunDto;
 }

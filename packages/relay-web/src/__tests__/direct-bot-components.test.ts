@@ -1178,6 +1178,7 @@ describe("Direct Bot Components", () => {
         parts: [textPart],
         status: "streaming",
         startedAt: Date.now(),
+        revision: 1,
       } as never;
       const activeRun = {
         id: "run_1", conversationId: "c1", topicId: "t1", requestMessageId: "m1",
@@ -1201,9 +1202,50 @@ describe("Direct Bot Components", () => {
       const recordScroll: typeof scrollerEl.scrollTo = () => { scrollCalls += 1; };
       scrollerEl.scrollTo = recordScroll;
       // In-place growth: same part object extended (store appendText mutates
-      // last.text), so parts.length stays 1 while the transcript grows.
+      // last.text), so parts.length stays 1 while the transcript grows; the
+      // store bumps revision, which is what the follower watches.
       textPart.text = "Hello world, streaming more tokens";
-      await wrapper.setProps({ liveTurn: { ...liveTurn, parts: [...liveTurn.parts] } });
+      await wrapper.setProps({ liveTurn: { ...liveTurn, parts: [...liveTurn.parts], revision: 2 } });
+      await flushPromises();
+      expect(scrollCalls).toBeGreaterThan(0);
+    });
+    it("follows in-place tool updates with an unchanged toolCallId while at bottom", async () => {
+      const toolPart = {
+        type: "tool",
+        step: { toolCallId: "call_1", status: "running" },
+      } as unknown as { type: "tool"; step: { toolCallId: string; status: string; output?: string } };
+      const liveTurn = {
+        parts: [toolPart],
+        status: "streaming",
+        startedAt: Date.now(),
+        revision: 1,
+      } as never;
+      const activeRun = {
+        id: "run_1", conversationId: "c1", topicId: "t1", requestMessageId: "m1",
+        requestId: "r1", mode: "explicit", state: "running", profileRevision: 1,
+        createdAt: "now",
+      } as never;
+      const wrapper = mount(ConversationMessageList, {
+        props: {
+          messages: [],
+          liveTurn,
+          activeRun,
+          activeMemberTurn: null,
+          runParts: {},
+        },
+        global: {
+          plugins: [i18n],
+        },
+      });
+      const scrollerEl = wrapper.element as HTMLElement;
+      let scrollCalls = 0;
+      const recordScroll: typeof scrollerEl.scrollTo = () => { scrollCalls += 1; };
+      scrollerEl.scrollTo = recordScroll;
+      // Same toolCallId, new status/output (store upsertTool replaces the row):
+      // the old toolCallId.length heuristic never fired; revision does.
+      toolPart.step.status = "success";
+      toolPart.step.output = "long output that extends the transcript";
+      await wrapper.setProps({ liveTurn: { ...liveTurn, parts: [...liveTurn.parts], revision: 2 } });
       await flushPromises();
       expect(scrollCalls).toBeGreaterThan(0);
     });
@@ -1255,7 +1297,7 @@ describe("Direct Bot Components", () => {
       await topicPills[1]?.trigger("click");
       expect(switchTopicSpy).toHaveBeenCalledWith("t2");
     });
-    it("traps focus and closes the New Topic modal on Escape", async () => {
+    it("opens the New Topic dialog with focus, traps Tab, and restores focus on Escape", async () => {
       const instances = useInstancesStore();
       instances.instances = [
         {
@@ -1285,14 +1327,31 @@ describe("Direct Bot Components", () => {
           plugins: [i18n],
         },
       });
-      await wrapper.find('[data-test="new-topic-button"]').trigger("click");
+      const trigger = wrapper.find('[data-test="new-topic-button"]');
+      (trigger.element as HTMLElement).focus();
+      await trigger.trigger("click");
       await flushPromises();
       const dialog = wrapper.find('[role="dialog"]');
       expect(dialog.exists()).toBe(true);
       expect(dialog.attributes("aria-modal")).toBe("true");
+      // Opening focus moves inside the dialog (first field), not the trigger.
+      expect(dialog.element.contains(document.activeElement)).toBe(true);
+      // Tab on the last focusable wraps to the first (focus trap).
+      const focusables = dialog.element.querySelectorAll<HTMLElement>(
+        'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])',
+      );
+      expect(focusables.length).toBeGreaterThan(1);
+      const last = focusables[focusables.length - 1];
+      const first = focusables[0];
+      if (!last || !first) throw new Error("expected focusable dialog controls");
+      last.focus();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+      expect(document.activeElement).toBe(first);
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
       await flushPromises();
       expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
+      // Closing focus restores to the trigger that opened the dialog.
+      expect(document.activeElement).toBe(trigger.element);
       wrapper.unmount();
     });
   });

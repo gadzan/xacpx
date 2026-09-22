@@ -29,6 +29,11 @@ export interface DirectBotLiveTurn {
   parts: TurnPartDto[];
   status: "working" | "streaming";
   startedAt: number;
+  /** Monotonic counter bumped on every in-place stream mutation (text /
+   *  reasoning append, tool upsert). parts.length misses those (appendText
+   *  does last.text += chunk; upsertTool replaces one row), so the transcript
+   *  follower watches this revision instead of inferring growth. */
+  revision: number;
 }
 export type DirectBotErrorCode =
   | "connectorOutdated"
@@ -724,9 +729,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       }
       messages.value = Object.values(merged).sort((a, b) => a.seq - b.seq);
       transcriptRevision += 1;
-      oldestSeq.value = res.oldestSeq;
-      newestSeq.value = res.newestSeq;
-      hasMoreBefore.value = res.hasMoreBefore;
+      // The fresh page is newest-bounded (limit 50): its oldestSeq/hasMoreBefore
+      // describe the page, not the merged window. Keep the already-loaded left
+      // edge: extend only when the fresh page actually reaches older rows.
+      const prevOldest = oldestSeq.value;
+      if (res.oldestSeq !== undefined && (prevOldest === undefined || res.oldestSeq < prevOldest)) {
+        oldestSeq.value = res.oldestSeq;
+        hasMoreBefore.value = res.hasMoreBefore;
+      }
+      newestSeq.value = res.newestSeq ?? newestSeq.value;
       hasMoreAfter.value = res.hasMoreAfter;
 
       // If any bot message in history corresponds to an active run, converge liveTurn
@@ -961,9 +972,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         }
         messages.value = Object.values(merged).sort((a, b) => a.seq - b.seq);
         transcriptRevision += 1;
-        oldestSeq.value = res.oldestSeq;
-        newestSeq.value = res.newestSeq;
-        hasMoreBefore.value = res.hasMoreBefore;
+        const prevOldest = oldestSeq.value;
+        if (res.oldestSeq !== undefined && (prevOldest === undefined || res.oldestSeq < prevOldest)) {
+          oldestSeq.value = res.oldestSeq;
+          hasMoreBefore.value = res.hasMoreBefore;
+        }
+        newestSeq.value = res.newestSeq ?? newestSeq.value;
         hasMoreAfter.value = res.hasMoreAfter;
         if (activeRun.value) {
           const canonicalBotMsg = messages.value.find(
@@ -1293,6 +1307,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       const promptOwner = res.activeRun && !isTerminalRunState(res.activeRun.state)
         ? res.activeRun
         : undefined;
+      // Older connectors omit the prompt-carried owner entirely: a nonterminal
+      // accept then proves durability only, never topic-wide ownership. Only an
+      // owner id that names the accepted Run proves it owns the Topic; anything
+      // else (absent, or naming another Run without its row) fails closed
+      // below via runs.list before Stop may target the optimistic row.
+      const promptOwnerId = res.activeRunId ?? promptOwner?.id;
+      const ownerProvesAccepted = promptOwnerId !== undefined && promptOwnerId === res.run.id;
+      const ownerProvesOther = !!promptOwner && promptOwner.id !== res.run.id;
       const acceptOverwritesOwner =
         !activeRun.value ||
         activeRun.value.id === res.run.id ||
@@ -1300,10 +1322,24 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // Track active run and member turn without regressing already-advanced state
       const priorRunId = activeRun.value?.id;
       const priorRunActive = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
-      if (promptOwner && promptOwner.id !== res.run.id) {
+      // Background-confirm a fresh queued adopt with no owner id: the new row
+      // is durability-only until runs.list elects the true owner. Fence the
+      // cancel door whenever the accept does not prove ownership — whether
+      // the local slot was empty (uncontested first adopt, now fenced until
+      // discovery confirms) or contested (tracked owner stands, fenced until
+      // discovery re-elects it).
+      const freshOptimisticAdopt = acceptOverwritesOwner && res.run.state === "queued";
+      const ownerUnproven = freshOptimisticAdopt && res.activeRunId === undefined && !promptOwner;
+      const ownerUnknown = ownerUnproven;
+      // A contested ownerless accept never adopts: the tracked nonterminal
+      // owner stands, and the fence below confirms it. Only an empty/terminal
+      // slot adopts the optimistic row (still fenced until discovery).
+      const contestedOwnerless = priorRunActive && !ownerProvesAccepted && !ownerProvesOther && res.activeRunId === undefined && !promptOwner;
+      if (contestedOwnerless) {
+        // Contested ownerless accept: the tracked nonterminal owner stands;
+        // the fence below confirms it. Never adopt the optimistic row here.
+      } else if (promptOwner && promptOwner.id !== res.run.id) {
         // The Topic owner differs from the accepted Run (B durable before C):
-        // adopt the authoritative owner, not the optimistic accept row. Stop
-        // then targets B with the exact runId — never C.
         activeRun.value = mergeRun(null, promptOwner);
         activeMemberTurn.value = null;
         liveTurn.value = null;
@@ -1326,8 +1362,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // Reused-completed-run accept: the accepted Run row is authoritative
       // for the accepted Run, but a queued next Run may still own the Topic
       // (the accept response carries no topic-wide ownership). Converge the
-      // transcript, then re-discover the owner exactly like a terminal event:
-      // adopt queued B blocked, or open the gate on no-candidate.
       const ownerAdoptedFromPrompt = !!promptOwner && promptOwner.id !== res.run.id;
       if (isTerminalRunState(adoptedRun.state)) {
         liveTurn.value = null;
@@ -1351,6 +1385,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           startedAt: res.memberTurn.startedAt
             ? new Date(res.memberTurn.startedAt).getTime()
             : (liveTurn.value?.startedAt ?? Date.now()),
+          revision: (liveTurn.value?.revision ?? 0) + 1,
         };
         if (existingParts.length && !runParts.value[res.run.id]) {
           runParts.value = {
@@ -1362,8 +1397,27 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // latestPlanRunId follows the tracked owner only: when the accept did
       // not overwrite (a different-id nonterminal owner stayed), keep the
       // owner's plan context instead of pointing at the unowned accept row.
-      if (acceptOverwritesOwner && !ownerAdoptedFromPrompt) {
+      if (acceptOverwritesOwner && !ownerAdoptedFromPrompt && !contestedOwnerless) {
         latestPlanRunId.value = res.run.id;
+      }
+      // Compat fallback: an older connector's queued accept carries no owner
+      // id, so the optimistic row above is durability-only. Close the cancel
+      // door until runs.list elects the true owner; Stop fails closed
+      // meanwhile. New connectors name the accepted Run as owner when it owns
+      // the Topic, so a proven owner never trips this fence.
+      // Contested ownerless accepts keep the tracked owner above, so there
+      // is no optimistic row to confirm — but the fence still closes the
+      // cancel door until discovery re-elects the standing owner. Uncontested
+      // ownerless adopts confirm in the background AND fence until discovery
+      // elects the true owner.
+      if ((ownerUnproven || contestedOwnerless) && adoptedRun.state === "queued") {
+        if (targetInstId && targetConvId && targetTopicId) {
+          void retryDiscovery();
+        }
+      }
+      if ((ownerUnknown || contestedOwnerless) && adoptedRun.state === "queued") {
+        ownershipUncertain.value = true;
+        cancelError.value = "ownershipChecking";
       }
     } catch (err: unknown) {
       // WS may already have proved durable accept for this requestId (the
@@ -1690,6 +1744,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             parts: [...matchingTurn.parts],
             status: matchingTurn.status,
             startedAt: matchingTurn.startedAt,
+            revision: (liveTurn.value?.revision ?? 0) + 1,
           };
           const corr = matchingTurn.conversation;
           if (corr?.runId) {
@@ -2034,6 +2089,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             parts: [],
             status: "working",
             startedAt: memberTurn.startedAt ? new Date(memberTurn.startedAt).getTime() : Date.now(),
+            revision: (liveTurn.value?.revision ?? 0) + 1,
           };
         }
       }
@@ -2084,19 +2140,26 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           parts: [],
           status: "working",
           startedAt: Date.now(),
+          revision: 0,
         };
       }
 
       const parts = liveTurn.value.parts;
+      const bumpStream = (): void => {
+        if (liveTurn.value) liveTurn.value.revision += 1;
+      };
       if (e.type === "turn-started") {
         liveTurn.value.startedAt = e.startedAt ?? Date.now();
       } else if (e.type === "turn-output") {
         appendText(parts, e.chunk);
         liveTurn.value.status = "streaming";
+        bumpStream();
       } else if (e.type === "turn-thought") {
         appendReasoning(parts, e.chunk);
+        bumpStream();
       } else if (e.type === "tool-event") {
         upsertTool(parts, e.step);
+        bumpStream();
       } else if (e.type === "plan") {
         if (corr.runId) {
           latestPlanRunId.value = corr.runId;

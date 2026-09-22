@@ -119,24 +119,12 @@ watch(
   },
 );
 
-// Stream revision: parts.length misses in-place text growth (appendText does
-// last.text += chunk), so also track the last part's text length plus the
-// tool-step count. Any token that extends the visible transcript re-fires the
-// follow, while the atBottom guard still protects manual scroll-up reading.
-const liveStreamRevision = computed(() => {
-  const parts = props.liveTurn?.parts;
-  if (!parts || parts.length === 0) return 0;
-  let revision = parts.length * 1000003;
-  const last = parts[parts.length - 1];
-  if (last?.type === "text" || last?.type === "reasoning") {
-    revision += last.text.length;
-  } else if (last?.type === "tool") {
-    revision += last.step.toolCallId.length;
-  }
-  return revision;
-});
+// Monotonic stream revision from the store: every in-place mutation
+// (text/reasoning append, tool upsert) bumps liveTurn.revision, while
+// parts.length misses those (appendText does last.text += chunk; upsertTool
+// replaces one row). The atBottom guard still protects manual scroll-up.
 watch(
-  liveStreamRevision,
+  () => props.liveTurn?.revision ?? 0,
   () => {
     if (atBottom.value) {
       void nextTick(() => scrollToBottom(false));

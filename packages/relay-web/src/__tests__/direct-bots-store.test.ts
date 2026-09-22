@@ -764,8 +764,13 @@ describe("useDirectBotsStore", () => {
       });
       await store.loadHistory("inst_1", "conv_1", "top_1");
       // Older rows survive the terminal-handoff reload; the new tail merges in.
+      // The fresh page's oldestSeq/hasMoreBefore describe the bounded page, not
+      // the merged window: seq 1 is already loaded, so the window keeps
+      // oldestSeq=1 and hasMoreBefore=false (no phantom Load Older for 1..2).
       expect(store.messages.map((m) => m.seq)).toEqual([1, 2, 3, 4]);
-      expect(store.hasMoreBefore).toBe(true);
+      expect(store.oldestSeq).toBe(1);
+      expect(store.newestSeq).toBe(4);
+      expect(store.hasMoreBefore).toBe(false);
     });
   });
 
@@ -837,7 +842,7 @@ describe("useDirectBotsStore", () => {
       mockRpc.mockResolvedValueOnce(promptResponse);
 
       await store.sendPrompt("Help me debug");
-      expect(mockRpc).toHaveBeenLastCalledWith("inst_1", "control.conversation.prompt", {
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.conversation.prompt", {
         conversationId: "conv_1",
         topicId: "top_1",
         requestId: firstReqId,
@@ -1109,6 +1114,11 @@ describe("useDirectBotsStore", () => {
       store.botsByInstance["inst_1"] = [
         { id: "bot_1", name: "Fresh", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
       ];
+      const run1Queued = {
+        id: "run_1", conversationId: "conv_1", topicId: "top_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit",
+        state: "queued", profileRevision: 1, createdAt: "now",
+      };
       mockRpc.mockImplementation((instId: string, type: string) => {
         if (type === "control.conversation.prompt") {
           return Promise.resolve({
@@ -1116,17 +1126,29 @@ describe("useDirectBotsStore", () => {
               id: "msg_1", conversationId: "conv_1", topicId: "top_1", seq: 1,
               role: "human", content: "first", createdAt: "now",
             },
-            run: {
-              id: "run_1", conversationId: "conv_1", topicId: "top_1",
-              requestMessageId: "msg_1", requestId: "req_1", mode: "explicit",
-              state: "queued", profileRevision: 1, createdAt: "now",
-            },
+            run: run1Queued,
             memberTurn: {
               id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1",
               botId: "bot_1", batch: 1, attempt: 1, origin: "human",
               state: "queued", createdAt: "now",
             },
+            // New-connector owner proof: the accepted Run owns the Topic, so
+            // no compat fence trips and the immediate queued cancel is exact.
+            activeRunId: "run_1",
+            activeRun: run1Queued,
           });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            runs: [run1Queued],
+            activeRunId: "run_1",
+            activeRun: run1Queued,
+          });
+        }
+        if (type === "control.runs.get") {
+          return Promise.resolve({ run: { ...run1Queued, memberTurns: [] } });
         }
         if (type === "control.runs.cancel") {
           return Promise.resolve({
@@ -2735,19 +2757,26 @@ describe("useDirectBotsStore", () => {
         message: { id: "msg_C", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "prompt C before foreign B", createdAt: "now" },
         run: { id: "run_C", conversationId: "conv_1", topicId: "top_1", requestMessageId: "msg_C", requestId: "req_C", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" },
         memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "queued", createdAt: "now" },
+        // Old-connector path: no prompt-carried owner, but local slot was
+        // contested by a tracked nonterminal owner is false here — instead the
+        // test documents the B-event path: C adopts optimistically, then B's
+        // WS event elects the durable owner via runs.list.
       });
       await sendCall;
-      // This tab's accept adopted C first (no owner was tracked). B's WS
-      // event then arrives: the gate stays open while the
-      // authoritative-newcomer check asks runs.list whether B already owns
-      // the Topic — no synchronous close, no blind adopt.
-      expect(store.activeRun?.id).toBe("run_C");
+      // Compat background-confirm fires on the ownerless C adopt, so discovery
+      // may already have elected B before the WS event arrives: either C
+      // (confirm still in flight) or B (confirm landed) is correct here. The
+      // invariant is that B wins after convergence, never that C shows first.
+      if (store.activeRun?.id !== "run_B") {
+        expect(store.activeRun?.id).toBe("run_C");
+      }
       store.applyEvent({
         kind: "control-event",
         instanceId: "inst_1",
         event: { type: "conversation-run-changed", run: runBQueued },
       } as never);
-      expect(store.activeRun?.id).toBe("run_C");
+      // B may already have won via the background confirm, or still converge
+      // through this event's discovery — either way B is the final owner.
       await flushPromises();
       await flushPromises();
       expect(store.activeRun?.id).toBe("run_B");
@@ -2829,6 +2858,82 @@ describe("useDirectBotsStore", () => {
       await store.cancelCurrentRun();
       expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_B" });
       expect(mockRpc).not.toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_C" });
+    });
+    it("fails closed on Stop when an older connector omits the prompt owner", async () => {
+      // Our prompt C is in flight (draft minted, HTTP deferred) while a
+      // tracked owner B exists; C's ownerless HTTP accept then resolves on an
+      // older connector. C must not steal B; Stop must target B, never C.
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const runBQueued = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_foreign_B",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      const { promise: promptPromise, resolve: resolvePrompt } = Promise.withResolvers<unknown>();
+      const { promise: listPromise, resolve: resolveList } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") return promptPromise;
+        if (type === "control.runs.list") return listPromise;
+        if (type === "control.runs.cancel") {
+          return Promise.resolve({
+            ok: true,
+            run: { ...runBQueued, state: "cancelled", memberTurns: [] },
+          });
+        }
+        if (type === "control.runs.get") {
+          return Promise.resolve({ run: { ...runBQueued, memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+
+      const sendCall = store.sendPrompt("prompt C after B");
+      await Promise.resolve();
+      // B gets tracked while C's HTTP accept is still deferred (e.g. its WS
+      // accept event landed first).
+      store.activeRun = { ...runBQueued };
+      resolvePrompt({
+        reused: false,
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestId: store.currentDraftRequestId!,
+        message: { id: "msg_C", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "prompt C after B", createdAt: "now" },
+        run: { id: "run_C", conversationId: "conv_1", topicId: "top_1", requestMessageId: "msg_C", requestId: "req_C", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" },
+        memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "queued", createdAt: "now" },
+      });
+      await sendCall;
+      await Promise.resolve();
+      await Promise.resolve();
+      // C must not steal the tracked B owner on an ownerless accept.
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.ownershipUncertain).toBe(true);
+      // Stop must fail closed, not cancel C.
+      await store.cancelCurrentRun();
+      expect(mockRpc).not.toHaveBeenCalledWith(expect.anything(), "control.runs.cancel", expect.anything());
+      resolveList({
+        conversationId: "conv_1",
+        topicId: "top_1",
+        runs: [runBQueued],
+        activeRunId: "run_B",
+        activeRun: runBQueued,
+      });
+      await flushPromises();
+      await flushPromises();
+      expect(store.activeRun?.id).toBe("run_B");
+      await store.cancelCurrentRun();
+      expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.runs.cancel", { runId: "run_B" });
     });
     it("adopts authoritative owner B when successive foreign events arrive and B is not the trigger", async () => {
       // Successive foreign newcomers:
@@ -4169,6 +4274,7 @@ describe("useDirectBotsStore", () => {
         },
       } as never);
       expect(store.liveTurn?.parts).toEqual([{ type: "reasoning", text: "Thinking deeply" }]);
+      const revAfterThought = store.liveTurn?.revision ?? 0;
 
       // Output chunk
       store.applyEvent({
@@ -4190,6 +4296,7 @@ describe("useDirectBotsStore", () => {
       } as never);
       expect(store.liveTurn?.parts).toHaveLength(2);
       expect(store.liveTurn?.parts[1]).toEqual({ type: "text", text: "Result:" });
+      expect(store.liveTurn?.revision ?? 0).toBeGreaterThan(revAfterThought);
 
       // Tool event
       store.applyEvent({
@@ -4210,6 +4317,27 @@ describe("useDirectBotsStore", () => {
         },
       } as never);
       expect(store.liveTurn?.parts).toHaveLength(3);
+      const revAfterToolInsert = store.liveTurn?.revision ?? 0;
+      // Same toolCallId, new status: in-place upsert must still bump revision.
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "tool-event",
+          chatKey: "rk",
+          sessionAlias: "brt_1",
+          step: { toolCallId: "call_1", name: "git_diff", input: {}, status: "success", output: "ok" } as never,
+          conversation: {
+            conversationId: "conv_1",
+            topicId: "top_1",
+            botId: "bot_1",
+            runId: "run_1",
+            memberTurnId: "m_1",
+          },
+        },
+      } as never);
+      expect(store.liveTurn?.parts).toHaveLength(3);
+      expect(store.liveTurn?.revision ?? 0).toBeGreaterThan(revAfterToolInsert);
 
       // Finish event retains parts under runParts[runId]
       store.applyEvent({

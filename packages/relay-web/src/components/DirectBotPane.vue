@@ -14,11 +14,11 @@ import {
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useInstancesStore } from "../stores/instances";
 import { confirm } from "../lib/use-confirm";
-import { useModalA11y } from "../lib/use-modal-a11y";
 import AgentIcon from "./AgentIcon.vue";
 import ConversationMessageList from "./ConversationMessageList.vue";
 import ConversationPromptInput from "./ConversationPromptInput.vue";
 import BotDialog from "./BotDialog.vue";
+import NewTopicDialog from "./NewTopicDialog.vue";
 
 const { t } = useI18n();
 const directBotsStore = useDirectBotsStore();
@@ -36,10 +36,6 @@ const botDriver = computed(() => {
 
 const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
-const newTopicTitle = ref("");
-const creatingTopic = ref(false);
-const newTopicDialogEl = ref<HTMLElement | null>(null);
-useModalA11y(newTopicDialogEl, () => { newTopicDialogOpen.value = false; });
 
 const botHasRuntime = computed(() =>
   (bot.value && "hasRuntime" in bot.value && bot.value.hasRuntime) === true,
@@ -73,26 +69,6 @@ async function handleDeleteBot(): Promise<void> {
     directBotsStore.generalError = code === "bot_in_use"
       ? t("bot.lifecycle.deleteBlocked")
       : err instanceof Error ? err.message : String(err);
-  }
-}
-
-async function handleCreateTopic(): Promise<void> {
-  const title = newTopicTitle.value.trim();
-  if (!title || !directBotsStore.instanceId || !directBotsStore.activeConversationId) return;
-
-  creatingTopic.value = true;
-  try {
-    await directBotsStore.createTopic(
-      directBotsStore.instanceId,
-      directBotsStore.activeConversationId,
-      title,
-    );
-    newTopicDialogOpen.value = false;
-    newTopicTitle.value = "";
-  } catch (err: unknown) {
-    directBotsStore.generalError = err instanceof Error ? err.message : String(err);
-  } finally {
-    creatingTopic.value = false;
   }
 }
 </script>
@@ -250,39 +226,9 @@ async function handleCreateTopic(): Promise<void> {
       @close="editDialogOpen = false"
     />
 
-    <!-- New Topic Modal -->
-    <div v-if="newTopicDialogOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
-         @click.self="newTopicDialogOpen = false">
-      <div ref="newTopicDialogEl" role="dialog" aria-modal="true" aria-labelledby="new-topic-title" tabindex="-1" class="w-full max-w-sm rounded-xl border border-border bg-surface p-4 shadow-xl">
-        <h3 id="new-topic-title" class="text-sm font-semibold mb-2">{{ $t("bot.topic.createTitle") }}</h3>
-        <p class="text-xs text-fg-muted mb-3">{{ $t("bot.topic.createHint") }}</p>
-        <form @submit.prevent="handleCreateTopic">
-          <input
-            v-model="newTopicTitle"
-            type="text"
-            required
-            maxlength="60"
-            :placeholder="$t('bot.topic.titlePlaceholder')"
-            class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent mb-4"
-          />
-          <div class="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              class="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted hover:bg-raised"
-              @click="newTopicDialogOpen = false"
-            >
-              {{ $t("common.cancel") }}
-            </button>
-            <button
-              type="submit"
-              :disabled="creatingTopic || !newTopicTitle.trim()"
-              class="rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:opacity-90 disabled:opacity-50"
-            >
-              {{ $t("common.create") }}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <NewTopicDialog
+      v-if="newTopicDialogOpen"
+      @close="newTopicDialogOpen = false"
+    />
   </div>
 </template>
