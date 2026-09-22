@@ -246,6 +246,21 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // cache or invalidate botsLoaded; stale responses are dropped.
   const botsListSeq: Record<string, number> = {};
   const botDetailSeq: Record<string, number> = {};
+  // Authoritative detail hydration: a detailKey lands here only when a full
+  // BotDetailDto arrived from bots.get/create/update (never from a list-row
+  // synthesis like markBotHasRuntime's minimal seed). BotDialog gates Save on
+  // this instead of sniffing the optional instructions field — a complete
+  // detail with empty instructions legitimately omits the property.
+  const botDetailHydrated: Record<string, number> = {};
+  // Delete tombstones: an authoritative list that proves a Bot absent (or an
+  // explicit delete) records the catalog generation that proved it. A late
+  // mutation response for the same Bot must not resurrect the row — it only
+  // proves the Bot existed at its own older revision.
+  const botDeletedAtSeq: Record<string, number> = {};
+  // Highest proven profileRevision per Bot, across every writer (list
+  // snapshots, detail loads, mutation responses). A lower-revision response
+  // that lands late must never roll the cache back.
+  const botProvenRevision: Record<string, number> = {};
   // Monotonic lifecycle clock per instance: execution evidence
   // (member-turn-started / running / waiting-human rows) advances this, and
   // loadBots() merges locally-converged hasRuntime=true rows into whatever
@@ -277,6 +292,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const hasMoreAfter = ref<boolean>(false);
   const loadingHistory = ref<boolean>(false);
   const loadingOlder = ref<boolean>(false);
+  // Pagination ownership: a deferred beforeSeq page for Topic A must not
+  // block Topic B's pagination after a switch. The token is keyed to the
+  // (instance, conversation, topic) the request was issued for; stale
+  // requests exit via the view fence and only the owner clears the flag.
+  let olderRequestToken = 0;
+  let olderRequestOwner = "";
   const historyError = ref<DirectBotHistoryErrorCode | null>(null);
   const historyErrorDetail = ref<string | null>(null);
   // Fail-closed admission gate: false from topic selection until durable run
@@ -372,6 +393,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // Invalidate any in-flight detail load so a stale response cannot
     // resurrect the dropped entry after a remote delete.
     botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
+    // Tombstone so a late mutation response for the same id cannot reinsert
+    // the row either. Cleared when an authoritative list re-proves presence.
+    botDeletedAtSeq[detailKey] = (botDeletedAtSeq[detailKey] ?? 0) + 1;
+    delete botDetailHydrated[detailKey];
     if (detailKey in botDetails.value) {
       const nextDetails = { ...botDetails.value };
       delete nextDetails[detailKey];
@@ -497,6 +522,38 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
         }
       }
+      // Tombstone maintenance on an authoritative snapshot: present ids are
+      // alive (Bot ids are never reused, so presence clears the tombstone);
+      // ids we previously tracked but the server no longer returns are proven
+      // deleted — tombstone them so a late mutation response cannot resurrect
+      // the row, and drop their cached details. First loads prove nothing:
+      // with no previously known ids the absent set is empty by construction.
+      const present = new Set(res.bots.map((b) => `${targetInstanceId}:${b.id}`));
+      const knownKeys = new Set<string>();
+      for (const b of prevList) knownKeys.add(`${targetInstanceId}:${b.id}`);
+      for (const key of Object.keys(nextDetails)) {
+        if (key.startsWith(`${targetInstanceId}:`)) knownKeys.add(key);
+      }
+      for (const key of Object.keys(botProvenRevision)) {
+        if (key.startsWith(`${targetInstanceId}:`)) knownKeys.add(key);
+      }
+      for (const key of Object.keys(botDeletedAtSeq)) {
+        if (key.startsWith(`${targetInstanceId}:`)) knownKeys.add(key);
+      }
+      for (const key of knownKeys) {
+        if (present.has(key)) {
+          delete botDeletedAtSeq[key];
+        } else {
+          if (botDeletedAtSeq[key] === undefined) {
+            botDeletedAtSeq[key] = (botDeletedAtSeq[key] ?? 0) + 1;
+            // Invalidate any in-flight detail so a stale response cannot
+            // resurrect the dropped entry either.
+            botDetailSeq[key] = (botDetailSeq[key] ?? 0) + 1;
+          }
+          delete nextDetails[key];
+          delete botDetailHydrated[key];
+        }
+      }
       botDetails.value = nextDetails;
       botsByInstance.value = {
         ...botsByInstance.value,
@@ -508,6 +565,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         ...botsLoaded.value,
         [targetInstanceId]: true,
       };
+      for (const b of res.bots) {
+        if (typeof b.profileRevision === "number") {
+          const key = `${targetInstanceId}:${b.id}`;
+          botProvenRevision[key] = Math.max(botProvenRevision[key] ?? -1, b.profileRevision);
+        }
+      }
       return res.bots;
     } catch (err: unknown) {
       // A failed refresh leaves no fresh cache: invalidate so the next Bots
@@ -534,6 +597,20 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
   }
 
+  // True when the cache holds a full BotDetailDto from an authoritative
+  // source (bots.get/create/update) — never a list synthesis. The revision
+  // comparison keeps a stale hydration from gating a newer dialog open: if
+  // the summary has since moved past the hydrated revision, a refetch is due.
+  function isBotDetailHydrated(targetInstanceId: string, botId: string): boolean {
+    const detailKey = `${targetInstanceId}:${botId}`;
+    const hydratedRev = botDetailHydrated[detailKey];
+    if (hydratedRev === undefined) return false;
+    if (!(detailKey in botDetails.value)) return false;
+    const summaryRev = botsByInstance.value[targetInstanceId]?.find((b) => b.id === botId)?.profileRevision;
+    if (typeof summaryRev === "number" && summaryRev > hydratedRev) return false;
+    return true;
+  }
+
   async function loadBotDetail(targetInstanceId: string, botId: string): Promise<BotDetailDto> {
     const detailKey = `${targetInstanceId}:${botId}`;
     const seq = (botDetailSeq[detailKey] ?? 0) + 1;
@@ -558,6 +635,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       [detailKey]:
         prevDetail?.hasRuntime && !res.bot.hasRuntime ? { ...res.bot, hasRuntime: true as const } : res.bot,
     };
+    botProvenRevision[detailKey] = Math.max(botProvenRevision[detailKey] ?? -1, res.bot.profileRevision);
+    botDetailHydrated[detailKey] = res.bot.profileRevision;
     return res.bot;
   }
 
@@ -565,15 +644,31 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // refresh is best-effort, so the dialog must see its Bot immediately.
   // Keeps a sticky hasRuntime=true (execution evidence) the same way the
   // list snapshot merge does — a refresh row must never clear it.
-  function mergeBotSummary(targetInstanceId: string, bot: BotDetailDto): void {
+  // Monotonic: a late mutation response at an older profileRevision never
+  // rolls back a newer row, and a tombstoned (authoritatively deleted) Bot is
+  // never resurrected. Returns true when the row was adopted.
+  function mergeBotSummary(targetInstanceId: string, bot: BotDetailDto): boolean {
+    const key = `${targetInstanceId}:${bot.id}`;
+    if (botDeletedAtSeq[key] !== undefined) return false;
+    const proven = botProvenRevision[key];
+    if (proven !== undefined && bot.profileRevision < proven) return false;
+    botProvenRevision[key] = Math.max(proven ?? -1, bot.profileRevision);
     const list = botsByInstance.value[targetInstanceId] ?? [];
     const prev = list.find((b) => b.id === bot.id);
+    if (
+      prev &&
+      typeof prev.profileRevision === "number" &&
+      bot.profileRevision < prev.profileRevision
+    ) {
+      return false;
+    }
     const row: BotSummaryDto =
       prev?.hasRuntime && !bot.hasRuntime ? { ...bot, hasRuntime: true as const } : bot;
     const idx = list.findIndex((b) => b.id === bot.id);
     const next = idx >= 0 ? [...list.slice(0, idx), row, ...list.slice(idx + 1)] : [...list, row];
     botsByInstance.value = { ...botsByInstance.value, [targetInstanceId]: next };
     botsLoaded.value = { ...botsLoaded.value, [targetInstanceId]: true };
+    return true;
   }
 
   async function createBot(
@@ -594,13 +689,29 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       await api.rpc<{ bot: BotDetailDto }>(targetInstanceId, MSG.botsCreate, payload),
     );
     const detailKey = `${targetInstanceId}:${res.bot.id}`;
+    // Monotonic detail write: a late create response (older revision, or a
+    // tombstoned id) must not roll back newer converged state.
+    if (
+      botDeletedAtSeq[detailKey] === undefined &&
+      (botProvenRevision[detailKey] === undefined || res.bot.profileRevision >= botProvenRevision[detailKey])
+    ) {
+      const prevDetail = botDetails.value[detailKey];
+      botDetails.value = {
+        ...botDetails.value,
+        [detailKey]:
+          prevDetail?.hasRuntime && !res.bot.hasRuntime
+            ? { ...res.bot, hasRuntime: true as const }
+            : res.bot,
+      };
+      botProvenRevision[detailKey] = Math.max(botProvenRevision[detailKey] ?? -1, res.bot.profileRevision);
+      botDetailHydrated[detailKey] = res.bot.profileRevision;
+      mergeBotSummary(targetInstanceId, res.bot);
+    }
     botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
-    botDetails.value = { ...botDetails.value, [detailKey]: res.bot };
     // The mutation RPC already committed (every create mints a new Bot id):
     // a failed follow-up list refresh must not report the create as failed —
     // the user retrying would mint a second durable Bot. Merge locally and
     // let the refresh converge best-effort in the background.
-    mergeBotSummary(targetInstanceId, res.bot);
     void loadBots(targetInstanceId).catch(() => {});
     return res.bot;
   }
@@ -624,11 +735,27 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       await api.rpc<{ bot: BotDetailDto }>(targetInstanceId, MSG.botsUpdate, { id: botId, ...patch }),
     );
     const detailKey = `${targetInstanceId}:${botId}`;
+    // Same monotonic rule as create: a stale update response never rolls
+    // back newer converged state or resurrects a deleted Bot.
+    if (
+      botDeletedAtSeq[detailKey] === undefined &&
+      (botProvenRevision[detailKey] === undefined || res.bot.profileRevision >= botProvenRevision[detailKey])
+    ) {
+      const prevDetail = botDetails.value[detailKey];
+      botDetails.value = {
+        ...botDetails.value,
+        [detailKey]:
+          prevDetail?.hasRuntime && !res.bot.hasRuntime
+            ? { ...res.bot, hasRuntime: true as const }
+            : res.bot,
+      };
+      botProvenRevision[detailKey] = Math.max(botProvenRevision[detailKey] ?? -1, res.bot.profileRevision);
+      botDetailHydrated[detailKey] = res.bot.profileRevision;
+      mergeBotSummary(targetInstanceId, res.bot);
+    }
     botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
-    botDetails.value = { ...botDetails.value, [detailKey]: res.bot };
     // Same committed-write rule as create: the update already persisted, so
     // merge locally and refresh best-effort instead of failing the save.
-    mergeBotSummary(targetInstanceId, res.bot);
     void loadBots(targetInstanceId).catch(() => {});
     return res.bot;
   }
@@ -1342,10 +1469,21 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const iId = instanceId.value;
     const cId = activeConversationId.value;
     const tId = activeTopicId.value;
-    if (!iId || !cId || !tId || loadingOlder.value || !hasMoreBefore.value || oldestSeq.value === undefined) {
+    if (!iId || !cId || !tId || !hasMoreBefore.value || oldestSeq.value === undefined) {
       return;
     }
-
+    // Same-view singleflight: a second page for the SAME topic waits on the
+    // first; a page for a DIFFERENT topic is never blocked by a stale owner.
+    const owner = `${iId}:${cId}:${tId}`;
+    if (loadingOlder.value && olderRequestOwner === owner) return;
+    if (loadingOlder.value) {
+      // A stale owner (Topic A) still holds the flag after a switch: retire
+      // it — its view fence already prevents transcript writes, and its
+      // finally below is token-checked so it cannot clear the new owner.
+      olderRequestToken += 1;
+    }
+    const token = ++olderRequestToken;
+    olderRequestOwner = owner;
     loadingOlder.value = true;
     try {
       const res = unwrapRpc(
@@ -1380,7 +1518,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // Non-fatal pagination error
       console.warn("loadOlder failed:", err);
     } finally {
-      loadingOlder.value = false;
+      // Only the owning request clears the flag: a retired Topic-A page that
+      // settles after Topic B re-acquired must not drop B's spinner.
+      if (token === olderRequestToken && olderRequestOwner === owner) {
+        loadingOlder.value = false;
+      }
     }
   }
 
@@ -1389,6 +1531,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
     discoverySequence += 1;
+    olderRequestToken += 1;
     touchTranscript();
     topicReady.value = false;
     instanceId.value = targetInstanceId;
@@ -1463,6 +1606,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
     discoverySequence += 1;
+    olderRequestToken += 1;
     touchTranscript();
     topicReady.value = false;
     activeTopicId.value = topicId;
@@ -1499,6 +1643,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     currentSelectionGeneration++;
     historyRequestSequence += 1;
     discoverySequence += 1;
+    olderRequestToken += 1;
     touchTranscript();
     topicReady.value = true;
     instanceId.value = null;
@@ -2631,6 +2776,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     isRunActive,
     loadBots,
     loadBotDetail,
+    isBotDetailHydrated,
     createBot,
     updateBot,
     deleteBot,

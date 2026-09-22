@@ -112,12 +112,14 @@ const availableAgents = computed(() => {
 
 // Available workspaces from instance
 const availableWorkspaces = computed(() => inst.value?.workspaces ?? []);
-// Detail hydration for summary-backed edits: a summary row carries no
-// instructions, so the form must not submit until the authoritative detail
-// arrives. Otherwise an early Save would send instructions=null and silently
-// wipe backend instructions the user never saw.
+// Detail hydration for summary-backed edits: the form must not submit
+// until the authoritative detail arrives. Otherwise an early Save would send
+// instructions=null and silently wipe backend instructions the user never
+// saw. Gated on the store's authoritative-hydration flag — never on the
+// optional instructions field itself, which a complete detail legitimately
+// omits when empty.
 const detailHydrated = ref(
-  !props.bot || "instructions" in props.bot || (props.bot as BotDetailDto).instructions !== undefined,
+  !props.bot || directBotsStore.isBotDetailHydrated(props.instanceId, props.bot.id),
 );
 const detailLoading = ref(false);
 
@@ -137,7 +139,7 @@ onMounted(async () => {
     // Ignore options load error; validation surfaces missing agent/workspace.
   }
   if (generation !== dialogGeneration) return;
-  if (props.bot && (!("instructions" in props.bot) || props.bot.instructions === undefined)) {
+  if (props.bot && !directBotsStore.isBotDetailHydrated(props.instanceId, props.bot.id)) {
     detailLoading.value = true;
     try {
       const detail = await directBotsStore.loadBotDetail(props.instanceId, props.bot.id);

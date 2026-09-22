@@ -141,6 +141,199 @@ describe("useDirectBotsStore", () => {
       expect(res).toEqual(updatedBot);
     });
 
+    it("never rolls the cache back when a stale mutation response lands after rev3", async () => {
+      const store = useDirectBotsStore();
+      const rev3 = {
+        id: "bot_1",
+        name: "Rev Three",
+        agent: "codex",
+        workspace: "repo",
+        enabled: true,
+        profileRevision: 3,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        updatedAt: "2026-09-18T00:02:00.000Z",
+      };
+      const rev2 = {
+        id: "bot_1",
+        name: "Rev Two",
+        agent: "codex",
+        workspace: "repo",
+        enabled: false,
+        profileRevision: 2,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        updatedAt: "2026-09-18T00:01:00.000Z",
+      };
+      const { promise: updateGate, resolve: resolveUpdate } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.update") return updateGate;
+        if (type === "control.bots.list") return Promise.reject(new Error("background refresh drop"));
+        return Promise.resolve({});
+      });
+      // U1 (rev2) deferred in flight; a remote U2 converges rev3 first via
+      // the authoritative list + detail path.
+      const updateCall = store.updateBot("inst_1", "bot_1", { name: "Rev Two" });
+      store.botsByInstance["inst_1"] = [rev3 as never];
+      store.botDetails["inst_1:bot_1"] = rev3 as never;
+      // Simulate the rev3 convergence the list/detail path performs.
+      mockRpc.mockImplementationOnce((instId: string, type: string) => {
+        if (type === "control.bots.list") {
+          return Promise.resolve({ bots: [rev3] });
+        }
+        return Promise.resolve({});
+      });
+      await store.loadBots("inst_1");
+      // Re-arm the background-refresh failure for the mutation's own refresh.
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.update") return updateGate;
+        if (type === "control.bots.list") return Promise.reject(new Error("background refresh drop"));
+        return Promise.resolve({});
+      });
+      resolveUpdate({ bot: rev2 });
+      const res = await updateCall;
+      // The RPC still resolves with its own (older) row, but the cache must
+      // stay at rev3 — and the failed background refresh must not clear it.
+      expect(res).toEqual(rev2);
+      expect(store.botsByInstance["inst_1"]).toEqual([rev3]);
+      expect(store.botDetails["inst_1:bot_1"]).toEqual(rev3 as never);
+      for (let i = 0; i < 5; i += 1) {
+        await flushPromises();
+      }
+      expect(store.botsByInstance["inst_1"]).toEqual([rev3]);
+    });
+    it("never resurrects an authoritatively deleted bot via a late update response", async () => {
+      const store = useDirectBotsStore();
+      const rev2 = {
+        id: "bot_1",
+        name: "Rev Two",
+        agent: "codex",
+        workspace: "repo",
+        enabled: true,
+        profileRevision: 2,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        updatedAt: "2026-09-18T00:01:00.000Z",
+      };
+      const { promise: updateGate, resolve: resolveUpdate } = Promise.withResolvers<unknown>();
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.update") return updateGate;
+        if (type === "control.bots.list") return Promise.resolve({ bots: [] });
+        return Promise.resolve({});
+      });
+      const updateCall = store.updateBot("inst_1", "bot_1", { name: "Rev Two" });
+      // Seed the row, then prove deletion through the real remote-delete
+      // path (bots-changed with an empty authoritative list): reconcile
+      // drops the detail AND records the tombstone before the stale update
+      // response lands.
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Old", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: { type: "bots-changed" },
+      } as never);
+      for (let i = 0; i < 5; i += 1) {
+        await flushPromises();
+      }
+      expect(store.botsByInstance["inst_1"]).toEqual([]);
+      resolveUpdate({ bot: rev2 });
+      await updateCall;
+      for (let i = 0; i < 5; i += 1) {
+        await flushPromises();
+      }
+      expect(store.botsByInstance["inst_1"]).toEqual([]);
+      expect(store.botDetails["inst_1:bot_1"]).toBeUndefined();
+    });
+    it("lets a newer topic paginate while an older topic page is still deferred", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_A";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      const msg = (seq: number, topic: string) => ({
+        id: `msg_${topic}_${seq}`,
+        conversationId: "conv_1",
+        topicId: topic,
+        seq,
+        role: "human",
+        content: `m${seq}`,
+        createdAt: "now",
+      });
+      const { promise: pageAGate, resolve: resolvePageA } = Promise.withResolvers<unknown>();
+      const olderCalls: Array<{ topicId: string; beforeSeq: number }> = [];
+      mockRpc.mockImplementation((instId: string, type: string, payload?: unknown) => {
+        if (type === "control.conversation.history") {
+          const pl = payload as { beforeSeq?: number; limit?: number; direction?: string } | undefined;
+          if (pl?.beforeSeq !== undefined) {
+            olderCalls.push({ topicId: (payload as { topicId: string }).topicId, beforeSeq: pl.beforeSeq });
+            if ((payload as { topicId: string }).topicId === "top_A") return pageAGate;
+            return Promise.resolve({
+              conversationId: "conv_1",
+              topicId: "top_B",
+              messages: [msg(40, "top_B")],
+              oldestSeq: 40,
+              newestSeq: 40,
+              hasMoreBefore: false,
+              hasMoreAfter: true,
+            });
+          }
+          const topicId = (payload as { topicId: string }).topicId;
+          const base = topicId === "top_B" ? 50 : 100;
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId,
+            messages: Array.from({ length: 50 }, (_, i) => msg(base + i, topicId)),
+            oldestSeq: base,
+            newestSeq: base + 49,
+            hasMoreBefore: true,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({ conversationId: "conv_1", topicId: (payload as { topicId: string }).topicId, runs: [] });
+        }
+        return Promise.resolve({});
+      });
+      // Topic A window with more history behind; its older page hangs.
+      store.messages = Array.from({ length: 50 }, (_, i) => msg(100 + i, "top_A")) as never;
+      store.oldestSeq = 100;
+      store.newestSeq = 149;
+      store.contiguousNewestSeq = 149;
+      store.hasMoreBefore = true;
+      const olderA = store.loadOlder();
+      await flushPromises();
+      expect(store.loadingOlder).toBe(true);
+      // Switch to B (newest load converges), then paginate B immediately:
+      // B's request must go out without waiting for A's deferred page.
+      await store.switchTopic("top_B");
+      for (let i = 0; i < 10; i += 1) {
+        await flushPromises();
+      }
+      expect(store.activeTopicId).toBe("top_B");
+      expect(store.hasMoreBefore).toBe(true);
+      const olderB = store.loadOlder();
+      for (let i = 0; i < 10; i += 1) {
+        await flushPromises();
+      }
+      await olderB;
+      expect(olderCalls.some((c) => c.topicId === "top_B")).toBe(true);
+      // A's late page resolves afterwards: it must not touch B's window or
+      // drop B's spinner ownership.
+      resolvePageA({
+        conversationId: "conv_1",
+        topicId: "top_A",
+        messages: [msg(99, "top_A")],
+        oldestSeq: 99,
+        newestSeq: 99,
+        hasMoreBefore: false,
+        hasMoreAfter: true,
+      });
+      await olderA;
+      expect(store.activeTopicId).toBe("top_B");
+      expect(store.messages.every((m) => m.topicId === "top_B")).toBe(true);
+    });
     it("deletes a bot and removes it from state", async () => {
       const store = useDirectBotsStore();
       store.botsByInstance["inst_1"] = [

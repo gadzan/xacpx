@@ -608,6 +608,69 @@ describe("Direct Bot Components", () => {
       expect(wrapper.vm).toBeTruthy();
     });
 
+    it("opens Save immediately when the cached detail is authoritative without instructions", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+          agentCatalog: [],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      // Seed authority through the REAL updateBot path with a mocked RPC:
+      // the committed detail (no instructions key — the server omits empty
+      // instructions) records authoritative hydration in the store.
+      const { api } = await import("../api/client");
+      const apiSpy = vi.spyOn(api, "rpc").mockImplementation(async (iid: string, type: string) => {
+        if (type === "control.bots.update") {
+          return {
+            bot: {
+              id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+              enabled: true, profileRevision: 3,
+              createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+            },
+          } as never;
+        }
+        if (type === "control.bots.list") {
+          return { bots: [directBots.botsByInstance["i1"]?.[0] ?? {
+            id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+            enabled: true, profileRevision: 3, updatedAt: "2026-09-18T00:00:00.000Z",
+          }] } as never;
+        }
+        return {} as never;
+      });
+      const committed = await directBots.updateBot("i1", "bot_1", {});
+      expect("instructions" in committed).toBe(false);
+      expect(directBots.isBotDetailHydrated("i1", "bot_1")).toBe(true);
+      apiSpy.mockRestore();
+      // A redundant detail fetch would now fail — the dialog must not need it.
+      const loadSpy = vi.spyOn(directBots, "loadBotDetail").mockRejectedValue(new Error("redundant fetch drop"));
+      const updateSpy = vi.spyOn(directBots, "updateBot").mockResolvedValue({
+        ...committed, name: "Renamed",
+      });
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: { ...committed } as never },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.vm.$nextTick();
+      // Save is enabled immediately; submitting renames without tripping the
+      // detailLoading gate and without the redundant fetch.
+      const saveBtn = wrapper.findAll("button").find((b) => b.text().includes("Save"));
+      expect(saveBtn).toBeTruthy();
+      expect((saveBtn!.element as HTMLButtonElement).disabled).toBe(false);
+      await wrapper.find("#bot-name").setValue("Renamed");
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(updateSpy).toHaveBeenCalled();
+      expect(loadSpy).not.toHaveBeenCalled();
+    });
     it("blocks Save until summary-backed detail hydration completes", async () => {
       const instances = useInstancesStore();
       instances.instances = [
