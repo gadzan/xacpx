@@ -4342,6 +4342,178 @@ describe("useDirectBotsStore", () => {
       expect(store.activeTopicId).toBe("top_2");
       expect(store.historyError).toBeNull();
     });
+    it("closes admission at reconnect start, before catalog RPCs can stall", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      // Pre-disconnect the gate was open with no tracked Run.
+      store.topicReady = true;
+      const { promise: botsGate, resolve: resolveBots } = Promise.withResolvers<unknown>();
+      const runBQueued = {
+        id: "run_B",
+        conversationId: "conv_1",
+        topicId: "top_1",
+        requestMessageId: "msg_B",
+        requestId: "req_B",
+        mode: "explicit",
+        state: "queued",
+        profileRevision: 1,
+        createdAt: "now",
+      };
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.list") return botsGate;
+        if (type === "control.bots.get") {
+          return Promise.resolve({ bot: { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, profileRevision: 1, createdAt: "now", updatedAt: "now" } });
+        }
+        if (type === "control.topics.list") {
+          return Promise.resolve({ topics: [{ id: "top_1", conversationId: "conv_1", title: "Default", status: "active", createdAt: "now", updatedAt: "now" }] });
+        }
+        if (type === "control.conversation.history") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            messages: [],
+            hasMoreBefore: false,
+            hasMoreAfter: false,
+          });
+        }
+        if (type === "control.runs.list") {
+          return Promise.resolve({
+            conversationId: "conv_1",
+            topicId: "top_1",
+            runs: [runBQueued],
+            activeRunId: "run_B",
+            activeRun: runBQueued,
+          });
+        }
+        if (type === "control.runs.get") {
+          return Promise.resolve({ run: { ...runBQueued, memberTurns: [] } });
+        }
+        return Promise.resolve({});
+      });
+      const reconcileCall = store.reconcileOnReconnect();
+      // Synchronous gate: no RPC has resolved yet, but the composer is
+      // already closed. Await one microtask so the async function runs its
+      // sync prefix up to the first await.
+      await Promise.resolve();
+      expect(store.topicReady).toBe(false);
+      // A prompt attempted while catalog RPCs stall must fail closed without
+      // touching the wire.
+      await store.sendPrompt("C while owner unknown");
+      expect(store.promptError).toBe("topicRecovering");
+      expect(mockRpc).not.toHaveBeenCalledWith(
+        "inst_1",
+        "control.conversation.prompt",
+        expect.anything(),
+      );
+      // Release the catalog: discovery finds offline-queued B and adopts it.
+      resolveBots({ bots: store.botsByInstance["inst_1"] });
+      await reconcileCall;
+      for (let i = 0; i < 10; i += 1) {
+        await flushPromises();
+      }
+      expect(store.activeRun?.id).toBe("run_B");
+      expect(store.topicReady).toBe(true);
+    });
+    it("resolves create on the committed write even when the follow-up list refresh fails", async () => {
+      const store = useDirectBotsStore();
+      const createdBot = {
+        id: "bot_new",
+        name: "Architect",
+        agent: "claude",
+        workspace: "repo",
+        enabled: true,
+        profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.create") return Promise.resolve({ bot: createdBot });
+        if (type === "control.bots.list") return Promise.reject(new Error("list refresh drop"));
+        return Promise.resolve({});
+      });
+      // Must resolve with the committed bot — not reject — so the dialog
+      // closes instead of inviting a duplicate-creating retry.
+      const res = await store.createBot("inst_1", {
+        name: "Architect",
+        agent: "claude",
+        workspace: "repo",
+        enabled: true,
+      });
+      expect(res).toEqual(createdBot);
+      expect(store.botsByInstance["inst_1"]).toEqual([createdBot]);
+      expect(mockRpc).toHaveBeenCalledTimes(2);
+      expect(mockRpc).toHaveBeenNthCalledWith(1, "inst_1", "control.bots.create", expect.anything());
+    });
+    it("resolves update on the committed write even when the follow-up list refresh fails", async () => {
+      const store = useDirectBotsStore();
+      const updatedBot = {
+        id: "bot_1",
+        name: "Senior Reviewer",
+        agent: "codex",
+        workspace: "repo",
+        enabled: true,
+        profileRevision: 2,
+        createdAt: "2026-09-18T00:00:00.000Z",
+        updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.bots.update") return Promise.resolve({ bot: updatedBot });
+        if (type === "control.bots.list") return Promise.reject(new Error("list refresh drop"));
+        return Promise.resolve({});
+      });
+      const res = await store.updateBot("inst_1", "bot_1", { name: "Senior Reviewer" });
+      expect(res).toEqual(updatedBot);
+      expect(store.botsByInstance["inst_1"]).toEqual([updatedBot]);
+    });
+    it("maps server prompt rejections to translated error codes, not raw backend text", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.topicReady = true;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") {
+          return Promise.resolve({ error: { code: "bot_disabled", message: 'bot "bot_1" is disabled' } });
+        }
+        return Promise.resolve({});
+      });
+      await store.sendPrompt("hello");
+      expect(store.promptError).toBe("botDisabled");
+      expect(store.promptErrorDetail).toBeNull();
+    });
+    it("maps unknown-type prompt rejection to connectorOutdated", async () => {
+      const store = useDirectBotsStore();
+      store.instanceId = "inst_1";
+      store.selectedBotId = "bot_1";
+      store.activeConversationId = "conv_1";
+      store.activeTopicId = "top_1";
+      store.botsByInstance["inst_1"] = [
+        { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      store.topicReady = true;
+      mockRpc.mockImplementation((instId: string, type: string) => {
+        if (type === "control.conversation.prompt") {
+          return Promise.resolve({ error: { code: "unknown-type", message: "unsupported rpc type" } });
+        }
+        return Promise.resolve({});
+      });
+      await store.sendPrompt("hello");
+      expect(store.promptError).toBe("connectorOutdated");
+      expect(store.promptErrorDetail).toBeNull();
+    });
     it("directly converges to terminal state and loads history when prompt RPC returns reused completed run", async () => {
       const store = useDirectBotsStore();
       store.instanceId = "inst_1";

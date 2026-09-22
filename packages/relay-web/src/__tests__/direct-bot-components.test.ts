@@ -1117,6 +1117,84 @@ describe("Direct Bot Components", () => {
     });
   });
 
+  describe("finished-row trace completeness", () => {
+    it("renders the durable final answer when the cached trace never finished", async () => {
+      // Partial live parts (stream cut by disconnect, no turn-finished) must
+      // not shadow the durable final row recovered on reconnect.
+      const wrapper = mount(ConversationMessageList, {
+        props: {
+          messages: [
+            {
+              id: "msg_final",
+              conversationId: "c1",
+              topicId: "t1",
+              seq: 2,
+              role: "bot",
+              runId: "run_A",
+              content: "complete durable answer",
+              createdAt: "2026-09-18T00:02:00.000Z",
+            },
+          ],
+          liveTurn: null,
+          activeRun: null,
+          activeMemberTurn: null,
+          // Stale partial: only completeRunParts (filtered) reaches the
+          // component, so this entry must be absent.
+          runParts: {},
+          bot: { id: "b1", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        },
+        global: {
+          plugins: [i18n],
+        },
+      });
+      await flushPromises();
+      expect(wrapper.text()).toContain("complete durable answer");
+    });
+
+    it("keeps rich trace cards only for turn-finished runs", async () => {
+      const directBots = useDirectBotsStore();
+      directBots.instanceId = "inst_1";
+      directBots.selectedBotId = "bot_1";
+      directBots.activeConversationId = "conv_1";
+      directBots.activeTopicId = "top_1";
+      // Partial snapshot without turn-finished: excluded from completeRunParts.
+      directBots.runParts["run_partial"] = [{ type: "text", text: "partial..." } as never];
+      expect(directBots.completeRunParts["run_partial"]).toBeUndefined();
+      // turn-finished proves completeness: included.
+      directBots.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "turn-output",
+          chatKey: "rk",
+          sessionAlias: "brt_1",
+          chunk: "full text",
+          conversation: { conversationId: "conv_1", topicId: "top_1", botId: "bot_1", runId: "run_full", memberTurnId: "m1" },
+        } as never,
+      });
+      directBots.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "turn-finished",
+          chatKey: "rk",
+          sessionAlias: "brt_1",
+          conversation: { conversationId: "conv_1", topicId: "top_1", botId: "bot_1", runId: "run_full", memberTurnId: "m1" },
+        } as never,
+      });
+      expect(directBots.completeRunParts["run_full"]).toHaveLength(1);
+      // Durable final row for the partial run prunes the stale cache.
+      directBots.applyEvent({
+        kind: "control-event",
+        instanceId: "inst_1",
+        event: {
+          type: "conversation-message",
+          message: { id: "msg_f", conversationId: "conv_1", topicId: "top_1", seq: 9, role: "bot", runId: "run_partial", content: "complete durable answer", createdAt: "now" },
+        } as never,
+      });
+      expect(directBots.runParts["run_partial"]).toBeUndefined();
+    });
+  });
   describe("ConversationMessageList.vue", () => {
     it("renders human and bot messages", async () => {
       const messages: ConversationMessageDto[] = [

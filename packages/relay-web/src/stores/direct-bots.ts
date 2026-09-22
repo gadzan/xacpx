@@ -45,7 +45,7 @@ export type DirectBotErrorCode =
   | "runInProgress"
   | "cancelUnknown"
   | "instanceOffline";
-export type DirectBotPromptErrorCode = "topicRecovering" | "botDisabled" | "runInProgress";
+export type DirectBotPromptErrorCode = "topicRecovering" | "botDisabled" | "runInProgress" | "connectorOutdated";
 export type DirectBotCancelErrorCode = "ownershipUnconfirmed" | "ownershipChecking" | "cancelUnknown";
 export type DirectBotHistoryErrorCode = "discoveryFailed";
 export type DirectBotGeneralErrorCode = "instanceOffline";
@@ -293,6 +293,19 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
   // Accumulated trace parts retained per runId so completed assistant messages keep their rich cards
   const runParts = ref<Record<string, TurnPartDto[]>>({});
+  // Completeness evidence: only a runId that actually received its stream's
+  // turn-finished may keep its cached parts. A partial snapshot (stream cut
+  // by disconnect) must never shadow the durable final row recovered later.
+  const runPartsComplete = ref<Record<string, true>>({});
+  // Finished-row rendering must only use traces proven complete by their own
+  // stream's turn-finished. DirectBotPane binds this (never raw runParts).
+  const completeRunParts = computed<Record<string, TurnPartDto[]>>(() => {
+    const out: Record<string, TurnPartDto[]> = {};
+    for (const [id, parts] of Object.entries(runParts.value)) {
+      if (parts.length && runPartsComplete.value[id]) out[id] = parts;
+    }
+    return out;
+  });
 
   // Prompt / Idempotency state
   const currentDraftRequestId = ref<string | null>(null);
@@ -526,6 +539,21 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     return res.bot;
   }
 
+  // Local list convergence for a committed Bot write: the follow-up list
+  // refresh is best-effort, so the dialog must see its Bot immediately.
+  // Keeps a sticky hasRuntime=true (execution evidence) the same way the
+  // list snapshot merge does — a refresh row must never clear it.
+  function mergeBotSummary(targetInstanceId: string, bot: BotDetailDto): void {
+    const list = botsByInstance.value[targetInstanceId] ?? [];
+    const prev = list.find((b) => b.id === bot.id);
+    const row: BotSummaryDto =
+      prev?.hasRuntime && !bot.hasRuntime ? { ...bot, hasRuntime: true as const } : bot;
+    const idx = list.findIndex((b) => b.id === bot.id);
+    const next = idx >= 0 ? [...list.slice(0, idx), row, ...list.slice(idx + 1)] : [...list, row];
+    botsByInstance.value = { ...botsByInstance.value, [targetInstanceId]: next };
+    botsLoaded.value = { ...botsLoaded.value, [targetInstanceId]: true };
+  }
+
   async function createBot(
     targetInstanceId: string,
     payload: {
@@ -546,7 +574,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const detailKey = `${targetInstanceId}:${res.bot.id}`;
     botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
     botDetails.value = { ...botDetails.value, [detailKey]: res.bot };
-    await loadBots(targetInstanceId);
+    // The mutation RPC already committed (every create mints a new Bot id):
+    // a failed follow-up list refresh must not report the create as failed —
+    // the user retrying would mint a second durable Bot. Merge locally and
+    // let the refresh converge best-effort in the background.
+    mergeBotSummary(targetInstanceId, res.bot);
+    void loadBots(targetInstanceId).catch(() => {});
     return res.bot;
   }
 
@@ -571,7 +604,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const detailKey = `${targetInstanceId}:${botId}`;
     botDetailSeq[detailKey] = (botDetailSeq[detailKey] ?? 0) + 1;
     botDetails.value = { ...botDetails.value, [detailKey]: res.bot };
-    await loadBots(targetInstanceId);
+    // Same committed-write rule as create: the update already persisted, so
+    // merge locally and refresh best-effort instead of failing the save.
+    mergeBotSummary(targetInstanceId, res.bot);
+    void loadBots(targetInstanceId).catch(() => {});
     return res.bot;
   }
 
@@ -677,6 +713,21 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // owner handoff below re-runs discovery instead of trusting a background
   // transcript refresh, so a queued next Run can never hide behind an open
   // gate. Transcript paging stays seq-cursor driven.
+  // A durable bot row proves the final answer: an unproven (never
+  // turn-finished) cached trace for the same Run is a stale partial that
+  // must not shadow it — drop it so the canonical content renders.
+  function pruneIncompleteTraces(): void {
+    const completeFlags = runPartsComplete.value;
+    let prunedParts: Record<string, TurnPartDto[]> | null = null;
+    for (const m of messages.value) {
+      if (m.runId && runParts.value[m.runId]?.length && !completeFlags[m.runId]) {
+        if (!prunedParts) prunedParts = { ...runParts.value };
+        delete prunedParts[m.runId];
+      }
+    }
+    if (prunedParts) runParts.value = prunedParts;
+  }
+
   // Merge one newest-bounded page into the loaded window, preserving the
   // already-loaded left edge and newest cursor. Loaded rows win on id
   // conflict (same id with locally-merged stream state).
@@ -692,6 +743,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
     messages.value = Object.values(merged).sort((a, b) => a.seq - b.seq);
     transcriptRevision += 1;
+    pruneIncompleteTraces();
     const prevOldest = oldestSeq.value;
     if (res.oldestSeq !== undefined && (prevOldest === undefined || res.oldestSeq < prevOldest)) {
       oldestSeq.value = res.oldestSeq;
@@ -1677,8 +1729,23 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // run-changed adoption branch converges to success and retires the
       // retry identity). A late HTTP failure must not rewrite that success.
       if (isCurrent() && currentDraftRequestId.value === reqId) {
-        promptError.value = err instanceof Error ? err.message : String(err);
-        promptErrorDetail.value = promptError.value;
+        // Map known server business rejections to UI codes so the user sees
+        // the translated banner, not raw backend English. Network/unknown
+        // errors keep the raw text as detail.
+        const code = err instanceof DirectBotRpcError ? err.code : null;
+        if (code === "bot_disabled") {
+          promptError.value = "botDisabled";
+          promptErrorDetail.value = null;
+        } else if (code === "unknown-type") {
+          promptError.value = "connectorOutdated";
+          promptErrorDetail.value = null;
+        } else if (code === "conversation_target_mismatch" || code === "conversation_mismatch") {
+          promptError.value = "topicRecovering";
+          promptErrorDetail.value = err instanceof Error ? err.message : String(err);
+        } else {
+          promptError.value = err instanceof Error ? err.message : String(err);
+          promptErrorDetail.value = promptError.value;
+        }
       } else if (isCurrent() && promptError.value === "runInProgress") {
         // The blocked Prompt C was never sent and its Run is now durable:
         // drop the transient gate error instead of pinning a stale banner.
@@ -1887,6 +1954,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const rId = activeRun.value?.id;
     const generation = currentSelectionGeneration;
     if (!iId) return;
+    // Fail-closed from the first line: buffered WS events were lost, so the
+    // durable owner is unknown until loadHistory + runs.list re-prove it.
+    // Close admission synchronously — before the catalog RPCs can stall — and
+    // invalidate in-flight history/discovery generations so a stale
+    // pre-reconnect response cannot reopen the gate or plant an owner.
+    if (tId) {
+      topicReady.value = false;
+      historyRequestSequence += 1;
+      discoverySequence += 1;
+    }
     try {
       const bots = await loadBots(iId);
       // The reconcile started before this await: the user may have selected
@@ -2024,6 +2101,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
               ...runParts.value,
               [matchingRunId]: [...matchingTurn.parts],
             };
+            // A fresh live snapshot restarts the stream: prior completeness
+            // evidence no longer applies to the new turn.
+            if (runPartsComplete.value[matchingRunId]) {
+              const { [matchingRunId]: _dropped, ...rest } = runPartsComplete.value;
+              runPartsComplete.value = rest;
+            }
 
             const targetInstId = event.instanceId;
             const targetConvId = activeConversationId.value ?? undefined;
@@ -2182,6 +2265,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           newestSeq.value = Math.max(newestSeq.value ?? 0, msg.seq);
           // Same chained rule as the HTTP accept path (see helper).
           advanceContiguousForSeq(msg.seq);
+          // Same durable-final rule as mergeHistoryPage: a live bot row for
+          // a Run whose trace never finished proves the partial stale.
+          pruneIncompleteTraces();
         }
         // If this message belongs to the active run and is from the bot, converge liveTurn
         if (msg.role === "bot" && activeRun.value && msg.runId === activeRun.value.id) {
@@ -2435,22 +2521,18 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         }
       } else if (e.type === "turn-finished") {
         liveTurn.value.status = "working";
-        // Retain parts under runId
+        // Retain parts under runId — and only this event proves the snapshot
+        // complete, so a reconnect that later recovers the durable final row
+        // can trust it over the message content fallback.
         if (corr.runId) {
           runParts.value = {
             ...runParts.value,
             [corr.runId]: [...parts],
           };
+          runPartsComplete.value = { ...runPartsComplete.value, [corr.runId]: true };
         }
       }
 
-      // Also update runParts copy
-      if (corr.runId) {
-        runParts.value = {
-          ...runParts.value,
-          [corr.runId]: [...parts],
-        };
-      }
     }
   }
 
@@ -2484,6 +2566,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     cancellingRunId,
     cancelUncertaintyRunId,
     runParts,
+    completeRunParts,
     currentDraftRequestId,
     lastPromptText,
     promptInFlight,

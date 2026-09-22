@@ -188,7 +188,7 @@ async function handleDeleteBot(): Promise<void> {
       :live-turn="directBotsStore.liveTurn"
       :active-run="directBotsStore.activeRun"
       :active-member-turn="directBotsStore.activeMemberTurn"
-      :run-parts="directBotsStore.runParts"
+      :run-parts="directBotsStore.completeRunParts"
       :plan-entries="directBotsStore.planEntries"
       :has-more-older="directBotsStore.hasMoreBefore"
       :loading-older="directBotsStore.loadingOlder"
