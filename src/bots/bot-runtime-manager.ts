@@ -105,7 +105,7 @@ export class BotRuntimeManager {
     });
   }
 
-  private async releaseDirectBindingInternal(snapshot: BotRuntimeBinding, bindingId: string): Promise<void> {
+  private async releaseDirectBindingInternal(snapshot: DirectBotRuntimeBinding, bindingId: string): Promise<void> {
     const live = this.state.bot_runtime_bindings[bindingId];
     if (!live || live.scope !== "bot-direct") {
       return;
@@ -190,7 +190,7 @@ export class BotRuntimeManager {
     const adopted = this.findAdoptableLegacyBinding(bot.id, scope);
     if (adopted && this.bindingSessionIsLive(adopted)) {
       const session = this.sessions.getLogicalSessionById(adopted.logicalSessionId)
-        ?? this.findOwnedSession(adopted.id);
+        ?? this.findOwnedSession(adopted.id, bot.id, scope.conversationId);
       const target = input.execution ?? bot;
       const targetEffort = target.effort;
       if (session && session.effort && !targetEffort) {
