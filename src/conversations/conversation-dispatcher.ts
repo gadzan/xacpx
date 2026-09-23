@@ -172,8 +172,31 @@ export class ConversationDispatcher {
         }),
       });
     }
-    for (const entry of pending) {
-      this.persistCancelOutcome(outcome.run.id, entry.member, entry.result);
+    // Two-phase settlement: physical cancel already fanned out to every
+    // active member above. Persist ALL observed outcomes as member evidence
+    // in one transaction first, then aggregate the Run once. A sibling's
+    // unknown can never erase another member's proven completion/failure:
+    // A=indeterminate + B=completed yields B=completed with evidence and
+    // Run=indeterminate — never B=indeterminate.
+    const settled = this.store.settleCancelBatch({
+      runId: outcome.run.id,
+      now: this.now().toISOString(),
+      outcomes: pending.map((entry) => ({
+        memberTurnId: entry.member.id,
+        outcome: entry.result.outcome,
+        ...(entry.result.outcome === "completed" ? { content: entry.result.text ?? "" } : {}),
+        ...(entry.result.outcome === "completed"
+          ? { sourceTurn: { sessionAlias: entry.member.sessionAlias ?? "", turnId: entry.member.sourceTurnId } }
+          : {}),
+        ...(entry.result.outcome === "failed" ? { reason: entry.result.error ?? "failed" } : {}),
+      })),
+    });
+    for (const entry of settled.settled) {
+      if (entry.outcome === "completed" && entry.message) {
+        this.emitTerminalProjection(settled.run, entry.member, entry.message);
+      } else {
+        this.emitRunAndMember(settled.run, entry.member.id);
+      }
     }
     await this.kick();
   }

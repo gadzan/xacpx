@@ -2949,7 +2949,88 @@ test("unknown on first active member never skips the second physical cancel", as
   await first.dispatcher.cancelRun(claimA.run.id);
   expect(calls.sort()).toEqual(["sturn_a", "sturn_b"]);
   expect(first.store.getRun(claimA.run.id)?.state).toBe("indeterminate");
+  // B's proven outcome survives A's unknown: order-independent evidence.
+  expect(first.store.getMemberTurn(claimB.memberTurn.id)?.state).toBe("cancelled");
+  expect(first.store.getMemberTurn(claimA.memberTurn.id)?.state).toBe("indeterminate");
   first.store.close();
+});
+
+test("unknown + proven sibling preserves evidence in both orders", async () => {
+  for (const secondOutcome of ["cancelled", "completed", "failed"] as const) {
+    for (const unknownFirst of [true, false]) {
+      const first = await createLifecycle();
+      seedTesterBot(first.state);
+      const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+      const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+        workspace: "backend",
+        isolation: "shared-single-writer",
+      });
+      const botA = first.bots.getBot(BOT_ID);
+      const botB = first.bots.getBot(TESTER_ID);
+      const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+      const accepted = first.store.acceptRequest({
+        conversationId: group.id,
+        topicId: topic.id,
+        requestId: `req-ev-${secondOutcome}-${unknownFirst}`,
+        botId: botA.id,
+        content: "go",
+        profileSnapshot: snapshotBotProfile(botA, NOW),
+        mode: "automatic",
+        members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+        now: NOW,
+      });
+      const [turnA, turnB] = accepted.memberTurns;
+      const botOf = (id: string) => (id === turnA!.id ? botA.id : botB.id);
+      // Direct two-phase settlement: unknown on one member, proven on other.
+      const unknownId = unknownFirst ? turnA!.id : turnB!.id;
+      const provenId = unknownFirst ? turnB!.id : turnA!.id;
+      const outcomes = unknownFirst
+        ? [
+          { memberTurnId: unknownId, outcome: "unknown" as const },
+          secondOutcome === "completed"
+            ? {
+              memberTurnId: provenId,
+              outcome: "completed" as const,
+              content: "proven work",
+              sourceTurn: { sessionAlias: `sess_${provenId}` },
+            }
+            : secondOutcome === "failed"
+              ? { memberTurnId: provenId, outcome: "failed" as const, reason: "proven failure" }
+              : { memberTurnId: provenId, outcome: "cancelled" as const },
+        ]
+        : [
+          secondOutcome === "completed"
+            ? {
+              memberTurnId: provenId,
+              outcome: "completed" as const,
+              content: "proven work",
+              sourceTurn: { sessionAlias: `sess_${provenId}` },
+            }
+            : secondOutcome === "failed"
+              ? { memberTurnId: provenId, outcome: "failed" as const, reason: "proven failure" }
+              : { memberTurnId: provenId, outcome: "cancelled" as const },
+          { memberTurnId: unknownId, outcome: "unknown" as const },
+        ];
+      const settled = first.store.settleCancelBatch({ runId: accepted.run.id, outcomes, now: NOW });
+      expect(settled.run.state).toBe("indeterminate");
+      const proven = first.store.getMemberTurn(provenId)!;
+      const unknown = first.store.getMemberTurn(unknownId)!;
+      expect(unknown.state).toBe("indeterminate");
+      if (secondOutcome === "completed") {
+        expect(proven.state).toBe("completed");
+        const evidence = first.store.listMessages({
+          conversationId: group.id, topicId: topic.id, limit: 10,
+        }).filter((message) => message.role === "bot" && message.senderBotId === botOf(provenId));
+        expect(evidence.map((message) => message.content)).toContain("proven work");
+      } else if (secondOutcome === "failed") {
+        expect(proven.state).toBe("failed");
+        expect(settled.run.failedBotIds).toContain(botOf(provenId));
+      } else {
+        expect(proven.state).toBe("cancelled");
+      }
+      first.store.close();
+    }
+  }
 });
 
 test("automatic cancel that races a member completion still terminals the run", async () => {

@@ -11,6 +11,7 @@ import type {
   AcceptRequestInput,
   AcceptRequestResult,
   AssertLiveDispatchForMaterializeInput,
+  CancelMemberOutcome,
   CancelRunResult,
   ClaimedWork,
   ClaimNextDispatchInput,
@@ -23,6 +24,9 @@ import type {
   MarkExecutionStartedInput,
   RecoveredClaim,
   ReleaseClaimToPendingInput,
+  SettleCancelBatchInput,
+  SettleCancelBatchResult,
+  SettledCancelMember,
 } from "./conversation-store";
 import {
   conversationExecutionOrigin,
@@ -962,6 +966,124 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
+  settleCancelBatch(input: SettleCancelBatchInput): SettleCancelBatchResult {
+    return this.sqlite.transaction(() => {
+      const run = this.requireRun(input.runId);
+      if (TERMINAL_RUN_STATES.includes(run.state)) {
+        return {
+          run,
+          settled: input.outcomes.map((entry) => ({
+            member: this.requireMemberTurn(entry.memberTurnId),
+            outcome: entry.outcome,
+          })),
+        };
+      }
+      // Phase 1: persist every member's observed physical outcome as member
+      // evidence. Proven outcomes win per-member: a member that already
+      // reached a terminal state keeps it (idempotent fence); an unknown
+      // never overwrites a sibling's proven evidence, and proven evidence
+      // is never downgraded by a later unknown.
+      const settled: SettledCancelMember[] = [];
+      for (const entry of input.outcomes) {
+        const member = this.requireMemberTurn(entry.memberTurnId);
+        if (member.runId !== input.runId) {
+          throw new ConversationError("stale_claim", `member turn "${entry.memberTurnId}" does not belong to run "${input.runId}"`);
+        }
+        if (TERMINAL_MEMBER_STATES.includes(member.state)) {
+          settled.push({ member, outcome: entry.outcome });
+          continue;
+        }
+        if (entry.outcome === "completed") {
+          const seq = this.allocateSeq(run.conversationId, run.topicId);
+          const messageId = this.ids.messageId();
+          this.sqlite.run(
+            `INSERT INTO messages (
+               id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
+             ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+            [
+              messageId,
+              run.conversationId,
+              run.topicId,
+              seq,
+              member.botId,
+              entry.content ?? "",
+              run.id,
+              JSON.stringify(entry.sourceTurn ?? { sessionAlias: member.sessionAlias ?? "" }),
+              input.now,
+            ],
+          );
+          this.sqlite.run(
+            `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
+            [input.now, member.id],
+          );
+          this.sqlite.run(
+            `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+            [run.id],
+          );
+          this.finishDispatchForMemberTurn(member.id, input.now);
+          settled.push({
+            member: this.requireMemberTurn(member.id),
+            outcome: entry.outcome,
+            message: this.getMessage(messageId),
+          });
+          continue;
+        }
+        const state = entry.outcome === "failed"
+          ? "failed"
+          : entry.outcome === "unknown"
+            ? "indeterminate"
+            : "cancelled";
+        this.sqlite.run(
+          `UPDATE member_turns SET state = ?, finished_at = ? WHERE id = ?`,
+          [state, input.now, member.id],
+        );
+        this.sqlite.run(
+          `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+          [run.id],
+        );
+        this.finishDispatchForMemberTurn(member.id, input.now);
+        settled.push({ member: this.requireMemberTurn(member.id), outcome: entry.outcome });
+      }
+      // Phase 2: aggregate the Run once, from whole-batch evidence.
+      // Whole-run cancel always force-terminals (human cancel ends the Run,
+      // including automatic Runs awaiting routing). Indeterminate outranks
+      // failed; proven member evidence above is never rewritten by this step
+      // (it only sets Run-level state/reason/finished_at). Accumulate
+      // failedBotIds for EVERY failed member here: the aggregate only
+      // attributes its anchor member, which may be the unknown one.
+      const failedIds = new Set(this.requireRun(input.runId).failedBotIds);
+      for (const entry of settled) {
+        const fresh = this.requireMemberTurn(entry.member.id);
+        if (fresh.state === "failed") {
+          failedIds.add(fresh.botId);
+        }
+      }
+      if (failedIds.size > 0) {
+        this.sqlite.run(`UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`, [JSON.stringify([...failedIds]), input.runId]);
+      }
+      const anchor = settled.find((entry) => entry.outcome === "unknown")?.member
+        ?? settled.find((entry) => TERMINAL_MEMBER_STATES.includes(entry.member.state))?.member
+        ?? settled[0]?.member;
+      if (!anchor) {
+        return { run: this.requireRun(input.runId), settled };
+      }
+      const aggregated = this.aggregateRunAfterMemberTerminal(
+        input.runId,
+        anchor.id,
+        input.now,
+        "cancelled",
+        true,
+      );
+      return {
+        run: aggregated,
+        settled: settled.map((entry) => ({
+          member: this.requireMemberTurn(entry.member.id),
+          outcome: entry.outcome,
+          ...(entry.message ? { message: entry.message } : {}),
+        })),
+      };
+    });
+  }
   cancelRun(runId: string, now: string, reason = "cancelled"): CancelRunResult {
     return this.sqlite.transaction(() => {
       const run = this.requireRun(runId);

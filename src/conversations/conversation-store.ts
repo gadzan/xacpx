@@ -141,6 +141,35 @@ export interface ClaimFenceInput {
   now: string;
 }
 
+/** One member's observed physical cancel result for batch settlement. */
+export interface CancelMemberOutcome {
+  memberTurnId: string;
+  outcome: "completed" | "failed" | "cancelled" | "unknown";
+  /** Proven completion text (completed only). */
+  content?: string;
+  /** Proven completion correlation (completed only). */
+  sourceTurn?: { sessionAlias: string; turnId?: string };
+  /** Failure reason (failed only). */
+  reason?: string;
+}
+
+export interface SettleCancelBatchInput {
+  runId: string;
+  outcomes: CancelMemberOutcome[];
+  now: string;
+}
+
+export interface SettledCancelMember {
+  member: MemberTurnRecord;
+  outcome: CancelMemberOutcome["outcome"];
+  message?: ConversationMessage;
+}
+
+export interface SettleCancelBatchResult {
+  run: ConversationRun;
+  settled: SettledCancelMember[];
+}
+
 export interface ReleaseClaimToPendingInput extends ClaimFenceInput {}
 
 export interface FailClaimBeforeStartInput extends ClaimFenceInput, FailExecutionInput {}
@@ -192,6 +221,11 @@ export interface ConversationStore {
   failClaimBeforeStart(input: FailClaimBeforeStartInput): ConversationRun;
   cancelRun(runId: string, now: string, reason?: string): CancelRunResult;
   completeCancel(runId: string, memberTurnId: string, now: string, indeterminate?: boolean, forceRunTerminal?: boolean): ConversationRun;
+  /** Two-phase cancel settlement: persist every member's observed physical
+   *  cancel outcome as member evidence first (completed evidence, failed
+   *  state, cancelled, unknown), then aggregate the Run once. Proven member
+   *  outcomes are never overwritten by a sibling's unknown. */
+  settleCancelBatch(input: SettleCancelBatchInput): SettleCancelBatchResult;
   markConversationDeleting(conversationId: string, now: string): void;
   markTopicDeleting(topicId: string, conversationId: string, now: string): void;
   isConversationDeleting(conversationId: string): boolean;
