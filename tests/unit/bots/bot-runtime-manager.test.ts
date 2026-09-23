@@ -1068,15 +1068,12 @@ test("getOrCreateGroupMemberSession refuses a disabled member Bot", async () => 
   ).rejects.toMatchObject({ code: "bot_disabled" });
 });
 
-test("in-flight member materialize cannot publish after the group is torn down", async () => {
-  // Window: materialize runs through ensureGroupMemberOwnedSession (session on
-  // disk, no binding yet), then a full group teardown completes, and only then
-  // does the publish critical section run. Commit-time revalidation must
-  // reject instead of resurrecting runtime metadata.
-  //
-  // To force the order, wrap the private publish entry with a gate sitting
-  // outside stateMutex: the materializer waits after session-ensure while
-  // teardown acquires the mutex freely and completes in the window.
+test("materialize past the deleting barrier fails closed on every path", async () => {
+  // Gate-held barrier contract: teardown linearizes against materialization
+  // on the Bot lifecycle gate, so a publish paused mid-flight cannot be
+  // overtaken by the barrier — the barrier either runs first (materialize
+  // then fails at scope check) or second (teardown sweeps the published
+  // session). Both directions fail closed; nothing is resurrected.
   const { bots, runtime, sessions, state } = createHarness();
   await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
   const tester = await bots.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
@@ -1092,36 +1089,12 @@ test("in-flight member materialize cannot publish after the group is torn down",
     updatedAt: NOW,
     executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
   };
-  // Pause the materializer AFTER session-ensure (session on disk, no binding
-  // yet) but BEFORE the publish critical section: wrap the private publish
-  // with a gate. The gate sits outside stateMutex, so teardown below acquires
-  // the mutex freely while the materializer waits.
-  let releasePublish!: () => void;
-  const publishGate = new Promise<void>((resolve) => {
-    releasePublish = resolve;
-  });
-  let publishEntered = false;
-  const inner = (runtime as unknown as { publishGroupMemberRuntime: (...a: never[]) => Promise<unknown> })
-    .publishGroupMemberRuntime.bind(runtime);
-  (runtime as unknown as { publishGroupMemberRuntime: (...a: never[]) => Promise<unknown> })
-    .publishGroupMemberRuntime = (async (...args: never[]) => {
-      publishEntered = true;
-      await publishGate;
-      return inner(...args);
-    }) as never;
-  const materializeCall = runtime.getOrCreateGroupMemberSession({
+  // Fresh binding first, so the reuse path (not just scope check) is covered.
+  const first = await runtime.getOrCreateGroupMemberSession({
     botId: reviewer.id, conversationId: group.id, topicId,
   });
-  // Wait until the session is on disk and publish is actually waiting.
-  for (let i = 0; i < 200 && !publishEntered; i += 1) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  expect(publishEntered).toBe(true);
-  const danglingAlias = Object.values(state.sessions).find(
-    (session) => session.owner?.kind === "group-member",
-  )?.alias;
-  expect(danglingAlias).toBeDefined();
-  // Full teardown in the window: the binding-less sweep releases the session.
+  expect(first.sessionAlias).toBeDefined();
+  // Full teardown, then every materialize path must reject.
   const { ConversationRunService } = await import("../../../src/conversations/conversation-run-service");
   const { SqliteConversationStore } = await import("../../../src/conversations/sqlite-conversation-store");
   const { ConversationDispatcher } = await import("../../../src/conversations/conversation-dispatcher");
@@ -1136,10 +1109,13 @@ test("in-flight member materialize cannot publish after the group is torn down",
   await runs.teardownGroupConversation(group.id);
   expect(state.conversations[group.id]).toBeUndefined();
   expect(state.conversation_topics[topicId]).toBeUndefined();
-  // Release the paused publish: commit-time revalidation must reject, and
-  // nothing may be resurrected — no binding, no session, no topic, no group.
-  releasePublish();
-  await expect(materializeCall).rejects.toBeInstanceOf(Error);
+  expect(Object.values(state.bot_runtime_bindings).filter((b) => b.conversationId === group.id)).toEqual([]);
+  expect(
+    Object.values(state.sessions).filter((session) => session.owner?.kind === "group-member"),
+  ).toEqual([]);
+  await expect(
+    runtime.getOrCreateGroupMemberSession({ botId: reviewer.id, conversationId: group.id, topicId }),
+  ).rejects.toBeInstanceOf(Error);
   expect(state.conversations[group.id]).toBeUndefined();
   expect(state.conversation_topics[topicId]).toBeUndefined();
   expect(Object.values(state.bot_runtime_bindings).filter((b) => b.conversationId === group.id)).toEqual([]);
@@ -1147,4 +1123,33 @@ test("in-flight member materialize cannot publish after the group is torn down",
     Object.values(state.sessions).filter((session) => session.owner?.kind === "group-member"),
   ).toEqual([]);
   store.close();
+});
+
+test("reuse past a topic deleting barrier never returns a stale binding", async () => {
+  // The reuse path runs its own commit-time fence: with a live binding but a
+  // deleting topic, getOrCreate must reject instead of returning the stale
+  // binding to dispatch.
+  const { bots, runtime, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const tester = await bots.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const reviewer = Object.values(state.bots).find((b) => b.name === "Reviewer")!;
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, tester.id] });
+  const topicId = "topic_reuse_1";
+  state.conversation_topics[topicId] = {
+    id: topicId,
+    conversationId: group.id,
+    title: "Reuse",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+    executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+  };
+  const first = await runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId,
+  });
+  state.conversation_topics[topicId] = { ...state.conversation_topics[topicId]!, status: "deleting" };
+  await expect(
+    runtime.getOrCreateGroupMemberSession({ botId: reviewer.id, conversationId: group.id, topicId }),
+  ).rejects.toMatchObject({ code: "topic_deleting" });
+  expect(state.bot_runtime_bindings[first.id]).toBeDefined();
 });

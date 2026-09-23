@@ -10,7 +10,7 @@ import {
   type DirectBotRuntimeBinding,
   type GroupMemberRuntimeBinding,
 } from "./bot-service";
-import type { BotProfile, BotProfileExecution, BotRuntimeBinding } from "./bot-types";
+import { sessionMatchesExecution, type BotProfile, type BotProfileExecution, type BotRuntimeBinding } from "./bot-types";
 import { planDirectConversation } from "../conversations/direct-conversation";
 import type { ConversationTopic } from "../conversations/conversation-types";
 import {
@@ -193,6 +193,66 @@ export class BotRuntimeManager {
     });
   }
 
+  private async releaseGroupMemberBindingInternal(
+    snapshot: GroupMemberRuntimeBinding,
+    bindingId: string,
+  ): Promise<void> {
+    const live = this.state.bot_runtime_bindings[bindingId];
+    if (!live || live.scope !== "group-member") {
+      return;
+    }
+    this.assertGroupMemberBindingIdentity(live);
+    if (
+      live.botId !== snapshot.botId
+      || live.conversationId !== snapshot.conversationId
+      || live.topicId !== snapshot.topicId
+      || live.sessionAlias !== snapshot.sessionAlias
+      || live.logicalSessionId !== snapshot.logicalSessionId
+    ) {
+      throw this.groupMemberBindingConflict(live.botId, live);
+    }
+    const byAlias = this.sessions.getLogicalSessionRecord(live.sessionAlias);
+    const byId = this.sessions.getLogicalSessionById(live.logicalSessionId);
+    if (byAlias || byId) {
+      if (
+        !byAlias
+        || !byId
+        || byAlias.logical_session_id !== byId.logical_session_id
+        || byAlias.alias !== byId.alias
+      ) {
+        throw this.groupMemberBindingConflict(live.botId, live);
+      }
+      this.assertGroupMemberBindingOwnsSession(live, byAlias);
+      await this.releaseOwnedSession(live.sessionAlias);
+    }
+    const remaining = this.state.bot_runtime_bindings[bindingId];
+    if (
+      !remaining
+      || remaining.sessionAlias !== live.sessionAlias
+      || remaining.logicalSessionId !== live.logicalSessionId
+    ) {
+      return;
+    }
+    await this.stateMutex.run(async () => {
+      const current = this.state.bot_runtime_bindings[bindingId];
+      if (
+        !current
+        || current.sessionAlias !== live.sessionAlias
+        || current.logicalSessionId !== live.logicalSessionId
+      ) {
+        return;
+      }
+      const next = structuredClone(this.state);
+      delete next.bot_runtime_bindings[bindingId];
+      if (typeof this.stateStore.saveNow === "function") {
+        await this.stateStore.saveNow(next);
+      } else {
+        await this.stateStore.save(next);
+      }
+      replaceRuntimeState(this.state, next);
+    });
+  }
+
   private async materializeDirectSession(input: {
     botId: string;
     conversationId?: string;
@@ -252,8 +312,21 @@ export class BotRuntimeManager {
     const scopedId = createScopedGroupMemberBindingId(scope.conversationId, scope.topicId, bot.id);
     const existing = this.findScopedGroupMemberBinding(scope.conversationId, scope.topicId, bot.id);
     if (existing && this.groupMemberBindingSessionIsLive(existing)) {
-      await this.alignGroupMemberSessionRuntime(existing, effective);
-      return existing;
+      // Reuse crosses the same commit-time fence as fresh publish: the
+      // barrier may have landed after scope resolution (topic deleting, group
+      // deleting, bot removed/disabled). Returning a stale binding past the
+      // barrier would hand dispatch a session teardown is about to release.
+      await this.assertGroupMemberReuseDispatchable(bot, scope);
+      const session = this.sessions.getLogicalSessionRecord(existing.sessionAlias)
+        ?? this.sessions.getLogicalSessionById(existing.logicalSessionId);
+      if (session && session.effort && !effective.effort) {
+        // Turn-boundary recreate mirrors direct: clearing effort from a set
+        // value to default must not silently keep the old effort runtime.
+        await this.releaseGroupMemberBindingInternal(existing, existing.id);
+      } else {
+        await this.alignGroupMemberSessionRuntime(existing, effective);
+        return existing;
+      }
     }
     const session = await this.ensureGroupMemberOwnedSession(bot, scopedId, scope, effective);
     return await this.publishGroupMemberRuntime(bot, session, scopedId, scope);
@@ -273,10 +346,17 @@ export class BotRuntimeManager {
     if (execution) {
       return execution;
     }
+    // Group Topics must carry an explicit ExecutionTarget: a missing target
+    // is unknown policy (legacy/damaged/migration gap), never the Bot
+    // default. Failing closed here avoids silently running member work in
+    // the wrong workspace. Direct Topics keep resolving from the Bot.
     const target = topic.executionTarget;
+    if (!target) {
+      throw new BotError("execution_target_missing", `topic "${topic.id}" has no execution target`);
+    }
     return {
       agent: bot.agent,
-      workspace: target?.workspace ?? bot.workspace,
+      workspace: target.workspace,
       ...(bot.model ? { model: bot.model } : {}),
       ...(bot.effort ? { effort: bot.effort } : {}),
     };
@@ -299,8 +379,11 @@ export class BotRuntimeManager {
     if (!execution) {
       return;
     }
-    const resolvedWorkspace = topic.executionTarget?.workspace ?? bot.workspace;
-    if (bot.agent !== execution.agent || resolvedWorkspace !== execution.workspace) {
+    const target = topic.executionTarget;
+    if (!target) {
+      throw new BotError("execution_target_missing", `topic "${topic.id}" has no execution target`);
+    }
+    if (bot.agent !== execution.agent || target.workspace !== execution.workspace) {
       throw new BotError(
         "runtime_revision_mismatch",
         `bot "${bot.id}" group execution no longer matches the accepted target`,
@@ -489,8 +572,19 @@ export class BotRuntimeManager {
     execution?: BotProfileExecution,
   ): Promise<LogicalSession> {
     const alias = ownedGroupMemberSessionAlias(bindingId);
+    const expected = execution ?? bot;
     const current = this.findOwnedGroupMemberSession(bindingId, bot.id, scope.conversationId, scope.topicId);
     if (current) {
+      // Binding-less recovery must not resurrect an old-Agent session under a
+      // changed identity: agent/workspace/model/effort all gate reuse, the
+      // same axes the dispatcher checks post-materialize. A mismatch fails
+      // closed instead of silently adopting stale Agent context.
+      if (!sessionMatchesExecution(current, expected)) {
+        throw new BotError(
+          "runtime_revision_mismatch",
+          `bot "${bot.id}" group execution no longer matches the persisted session`,
+        );
+      }
       return current;
     }
     const occupant = this.sessions.getLogicalSessionRecord(alias);
@@ -522,6 +616,12 @@ export class BotRuntimeManager {
     const record = this.findOwnedGroupMemberSession(bindingId, bot.id, scope.conversationId, scope.topicId);
     if (!record) {
       throw new BotError("session_missing", `failed to persist owned session for bot "${bot.id}"`);
+    }
+    if (!sessionMatchesExecution(record, expected)) {
+      throw new BotError(
+        "runtime_revision_mismatch",
+        `bot "${bot.id}" group execution no longer matches the persisted session`,
+      );
     }
     return record;
   }
@@ -625,6 +725,49 @@ export class BotRuntimeManager {
         // Product projection must not affect dispatch fencing.
       }
       return published;
+    });
+  }
+
+  /**
+   * Reuse-path commit fence: mirrors the publish critical-section checks
+   * without the session/body work. Runs on the shared mutex so the read is
+   * linearizable against a concurrent teardown finalization; the barrier set
+   * just before this read still fails closed here.
+   */
+  private async assertGroupMemberReuseDispatchable(
+    bot: BotProfile,
+    scope: { conversationId: string; topicId: string },
+  ): Promise<void> {
+    await this.stateMutex.run(async () => {
+      const liveConversation = this.state.conversations[scope.conversationId];
+      if (!liveConversation || liveConversation.kind !== "group") {
+        throw new BotError("conversation_not_group", `conversation "${scope.conversationId}" is not a Group`);
+      }
+      if (!liveConversation.botIds.includes(bot.id)) {
+        throw new BotError(
+          "group_member_not_member",
+          `bot "${bot.id}" is not a member of group "${scope.conversationId}"`,
+        );
+      }
+      if (liveConversation.lifecycle === "deleting") {
+        throw new BotError("conversation_deleting", `group "${scope.conversationId}" is deleting`);
+      }
+      const liveTopic = this.state.conversation_topics[scope.topicId];
+      if (!liveTopic || liveTopic.conversationId !== scope.conversationId) {
+        throw new BotError("topic_not_found", `topic "${scope.topicId}" does not belong to group "${scope.conversationId}"`);
+      }
+      if (liveTopic.status !== "active") {
+        throw new BotError("topic_deleting", `topic "${scope.topicId}" is deleting`);
+      }
+      let liveBot: BotProfile;
+      try {
+        liveBot = this.bots.getBot(bot.id);
+      } catch {
+        throw new BotError("bot_not_found", `bot "${bot.id}" does not exist`);
+      }
+      if (!liveBot.enabled) {
+        throw new BotError("bot_disabled", `bot "${bot.id}" is disabled`);
+      }
     });
   }
 

@@ -232,6 +232,7 @@ var isBoundedStr = (v, maxLen) => typeof v === "string" && v.length > 0 && v.len
 var isIntInRange = (v, min, max) => typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
 var isNonNegInt = (v) => typeof v === "number" && Number.isInteger(v) && v >= 0;
 var optNonNegInt = (v) => v === undefined || isNonNegInt(v);
+var optStrArr = (v) => v === undefined || Array.isArray(v) && v.every((entry) => typeof entry === "string");
 function decodeCanonicalBase64(encoded) {
   if (typeof globalThis.atob === "function" && typeof globalThis.btoa === "function") {
     const binary = globalThis.atob(encoded);
@@ -535,7 +536,7 @@ function validMemberTurnSummary(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && typeof c.attempt === "number" && (c.origin === "human" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt);
+  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && typeof c.attempt === "number" && (c.origin === "human" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput) && optStrArr(c.dependsOn);
 }
 function validControlEvent(e) {
   if (typeof e !== "object" || e === null)
@@ -1269,6 +1270,7 @@ export {
   optNonNegInt,
   optNum,
   optStr,
+  optStrArr,
   parseCanonicalBase64,
   parseControlPayload,
   parseTerminalEventPayload,

@@ -20,7 +20,7 @@ import {
   TERMINAL_REBASE_CHUNK_BYTES,
 } from "./limits.js";
 import type { InstanceNoticePayload, TerminalRole } from "./messages.js";
-import { isBoundedStr, isIntInRange, isNonNegInt, isStr, optStr, optNum, optBool, optNonNegInt, parseCanonicalBase64 } from "./validate-primitives.js";
+import { isBoundedStr, isIntInRange, isNonNegInt, isStr, optBool, optNonNegInt, optNum, optStr, optStrArr, parseCanonicalBase64 } from "./validate-primitives.js";
 
 
 /** Envelope `type` for every relay→web push. */
@@ -582,7 +582,9 @@ function validMemberTurnSummary(value: unknown): boolean {
       || c.state === "completed" || c.state === "failed" || c.state === "cancelled"
       || c.state === "indeterminate")
     && typeof c.createdAt === "string"
-    && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt);
+    && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt)
+    && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput)
+    && optStrArr(c.dependsOn);
 }
 
 /** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.

@@ -104,6 +104,10 @@ interface MemberTurnRow {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  assignment_id: string | null;
+  task: string | null;
+  expected_output: string | null;
+  depends_on_json: string | null;
 }
 
 interface DispatchRow {
@@ -192,12 +196,15 @@ CREATE TABLE IF NOT EXISTS member_turns (
   trigger_message_ids_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   started_at TEXT,
-  finished_at TEXT
+  finished_at TEXT,
+  assignment_id TEXT,
+  task TEXT,
+  expected_output TEXT,
+  depends_on_json TEXT NOT NULL DEFAULT '[]'
 );
-
 CREATE TABLE IF NOT EXISTS pending_dispatches (
   id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL UNIQUE,
+  run_id TEXT NOT NULL,
   member_turn_id TEXT NOT NULL,
   generation INTEGER NOT NULL,
   state TEXT NOT NULL,
@@ -207,12 +214,14 @@ CREATE TABLE IF NOT EXISTS pending_dispatches (
   human_ingress TEXT,
   created_at TEXT NOT NULL,
   claimed_at TEXT,
-  completed_at TEXT
+  completed_at TEXT,
+  UNIQUE (run_id, member_turn_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_topic_seq ON messages (topic_id, seq);
 CREATE INDEX IF NOT EXISTS idx_runs_topic_state ON runs (topic_id, state, created_at);
 CREATE INDEX IF NOT EXISTS idx_dispatches_state ON pending_dispatches (state, created_at);
+CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state);
 CREATE INDEX IF NOT EXISTS idx_member_turns_run ON member_turns (run_id);
 `;
 
@@ -259,13 +268,14 @@ function mapMessage(row: MessageRow): ConversationMessage {
 }
 
 function mapRun(row: RunRow): ConversationRun {
+  const mode = row.mode === "automatic" ? "automatic" : "explicit";
   return {
     id: row.id,
     conversationId: row.conversation_id,
     topicId: row.topic_id,
     requestMessageId: row.request_message_id,
     requestId: row.request_id,
-    mode: "explicit",
+    mode,
     state: row.state as ConversationRunState,
     ...(optionalString(row.completion_reason) ? { completionReason: row.completion_reason as string } : {}),
     generation: Number(row.generation),
@@ -279,7 +289,20 @@ function mapRun(row: RunRow): ConversationRun {
   };
 }
 
+function parseDependsOn(json: string | null | undefined): string[] {
+  if (!json) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
+  const dependsOn = parseDependsOn(row.depends_on_json);
   return {
     id: row.id,
     runId: row.run_id,
@@ -298,6 +321,10 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
     createdAt: row.created_at,
     ...(optionalString(row.started_at) ? { startedAt: row.started_at as string } : {}),
     ...(optionalString(row.finished_at) ? { finishedAt: row.finished_at as string } : {}),
+    ...(optionalString(row.assignment_id) ? { assignmentId: row.assignment_id as string } : {}),
+    ...(optionalString(row.task) ? { task: row.task as string } : {}),
+    ...(optionalString(row.expected_output) ? { expectedOutput: row.expected_output as string } : {}),
+    ...(dependsOn.length > 0 ? { dependsOn } : {}),
   };
 }
 
@@ -343,6 +370,8 @@ export class SqliteConversationStore implements ConversationStore {
     this.sqlite.exec(SCHEMA);
     this.ensureDispatchAuthorityEpochColumn();
     this.ensureDispatchHumanIngressColumn();
+    this.ensureMemberTurnAssignmentColumns();
+    this.ensureDispatchMultiMemberShape();
   }
 
   private assertOpen(): void {
@@ -460,8 +489,23 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   getDispatchForRun(runId: string): PendingDispatch | undefined {
-    const row = this.sqlite.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE run_id = ?", [runId]);
+    const row = this.sqlite.get<DispatchRow>(
+      "SELECT * FROM pending_dispatches WHERE run_id = ? ORDER BY created_at ASC, id ASC",
+      [runId],
+    );
     return row ? mapDispatch(row) : undefined;
+  }
+
+  getDispatchForMemberTurn(memberTurnId: string): PendingDispatch | undefined {
+    const row = this.sqlite.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE member_turn_id = ?", [memberTurnId]);
+    return row ? mapDispatch(row) : undefined;
+  }
+
+  listDispatchesForRun(runId: string): PendingDispatch[] {
+    return this.sqlite.all<DispatchRow>(
+      "SELECT * FROM pending_dispatches WHERE run_id = ? ORDER BY created_at ASC, id ASC",
+      [runId],
+    ).map(mapDispatch);
   }
 
   recoverExpiredClaims(now: string): RecoveredClaim[] {
@@ -735,7 +779,7 @@ export class SqliteConversationStore implements ConversationStore {
       const run = this.requireRun(input.runId);
       const member = this.requireMemberTurn(input.memberTurnId);
       if (run.state === "cancelled") {
-        this.finishDispatchForRun(run.id, input.now);
+        this.finishDispatchForMemberTurn(member.id, input.now);
         if (!member.finishedAt) {
           this.sqlite.run(
             `UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?`,
@@ -749,7 +793,7 @@ export class SqliteConversationStore implements ConversationStore {
         };
       }
       if (run.state === "indeterminate") {
-        this.finishDispatchForRun(run.id, input.now);
+        this.finishDispatchForMemberTurn(member.id, input.now);
         return {
           run,
           memberTurn: member,
@@ -790,7 +834,7 @@ export class SqliteConversationStore implements ConversationStore {
          WHERE id = ?`,
         [input.completionReason ?? "completed", input.now, run.id],
       );
-      this.finishDispatchForRun(run.id, input.now);
+      this.finishDispatchForMemberTurn(member.id, input.now);
       return {
         run: this.requireRun(run.id),
         memberTurn: this.requireMemberTurn(member.id),
@@ -824,12 +868,13 @@ export class SqliteConversationStore implements ConversationStore {
   cancelRun(runId: string, now: string, reason = "cancelled"): CancelRunResult {
     return this.sqlite.transaction(() => {
       const run = this.requireRun(runId);
-      const member = this.listMemberTurns(runId)[0];
+      const members = this.listMemberTurns(runId);
+      const member = members[0];
       if (!member) {
         throw new ConversationError("member_turn_missing", `run "${runId}" has no member turn`);
       }
-      const dispatch = this.requireDispatchForRun(runId);
-      const executionStarted = Boolean(member.startedAt);
+      const dispatch = this.requireDispatchForMemberTurn(member.id);
+      const executionStarted = members.some((turn) => Boolean(turn.startedAt));
       if (TERMINAL_RUN_STATES.includes(run.state)) {
         return { run, memberTurn: member, dispatch, alreadyTerminal: true, executionStarted };
       }
@@ -849,15 +894,19 @@ export class SqliteConversationStore implements ConversationStore {
           executionStarted: true,
         };
       }
-      this.sqlite.run(
-        `UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?`,
-        [now, member.id],
-      );
+      // Multi-member cancel: every unstarted member settles in one
+      // transaction so no sibling dispatch survives the Run's terminal state.
+      for (const turn of members) {
+        this.sqlite.run(
+          `UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ? AND finished_at IS NULL`,
+          [now, turn.id],
+        );
+        this.finishDispatchForMemberTurn(turn.id, now);
+      }
       this.sqlite.run(
         `UPDATE runs SET state = 'cancelled', completion_reason = ?, finished_at = ? WHERE id = ?`,
         [reason, now, runId],
       );
-      this.finishDispatch(dispatch.id, now);
       return {
         run: this.requireRun(runId),
         memberTurn: this.requireMemberTurn(member.id),
@@ -989,6 +1038,78 @@ export class SqliteConversationStore implements ConversationStore {
     this.sqlite.exec("ALTER TABLE pending_dispatches ADD COLUMN human_ingress TEXT");
   }
 
+  /**
+   * PR6 multi-member durable shape (§9.3 + §9.4): assignment/task/expected
+   * output/dependencies land on member_turns, and one Run may own many
+   * pending dispatches — one per MemberTurn. Older databases created before
+   * this change migrate in place: new columns default empty, and the legacy
+   * UNIQUE(run_id) constraint is rebuilt as UNIQUE(run_id, member_turn_id).
+   */
+  private ensureMemberTurnAssignmentColumns(): void {
+    const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(member_turns)");
+    const names = new Set(cols.map((col) => col.name));
+    if (!names.has("assignment_id")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN assignment_id TEXT");
+    }
+    if (!names.has("task")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN task TEXT");
+    }
+    if (!names.has("expected_output")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN expected_output TEXT");
+    }
+    if (!names.has("depends_on_json")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN depends_on_json TEXT NOT NULL DEFAULT '[]'");
+    }
+  }
+
+  private ensureDispatchMultiMemberShape(): void {
+    const indexes = this.sqlite.all<{ name: string; sql: string | null }>(
+      "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'pending_dispatches'",
+    );
+    const uniqueRunOnly = indexes.some(
+      (index) => (index.sql ?? "").includes("UNIQUE") && (index.sql ?? "").includes("run_id")
+        && !(index.sql ?? "").includes("member_turn_id"),
+    );
+    if (!uniqueRunOnly) {
+      this.sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state)",
+      );
+      return;
+    }
+    this.sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS pending_dispatches_next (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        member_turn_id TEXT NOT NULL,
+        generation INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        owner TEXT,
+        lease_expires_at TEXT,
+        authority_epoch TEXT,
+        human_ingress TEXT,
+        created_at TEXT NOT NULL,
+        claimed_at TEXT,
+        completed_at TEXT,
+        UNIQUE (run_id, member_turn_id)
+      )`);
+    this.sqlite.exec(`
+      INSERT OR IGNORE INTO pending_dispatches_next (
+        id, run_id, member_turn_id, generation, state, owner, lease_expires_at,
+        authority_epoch, human_ingress, created_at, claimed_at, completed_at
+      )
+      SELECT id, run_id, member_turn_id, generation, state, owner, lease_expires_at,
+        authority_epoch, human_ingress, created_at, claimed_at, completed_at
+      FROM pending_dispatches`);
+    this.sqlite.exec(`DROP TABLE pending_dispatches`);
+    this.sqlite.exec(`ALTER TABLE pending_dispatches_next RENAME TO pending_dispatches`);
+    this.sqlite.exec(
+      "CREATE INDEX IF NOT EXISTS idx_dispatches_state ON pending_dispatches (state, created_at)",
+    );
+    this.sqlite.exec(
+      "CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state)",
+    );
+  }
+
   private assertAcceptable(conversationId: string, topicId: string): void {
     if (this.isConversationDeleting(conversationId)) {
       throw new ConversationError("conversation_deleting", `conversation "${conversationId}" is deleting`);
@@ -1002,9 +1123,8 @@ export class SqliteConversationStore implements ConversationStore {
     const seq = this.allocateSeq(input.conversationId, input.topicId);
     const messageId = this.ids.messageId();
     const runId = this.ids.runId();
-    const memberTurnId = this.ids.memberTurnId();
-    const dispatchId = this.ids.dispatchId();
     const maxMemberTurns = input.maxMemberTurns ?? 1;
+    const mode = input.mode ?? "explicit";
     this.sqlite.run(
       `INSERT INTO messages (
          id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
@@ -1016,13 +1136,14 @@ export class SqliteConversationStore implements ConversationStore {
          id, conversation_id, topic_id, request_message_id, request_id, mode, state, completion_reason,
          generation, max_member_turns, consumed_member_turns, profile_revision, profile_snapshot_json,
          created_at, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, 'explicit', 'queued', NULL, 1, ?, 0, ?, ?, ?, NULL, NULL)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, 'queued', NULL, 1, ?, 0, ?, ?, ?, NULL, NULL)`,
       [
         runId,
         input.conversationId,
         input.topicId,
         messageId,
         input.requestId,
+        mode,
         maxMemberTurns,
         input.profileSnapshot.revision,
         JSON.stringify(input.profileSnapshot),
@@ -1032,25 +1153,63 @@ export class SqliteConversationStore implements ConversationStore {
     const ingressJson = serializeHumanIngress(input.humanIngress);
     const authorityEpoch = ingressJson ? (input.authorityEpoch ?? null) : null;
     const memberOrigin = ingressJson && authorityEpoch ? "human" : "recovery";
-    this.sqlite.run(
-      `INSERT INTO member_turns (
-         id, run_id, conversation_id, topic_id, bot_id, session_alias, logical_session_id, source_turn_id,
-         queue_item_id, batch, attempt, origin, state, trigger_message_ids_json, created_at, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, 1, ?, 'queued', ?, ?, NULL, NULL)`,
-      [memberTurnId, runId, input.conversationId, input.topicId, input.botId, memberOrigin, JSON.stringify([messageId]), input.now],
-    );
-    this.sqlite.run(
-      `INSERT INTO pending_dispatches (
-         id, run_id, member_turn_id, generation, state, owner, lease_expires_at, created_at, claimed_at, completed_at, authority_epoch, human_ingress
-       ) VALUES (?, ?, ?, 1, 'pending', NULL, NULL, ?, NULL, NULL, ?, ?)`,
-      [dispatchId, runId, memberTurnId, input.now, authorityEpoch, ingressJson],
-    );
+    const members = [
+      {
+        botId: input.botId,
+        profileSnapshot: input.profileSnapshot,
+      },
+      ...(input.members ?? []),
+    ];
+    const seenBotIds = new Set<string>();
+    const memberTurnIds: string[] = [];
+    const dispatchIds: string[] = [];
+    for (const member of members) {
+      if (seenBotIds.has(member.botId)) {
+        throw new ConversationError("duplicate_member", `run accepts bot "${member.botId}" twice`);
+      }
+      seenBotIds.add(member.botId);
+      const memberTurnId = this.ids.memberTurnId();
+      const dispatchId = this.ids.dispatchId();
+      this.sqlite.run(
+        `INSERT INTO member_turns (
+           id, run_id, conversation_id, topic_id, bot_id, session_alias, logical_session_id, source_turn_id,
+           queue_item_id, batch, attempt, origin, state, trigger_message_ids_json, created_at, started_at, finished_at,
+           assignment_id, task, expected_output, depends_on_json
+         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, 1, ?, 'queued', ?, ?, NULL, NULL, ?, ?, ?, ?)`,
+        [
+          memberTurnId,
+          runId,
+          input.conversationId,
+          input.topicId,
+          member.botId,
+          memberOrigin,
+          JSON.stringify([messageId]),
+          input.now,
+          member.assignmentId ?? null,
+          member.task ?? null,
+          member.expectedOutput ?? null,
+          JSON.stringify(member.dependsOn ?? []),
+        ],
+      );
+      this.sqlite.run(
+        `INSERT INTO pending_dispatches (
+           id, run_id, member_turn_id, generation, state, owner, lease_expires_at, created_at, claimed_at, completed_at, authority_epoch, human_ingress
+         ) VALUES (?, ?, ?, 1, 'pending', NULL, NULL, ?, NULL, NULL, ?, ?)`,
+        [dispatchId, runId, memberTurnId, input.now, authorityEpoch, ingressJson],
+      );
+      memberTurnIds.push(memberTurnId);
+      dispatchIds.push(dispatchId);
+    }
+    const memberTurns = memberTurnIds.map((id) => this.requireMemberTurn(id));
+    const dispatches = dispatchIds.map((id) => this.requireDispatch(id));
     return {
       reused: false,
       message: this.requireMessage(messageId),
       run: this.requireRun(runId),
-      memberTurn: this.requireMemberTurn(memberTurnId),
-      dispatch: this.requireDispatch(dispatchId),
+      memberTurn: memberTurns[0]!,
+      dispatch: dispatches[0]!,
+      memberTurns,
+      dispatches,
     };
   }
 
@@ -1078,12 +1237,14 @@ export class SqliteConversationStore implements ConversationStore {
       return undefined;
     }
     const message = this.getMessage(run.requestMessageId);
-    const memberTurn = this.listMemberTurns(run.id)[0];
-    const dispatch = this.getDispatchForRun(run.id);
-    if (!message || !memberTurn || !dispatch) {
+    const memberTurns = this.listMemberTurns(run.id);
+    const dispatches = this.listDispatchesForRun(run.id);
+    const memberTurn = memberTurns[0];
+    const dispatch = memberTurn ? this.getDispatchForMemberTurn(memberTurn.id) : undefined;
+    if (!message || !memberTurn || !dispatch || memberTurns.length !== dispatches.length) {
       throw new ConversationError("accepted_request_incomplete", `request "${requestId}" is missing durable rows`);
     }
-    return { message, run, memberTurn, dispatch };
+    return { message, run, memberTurn, dispatch, memberTurns, dispatches };
   }
 
   private writeIndeterminate(runId: string, memberTurnId: string, now: string, reason: string): void {
@@ -1095,11 +1256,18 @@ export class SqliteConversationStore implements ConversationStore {
       `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
       [reason, now, runId],
     );
-    this.finishDispatchForRun(runId, now);
+    this.finishDispatchForMemberTurn(memberTurnId, now);
   }
 
   private finishDispatchForRun(runId: string, now: string): void {
-    const dispatch = this.sqlite.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE run_id = ?", [runId]);
+    const rows = this.sqlite.all<DispatchRow>("SELECT * FROM pending_dispatches WHERE run_id = ?", [runId]);
+    for (const dispatch of rows) {
+      this.finishDispatch(dispatch.id, now);
+    }
+  }
+
+  private finishDispatchForMemberTurn(memberTurnId: string, now: string): void {
+    const dispatch = this.sqlite.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE member_turn_id = ?", [memberTurnId]);
     if (dispatch) {
       this.finishDispatch(dispatch.id, now);
     }
@@ -1155,7 +1323,7 @@ export class SqliteConversationStore implements ConversationStore {
       `UPDATE runs SET state = ?, completion_reason = ?, finished_at = ? WHERE id = ?`,
       [state, input.reason, input.now, input.runId],
     );
-    this.finishDispatchForRun(input.runId, input.now);
+    this.finishDispatchForMemberTurn(input.memberTurnId, input.now);
     return this.requireRun(input.runId);
   }
 
@@ -1195,6 +1363,14 @@ export class SqliteConversationStore implements ConversationStore {
     const dispatch = this.getDispatchForRun(runId);
     if (!dispatch) {
       throw new ConversationError("dispatch_not_found", `run "${runId}" has no dispatch`);
+    }
+    return dispatch;
+  }
+
+  private requireDispatchForMemberTurn(memberTurnId: string): PendingDispatch {
+    const dispatch = this.getDispatchForMemberTurn(memberTurnId);
+    if (!dispatch) {
+      throw new ConversationError("dispatch_not_found", `member turn "${memberTurnId}" has no dispatch`);
     }
     return dispatch;
   }

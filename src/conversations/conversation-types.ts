@@ -132,6 +132,8 @@ export interface MemberTurnRecord {
   task?: string;
   /** Expected output description for this assignment. */
   expectedOutput?: string;
+  /** Assignment ids this turn depends on (Router dependsOn). */
+  dependsOn?: string[];
 }
 
 /** Server-derived authenticated human ingress. Clients cannot mint this. */

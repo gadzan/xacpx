@@ -374,6 +374,10 @@ export interface MemberTurnSummaryDto {
     createdAt: string;
     startedAt?: string;
     finishedAt?: string;
+    assignmentId?: string;
+    task?: string;
+    expectedOutput?: string;
+    dependsOn?: string[];
 }
 export interface ConversationRunDetailDto extends ConversationRunDto {
     profileSnapshot?: BotProfileSnapshotDto;

@@ -36,6 +36,9 @@ export const isNonNegInt = (v: unknown): v is number =>
 /** Optional finite non-negative integer: absent or `isNonNegInt`. */
 export const optNonNegInt = (v: unknown): boolean => v === undefined || isNonNegInt(v);
 
+/** Optional string array: absent or an array of strings. */
+export const optStrArr = (v: unknown): boolean =>
+  v === undefined || (Array.isArray(v) && v.every((entry) => typeof entry === "string"));
 type Base64BufferCtor = {
   from(value: string, encoding: "base64"): {
     length: number;

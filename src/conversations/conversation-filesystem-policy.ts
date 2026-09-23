@@ -26,19 +26,22 @@ export function isEffectConcurrencySafe(
   if (otherInFlight <= 0) {
     return true;
   }
-  if (isolation === "shared") {
-    return true;
-  }
+  // `shared` parallel execution is safe only for turns proven non-mutating by
+  // enforced capability/tool policy. Anything else is treated as potentially
+  // mutating, including `mutating` and `unknown` (unproven). The `shared`
+  // tree itself never serializes here; the PR7+ scheduler still routes
+  // through this classification when deciding what may run alongside.
   return effect === "read-only";
 }
 
 /** True when the turn must acquire the Topic's single-writer slot. */
 export function requiresSingleWriterSlot(
   effect: MemberTurnEffect | undefined,
-  isolation: WorkspaceIsolationPolicy,
+  _isolation: WorkspaceIsolationPolicy,
 ): boolean {
-  if (isolation === "shared") {
-    return false;
-  }
+  // Every isolation reports the same answer today: only a proven `read-only`
+  // turn skips the writer slot. `shared` never serializes by itself — the
+  // scheduler still decides — but this seam must not mark unproven work as
+  // safe to run alongside on any tree.
   return effect !== "read-only";
 }

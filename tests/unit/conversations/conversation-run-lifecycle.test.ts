@@ -1988,3 +1988,171 @@ test("group delete keeps the record when store row cleanup throws, retryable", a
   expect(first.state.conversations[group.id]).toBeUndefined();
   expect(first.store.hasDurableGroupWork(group.id)).toBe(false);
 });
+
+test("group topic teardown linearizes with a late member materializer instead of deadlocking", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Materialize one member so the binding exists.
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID, conversationId: group.id, topicId: topic.id,
+  });
+  expect(binding.sessionAlias).toBeDefined();
+  // Start a second materializer for the other member, then tear down the
+  // topic concurrently: the gate-held barrier must linearize, not deadlock.
+  const late = first.runtime.getOrCreateGroupMemberSession({
+    botId: TESTER_ID, conversationId: group.id, topicId: topic.id,
+  });
+  const teardown = first.service.teardownGroupTopic(group.id, topic.id);
+  const settled = await Promise.race([
+    Promise.allSettled([late, teardown]).then(() => "settled"),
+    new Promise((resolve) => setTimeout(() => resolve("timeout"), 4000)),
+  ]);
+  expect(settled).toBe("settled");
+  const [lateOutcome] = await Promise.allSettled([late]);
+  // Either the late materializer won the gate first (then teardown swept its
+  // session) or it queued behind the barrier (then it failed closed). In both
+  // cases teardown completes and no member session survives.
+  await teardown;
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  const survivors = Object.values(first.state.sessions).filter(
+    (session) => session.owner?.kind === "group-member",
+  );
+  expect(survivors).toEqual([]);
+  if (lateOutcome.status === "rejected") {
+    expect(lateOutcome.reason).toBeInstanceOf(Error);
+  }
+  first.store.close();
+});
+
+test("topic teardown never releases another topic's session via a partial legacy owner", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topicA = await first.service.createGroupTopic(group.id, "A", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const topicB = await first.service.createGroupTopic(group.id, "B", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Topic B: live binding + session whose owner is a partial legacy shape
+  // ({ kind, bindingId } only, no scope fields).
+  const bindingB = await first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID, conversationId: group.id, topicId: topicB.id,
+  });
+  const sessionB = first.state.sessions[bindingB.sessionAlias]!;
+  sessionB.owner = { kind: "group-member", bindingId: bindingB.id };
+  // Teardown A must leave B's session and binding untouched.
+  await first.service.teardownGroupTopic(group.id, topicA.id);
+  expect(first.state.conversation_topics[topicA.id]).toBeUndefined();
+  expect(first.state.sessions[bindingB.sessionAlias]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[bindingB.id]).toBeDefined();
+  first.store.close();
+});
+
+test("multi-member accept persists one run with N turns and N dispatches across reopen", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-multi",
+    botId: botA.id,
+    content: "review it",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    mode: "automatic",
+    members: [{
+      botId: botB.id,
+      profileSnapshot: snapshotBotProfile(botB, NOW),
+      assignmentId: "assign_b",
+      task: "Write tests",
+      expectedOutput: "passing suite",
+      dependsOn: ["assign_a"],
+    }],
+    now: NOW,
+  });
+  expect(accepted.memberTurns).toHaveLength(2);
+  expect(accepted.dispatches).toHaveLength(2);
+  expect(accepted.run.mode).toBe("automatic");
+  // Reopen the same SQLite file: everything round-trips.
+  first.store.close();
+  const reopened = await SqliteConversationStore.open(first.path);
+  const run = reopened.getRun(accepted.run.id);
+  expect(run?.mode).toBe("automatic");
+  const turns = reopened.listMemberTurns(accepted.run.id);
+  expect(turns).toHaveLength(2);
+  const dispatches = reopened.listDispatchesForRun(accepted.run.id);
+  expect(dispatches).toHaveLength(2);
+  const turnB = turns.find((turn) => turn.botId === botB.id)!;
+  expect(turnB.assignmentId).toBe("assign_b");
+  expect(turnB.task).toBe("Write tests");
+  expect(turnB.expectedOutput).toBe("passing suite");
+  expect(turnB.dependsOn).toEqual(["assign_a"]);
+  expect(reopened.getDispatchForMemberTurn(turnB.id)?.runId).toBe(accepted.run.id);
+  reopened.close();
+});
+
+test("binding-less group session pins agent identity across updateBot and recovery", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Crash window: session persisted, binding never published. Simulate by
+  // materializing then dropping the binding row only.
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID, conversationId: group.id, topicId: topic.id,
+  });
+  const alias = binding.sessionAlias;
+  const saved = first.state.bot_runtime_bindings[binding.id];
+  delete first.state.bot_runtime_bindings[binding.id];
+  expect(first.state.sessions[alias]).toBeDefined();
+  // Agent change must now fail closed: the binding-less session still locks identity.
+  await expect(first.bots.updateBot(BOT_ID, { agent: "claude" })).rejects.toMatchObject({
+    code: "runtime_identity_locked",
+  });
+  // And recovery with a mismatched execution fails instead of adopting stale context.
+  await expect(first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID,
+    conversationId: group.id,
+    topicId: topic.id,
+    execution: { agent: "claude", workspace: "backend" },
+  })).rejects.toMatchObject({ code: "runtime_revision_mismatch" });
+  expect(saved).toBeDefined();
+  first.store.close();
+});
+
+test("group member materialize without an execution target fails closed", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topicId = "topic_no_target_1";
+  first.state.conversation_topics[topicId] = {
+    id: topicId,
+    conversationId: group.id,
+    title: "Legacy",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  await expect(first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID, conversationId: group.id, topicId,
+  })).rejects.toMatchObject({ code: "execution_target_missing" });
+  first.store.close();
+});

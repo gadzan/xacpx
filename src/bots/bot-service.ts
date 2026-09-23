@@ -304,6 +304,11 @@ export class BotService {
     return this.lifecycleGate.run(botId, critical);
   }
 
+  /** Run one section while holding every listed Bot gate simultaneously. */
+  runLifecycleAll<T>(botIds: readonly string[], critical: () => Promise<T>): Promise<T> {
+    return this.lifecycleGate.runAll(botIds, critical);
+  }
+
   /** Composition hook: wake pending durable work when a Bot re-enables. */
   setReenabledHook(hook: ((botId: string) => void) | undefined): void {
     this._onBotReenabled = hook;
@@ -714,12 +719,42 @@ export class BotService {
 
   private hasMaterializedRuntime(botId: string): boolean {
     const refs = this.directRuntimeRefs(botId);
-    return refs.bindingIds.length > 0 || refs.sessionAliases.length > 0;
+    return refs.bindingIds.length > 0 || refs.sessionAliases.length > 0
+      || this.hasGroupMemberRuntime(botId);
   }
 
   private hasLockedRuntime(botId: string): boolean {
     const refs = this.directRuntimeRefs(botId);
-    return refs.conversationIds.length > 0 || refs.bindingIds.length > 0 || refs.sessionAliases.length > 0;
+    return refs.conversationIds.length > 0 || refs.bindingIds.length > 0 || refs.sessionAliases.length > 0
+      || this.hasGroupMemberRuntime(botId);
+  }
+
+  /**
+   * Exact group-member owned sessions participate in the agent identity lock:
+   * a binding-less crash-window session (persisted, binding never published)
+   * still pins the Bot's agent, so updateBot cannot change identity under it
+   * and later recovery cannot silently adopt the old-Agent context.
+   */
+  private hasGroupMemberRuntime(botId: string): boolean {
+    for (const session of Object.values(this.state.sessions)) {
+      const owner = session.owner;
+      if (owner?.kind !== "group-member") {
+        continue;
+      }
+      if (owner.botId !== undefined && owner.botId !== botId) {
+        continue;
+      }
+      if (owner.botId === undefined) {
+        const bound = this.state.bot_runtime_bindings[owner.bindingId];
+        if (!bound || bound.scope !== "group-member" || bound.botId !== botId) {
+          continue;
+        }
+      }
+      return true;
+    }
+    return Object.values(this.state.bot_runtime_bindings).some(
+      (binding) => binding.scope === "group-member" && binding.botId === botId,
+    );
   }
 
   private directRuntimeRefs(botId: string): {

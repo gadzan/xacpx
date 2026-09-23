@@ -16,6 +16,19 @@ export interface ListMessagesQuery {
   direction?: "oldest-first" | "newest-first";
 }
 
+export interface AcceptMemberInput {
+  botId: string;
+  profileSnapshot: BotProfileSnapshot;
+  /** Group assignment identity. Absent on direct (single-member) accepts. */
+  assignmentId?: string;
+  /** Concrete work instruction for this assignment. */
+  task?: string;
+  /** Expected output description for this assignment. */
+  expectedOutput?: string;
+  /** Assignment ids this member depends on. */
+  dependsOn?: string[];
+}
+
 export interface AcceptRequestInput {
   conversationId: string;
   topicId: string;
@@ -23,8 +36,13 @@ export interface AcceptRequestInput {
   botId: string;
   content: string;
   profileSnapshot: BotProfileSnapshot;
+  mode?: ConversationRun["mode"];
   maxMemberTurns?: number;
   now: string;
+  /** Extra members accepted in the same transaction: one MemberTurn plus one
+   *  pending dispatch intent each. The legacy single `botId/profileSnapshot`
+   *  is always the first member. Direct accepts omit this. */
+  members?: AcceptMemberInput[];
   /** Live Conversation dispatcher epoch. Stamped on the dispatch row so a later
    *  process or recovered claim cannot inherit human permission authority. */
   authorityEpoch?: string;
@@ -38,6 +56,11 @@ export interface AcceptRequestResult {
   run: ConversationRun;
   memberTurn: MemberTurnRecord;
   dispatch: PendingDispatch;
+  /** Every accepted member in durable order (first entry mirrors the legacy
+   *  singular `memberTurn`/`dispatch`). Single-member accepts hold one. */
+  memberTurns: MemberTurnRecord[];
+  /** One pending dispatch intent per member, same order as `memberTurns`. */
+  dispatches: PendingDispatch[];
 }
 
 export interface ClaimNextDispatchInput {
@@ -138,6 +161,8 @@ export interface ConversationStore {
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined;
   listMemberTurns(runId: string): MemberTurnRecord[];
   getDispatchForRun(runId: string): PendingDispatch | undefined;
+  getDispatchForMemberTurn(memberTurnId: string): PendingDispatch | undefined;
+  listDispatchesForRun(runId: string): PendingDispatch[];
   recoverExpiredClaims(now: string): RecoveredClaim[];
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined;
   hasDurableBotWork(botId: string): boolean;

@@ -7,12 +7,12 @@ import {
   classifyDirectBotSessionOwnership,
   classifyGroupMemberBindingOwnership,
   classifyGroupMemberBindingSessionLink,
-  classifyGroupMemberSessionOwnership,
   type BotService,
   type DirectBotRuntimeBinding,
+  type GroupMemberRuntimeBinding,
 } from "../bots/bot-service";
 import { planDirectConversation, presentDefaultDirectTopic, presentDirectConversation } from "./direct-conversation";
-import { createDirectBindingId, createDirectTopicId, createTopicId } from "../domain/ids";
+import { createDirectBindingId, createDirectTopicId, createScopedGroupMemberBindingId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
@@ -624,10 +624,27 @@ export class ConversationRunService {
     this.assertOpen();
     this.requireGroupTopic(conversationId, topicId);
     const timestamp = this.now().toISOString();
-    this.store.markTopicDeleting(topicId, conversationId, timestamp);
-    await this.markGroupTopicDeleting(conversationId, topicId, timestamp);
+    // Linearize against member materialization: hold every involved Bot
+    // lifecycle gate WHILE setting the deleting barrier, so no materializer
+    // can be inside session work when the barrier lands. A materializer that
+    // already holds its gate runs first and its session is swept below; one
+    // that arrives later queues behind the barrier section and then fails
+    // closed on the deleting check. Gates are per-Bot and never hold the
+    // shared daemon mutex, so session work inside cannot deadlock.
+    const preBotIds = this.groupTopicMemberBotIds(conversationId, topicId);
+    await this.bots.runLifecycleAll(preBotIds, async () => {
+      this.groupMemberAliases(conversationId, topicId);
+      this.store.markTopicDeleting(topicId, conversationId, timestamp);
+      await this.stateMutex.run(async () => {
+        const topic = this.state.conversation_topics[topicId];
+        if (topic && topic.conversationId === conversationId && topic.status === "active") {
+          const next = structuredClone(this.state);
+          next.conversation_topics[topicId] = { ...topic, status: "deleting", updatedAt: timestamp };
+          await this.persist(next);
+        }
+      });
+    });
     await this.afterTeardownMarkedDeleting?.();
-
     const runs = this.store.listRuns(conversationId, topicId);
     for (const run of runs) {
       if (run.state === "queued" || run.state === "running" || run.state === "waiting-human") {
@@ -642,52 +659,70 @@ export class ConversationRunService {
         runIds: indeterminate.map((run) => run.id),
       });
     }
-
+    // Physical/session release runs OUTSIDE the shared daemon mutex: the
+    // production release path re-enters it (SessionService.removeSession),
+    // and the mutex is non-reentrant. The barrier section above already
+    // drained in-flight materializers, so no new owned session can appear
+    // here; a survivor is a late write from before the drain (release it
+    // now) or contradictory metadata (throws, barrier stays for retry).
     for (const alias of this.groupMemberAliases(conversationId, topicId)) {
       if (this.sessions.getLogicalSessionRecord(alias)) {
         await this.releaseAlias(alias);
       }
     }
-
-    await this.stateMutex.run(async () => {
-      await this.beforeTeardownFinalize?.();
-      for (const alias of this.groupMemberAliases(conversationId, topicId)) {
-        if (this.sessions.getLogicalSessionRecord(alias)) {
-          await this.releaseAlias(alias);
-        }
+    await this.beforeTeardownFinalize?.();
+    for (const alias of this.groupMemberAliases(conversationId, topicId)) {
+      if (this.sessions.getLogicalSessionRecord(alias)) {
+        await this.releaseAlias(alias);
       }
-      const next = structuredClone(this.state);
-      for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
-        if (
-          binding.scope === "group-member"
+    }
+    // Final metadata deletion holds every member gate so a late materializer
+    // cannot slip between the last release and the binding/topic removal.
+    // The section itself performs no session work — only the short mutex
+    // transaction.
+    await this.bots.runLifecycleAll(
+      this.groupTopicMemberBotIds(conversationId, topicId),
+      async () => {
+        await this.stateMutex.run(async () => {
+          const next = structuredClone(this.state);
+          for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
+            if (
+              binding.scope === "group-member"
+              && binding.conversationId === conversationId
+              && binding.topicId === topicId
+            ) {
+              delete next.bot_runtime_bindings[id];
+            }
+          }
+          this.store.deleteTopicRows(conversationId, topicId);
+          delete next.conversation_topics[topicId];
+          await this.persist(next);
+        });
+      },
+    );
+  }
+
+  /**
+   * Every Bot whose lifecycle gate can mint a session for this Topic: bound
+   * members, crash-window session owners, and the full group membership as a
+   * backstop for members with no runtime yet.
+   */
+  private groupTopicMemberBotIds(conversationId: string, topicId: string): string[] {
+    return [...new Set([
+      ...Object.values(this.state.bot_runtime_bindings)
+        .filter((binding): binding is GroupMemberRuntimeBinding => binding.scope === "group-member"
           && binding.conversationId === conversationId
-          && binding.topicId === topicId
-        ) {
-          delete next.bot_runtime_bindings[id];
-        }
-      }
-      this.store.deleteTopicRows(conversationId, topicId);
-      delete next.conversation_topics[topicId];
-      await this.persist(next);
-    });
+          && binding.topicId === topicId)
+        .map((binding) => binding.botId),
+      ...Object.values(this.state.sessions)
+        .filter((session) => session.owner?.kind === "group-member"
+          && (session.owner.conversationId === undefined || session.owner.conversationId === conversationId)
+          && (session.owner.topicId === undefined || session.owner.topicId === topicId)
+          && session.owner.botId !== undefined)
+        .map((session) => session.owner!.botId!),
+      ...(this.state.conversations[conversationId]?.botIds ?? []),
+    ])];
   }
-
-  private async markGroupTopicDeleting(
-    conversationId: string,
-    topicId: string,
-    timestamp: string,
-  ): Promise<void> {
-    await this.stateMutex.run(async () => {
-      const topic = this.state.conversation_topics[topicId];
-      if (!topic || topic.conversationId !== conversationId || topic.status !== "active") {
-        return;
-      }
-      const next = structuredClone(this.state);
-      next.conversation_topics[topicId] = { ...topic, status: "deleting", updatedAt: timestamp };
-      await this.persist(next);
-    });
-  }
-
   /**
    * Owned member aliases for one Group Topic. Mirrors direct `ownedAliases`:
    * pass 1 walks bindings with an alias+id cross-check (missing on both axes
@@ -696,6 +731,16 @@ export class ConversationRunService {
    * binding-less crash-window owner (session persisted, binding never
    * published) is still released. Any contradiction throws and leaves all
    * physical state intact for retry.
+   *
+   * Destructive authority is deliberately narrow: a legacy owner that omits
+   * scope fields ({ kind, bindingId } only) is NEVER sufficient to release.
+   * Group has no safe default scope to guess, so a binding-less session must
+   * carry complete botId/conversationId/topicId AND its bindingId must equal
+   * the canonical id for that triple. When a binding row exists for the
+   * owner's bindingId, that binding must classify as owned for the TARGET
+   * triple — a foreign binding (another Group/Topic) is skipped, a conflict
+   * fails closed. Otherwise Topic A could release Topic B's session through
+   * a partial legacy owner while pass 1 correctly ignores B's binding.
    */
   private groupMemberAliases(conversationId: string, topicId: string): string[] {
     const aliases = new Set<string>();
@@ -752,44 +797,74 @@ export class ConversationRunService {
       }
       aliases.add(byAlias.alias);
     }
-    // Binding-less crash-window owners: the session made it to disk but the
-    // binding publish never ran. Every signal must still agree with the
-    // Group Topic triple; conflicts fail closed. The expected botId comes
-    // from the binding when one exists (binding ids are triple-deterministic,
-    // so the id already pins the Bot); otherwise the owner's own botId.
     for (const session of allSessions) {
       const owner = session.owner;
       if (owner?.kind !== "group-member") {
         continue;
       }
-      if (owner.conversationId !== undefined && owner.conversationId !== conversationId) {
-        continue;
-      }
-      if (owner.topicId !== undefined && owner.topicId !== topicId) {
-        continue;
-      }
       const bound = this.state.bot_runtime_bindings[owner.bindingId];
-      const expectedBotId = bound?.scope === "group-member" ? bound.botId : owner.botId;
-      if (expectedBotId === undefined) {
+      if (bound) {
+        // A live binding row pins the true triple. Classify it against THIS
+        // teardown target: foreign means another Topic's session — skip.
+        // Conflict means contradictory metadata — fail closed for retry.
+        // A non-group-member row under the same id is foreign by definition.
+        if (bound.scope !== "group-member") {
+          continue;
+        }
+        const targetOwnership = classifyGroupMemberBindingOwnership(bound, bound.botId, conversationId, topicId);
+        if (targetOwnership !== "owned") {
+          if (targetOwnership === "conflict") {
+            throw new ConversationError(
+              "runtime_ownership_conflict",
+              "group member session binding metadata is contradictory",
+              { alias: session.alias, owner: session.owner },
+            );
+          }
+          continue;
+        }
+        // The binding belongs to this triple: the session must link to it
+        // exactly, with complete scope fields — no legacy guessing.
+        if (
+          owner.botId === undefined
+          || owner.conversationId === undefined
+          || owner.topicId === undefined
+          || classifyGroupMemberBindingSessionLink(
+            bound,
+            session,
+            bound.id,
+            bound.botId,
+            conversationId,
+            topicId,
+          ) !== "owned"
+        ) {
+          throw new ConversationError(
+            "runtime_ownership_conflict",
+            "group member session ownership metadata is contradictory",
+            { alias: session.alias, owner: session.owner },
+          );
+        }
+        aliases.add(session.alias);
         continue;
       }
-      const ownership = classifyGroupMemberSessionOwnership(
-        session,
-        expectedBotId,
-        owner.bindingId,
-        conversationId,
-        topicId,
-      );
-      if (ownership === "conflict") {
+      // A partial legacy owner ({ kind, bindingId } only) can never prove
+      // which triple it belongs to, so it is skipped here — never released.
+      if (
+        owner.botId === undefined
+        || owner.conversationId === undefined
+        || owner.topicId === undefined
+        || owner.conversationId !== conversationId
+        || owner.topicId !== topicId
+      ) {
+        continue;
+      }
+      if (owner.bindingId !== createScopedGroupMemberBindingId(conversationId, topicId, owner.botId)) {
         throw new ConversationError(
           "runtime_ownership_conflict",
           "group member session ownership metadata is contradictory",
           { alias: session.alias, owner: session.owner },
         );
       }
-      if (ownership === "owned") {
-        aliases.add(session.alias);
-      }
+      aliases.add(session.alias);
     }
     return [...aliases];
   }
