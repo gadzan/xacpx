@@ -1072,16 +1072,11 @@ test("in-flight member materialize cannot publish after the group is torn down",
   // Window: materialize runs through ensureGroupMemberOwnedSession (session on
   // disk, no binding yet), then a full group teardown completes, and only then
   // does the publish critical section run. Commit-time revalidation must
-  // reject instead of resurrecting runtime metadata. No saveNow gate is
-  // needed: teardown's barrier + the publish mutex serialize the interleaving
-  // deterministically — teardown first acquires stateMutex (barrier), and the
-  // publish revalidates inside its own critical section afterwards.
+  // reject instead of resurrecting runtime metadata.
   //
-  // To force the order, pause the materializer between session-ensure and
-  // publish via the per-Bot lifecycle gate: hold a second lifecycle task for
-  // the same Bot while teardown runs. runLifecycle serializes per botId, so
-  // the materialize waits; teardown (which uses stateMutex + store barriers,
-  // not the Bot gate) completes in the window.
+  // To force the order, wrap the private publish entry with a gate sitting
+  // outside stateMutex: the materializer waits after session-ensure while
+  // teardown acquires the mutex freely and completes in the window.
   const { bots, runtime, sessions, state } = createHarness();
   await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
   const tester = await bots.createBot({ name: "Tester", agent: "codex", workspace: "backend" });

@@ -567,12 +567,13 @@ export class ConversationRunService {
    * PR6 Group delete (§9.1 + §9.7): mark the Group deleting first (new Topics
    * and new Group work fail closed from there), teardown every remaining
    * Topic through the verified path, delete residual Conversation-store rows,
-   * then remove the Group metadata record last. A Topic teardown that throws
-   * (indeterminate work, release failure, ownership conflict) aborts the
-   * delete with the Group row and the deleting barrier intact for retry.
-   * Callers must not delete Group metadata around this method:
-   * `BotService.deleteGroup` stays fail-closed while Topics/bindings/durable
-   * rows exist.
+   * then remove the Group metadata record itself last. A Topic teardown that
+   * throws (indeterminate work, release failure, ownership conflict) aborts
+   * the delete with the Group row and the deleting barrier intact for retry.
+   * `BotService.deleteGroup` is a separate fail-closed metadata-only API that
+   * refuses while Topics/bindings/durable rows exist; this verified teardown
+   * is the only path that removes the record after teardown, never
+   * `BotService.deleteGroup`.
    */
   async teardownGroupConversation(conversationId: string): Promise<void> {
     this.assertOpen();
