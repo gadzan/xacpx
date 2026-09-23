@@ -20,14 +20,16 @@ import type {
   MemberTurnSummaryDto,
   PlanEntryDto,
   TurnPartDto,
+  InteractionValueDto,
 } from "@ganglion/xacpx-relay-protocol";
-import type { DirectBotLiveTurn } from "../stores/direct-bots";
+import type { DirectBotLiveTurn, PendingInteractionState } from "../stores/direct-bots";
 import { useInstancesStore } from "../stores/instances";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import TurnParts from "./TurnParts.vue";
 import CopyButton from "./CopyButton.vue";
 import AgentIcon from "./AgentIcon.vue";
 import PlanPanel from "./PlanPanel.vue";
+import ConversationInteractionForm from "./ConversationInteractionForm.vue";
 import { fmtTime, fmtDateTime } from "../lib/format";
 
 const props = defineProps<{
@@ -43,10 +45,19 @@ const props = defineProps<{
   bot?: BotDetailDto | BotSummaryDto;
   instanceId?: string | null;
   loadOlder?: () => Promise<void>;
+  /** Open interaction awaiting an answer, if any. Passed in rather than read
+   *  from the store: this component is a pure renderer and its parent already
+   *  subscribes to the store for the rest of the turn. */
+  pendingInteraction?: PendingInteractionState | null;
 }>();
 const emit = defineEmits<{
   loadOlder: [];
   cancelRun: [];
+  answer: [key: string, value: import("@ganglion/xacpx-relay-protocol").InteractionValueDto];
+  submitInteraction: [];
+  declineInteraction: [];
+  cancelInteraction: [];
+  dismissInteraction: [];
 }>();
 
 const { t } = useI18n();
@@ -268,6 +279,23 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
         </div>
 
         <div class="flex flex-col items-start min-w-0 flex-1 space-y-2">
+          <!-- Open interaction: rendered inside the turn's own banner so the form
+            belongs to the turn that asked. A form belongs to one exact turn, and
+            showing it anywhere else invites answering a turn that has moved on. -->
+          <ConversationInteractionForm
+            v-if="pendingInteraction"
+            :request="pendingInteraction.request"
+            :answers="pendingInteraction.answers"
+            :submitting="pendingInteraction.submitting"
+            :error-code="pendingInteraction.errorCode"
+            :outcome="pendingInteraction.outcome"
+            @answer="(key: string, value: InteractionValueDto) => emit('answer', key, value)"
+            @submit="emit('submitInteraction')"
+            @decline="emit('declineInteraction')"
+            @cancel="emit('cancelInteraction')"
+            @dismiss="emit('dismissInteraction')"
+          />
+
           <!-- Turn Live HUD Header -->
           <div class="flex items-center gap-2 flex-wrap">
             <span class="text-xs font-semibold text-fg">{{ bot?.name ?? "Bot" }}</span>

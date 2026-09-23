@@ -2260,6 +2260,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
   }
 
+  /** Dismiss a form that already reached a terminal outcome. */
+  function dismissResolvedInteraction(): void {
+    pendingInteraction.value = null;
+  }
+
   async function cancelCurrentRun(): Promise<void> {
     if (!instanceId.value || !activeRun.value) return;
     // Store-level double-click fence: while a cancel RPC for this Run is in
@@ -3089,6 +3094,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     submitInteraction,
     declineInteraction,
     cancelInteraction,
+    dismissResolvedInteraction,
     cancelError,
     generalError,
     generalErrorCode,
