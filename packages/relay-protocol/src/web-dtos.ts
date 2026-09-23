@@ -312,6 +312,8 @@ const CONTROL_EVENT_TYPE_MAP = {
   "conversation-run-changed": true,
   "member-turn-started": true,
   "member-turn-finished": true,
+  "interaction-opened": true,
+  "interaction-closed": true,
 } satisfies Record<ControlEventDto["type"], true>;
 
 const CONTROL_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
@@ -550,6 +552,85 @@ function validConversationMessage(value: unknown): boolean {
     && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId);
 }
 
+/**
+ * Local mirror of `validateInteractionRequest` (payload-validators.ts).
+ *
+ * web-dtos deliberately keeps its own validators rather than importing the
+ * control-RPC ones: this file guards the hub→web direction, and a single
+ * validator shared across both boundaries would let a hub-side relaxation
+ * silently widen what a browser accepts. The duplication is the isolation.
+ */
+function validInteractionRequest(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const c = value as Record<string, unknown>;
+  if (!isBoundedStr(c.requestId, 128)) return false;
+  if (c.kind !== "permission" && c.kind !== "elicitation") return false;
+  if (typeof c.expiresAt !== "number" || !Number.isFinite(c.expiresAt) || c.expiresAt <= 0) return false;
+  if (c.conversation !== undefined) {
+    if (typeof c.conversation !== "object" || c.conversation === null) return false;
+    const conv = c.conversation as Record<string, unknown>;
+    if (!optStr(conv.conversationId) || !optStr(conv.topicId) || !optStr(conv.runId)) return false;
+    if (!optStr(conv.memberTurnId) || !optStr(conv.promptRequestId)) return false;
+    // No hidden runtime alias may travel as a product routing key.
+    for (const item of Object.values(conv)) {
+      if (typeof item === "string" && item.startsWith("brt_")) return false;
+    }
+  }
+  if (c.kind === "elicitation") {
+    const e = c.elicitation;
+    if (typeof e !== "object" || e === null) return false;
+    const elicitation = e as Record<string, unknown>;
+    if (elicitation.mode !== "form") return false;
+    if (!optStr(elicitation.message)) return false;
+    if (typeof elicitation.message === "string" && elicitation.message.length > 8000) return false;
+    if (!optStr(elicitation.schemaTitle)) return false;
+    if (!Array.isArray(elicitation.fields) || elicitation.fields.length === 0) return false;
+    if (elicitation.fields.length > 100) return false;
+    return elicitation.fields.every(validInteractionField)
+      && c.permission === undefined;
+  }
+  const perm = c.permission;
+  if (typeof perm !== "object" || perm === null) return false;
+  const permission = perm as Record<string, unknown>;
+  if (!Array.isArray(permission.availableOutcomes)) return false;
+  return c.elicitation === undefined;
+}
+
+/** One normalized form field, mirrored from payload-validators.ts (see above). */
+function validInteractionField(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const f = value as Record<string, unknown>;
+  if (f.kind !== "text" && f.kind !== "single-select" && f.kind !== "number"
+    && f.kind !== "boolean" && f.kind !== "multi-select") return false;
+  if (!isBoundedStr(f.key, 64)) return false;
+  if (!isBoundedStr(f.title, 200)) return false;
+  if (typeof f.required !== "boolean") return false;
+  if (!optStr(f.description)) return false;
+  const isSelect = f.kind === "single-select" || f.kind === "multi-select";
+  if (isSelect) {
+    const options = f.options;
+    if (!Array.isArray(options) || options.length === 0 || options.length > 200) return false;
+    for (const option of options) {
+      if (typeof option !== "object" || option === null) return false;
+      const o = option as Record<string, unknown>;
+      // `value` is what core validates; `label` is agent-controlled display text.
+      if (!isBoundedStr(o.value, 200)) return false;
+      if (!isBoundedStr(o.label, 200)) return false;
+      if (!optStr(o.description)) return false;
+    }
+  } else if (f.options !== undefined) {
+    return false;
+  }
+  if (f.defaultValue !== undefined) {
+    const d = f.defaultValue;
+    const scalar = typeof d === "string" || typeof d === "number" || typeof d === "boolean";
+    const array = Array.isArray(d) && d.every((item) => typeof item === "string");
+    if (!scalar && !array) return false;
+    if (typeof d === "string" && d.length > 8000) return false;
+  }
+  return true;
+}
+
 function validConversationRun(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const c = value as Record<string, unknown>;
@@ -673,6 +754,15 @@ export function validControlEvent(e: unknown): boolean {
     case "member-turn-started":
     case "member-turn-finished":
       return validConversationRun(c.run) && validMemberTurnSummary(c.memberTurn);
+    case "interaction-opened":
+      // The request must itself validate: a form that failed protocol validation
+      // must never reach a renderer, and the guard here is the last one before web.
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
+        && validInteractionRequest(c.interaction);
+    case "interaction-closed":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
+        && typeof c.requestId === "string" && c.requestId.length > 0
+        && (c.reason === "resolved" || c.reason === "withdrawn" || c.reason === "expired");
     default: {
       // Exhaustiveness guard: adding a ControlEventDto member without a case above is a tsc error.
       const _exhaustive: never = type;
