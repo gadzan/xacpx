@@ -18,7 +18,7 @@ import type {
   ConversationTurnCancelResult,
   ConversationTurnRunner,
 } from "./conversation-turn-runner";
-import type { MemberTurnRecord } from "./conversation-types";
+import { TERMINAL_MEMBER_STATES, type MemberTurnRecord } from "./conversation-types";
 
 export interface ConversationDispatcherHooks {
   afterClaim?: (work: ClaimedWork) => Promise<void>;
@@ -146,19 +146,25 @@ export class ConversationDispatcher {
     if (outcome.alreadyTerminal) {
       return;
     }
-    if (!outcome.executionStarted) {
+    if (!outcome.executionStarted || outcome.activeMembers.length === 0) {
       this.emitRunAndMember(outcome.run, outcome.memberTurn.id);
       await this.kick();
       return;
     }
-    const result = await this.runner.cancel({
-      conversationId: outcome.run.conversationId,
-      topicId: outcome.run.topicId,
-      sessionAlias: outcome.memberTurn.sessionAlias ?? "",
-      queueItemId: outcome.memberTurn.queueItemId,
-      promptRequestId: outcome.memberTurn.sourceTurnId ?? "",
-    });
-    this.persistCancelOutcome(outcome.run.id, outcome.memberTurn, result);
+    for (const active of outcome.activeMembers) {
+      const current = this.store.getMemberTurn(active.id);
+      if (!current || (TERMINAL_MEMBER_STATES as readonly string[]).includes(current.state)) {
+        continue;
+      }
+      const result = await this.runner.cancel({
+        conversationId: outcome.run.conversationId,
+        topicId: outcome.run.topicId,
+        sessionAlias: current.sessionAlias ?? "",
+        queueItemId: current.queueItemId,
+        promptRequestId: current.sourceTurnId ?? "",
+      });
+      this.persistCancelOutcome(outcome.run.id, current, result);
+    }
     await this.kick();
   }
 
@@ -373,7 +379,7 @@ export class ConversationDispatcher {
       this.emitRunAndMember(run, member.id);
       return;
     }
-    const run = this.store.completeCancel(runId, member.id, now, result.outcome === "unknown");
+    const run = this.store.completeCancel(runId, member.id, now, result.outcome === "unknown", true);
     this.emitRunAndMember(run, member.id);
   }
 
@@ -396,7 +402,7 @@ export class ConversationDispatcher {
       return;
     }
     if (result.status === "cancelled") {
-      const run = this.store.completeCancel(work.run.id, started.id, now, result.unknown === true);
+      const run = this.store.completeCancel(work.run.id, started.id, now, result.unknown === true, true);
       this.emitRunAndMember(run, started.id);
       return;
     }

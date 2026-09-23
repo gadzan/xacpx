@@ -573,10 +573,22 @@ export class SqliteConversationStore implements ConversationStore {
           continue;
         }
         if (member.startedAt) {
-          this.writeIndeterminate(run.id, member.id, now, "started_result_unknown");
+          const alreadyCounted = Boolean(member.finishedAt);
+          this.sqlite.run(
+            `UPDATE member_turns SET state = 'indeterminate', finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+            [now, member.id],
+          );
+          if (!alreadyCounted) {
+            this.sqlite.run(
+              `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+              [run.id],
+            );
+          }
+          this.finishDispatchForMemberTurn(member.id, now);
+          const settled = this.aggregateRunAfterMemberTerminal(run.id, member.id, now, "started_result_unknown");
           recovered.push({
             dispatch: this.requireDispatch(row.id),
-            run: this.requireRun(run.id),
+            run: settled,
             memberTurn: this.requireMemberTurn(member.id),
             outcome: "indeterminate",
           });
@@ -592,7 +604,7 @@ export class SqliteConversationStore implements ConversationStore {
           `UPDATE member_turns SET state = 'queued', attempt = attempt + 1, origin = 'recovery' WHERE id = ?`,
           [member.id],
         );
-        this.sqlite.run(`UPDATE runs SET state = 'queued', started_at = NULL WHERE id = ?`, [run.id]);
+        this.recomputeRunSchedulingState(run.id, now);
         recovered.push({
           dispatch: this.requireDispatch(row.id),
           run: this.requireRun(run.id),
@@ -602,6 +614,29 @@ export class SqliteConversationStore implements ConversationStore {
       }
       return recovered;
     });
+  }
+
+  /**
+   * Recompute Run scheduling state after one member re-queues (pre-start
+   * recovery or claim release). Never blindly resets to queued: when any
+   * sibling already started, the Run stays running with started_at intact so
+   * one-active-Run-per-Topic keeps holding. Only a Run with zero started
+   * members returns to queued (and clears started_at).
+   */
+  private recomputeRunSchedulingState(runId: string, now: string): void {
+    const run = this.requireRun(runId);
+    if (TERMINAL_RUN_STATES.includes(run.state)) {
+      return;
+    }
+    const members = this.listMemberTurns(runId);
+    const anyStarted = members.some((turn) => Boolean(turn.startedAt));
+    if (anyStarted) {
+      if (run.state === "queued") {
+        this.sqlite.run(`UPDATE runs SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?`, [now, runId]);
+      }
+      return;
+    }
+    this.sqlite.run(`UPDATE runs SET state = 'queued', started_at = NULL WHERE id = ?`, [runId]);
   }
 
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined {
@@ -761,7 +796,7 @@ export class SqliteConversationStore implements ConversationStore {
         `UPDATE member_turns SET state = 'queued', origin = 'recovery' WHERE id = ?`,
         [dispatch.member_turn_id],
       );
-      this.sqlite.run(`UPDATE runs SET state = 'queued' WHERE id = ? AND state = 'running'`, [dispatch.run_id]);
+      this.recomputeRunSchedulingState(dispatch.run_id, input.now);
       return this.requireDispatch(dispatch.id);
     });
   }
@@ -907,13 +942,17 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
-  completeCancel(runId: string, memberTurnId: string, now: string, indeterminate = false): ConversationRun {
+  completeCancel(runId: string, memberTurnId: string, now: string, indeterminate = false, forceRunTerminal = false): ConversationRun {
     return this.failExecution({
       runId,
       memberTurnId,
       now,
       reason: indeterminate ? "started_result_unknown" : "cancelled",
       terminalState: indeterminate ? "indeterminate" : "cancelled",
+      // Unknown side effects always seal the Run: no sibling may start after
+      // unproven execution, in either mode. Plain cancelled defers to the
+      // caller (whole-run cancel passes force=true; see persistCancelOutcome).
+      forceRunTerminalOnSettle: forceRunTerminal || indeterminate,
     });
   }
 
@@ -925,46 +964,66 @@ export class SqliteConversationStore implements ConversationStore {
       if (!member) {
         throw new ConversationError("member_turn_missing", `run "${runId}" has no member turn`);
       }
-      const dispatch = this.requireDispatchForMemberTurn(member.id);
-      const executionStarted = members.some((turn) => Boolean(turn.startedAt));
       if (TERMINAL_RUN_STATES.includes(run.state)) {
-        return { run, memberTurn: member, dispatch, alreadyTerminal: true, executionStarted };
-      }
-      if (executionStarted) {
-        // Cancellation of a started turn is recorded by the dispatcher after
-        // it observes the underlying cancel outcome. Persist a cancelling
-        // intent by completing the dispatch only when never started.
-        this.sqlite.run(
-          `UPDATE runs SET completion_reason = ? WHERE id = ?`,
-          [reason, runId],
-        );
         return {
-          run: this.requireRun(runId),
+          run,
           memberTurn: member,
-          dispatch: this.requireDispatch(dispatch.id),
-          alreadyTerminal: false,
-          executionStarted: true,
+          dispatch: this.requireDispatchForMemberTurn(member.id),
+          alreadyTerminal: true,
+          executionStarted: false,
+          activeMembers: [],
         };
       }
-      // Multi-member cancel: every unstarted member settles in one
-      // transaction so no sibling dispatch survives the Run's terminal state.
+      // Settle every never-started sibling in the same transaction so no new
+      // dispatch can escape the cancel: queued/dispatched members become
+      // cancelled and their dispatch intents complete. Started members stay
+      // for the dispatcher to cancel exactly (per-active turn below).
+      const activeMembers: MemberTurnRecord[] = [];
       for (const turn of members) {
+        if (TERMINAL_MEMBER_STATES.includes(turn.state)) {
+          continue;
+        }
+        if (turn.startedAt) {
+          activeMembers.push(turn);
+          continue;
+        }
         this.sqlite.run(
           `UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ? AND finished_at IS NULL`,
           [now, turn.id],
         );
         this.finishDispatchForMemberTurn(turn.id, now);
       }
-      this.sqlite.run(
-        `UPDATE runs SET state = 'cancelled', completion_reason = ?, finished_at = ? WHERE id = ?`,
-        [reason, now, runId],
+      const settled = this.listMemberTurns(runId);
+      const stillActive = settled.filter(
+        (turn) => Boolean(turn.startedAt) && !TERMINAL_MEMBER_STATES.includes(turn.state),
       );
+      if (stillActive.length === 0) {
+        // Nothing executing: the whole Run terminals now via the aggregate,
+        // forced even on automatic Runs (human cancel ends the Run; the
+        // Router never resumes a cancelled Run).
+        const aggregateAnchor = settled.find((turn) => TERMINAL_MEMBER_STATES.includes(turn.state)) ?? settled[0]!;
+        const terminal = this.aggregateRunAfterMemberTerminal(runId, aggregateAnchor.id, now, reason, true);
+        return {
+          run: terminal,
+          memberTurn: this.requireMemberTurn(aggregateAnchor.id),
+          dispatch: this.requireDispatchForMemberTurn(aggregateAnchor.id),
+          alreadyTerminal: false,
+          executionStarted: false,
+          activeMembers: [],
+        };
+      }
+      // Cancelling intent for active turns; the dispatcher records each
+      // outcome after observing the underlying cancel. Aggregate stays
+      // non-terminal until every active turn settles.
+      this.sqlite.run(`UPDATE runs SET completion_reason = ? WHERE id = ?`, [reason, runId]);
+      const firstActive = stillActive[0]!;
       return {
         run: this.requireRun(runId),
-        memberTurn: this.requireMemberTurn(member.id),
-        dispatch: this.requireDispatch(dispatch.id),
+        memberTurn: this.requireMemberTurn(firstActive.id),
+        dispatch: this.requireDispatchForMemberTurn(firstActive.id),
         alreadyTerminal: false,
-        executionStarted: false,
+        executionStarted: true,
+        activeMembers: stillActive.map((turn) => this.requireMemberTurn(turn.id)),
       };
     });
   }
@@ -1276,6 +1335,12 @@ export class SqliteConversationStore implements ConversationStore {
       ...(input.members ?? []),
     ];
     const maxMemberTurns = input.maxMemberTurns ?? members.length;
+    if (!Number.isInteger(maxMemberTurns) || maxMemberTurns < members.length) {
+      throw new ConversationError(
+        "invalid-max-member-turns",
+        `maxMemberTurns (${String(input.maxMemberTurns)}) must be a positive integer >= accepted member count (${members.length})`,
+      );
+    }
     const mode = input.mode ?? "explicit";
     this.sqlite.run(
       `INSERT INTO messages (
@@ -1479,25 +1544,34 @@ export class SqliteConversationStore implements ConversationStore {
       [input.runId],
     );
     this.finishDispatchForMemberTurn(input.memberTurnId, input.now);
-    return this.aggregateRunAfterMemberTerminal(input.runId, input.memberTurnId, input.now, input.reason);
+    return this.aggregateRunAfterMemberTerminal(
+      input.runId,
+      input.memberTurnId,
+      input.now,
+      input.reason,
+      input.forceRunTerminalOnSettle ?? false,
+    );
   }
 
   /**
    * Aggregate Run lifecycle after one MemberTurn reaches a terminal state.
    * Member completion terminals only the member; explicit Runs terminal when
    * no member of the active batch is still runnable (no Router follows).
-   * Automatic Runs never terminal on batch settle (except indeterminate):
-   * the batch result stays durable in non-terminal running state for the PR8
-   * Router, which decides dispatch / need-human / complete. Whole-Run human
-   * cancel still terminals via cancelRun(). Only failed members accumulate
-   * in failedBotIds; cancelled/indeterminate are read from MemberTurns.
-   * unavailableBotIds is PR7+ reservation surface, defaulting empty.
+   * Automatic batch settle stays running for the PR8 Router — UNLESS
+   * forceRunTerminal is set (whole-Run human cancel path), in which case the
+   * settled batch aggregates to its terminal outcome exactly like explicit.
+   * Indeterminate (unproven side effects) always terminals directly AND
+   * settles every still-runnable sibling as indeterminate in the same
+   * transaction, so no further member can be claimed afterwards. Only failed
+   * members accumulate in failedBotIds; cancelled/indeterminate are read
+   * from MemberTurns. unavailableBotIds is PR7+ reservation surface.
    */
   private aggregateRunAfterMemberTerminal(
     runId: string,
     memberTurnId: string,
     now: string,
     memberReason?: string,
+    forceRunTerminal = false,
   ): ConversationRun {
     const run = this.requireRun(runId);
     if (TERMINAL_RUN_STATES.includes(run.state)) {
@@ -1516,6 +1590,34 @@ export class SqliteConversationStore implements ConversationStore {
       current.add(member.botId);
       this.sqlite.run(`UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`, [JSON.stringify([...current]), runId]);
     }
+    const batchIndeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
+    if (run.mode === "automatic" && batchIndeterminate.length > 0) {
+      // Unknown side effects seal an automatic Run immediately, even with
+      // runnable siblings: settle every still-runnable sibling as
+      // indeterminate in the same transaction so nothing further can be
+      // claimed, then terminal the Run. Covers both runner settlement
+      // (completeCancel unknown) and lease recovery paths identically.
+      const reason = batchMembers.length === 1 ? (memberReason ?? "started_result_unknown") : "started_result_unknown";
+      for (const turn of batchMembers) {
+        if (TERMINAL_MEMBER_STATES.includes(turn.state)) {
+          continue;
+        }
+        this.sqlite.run(
+          `UPDATE member_turns SET state = 'indeterminate', finished_at = ? WHERE id = ?`,
+          [now, turn.id],
+        );
+        this.sqlite.run(
+          `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+          [runId],
+        );
+        this.finishDispatchForMemberTurn(turn.id, now);
+      }
+      this.sqlite.run(
+        `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = ? WHERE id = ?`,
+        [reason, now, runId],
+      );
+      return this.requireRun(runId);
+    }
     if (terminal.length < batchMembers.length) {
       // Intermediate state: one member terminal, siblings still runnable.
       // The Run stays non-terminal (running) so claimNextDispatch keeps
@@ -1525,14 +1627,30 @@ export class SqliteConversationStore implements ConversationStore {
       }
       return this.requireRun(runId);
     }
-    if (run.mode === "automatic") {
+    if (run.mode === "automatic" && !forceRunTerminal) {
       // Batch settled but the Run is not done: PR8 Router decides the next
       // step from durable MemberTurns. Indeterminate (unproven side effects)
-      // cannot auto-continue, so it terminals directly; every other settled
-      // batch stays running awaiting routing.
+      // cannot auto-continue, so it settles every still-runnable sibling as
+      // indeterminate in the same transaction and terminals the Run — no
+      // further member can be claimed afterwards. Every other settled batch
+      // stays running awaiting routing.
       const indeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
       if (indeterminate.length > 0) {
         const reason = batchMembers.length === 1 ? (memberReason ?? "started_result_unknown") : "started_result_unknown";
+        for (const turn of batchMembers) {
+          if (TERMINAL_MEMBER_STATES.includes(turn.state)) {
+            continue;
+          }
+          this.sqlite.run(
+            `UPDATE member_turns SET state = 'indeterminate', finished_at = ? WHERE id = ?`,
+            [now, turn.id],
+          );
+          this.sqlite.run(
+            `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+            [runId],
+          );
+          this.finishDispatchForMemberTurn(turn.id, now);
+        }
         this.sqlite.run(
           `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = ? WHERE id = ?`,
           [reason, now, runId],

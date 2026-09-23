@@ -126,6 +126,9 @@ export interface FailExecutionInput {
   now: string;
   reason: string;
   terminalState?: Extract<ConversationRun["state"], "failed" | "cancelled" | "indeterminate">;
+  /** Whole-Run human cancel path: settle the batch to its terminal outcome
+   *  even on automatic Runs (which otherwise stay running for the Router). */
+  forceRunTerminalOnSettle?: boolean;
 }
 
 export interface ClaimFenceInput {
@@ -152,6 +155,9 @@ export interface CancelRunResult {
   dispatch: PendingDispatch;
   alreadyTerminal: boolean;
   executionStarted: boolean;
+  /** Every started-but-unsettled member at cancel time (durable order).
+   *  Empty when nothing was executing. The dispatcher cancels each exactly. */
+  activeMembers: MemberTurnRecord[];
 }
 
 export interface ConversationStore {
@@ -182,7 +188,7 @@ export interface ConversationStore {
   failExecution(input: FailExecutionInput): ConversationRun;
   failClaimBeforeStart(input: FailClaimBeforeStartInput): ConversationRun;
   cancelRun(runId: string, now: string, reason?: string): CancelRunResult;
-  completeCancel(runId: string, memberTurnId: string, now: string, indeterminate?: boolean): ConversationRun;
+  completeCancel(runId: string, memberTurnId: string, now: string, indeterminate?: boolean, forceRunTerminal?: boolean): ConversationRun;
   markConversationDeleting(conversationId: string, now: string): void;
   markTopicDeleting(topicId: string, conversationId: string, now: string): void;
   isConversationDeleting(conversationId: string): boolean;

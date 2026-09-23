@@ -660,6 +660,18 @@ export class ConversationRunService {
     }
     this.store.recoverExpiredClaims(this.now().toISOString());
     const remaining = this.store.listRuns(conversationId, topicId);
+    const blocking = remaining.filter(
+      (run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human",
+    );
+    if (blocking.length > 0) {
+      // Any non-terminal survivor (e.g. an automatic Run awaiting routing
+      // after cancel, or a still-running member) fails closed: releasing
+      // member sessions while a Run can still execute would strand or
+      // orphan live runtime ownership.
+      throw new ConversationError("conversation_not_settled", "topic has unsettled runs", {
+        runIds: blocking.map((run) => run.id),
+      });
+    }
     const indeterminate = remaining.filter((run) => run.state === "indeterminate");
     if (indeterminate.length > 0) {
       throw new ConversationError("conversation_indeterminate", "topic has indeterminate work", {

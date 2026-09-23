@@ -421,6 +421,13 @@ export class BotRuntimeManager {
     const target = topic.executionTarget;
     if (target) {
       this.bots.assertWorkspaceRegistered(target.workspace);
+      // worktree-per-member persists as a value but has no provisioning
+      // lifecycle yet (PR10): executing it in the shared workspace root
+      // would be a silent isolation downgrade. Fail closed at the
+      // materialization boundary, not at topic creation.
+      if (target.isolation === "worktree-per-member") {
+        throw new BotError("worktree_unprovisioned", `topic "${topicId}" requires worktree-per-member provisioning`);
+      }
     }
     return { conversationId, topicId, topic };
   }
