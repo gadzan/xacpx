@@ -12,7 +12,26 @@ export function listKnownChannelIds(): string[] {
   return Array.from(KNOWN_CHANNEL_IDS);
 }
 
+/**
+ * Which channel a chatKey belongs to.
+ *
+ * A Direct Conversation isolation key (`bot:<conversationId>:<topicId>`) does not
+ * start with a channel id — `bot` is the product kind, not a channel. It resolves
+ * to the relay channel, because a Direct Bot turn is reached through the relay
+ * connector and its card-callback channel.
+ *
+ * The relay id is handled here as a PREFIX RULE rather than an entry in
+ * `KNOWN_CHANNEL_IDS`: that set reports which channels are built in before
+ * plugins load, and pre-registering relay there would claim the channel exists
+ * without its plugin. The rule only affects routing, not the built-in report.
+ *
+ * Falling through to "weixin" would be a silent misroute: the request would reach
+ * a channel that cannot render the interaction, and the broker would cancel with
+ * "channel cannot render form elicitation" — a fail-closed result, but one that
+ * looks like an unsupported channel rather than a routing bug.
+ */
 export function getChannelIdFromChatKey(chatKey: string): string {
+  if (chatKey.startsWith("bot:")) return "relay";
   const first = chatKey.split(":", 1)[0];
   return first && KNOWN_CHANNEL_IDS.has(first) ? first : "weixin";
 }
