@@ -210,9 +210,12 @@ function button(label: string, customId: string, style: ButtonStyle, disabled = 
 }
 
 /** Rows for a card that can still be acted on. Never exceeds one row of controls. */
-function actionRow(entries: Array<{ label: string; customId: string; style: ButtonStyle }>): DiscordActionRow[] {
+function actionRow(entries: Array<{ label: string; customId: string; style: ButtonStyle; disabled?: boolean }>): DiscordActionRow[] {
   if (entries.length === 0) return [];
-  return [{ type: 1, components: entries.map((entry) => button(entry.label, entry.customId, entry.style)) }];
+  return [{
+    type: 1,
+    components: entries.map((entry) => button(entry.label, entry.customId, entry.style, entry.disabled ?? false)),
+  }];
 }
 
 /**
@@ -449,6 +452,7 @@ export function buildElicitationReviewCard(
   token: string,
   values: Record<string, ChannelElicitationValue>,
   page = 0,
+  options: { submitDisabled?: boolean } = {},
 ): {
   content: string;
   /**
@@ -490,13 +494,23 @@ export function buildElicitationReviewCard(
   const start = clamped * perPage;
   const pageEnd = start + perPage;
   const pageFields = request.fields.slice(start, pageEnd);
-  const controls: Array<{ label: string; customId: string; style: 1 | 2 | 3 | 4 }> = pageFields
+  const controls: Array<{ label: string; customId: string; style: 1 | 2 | 3 | 4; disabled?: boolean }> = pageFields
     .map((field) => ({
       label: truncate(escapeDiscordLiteralText(`${messages.elicitationEdit}: ${field.title}`), 80),
       customId: elicitationCustomId(token, "edit", request.fields.indexOf(field)),
       style: 2 as const,
     }));
-  controls.push({ label: messages.elicitationSubmit, customId: elicitationCustomId(token, "submit"), style: 3 });
+  controls.push({
+    label: messages.elicitationSubmit,
+    customId: elicitationCustomId(token, "submit"),
+    style: 3,
+    // A disabled Submit is the transactional gate for multi-message reviews.
+    // Continuation edits happen in place, so a failure part-way through leaves
+    // the channel holding a MIX of the old and new review. The old primary is
+    // itself a review card and its Submit is live unless it is disabled first,
+    // which would let the user approve content they were never shown intact.
+    ...(options.submitDisabled ? { disabled: true } : {}),
+  });
   controls.push({ label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 });
   controls.push({ label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 });
   const rows = [actionRow(controls)];
@@ -902,6 +916,15 @@ export async function handleElicitationClick(input: ElicitationClickInput): Prom
       return { decided: false, rerender: "review" };
     }
     case "submit": {
+      // Refuse a submit while a multi-message review is mid-transaction. Discord
+      // disables the control, but a stale interaction can still arrive (or the
+      // gate flag can be set by a rerender that failed), and honouring one would
+      // approve a mixed review. The state machine is the real gate; the disabled
+      // button is only the visible half.
+      if (entry.submitGateClosed) {
+        await input.interaction.replyEphemeral(messages.elicitationReviewUpdating);
+        return { decided: false };
+      }
       return submitAnswers(entry, input);
     }
     default:

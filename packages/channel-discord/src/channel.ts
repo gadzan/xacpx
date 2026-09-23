@@ -712,6 +712,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       values: createAnswerMap(),
       skipped: new Set<string>(),
       continuationMessageIds: [],
+      submitGateClosed: false,
       visitedReview: false,
       reviewPage: 0,
       settled: false,
@@ -934,6 +935,33 @@ export class DiscordChannel implements MessageChannelRuntime {
         return;
     }
     try {
+      // MULTI-MESSAGE REVIEWS ARE TRANSACTIONAL, and the gate is the primary's
+      // Submit.
+      //
+      // Continuation messages are edited in place, so a failure part-way through
+      // leaves the channel holding a MIX: the old primary (still a review card)
+      // plus new continuations plus the old tail. The old primary's Submit is
+      // live, which would let the user approve content they never saw intact.
+      // So the submit gate is disabled FIRST, before any continuation is touched,
+      // and only re-enabled once every continuation is consistent.
+      const isReview = action === "review" || action === "start" || action === "page" || action === "skip";
+      const needsGate = isReview && (card.contents?.length ?? 1) > 1;
+      if (needsGate && !entry.submitGateClosed) {
+        const gated = buildElicitationReviewCard(
+          entry.request,
+          entry.token,
+          entry.values,
+          entry.reviewPage,
+          { submitDisabled: true },
+        );
+        await runtime.client.editMessage(entry.target, messageId, {
+          content: gated.content,
+          allowedMentions: { parse: [] },
+          components: gated.components,
+        });
+        entry.submitGateClosed = true;
+      }
+
       // Continuations FIRST, primary LAST.
       //
       // The primary carries Submit. If it is edited to the review while a
@@ -949,7 +977,13 @@ export class DiscordChannel implements MessageChannelRuntime {
         components: card.components,
         ...(card.selectRows && card.selectRows.length > 0 ? { selectRows: card.selectRows } : {}),
       });
+      entry.submitGateClosed = false;
     } catch (error) {
+      // The gate CLOSES on failure rather than reopening: a failure here means
+      // the channel may still hold a mixed review, so the submit gate stays
+      // disabled until a later rerender completes. The user can retry the same
+      // control; Decline/Cancel remain available, and no partial content can be
+      // submitted.
       await this.logger?.warn("discord.elicitation.edit_failed", "failed to update elicitation message", {
         requestId: entry.requestId,
         message: error instanceof Error ? error.message : String(error),

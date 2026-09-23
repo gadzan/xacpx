@@ -1302,9 +1302,21 @@ test("a failed continuation send leaves the primary's Submit alone", async () =>
 
     // A continuation send was attempted and failed.
     expect(failSends).toBeGreaterThan(0);
-    // And the primary was NOT switched to the review: the user still sees the
-    // previous card rather than a review that is missing its content.
-    expect(client.edited.length).toBe(editsBefore);
+    // The primary was NOT switched to the review. It WAS edited once, to the same
+    // review content with Submit DISABLED — the gate that makes a partially
+    // applied multi-message review unsubmittable. So the user sees either the
+    // previous card or a review they cannot submit from, never a live Submit over
+    // content that failed to lay in.
+    const primaryEdits = client.edited.filter((entry) => entry.messageId === "m1");
+    expect(primaryEdits.length).toBe(editsBefore + 1);
+    const submitControl = (primaryEdits[primaryEdits.length - 1]!.body.components ?? [])
+      .flatMap((row) => row.components)
+      .find((component) => component.customId.endsWith(":submit"));
+    expect(submitControl?.disabled).toBe(true);
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { submitGateClosed: boolean }>;
+    }).pendingElicitations;
+    expect([...store.values()][0]!.submitGateClosed).toBe(true);
   } finally {
     abort.abort();
     await channel.stop().catch(() => {});
@@ -1327,7 +1339,7 @@ test("a failed stale-tail delete keeps the primary off the shorter review", asyn
         error.code = "TRANSIENT";
         throw error;
       }
-      return realDelete(target as never);
+      return realDelete(target as never, messageId);
     };
   const { channel, abort } = await startChannel(client);
   try {
@@ -1344,16 +1356,18 @@ test("a failed stale-tail delete keeps the primary off the shorter review", asyn
     while (client.sent.length === 0 && Date.now() < deadline) await wait();
     client.emitButton(click(client, idFor(client, "start")));
     await wait();
-    // Answer so that page 0 is LONG and page 1 is SHORT: the review's page-0 text
-    // spans several chunks and page 1's fits in fewer, so paging forward shrinks
-    // the continuation set — the `slice(extras.length)` branch. (Review pages are
-    // 2 fields wide: 5 button slots minus Submit/Decline/Cancel.)
+    // Answer so that page 0 is LONG (5 chunks, 4 continuations) and page 1 is
+    // MEDIUM (2 chunks, 1 continuation). Paging 0 -> 1 therefore shrinks 4 extras
+    // to 1 and hits the `slice(extras.length)` tail-trim branch, which is the
+    // only path where a partial failure leaves a MIXED review: the continuations
+    // are edited in place while the primary is still the old card.
+    // (Review pages are 2 fields wide: 5 button slots minus Submit/Decline/Cancel.)
+    const lengths = [1800, 1800, 900, 900, 5, 5, 5, 5];
     for (let index = 0; index < 8; index += 1) {
       client.emitButton(click(client, idFor(client, "field", index)));
       await wait();
       const modalId = client.modals[client.modals.length - 1]!.customId;
-      const content = index < 4 ? "L".repeat(1800) : "s";
-      client.emitModal(modal(client, modalId, { [fields[index]!.key]: content }, "user-A", index));
+      client.emitModal(modal(client, modalId, { [fields[index]!.key]: "L".repeat(lengths[index]!) }, "user-A", index));
       await wait();
       if (index < 7) {
         client.emitButton(click(client, idFor(client, "next", index + 1)));
@@ -1362,53 +1376,51 @@ test("a failed stale-tail delete keeps the primary off the shorter review", asyn
     }
     client.emitButton(click(client, idFor(client, "review")));
     await wait();
-    // The review opened on page 0, whose long answers need continuations.
-    expect(client.sent.length).toBeGreaterThan(1);
 
-    // Move to page 1, whose shorter answers need FEWER chunks.
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, {
+        continuationMessageIds: string[];
+        submitGateClosed: boolean;
+      }>;
+    }).pendingElicitations;
+    const liveEntry = [...store.values()][0]!;
+    // The review opened on page 0 with its 4 continuations.
+    expect(liveEntry.continuationMessageIds.length).toBe(4);
+
+    // Move to page 1 — the only other non-zero page control on page 0's row.
     const rowIds = (): string[] => {
       const rows = client.edited[client.edited.length - 1]!.body.components ?? [];
       return rows.flatMap((r) => r.components.map((c) => c.customId));
     };
-    let nextPage = rowIds().find((id) => /:page:[0-9]+$/.test(id) && !id.endsWith(":page:0"));
-    if (!nextPage) {
-      for (let step = 0; step < 8 && !nextPage; step += 1) {
-        nextPage = rowIds().find((id) => /:page:[0-9]+$/.test(id) && !id.endsWith(":page:0"));
-        if (nextPage) break;
-        const anyNext = rowIds().find((id) => /:page:[0-9]+$/.test(id));
-        if (!anyNext) break;
-        client.emitButton(click(client, anyNext));
-        await wait();
-      }
-    }
-    expect(nextPage).toBeDefined();
+    const page1 = rowIds().find((id) => id.endsWith(":page:1"));
+    expect(page1).toBeDefined();
+    const primaryEditsBefore = client.edited.filter((entry) => entry.messageId === "m1").length;
 
-    const editsBefore = client.edited.length;
-    const sendsBefore = client.sent.length;
-    // Read the live continuation count, then make EVERY continuation delete fail.
-    // Whichever subset the trim needs to remove, they are all unremovable, which
-    // is the condition under which the primary must stay put.
-    const store = (channel as unknown as {
-      pendingElicitations: Map<string, { continuationMessageIds: string[] }>;
-    }).pendingElicitations;
-    const liveEntry = [...store.values()][0]!;
-    const liveContinuations = liveEntry.continuationMessageIds.length;
-    expect(liveContinuations).toBeGreaterThan(1);
+    // The stale tail's deletes fail from here on.
     for (const id of liveEntry.continuationMessageIds) {
       failsOn.add(id);
     }
 
-    client.emitButton(click(client, nextPage!));
+    client.emitButton(click(client, page1!));
     await wait();
 
-    // The primary was NOT switched: its last edit is still the page-0 review, so
-    // Submit never appeared over a review that is missing its trimmed content.
-    expect(client.edited.length).toBe(editsBefore);
-    expect(client.sent.length).toBe(sendsBefore);
-    // And the ids that could not be removed are still tracked, so a later retry
-    // can finish the job rather than forgetting a live stale message.
-    const afterEntry = [...store.values()][0]!;
-    expect(afterEntry.continuationMessageIds).toEqual(liveEntry.continuationMessageIds);
+    // THE MIXED-REVIEW GATE. The primary is disabled before any continuation is
+    // touched, so whatever the failure left in the channel, the user cannot
+    // submit from it.
+    const gateEntry = [...store.values()][0]!;
+    expect(gateEntry.submitGateClosed).toBe(true);
+    // And the primary's last published controls have Submit disabled.
+    const primaryEdits = client.edited.filter((entry) => entry.messageId === "m1");
+    const lastPrimary = primaryEdits[primaryEdits.length - 1]!;
+    const submitControl = (lastPrimary.body.components ?? [])
+      .flatMap((row) => row.components)
+      .find((component) => component.customId.endsWith(":submit"));
+    expect(submitControl?.disabled).toBe(true);
+    // The final (enabled) review was never published, so no primary edit carries
+    // a live Submit over the inconsistent set.
+    expect(primaryEdits.length).toBeGreaterThan(primaryEditsBefore);
+    // The unremovable ids are still tracked so a retry can finish the job.
+    expect(gateEntry.continuationMessageIds).toEqual(liveEntry.continuationMessageIds);
   } finally {
     failsOn.clear();
     abort.abort();
@@ -1429,7 +1441,7 @@ test("an Unknown Message delete is treated as a successful trim", async () => {
         error.code = 10008;
         throw error;
       }
-      return realDelete(target as never);
+      return realDelete(target as never, messageId);
     };
   const { channel, abort } = await startChannel(client);
   try {

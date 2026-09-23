@@ -36,6 +36,7 @@ export const zh: DiscordMessages = {
   elicitationNextField: "下一题",
   elicitationPrevField: "上一题",
   elicitationSkip: "跳过",
+  elicitationReviewUpdating: "内容仍在更新，请稍后重试。",
   elicitationPagePrev: "◀ 上一页",
   elicitationPageNext: "下一页 ▶",
   elicitationProgress: (answered, total) => `已答 ${answered} / ${total} 题`,

@@ -67,6 +67,17 @@ export interface PendingDiscordElicitation {
    */
   continuationMessageIds: string[];
   /**
+   * Whether the primary's Submit is currently disabled because a multi-message
+   * review is mid-transaction.
+   *
+   * A review whose continuations are being edited in place can be left in a
+   * MIXED state by a failure — the old primary (itself a review card, with a
+   * live Submit) plus new continuations plus the old tail. The old primary's
+   * Submit must therefore be disabled before any continuation is touched, and
+   * only restored once the whole set is consistent.
+   */
+  submitGateClosed: boolean;
+  /**
    * Which review page the user is on. A form wider than one action row is a
    * navigable list, so the page is state rather than derived from the field.
    */

@@ -27,6 +27,7 @@ export const en: DiscordMessages = {
   elicitationNextField: "Next question",
   elicitationPrevField: "Previous",
   elicitationSkip: "Skip",
+  elicitationReviewUpdating: "The review is still updating; try again in a moment.",
   elicitationPagePrev: "◀ Prev",
   elicitationPageNext: "Next ▶",
   elicitationProgress: (answered, total) => `${answered} of ${total} fields answered`,
