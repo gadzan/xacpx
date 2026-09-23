@@ -164,8 +164,12 @@ function validateInteractionRequestPayload(payload: unknown): InteractionRequest
  * `responded: false` keeps its reason intact: the browser must distinguish "the
  * human never answered" from "the human chose cancel", and collapsing the two
  * would show a user's own dismissal as an infrastructure error.
+ *
+ * Exported for the test that pins the stamping: an unexported helper on the
+ * security-critical path is a path with no coverage, and the failure mode (an
+ * identity a client chose being reported to core) is silent.
  */
-function interactionResultForBrowser(result: unknown, accountId: string): unknown {
+export function interactionResultForBrowser(result: unknown, accountId: string): unknown {
   if (typeof result !== "object" || result === null) {
     return { responded: false as const, reason: "aborted" as const };
   }
@@ -179,7 +183,7 @@ function interactionResultForBrowser(result: unknown, accountId: string): unknow
     return { responded: false as const, reason: "aborted" as const };
   }
   const decision = response as Record<string, unknown>;
-  // Stamp over anything the frame carried: the hub's session is the authority.
+  // Stamp OVER anything the frame carried: the hub's session is the authority.
   return {
     responded: true as const,
     response: { ...decision, responderId: accountId },
