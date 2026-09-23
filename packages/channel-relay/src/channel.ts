@@ -9,10 +9,15 @@ import {
   type AgentMessageCompletionResult,
   type InstanceNoticePayload,
   type InstanceRecoveryAckPayload,
+  type InteractionRequestDto,
+  type InteractionResult,
   type RelayEnvelope,
 } from "@ganglion/xacpx-relay-protocol";
 import type {
   ChannelStartInput,
+  ChannelElicitationDecision,
+  ChannelElicitationMode,
+  ChannelElicitationRequest,
   PublicControlService,
   CoordinatorMessageInput,
   MessageChannelRuntime,
@@ -92,6 +97,20 @@ interface RelayClientLike {
   ): Promise<T>;
 }
 
+/**
+ * An AbortSignal that fires when an interaction's own window closes.
+ *
+ * Unref'd so a pending interaction never keeps the connector alive by itself,
+ * and derived from the HUB's `expiresAt` rather than a local timer: the window
+ * belongs to whoever opened the interaction.
+ */
+function abortSignalExpiringAt(expiresAt: number): AbortSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(0, expiresAt - Date.now()));
+  if (typeof timer.unref === "function") timer.unref();
+  return controller.signal;
+}
+
 export function defaultTerminalRegistryDir(): string {
   return join(coreHomeDir(process.env.HOME ?? homedir()), "relay");
 }
@@ -99,6 +118,14 @@ export function defaultTerminalRegistryDir(): string {
 export interface RelayChannelDeps {
   credentialStore?: CredentialStoreLike;
   createClient?: (options: RelayClientOptions) => RelayClientLike;
+  /**
+   * Daemon-supplied form renderer. Injected because the daemon, not the
+   * connector, owns the core brokers that decide an interaction; the connector's
+   * job is to hand it a request built from a verified hub frame. Absent means
+   * "this build cannot render", and interactions are refused rather than
+   * silently dropped.
+   */
+  renderElicitation?: (request: ChannelElicitationRequest) => Promise<ChannelElicitationDecision>;
   /** Override terminal registry directory (tests). Default: ~/.xacpx/relay */
   terminalRegistryDir?: string;
   /**
@@ -117,6 +144,17 @@ export interface RelayChannelDeps {
 export class RelayChannel implements MessageChannelRuntime {
   readonly id = "relay";
   readonly nativeSessionListFormat = "table" as const;
+  /**
+   * Form capability, declared because it is implemented: `openRelayInteraction`
+   * answers a hub-forwarded frame through the daemon-supplied renderer. Core's
+   * probe requires both halves, and either alone would advertise a capability the
+   * broker then fails on.
+   *
+   * Computed in the constructor rather than as a field initializer: a parameter
+   * property is not readable from a field initializer, and reading one there is a
+   * use-before-initialization error rather than a working default.
+   */
+  readonly elicitationModes: readonly ChannelElicitationMode[];
 
   private readonly config: RelayChannelConfig;
   private readonly credentials: CredentialStoreLike;
@@ -138,6 +176,7 @@ export class RelayChannel implements MessageChannelRuntime {
     this.config = parseRelayChannelConfig(options);
     this.credentials =
       deps.credentialStore ?? new CredentialStore(defaultCredentialPath());
+    this.elicitationModes = deps.renderElicitation ? ["form"] : [];
   }
 
   isLoggedIn(): boolean {
@@ -187,6 +226,10 @@ export class RelayChannel implements MessageChannelRuntime {
       ...(input.trustedConversationPrompt
         ? { trustedConversationPrompt: input.trustedConversationPrompt }
         : {}),
+      // Interaction renderer: the bridge forwards the hub's frame here. The
+      // bridge never decides anything itself — it carries the frame, validates
+      // it, and reports the outcome verbatim.
+      renderInteraction: (request) => this.openRelayInteraction(request),
     });
     const onRequest = (
       envelope: RelayEnvelope,
@@ -431,6 +474,94 @@ export class RelayChannel implements MessageChannelRuntime {
       chatKey: input.chatKey,
       text: input.text,
     });
+  }
+
+  /**
+   * Render an ACP form elicitation.
+   *
+   * The plugin-contract entry point core's capability probe looks for. A relay
+   * interaction is ANSWERED rather than requested -- the connector does not dial
+   * out -- so the real work is `openRelayInteraction`, invoked when the hub's
+   * frame arrives. Calling this directly would have nothing to answer against.
+   */
+  async requestElicitation(): Promise<ChannelElicitationDecision> {
+    throw new Error("relay elicitation is driven by the hub's interaction frame, not by a direct call");
+  }
+
+  /**
+   * Answer a hub-forwarded interaction frame.
+   *
+   * Failure policy, in the order it is decided:
+   *
+   * - `kind !== "elicitation"` or a missing `elicitation` block -> `unsupported`.
+   *   The permission kind is carried on the wire so the transport is exercised,
+   *   but no renderer exists, and leaving a turn waiting for an answer that can
+   *   never arrive is worse than refusing up front.
+   * - An already-past `expiresAt` -> `timeout`. Enforced here rather than trusted
+   *   from the wire, so a stale window closes immediately instead of holding the
+   *   turn until the daemon's own deadline.
+   * - Anything else -> handed to the daemon-supplied renderer with the responder
+   *   identity the HUB stamped. This channel never derives an identity of its
+   *   own: a connector asserting who answered would be self-reported, which is
+   *   exactly what the M1 broker contract forbids.
+   */
+  async openRelayInteraction(input: InteractionRequestDto): Promise<InteractionResult> {
+    if (input.kind !== "elicitation" || !input.elicitation) {
+      return { responded: false, reason: "unsupported" };
+    }
+    if (input.expiresAt <= Date.now()) {
+      return { responded: false, reason: "timeout" };
+    }
+    const render = this.deps.renderElicitation;
+    if (!render) {
+      return { responded: false, reason: "channel-missing" };
+    }
+    // The responder identity is NOT in this frame and must not be: the hub stamps
+    // it on the way back, from which authenticated session answered. Reading one
+    // here would be a connector asserting an identity it cannot know.
+    try {
+      const decision = await render({
+        requestId: input.requestId,
+        chatKey: input.conversation
+          ? `bot:${input.conversation.conversationId}:${input.conversation.topicId}`
+          : `relay:${input.requestId}`,
+        ...(input.conversation?.promptRequestId !== undefined
+          ? { replyContextToken: input.conversation.promptRequestId }
+          : {}),
+        // Placeholder identity: the renderer is responsible for resolving the
+        // trusted initiator from the turn's ingress, and it refuses a request it
+        // cannot attribute. An empty senderId makes that refusal explicit rather
+        // than accidentally satisfiable.
+        requester: { senderId: "", isOwner: false },
+        agent: { name: "relay" },
+        message: input.elicitation.message,
+        mode: "form",
+        fields: input.elicitation.fields as ChannelElicitationRequest["fields"],
+        ...(input.elicitation.schemaTitle !== undefined
+          ? { schemaTitle: input.elicitation.schemaTitle }
+          : {}),
+        expiresAt: input.expiresAt,
+        signal: abortSignalExpiringAt(input.expiresAt),
+      });
+      if (decision.action === "cancel") {
+        return { responded: false, reason: "aborted" };
+      }
+      return {
+        responded: true,
+        response: {
+          requestId: input.requestId,
+          kind: "elicitation",
+          action: decision.action,
+          ...(decision.action === "accept" ? { content: decision.content } : {}),
+        },
+      };
+    } catch (error) {
+      await this.startLogger?.error("relay.interaction.failed", "relay interaction render failed", {
+        requestId: input.requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return { responded: false, reason: "aborted" };
+    }
   }
 
   async sendScheduledMessage(
