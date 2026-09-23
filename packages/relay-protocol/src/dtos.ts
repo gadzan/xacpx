@@ -375,11 +375,16 @@ export interface ConversationRunDto {
   state: ConversationRunStateDto;
   completionReason?: string;
   profileRevision: number;
+  /** Active batch for multi-member Runs. Absent on older single-member shapes. */
   activeBatch?: number;
-  maxMemberTurns: number;
-  consumedMemberTurns: number;
-  failedBotIds: string[];
-  unavailableBotIds: string[];
+  /** Guardrail cap; absent on older wire shapes (direct legacy default 1). */
+  maxMemberTurns?: number;
+  /** Progress counter; absent on older wire shapes (direct legacy default 0). */
+  consumedMemberTurns?: number;
+  /** Members that failed in the current batch; absent on older wire shapes. */
+  failedBotIds?: string[];
+  /** Members unavailable for the current batch; absent on older wire shapes. */
+  unavailableBotIds?: string[];
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;

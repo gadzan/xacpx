@@ -853,6 +853,12 @@ export class SqliteConversationStore implements ConversationStore {
       if (run.state === "completed" || run.state === "failed") {
         return { run, memberTurn: member, resurrected: false };
       }
+      if (TERMINAL_MEMBER_STATES.includes(member.state)) {
+        // Idempotent replay: this member already reached a terminal state
+        // (late provider settlement, recovery redelivery). No new message,
+        // no double progress count; the Run aggregate already observed it.
+        return { run, memberTurn: member, resurrected: false };
+      }
       const seq = this.allocateSeq(run.conversationId, run.topicId);
       const messageId = this.ids.messageId();
       this.sqlite.run(
@@ -880,7 +886,7 @@ export class SqliteConversationStore implements ConversationStore {
         [run.id],
       );
       this.finishDispatchForMemberTurn(member.id, input.now);
-      const aggregated = this.aggregateRunAfterMemberTerminal(run.id, input.now, "completed");
+      const aggregated = this.aggregateRunAfterMemberTerminal(run.id, member.id, input.now, input.completionReason);
       return {
         run: aggregated,
         memberTurn: this.requireMemberTurn(member.id),
@@ -1457,6 +1463,12 @@ export class SqliteConversationStore implements ConversationStore {
     if (TERMINAL_RUN_STATES.includes(run.state)) {
       return run;
     }
+    const member = this.requireMemberTurn(input.memberTurnId);
+    if (TERMINAL_MEMBER_STATES.includes(member.state)) {
+      // Idempotent replay: this member already terminal; the aggregate
+      // already observed it. No double progress count.
+      return run;
+    }
     const state = input.terminalState ?? "failed";
     this.sqlite.run(
       `UPDATE member_turns SET state = ?, finished_at = ? WHERE id = ?`,
@@ -1467,7 +1479,7 @@ export class SqliteConversationStore implements ConversationStore {
       [input.runId],
     );
     this.finishDispatchForMemberTurn(input.memberTurnId, input.now);
-    return this.aggregateRunAfterMemberTerminal(input.runId, input.now, state, input.reason);
+    return this.aggregateRunAfterMemberTerminal(input.runId, input.memberTurnId, input.now, input.reason);
   }
 
   /**
@@ -1482,9 +1494,9 @@ export class SqliteConversationStore implements ConversationStore {
    */
   private aggregateRunAfterMemberTerminal(
     runId: string,
+    memberTurnId: string,
     now: string,
-    memberState: MemberTurnState,
-    reason?: string,
+    memberReason?: string,
   ): ConversationRun {
     const run = this.requireRun(runId);
     if (TERMINAL_RUN_STATES.includes(run.state)) {
@@ -1494,10 +1506,11 @@ export class SqliteConversationStore implements ConversationStore {
     const batch = run.activeBatch ?? 1;
     const batchMembers = members.filter((turn) => turn.batch === batch);
     const terminal = batchMembers.filter((turn) => TERMINAL_MEMBER_STATES.includes(turn.state));
-    const member = this.requireMemberTurn(
-      members.find((turn) => turn.state === memberState)?.id ?? members[0]!.id,
-    );
-    if (memberState === "failed" || memberState === "cancelled" || memberState === "indeterminate") {
+    // Exact member that just terminalled: never re-derive by state lookup
+    // (two members may share the same terminal state; the lookup would
+    // attribute the second event to the first member and drop a failedBotId).
+    const member = this.requireMemberTurn(memberTurnId);
+    if (member.state === "failed" || member.state === "cancelled" || member.state === "indeterminate") {
       const current = new Set(run.failedBotIds);
       current.add(member.botId);
       this.sqlite.run(`UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`, [JSON.stringify([...current]), runId]);
@@ -1511,29 +1524,36 @@ export class SqliteConversationStore implements ConversationStore {
       }
       return this.requireRun(runId);
     }
-    // All batch members terminal: aggregate.
-    const failed = batchMembers.filter((turn) => turn.state === "failed" || turn.state === "indeterminate");
+    // All batch members terminal: derive the outcome from the whole batch,
+    // never from the last event's reason — except single-member Runs, which
+    // preserve the member's diagnostic reason (e.g. runtime_revision_mismatch
+    // on direct drift). Precedence: any indeterminate (unproven side effects)
+    // outranks failed; any failed-or-cancelled mix is failed; unanimous
+    // cancel is cancelled; unanimous completed completes.
+    const indeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
+    const failed = batchMembers.filter((turn) => turn.state === "failed");
     const cancelled = batchMembers.filter((turn) => turn.state === "cancelled");
-    if (failed.length > 0) {
-      const firstBad = failed[0]!;
-      const state = firstBad.state === "indeterminate" ? "indeterminate" : "failed";
+    if (indeterminate.length > 0) {
+      const reason = batchMembers.length === 1 ? (memberReason ?? "started_result_unknown") : "started_result_unknown";
       this.sqlite.run(
-        `UPDATE runs SET state = ?, completion_reason = ?, finished_at = ? WHERE id = ?`,
-        [state, reason ?? (state === "indeterminate" ? "started_result_unknown" : "execution-failed"), now, runId],
+        `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = ? WHERE id = ?`,
+        [reason, now, runId],
       );
       return this.requireRun(runId);
     }
-    if (cancelled.length === batchMembers.length) {
-      this.sqlite.run(
-        `UPDATE runs SET state = 'cancelled', completion_reason = ?, finished_at = ? WHERE id = ?`,
-        [reason ?? "human-cancelled", now, runId],
-      );
-      return this.requireRun(runId);
-    }
-    if (cancelled.length > 0) {
+    if (failed.length > 0 || cancelled.length > 0) {
+      if (cancelled.length === batchMembers.length) {
+        const reason = batchMembers.length === 1 ? (memberReason ?? "human-cancelled") : "human-cancelled";
+        this.sqlite.run(
+          `UPDATE runs SET state = 'cancelled', completion_reason = ?, finished_at = ? WHERE id = ?`,
+          [reason, now, runId],
+        );
+        return this.requireRun(runId);
+      }
+      const reason = batchMembers.length === 1 ? (memberReason ?? "execution-failed") : "execution-failed";
       this.sqlite.run(
         `UPDATE runs SET state = 'failed', completion_reason = ?, finished_at = ? WHERE id = ?`,
-        [reason ?? "execution-failed", now, runId],
+        [reason, now, runId],
       );
       return this.requireRun(runId);
     }
@@ -1543,7 +1563,6 @@ export class SqliteConversationStore implements ConversationStore {
     );
     return this.requireRun(runId);
   }
-
   private requireRun(runId: string): ConversationRun {
     const run = this.getRun(runId);
     if (!run) {

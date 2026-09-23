@@ -2298,6 +2298,144 @@ test("failed member accumulates failedBotIds; run fails only after the batch set
   first.store.close();
 });
 
+test("failed+failed accumulates both bots; failed+indeterminate yields indeterminate", async () => {
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const setup = async (requestId: string) => {
+    const first = await createLifecycle();
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    const botA = first.bots.getBot(BOT_ID);
+    const botB = first.bots.getBot(TESTER_ID);
+    const accepted = first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId,
+      botId: botA.id,
+      content: "go",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+      now: NOW,
+    });
+    return { first, botA, botB, accepted };
+  };
+  {
+    const { first, botA, botB, accepted } = await setup("req-fail-fail");
+    first.store.failExecution({
+      runId: accepted.run.id, memberTurnId: accepted.memberTurns[0]!.id, now: NOW, reason: "boom-a",
+    });
+    const done = first.store.failExecution({
+      runId: accepted.run.id, memberTurnId: accepted.memberTurns[1]!.id, now: NOW, reason: "boom-b",
+    });
+    expect(done.state).toBe("failed");
+    expect(done.completionReason).toBe("execution-failed");
+    expect(done.failedBotIds).toContain(botA.id);
+    expect(done.failedBotIds).toContain(botB.id);
+    first.store.close();
+  }
+  {
+    const { first, botA, accepted } = await setup("req-fail-ind");
+    first.store.failExecution({
+      runId: accepted.run.id, memberTurnId: accepted.memberTurns[0]!.id, now: NOW, reason: "boom",
+    });
+    const done = first.store.failExecution({
+      runId: accepted.run.id, memberTurnId: accepted.memberTurns[1]!.id, now: NOW,
+      reason: "started_result_unknown", terminalState: "indeterminate",
+    });
+    // Indeterminate (unproven side effects) outranks failed regardless of order.
+    expect(done.state).toBe("indeterminate");
+    expect(done.completionReason).toBe("started_result_unknown");
+    expect(done.failedBotIds).toContain(botA.id);
+    first.store.close();
+  }
+});
+
+test("failed+cancelled aggregates to failed with a derived reason, not the last event's", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-fail-cancel",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  first.store.failExecution({
+    runId: accepted.run.id, memberTurnId: accepted.memberTurns[0]!.id, now: NOW, reason: "boom",
+  });
+  const done = first.store.failExecution({
+    runId: accepted.run.id, memberTurnId: accepted.memberTurns[1]!.id, now: NOW,
+    reason: "cancelled", terminalState: "cancelled",
+  });
+  expect(done.state).toBe("failed");
+  expect(done.completionReason).toBe("execution-failed");
+  first.store.close();
+});
+
+test("replayed member completion is idempotent: no second message, no double progress", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-replay",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const once = first.store.completeExecution({
+    runId: accepted.run.id, memberTurnId: accepted.memberTurns[0]!.id, botId: botA.id,
+    content: "done a", sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" }, now: NOW,
+  });
+  expect(once.memberTurn.state).toBe("completed");
+  const botMessages = () => first.store.listMessages({
+    conversationId: group.id, topicId: topic.id, limit: 10,
+  }).filter((message) => message.role === "bot");
+  expect(botMessages()).toHaveLength(1);
+  expect(first.store.getRun(accepted.run.id)?.consumedMemberTurns).toBe(1);
+  // Late provider settlement redelivers A's completion: must be a no-op.
+  const replay = first.store.completeExecution({
+    runId: accepted.run.id, memberTurnId: accepted.memberTurns[0]!.id, botId: botA.id,
+    content: "done a again", sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" }, now: NOW,
+  });
+  expect(replay.memberTurn.state).toBe("completed");
+  expect(replay.assistantMessage).toBeUndefined();
+  expect(botMessages()).toHaveLength(1);
+  expect(first.store.getRun(accepted.run.id)?.consumedMemberTurns).toBe(1);
+  expect(first.store.getRun(accepted.run.id)?.state).not.toBe("completed");
+  // Replayed member failure is equally a no-op.
+  const refail = first.store.failExecution({
+    runId: accepted.run.id, memberTurnId: accepted.memberTurns[0]!.id, now: NOW, reason: "boom",
+  });
+  expect(first.store.getRun(accepted.run.id)?.consumedMemberTurns).toBe(1);
+  expect(refail.failedBotIds).not.toContain(botA.id);
+  first.store.close();
+});
+
 test("dispatch migration crash before commit keeps the old table intact", async () => {
   const { join } = await import("node:path");
   const { mkdtempSync } = await import("node:fs");
