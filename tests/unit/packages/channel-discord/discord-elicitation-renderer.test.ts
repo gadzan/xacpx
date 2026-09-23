@@ -1484,3 +1484,173 @@ test("an Unknown Message delete is treated as a successful trim", async () => {
     await channel.stop().catch(() => {});
   }
 });
+
+test("review -> Edit -> field card cannot be submitted when the continuation delete fails", async () => {
+  // `edit` leaves the multi-chunk review for a field card, whose target has NO
+  // continuations — so it takes the strict discard path. Gating on the TARGET
+  // card's shape missed this entirely: the primary is still the old review with a
+  // live Submit while its continuations are being deleted out from under it.
+  const client = makeFakeClient();
+  const failsOn = new Set<string>();
+  const realDelete = client.deleteMessage.bind(client);
+  (client as unknown as { deleteMessage: unknown }).deleteMessage =
+    async (target: unknown, messageId: string) => {
+      if (failsOn.has(messageId)) {
+        const error = new Error("delete failed") as Error & { code?: string };
+        error.code = "TRANSIENT";
+        throw error;
+      }
+      return realDelete(target as never, messageId);
+    };
+  const { channel, abort } = await startChannel(client);
+  try {
+    const longAnswer = "A".repeat(4000);
+    const { request: req } = request([
+      { kind: "text", key: "body", title: "Body", required: true },
+    ]);
+    channel.requestElicitation(req).catch(() => {});
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 8));
+    await wait();
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await wait();
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: longAnswer }, "user-A", 0));
+    await wait();
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, {
+        continuationMessageIds: string[];
+        submitGateClosed: boolean;
+      }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.continuationMessageIds.length).toBeGreaterThan(1);
+    const openingIds = [...entry.continuationMessageIds];
+
+    // Every delete fails from here, including the second one.
+    for (const id of openingIds) failsOn.add(id);
+    const primaryEditsBefore = client.edited.filter((e) => e.messageId === "m1").length;
+
+    client.emitButton(click(client, idFor(client, "edit", 0)));
+    await wait();
+
+    const gateEntry = [...store.values()][0]!;
+    // The gate closed because the CURRENT primary was a review whose text was
+    // about to be deleted — even though the destination is a field card.
+    expect(gateEntry.submitGateClosed).toBe(true);
+    // The primary's last published Submit is disabled.
+    const primaryEdits = client.edited.filter((e) => e.messageId === "m1");
+    const lastPrimary = primaryEdits[primaryEdits.length - 1]!;
+    const submitControl = (lastPrimary.body.components ?? [])
+      .flatMap((row) => row.components)
+      .find((component) => component.customId.endsWith(":submit"));
+    expect(submitControl?.disabled).toBe(true);
+    // A gate edit was published (the review with Submit disabled) in addition to
+    // whatever else happened.
+    expect(primaryEdits.length).toBeGreaterThan(primaryEditsBefore);
+    // The unremovable ids are still tracked so a retry can finish the job.
+    expect(gateEntry.continuationMessageIds).toEqual(openingIds);
+  } finally {
+    failsOn.clear();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("review -> single-chunk page cannot be submitted when the delete fails", async () => {
+  // The TARGET page fits in one message, so the old condition skipped the gate —
+  // yet the transition deletes the current review's continuations.
+  const client = makeFakeClient();
+  const failsOn = new Set<string>();
+  const realDelete = client.deleteMessage.bind(client);
+  (client as unknown as { deleteMessage: unknown }).deleteMessage =
+    async (target: unknown, messageId: string) => {
+      if (failsOn.has(messageId)) {
+        const error = new Error("delete failed") as Error & { code?: string };
+        error.code = "TRANSIENT";
+        throw error;
+      }
+      return realDelete(target as never, messageId);
+    };
+  const { channel, abort } = await startChannel(client);
+  try {
+    // 8 fields, paged 2 at a time; page 0 long, page 2 short.
+    const fields: ChannelElicitationRequest["fields"] = Array.from({ length: 8 }, (_, index) => ({
+      kind: "text" as const,
+      key: `f${index}`,
+      title: `Field ${index}`,
+      required: true,
+    }));
+    const lengths = [1800, 1800, 5, 5, 5, 5, 5, 5];
+    const { request: req } = request(fields);
+    channel.requestElicitation(req).catch(() => {});
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 8));
+    await wait();
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    for (let index = 0; index < 8; index += 1) {
+      client.emitButton(click(client, idFor(client, "field", index)));
+      await wait();
+      const modalId = client.modals[client.modals.length - 1]!.customId;
+      client.emitModal(modal(client, modalId, { [fields[index]!.key]: "L".repeat(lengths[index]!) }, "user-A", index));
+      await wait();
+      if (index < 7) {
+        client.emitButton(click(client, idFor(client, "next", index + 1)));
+        await wait();
+      }
+    }
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, {
+        continuationMessageIds: string[];
+        submitGateClosed: boolean;
+      }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    // Page 0's long review produced continuations.
+    expect(entry.continuationMessageIds.length).toBeGreaterThan(1);
+    const openingIds = [...entry.continuationMessageIds];
+    for (const id of openingIds) failsOn.add(id);
+
+    // Page 2's answers are tiny, so its review is a SINGLE chunk. It is not
+    // directly reachable from page 0 (whose row is Prev->page3, Next->page1), so
+    // step through page 1 first.
+    const rowIds = (): string[] => (client.edited[client.edited.length - 1]!.body.components ?? [])
+      .flatMap((row) => row.components)
+      .map((component) => component.customId);
+    const goTo = async (suffix: string): Promise<string> => {
+      for (let step = 0; step < 8; step += 1) {
+        const found = rowIds().find((id) => id.endsWith(`:page:${suffix}`));
+        if (found) return found;
+        const next = rowIds().find((id) => /:page:[0-9]+$/.test(id));
+        if (!next) break;
+        client.emitButton(click(client, next));
+        await wait();
+      }
+      throw new Error(`no page:${suffix} control reachable`);
+    };
+    const page2 = await goTo("2");
+    expect(page2).toBeDefined();
+
+    client.emitButton(click(client, page2!));
+    await wait();
+
+    const gateEntry = [...store.values()][0]!;
+    expect(gateEntry.submitGateClosed).toBe(true);
+    const primaryEdits = client.edited.filter((e) => e.messageId === "m1");
+    const submitControl = (primaryEdits[primaryEdits.length - 1]!.body.components ?? [])
+      .flatMap((row) => row.components)
+      .find((component) => component.customId.endsWith(":submit"));
+    expect(submitControl?.disabled).toBe(true);
+    expect(gateEntry.continuationMessageIds).toEqual(openingIds);
+  } finally {
+    failsOn.clear();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});

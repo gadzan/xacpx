@@ -938,15 +938,34 @@ export class DiscordChannel implements MessageChannelRuntime {
       // MULTI-MESSAGE REVIEWS ARE TRANSACTIONAL, and the gate is the primary's
       // Submit.
       //
-      // Continuation messages are edited in place, so a failure part-way through
-      // leaves the channel holding a MIX: the old primary (still a review card)
-      // plus new continuations plus the old tail. The old primary's Submit is
-      // live, which would let the user approve content they never saw intact.
-      // So the submit gate is disabled FIRST, before any continuation is touched,
-      // and only re-enabled once every continuation is consistent.
-      const isReview = action === "review" || action === "start" || action === "page" || action === "skip";
-      const needsGate = isReview && (card.contents?.length ?? 1) > 1;
-      if (needsGate && !entry.submitGateClosed) {
+      // The condition is NOT about the shape of the card being built. It is about
+      // the card CURRENTLY on screen and what is about to happen to it:
+      //
+      //   the primary may only carry a live Submit if it is a review, and that
+      //   review's continuations may only be mutated behind a closed gate.
+      //
+      // `edit` and `page` exist ONLY on a review card, so any `edit`/`page`
+      // rerender starts from a primary whose Submit was live and whose
+      // continuations are about to be edited, trimmed, or deleted. Gating only
+      // when the TARGET was multi-chunk left two holes: review -> field card
+      // (the target has no continuations at all) and review -> single-chunk page
+      // (the target has fewer). Both drove continuation deletes — destroying the
+      // text the live Submit was approving — with the gate still open.
+      //
+      // `visitedReview` is the state that says the primary currently IS a review,
+      // which is the only situation in which the gate-close edit publishes
+      // sensible content. Every path that sets it does so while rendering a
+      // review, so the two cannot disagree.
+      const canMutateCurrentReview =
+        action === "review"
+        || action === "start"
+        || action === "page"
+        || action === "skip"
+        || action === "edit";
+      if (entry.visitedReview && canMutateCurrentReview && !entry.submitGateClosed) {
+        // Publish the CURRENT review's text with Submit disabled. Same content
+        // the user is looking at, so this is not a visual step: it only removes
+        // the ability to submit while the text underneath is in flux.
         const gated = buildElicitationReviewCard(
           entry.request,
           entry.token,
