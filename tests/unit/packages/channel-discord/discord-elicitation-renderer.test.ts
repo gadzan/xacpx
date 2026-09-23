@@ -111,8 +111,14 @@ function modal(client: FakeDiscordClient, customId: string, fields: Record<strin
   };
 }
 
-function idFor(client: FakeDiscordClient, action: string, fieldKey?: string): string {
-  const suffix = fieldKey ? `${action}:${fieldKey}` : action;
+/**
+ * Find a control's custom id by action and optional field PAGE/INDEX.
+ *
+ * `fieldIndex` is a number, matching the codec: routing is positional, never by
+ * schema key.
+ */
+function idFor(client: FakeDiscordClient, action: string, fieldIndex?: number): string {
+  const suffix = fieldIndex !== undefined ? `${action}:${fieldIndex}` : action;
   const rows = client.edited.length > 0
     ? (client.edited[client.edited.length - 1]!.body.components ?? [])
     : (client.sent[client.sent.length - 1]?.body.components ?? []);
@@ -203,11 +209,73 @@ async function startWizard(
   if (req.fields[0]?.key !== fieldKey) {
     const index = req.fields.findIndex((f) => f.key === fieldKey);
     for (let i = 0; i < index; i += 1) {
-      client.emitButton(click(client, idFor(client, "edit", req.fields[i]!.key)));
+      // Routed by POSITION, matching the codec.
+      client.emitButton(click(client, idFor(client, "edit", i)));
       await new Promise((r) => setTimeout(r, 5));
     }
   }
   return { settled };
+}
+
+/**
+ * Drive a full wizard: answer every field through its natural control, then
+ * review and submit. Returns the decision (or the teardown error).
+ *
+ * Field order comes from the request, so a field is only ever reached from a
+ * control that names its position — which is what the review-card paging exists
+ * to guarantee for forms wider than one action row.
+ */
+async function driveToSubmit(
+  client: FakeDiscordClient,
+  channel: DiscordChannel,
+  req: ChannelElicitationRequest,
+  answers: Record<string, string>,
+): Promise<ChannelElicitationDecision | Error> {
+  const settled = channel.requestElicitation(req).then(
+    (decision) => decision,
+    (error: Error) => error,
+  );
+  const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
+  const deadline = Date.now() + 5_000;
+  while (client.sent.length === 0 && Date.now() < deadline) await wait();
+  client.emitButton(click(client, idFor(client, "start")));
+  await wait();
+
+  if (req.fields.length === 0) {
+    // Zero-field form: Start goes straight to review, so Submit is next.
+    client.emitButton(click(client, idFor(client, "submit")));
+    return settled;
+  }
+
+  for (let index = 0; index < req.fields.length; index += 1) {
+    const field = req.fields[index]!;
+    const answer = answers[field.key];
+    // The card in front of us is field `index`'s: the opening click landed on 0
+    // and each iteration advanced with the previous field's forward control.
+    if (answer !== undefined) {
+      if (field.kind === "single-select" || field.kind === "multi-select" || field.kind === "boolean") {
+        client.emitSelect(select(client, selectCustomIdOf(client, field.key), [answer]));
+      } else {
+        // Answer opens the modal for THIS field.
+        client.emitButton(click(client, idFor(client, "field", index)));
+        await wait();
+        const modalId = client.modals[client.modals.length - 1]!.customId;
+        client.emitModal(modal(client, modalId, { [field.key]: answer }));
+      }
+      await wait();
+    }
+    // Advance to the next field using this card's forward control. The last
+    // field has none — its Next goes to review.
+    if (index < req.fields.length - 1) {
+      client.emitButton(click(client, idFor(client, "next", index + 1)));
+      await wait();
+    }
+  }
+  // To review, then submit.
+  client.emitButton(click(client, idFor(client, "review")));
+  await wait();
+  client.emitButton(click(client, idFor(client, "submit")));
+  return settled;
 }
 
 test("a single-select field renders a String Select with its options and selects the value", async () => {
@@ -323,7 +391,7 @@ test("a text field opens a modal whose input ids are keys, not answers", async (
       { kind: "text", key: "note", title: "Note", required: true },
     ]);
     await startWizard(client, channel, req, "note");
-    const answerId = idFor(client, "field", "note");
+    const answerId = idFor(client, "field", 0);
     client.emitButton(click(client, answerId));
     await new Promise((r) => setTimeout(r, 5));
     expect(client.modals).toHaveLength(1);
@@ -355,7 +423,7 @@ test("a non-numeric answer for a number field leaves it unanswered instead of st
       { kind: "number", key: "hours", title: "Hours", required: true },
     ]);
     await startWizard(client, channel, req, "hours");
-    const answerId = idFor(client, "field", "hours");
+    const answerId = idFor(client, "field", 0);
     client.emitButton(click(client, answerId));
     await new Promise((r) => setTimeout(r, 5));
     const m = client.modals[0]!;
@@ -385,7 +453,7 @@ test("an integer field rejects a fractional answer instead of rounding it", asyn
       { kind: "number", key: "retries", title: "Retries", required: true, integer: true },
     ]);
     await startWizard(client, channel, req, "retries");
-    client.emitButton(click(client, idFor(client, "field", "retries")));
+    client.emitButton(click(client, idFor(client, "field", 0)));
     await new Promise((r) => setTimeout(r, 5));
     const m = client.modals[0]!;
     client.emitModal(modal(client, m.customId, { retries: "2.5" }));
@@ -410,7 +478,7 @@ test("a field's own numeric bounds are enforced before submit", async () => {
       { kind: "number", key: "hours", title: "Hours", required: true, minimum: 1, maximum: 8 },
     ]);
     await startWizard(client, channel, req, "hours");
-    client.emitButton(click(client, idFor(client, "field", "hours")));
+    client.emitButton(click(client, idFor(client, "field", 0)));
     await new Promise((r) => setTimeout(r, 5));
     const m = client.modals[0]!;
     const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
@@ -442,7 +510,7 @@ test("date/email/uri fields arrive as text and pass through for core to validate
       { kind: "text", key: "mail", title: "Email", required: true },
     ]);
     await startWizard(client, channel, req, "mail");
-    client.emitButton(click(client, idFor(client, "field", "mail")));
+    client.emitButton(click(client, idFor(client, "field", 0)));
     await new Promise((r) => setTimeout(r, 5));
     const m = client.modals[0]!;
     // The renderer does not pre-validate the format: core is authoritative, so
@@ -488,9 +556,9 @@ test("an intruder's select or modal cannot write an answer", async () => {
     // card's Answer control.
     client.emitButton(click(client, idFor(client, "review")));
     await new Promise((r) => setTimeout(r, 5));
-    client.emitButton(click(client, idFor(client, "edit", "note")));
+    client.emitButton(click(client, idFor(client, "edit", 1)));
     await new Promise((r) => setTimeout(r, 5));
-    client.emitButton(click(client, idFor(client, "field", "note")));
+    client.emitButton(click(client, idFor(client, "field", 1)));
     await new Promise((r) => setTimeout(r, 5));
     const m = client.modals[0]!;
     client.emitModal(modal(client, m.customId, { note: "intruder value" }, "user-INTRUDER"));
@@ -583,6 +651,190 @@ test("an agent-controlled option label renders literally in the select", async (
     expect(component!.options[0]!.label).toContain("\\*\\*bold\\*\\*");
     expect(component!.options[0]!.value).toBe("prod");
     expect(client.edited[client.edited.length - 1]!.body.allowedMentions?.parse).toEqual([]);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+// --- The three flows called out as previously unproven ---------------------
+//
+// Before the fix the advertised `form` capability could not complete these:
+// optional fields were unreachable, field 3+ had no control at all, and a
+// zero-field form could not be accepted at all.
+
+test("a required + optional form reaches BOTH fields before submitting", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "a", title: "A", required: true },
+      { kind: "text", key: "b", title: "B", required: false },
+    ]);
+    const decision = await driveToSubmit(client, channel, req, { a: "alpha", b: "beta" });
+    expect(decision).toEqual({
+      action: "accept",
+      responderId: "user-A",
+      content: { a: "alpha", b: "beta" },
+    });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a 3+ field form is completable: the third field is reachable and answerable", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    // The third field is REQUIRED, so a wizard that cannot reach it can never
+    // submit: this is the shape that was previously a dead end.
+    const { request: req } = request([
+      { kind: "text", key: "f1", title: "F1", required: true },
+      { kind: "number", key: "f2", title: "F2", required: true },
+      { kind: "single-select", key: "f3", title: "F3", required: true, options: [{ value: "c", label: "C" }] },
+    ]);
+    const decision = await driveToSubmit(client, channel, req, { f1: "one", f2: "2", f3: "c" });
+    expect(decision).toEqual({
+      action: "accept",
+      responderId: "user-A",
+      content: { f1: "one", f2: 2, f3: "c" },
+    });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("an all-optional form submitted empty accepts with null content", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "single-select", key: "opt1", title: "Opt 1", required: false, options: [{ value: "x", label: "X" }] },
+      { kind: "text", key: "opt2", title: "Opt 2", required: false },
+    ]);
+    const decision = await driveToSubmit(client, channel, req, {});
+    // `null` is ACP's "accept with no answers"; `{}` is a different statement.
+    expect(decision).toEqual({ action: "accept", responderId: "user-A", content: null });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a zero-field form accepts through the review page", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([]);
+    const decision = await driveToSubmit(client, channel, req, {});
+    expect(decision).toEqual({ action: "accept", responderId: "user-A", content: null });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("edit after review corrects a field and the correction reaches the decision", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "a", title: "A", required: true },
+      { kind: "text", key: "b", title: "B", required: true },
+    ]);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
+    const deadline = Date.now() + 5_000;
+    while (client.sent.length === 0 && Date.now() < deadline) await wait();
+
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await wait();
+    client.emitModal(modal(client, client.modals[0]!.customId, { a: "first" }));
+    await wait();
+    client.emitButton(click(client, idFor(client, "next", 1)));
+    await wait();
+    // Field 1's card: its Answer control opens the modal for b.
+    client.emitButton(click(client, idFor(client, "field", 1)));
+    await wait();
+    client.emitModal(modal(client, client.modals[1]!.customId, { b: "second" }));
+    await wait();
+
+    // Review -> Edit field 0 -> correct it -> review -> submit.
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+    client.emitButton(click(client, idFor(client, "edit", 0)));
+    await wait();
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await wait();
+    client.emitModal(modal(client, client.modals[2]!.customId, { a: "corrected" }));
+    await wait();
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+    client.emitButton(click(client, idFor(client, "submit")));
+    expect(await settled).toEqual({
+      action: "accept",
+      responderId: "user-A",
+      content: { a: "corrected", b: "second" },
+    });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a 6-field review paginates and every field stays reachable", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const fields = Array.from(
+      { length: 6 },
+      (_, i) => ({ kind: "text" as const, key: `k${i}`, title: `K${i}`, required: true }),
+    );
+    const { request: req } = request(fields);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
+    const deadline = Date.now() + 5_000;
+    while (client.sent.length === 0 && Date.now() < deadline) await wait();
+
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+
+    const rowIds = (): string[] => {
+      const rows = client.edited[client.edited.length - 1]!.body.components ?? [];
+      return rows.flatMap((r) => r.components.map((c) => c.customId));
+    };
+    // Page 0 shows fewer than all fields, and the rest are reachable by paging.
+    expect(rowIds().filter((id) => /:edit:[0-9]+$/.test(id)).length).toBeLessThan(6);
+    expect(rowIds().some((id) => /:page:/.test(id))).toBe(true);
+
+    let sawLast = false;
+    for (let step = 0; step < 6 && !sawLast; step += 1) {
+      const ids = rowIds();
+      if (ids.some((id) => id.endsWith(":edit:5"))) {
+        sawLast = true;
+        break;
+      }
+      const next = ids.find((id) => /:page:[0-9]+$/.test(id) && !id.endsWith(":page:0"));
+      if (!next) break;
+      client.emitButton(click(client, next));
+      await wait();
+    }
+    expect(sawLast).toBe(true);
+
+    await channel.stop();
+    await settled;
   } finally {
     abort.abort();
     await channel.stop().catch(() => {});

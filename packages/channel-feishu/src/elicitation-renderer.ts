@@ -114,18 +114,19 @@ function cryptoRandomId(): string {
  * missing `action.value` means the callback belongs to some other feature, and
  * guessing at it would let unrelated clicks drive an elicitation.
  */
-export function parseElicitationAction(payloadValue: unknown): { token: string; action: string; fieldKey?: string } | null {
+export function parseElicitationAction(payloadValue: unknown): { token: string; action: string; fieldIndex?: number } | null {
   if (typeof payloadValue !== "object" || payloadValue === null || Array.isArray(payloadValue)) return null;
   const record = payloadValue as Record<string, unknown>;
   const token = record.t;
   const action = record.a;
   if (typeof token !== "string" || token.length === 0) return null;
   if (typeof action !== "string" || action.length === 0) return null;
-  const fieldKey = record.f;
+  // Positional, like Discord: a schema key is not a valid routing id.
+  const fieldIndex = record.f;
   return {
     token,
     action,
-    ...(typeof fieldKey === "string" && fieldKey.length > 0 ? { fieldKey } : {}),
+    ...(typeof fieldIndex === "number" && Number.isInteger(fieldIndex) && fieldIndex >= 0 ? { fieldIndex } : {}),
   };
 }
 
@@ -211,6 +212,7 @@ export class FeishuElicitationRenderer {
       sequence: 0,
       request,
       values: {},
+      visitedReview: false,
       settled: false,
       resolve: settle,
       reject: rejectPromise,
@@ -279,22 +281,52 @@ export class FeishuElicitationRenderer {
       case "start": {
         entry.currentField = entry.request.fields[0]?.key;
         if (entry.currentField === undefined) {
-          // A zero-field form: nothing to ask, and the review page is the only
-          // honest card, so it is never reached.
+          // A zero-field form has nothing to ask, but it is NOT a dead end: M1
+          // keeps `accept` + `content: null` precisely for this, so Start goes
+          // straight to the review page where Submit is the only way to accept.
+          entry.visitedReview = true;
+          await this.renderReview(entry);
           return { handled: true, settled: false };
         }
         await this.renderCurrentField(entry);
         return { handled: true, settled: false };
       }
       case "field": {
-        // Review-page Edit: move to the named field.
-        if (parsed.fieldKey && entry.request.fields.some((f) => f.key === parsed.fieldKey)) {
-          entry.currentField = parsed.fieldKey;
+        // Review-page Edit: move to the named field. Routed by POSITION, since a
+        // schema key is not a valid routing id.
+        if (parsed.fieldIndex !== undefined && entry.request.fields[parsed.fieldIndex]) {
+          entry.currentField = entry.request.fields[parsed.fieldIndex]!.key;
+          entry.visitedReview = false;
           await this.renderCurrentField(entry);
         }
         return { handled: true, settled: false };
       }
+      case "skip": {
+        // An explicit "leave this optional field blank". Distinct from a submit
+        // with empty input, which the field's own validator would keep
+        // unanswered and thereby block the advance.
+        if (entry.currentField !== undefined && entry.request.fields.some((f) => f.key === entry.currentField)) {
+          const field = entry.request.fields.find((f) => f.key === entry.currentField)!;
+          // Mark it answered-with-nothing so progression treats it as done.
+          entry.values[field.key] = entry.values[field.key] ?? "";
+        }
+        const next = entry.request.fields.find((field) => entry.values[field.key] === undefined);
+        if (next) {
+          entry.currentField = next.key;
+          await this.renderCurrentField(entry);
+          return { handled: true, settled: false };
+        }
+        entry.visitedReview = true;
+        await this.renderReview(entry);
+        return { handled: true, settled: false };
+      }
       case "submit": {
+        // Two submits exist and they mean different things: the field card's
+        // saves that field and advances, while the review page's commits what
+        // the user just reviewed. `visitedReview` is what tells them apart.
+        if (entry.visitedReview) {
+          return this.confirmReviewed(entry);
+        }
         return this.submit(entry, action.formValues);
       }
       case "decline":
@@ -315,25 +347,23 @@ export class FeishuElicitationRenderer {
   }
 
   /**
-   * The single path to `accept`.
+   * Record the submitted field, then ADVANCE. Never settles.
    *
-   * A form submit carries the CURRENT field's answer in `formValues`, keyed by
-   * the component `name`. The answer is recorded, then the request advances to
-   * the next unanswered field; when nothing is unanswered the decision is
-   * committed.
-   *
-   * A required field with no collected answer blocks the submission rather than
-   * sending a partial form: core validates too, but failing here keeps the card
-   * live instead of burning the turn on a rejected payload.
+   * The field card's submit saves that field and moves to the next unanswered
+   * one, so an optional field is reachable exactly like a required one. Only the
+   * REVIEW page's submit settles — which is what the ACP requirement to
+   * review-and-modify-before-sending actually means. The previous behaviour
+   * settled as soon as every required field was answered, so optional fields
+   * were unreachable and no review ever happened.
    */
   private async submit(
     entry: PendingFeishuElicitation,
     formValues: Record<string, string>,
-  ): Promise<{ handled: boolean; settled: boolean }> {
+  ): Promise<{ handled: boolean; settled: false }> {
     if (entry.currentField !== undefined) {
       const field = entry.request.fields.find((f) => f.key === entry.currentField);
       if (field) {
-        const name = formComponentName(field.key);
+        const name = formComponentName(field.key, entry.request.fields);
         const raw = name !== null ? formValues[name] : undefined;
         // A single-select contributes to form_value under its `name` too, so the
         // same conversion covers it: an option VALUE is already a string.
@@ -343,23 +373,50 @@ export class FeishuElicitationRenderer {
         }
       }
     }
-
-    const missing = entry.request.fields.filter((f) => f.required && entry.values[f.key] === undefined);
-    if (missing.length > 0) {
-      // Stay on the unanswered field and let the user fix it.
-      entry.currentField = missing[0]!.key;
+    const next = entry.request.fields.find((field) => entry.values[field.key] === undefined);
+    if (next) {
+      entry.currentField = next.key;
       await this.renderCurrentField(entry);
       return { handled: true, settled: false };
     }
+    // Everything collected (including the optional ones the user skipped by
+    // advancing): show the review page, which is the only path to accept.
+    entry.visitedReview = true;
+    await this.renderReview(entry);
+    return { handled: true, settled: false };
+  }
 
+  /**
+   * Commit a reviewed form as an ACP accept. Called ONLY from the review page's
+   * submit control, so a user always confirms what they are about to send.
+   */
+  private async confirmReviewed(
+    entry: PendingFeishuElicitation,
+  ): Promise<{ handled: boolean; settled: boolean }> {
+    const missing = entry.request.fields.filter((field) => field.required && entry.values[field.key] === undefined);
+    if (missing.length > 0) {
+      // Stay on the unanswered field and let the user fix it.
+      entry.currentField = missing[0]!.key;
+      entry.visitedReview = false;
+      await this.renderCurrentField(entry);
+      return { handled: true, settled: false };
+    }
     if (!trySettle(entry)) return { handled: false, settled: false };
     this.options.pending.delete(entry.token);
     await this.withdraw(entry, "terminal");
     // `null` is a valid ACP accept for an all-optional form and is deliberately
     // distinguishable from "the channel submitted nothing" (`undefined`), so the
-    // empty case is preserved rather than normalized to `{}`.
+    // empty case is preserved rather than normalized to `{}`. A field the user
+    // skipped is recorded as "" and dropped here: sending an empty string would
+    // be an answer the agent did not ask for.
+    const collected: Record<string, ChannelElicitationValue> = {};
+    for (const [key, value] of Object.entries(entry.values)) {
+      if (value === "") continue;
+      if (Array.isArray(value) && value.length === 0) continue;
+      collected[key] = value;
+    }
     const content: Record<string, ChannelElicitationValue> | null =
-      Object.keys(entry.values).length === 0 ? null : { ...entry.values };
+      Object.keys(collected).length === 0 ? null : collected;
     entry.resolve({ action: "accept", responderId: entry.requesterId, content });
     return { handled: true, settled: true };
   }
@@ -428,8 +485,11 @@ export class FeishuElicitationRenderer {
     entry.reject(new Error(reason));
   }
 
-  /** Render the review card, for a user who wants to see everything collected. */
-  async showReview(entry: PendingFeishuElicitation): Promise<void> {
+  /**
+   * Replace the card with the review page: every label with its current value,
+   * plus one Edit per field and the Submit that confirms what is being sent.
+   */
+  private async renderReview(entry: PendingFeishuElicitation): Promise<void> {
     if (!entry.cardId || entry.settled) return;
     const card = buildElicitationReviewCard(entry.request, entry.token, entry.values);
     try {

@@ -46,8 +46,10 @@ export const ELICITATION_CUSTOM_ID_PREFIX = "xacpx-elicit:";
 export type ElicitationUiAction =
   | "start"
   | "field"
+  | "next"
   | "review"
   | "edit"
+  | "page"
   | "submit"
   | "decline"
   | "cancel";
@@ -55,8 +57,10 @@ export type ElicitationUiAction =
 const ACTION_SEGMENTS: Record<ElicitationUiAction, string> = {
   start: "start",
   field: "field",
+  next: "next",
   review: "review",
   edit: "edit",
+  page: "page",
   submit: "submit",
   decline: "decline",
   cancel: "cancel",
@@ -78,19 +82,32 @@ export function createElicitationToken(): string {
  * Build a custom id from token + routing identity only. Deliberately has no
  * slot for a field value: a `custom_id` is echoed in every interaction payload,
  * so encoding an answer there would leak it into Discord's own logs.
+ *
+ * `fieldIndex` is a POSITION, never the schema key. Core guarantees a key is a
+ * bounded JSON property name and nothing more — `env.prod`, `a/b` and keys past
+ * any character budget are all legal. Carrying the key meant truncating and
+ * stripping it, then matching the stripped form back against the original, which
+ * silently lost the field. An index is always expressible, and the pending state
+ * maps it back to the exact field.
  */
-export function elicitationCustomId(token: string, action: ElicitationUiAction, fieldKey?: string): string {
+export function elicitationCustomId(token: string, action: ElicitationUiAction, fieldIndex?: number): string {
+  if (action === "page" || action === "next") {
+    if (fieldIndex === undefined || !Number.isInteger(fieldIndex) || fieldIndex < 0) {
+      throw new Error(`elicitation custom id action "${action}" requires a page index`);
+    }
+    return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ACTION_SEGMENTS[action]}:${fieldIndex}`;
+  }
   if (action !== "field" && action !== "edit") {
-    if (fieldKey !== undefined) throw new Error(`elicitation custom id must not carry a field for action "${action}"`);
+    if (fieldIndex !== undefined) throw new Error(`elicitation custom id must not carry a field for action "${action}"`);
     return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ACTION_SEGMENTS[action]}`;
   }
-  if (fieldKey === undefined || fieldKey.length === 0) {
-    throw new Error(`elicitation custom id action "${action}" requires a field key`);
+  if (fieldIndex === undefined || !Number.isInteger(fieldIndex) || fieldIndex < 0) {
+    throw new Error(`elicitation custom id action "${action}" requires a field index`);
   }
-  // Field keys are core-chosen identifiers (bounded, URI-safe), not answers;
-  // they are still length-capped so a pathological key cannot overflow the id.
-  const boundedKey = fieldKey.slice(0, 48).replace(/[^A-Za-z0-9_-]/g, "");
-  return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ACTION_SEGMENTS[action]}:${boundedKey}`;
+  // Bounded so a pathological field count cannot overflow the id; Discord caps
+  // custom ids at 100 chars and this stays far inside it.
+  const boundedIndex = Math.min(fieldIndex, 999).toString();
+  return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ACTION_SEGMENTS[action]}:${boundedIndex}`;
 }
 
 /** Custom id for the modal wrapper itself; the field identity rides inside. */
@@ -100,14 +117,14 @@ export function elicitationModalCustomId(token: string): string {
 
 export function parseElicitationCustomId(
   customId: string,
-): { token: string; action: ElicitationUiAction; fieldKey?: string } | null {
+): { token: string; action: ElicitationUiAction; fieldIndex?: number } | null {
   if (!customId.startsWith(ELICITATION_CUSTOM_ID_PREFIX)) return null;
   const rest = customId.slice(ELICITATION_CUSTOM_ID_PREFIX.length);
-  // Layout is `<token>:<action>[:<field>]`. The token is a fixed 32-char hex
+  // Layout is `<token>:<action>[:<fieldIndex>]`. The token is a fixed 32-char hex
   // slug, so it is read FIRST rather than by "split on the last colon" (the
   // permission shape): token length is known, and the action/field segments are
-  // then unambiguous. Splitting on the last colon would leak a field key into
-  // the token position and silently mis-route the callback.
+  // then unambiguous. Splitting on the last colon would leak a field identity
+  // into the token slot and silently mis-route the callback.
   const tokenPattern = /^[0-9a-f]{32}/;
   const match = tokenPattern.exec(rest);
   if (!match) return null;
@@ -116,7 +133,7 @@ export function parseElicitationCustomId(
   if (!tail.startsWith(":")) return null;
   const segments = tail.slice(1).split(":");
   const action = segments[0];
-  let fieldKey: string | undefined;
+  let fieldIndex: number | undefined;
   switch (action) {
     case "start":
     case "review":
@@ -127,14 +144,16 @@ export function parseElicitationCustomId(
       break;
     case "field":
     case "edit":
+    case "page":
+    case "next":
       if (segments.length !== 2) return null;
-      fieldKey = segments[1];
-      if (!fieldKey || !/^[A-Za-z0-9_-]{1,48}$/.test(fieldKey)) return null;
+      fieldIndex = Number(segments[1]);
+      if (!Number.isInteger(fieldIndex) || fieldIndex < 0) return null;
       break;
     default:
       return null;
   }
-  return { token, action: action as ElicitationUiAction, ...(fieldKey ? { fieldKey } : {}) };
+  return { token, action: action as ElicitationUiAction, ...(fieldIndex !== undefined ? { fieldIndex } : {}) };
 }
 
 type ButtonStyle = 1 | 2 | 3 | 4;
@@ -241,11 +260,26 @@ export function buildElicitationFieldCard(
   }
   const isSelect = field.kind === "single-select" || field.kind === "multi-select";
   const isBoolean = field.kind === "boolean";
+  const totalFields = request.fields.length;
+  // Derived from the passed-in 1-based `index`, NOT `indexOf(field)`: the latter
+  // fails when a caller passes a field from a different array instance (a mapped
+  // or copied form), yielding -1 and silently dropping every position-dependent
+  // control — including the forward navigation a multi-field form needs.
+  const position = Math.min(Math.max(0, index - 1), Math.max(0, totalFields - 1));
   const controls: Array<{ label: string; customId: string; style: 1 | 2 | 3 | 4 }> = [];
   // Booleans are answerable in place (yes/no are their options), so only
   // text-like fields need an "Answer" button that opens a modal.
   if (!isSelect && !isBoolean) {
-    controls.push({ label: messages.elicitationEdit, customId: elicitationCustomId(token, "field", field.key), style: 3 });
+    controls.push({ label: messages.elicitationEdit, customId: elicitationCustomId(token, "field", position), style: 3 });
+  }
+  // Per-field forward/back. Without these the only way to reach field N>0 is to
+  // jump to the review page and use its Edit control — a detour that leaves a
+  // mid-wizard user with no obvious way forward.
+  if (position > 0) {
+    controls.push({ label: truncate(messages.elicitationPrevField, 80), customId: elicitationCustomId(token, "edit", position - 1), style: 2 });
+  }
+  if (position < totalFields - 1) {
+    controls.push({ label: truncate(messages.elicitationNextField, 80), customId: elicitationCustomId(token, "next", position + 1), style: 3 });
   }
   controls.push({ label: messages.elicitationNext, customId: elicitationCustomId(token, "review"), style: 2 });
   controls.push({ label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 });
@@ -254,9 +288,9 @@ export function buildElicitationFieldCard(
     content: truncate(lines.join("\n\n"), MAX_CARD_CHARS),
     components: actionRow(controls),
     selectRows: isSelect
-      ? buildElicitationSelectRows(token, field, current)
+      ? buildElicitationSelectRows(token, field, current, position)
       : isBoolean
-        ? buildElicitationBooleanRows(token, field, current)
+        ? buildElicitationBooleanRows(token, field, current, position)
         : [],
     modalAction: !isSelect && !isBoolean,
   };
@@ -271,6 +305,8 @@ export function buildElicitationBooleanRows(
   token: string,
   field: Extract<ChannelElicitationField, { kind: "boolean" }>,
   current: ChannelElicitationValue | undefined,
+  /** 0-based position, used as the control's routing identity (never the key). */
+  fieldIndex: number,
 ): DiscordSelectActionRow[] {
   const messages = getMessages();
   const selected = typeof current === "boolean" ? String(current) : undefined;
@@ -280,7 +316,7 @@ export function buildElicitationBooleanRows(
       components: [
         {
           type: 3 as const,
-          customId: elicitationCustomId(token, "field", field.key),
+          customId: elicitationCustomId(token, "field", fieldIndex),
           placeholder: escapeDiscordLiteralText(field.title),
           options: [
             { label: messages.elicitationYes, value: "true", ...(selected === "true" ? { default: true } : {}) },
@@ -292,11 +328,20 @@ export function buildElicitationBooleanRows(
   ];
 }
 
-/** Review card: every label and its current value, with Edit / Submit / Decline / Cancel. */
+/**
+ * Review card: every label and its current value, with Edit / Submit / Decline / Cancel.
+ *
+ * Every field gets an Edit control, but an action row holds 5 buttons and
+ * Submit/Decline/Cancel take three. Rather than dropping the fields past the
+ * budget — which left field 3+ with no way in at all, and a required field there
+ * made Submit unsatisfiable — the row carries a Prev/Next pair and the page
+ * advances by index.
+ */
 export function buildElicitationReviewCard(
   request: ChannelElicitationRequest,
   token: string,
   values: Record<string, ChannelElicitationValue>,
+  page = 0,
 ): { content: string; components: DiscordActionRow[] } {
   const messages = getMessages();
   const lines = [`**${messages.elicitationReview}**`, messages.elicitationFromAgent(escapeDiscordLiteralText(request.agent.name))];
@@ -304,23 +349,43 @@ export function buildElicitationReviewCard(
     const value = values[field.key];
     lines.push(`**${escapeDiscordLiteralText(field.title)}**\n${escapeDiscordLiteralText(value === undefined ? messages.elicitationNoAnswer : displayValue(value))}`);
   }
-  // One Edit control per field, so the review page is genuinely navigable: the
-  // ACP requirement is that the user can MODIFY answers, which needs a route
-  // back to each answer rather than one ambiguous "Edit".
-  //
-  // A form with more fields than one row can hold (5) keeps an aggregate Edit
-  // that returns to the first unanswered field instead of overflowing the row.
-  const editButtons = request.fields.slice(0, DISCORD_ACTION_ROW_BUTTON_MAX - 3).map((field) => ({
-    label: truncate(escapeDiscordLiteralText(`${messages.elicitationEdit}: ${field.title}`), 80),
-    customId: elicitationCustomId(token, "edit", field.key),
-    style: 2 as const,
-  }));
-  const components = actionRow([
-    ...editButtons,
-    { label: messages.elicitationSubmit, customId: elicitationCustomId(token, "submit"), style: 3 },
-    { label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 },
-    { label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 },
-  ]);
+  // Budget: the row holds 5 buttons. Submit/Decline/Cancel always take 3, and
+  // paging takes 2 when needed, so the Edit controls get whatever is left.
+  // Getting this wrong is not cosmetic: an over-full row is rejected by Discord,
+  // and under-budgeting silently drops fields the user then cannot reach.
+  const total = request.fields.length;
+  const terminals = 3;
+  // Paging costs 2 slots, so a paged page shows (5 - 3 - 2) = 0 fields. That is
+  // wrong: a row cannot hold a page control AND any field. Rather than emit an
+  // over-full row Discord would reject, a form wider than what fits uses a
+  // SECOND row for the paging controls, which the component API allows (up to
+  // 5 rows per message) — so all 5 slots stay available for fields.
+  const perPage = DISCORD_ACTION_ROW_BUTTON_MAX - terminals;
+  const pageCount = Math.max(1, Math.ceil(total / perPage));
+  const hasPaging = pageCount > 1;
+  const clamped = Math.min(Math.max(0, page), pageCount - 1);
+  const start = clamped * perPage;
+  const controls: Array<{ label: string; customId: string; style: 1 | 2 | 3 | 4 }> = request.fields
+    .slice(start, start + perPage)
+    .map((field) => ({
+      label: truncate(escapeDiscordLiteralText(`${messages.elicitationEdit}: ${field.title}`), 80),
+      customId: elicitationCustomId(token, "edit", request.fields.indexOf(field)),
+      style: 2 as const,
+    }));
+  controls.push({ label: messages.elicitationSubmit, customId: elicitationCustomId(token, "submit"), style: 3 });
+  controls.push({ label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 });
+  controls.push({ label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 });
+  const rows = [actionRow(controls)];
+  // Paging lives on its own row so it never costs a field slot.
+  if (hasPaging) {
+    const prevPage = (clamped - 1 + pageCount) % pageCount;
+    const nextPage = (clamped + 1) % pageCount;
+    rows.push(actionRow([
+      { label: truncate(`${messages.elicitationPagePrev} ${prevPage + 1}/${pageCount}`, 80), customId: `${ELICITATION_CUSTOM_ID_PREFIX}${token}:page:${prevPage}`, style: 2 },
+      { label: truncate(`${messages.elicitationPageNext} ${nextPage + 1}/${pageCount}`, 80), customId: `${ELICITATION_CUSTOM_ID_PREFIX}${token}:page:${nextPage}`, style: 2 },
+    ]));
+  }
+  const components = rows.flat();
   return { content: truncate(lines.join("\n\n"), MAX_CARD_CHARS), components };
 }
 
@@ -360,6 +425,8 @@ export function buildElicitationSelectRows(
   token: string,
   field: Extract<ChannelElicitationField, { kind: "single-select" } | { kind: "multi-select" }>,
   current: ChannelElicitationValue | undefined,
+  /** 0-based position, used as the control's routing identity (never the key). */
+  fieldIndex: number,
 ): DiscordSelectActionRow[] {
   const selected = current === undefined
     ? []
@@ -382,7 +449,7 @@ export function buildElicitationSelectRows(
       components: [
         {
           type: 3 as const,
-          customId: elicitationCustomId(token, "field", field.key),
+          customId: elicitationCustomId(token, "field", fieldIndex),
           placeholder: escapeDiscordLiteralText(field.title),
           ...(field.kind === "multi-select"
             ? {
@@ -587,25 +654,46 @@ export async function handleElicitationClick(input: ElicitationClickInput): Prom
       return { decided: true, decision };
     }
     case "start": {
-      if (!enterWizard(entry)) {
-        // No fields to ask about: nothing to render beyond the opening card.
+      enterWizard(entry);
+      // A zero-field form has nothing to ask, but it is NOT a dead end: M1 keeps
+      // `accept` + `content: null` precisely for this, so Start goes straight to
+      // the review page where Submit is the only way to accept. Returning
+      // without a rerender left the user with Decline/Cancel and no way to
+      // confirm, which turned a legal form into a timeout.
+      if (entry.currentField === undefined) {
+        entry.visitedReview = true;
         await input.interaction.acknowledge();
-        return { decided: false };
+        return { decided: false, rerender: "review" };
       }
       await input.interaction.acknowledge();
       return { decided: false, rerender: "field" };
     }
     case "field":
     case "edit": {
-      // Route to the requested field. Answers are not carried here (there is
-      // no slot for one), so the caller supplies the collected value.
-      if (parsed.fieldKey && entry.request.fields.some((field) => field.key === parsed.fieldKey)) {
-        entry.currentField = parsed.fieldKey;
+      // Route to the requested field by POSITION. Answers are not carried here
+      // (there is no slot for one).
+      if (parsed.fieldIndex !== undefined && entry.request.fields[parsed.fieldIndex]) {
+        entry.currentField = entry.request.fields[parsed.fieldIndex]!.key;
       } else if (!entry.currentField) {
         entry.currentField = entry.request.fields[0]?.key;
       }
       await input.interaction.acknowledge();
       return { decided: false, rerender: "field" };
+    }
+    case "next": {
+      // Advance to the named field. This is NAVIGATION, not answering: only
+      // `field` opens a modal, and conflating the two meant a forward control
+      // silently opened a modal instead of moving the wizard on.
+      if (parsed.fieldIndex !== undefined && entry.request.fields[parsed.fieldIndex]) {
+        entry.currentField = entry.request.fields[parsed.fieldIndex]!.key;
+      }
+      await input.interaction.acknowledge();
+      return { decided: false, rerender: "field" };
+    }
+    case "page": {
+      // Review paging. Positional, like field routing.
+      await input.interaction.acknowledge();
+      return { decided: false, rerender: "review" };
     }
     case "review": {
       await input.interaction.acknowledge();

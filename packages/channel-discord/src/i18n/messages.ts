@@ -22,6 +22,10 @@ export interface DiscordMessages {
   elicitationReview: string;
   elicitationEdit: string;
   elicitationNext: string;
+  elicitationNextField: string;
+  elicitationPrevField: string;
+  elicitationPagePrev: string;
+  elicitationPageNext: string;
   elicitationProgress: (answered: number, total: number) => string;
   elicitationFieldLabel: (index: number, total: number) => string;
   elicitationRequired: string;

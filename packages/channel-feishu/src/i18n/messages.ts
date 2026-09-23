@@ -85,6 +85,7 @@ export interface FeishuMessages {
   elicitationDecline: string;
   elicitationCancel: string;
   elicitationSubmit: string;
+  elicitationSkip: string;
   elicitationReview: string;
   elicitationEdit: string;
   elicitationProgress: (answered: number, total: number) => string;

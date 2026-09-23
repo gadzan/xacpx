@@ -27,6 +27,7 @@ import {
   type FeishuCardActionCallback,
   type FeishuCardActionRuntime,
 } from "./card-action-host.js";
+import type { ChannelElicitationMode } from "xacpx/plugin-api";
 import { checkElicitationRenderability } from "./elicitation-limits.js";
 import { buildCardMessageContent } from "./card/card-builder.js";
 import {
@@ -122,17 +123,25 @@ interface ActiveTask {
 export class FeishuChannel implements MessageChannelRuntime {
   readonly id = "feishu";
   /**
-   * Declares form support, which core only advertises when a channel declares a
-   * mode AND implements `requestElicitation()` (both must be present — either
-   * alone would advertise a capability core then fails on).
+   * Declares form support ONLY when at least one account can actually deliver
+   * it, because core advertises the mode from this value plus the presence of
+   * `requestElicitation()`.
    *
-   * This is the honest declaration: the renderer exists and handles the fields
-   * Feishu can express. `multi-select` is refused by the renderability gate
-   * because Feishu cards have no multi-select component, so a form containing one
-   * cancels rather than being reshaped. URL mode is deliberately absent — the
-   * M1 plugin contract is form-only and there is no URL dispatch.
+   * The renderer itself needs the card-callback channel (Stage 1): without
+   * `cardActions` configured there is no way for a human's answer to arrive, so
+   * every request would fail closed at "no card-callback channel". Declaring
+   * unconditionally told agents "form works here" and then cancelled every
+   * single request — a capability lie the agent pays for.
+   *
+   * `multi-select` is refused by the renderability gate because Feishu cards
+   * have no multi-select component, so a form containing one cancels rather than
+   * being reshaped. URL mode is deliberately absent — the M1 plugin contract is
+   * form-only and there is no URL dispatch.
+   *
+   * Assigned in the constructor rather than as a field initializer: a parameter
+   * property is not readable from a field initializer.
    */
-  readonly elicitationModes = ["form"] as const;
+  readonly elicitationModes: readonly ChannelElicitationMode[];
   private readonly accounts: Map<string, AccountRuntime> = new Map();
   private dedup: MessageDedup;
   private markDelivered: OrchestrationDeliveryCallbacks["markTaskNoticeDelivered"] | null = null;
@@ -164,6 +173,14 @@ export class FeishuChannel implements MessageChannelRuntime {
     private readonly deps: FeishuChannelDeps = {},
   ) {
     this.config = parseFeishuChannelConfig(options);
+    // Declared from CONFIG, not unconditionally: without an account's
+    // `cardActions` the card-callback listener never starts and no answer can
+    // arrive, so this build cannot render a form.
+    this.elicitationModes = this.config.accounts.some(
+      (account) => account.enabled && account.configured && account.cardActions !== undefined,
+    )
+      ? ["form"]
+      : [];
     this.dedup = new MessageDedup({ ttlMs: this.config.dedupTtlMs, maxEntries: this.config.dedupMaxEntries });
     this.permissionNotifier = new PermissionNotifier(this.config.tuning.permissionNotifyCooldownMs);
   }

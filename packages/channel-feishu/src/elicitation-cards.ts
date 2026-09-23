@@ -51,6 +51,7 @@ export type ElicitationUiAction =
   | "start"
   | "field"
   | "review"
+  | "skip"
   | "submit"
   | "decline"
   | "cancel";
@@ -129,9 +130,9 @@ function plainText(content: string, literal = false): Record<string, unknown> {
  * the token and the action, plus a field key when the control names one — never
  * a value, a default, or any agent text.
  */
-function routingValue(token: string, action: ElicitationUiAction, fieldKey?: string): Record<string, unknown> {
+function routingValue(token: string, action: ElicitationUiAction, fieldIndex?: number): Record<string, unknown> {
   return {
-    ...(fieldKey ? { f: fieldKey } : {}),
+    ...(fieldIndex !== undefined ? { f: fieldIndex } : {}),
     t: token,
     a: action,
   };
@@ -239,7 +240,7 @@ export function buildElicitationFieldCard(
   current: ChannelElicitationValue | undefined,
 ): Record<string, unknown> {
   const messages = getMessages();
-  const name = formComponentName(field.key);
+  const name = formComponentName(field.key, request.fields);
   const lines: string[] = [
     `**${messages.elicitationFieldLabel(index, request.fields.length)}**`,
     messages.elicitationFromAgent(escapeFeishuCardText(request.agent.name)),
@@ -273,7 +274,11 @@ export function buildElicitationFieldCard(
     formElements.push({
       tag: "input",
       name,
-      label: { tag: "plain_text", content: truncate(field.title, FEISHU_TEXT_CONTENT_MAX) },
+      // Escaped like every other agent-controlled string. This label was the one
+      // place that passed `field.title` through raw, and Feishu renders `<at>`
+      // tags in plain_text — so an agent-written title could ping @everyone in
+      // the form the user is filling in.
+      label: { tag: "plain_text", content: escapeFeishuCardText(truncate(field.title, FEISHU_TEXT_CONTENT_MAX)) },
       label_position: "top",
       placeholder: plainText(truncate(field.title, FEISHU_INPUT_PLACEHOLDER_MAX)),
       required: field.required,
@@ -294,11 +299,16 @@ export function buildElicitationFieldCard(
           name: "elicit",
           elements: [
             ...formElements,
-            // The submit button is the ONLY path to accept, and it lives on the
-            // field card rather than a separate review card: Feishu's callback
-            // model has no way to re-open a card for editing after a form
-            // submit, so review-before-submit is expressed by sending the user
-            // back through their own answers (the "answer saved" line above)
+            // Skip is offered only for optional fields, and it is the honest way
+            // past one: submitting with an empty value leaves the field
+            // unanswered, which blocks the advance and makes an all-optional
+            // form uncompletable.
+            ...(!field.required ? [button(messages.elicitationSkip, routingValue(token, "skip"), "default", true)] : []),
+            // The submit button saves this field and advances; the REVIEW card's
+            // submit is the only path to accept. Feishu's callback model has no
+            // way to re-open a card for editing after a form submit, so
+            // review-before-submit is expressed by sending the user back
+            // through their own answers (the "answer saved" line above)
             // instead of a second page.
             button(messages.elicitationSubmit, routingValue(token, "submit"), "primary", true),
             button(messages.elicitationDecline, routingValue(token, "decline"), "default", true),
@@ -326,7 +336,7 @@ export function buildElicitationReviewCard(
   // requirement is that answers can be MODIFIED, which needs a route back to
   // each of them.
   const editButtons = request.fields.slice(0, 40).map((field) =>
-    button(`${messages.elicitationEdit}: ${field.title}`, routingValue(token, "field", field.key)),
+    button(`${messages.elicitationEdit}: ${field.title}`, routingValue(token, "field", request.fields.indexOf(field))),
   );
   return {
     schema: "2.0",

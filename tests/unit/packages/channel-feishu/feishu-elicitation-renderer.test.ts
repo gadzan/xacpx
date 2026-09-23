@@ -104,7 +104,7 @@ async function runFlow(
   rec: Recording,
   req: ChannelElicitationRequest,
   answer: string,
-  formName = "fenv",
+  formName = "f0",
 ): Promise<ChannelElicitationDecision | Error> {
   const promise = rec.renderer.requestElicitation(req, "oc_chat").then(
     (decision) => decision,
@@ -112,10 +112,17 @@ async function runFlow(
   );
   const { token } = await pendingEntry(rec);
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  // Field card submit: saves this field and advances.
   await rec.renderer.handleAction({
     openId: "ou_initiator",
     value: { t: token, a: "submit" },
     formValues: { [formName]: answer },
+  });
+  // Review page submit: commits what the user reviewed. Only this one settles.
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "submit" },
+    formValues: {},
   });
   return promise;
 }
@@ -139,7 +146,7 @@ test("a single-select field renders a select_static whose option values are the 
   const select = (form as { elements: Array<Record<string, unknown>> }).elements.find((e) => e.tag === "select_static");
   expect(select).toBeDefined();
   // The component `name` is the sanitized field key, NOT the answer.
-  expect((select as { name: string }).name).toBe("fenv");
+  expect((select as { name: string }).name).toBe("f0");
   const options = (select as { options: Array<{ value: string }> }).options.map((o) => o.value);
   expect(options).toEqual(["prod", "staging"]);
 });
@@ -171,7 +178,7 @@ test("a text field renders an input bounded by the platform's max_length", () =>
   const form = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements.find((e) => e.tag === "form");
   const input = (form as { elements: Array<Record<string, unknown>> }).elements.find((e) => e.tag === "input");
   expect(input).toBeDefined();
-  expect((input as { name: string }).name).toBe("fnote");
+  expect((input as { name: string }).name).toBe("f0");
   expect((input as { max_length: number }).max_length).toBe(1000);
   expect((input as { required: boolean }).required).toBe(true);
 });
@@ -215,9 +222,9 @@ test("the review card has one Edit per field so answers are modifiable", () => {
   const buttons = (column as { columns: Array<{ elements: Array<Record<string, unknown>> }> }).columns[0]!.elements;
   const editButtons = buttons.filter((b) => JSON.stringify(b).includes("Edit:"));
   expect(editButtons).toHaveLength(2);
-  // Each routes to its own field.
-  const targets = editButtons.map((b) => (b as { behaviors: Array<{ value: { f?: string } }> }).behaviors[0]!.value.f);
-  expect(targets).toEqual(["env", "note"]);
+  // Each routes to its own field by POSITION.
+  const targets = editButtons.map((b) => (b as { behaviors: Array<{ value: { f?: number } }> }).behaviors[0]!.value.f);
+  expect(targets).toEqual([0, 1]);
 });
 
 test("the terminal card has no interactive component at all", () => {
@@ -377,7 +384,7 @@ test("a non-initiator cannot submit, and the initiator still can", async () => {
   await rec.renderer.handleAction({
     openId: "ou_intruder",
     value: { t: token, a: "submit" },
-    formValues: { fenv: "prod" },
+    formValues: { f0: "prod" },
   });
   const entry = rec.pending.get(token)!;
   expect(entry.settled).toBe(false);
@@ -388,8 +395,10 @@ test("a non-initiator cannot submit, and the initiator still can", async () => {
   await rec.renderer.handleAction({
     openId: "ou_initiator",
     value: { t: token, a: "submit" },
-    formValues: { fenv: "prod" },
+    formValues: { f0: "prod" },
   });
+  // Review page submit commits it.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { env: "prod" } });
 });
 
@@ -403,7 +412,7 @@ test("an intruder's click does not move the wizard or write an answer", async ()
   await rec.renderer.handleAction({
     openId: "ou_intruder",
     value: { t: token, a: "submit" },
-    formValues: { fenv: "prod" },
+    formValues: { f0: "prod" },
   });
   const entry = rec.pending.get(token)!;
   expect(entry.values).toEqual({});
@@ -413,8 +422,10 @@ test("an intruder's click does not move the wizard or write an answer", async ()
   await rec.renderer.handleAction({
     openId: "ou_initiator",
     value: { t: token, a: "submit" },
-    formValues: { fenv: "staging" },
+    formValues: { f0: "staging" },
   });
+  // Review page submit commits it.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { env: "staging" } });
 });
 
@@ -429,7 +440,7 @@ test("a submit with no answer for a required field keeps the card live", async (
   await rec.renderer.handleAction({
     openId: "ou_initiator",
     value: { t: token, a: "submit" },
-    formValues: { fenv: "" },
+    formValues: { f0: "" },
   });
   const entry = rec.pending.get(token)!;
   // Not settled, nothing authored: the user gets another chance.
@@ -439,8 +450,10 @@ test("a submit with no answer for a required field keeps the card live", async (
   await rec.renderer.handleAction({
     openId: "ou_initiator",
     value: { t: token, a: "submit" },
-    formValues: { fenv: "prod" },
+    formValues: { f0: "prod" },
   });
+  // Review page submit commits it.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { env: "prod" } });
 });
 
@@ -455,7 +468,7 @@ test("an all-optional form still carries a provided answer as content", async ()
       options: [{ value: "a", label: "A" }],
     },
   ];
-  const decision = await runFlow(rec, request(fields), "a", "fany");
+  const decision = await runFlow(rec, request(fields), "a", "f0");
   expect(decision).toEqual({ action: "accept", responderId: "ou_initiator", content: { any: "a" } });
 });
 
@@ -476,13 +489,19 @@ test("an all-optional form submitted with no answers yields a null content", asy
   );
   const { token } = await pendingEntry(rec);
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
-  // Submit without selecting anything: nothing is required, so this is legal and
-  // the content must be `null` (ACP's "accept with no answers") — not `{}` and
+  // Skip the optional field: nothing is required, so this is legal and the
+  // content must be `null` (ACP's "accept with no answers") — not `{}` and
   // not `undefined`, both of which are different statements.
   await rec.renderer.handleAction({
     openId: "ou_initiator",
+    value: { t: token, a: "skip" },
+    formValues: {},
+  });
+  // The skip advanced to review; this submit commits the empty form.
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
     value: { t: token, a: "submit" },
-    formValues: { fany: "" },
+    formValues: {},
   });
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: null });
 });
@@ -497,7 +516,7 @@ test("a token the renderer never issued is ignored", async () => {
   const outcome = await rec.renderer.handleAction({
     openId: "ou_initiator",
     value: { t: "not-a-real-token", a: "submit" },
-    formValues: { fenv: "prod" },
+    formValues: { f0: "prod" },
   });
   expect(outcome).toEqual({ handled: false, settled: false });
   // The real request is untouched and must be drained for a clean test exit.
@@ -557,10 +576,10 @@ test("a number answer is parsed as a number, and a bad one is not stored", async
 });
 
 test("parseElicitationAction refuses payloads the renderer did not shape", () => {
-  expect(parseElicitationAction({ t: "tok", a: "submit", f: "env" })).toEqual({
+  expect(parseElicitationAction({ t: "tok", a: "field", f: 3 })).toEqual({
     token: "tok",
-    action: "submit",
-    fieldKey: "env",
+    action: "field",
+    fieldIndex: 3,
   });
   expect(parseElicitationAction({ t: "tok", a: "submit" })).toEqual({ token: "tok", action: "submit" });
   // A scalar, an array, or a missing token/action is not ours.

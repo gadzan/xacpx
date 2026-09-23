@@ -303,21 +303,24 @@ test("each account gets its own listener", async () => {
   }
 });
 
-test("feishu declares form mode only alongside the implementation", async () => {
-  const channel = new FeishuChannel(FEISHU_BASE, {
+test("feishu declares form mode only when a card callback is configured", async () => {
+  const withoutCardActions = new FeishuChannel(FEISHU_BASE, {
     createClient: () => feishuClient(),
-    createCardHost: async (options) => {
-      void options;
-      return { stop: async () => {}, port: () => 0 };
-    },
   } as never);
-  // Both halves must be present: core advertises a mode only when a channel
-  // declares it AND implements requestElicitation, so either alone would be a
-  // capability lie the broker then fails on.
-  expect(channel.elicitationModes).toEqual(["form"]);
-  expect(typeof channel.requestElicitation).toBe("function");
-  // And URL mode is not expressible.
-  expect(channel.elicitationModes).not.toContain("url");
+  // No cardActions: no way for a human's answer to arrive, so the form mode is
+  // NOT declared even though requestElicitation exists.
+  expect(withoutCardActions.elicitationModes).toEqual([]);
+  expect(typeof withoutCardActions.requestElicitation).toBe("function");
+
+  const withCardActions = new FeishuChannel(
+    { ...FEISHU_BASE, accounts: { default: { appId: "cli_test", appSecret: "s", cardActions: CARD_ACTIONS } } },
+    { createClient: () => feishuClient() } as never,
+  );
+  // With it, both halves are present: the mode is declared AND the method
+  // exists. URL mode is not expressible either way.
+  expect(withCardActions.elicitationModes).toEqual(["form"]);
+  expect(typeof withCardActions.requestElicitation).toBe("function");
+  expect(withCardActions.elicitationModes).not.toContain("url");
 });
 
 test("requestElicitation without a card channel fails closed", async () => {

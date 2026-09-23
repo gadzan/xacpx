@@ -40,6 +40,11 @@ export interface PendingDiscordElicitation {
    */
   currentField?: string;
   /**
+   * Which review page the user is on. A form wider than one action row is a
+   * navigable list, so the page is state rather than derived from the field.
+   */
+  reviewPage: number;
+  /**
    * Whether the wizard has shown the review page. Distinguishes the review
    * control's two intents (Next forward vs. Edit back) without adding a second
    * control whose action could be confused with a field action.

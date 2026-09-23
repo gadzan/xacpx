@@ -51,6 +51,7 @@ export const en: FeishuMessages = {
   elicitationDecline: "Decline",
   elicitationCancel: "Cancel",
   elicitationSubmit: "Submit",
+  elicitationSkip: "Skip",
   elicitationReview: "Review answers",
   elicitationEdit: "Edit",
   elicitationProgress: (answered, total) => `${answered} of ${total} answered`,

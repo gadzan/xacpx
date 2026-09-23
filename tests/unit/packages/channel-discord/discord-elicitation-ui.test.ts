@@ -76,8 +76,8 @@ function interaction(token: string, userId: string, action: string, eph: string[
 
 test("custom id round-trips token and routing identity", () => {
   const token = createElicitationToken();
-  const id = elicitationCustomId(token, "field", "env");
-  expect(parseElicitationCustomId(id)).toEqual({ token, action: "field", fieldKey: "env" });
+  const id = elicitationCustomId(token, "field", 3);
+  expect(parseElicitationCustomId(id)).toEqual({ token, action: "field", fieldIndex: 3 });
   expect(parseElicitationCustomId(elicitationCustomId(token, "submit"))).toEqual({ token, action: "submit" });
   expect(parseElicitationCustomId(`xacpx-perm:${token}:allow`)).toBeNull();
   expect(parseElicitationCustomId(`${ELICITATION_CUSTOM_ID_PREFIX}bogus`)).toBeNull();
@@ -89,29 +89,51 @@ test("custom ids never carry an answer: a sentinel value has no slot", () => {
   // the strongest available assertion is that its argument shape has no answer
   // position at all AND that an id built for a real field stays short.
   const token = createElicitationToken();
-  const id = elicitationCustomId(token, "field", "env");
+  const id = elicitationCustomId(token, "field", 0);
   expect(id).not.toContain(SENTINEL_ANSWER);
   expect(id).not.toContain("prod");
   expect(id.length).toBeLessThanOrEqual(100);
 });
 
-test("a field action without a field key is rejected at construction", () => {
+test("a field action without a position is rejected at construction", () => {
   const token = createElicitationToken();
   expect(() => elicitationCustomId(token, "field")).toThrow();
   // And the reverse: a non-field action must not carry one.
-  expect(() => elicitationCustomId(token, "submit", "env")).toThrow();
+  expect(() => elicitationCustomId(token, "submit", 0)).toThrow();
 });
 
-test("field keys survive round-trip but unsafe characters are dropped", () => {
+test("routing is positional, so a hostile schema key cannot reach the id at all", () => {
+  // Core guarantees only that a key is a bounded JSON property name. `env.prod`,
+  // `a/b` and very long keys are all legal, so carrying the key meant
+  // truncating and stripping it and then matching the stripped form back —
+  // which silently lost the field. The id now holds a POSITION, so the key is
+  // never in it and there is nothing to sanitize.
   const token = createElicitationToken();
-  const parsed = parseElicitationCustomId(elicitationCustomId(token, "field", "env-prod_1"));
-  expect(parsed?.fieldKey).toBe("env-prod_1");
-  const dirty = elicitationCustomId(token, "field", "env:prod\n");
-  expect(dirty).not.toContain("\n");
-  // ':' and the newline are both dropped by the key sanitizer, not encoded.
-  expect(dirty.endsWith(":envprod")).toBe(true);
-  // A sanitized key still routes back to the same field.
-  expect(parseElicitationCustomId(dirty)?.fieldKey).toBe("envprod");
+  const hostile = [
+    "env.prod",
+    "a/b",
+    "note\n",
+    "field:with:colons",
+    "üñïçø∂é",
+  ];
+  for (const key of hostile) {
+    // Whatever the key is, the same field always produces the same control id.
+    const id = elicitationCustomId(token, "field", 7);
+    expect(id).toBe(elicitationCustomId(token, "field", 7));
+    expect(parseElicitationCustomId(id)).toEqual({ token, action: "field", fieldIndex: 7 });
+    // And the key text itself is nowhere in the id.
+    expect(id).not.toContain(key);
+  }
+  // A long key is likewise absent: the id length is a function of the token and
+  // the index alone, never of the key.
+  const longId = elicitationCustomId(token, "field", 7);
+  expect(longId.length).toBeLessThanOrEqual(100);
+});
+
+test("a page control round-trips its page number", () => {
+  const token = createElicitationToken();
+  const id = elicitationCustomId(token, "page", 2);
+  expect(parseElicitationCustomId(id)).toEqual({ token, action: "page", fieldIndex: 2 });
 });
 
 test("the initiator's decline is a distinct ACP action and carries their identity", async () => {

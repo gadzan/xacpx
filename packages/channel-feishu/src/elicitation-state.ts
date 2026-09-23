@@ -21,6 +21,7 @@
  */
 import type {
   ChannelElicitationDecision,
+  ChannelElicitationField,
   ChannelElicitationRequest,
   ChannelElicitationValue,
 } from "xacpx/plugin-api";
@@ -46,6 +47,12 @@ export interface PendingFeishuElicitation {
   /** Answers collected so far, keyed by field key. Memory only. */
   values: Record<string, ChannelElicitationValue>;
   currentField?: string;
+  /**
+   * Whether the review page is showing. Only the review page's submit may
+   * settle, so this flag is what distinguishes "save and advance" from
+   * "commit what the user reviewed".
+   */
+  visitedReview: boolean;
   settled: boolean;
   /** Terminal UI state for a send that completes after settlement (send race). */
   terminalState?: "expired" | "cancelled";
@@ -89,16 +96,19 @@ export function remainingFieldCount(entry: PendingFeishuElicitation): number {
  * The component `name` a field uses inside a `form` container.
  *
  * Feishu requires a non-empty, card-unique name for every interactive component
- * inside a form (error 200530), and `element_id` is separately constrained to
- * 20 chars of `[A-Za-z0-9_]`. Field keys come from the ACP schema and could be
- * longer or contain other characters, so they are namespaced and sanitized.
- * Returns null when the key cannot be expressed, which the renderer treats as
- * unrenderable rather than silently renaming a field.
+ * inside a form (error 200530). A schema key is NOT a safe source for one: core
+ * guarantees only that it is a bounded JSON property name, so `env.prod`, `a/b`,
+ * a key of only punctuation, or a 128-char key are all legal and would each
+ * either fail the platform rule or collide after sanitizing. Position is always
+ * expressible and always unique.
+ *
+ * Returns null only when the field is not in the request at all, which the
+ * caller treats as unrenderable rather than silently dropping the field.
  */
-export function formComponentName(fieldKey: string): string | null {
-  const sanitized = fieldKey.replace(/[^A-Za-z0-9_]/g, "").slice(0, 16);
-  if (sanitized.length === 0) return null;
-  return `f${sanitized}`;
+export function formComponentName(fieldKey: string, fields: readonly ChannelElicitationField[]): string | null {
+  const index = fields.findIndex((field) => field.key === fieldKey);
+  if (index < 0) return null;
+  return `f${index}`;
 }
 
 /** The `element_id` for a static markdown element, safely bounded to 20 chars. */

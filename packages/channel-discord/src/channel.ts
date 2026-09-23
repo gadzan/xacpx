@@ -382,8 +382,8 @@ export class DiscordChannel implements MessageChannelRuntime {
               // A field control on a text-like field opens a modal; every other
               // elicitation control drives the wizard state machine.
               const parsed = parseElicitationCustomId(interaction.customId);
-              if (parsed && parsed.action === "field" && parsed.fieldKey) {
-                void this.handleElicitationAnswerPrompt(interaction, parsed.fieldKey).catch(() => {});
+              if (parsed && parsed.action === "field" && parsed.fieldIndex !== undefined) {
+                void this.handleElicitationAnswerPrompt(interaction, parsed.fieldIndex).catch(() => {});
                 return;
               }
               void this.handleElicitationButton(interaction).catch(() => {});
@@ -685,6 +685,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       request,
       values: {},
       visitedReview: false,
+      reviewPage: 0,
       settled: false,
       resolve: settle,
       reject: rejectPromise,
@@ -793,22 +794,24 @@ export class DiscordChannel implements MessageChannelRuntime {
     });
     if (outcome.decided) return;
     if (!outcome.rerender) return;
-    await this.rerenderElicitationCard(entry, runtime, parsed.action, parsed.fieldKey);
+    await this.rerenderElicitationCard(entry, runtime, parsed.action, parsed.fieldIndex);
   }
 
   /**
    * Re-render the current wizard step in place, without settling.
    *
-   * `fieldKey` is the field a `field`/`edit` control named, when it named one:
-   * review-page Edit buttons carry the field they jump to, and a field card's
-   * Answer control carries its own field. Either way the navigation target is
-   * explicit rather than inferred from "wherever the wizard happens to be".
+   * `fieldIndex` is the field position a `field`/`edit` control named, when it
+   * named one: review-page Edit buttons carry the field they jump to, and a field
+   * card's Answer control carries its own field. Either way the navigation target
+   * is explicit rather than inferred from "wherever the wizard happens to be".
+   *
+   * A `page` control carries a review-page number in the same slot.
    */
   private async rerenderElicitationCard(
     entry: PendingDiscordElicitation,
     runtime: AccountRuntime,
     action: ElicitationUiAction,
-    fieldKey?: string,
+    fieldIndex?: number,
   ): Promise<void> {
     const messageId = entry.messageId;
     if (!messageId || entry.settled) return;
@@ -826,17 +829,26 @@ export class DiscordChannel implements MessageChannelRuntime {
       case "start": {
         entry.currentField = entry.request.fields[0]?.key;
         if (entry.currentField === undefined) {
-          // A zero-field form has nothing to ask: the review page is honest
-          // only if there is at least one field, so treat it as unrenderable.
-          return;
+          // A zero-field form has nothing to ask, but it is NOT a dead end: M1
+          // keeps `accept` + `content: null` precisely for this, so Start goes
+          // straight to the review page where Submit is the only way to accept.
+          // Returning here left the user with Decline/Cancel and no way to
+          // confirm, which turned a legal form into a timeout.
+          entry.visitedReview = true;
+          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, 0);
+          break;
         }
         card = fieldCard(entry.currentField);
         break;
       }
       case "field":
-      case "edit": {
-        if (fieldKey && entry.request.fields.some((f) => f.key === fieldKey)) {
-          entry.currentField = fieldKey;
+      case "edit":
+      case "next": {
+        // Routed by POSITION, resolved against the frozen field list. A schema key
+        // is not a valid routing id — core allows `env.prod`, `a/b`, and keys of
+        // any bounded length, so a cleaned-up key would not match the original.
+        if (fieldIndex !== undefined && entry.request.fields[fieldIndex]) {
+          entry.currentField = entry.request.fields[fieldIndex]!.key;
         } else if (entry.currentField === undefined) {
           entry.currentField = entry.request.fields[0]?.key;
         }
@@ -844,22 +856,22 @@ export class DiscordChannel implements MessageChannelRuntime {
         card = fieldCard(entry.currentField);
         break;
       }
-      case "review": {
-        // Two intents share this action: the field card's Next (forward to the
-        // review page) and the review card's Edit (back to a field). They are
-        // told apart by whether the review page has been shown, so a repeated
-        // Edit walks through fields instead of looping on the review card.
-        const returning = entry.visitedReview;
-        entry.visitedReview = !returning;
-        if (returning) {
-          const backTo = entry.currentField ?? entry.request.fields[0]?.key;
-          if (backTo !== undefined && entry.request.fields.some((f) => f.key === backTo)) {
-            entry.currentField = backTo;
-            card = fieldCard(backTo);
-            break;
-          }
+      case "page": {
+        // Review paging: a form wider than one action row is a navigable list
+        // rather than a truncated one.
+        if (fieldIndex !== undefined) {
+          entry.reviewPage = fieldIndex;
+          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, fieldIndex);
+        } else {
+          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, entry.reviewPage);
         }
-        card = buildElicitationReviewCard(entry.request, entry.token, entry.values);
+        break;
+      }
+      case "review": {
+        // The field card's Next. Navigation back to a field is the review card's
+        // own `edit`/`page` controls, so this is a one-way forward step.
+        entry.visitedReview = true;
+        card = buildElicitationReviewCard(entry.request, entry.token, entry.values, entry.reviewPage);
         break;
       }
       default:
@@ -890,7 +902,7 @@ export class DiscordChannel implements MessageChannelRuntime {
    */
   private async handleElicitationAnswerPrompt(
     interaction: DiscordButtonInteraction,
-    fieldKey: string,
+    fieldIndex: number,
   ): Promise<void> {
     const entry = this.findElicitationByToken(interaction.customId);
     if (!entry) return;
@@ -898,7 +910,9 @@ export class DiscordChannel implements MessageChannelRuntime {
       await interaction.replyEphemeral(getMessages().elicitationUnauthorized);
       return;
     }
-    const field = entry.request.fields.find((f) => f.key === fieldKey);
+    // Position-resolved: a schema key is not a valid routing id (core allows
+    // `env.prod`, `a/b`, arbitrarily long bounded keys).
+    const field = entry.request.fields[fieldIndex];
     if (!field) return;
     if (field.kind === "single-select" || field.kind === "multi-select" || field.kind === "boolean") {
       // Select kinds are answered in place; there is nothing to open a modal for.
@@ -930,14 +944,14 @@ export class DiscordChannel implements MessageChannelRuntime {
    */
   private async handleElicitationSelect(interaction: DiscordSelectInteraction): Promise<void> {
     const parsed = parseElicitationCustomId(interaction.customId);
-    if (!parsed || !parsed.fieldKey) return;
+    if (!parsed || parsed.fieldIndex === undefined) return;
     const entry = this.pendingElicitations.get(parsed.token);
     if (!entry) return;
     if (authorizeElicitationClick(entry, interaction.userId) !== null) {
       await interaction.replyEphemeral(getMessages().elicitationUnauthorized);
       return;
     }
-    const field = entry.request.fields.find((f) => f.key === parsed.fieldKey);
+    const field = entry.request.fields[parsed.fieldIndex];
     if (!field) return;
     // The field identity also proves the answer's kind, so it is used below by
     // the branch that writes the value.

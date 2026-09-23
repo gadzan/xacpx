@@ -131,15 +131,26 @@ test("undocumented limits are disclosed rather than invented", () => {
   expect(joined).toContain("behaviors");
 });
 
-test("formComponentName sanitizes a key into Feishu's name charset", () => {
-  // Feishu requires a card-unique name per interactive component in a form.
-  expect(formComponentName("env")).toBe("fenv");
-  expect(formComponentName("has-dashes and spaces")).toBe("fhasdashesandspac");
-  // A name longer than the bound is truncated, not rejected mid-form.
-  expect(formComponentName("k".repeat(40))).toBe(`f${"k".repeat(16)}`);
-  // Nothing salvageable → null, which the renderer treats as unrenderable.
-  expect(formComponentName("---")).toBeNull();
-  expect(formComponentName("")).toBeNull();
+test("formComponentName is positional, so a hostile key cannot break it", () => {
+  // Feishu requires a non-empty, card-unique name per interactive component in a
+  // form. A schema key is not a safe source — `env.prod`, `a/b`, a key of only
+  // punctuation and a 128-char key are all legal JSON property names — so the
+  // name is derived from POSITION instead.
+  const fields: ChannelElicitationField[] = [
+    { kind: "text", key: "env", title: "Env", required: true },
+    { kind: "text", key: "a/b", title: "Slash", required: true },
+    { kind: "text", key: "---", title: "Punct", required: true },
+    { kind: "text", key: "k".repeat(128), title: "Long", required: true },
+  ];
+  expect(formComponentName("env", fields)).toBe("f0");
+  expect(formComponentName("a/b", fields)).toBe("f1");
+  expect(formComponentName("---", fields)).toBe("f2");
+  expect(formComponentName("k".repeat(128), fields)).toBe("f3");
+  // Unique per field, which is what the platform rule demands.
+  const names = fields.map((f) => formComponentName(f.key, fields));
+  expect(new Set(names).size).toBe(fields.length);
+  // A key that is not in the request yields nothing rather than a guessed name.
+  expect(formComponentName("absent", fields)).toBeNull();
 });
 
 test("cardElementId satisfies Feishu's element_id charset", () => {

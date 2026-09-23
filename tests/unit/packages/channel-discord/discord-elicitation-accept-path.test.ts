@@ -65,10 +65,10 @@ function makeEntry(overrides: Partial<PendingDiscordElicitation> = {}): PendingD
   };
 }
 
-function interaction(token: string, userId: string, action: string, fieldKey?: string, eph: string[] = []) {
+function interaction(token: string, userId: string, action: string, fieldIndex?: number, eph: string[] = []) {
   return {
-    customId: fieldKey
-      ? elicitationCustomId(token, action as "field", fieldKey)
+    customId: fieldIndex !== undefined
+      ? elicitationCustomId(token, action as "field", fieldIndex)
       : `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${action}`,
     userId,
     acknowledge: async () => {},
@@ -97,7 +97,7 @@ test("a reviewed form submits as accept carrying the collected answers", async (
   const entry = makeEntry();
   const { click, decisions } = harness(entry);
   click("start");
-  click("field", "user-A", "env");
+  click("field", "user-A", 0);
   // The renderer/collector stores the answer; here we stand in for it.
   entry.values.env = "prod";
   entry.values.note = "ship it";
@@ -187,10 +187,10 @@ test("wizard progression routes to the requested field", async () => {
   const { click } = harness(entry);
   await click("start");
   expect(entry.currentField).toBe("env");
-  await click("field", "user-A", "note");
+  await click("field", "user-A", 1);
   expect(entry.currentField).toBe("note");
   // An unknown field key does not change position.
-  await click("field", "user-A", "nope");
+  await click("field", "user-A", 99);
   expect(entry.currentField).toBe("note");
 });
 
@@ -204,9 +204,18 @@ test("trySettle is the only way to settle and it wins exactly once", () => {
 test("every parsed control maps to a handled action", async () => {
   // A custom id that parses but has no handler branch would silently no-op,
   // so the action set is pinned against the parser's own.
-  for (const [action, fieldKey] of [["start", undefined], ["review", undefined], ["submit", undefined], ["decline", undefined], ["cancel", undefined], ["field", "env"], ["edit", "env"]] as const) {
-    const parsed = parseElicitationCustomId(elicitationCustomId(createElicitationToken(), action, fieldKey));
+  for (const [action, fieldIndex] of [
+    ["start", undefined],
+    ["review", undefined],
+    ["submit", undefined],
+    ["decline", undefined],
+    ["cancel", undefined],
+    ["field", 0],
+    ["edit", 1],
+    ["page", 0],
+  ] as const) {
+    const parsed = parseElicitationCustomId(elicitationCustomId(createElicitationToken(), action, fieldIndex));
     expect(parsed).not.toBeNull();
-    expect(["start", "review", "submit", "decline", "cancel", "field", "edit"]).toContain(parsed!.action);
+    expect(["start", "review", "submit", "decline", "cancel", "field", "edit", "page"]).toContain(parsed!.action);
   }
 });
