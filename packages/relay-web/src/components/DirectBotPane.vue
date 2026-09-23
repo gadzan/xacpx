@@ -13,6 +13,7 @@ import {
 } from "lucide-vue-next";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useInstancesStore } from "../stores/instances";
+import type { InteractionValueDto } from "@ganglion/xacpx-relay-protocol";
 import { confirm } from "../lib/use-confirm";
 import AgentIcon from "./AgentIcon.vue";
 import ConversationMessageList from "./ConversationMessageList.vue";
@@ -198,6 +199,12 @@ async function handleDeleteBot(): Promise<void> {
       :load-older="directBotsStore.loadOlder"
       @load-older="directBotsStore.loadOlder"
       @cancel-run="directBotsStore.cancelCurrentRun"
+      :pending-interaction="directBotsStore.pendingInteraction"
+      @answer="(key: string, value: InteractionValueDto) => directBotsStore.setInteractionAnswer(key, value)"
+      @submit-interaction="directBotsStore.submitInteraction('accept')"
+      @decline-interaction="directBotsStore.declineInteraction()"
+      @cancel-interaction="directBotsStore.cancelInteraction()"
+      @dismiss-interaction="directBotsStore.dismissResolvedInteraction()"
     />
 
     <!-- Prompt Composer -->
