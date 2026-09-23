@@ -1074,13 +1074,19 @@ test("group CRUD, topic lifecycle, and teardown flow through public Control", as
   expect(topic.conversationId).toBe(group.id);
   expect(topic.executionTarget).toEqual({ workspace: "backend", isolation: "shared-single-writer" });
   expect(control.getGroup(group.id).topics.map((t) => t.id)).toContain(topic.id);
-  const archived = await control.archiveGroupTopic(group.id, topic.id);
-  expect(archived.status).toBe("archived");
   // Member binding materializes on the group topic, isolated from direct bindings.
   const member = await runtime.botRuntime.getOrCreateGroupMemberSession({
     botId: botA.id, conversationId: group.id, topicId: topic.id,
   });
   expect(member.scope).toBe("group-member");
+  const archived = await control.archiveGroupTopic(group.id, topic.id);
+  expect(archived.status).toBe("archived");
+  // Archived topics refuse new member materialize (teardown-adjacent gate).
+  await expect(
+    runtime.botRuntime.getOrCreateGroupMemberSession({
+      botId: botA.id, conversationId: group.id, topicId: topic.id,
+    }),
+  ).rejects.toMatchObject({ code: "topic_deleting" });
   await control.teardownGroupTopic(group.id, topic.id);
   expect(control.getGroup(group.id).topics.map((t) => t.id)).not.toContain(topic.id);
   // Public deleteGroup runs verified teardown (not the fail-closed metadata

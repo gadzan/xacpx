@@ -416,6 +416,7 @@ export class ConversationRunService {
     if (conversation.kind !== "group") {
       throw new ConversationError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
     }
+    this.assertConversationNotDeleting(conversationId);
     const executionTarget = this.requireExecutionTarget(target);
     const timestamp = this.now().toISOString();
     const created = await this.stateMutex.run(async () => {
@@ -563,13 +564,15 @@ export class ConversationRunService {
     });
   }
   /**
-   * PR6 Group delete (§9.1 + §9.7): teardown every remaining Topic through
-   * the verified path above, delete residual Conversation-store rows for the
-   * Group id, then remove the Group metadata record. A Topic teardown that
-   * throws (indeterminate work, release failure, ownership conflict) aborts
-   * the delete with the Group row intact for retry. Callers must not delete
-   * Group metadata around this method: `BotService.deleteGroup` stays
-   * fail-closed while Topics/bindings/durable rows exist.
+   * PR6 Group delete (§9.1 + §9.7): mark the Group deleting first (new Topics
+   * and new Group work fail closed from there), teardown every remaining
+   * Topic through the verified path, delete residual Conversation-store rows,
+   * then remove the Group metadata record last. A Topic teardown that throws
+   * (indeterminate work, release failure, ownership conflict) aborts the
+   * delete with the Group row and the deleting barrier intact for retry.
+   * Callers must not delete Group metadata around this method:
+   * `BotService.deleteGroup` stays fail-closed while Topics/bindings/durable
+   * rows exist.
    */
   async teardownGroupConversation(conversationId: string): Promise<void> {
     this.assertOpen();
@@ -577,19 +580,35 @@ export class ConversationRunService {
     if (conversation.kind !== "group") {
       throw new ConversationError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
     }
+    // Barrier first: once the Group is marked deleting, createGroupTopic and
+    // any new Group work fail closed, so no Topic created concurrently can
+    // outlive this teardown and become an orphan. Mirrors
+    // teardownDirectConversation (SQLite barrier authoritative for
+    // accept/dispatch; AppState lifecycle flag is bounded metadata).
+    const timestamp = this.now().toISOString();
+    this.store.markConversationDeleting(conversationId, timestamp);
+    await this.markAppStateDeleting(conversationId);
+    await this.afterTeardownMarkedDeleting?.();
+    // Re-enumerate Topics after the barrier: a Topic created just before the
+    // barrier landed is still torn down here instead of orphaned.
     const topics = Object.values(this.state.conversation_topics)
       .filter((topic) => topic.conversationId === conversationId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     for (const topic of topics) {
       await this.teardownGroupTopic(conversationId, topic.id);
     }
+    // Store rows BEFORE the Group record: if deleteConversationRows throws
+    // (or the process crashes between the two steps), the Group row and the
+    // deleting barrier are still present, so teardown is retryable and the
+    // fail-closed BotService.deleteGroup guard still sees the durable rows.
+    // Deleting the record first would strand rows no guard can see.
+    this.store.deleteConversationRows(conversationId);
     await this.stateMutex.run(async () => {
       await this.beforeTeardownFinalize?.();
       const next = structuredClone(this.state);
       delete next.conversations[conversationId];
       await this.persist(next);
     });
-    this.store.deleteConversationRows(conversationId);
   }
   /**
    * PR6 Group Topic teardown (§9.7): mark deleting → stop/settle active Runs

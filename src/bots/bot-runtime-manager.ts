@@ -324,6 +324,17 @@ export class BotRuntimeManager {
     if (!topic || topic.conversationId !== conversationId) {
       throw new BotError("topic_not_found", `topic "${topicId}" does not belong to group "${conversationId}"`);
     }
+    // Fail closed while teardown is in flight: a Group delete marks the
+    // Conversation lifecycle deleting and flips active Topics to deleting
+    // before releasing anything. Materializing a member session past that
+    // point would mint runtime the teardown just decided to release. Codes
+    // match the run-service deleting barriers (callers match on .code).
+    if (conversation.lifecycle === "deleting") {
+      throw new BotError("conversation_deleting", `group "${conversationId}" is deleting`);
+    }
+    if (topic.status !== "active") {
+      throw new BotError("topic_deleting", `topic "${topicId}" is deleting`);
+    }
     const target = topic.executionTarget;
     if (target) {
       this.bots.assertWorkspaceRegistered(target.workspace);

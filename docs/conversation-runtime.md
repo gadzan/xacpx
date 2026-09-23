@@ -159,6 +159,8 @@ Group Conversations are durable membership records (`kind: "group"`, `botIds` �
 
 Group Topics carry an explicit `ExecutionTarget` (`workspace` + optional `cwd` + `isolation`). `shared-single-writer` is the engineering default; `worktree-per-member` persists as a value with no provisioning yet. Topic teardown mirrors the direct order at Topic scope: mark deleting → cancel active Runs → reconcile indeterminate → verified member-session release → remove member bindings → delete store rows → remove Topic metadata. Retryable on release failure.
 
+Group delete is barrier-first: mark the Group deleting in SQLite + AppState (new Topics and new Group work fail closed from there), teardown every remaining Topic, delete residual Conversation-store rows, then remove the Group record last. Rows-before-record means a store-cleanup failure leaves the Group row and the barrier intact for retry; the fail-closed metadata delete reuses the same Topics/bindings/durable-rows guards.
+
 Member sessions run Bot agent/model/effort on the Topic workspace/cwd (Topic owns the work target). Member bindings scope `conversationId × topicId × botId` with a `group-member`-separated deterministic id, `brt_group_` aliases, and `group-member` session owners. Direct vs Group, Group A vs Group B, and Topic A vs Topic B all isolate. No Router/controller session exists.
 
 The filesystem seam (`conversation-filesystem-policy.ts`) classifies a declared `MemberTurnEffect`: only an explicit `read-only` declaration is concurrency-safe under `shared-single-writer`; everything else takes the single-writer slot. The effect is never inferred from Bot names. No dispatcher schedules on it yet — PR7 explicit routing attaches it per assignment.

@@ -1917,3 +1917,74 @@ test("group topic teardown fails closed when alias and logical id disagree", asy
   expect(first.state.bot_runtime_bindings[member.id]).toBeDefined();
   expect(first.state.sessions[member.sessionAlias]).toBeDefined();
 });
+
+test("group delete marks the barrier first: concurrent topic create fails closed", async () => {
+  let releaseBarrier!: () => void;
+  const barrierGate = new Promise<void>((resolve) => {
+    releaseBarrier = resolve;
+  });
+  const first = await createLifecycle({
+    afterTeardownMarkedDeleting: () => barrierGate,
+  });
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topicA = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Start the group delete; it pauses right after the barrier is set.
+  const deleteCall = first.service.teardownGroupConversation(group.id);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  // A Topic create racing the delete now fails closed on the barrier.
+  await expect(
+    first.service.createGroupTopic(group.id, "Sprint B", {
+      workspace: "backend",
+      isolation: "shared",
+    }),
+  ).rejects.toMatchObject({ code: "conversation_deleting" });
+  // Member materialize past the barrier fails closed too.
+  await expect(
+    first.runtime.getOrCreateGroupMemberSession({
+      botId: reviewer.id, conversationId: group.id, topicId: topicA.id,
+    }),
+  ).rejects.toMatchObject({ code: "conversation_deleting" });
+  releaseBarrier();
+  await deleteCall;
+  expect(first.state.conversations[group.id]).toBeUndefined();
+});
+
+test("group delete keeps the record when store row cleanup throws, retryable", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Poison deleteConversationRows once: the Group record + barrier must survive.
+  const realDelete = first.store.deleteConversationRows.bind(first.store);
+  let calls = 0;
+  first.store.deleteConversationRows = (conversationId: string) => {
+    calls += 1;
+    if (calls === 1) {
+      throw new Error("injected rows cleanup failure");
+    }
+    return realDelete(conversationId);
+  };
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toThrow(
+    "injected rows cleanup failure",
+  );
+  // Record intact, barrier intact, topic already torn down.
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.store.isConversationDeleting(group.id)).toBe(true);
+  expect(first.state.conversations[group.id]?.lifecycle).toBe("deleting");
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  // Retry succeeds end to end.
+  await first.service.teardownGroupConversation(group.id);
+  expect(first.state.conversations[group.id]).toBeUndefined();
+  expect(first.store.hasDurableGroupWork(group.id)).toBe(false);
+});
