@@ -363,6 +363,8 @@ export function toMemberTurnSummary(turn: MemberTurnRecord): MemberTurnSummaryDt
     state: turn.state,
     createdAt: turn.createdAt,
     ...(turn.sourceTurnId ? { promptRequestId: turn.sourceTurnId } : {}),
+    ...(turn.startedAt ? { startedAt: turn.startedAt } : {}),
+    ...(turn.finishedAt ? { finishedAt: turn.finishedAt } : {}),
     ...(turn.assignmentId ? { assignmentId: turn.assignmentId } : {}),
     ...(turn.task ? { task: turn.task } : {}),
     ...(turn.expectedOutput ? { expectedOutput: turn.expectedOutput } : {}),

@@ -1101,3 +1101,26 @@ test("group CRUD, topic lifecycle, and teardown flow through public Control", as
   expect(() => control.getGroup(group.id)).toThrow();
   await runtime.shutdown();
 });
+
+test("toMemberTurnSummary projects timestamps alongside failureReason", async () => {
+  const { toMemberTurnSummary } = await import("../../../src/control/conversation-control-dtos");
+  const summary = toMemberTurnSummary({
+    id: "mturn_1",
+    runId: "run_1",
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    botId: "bot_1",
+    batch: 1,
+    attempt: 1,
+    origin: "human",
+    state: "failed",
+    triggerMessageIds: ["cmsg_1"],
+    createdAt: "2026-09-16T00:00:00.000Z",
+    startedAt: "2026-09-16T00:00:01.000Z",
+    finishedAt: "2026-09-16T00:00:02.000Z",
+    failureReason: "provider crashed",
+  });
+  expect(summary.startedAt).toBe("2026-09-16T00:00:01.000Z");
+  expect(summary.finishedAt).toBe("2026-09-16T00:00:02.000Z");
+  expect(summary.failureReason).toBe("provider crashed");
+});
