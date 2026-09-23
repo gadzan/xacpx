@@ -111,6 +111,9 @@ export interface CompleteExecutionInput {
   sourceTurn: { sessionAlias: string; turnId?: string };
   now: string;
   completionReason?: string;
+  /** Whole-Run human cancel path: settle the batch to its terminal outcome
+   *  even on automatic Runs (which otherwise stay running for the Router). */
+  forceRunTerminalOnSettle?: boolean;
 }
 
 export interface CompleteExecutionResult {

@@ -921,7 +921,13 @@ export class SqliteConversationStore implements ConversationStore {
         [run.id],
       );
       this.finishDispatchForMemberTurn(member.id, input.now);
-      const aggregated = this.aggregateRunAfterMemberTerminal(run.id, member.id, input.now, input.completionReason);
+      const aggregated = this.aggregateRunAfterMemberTerminal(
+        run.id,
+        member.id,
+        input.now,
+        input.completionReason,
+        input.forceRunTerminalOnSettle ?? false,
+      );
       return {
         run: aggregated,
         memberTurn: this.requireMemberTurn(member.id),

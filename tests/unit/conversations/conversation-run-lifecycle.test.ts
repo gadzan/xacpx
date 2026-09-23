@@ -2721,14 +2721,109 @@ test("teardown fails closed while a multi-member run still has live work", async
   const member = await first.runtime.getOrCreateGroupMemberSession({
     botId: claim.memberTurn.botId, conversationId: group.id, topicId: topic.id,
   });
-  // The runner reports the cancel as already-completed work: on an automatic
-  // Run the settlement stays running for the Router, so teardown must refuse
-  // to release runtime underneath it.
-  first.runner.cancelResult = { outcome: "completed", text: "late result" };
-  await expect(first.service.teardownGroupTopic(group.id, topic.id)).rejects.toMatchObject({
-    code: "conversation_not_settled",
+  // Whole-run cancel force-terminals even automatic Runs, so teardown settles
+  // the run first and then releases runtime: nothing stranded, nothing live.
+  // (Teardown deletes topic rows, so assert settlement via pre-delete state:
+  // capture the cancel outcome directly first.)
+  const cancelOutcome = first.store.cancelRun(accepted.run.id, NOW, "cancelled");
+  expect(cancelOutcome.executionStarted).toBe(true);
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  expect(first.store.listRuns(group.id, topic.id)).toHaveLength(0);
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[member.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(member.sessionAlias) ?? undefined).toBeUndefined();
+  first.store.close();
+});
+
+test("teardown still refuses while a run is genuinely routable", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
   });
-  // Live runtime untouched by the refused teardown.
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  // Automatic run whose batch settled completed WITHOUT a cancel: the Run
+  // stays running for the Router, so teardown must refuse to release runtime.
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-td-routable",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    mode: "automatic",
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  for (const turn of accepted.memberTurns) {
+    first.store.completeExecution({
+      runId: accepted.run.id, memberTurnId: turn.id, botId: turn.botId,
+      content: `done ${turn.botId}`, sourceTurn: { sessionAlias: `sess_${turn.botId}` }, now: NOW,
+    });
+  }
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("running");
+  const member = await first.runtime.getOrCreateGroupMemberSession({
+    botId: botA.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Cancel wins over router-pending: teardown settles the routable run
+  // (forced terminal) and releases everything.
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  expect(first.store.listRuns(group.id, topic.id)).toHaveLength(0);
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[member.id]).toBeUndefined();
+  first.store.close();
+});
+
+test("teardown aborts when physical cancel throws, keeping barrier and runtime", async () => {
+  const first = await createLifecycle({
+    hooks: { failRuntimeMaterialize: true },
+  });
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-td-throw",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const claim = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claim.dispatch.id, owner: "dispatcher-a", generation: claim.dispatch.generation,
+    runId: accepted.run.id, memberTurnId: claim.memberTurn.id,
+    sessionAlias: "sess_x", logicalSessionId: "lsess_x", sourceTurnId: "sturn_x", now: NOW,
+  });
+  const member = await first.runtime.getOrCreateGroupMemberSession({
+    botId: claim.memberTurn.botId, conversationId: group.id, topicId: topic.id,
+  });
+  // Physical cancel throws mid-loop: teardown propagates, barrier stays,
+  // runtime stays live for retry.
+  const disp = first.dispatcher as unknown as {
+    runner: { cancel: (input: never) => Promise<never> };
+  };
+  disp.runner.cancel = ((_input: never) => {
+    throw new Error("injected cancel transport failure");
+  }) as never;
+  await expect(first.service.teardownGroupTopic(group.id, topic.id)).rejects.toThrow(
+    "injected cancel transport failure",
+  );
+  expect(first.state.conversation_topics[topic.id]).toBeDefined();
   expect(first.state.bot_runtime_bindings[member.id]).toBeDefined();
   expect(first.sessions.getLogicalSessionRecord(member.sessionAlias)).toBeDefined();
   first.store.close();
@@ -2797,6 +2892,122 @@ test("dispatcher cancelRun cancels every started member exactly", async () => {
   hangA.resolve();
   hangB.resolve();
   first.store.close();
+});
+
+test("unknown on first active member never skips the second physical cancel", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-cancel-unknown",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const claimA = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claimA.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: claimA.run.id, memberTurnId: claimA.memberTurn.id,
+    sessionAlias: "sess_a", logicalSessionId: "lsess_a", sourceTurnId: "sturn_a", now: NOW,
+  });
+  const claimB = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claimB.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: claimB.run.id, memberTurnId: claimB.memberTurn.id,
+    sessionAlias: "sess_b", logicalSessionId: "lsess_b", sourceTurnId: "sturn_b", now: NOW,
+  });
+  // A's physical cancel reports unknown; B's reports cancelled. Both exact
+  // promptRequestIds must reach the runner even though A's persistence seals
+  // the Run indeterminate before B's outcome is recorded.
+  const calls: string[] = [];
+  const disp = first.dispatcher as unknown as {
+    runner: { cancel: (input: { promptRequestId: string }) => Promise<{ outcome: "cancelled" | "unknown" }> };
+  };
+  const origCancel = disp.runner.cancel.bind(disp.runner);
+  disp.runner.cancel = (async (input: { promptRequestId: string }) => {
+    calls.push(input.promptRequestId);
+    if (input.promptRequestId === "sturn_a") {
+      return { outcome: "unknown" };
+    }
+    return origCancel(input);
+  });
+  await first.dispatcher.cancelRun(claimA.run.id);
+  expect(calls.sort()).toEqual(["sturn_a", "sturn_b"]);
+  expect(first.store.getRun(claimA.run.id)?.state).toBe("indeterminate");
+  first.store.close();
+});
+
+test("automatic cancel that races a member completion still terminals the run", async () => {
+  for (const outcome of ["completed", "failed"] as const) {
+    const first = await createLifecycle();
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    const botA = first.bots.getBot(BOT_ID);
+    const botB = first.bots.getBot(TESTER_ID);
+    const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+    const accepted = first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: `req-cancel-race-${outcome}`,
+      botId: botA.id,
+      content: "go",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      mode: "automatic",
+      members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+      now: NOW,
+    });
+    const claim = first.store.claimNextDispatch({
+      now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+    })!;
+    first.store.markExecutionStarted({
+      dispatchId: claim.dispatch.id, owner: "dispatcher-a", generation: claim.dispatch.generation,
+      runId: accepted.run.id, memberTurnId: claim.memberTurn.id,
+      sessionAlias: "sess_x", logicalSessionId: "lsess_x", sourceTurnId: "sturn_x", now: NOW,
+    });
+    // Whole-run cancel settles the queued sibling, then the active member's
+    // physical cancel reports a proven outcome (race: work already done).
+    const cancelOutcome = first.store.cancelRun(accepted.run.id, NOW, "cancelled");
+    expect(cancelOutcome.executionStarted).toBe(true);
+    if (outcome === "completed") {
+      first.store.completeExecution({
+        runId: accepted.run.id, memberTurnId: claim.memberTurn.id, botId: claim.memberTurn.botId,
+        content: "late done", sourceTurn: { sessionAlias: "sess_x", turnId: "sturn_x" }, now: NOW,
+        forceRunTerminalOnSettle: true,
+      });
+    } else {
+      first.store.failExecution({
+        runId: accepted.run.id, memberTurnId: claim.memberTurn.id, now: NOW,
+        reason: "late failure", forceRunTerminalOnSettle: true,
+      });
+    }
+    const run = first.store.getRun(accepted.run.id)!;
+    expect(["completed", "failed"]).toContain(run.state);
+    expect(run.finishedAt).toBeDefined();
+    // No new dispatch may escape after cancel.
+    expect(first.store.claimNextDispatch({
+      now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+    })).toBeUndefined();
+    first.store.close();
+  }
 });
 
 test("worktree-per-member topics fail closed at member materialization", async () => {

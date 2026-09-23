@@ -151,19 +151,29 @@ export class ConversationDispatcher {
       await this.kick();
       return;
     }
+    // Snapshot-first: issue physical cancel to EVERY active member before
+    // persisting any outcome. Persisting A's result (e.g. unknown seals the
+    // automatic Run indeterminate and marks B indeterminate) must not revoke
+    // B's physical cancel: B's underlying execution may still be mutating.
+    const pending: Array<{ member: MemberTurnRecord; result: ConversationTurnCancelResult }> = [];
     for (const active of outcome.activeMembers) {
       const current = this.store.getMemberTurn(active.id);
-      if (!current || (TERMINAL_MEMBER_STATES as readonly string[]).includes(current.state)) {
+      if (!current) {
         continue;
       }
-      const result = await this.runner.cancel({
-        conversationId: outcome.run.conversationId,
-        topicId: outcome.run.topicId,
-        sessionAlias: current.sessionAlias ?? "",
-        queueItemId: current.queueItemId,
-        promptRequestId: current.sourceTurnId ?? "",
+      pending.push({
+        member: current,
+        result: await this.runner.cancel({
+          conversationId: outcome.run.conversationId,
+          topicId: outcome.run.topicId,
+          sessionAlias: current.sessionAlias ?? "",
+          queueItemId: current.queueItemId,
+          promptRequestId: current.sourceTurnId ?? "",
+        }),
       });
-      this.persistCancelOutcome(outcome.run.id, current, result);
+    }
+    for (const entry of pending) {
+      this.persistCancelOutcome(outcome.run.id, entry.member, entry.result);
     }
     await this.kick();
   }
@@ -357,6 +367,10 @@ export class ConversationDispatcher {
       return;
     }
     const now = this.now().toISOString();
+    // Whole-Run human cancel settlement: every branch carries force-terminal
+    // so an automatic Run can never return to routing after cancel. The
+    // proven member outcome is still preserved (completed/failed message and
+    // state); only the Run-level routing eligibility is sealed.
     if (result.outcome === "completed") {
       const completed = this.store.completeExecution({
         runId,
@@ -365,6 +379,7 @@ export class ConversationDispatcher {
         content: result.text ?? "",
         sourceTurn: { sessionAlias: member.sessionAlias ?? "", turnId: member.sourceTurnId },
         now,
+        forceRunTerminalOnSettle: true,
       });
       this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage);
       return;
@@ -375,6 +390,7 @@ export class ConversationDispatcher {
         memberTurnId: member.id,
         now,
         reason: result.error ?? "failed",
+        forceRunTerminalOnSettle: true,
       });
       this.emitRunAndMember(run, member.id);
       return;
