@@ -2513,6 +2513,94 @@ test("group topic with a non-empty cwd fails closed instead of persisting a sile
   first.store.close();
 });
 
+test("persisted topic cwd fails closed at member materialize", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Legacy/damaged row: non-empty cwd persisted before (or around) the
+  // create-time gate. The launcher does not honor it, so materialize must
+  // fail closed rather than silently execute in the workspace root.
+  first.state.conversation_topics[topic.id] = {
+    ...first.state.conversation_topics[topic.id]!,
+    executionTarget: { workspace: "backend", cwd: "/tmp/backend/subdir", isolation: "shared-single-writer" },
+  };
+  await expect(first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID, conversationId: group.id, topicId: topic.id,
+  })).rejects.toMatchObject({ code: "cwd_unsupported" });
+  expect(first.state.bot_runtime_bindings).toEqual({});
+  first.store.close();
+});
+
+test("teardownGroupTopic emits conversations-changed once on success", async () => {
+  // Product-level: run-service teardown has no per-topic tombstone, so it
+  // broadcasts the coarse refetch AFTER the final gate (Control bridge maps
+  // it to Relay consumers). Use a local sink: the lifecycle harness builds
+  // ConversationRunService directly without onProductEvent.
+  const { SqliteConversationStore } = await import("../../../src/conversations/sqlite-conversation-store");
+  const { ConversationRunService } = await import("../../../src/conversations/conversation-run-service");
+  const { ConversationDispatcher } = await import("../../../src/conversations/conversation-dispatcher");
+  const { BotService } = await import("../../../src/bots/bot-service");
+  const { BotRuntimeManager } = await import("../../../src/bots/bot-runtime-manager");
+  const { SessionService } = await import("../../../src/sessions/session-service");
+  const { createEmptyState } = await import("../../../src/state/types");
+  const { AsyncMutex } = await import("../../../src/orchestration/async-mutex");
+  const { createStrictOwnedSessionRelease } = await import("../../../src/sessions/owned-session-release");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const seen: string[] = [];
+  const path = join(mkdtempSync(join(tmpdir(), "xacpx-emit-")), "conversation.sqlite");
+  const store = await SqliteConversationStore.open(path);
+  const state = createEmptyState();
+  const stateStore = { save: async () => {} };
+  const stateMutex = new AsyncMutex();
+  const config = {
+    agents: { codex: { driver: "codex" }, claude: { driver: "claude" } },
+    workspaces: { backend: { root: "/tmp/backend" } },
+  } as never;
+  const sessions = new SessionService(config, stateStore as never, state, {
+    now: () => Date.parse(NOW), stateMutex,
+  } as never);
+  const bots = new BotService(config, state, stateStore as never, {
+    now: () => new Date(NOW), createId: (() => { let n = 0; return () => `bot_${++n}`; })(),
+    stateMutex,
+  });
+  const fakeRunner = {
+    run: async () => ({ outcome: "completed", text: "" }),
+    cancel: async () => ({ outcome: "cancelled" }),
+  } as never;
+  const runtime = new BotRuntimeManager(bots, sessions, state, stateStore as never, {
+    now: () => new Date(NOW), stateMutex,
+    releaseOwnedSession: createStrictOwnedSessionRelease({ sessions, transport: {
+      deleteSession: async () => {}, releaseLogicalSession: async () => {},
+    } }),
+  });
+  const dispatcher = new ConversationDispatcher(store, runtime, fakeRunner, sessions, {
+    now: () => new Date(Date.parse(NOW)), ownerId: "emit-test",
+  });
+  const service = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, stateStore as never, {
+    now: () => new Date(Date.parse(NOW)), stateMutex,
+    releaseOwnedSession: createStrictOwnedSessionRelease({ sessions, transport: {
+      deleteSession: async () => {}, releaseLogicalSession: async () => {},
+    } }),
+    onProductEvent: (event) => { seen.push(event.type); },
+  });
+  const created = [await bots.createBot({ name: "A", agent: "codex", workspace: "backend" }),
+    await bots.createBot({ name: "B", agent: "codex", workspace: "backend" })];
+  const group = await bots.createGroup({ title: "Team", botIds: created.map((b) => b.id) });
+  const topic = await service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend", isolation: "shared-single-writer",
+  });
+  seen.length = 0;
+  await service.teardownGroupTopic(group.id, topic.id);
+  expect(seen).toEqual(["conversations-changed"]);
+  store.close();
+});
+
 
 test("cancel targets the actually-started member, not members[0]", async () => {
   const first = await createLifecycle();
@@ -3398,6 +3486,43 @@ test("membership removal during teardown cannot orphan a late session", async ()
   await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID] });
   await first.service.teardownGroupTopic(group.id, topic.id);
   expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(bindingC.sessionAlias) ?? undefined).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[bindingC.id]).toBeUndefined();
+  first.store.close();
+});
+
+test("removed member runtime is still swept; removed member cannot rematerialize", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const botC = "bot_carol";
+  first.state.bots[botC] = {
+    id: botC,
+    name: "Carol",
+    agent: "codex",
+    workspace: "backend",
+    enabled: true,
+    profileRevision: 1,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const bindingC = await first.runtime.getOrCreateGroupMemberSession({
+    botId: botC, conversationId: group.id, topicId: topic.id,
+  });
+  // Remove C while its runtime exists: metadata edit succeeds (lifecycle
+  // gates held), runtime stays sweepable, rematerialize fails closed.
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID] });
+  expect(first.bots.getGroup(group.id).botIds).toEqual([BOT_ID, TESTER_ID]);
+  await expect(first.runtime.getOrCreateGroupMemberSession({
+    botId: botC, conversationId: group.id, topicId: topic.id,
+  })).rejects.toMatchObject({ code: "group_member_not_member" });
+  // Teardown still sweeps C's pre-removal runtime (final gate recomputes
+  // from bindings/sessions, not membership).
+  await first.service.teardownGroupTopic(group.id, topic.id);
   expect(first.sessions.getLogicalSessionRecord(bindingC.sessionAlias) ?? undefined).toBeUndefined();
   expect(first.state.bot_runtime_bindings[bindingC.id]).toBeUndefined();
   first.store.close();

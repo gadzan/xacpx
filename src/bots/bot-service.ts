@@ -341,10 +341,12 @@ export class BotService {
     return bot;
   }
 
-  /** True once the Bot materialized an actual direct runtime binding/session.
-   *  Identity lock (agent/workspace) follows this only: a persisted Direct
-   *  Conversation row alone (e.g. after createTopic with no execution) keeps
-   *  delete fail-closed via bot_in_use but must NOT permanently lock identity. */
+  /** True once the Bot materialized any runtime (direct or group-member).
+   *  Agent changes lock on this. Workspace-default changes lock only on
+   *  direct runtime: Group Topics always carry an explicit workspace, so the
+   *  Bot default never applies to member sessions. A persisted Direct
+   *  Conversation alone keeps delete fail-closed via bot_in_use but must NOT
+   *  permanently lock identity. */
   hasRuntime(id: string): boolean {
     this.getBot(id);
     return this.hasMaterializedRuntime(id);
@@ -385,7 +387,10 @@ export class BotService {
         if (patch.agent !== undefined && patch.agent !== existing.agent && this.hasMaterializedRuntime(id)) {
           throw new BotError("runtime_identity_locked", `bot "${id}" agent cannot change while a runtime exists`);
         }
-        if (patch.workspace !== undefined && patch.workspace !== existing.workspace && this.hasMaterializedRuntime(id)) {
+        // Group Topics always carry an explicit workspace (Bot default never
+        // applies to member sessions), so only direct runtime locks the
+        // workspace default. Agent changes stay locked by any runtime.
+        if (patch.workspace !== undefined && patch.workspace !== existing.workspace && this.hasDefaultWorkspaceRuntime(id)) {
           throw new BotError("runtime_identity_locked", `bot "${id}" workspace cannot change while a runtime exists`);
         }
         const identity = this.requireIdentity({
@@ -803,6 +808,29 @@ export class BotService {
     return Object.values(this.state.bot_runtime_bindings).some(
       (binding) => binding.scope === "group-member" && binding.botId === botId,
     );
+  }
+
+  /**
+   * Runtimes that consume the Bot workspace DEFAULT: direct sessions only.
+   * Group Topics always carry an explicit executionTarget (create-time
+   * required; legacy/missing target fails closed at materialize), so the Bot
+   * default never applies to member sessions and changing it never rebuilds
+   * them. Agent changes stay locked by ANY runtime (hasMaterializedRuntime);
+   * workspace-default changes only by direct runtime.
+   */
+  private hasDefaultWorkspaceRuntime(botId: string): boolean {
+    // Scope-narrow: only bot-direct bindings/sessions consume the Bot
+    // workspace default. directRuntimeRefs.bindingIds also covers
+    // group-member bindings (any non-controller scope), which must NOT lock
+    // the default — their Topics own an explicit workspace.
+    const hasDirectBinding = Object.values(this.state.bot_runtime_bindings).some(
+      (binding) => binding.scope === "bot-direct" && binding.botId === botId,
+    );
+    if (hasDirectBinding) {
+      return true;
+    }
+    const refs = this.directRuntimeRefs(botId);
+    return refs.sessionAliases.length > 0;
   }
 
   private directRuntimeRefs(botId: string): {

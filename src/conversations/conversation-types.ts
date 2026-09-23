@@ -129,6 +129,9 @@ export interface MemberTurnRecord {
   sourceTurnId?: string;
   queueItemId?: string;
   batch: number;
+  /** Durable accept order within the batch (0-based). Replaces created_at/id
+   *  tiebreaks so reopen/replay ordering is stable and dispatches align. */
+  memberIndex: number;
   attempt: number;
   origin: MemberTurnOrigin;
   state: MemberTurnState;

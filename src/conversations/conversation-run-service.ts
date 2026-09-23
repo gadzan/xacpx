@@ -243,7 +243,14 @@ export class ConversationRunService {
 
   getConversation(conversationId: string): ConversationRecord {
     this.assertOpen();
-    return this.presentDirect(this.requireConversation(conversationId));
+    const conversation = this.requireConversation(conversationId);
+    if (conversation.kind !== "bot") {
+      throw new ConversationError(
+        "conversation_not_direct",
+        `conversation "${conversationId}" is not a Direct Bot conversation`,
+      );
+    }
+    return this.presentDirect(conversation);
   }
 
   listConversations(filter?: { botId?: string }): ConversationRecord[] {
@@ -605,6 +612,31 @@ export class ConversationRunService {
     for (const topic of topics) {
       await this.teardownGroupTopic(conversationId, topic.id);
     }
+    // Ghost-topic durable work: runs whose Topic metadata is already gone
+    // (missing-Topic rows) never entered teardownGroupTopic above. Cancel
+    // every non-terminal run and reconcile to terminal before deleting rows —
+    // deleting live work with the cleanup root would strand it with no
+    // cancel/reconcile entrypoint.
+    const ghostRuns = this.store.listRuns(conversationId)
+      .filter((run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human");
+    for (const run of ghostRuns) {
+      await this.dispatcher.cancelRun(run.id);
+    }
+    this.store.recoverExpiredClaims(this.now().toISOString());
+    const unsettled = this.store.listRuns(conversationId)
+      .filter((run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human");
+    if (unsettled.length > 0) {
+      throw new ConversationError("conversation_not_settled", "group has unsettled runs", {
+        runIds: unsettled.map((run) => run.id),
+      });
+    }
+    const ghostIndeterminate = this.store.listRuns(conversationId)
+      .filter((run) => run.state === "indeterminate");
+    if (ghostIndeterminate.length > 0) {
+      throw new ConversationError("conversation_indeterminate", "group has indeterminate work", {
+        runIds: ghostIndeterminate.map((run) => run.id),
+      });
+    }
     // Store rows BEFORE the Group record: if deleteConversationRows throws
     // (or the process crashes between the two steps), the Group row and the
     // deleting barrier are still present, so teardown is retryable and the
@@ -860,6 +892,10 @@ export class ConversationRunService {
         });
       },
     );
+    // No per-topic tombstone exists: broadcast the coarse refetch so every
+    // Relay/plugin consumer drops its stale Topic snapshot. Only after the
+    // final gate succeeds — a throw above leaves metadata intact for retry.
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
   }
 
   /**

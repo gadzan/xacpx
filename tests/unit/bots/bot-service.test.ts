@@ -95,6 +95,42 @@ test("updateBot rejects agent and workspace changes after a direct runtime exist
   expect(service.getBot("bot_fixed").workspace).toBe("backend");
 });
 
+test("group-member runtime locks agent but not the workspace default", async () => {
+  const { service, state } = createService();
+  await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  state.conversation_topics.topic_g = {
+    id: "topic_g",
+    conversationId: "team",
+    title: "Sprint",
+    status: "active",
+    executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  state.bot_runtime_bindings.bind_g = {
+    id: "bind_g",
+    scope: "group-member",
+    conversationId: "team",
+    topicId: "topic_g",
+    botId: "bot_fixed",
+    logicalSessionId: "22222222-2222-4222-8222-222222222222",
+    sessionAlias: "brt_bind_g",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  expect(service.hasRuntime("bot_fixed")).toBe(true);
+  // Agent is identity: locked by any runtime including group-member.
+  await expect(service.updateBot("bot_fixed", { agent: "claude" })).rejects.toMatchObject({
+    code: "runtime_identity_locked",
+  });
+  // Workspace default is not consumed by member sessions (the Topic owns its
+  // explicit workspace), so changing it must not fail closed here.
+  await expect(service.updateBot("bot_fixed", { workspace: "frontend" })).resolves.toMatchObject({
+    workspace: "frontend",
+  });
+  expect(service.getBot("bot_fixed").agent).toBe("codex");
+});
+
 test("updateBot clears instructions so the next profile has no stale persona text", async () => {
   const { service } = createService();
   await service.createBot({

@@ -35,9 +35,11 @@ export interface BotSummaryDto {
    *  it; the Web treats a missing revision as unknown (field comparison
    *  still applies). */
   profileRevision?: number;
-  /** True once the Bot materialized an actual direct runtime binding/session.
-   *  Identity lock follows this only; a persisted Direct Conversation alone
-   *  keeps delete fail-closed via bot_in_use but does not lock identity. */
+  /** True once the Bot materialized any runtime (direct or group-member).
+   *  Agent changes lock on this; workspace-default changes lock only on
+   *  direct runtime (Group Topics always carry an explicit workspace). A
+   *  persisted Direct Conversation alone keeps delete fail-closed via
+   *  bot_in_use but does not lock identity. */
   hasRuntime?: boolean;
 }
 
@@ -167,6 +169,7 @@ export interface MemberTurnSummaryDto {
   topicId: string;
   botId: string;
   batch: number;
+  memberIndex: number;
   attempt: number;
   origin: MemberTurnRecord["origin"];
   state: MemberTurnRecord["state"];
@@ -298,7 +301,14 @@ export function toConversationSummary(
 ): ConversationSummaryDto {
   const botId = conversation.botIds[0];
   if (conversation.kind !== "bot" || !botId) {
-    throw new Error("conversation is not a Direct Bot conversation");
+    // Stable domain code (never bare Error): the Relay bridge maps .code to
+    // the wire error instead of "internal". Matches the run-service
+    // conversation_not_direct boundary (same value, same trigger: a Group
+    // id on the Direct-only read path).
+    throw Object.assign(
+      new Error("conversation is not a Direct Bot conversation"),
+      { code: "conversation_not_direct" },
+    );
   }
   return {
     id: conversation.id,
@@ -358,6 +368,7 @@ export function toMemberTurnSummary(turn: MemberTurnRecord): MemberTurnSummaryDt
     topicId: turn.topicId,
     botId: turn.botId,
     batch: turn.batch,
+    memberIndex: turn.memberIndex,
     attempt: turn.attempt,
     origin: turn.origin,
     state: turn.state,

@@ -583,6 +583,7 @@ function validMemberTurnSummary(value: unknown): boolean {
     && typeof c.topicId === "string"
     && typeof c.botId === "string"
     && typeof c.batch === "number"
+    && optNonNegInt(c.memberIndex)
     && typeof c.attempt === "number"
     && (c.origin === "human-explicit" || c.origin === "human"
       || c.origin === "router" || c.origin === "handoff" || c.origin === "followup"

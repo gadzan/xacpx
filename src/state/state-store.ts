@@ -1087,6 +1087,11 @@ export function parseState(
   const orchestration = parseOrchestrationState(raw.orchestration, dropped, migrated);
   repairExternalCoordinatorIdentityCollisions(parsedSessions, orchestration, dropped);
 
+  const conversations = parseConversations(raw.conversations, dropped);
+  const conversationTopics = parseConversationTopics(raw.conversation_topics, dropped);
+  const bindings = parseBotRuntimeBindings(raw.bot_runtime_bindings, dropped);
+  reconcileProductOwnershipGraph(parsedSessions, conversations, conversationTopics, bindings, dropped);
+
   return {
     sessions: parsedSessions,
     chat_contexts: parseChatContexts(sectionRecord(raw.chat_contexts, "chat_contexts", dropped), dropped),
@@ -1094,10 +1099,105 @@ export function parseState(
     orchestration,
     scheduled_tasks: parseScheduledTasks(raw.scheduled_tasks, dropped),
     bots: parseBotProfiles(raw.bots, dropped),
-    conversations: parseConversations(raw.conversations, dropped),
-    conversation_topics: parseConversationTopics(raw.conversation_topics, dropped),
-    bot_runtime_bindings: parseBotRuntimeBindings(raw.bot_runtime_bindings, dropped),
+    conversations,
+    conversation_topics: conversationTopics,
+    bot_runtime_bindings: bindings,
   };
+}
+
+/**
+ * Cross-record recovery for the product-owned ownership graph
+ * (Conversation → Topic → binding → owned session). Per-record parsers
+ * above only check shape; without this step a quarantined Group record
+ * would leave its Topics/bindings/sessions loaded with no cleanup root,
+ * and a dropped Topic/Bot would strand runtime no teardown can address.
+ *
+ * Fail-closed, never silent: descendants of a missing root are DROPPED into
+ * the load report (with their physical cleanup handles preserved in the
+ * quarantine backup StateStore.load writes), never published as live
+ * orphan state. Sessions whose owner references a dropped binding stay
+ * only when their triple still resolves to a live Conversation + Topic;
+ * otherwise they drop too. Bots themselves are never dropped here —
+ * membership edits, not load, own that transition.
+ */
+function reconcileProductOwnershipGraph(
+  sessions: AppState["sessions"],
+  conversations: Record<string, ConversationRecord>,
+  topics: Record<string, ConversationTopic>,
+  bindings: Record<string, BotRuntimeBinding>,
+  dropped: StateLoadDroppedRecord[],
+): void {
+  const groupReferencedTopics = new Set<string>();
+  for (const binding of Object.values(bindings)) {
+    if (binding.scope === "group-member") {
+      groupReferencedTopics.add(binding.topicId);
+    }
+  }
+  for (const session of Object.values(sessions)) {
+    const owner = session.owner;
+    if (owner?.kind === "group-member" && owner.topicId !== undefined) {
+      groupReferencedTopics.add(owner.topicId);
+    }
+  }
+  for (const [id, topic] of Object.entries(topics)) {
+    // Group topics carry executionTarget (direct topics never do) or are
+    // referenced by group-member runtime. Either marker with a missing
+    // conversation means the cleanup root is gone → drop with report.
+    // Synthetic direct convoy rows stay untouched.
+    const isGroupTopic = topic.executionTarget !== undefined || groupReferencedTopics.has(id);
+    if (!conversations[topic.conversationId] && isGroupTopic) {
+      delete topics[id];
+      dropped.push({
+        section: "conversation_topics",
+        key: id,
+        reason: `topic references missing conversation "${topic.conversationId}"; dropped (cleanup root gone)`,
+      });
+    }
+  }
+  for (const [id, binding] of Object.entries(bindings)) {
+    // Only group-member bindings resolve through persisted Conversation +
+    // Topic rows. Direct bindings resolve through the deterministic Bot plan
+    // (synthetic conversations); group-controller is provisional/unused.
+    if (binding.scope !== "group-member") {
+      continue;
+    }
+    const conversation = conversations[binding.conversationId];
+    const topic = topics[binding.topicId];
+    if (!conversation || !topic || topic.conversationId !== binding.conversationId) {
+      delete bindings[id];
+      dropped.push({
+        section: "bot_runtime_bindings",
+        key: id,
+        reason: `binding references missing conversation/topic (conversation "${binding.conversationId}", topic "${binding.topicId}"); dropped (cleanup root gone)`,
+      });
+    }
+  }
+  for (const [alias, session] of Object.entries(sessions)) {
+    const owner = session.owner;
+    // Only group-member ownership resolves through persisted Conversation +
+    // Topic rows. Direct owners resolve through the deterministic Bot plan
+    // (conversations are synthetic until teardown), so a missing record is
+    // normal crash-window state the repair path needs — never drop it here.
+    if (owner?.kind !== "group-member") {
+      continue;
+    }
+    const bound = owner.bindingId !== undefined ? bindings[owner.bindingId] : undefined;
+    const conversationId = owner.conversationId ?? bound?.conversationId;
+    const topicId = owner.topicId ?? bound?.topicId;
+    if (conversationId === undefined || topicId === undefined) {
+      continue;
+    }
+    const conversation = conversations[conversationId];
+    const topic = topics[topicId];
+    if (!conversation || !topic || topic.conversationId !== conversationId) {
+      delete sessions[alias];
+      dropped.push({
+        section: "sessions",
+        key: alias,
+        reason: `owned session references missing conversation/topic (conversation "${conversationId}", topic "${topicId}"); dropped (cleanup root gone)`,
+      });
+    }
+  }
 }
 
 /**

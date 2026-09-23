@@ -45,8 +45,9 @@ export interface AcceptRequestInput {
   maxMemberTurns?: number;
   now: string;
   /** Extra members accepted in the same transaction: one MemberTurn plus one
-   *  pending dispatch intent each. The legacy single `botId/profileSnapshot`
-   *  is always the first member. Direct accepts omit this. */
+   *  pending dispatch intent each, in durable member_index order. The legacy
+   *  single `botId/profileSnapshot` is always the first member (members[0]).
+   *  Direct accepts omit this. */
   members?: AcceptMemberInput[];
   /** Live Conversation dispatcher epoch. Stamped on the dispatch row so a later
    *  process or recovered claim cannot inherit human permission authority. */

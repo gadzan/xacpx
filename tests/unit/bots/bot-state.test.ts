@@ -169,12 +169,12 @@ test("parseState drops malformed Bot and Conversation records and reports them",
   expect(state.conversation_topics).toEqual({});
   expect(state.bot_runtime_bindings).toEqual({});
   expect(dropped).toEqual([
-    { section: "bots", key: "bad-enabled", reason: "malformed bot profile" },
     { section: "conversations", key: "bad-group", reason: "malformed conversation record" },
     { section: "conversations", key: "lead-outside", reason: "malformed conversation record" },
     { section: "conversations", key: "dup-members", reason: "malformed conversation record" },
     { section: "conversation_topics", key: "bad-status", reason: "malformed conversation topic" },
     { section: "bot_runtime_bindings", key: "controller-with-bot", reason: "malformed bot runtime binding" },
+    { section: "bots", key: "bad-enabled", reason: "malformed bot profile" },
   ]);
 });
 
@@ -225,6 +225,26 @@ test("parseState drops a session with a malformed owner and keeps an ownerless s
 
 test("parseState keeps PR2 bot-direct owners and scoped owners with botId", () => {
   const state = parseState({
+    conversations: {
+      conv_a: {
+        id: "conv_a",
+        kind: "bot",
+        title: "Reviewer",
+        botIds: ["bot_reviewer"],
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    conversation_topics: {
+      topic_b: {
+        id: "topic_b",
+        conversationId: "conv_a",
+        title: "Default",
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
     sessions: {
       legacy: {
         alias: "legacy",
@@ -263,6 +283,80 @@ test("parseState keeps PR2 bot-direct owners and scoped owners with botId", () =
     conversationId: "conv_a",
     topicId: "topic_b",
   });
+});
+
+test("parseState drops owned sessions whose conversation/topic root is gone", () => {
+  const dropped: StateLoadDroppedRecord[] = [];
+  const state = parseState({
+    sessions: {
+      orphan: {
+        alias: "orphan",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:orphan",
+        logical_session_id: "55555555-5555-4555-8555-555555555555",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: {
+          kind: "group-member",
+          bindingId: "bind_orphan",
+          botId: "bot_reviewer",
+          conversationId: "conv_gone",
+          topicId: "topic_gone",
+        },
+      },
+      plain: {
+        alias: "plain",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:plain",
+        logical_session_id: "66666666-6666-4666-8666-666666666666",
+        created_at: NOW,
+        last_used_at: NOW,
+      },
+    },
+  }, "state.json", dropped);
+  expect(state.sessions.orphan).toBeUndefined();
+  expect(state.sessions.plain?.alias).toBe("plain");
+  expect(dropped).toEqual([
+    {
+      section: "sessions",
+      key: "orphan",
+      reason: 'owned session references missing conversation/topic (conversation "conv_gone", topic "topic_gone"); dropped (cleanup root gone)',
+    },
+  ]);
+});
+
+test("parseState drops topics and bindings under a missing conversation", () => {
+  const dropped: StateLoadDroppedRecord[] = [];
+  const state = parseState({
+    conversation_topics: {
+      topic_x: {
+        id: "topic_x",
+        conversationId: "conv_gone",
+        title: "Sprint",
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    bot_runtime_bindings: {
+      bind_x: {
+        id: "bind_x",
+        scope: "group-member",
+        conversationId: "conv_gone",
+        topicId: "topic_x",
+        botId: "bot_a",
+        logicalSessionId: "77777777-7777-4777-8777-777777777777",
+        sessionAlias: "brt_group_x",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+  }, "state.json", dropped);
+  expect(state.conversation_topics).toEqual({});
+  expect(state.bot_runtime_bindings).toEqual({});
+  expect(dropped.map((entry) => entry.key).sort()).toEqual(["bind_x", "topic_x"]);
 });
 
 test("owner metadata round-trips through save and load", async () => {

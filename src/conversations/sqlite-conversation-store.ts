@@ -8,6 +8,7 @@ import {
 import type { BotProfileSnapshot } from "../bots/bot-types";
 import { ConversationError } from "./conversation-error";
 import type {
+  AcceptMemberInput,
   AcceptRequestInput,
   AcceptRequestResult,
   AssertLiveDispatchForMaterializeInput,
@@ -108,6 +109,7 @@ interface MemberTurnRow {
   source_turn_id: string | null;
   queue_item_id: string | null;
   batch: number;
+  member_index: number | null;
   attempt: number;
   origin: string;
   state: string;
@@ -206,6 +208,7 @@ CREATE TABLE IF NOT EXISTS member_turns (
   source_turn_id TEXT,
   queue_item_id TEXT,
   batch INTEGER NOT NULL DEFAULT 1,
+  member_index INTEGER NOT NULL DEFAULT 0,
   attempt INTEGER NOT NULL DEFAULT 1,
   origin TEXT NOT NULL,
   state TEXT NOT NULL,
@@ -377,6 +380,7 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
     ...(optionalString(row.source_turn_id) ? { sourceTurnId: row.source_turn_id as string } : {}),
     ...(optionalString(row.queue_item_id) ? { queueItemId: row.queue_item_id as string } : {}),
     batch: Number(row.batch),
+    memberIndex: Number(row.member_index ?? 0),
     attempt: Number(row.attempt),
     origin: row.origin as MemberTurnRecord["origin"],
     state: row.state as MemberTurnState,
@@ -561,14 +565,16 @@ export class SqliteConversationStore implements ConversationStore {
 
   listMemberTurns(runId: string): MemberTurnRecord[] {
     return this.sqlite.all<MemberTurnRow>(
-      "SELECT * FROM member_turns WHERE run_id = ? ORDER BY created_at ASC, id ASC",
+      "SELECT * FROM member_turns WHERE run_id = ? ORDER BY batch ASC, member_index ASC, id ASC",
       [runId],
     ).map(mapMemberTurn);
   }
 
   getDispatchForRun(runId: string): PendingDispatch | undefined {
     const row = this.sqlite.get<DispatchRow>(
-      "SELECT * FROM pending_dispatches WHERE run_id = ? ORDER BY created_at ASC, id ASC",
+      `SELECT d.* FROM pending_dispatches d
+       LEFT JOIN member_turns m ON m.id = d.member_turn_id
+       WHERE d.run_id = ? ORDER BY m.batch ASC, m.member_index ASC, d.id ASC`,
       [runId],
     );
     return row ? mapDispatch(row) : undefined;
@@ -581,7 +587,9 @@ export class SqliteConversationStore implements ConversationStore {
 
   listDispatchesForRun(runId: string): PendingDispatch[] {
     return this.sqlite.all<DispatchRow>(
-      "SELECT * FROM pending_dispatches WHERE run_id = ? ORDER BY created_at ASC, id ASC",
+      `SELECT d.* FROM pending_dispatches d
+       LEFT JOIN member_turns m ON m.id = d.member_turn_id
+       WHERE d.run_id = ? ORDER BY m.batch ASC, m.member_index ASC, d.id ASC`,
       [runId],
     ).map(mapDispatch);
   }
@@ -1375,6 +1383,9 @@ export class SqliteConversationStore implements ConversationStore {
     if (!names.has("failure_reason")) {
       this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN failure_reason TEXT");
     }
+    if (!names.has("member_index")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN member_index INTEGER NOT NULL DEFAULT 0");
+    }
   }
 
   private ensureMemberTurnSnapshotColumn(): void {
@@ -1531,6 +1542,10 @@ export class SqliteConversationStore implements ConversationStore {
     const seq = this.allocateSeq(input.conversationId, input.topicId);
     const messageId = this.ids.messageId();
     const runId = this.ids.runId();
+    // The singular botId/profileSnapshot is always members[0]; `members`
+    // holds extras (PR7/PR8), so merge as [legacy, ...extras] and write one
+    // MemberTurn plus one pending dispatch intent per member in durable
+    // member_index order. Direct accepts omit `members` (single member).
     const members = [
       {
         botId: input.botId,
@@ -1546,6 +1561,7 @@ export class SqliteConversationStore implements ConversationStore {
       );
     }
     const mode = input.mode ?? "explicit";
+    const runSnapshot = input.profileSnapshot;
     this.sqlite.run(
       `INSERT INTO messages (
          id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
@@ -1568,8 +1584,8 @@ export class SqliteConversationStore implements ConversationStore {
         input.requestId,
         mode,
         maxMemberTurns,
-        input.profileSnapshot.revision,
-        JSON.stringify(input.profileSnapshot),
+        runSnapshot.revision,
+        JSON.stringify(runSnapshot),
         input.now,
       ],
     );
@@ -1579,7 +1595,7 @@ export class SqliteConversationStore implements ConversationStore {
     const seenBotIds = new Set<string>();
     const memberTurnIds: string[] = [];
     const dispatchIds: string[] = [];
-    for (const member of members) {
+    for (const [index, member] of members.entries()) {
       if (seenBotIds.has(member.botId)) {
         throw new ConversationError("duplicate_member", `run accepts bot "${member.botId}" twice`);
       }
@@ -1589,16 +1605,17 @@ export class SqliteConversationStore implements ConversationStore {
       this.sqlite.run(
         `INSERT INTO member_turns (
            id, run_id, conversation_id, topic_id, bot_id, session_alias, logical_session_id, source_turn_id,
-           queue_item_id, batch, attempt, origin, state, trigger_message_ids_json, profile_snapshot_json,
+           queue_item_id, batch, member_index, attempt, origin, state, trigger_message_ids_json, profile_snapshot_json,
            created_at, started_at, finished_at,
            assignment_id, task, expected_output, depends_on_json
-         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, 1, ?, 'queued', ?, ?, ?, NULL, NULL, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, ?, 1, ?, 'queued', ?, ?, ?, NULL, NULL, ?, ?, ?, ?)`,
         [
           memberTurnId,
           runId,
           input.conversationId,
           input.topicId,
           member.botId,
+          index,
           member.provenance ?? defaultOrigin,
           JSON.stringify([messageId]),
           JSON.stringify(member.profileSnapshot),

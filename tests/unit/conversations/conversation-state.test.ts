@@ -34,6 +34,26 @@ test("parseState accepts a group conversation with a lead in membership", () => 
 
 test("parseState accepts a controller binding without botId", () => {
   const state = parseState({
+    conversations: {
+      team: {
+        id: "team",
+        kind: "group",
+        title: "Release Team",
+        botIds: ["reviewer", "tester"],
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    conversation_topics: {
+      "pr-400": {
+        id: "pr-400",
+        conversationId: "team",
+        title: "PR",
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
     bot_runtime_bindings: {
       bind_c: {
         id: "bind_c",
@@ -123,6 +143,16 @@ test("parseState defaults a missing Bot profileRevision to 1", () => {
 test("parseState accepts a group topic with an execution target and drops a junk target", () => {
   const dropped: StateLoadDroppedRecord[] = [];
   const state = parseState({
+    conversations: {
+      team: {
+        id: "team",
+        kind: "group",
+        title: "Release Team",
+        botIds: ["reviewer", "tester"],
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
     conversation_topics: {
       good: {
         id: "good",

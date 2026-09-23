@@ -261,9 +261,11 @@ export interface BotSummaryDto {
      *  it; the Web treats a missing revision as unknown (field comparison
      *  still applies). */
     profileRevision?: number;
-    /** True once the Bot materialized an actual direct runtime binding/session.
-     *  Identity lock follows this only; a persisted Direct Conversation alone
-     *  keeps delete fail-closed via bot_in_use but does not lock identity. */
+    /** True once the Bot materialized any runtime (direct or group-member).
+     *  Agent changes lock on this; workspace-default changes lock only on
+     *  direct runtime (Group Topics always carry an explicit workspace). A
+     *  persisted Direct Conversation alone keeps delete fail-closed via
+     *  bot_in_use but does not lock identity. */
     hasRuntime?: boolean;
 }
 export interface BotDetailDto extends BotSummaryDto {
@@ -377,7 +379,11 @@ export interface MemberTurnSummaryDto {
     topicId: string;
     botId: string;
     batch: number;
+    /** Durable accept order within the batch (0-based). Absent on older wire shapes. */
+    memberIndex?: number;
+    attempt: number;
     origin: "human-explicit" | "router" | "handoff" | "followup" | "retry" | "recovery";
+    state: "queued" | "dispatched" | "running" | "completed" | "failed" | "cancelled" | "indeterminate";
     promptRequestId?: string;
     createdAt: string;
     startedAt?: string;

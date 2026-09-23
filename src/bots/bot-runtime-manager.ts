@@ -428,6 +428,12 @@ export class BotRuntimeManager {
       if (target.isolation === "worktree-per-member") {
         throw new BotError("worktree_unprovisioned", `topic "${topicId}" requires worktree-per-member provisioning`);
       }
+      // A persisted non-empty cwd the launcher does not honor would silently
+      // execute in the workspace root (legacy/damaged row reloaded after the
+      // create-time cwd_unsupported gate). Fail closed like Bot cwd.
+      if (target.cwd !== undefined && target.cwd.trim() !== "") {
+        throw new BotError("cwd_unsupported", `topic "${topicId}" has an unsupported execution cwd`);
+      }
     }
     return { conversationId, topicId, topic };
   }
