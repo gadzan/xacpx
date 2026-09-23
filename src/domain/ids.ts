@@ -54,10 +54,6 @@ export function createSourceTurnId(createId?: () => string): string {
   return createDomainId("sourceTurn", createId);
 }
 
-export function createGroupTurnId(createId?: () => string): string {
-  return createDomainId("groupTurn", createId);
-}
-
 export function createRuntimeBindingId(createId?: () => string): string {
   return createDomainId("runtimeBinding", createId);
 }

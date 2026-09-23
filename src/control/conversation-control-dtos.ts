@@ -145,6 +145,11 @@ export interface ConversationRunDto {
   state: ConversationRun["state"];
   completionReason?: string;
   profileRevision: number;
+  activeBatch?: number;
+  maxMemberTurns: number;
+  consumedMemberTurns: number;
+  failedBotIds: string[];
+  unavailableBotIds: string[];
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
@@ -331,6 +336,11 @@ export function toConversationRun(run: ConversationRun): ConversationRunDto {
     mode: run.mode,
     state: run.state,
     profileRevision: run.profileRevision,
+    ...(run.activeBatch !== undefined ? { activeBatch: run.activeBatch } : {}),
+    maxMemberTurns: run.maxMemberTurns,
+    consumedMemberTurns: run.consumedMemberTurns,
+    failedBotIds: [...run.failedBotIds],
+    unavailableBotIds: [...run.unavailableBotIds],
     createdAt: run.createdAt,
     ...(run.completionReason ? { completionReason: run.completionReason } : {}),
     ...(run.startedAt ? { startedAt: run.startedAt } : {}),

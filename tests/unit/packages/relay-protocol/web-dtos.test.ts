@@ -908,6 +908,10 @@ test("validControlEvent accepts Conversation product events and optional turn co
       mode: "explicit",
       state: "indeterminate",
       profileRevision: 1,
+      maxMemberTurns: 1,
+      consumedMemberTurns: 0,
+      failedBotIds: [],
+      unavailableBotIds: [],
       createdAt: "2026-09-16T00:00:00.000Z",
     },
   })).toBe(true);
@@ -922,6 +926,10 @@ test("validControlEvent accepts Conversation product events and optional turn co
       mode: "explicit",
       state: "failed",
       profileRevision: 1,
+      maxMemberTurns: 1,
+      consumedMemberTurns: 1,
+      failedBotIds: [],
+      unavailableBotIds: [],
       createdAt: "2026-09-16T00:00:00.000Z",
     },
   })).toBe(true);
@@ -936,6 +944,11 @@ test("validControlEvent accepts Conversation product events and optional turn co
       mode: "automatic",
       state: "queued",
       profileRevision: 1,
+      maxMemberTurns: 2,
+      consumedMemberTurns: 0,
+      failedBotIds: [],
+      unavailableBotIds: [],
+      activeBatch: 1,
       createdAt: "2026-09-16T00:00:00.000Z",
     },
   })).toBe(true);

@@ -191,7 +191,7 @@ export class ConversationDispatcher {
       if (materializeFail) {
         throw materializeFail;
       }
-      const snapshot = work.run.profileSnapshot;
+      const snapshot = work.memberSnapshot ?? work.memberTurn.profileSnapshot ?? work.run.profileSnapshot;
       const live = this.runtime.getBot(work.memberTurn.botId);
       if (live.agent !== snapshot.execution.agent || live.workspace !== snapshot.execution.workspace) {
         this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");

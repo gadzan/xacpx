@@ -635,6 +635,8 @@ test("public Run DTO keeps indeterminate instead of mapping it to failed", async
     generation: 1,
     maxMemberTurns: 8,
     consumedMemberTurns: 1,
+    failedBotIds: [],
+    unavailableBotIds: [],
     profileRevision: 1,
     profileSnapshot: {
       revision: 1,

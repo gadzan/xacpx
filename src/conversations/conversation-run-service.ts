@@ -486,9 +486,16 @@ export class ConversationRunService {
       && target.isolation !== "worktree-per-member") {
       throw new ConversationError("invalid-isolation", `unknown isolation policy "${target.isolation}"`);
     }
+    // Topic cwd is not honored by member session materialization yet (the
+    // resolved session cwd still comes from the workspace config). Persisting
+    // a non-empty cwd would be a silent no-op: the Topic would look scoped to
+    // /repo/subdir while execution runs in the workspace root. Fail closed
+    // like Bot cwd until transport launch honors it.
+    if (target.cwd !== undefined && target.cwd.trim() !== "") {
+      throw new BotError("cwd_unsupported", "group Topic cwd is not supported until runtime launch honors it");
+    }
     return {
       workspace: target.workspace,
-      ...(target.cwd !== undefined ? { cwd: target.cwd } : {}),
       isolation: target.isolation,
     };
   }

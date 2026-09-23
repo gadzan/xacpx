@@ -5,10 +5,8 @@ export type ConversationLifecycle = "active" | "deleting";
 export type ConversationTopicStatus = "active" | "archived" | "deleting";
 export type ConversationMessageRole = "human" | "bot" | "system";
 
-export type GroupTurnOrigin = "human-explicit" | "controller" | "handoff" | "recovery";
-export type GroupTurnState = "queued" | "running" | "completed" | "failed" | "cancelled";
-
 export type ConversationRunMode = "explicit" | "automatic";
+
 export type WorkspaceIsolationPolicy = "shared" | "shared-single-writer" | "worktree-per-member";
 
 export interface ExecutionTarget {
@@ -99,8 +97,14 @@ export interface ConversationRun {
   state: ConversationRunState;
   completionReason?: string;
   generation: number;
+  /** Currently executing batch. Absent (direct legacy) means batch 1. */
+  activeBatch?: number;
   maxMemberTurns: number;
   consumedMemberTurns: number;
+  /** Member Bot ids that failed in the current batch (aggregate progress). */
+  failedBotIds: string[];
+  /** Member Bot ids unavailable for the current batch (aggregate progress). */
+  unavailableBotIds: string[];
   profileRevision: number;
   profileSnapshot: BotProfileSnapshot;
   createdAt: string;
@@ -123,6 +127,10 @@ export interface MemberTurnRecord {
   origin: MemberTurnOrigin;
   state: MemberTurnState;
   triggerMessageIds: string[];
+  /** Accepted execution snapshot for THIS member. Absent on pre-multi-member
+   *  rows: readers fall back to the Run's profileSnapshot for migration
+   *  compatibility (direct single-member accepts). */
+  profileSnapshot?: BotProfileSnapshot;
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
@@ -161,20 +169,6 @@ export interface PendingDispatch {
   createdAt: string;
   claimedAt?: string;
   completedAt?: string;
-}
-
-export interface GroupTurnRecord {
-  id: string;
-  conversationId: string;
-  topicId: string;
-  botId: string;
-  sessionAlias: string;
-  triggerMessageIds: string[];
-  origin: GroupTurnOrigin;
-  state: GroupTurnState;
-  createdAt: string;
-  startedAt?: string;
-  finishedAt?: string;
 }
 
 export const ACTIVE_RUN_STATES: readonly ConversationRunState[] = ["running", "waiting-human"];

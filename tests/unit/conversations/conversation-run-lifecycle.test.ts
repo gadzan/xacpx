@@ -2156,3 +2156,183 @@ test("group member materialize without an execution target fails closed", async 
   })).rejects.toMatchObject({ code: "execution_target_missing" });
   first.store.close();
 });
+
+test("second member dispatches against its own execution snapshot, not the first member's", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Reviewer runs codex/backend; Tester runs claude/frontend: disjoint axes so
+  // a snapshot mix-up fails loudly instead of passing by coincidence.
+  await first.bots.updateBot(TESTER_ID, { agent: "claude", workspace: "frontend" });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-snap",
+    botId: botA.id,
+    content: "review it",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{
+      botId: botB.id,
+      profileSnapshot: snapshotBotProfile(botB, NOW),
+      assignmentId: "assign_b",
+      task: "Write tests",
+    }],
+    now: NOW,
+  });
+  const turnB = accepted.memberTurns.find((turn) => turn.botId === botB.id)!;
+  expect(turnB.profileSnapshot?.execution).toMatchObject({ agent: "claude", workspace: "frontend" });
+  // Claim order is seq-stable: claim A first, then B must still be claimable
+  // (Run stays non-terminal with a runnable sibling) and carry B's snapshot.
+  const claimA = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  });
+  expect(claimA?.memberTurn.botId).toBe(botA.id);
+  expect(claimA?.memberSnapshot.execution).toMatchObject({ agent: "codex", workspace: "backend" });
+  const claimB = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  });
+  expect(claimB?.memberTurn.botId).toBe(botB.id);
+  expect(claimB?.memberSnapshot.execution).toMatchObject({ agent: "claude", workspace: "frontend" });
+  expect(claimB?.run.state).not.toBe("completed");
+  first.store.close();
+});
+
+test("explicit run aggregates: first completion leaves the run non-terminal until all members finish", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-agg",
+    botId: botA.id,
+    content: "ship it",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  expect(accepted.run.maxMemberTurns).toBe(2);
+  // Complete A's turn (claim -> start -> complete through the store).
+  const claimA = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  const startedA = first.store.markExecutionStarted({
+    dispatchId: claimA.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: accepted.run.id, memberTurnId: claimA.memberTurn.id,
+    sessionAlias: "sess_a", logicalSessionId: "lsess_a", sourceTurnId: "sturn_a", now: NOW,
+  });
+  expect(startedA.state).toBe("running");
+  const afterA = first.store.completeExecution({
+    runId: accepted.run.id, memberTurnId: claimA.memberTurn.id, botId: botA.id,
+    content: "done a", sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" }, now: NOW,
+  });
+  // Run must NOT be terminal: B is still queued and claimable.
+  expect(afterA.run.state).not.toBe("completed");
+  expect(afterA.run.consumedMemberTurns).toBe(1);
+  const claimB = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  });
+  expect(claimB?.memberTurn.botId).toBe(botB.id);
+  const startedB = first.store.markExecutionStarted({
+    dispatchId: claimB.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: accepted.run.id, memberTurnId: claimB.memberTurn.id,
+    sessionAlias: "sess_b", logicalSessionId: "lsess_b", sourceTurnId: "sturn_b", now: NOW,
+  });
+  expect(startedB.state).toBe("running");
+  const afterB = first.store.completeExecution({
+    runId: accepted.run.id, memberTurnId: claimB.memberTurn.id, botId: botB.id,
+    content: "done b", sourceTurn: { sessionAlias: "sess_b", turnId: "sturn_b" }, now: NOW,
+  });
+  expect(afterB.run.state).toBe("completed");
+  expect(afterB.run.completionReason).toBe("members-completed");
+  expect(afterB.run.consumedMemberTurns).toBe(2);
+  first.store.close();
+});
+
+test("failed member accumulates failedBotIds; run fails only after the batch settles", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-fail",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const failed = first.store.failExecution({
+    runId: accepted.run.id, memberTurnId: accepted.memberTurns[0]!.id, now: NOW, reason: "boom",
+  });
+  expect(failed.state).not.toBe("failed");
+  expect(failed.failedBotIds).toContain(botA.id);
+  const afterB = first.store.completeExecution({
+    runId: accepted.run.id, memberTurnId: accepted.memberTurns[1]!.id, botId: botB.id,
+    content: "done b", sourceTurn: { sessionAlias: "sess_b", turnId: "sturn_b" }, now: NOW,
+  });
+  expect(afterB.run.state).toBe("failed");
+  expect(afterB.run.failedBotIds).toContain(botA.id);
+  first.store.close();
+});
+
+test("dispatch migration crash before commit keeps the old table intact", async () => {
+  const { join } = await import("node:path");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { createSqlDriver } = await import("../../../src/conversations/sql-driver");
+  const path = join(mkdtempSync(join(tmpdir(), "xacpx-mig-")), "conversation.sqlite");
+  // Build a legacy-shaped database by hand: UNIQUE(run_id) + no new columns.
+  const raw = await createSqlDriver(path);
+  raw.exec("DROP TABLE IF EXISTS pending_dispatches");
+  raw.exec(`CREATE TABLE pending_dispatches (
+    id TEXT PRIMARY KEY, run_id TEXT NOT NULL UNIQUE, member_turn_id TEXT NOT NULL,
+    generation INTEGER NOT NULL, state TEXT NOT NULL, owner TEXT, lease_expires_at TEXT,
+    authority_epoch TEXT, human_ingress TEXT, created_at TEXT NOT NULL, claimed_at TEXT, completed_at TEXT)`);
+  raw.exec(`INSERT INTO pending_dispatches (id, run_id, member_turn_id, generation, state, created_at)
+    VALUES ('pdsp_1', 'run_1', 'mturn_1', 1, 'pending', '${NOW}')`);
+  raw.close();
+  // Open with a fault that throws inside the migration transaction: the open
+  // itself must throw, and the old table must be fully intact on reopen.
+  await expect(SqliteConversationStore.open(path, {
+    beforeDispatchMigrationCommit: () => {
+      throw new Error("injected migration crash");
+    },
+  })).rejects.toThrow("injected migration crash");
+  const reopened = await SqliteConversationStore.open(path);
+  expect(reopened.getDispatchForRun("run_1")?.id).toBe("pdsp_1");
+  reopened.close();
+});
+
+test("group topic with a non-empty cwd fails closed instead of persisting a silent no-op", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  await expect(first.service.createGroupTopic(group.id, "Subdir", {
+    workspace: "backend", cwd: "/tmp/backend/subdir", isolation: "shared-single-writer",
+  })).rejects.toMatchObject({ code: "cwd_unsupported" });
+  expect(Object.values(first.state.conversation_topics)).toHaveLength(0);
+  first.store.close();
+});

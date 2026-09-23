@@ -77,6 +77,10 @@ export interface ClaimedWork {
   dispatch: PendingDispatch;
   run: ConversationRun;
   memberTurn: MemberTurnRecord;
+  /** Accepted execution snapshot for THIS member. Falls back to the Run's
+   *  profileSnapshot for pre-multi-member rows (direct legacy). Dispatch
+   *  must use this, never the first member's snapshot. */
+  memberSnapshot: BotProfileSnapshot;
 }
 
 export interface RecoveredClaim {

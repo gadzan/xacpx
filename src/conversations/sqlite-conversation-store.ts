@@ -52,6 +52,9 @@ export interface ConversationIdFactory {
 export interface SqliteConversationStoreOptions {
   ids?: ConversationIdFactory;
   beforeAcceptCommit?: () => void;
+  /** Fault-injection seam for migration crash tests. Throwing inside aborts
+   *  the dispatch table rebuild before it commits. */
+  beforeDispatchMigrationCommit?: () => void;
 }
 
 interface MessageRow {
@@ -77,8 +80,11 @@ interface RunRow {
   state: string;
   completion_reason: string | null;
   generation: number;
+  active_batch: number | null;
   max_member_turns: number;
   consumed_member_turns: number;
+  failed_bot_ids_json: string | null;
+  unavailable_bot_ids_json: string | null;
   profile_revision: number;
   profile_snapshot_json: string;
   created_at: string;
@@ -101,6 +107,7 @@ interface MemberTurnRow {
   origin: string;
   state: string;
   trigger_message_ids_json: string;
+  profile_snapshot_json: string | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
@@ -169,8 +176,11 @@ CREATE TABLE IF NOT EXISTS runs (
   state TEXT NOT NULL,
   completion_reason TEXT,
   generation INTEGER NOT NULL,
+  active_batch INTEGER,
   max_member_turns INTEGER NOT NULL,
   consumed_member_turns INTEGER NOT NULL,
+  failed_bot_ids_json TEXT NOT NULL DEFAULT '[]',
+  unavailable_bot_ids_json TEXT NOT NULL DEFAULT '[]',
   profile_revision INTEGER NOT NULL,
   profile_snapshot_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -194,6 +204,7 @@ CREATE TABLE IF NOT EXISTS member_turns (
   origin TEXT NOT NULL,
   state TEXT NOT NULL,
   trigger_message_ids_json TEXT NOT NULL,
+  profile_snapshot_json TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   finished_at TEXT,
@@ -279,14 +290,31 @@ function mapRun(row: RunRow): ConversationRun {
     state: row.state as ConversationRunState,
     ...(optionalString(row.completion_reason) ? { completionReason: row.completion_reason as string } : {}),
     generation: Number(row.generation),
+    ...(row.active_batch !== null && row.active_batch !== undefined
+      ? { activeBatch: Number(row.active_batch) }
+      : {}),
     maxMemberTurns: Number(row.max_member_turns),
     consumedMemberTurns: Number(row.consumed_member_turns),
+    failedBotIds: parseBotIds(row.failed_bot_ids_json),
+    unavailableBotIds: parseBotIds(row.unavailable_bot_ids_json),
     profileRevision: Number(row.profile_revision),
     profileSnapshot: parseSnapshot(row.profile_snapshot_json),
     createdAt: row.created_at,
     ...(optionalString(row.started_at) ? { startedAt: row.started_at as string } : {}),
     ...(optionalString(row.finished_at) ? { finishedAt: row.finished_at as string } : {}),
   };
+}
+
+function parseBotIds(json: string | null | undefined): string[] {
+  if (!json) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 function parseDependsOn(json: string | null | undefined): string[] {
@@ -301,8 +329,20 @@ function parseDependsOn(json: string | null | undefined): string[] {
   }
 }
 
+function parseMemberSnapshot(json: string | null | undefined): BotProfileSnapshot | undefined {
+  if (!json) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(json) as BotProfileSnapshot;
+  } catch {
+    return undefined;
+  }
+}
+
 function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
   const dependsOn = parseDependsOn(row.depends_on_json);
+  const snapshot = parseMemberSnapshot(row.profile_snapshot_json);
   return {
     id: row.id,
     runId: row.run_id,
@@ -318,6 +358,7 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
     origin: row.origin as MemberTurnRecord["origin"],
     state: row.state as MemberTurnState,
     triggerMessageIds: JSON.parse(row.trigger_message_ids_json) as string[],
+    ...(snapshot ? { profileSnapshot: snapshot } : {}),
     createdAt: row.created_at,
     ...(optionalString(row.started_at) ? { startedAt: row.started_at as string } : {}),
     ...(optionalString(row.finished_at) ? { finishedAt: row.finished_at as string } : {}),
@@ -358,6 +399,7 @@ function defaultIds(): ConversationIdFactory {
 export class SqliteConversationStore implements ConversationStore {
   private readonly ids: ConversationIdFactory;
   private readonly beforeAcceptCommit?: () => void;
+  private readonly beforeDispatchMigrationCommit?: () => void;
 
   private closed = false;
 
@@ -367,10 +409,13 @@ export class SqliteConversationStore implements ConversationStore {
   ) {
     this.ids = options?.ids ?? defaultIds();
     this.beforeAcceptCommit = options?.beforeAcceptCommit;
+    this.beforeDispatchMigrationCommit = options?.beforeDispatchMigrationCommit;
     this.sqlite.exec(SCHEMA);
     this.ensureDispatchAuthorityEpochColumn();
     this.ensureDispatchHumanIngressColumn();
     this.ensureMemberTurnAssignmentColumns();
+    this.ensureMemberTurnSnapshotColumn();
+    this.ensureRunAggregateColumns();
     this.ensureDispatchMultiMemberShape();
   }
 
@@ -571,8 +616,9 @@ export class SqliteConversationStore implements ConversationStore {
          JOIN member_turns m ON m.id = d.member_turn_id
          JOIN messages msg ON msg.id = r.request_message_id
          WHERE d.state = 'pending'
-           AND r.state = 'queued'
+           AND r.state IN ('queued', 'running')
            AND m.started_at IS NULL
+           AND m.state IN ('queued', 'dispatched')
            AND NOT EXISTS (
              SELECT 1 FROM conversation_lifecycle c
              WHERE c.conversation_id = r.conversation_id AND c.state = 'deleting'
@@ -585,11 +631,13 @@ export class SqliteConversationStore implements ConversationStore {
              SELECT 1 FROM pending_dispatches claimed
              JOIN runs claimed_run ON claimed_run.id = claimed.run_id
              WHERE claimed_run.topic_id = r.topic_id
+               AND claimed_run.id <> r.id
                AND claimed.state = 'claimed'
            )
            AND NOT EXISTS (
              SELECT 1 FROM runs active
              WHERE active.topic_id = r.topic_id
+               AND active.id <> r.id
                AND active.state IN ('running', 'waiting-human')
            )
            ${skipClause}
@@ -625,6 +673,8 @@ export class SqliteConversationStore implements ConversationStore {
         dispatch: this.requireDispatch(row.id),
         run: this.requireRun(row.run_id),
         memberTurn: this.requireMemberTurn(row.member_turn_id),
+        memberSnapshot: this.requireMemberTurn(row.member_turn_id).profileSnapshot
+          ?? this.requireRun(row.run_id).profileSnapshot,
       };
     });
   }
@@ -826,17 +876,13 @@ export class SqliteConversationStore implements ConversationStore {
         [input.now, member.id],
       );
       this.sqlite.run(
-        `UPDATE runs
-         SET state = 'completed',
-             completion_reason = ?,
-             consumed_member_turns = consumed_member_turns + 1,
-             finished_at = ?
-         WHERE id = ?`,
-        [input.completionReason ?? "completed", input.now, run.id],
+        `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+        [run.id],
       );
       this.finishDispatchForMemberTurn(member.id, input.now);
+      const aggregated = this.aggregateRunAfterMemberTerminal(run.id, input.now, "completed");
       return {
-        run: this.requireRun(run.id),
+        run: aggregated,
         memberTurn: this.requireMemberTurn(member.id),
         assistantMessage: this.getMessage(messageId),
         resurrected: false,
@@ -1062,10 +1108,45 @@ export class SqliteConversationStore implements ConversationStore {
     }
   }
 
+  private ensureMemberTurnSnapshotColumn(): void {
+    const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(member_turns)");
+    if (cols.some((col) => col.name === "profile_snapshot_json")) {
+      return;
+    }
+    this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN profile_snapshot_json TEXT");
+  }
+
+  private ensureRunAggregateColumns(): void {
+    const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(runs)");
+    const names = new Set(cols.map((col) => col.name));
+    if (!names.has("active_batch")) {
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN active_batch INTEGER");
+    }
+    if (!names.has("failed_bot_ids_json")) {
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN failed_bot_ids_json TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!names.has("unavailable_bot_ids_json")) {
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN unavailable_bot_ids_json TEXT NOT NULL DEFAULT '[]'");
+    }
+  }
+
   private ensureDispatchMultiMemberShape(): void {
     // NOTE: the legacy UNIQUE(run_id) surfaces as a sqlite_autoindex row with
     // NULL sql in sqlite_master, so text-scanning sqlite_master cannot detect
     // it. PRAGMA index_list/index_info is authoritative instead.
+    //
+    // Crash-atomicity: the whole rebuild runs inside one SQLite transaction,
+    // so a crash at any point leaves either the complete old table or the
+    // complete new table — never a dropped old table with rows stranded in
+    // `pending_dispatches_next`. A leftover `_next` table from a crashed
+    // migration is reconciled explicitly below instead of ignored.
+    const leftover = this.sqlite.get<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pending_dispatches_next'",
+    );
+    if (leftover) {
+      this.reconcileLeftoverDispatchMigration();
+      return;
+    }
     const indexList = this.sqlite.all<{ name: string; unique: number }>(
       "PRAGMA index_list(pending_dispatches)",
     );
@@ -1087,38 +1168,85 @@ export class SqliteConversationStore implements ConversationStore {
       );
       return;
     }
-    this.sqlite.exec(`
-      CREATE TABLE IF NOT EXISTS pending_dispatches_next (
-        id TEXT PRIMARY KEY,
-        run_id TEXT NOT NULL,
-        member_turn_id TEXT NOT NULL,
-        generation INTEGER NOT NULL,
-        state TEXT NOT NULL,
-        owner TEXT,
-        lease_expires_at TEXT,
-        authority_epoch TEXT,
-        human_ingress TEXT,
-        created_at TEXT NOT NULL,
-        claimed_at TEXT,
-        completed_at TEXT,
-        UNIQUE (run_id, member_turn_id)
-      )`);
-    this.sqlite.exec(`
-      INSERT OR IGNORE INTO pending_dispatches_next (
-        id, run_id, member_turn_id, generation, state, owner, lease_expires_at,
-        authority_epoch, human_ingress, created_at, claimed_at, completed_at
-      )
-      SELECT id, run_id, member_turn_id, generation, state, owner, lease_expires_at,
-        authority_epoch, human_ingress, created_at, claimed_at, completed_at
-      FROM pending_dispatches`);
-    this.sqlite.exec(`DROP TABLE pending_dispatches`);
-    this.sqlite.exec(`ALTER TABLE pending_dispatches_next RENAME TO pending_dispatches`);
+    this.sqlite.transaction(() => {
+      this.sqlite.exec(`
+        CREATE TABLE pending_dispatches_next (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          member_turn_id TEXT NOT NULL,
+          generation INTEGER NOT NULL,
+          state TEXT NOT NULL,
+          owner TEXT,
+          lease_expires_at TEXT,
+          authority_epoch TEXT,
+          human_ingress TEXT,
+          created_at TEXT NOT NULL,
+          claimed_at TEXT,
+          completed_at TEXT,
+          UNIQUE (run_id, member_turn_id)
+        )`);
+      this.sqlite.exec(`
+        INSERT INTO pending_dispatches_next (
+          id, run_id, member_turn_id, generation, state, owner, lease_expires_at,
+          authority_epoch, human_ingress, created_at, claimed_at, completed_at
+        )
+        SELECT id, run_id, member_turn_id, generation, state, owner, lease_expires_at,
+          authority_epoch, human_ingress, created_at, claimed_at, completed_at
+        FROM pending_dispatches`);
+      this.beforeDispatchMigrationCommit?.();
+      this.sqlite.exec(`DROP TABLE pending_dispatches`);
+      this.sqlite.exec(`ALTER TABLE pending_dispatches_next RENAME TO pending_dispatches`);
+    });
     this.sqlite.exec(
       "CREATE INDEX IF NOT EXISTS idx_dispatches_state ON pending_dispatches (state, created_at)",
     );
     this.sqlite.exec(
       "CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state)",
     );
+  }
+
+  /**
+   * Reconcile a `pending_dispatches_next` table left behind by a migration
+   * that crashed outside the transaction (or on a driver that could not roll
+   * back DDL). Exactly one of the two tables can hold rows; the empty one is
+   * dropped. Rows in both (should be impossible via the transactional path,
+   * but possible if DDL committed piecemeal) fail closed loudly instead of
+   * silently preferring one side.
+   */
+  private reconcileLeftoverDispatchMigration(): void {
+    const mainCount = this.sqlite.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM pending_dispatches",
+    )?.n ?? 0;
+    const nextCount = this.sqlite.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM pending_dispatches_next",
+    )?.n ?? 0;
+    if (mainCount > 0 && nextCount > 0) {
+      throw new ConversationError(
+        "dispatch_migration_conflict",
+        "both pending_dispatches and pending_dispatches_next hold rows after a crashed migration",
+      );
+    }
+    if (nextCount > 0) {
+      this.sqlite.transaction(() => {
+        this.sqlite.exec(`DROP TABLE pending_dispatches`);
+        this.sqlite.exec(`ALTER TABLE pending_dispatches_next RENAME TO pending_dispatches`);
+      });
+    } else {
+      this.sqlite.exec(`DROP TABLE pending_dispatches_next`);
+    }
+    this.sqlite.exec(
+      "CREATE INDEX IF NOT EXISTS idx_dispatches_state ON pending_dispatches (state, created_at)",
+    );
+    this.sqlite.exec(
+      "CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state)",
+    );
+    // Re-run the shape check so a still-legacy main table migrates normally.
+    const leftover = this.sqlite.get<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pending_dispatches_next'",
+    );
+    if (!leftover) {
+      this.ensureDispatchMultiMemberShape();
+    }
   }
 
   private assertAcceptable(conversationId: string, topicId: string): void {
@@ -1134,7 +1262,14 @@ export class SqliteConversationStore implements ConversationStore {
     const seq = this.allocateSeq(input.conversationId, input.topicId);
     const messageId = this.ids.messageId();
     const runId = this.ids.runId();
-    const maxMemberTurns = input.maxMemberTurns ?? 1;
+    const members = [
+      {
+        botId: input.botId,
+        profileSnapshot: input.profileSnapshot,
+      },
+      ...(input.members ?? []),
+    ];
+    const maxMemberTurns = input.maxMemberTurns ?? members.length;
     const mode = input.mode ?? "explicit";
     this.sqlite.run(
       `INSERT INTO messages (
@@ -1145,9 +1280,11 @@ export class SqliteConversationStore implements ConversationStore {
     this.sqlite.run(
       `INSERT INTO runs (
          id, conversation_id, topic_id, request_message_id, request_id, mode, state, completion_reason,
-         generation, max_member_turns, consumed_member_turns, profile_revision, profile_snapshot_json,
+         generation, active_batch, max_member_turns, consumed_member_turns,
+         failed_bot_ids_json, unavailable_bot_ids_json,
+         profile_revision, profile_snapshot_json,
          created_at, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, ?, 'queued', NULL, 1, ?, 0, ?, ?, ?, NULL, NULL)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, 'queued', NULL, 1, 1, ?, 0, '[]', '[]', ?, ?, ?, NULL, NULL)`,
       [
         runId,
         input.conversationId,
@@ -1164,13 +1301,6 @@ export class SqliteConversationStore implements ConversationStore {
     const ingressJson = serializeHumanIngress(input.humanIngress);
     const authorityEpoch = ingressJson ? (input.authorityEpoch ?? null) : null;
     const memberOrigin = ingressJson && authorityEpoch ? "human" : "recovery";
-    const members = [
-      {
-        botId: input.botId,
-        profileSnapshot: input.profileSnapshot,
-      },
-      ...(input.members ?? []),
-    ];
     const seenBotIds = new Set<string>();
     const memberTurnIds: string[] = [];
     const dispatchIds: string[] = [];
@@ -1184,9 +1314,10 @@ export class SqliteConversationStore implements ConversationStore {
       this.sqlite.run(
         `INSERT INTO member_turns (
            id, run_id, conversation_id, topic_id, bot_id, session_alias, logical_session_id, source_turn_id,
-           queue_item_id, batch, attempt, origin, state, trigger_message_ids_json, created_at, started_at, finished_at,
+           queue_item_id, batch, attempt, origin, state, trigger_message_ids_json, profile_snapshot_json,
+           created_at, started_at, finished_at,
            assignment_id, task, expected_output, depends_on_json
-         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, 1, ?, 'queued', ?, ?, NULL, NULL, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, 1, ?, 'queued', ?, ?, ?, NULL, NULL, ?, ?, ?, ?)`,
         [
           memberTurnId,
           runId,
@@ -1195,6 +1326,7 @@ export class SqliteConversationStore implements ConversationStore {
           member.botId,
           memberOrigin,
           JSON.stringify([messageId]),
+          JSON.stringify(member.profileSnapshot),
           input.now,
           member.assignmentId ?? null,
           member.task ?? null,
@@ -1331,11 +1463,85 @@ export class SqliteConversationStore implements ConversationStore {
       [state, input.now, input.memberTurnId],
     );
     this.sqlite.run(
-      `UPDATE runs SET state = ?, completion_reason = ?, finished_at = ? WHERE id = ?`,
-      [state, input.reason, input.now, input.runId],
+      `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+      [input.runId],
     );
     this.finishDispatchForMemberTurn(input.memberTurnId, input.now);
-    return this.requireRun(input.runId);
+    return this.aggregateRunAfterMemberTerminal(input.runId, input.now, state, input.reason);
+  }
+
+  /**
+   * Aggregate Run lifecycle after one MemberTurn reaches a terminal state.
+   * Member completion terminals only the member; the Run terminals when no
+   * member of the active batch is still runnable. Explicit Runs aggregate
+   * over the accepted batch (no Router follows); automatic Runs leave the
+   * non-terminal intermediate state durable for the PR8 Router, which adds
+   * later batches. Failed/cancelled/indeterminate members accumulate in
+   * failedBotIds (durable progress); unavailableBotIds is PR7+ reservation
+   * surface, defaulting empty.
+   */
+  private aggregateRunAfterMemberTerminal(
+    runId: string,
+    now: string,
+    memberState: MemberTurnState,
+    reason?: string,
+  ): ConversationRun {
+    const run = this.requireRun(runId);
+    if (TERMINAL_RUN_STATES.includes(run.state)) {
+      return run;
+    }
+    const members = this.listMemberTurns(runId);
+    const batch = run.activeBatch ?? 1;
+    const batchMembers = members.filter((turn) => turn.batch === batch);
+    const terminal = batchMembers.filter((turn) => TERMINAL_MEMBER_STATES.includes(turn.state));
+    const member = this.requireMemberTurn(
+      members.find((turn) => turn.state === memberState)?.id ?? members[0]!.id,
+    );
+    if (memberState === "failed" || memberState === "cancelled" || memberState === "indeterminate") {
+      const current = new Set(run.failedBotIds);
+      current.add(member.botId);
+      this.sqlite.run(`UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`, [JSON.stringify([...current]), runId]);
+    }
+    if (terminal.length < batchMembers.length) {
+      // Intermediate state: one member terminal, siblings still runnable.
+      // The Run stays non-terminal (running) so claimNextDispatch keeps
+      // serving the batch; PR8 Router continues from this durable state.
+      if (run.state === "queued") {
+        this.sqlite.run(`UPDATE runs SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?`, [now, runId]);
+      }
+      return this.requireRun(runId);
+    }
+    // All batch members terminal: aggregate.
+    const failed = batchMembers.filter((turn) => turn.state === "failed" || turn.state === "indeterminate");
+    const cancelled = batchMembers.filter((turn) => turn.state === "cancelled");
+    if (failed.length > 0) {
+      const firstBad = failed[0]!;
+      const state = firstBad.state === "indeterminate" ? "indeterminate" : "failed";
+      this.sqlite.run(
+        `UPDATE runs SET state = ?, completion_reason = ?, finished_at = ? WHERE id = ?`,
+        [state, reason ?? (state === "indeterminate" ? "started_result_unknown" : "execution-failed"), now, runId],
+      );
+      return this.requireRun(runId);
+    }
+    if (cancelled.length === batchMembers.length) {
+      this.sqlite.run(
+        `UPDATE runs SET state = 'cancelled', completion_reason = ?, finished_at = ? WHERE id = ?`,
+        [reason ?? "human-cancelled", now, runId],
+      );
+      return this.requireRun(runId);
+    }
+    if (cancelled.length > 0) {
+      this.sqlite.run(
+        `UPDATE runs SET state = 'failed', completion_reason = ?, finished_at = ? WHERE id = ?`,
+        [reason ?? "execution-failed", now, runId],
+      );
+      return this.requireRun(runId);
+    }
+    this.sqlite.run(
+      `UPDATE runs SET state = 'completed', completion_reason = ?, finished_at = ? WHERE id = ?`,
+      ["members-completed", now, runId],
+    );
+    return this.requireRun(runId);
   }
 
   private requireRun(runId: string): ConversationRun {

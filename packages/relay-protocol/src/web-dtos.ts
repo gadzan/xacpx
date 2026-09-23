@@ -563,8 +563,13 @@ function validConversationRun(value: unknown): boolean {
       || c.state === "completed" || c.state === "failed" || c.state === "cancelled"
       || c.state === "indeterminate")
     && typeof c.profileRevision === "number"
+    && typeof c.maxMemberTurns === "number"
+    && typeof c.consumedMemberTurns === "number"
+    && Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")
+    && Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")
     && typeof c.createdAt === "string"
-    && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt);
+    && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt)
+    && (c.activeBatch === undefined || typeof c.activeBatch === "number");
 }
 
 function validMemberTurnSummary(value: unknown): boolean {

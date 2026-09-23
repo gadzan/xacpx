@@ -375,6 +375,11 @@ export interface ConversationRunDto {
   state: ConversationRunStateDto;
   completionReason?: string;
   profileRevision: number;
+  activeBatch?: number;
+  maxMemberTurns: number;
+  consumedMemberTurns: number;
+  failedBotIds: string[];
+  unavailableBotIds: string[];
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
