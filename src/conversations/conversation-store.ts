@@ -141,6 +141,11 @@ export interface ConversationStore {
   recoverExpiredClaims(now: string): RecoveredClaim[];
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined;
   hasDurableBotWork(botId: string): boolean;
+  /** True when any durable rows exist for a Group Conversation (runs,
+   *  messages, dispatches, lifecycle, or seq allocation). Guards Group
+   *  metadata delete against orphaning history the Group row is needed to
+   *  interpret. */
+  hasDurableGroupWork(conversationId: string): boolean;
   releaseClaimToPending(input: ReleaseClaimToPendingInput): PendingDispatch;
   markExecutionStarted(input: MarkExecutionStartedInput): MemberTurnRecord;
   assertLiveDispatchForMaterialize(input: AssertLiveDispatchForMaterializeInput): void;

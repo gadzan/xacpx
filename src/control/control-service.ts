@@ -1982,7 +1982,7 @@ export class ControlService {
 
   async deleteGroup(id: string): Promise<{ ok: true }> {
     return this.runConversationMutation(async (runtime) => {
-      await runtime.bots.deleteGroup(id);
+      await runtime.runs.teardownGroupConversation(id);
       this.deps.events.emit({ type: "bots-changed" });
       this.deps.events.emit({ type: "conversations-changed" });
       return { ok: true };

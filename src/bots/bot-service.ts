@@ -253,6 +253,11 @@ export function classifyDirectBotBindingSessionLink(
 
 export interface BotConversationWork {
   hasDurableBotWork(botId: string): boolean;
+  /** True when any durable Conversation rows exist for a Group (runs,
+   *  messages, dispatches, lifecycle, or seq allocation). Optional so older
+   *  implementers (tests) keep working; absence means "unknown, do not
+   *  block". */
+  hasDurableGroupWork?: (conversationId: string) => boolean;
 }
 
 export interface BotServiceOptions {
@@ -504,11 +509,44 @@ export class BotService {
     });
   }
 
+  /**
+   * Group metadata delete. Fail-closed while the Group still owns Topics,
+   * member bindings/sessions, or durable Conversation rows: deleting the
+   * record first would orphan Topics whose teardown requires the Group row
+   * (`requireGroupTopic`) and strand runtime ownership with no cleanup
+   * entrypoint. Callers teardown every Topic first
+   * (`ConversationRunService.teardownGroupTopic`), then delete the Group.
+   * A read of `state` inside `mutate` is safe: `mutate` serializes writers
+   * on the daemon stateMutex and the check+delete are one critical section.
+   */
   async deleteGroup(id: string): Promise<void> {
     this.assertOpen();
     return await this.mutate(async () => {
       this.assertOpen();
       this.getGroup(id);
+      const topics = Object.values(this.state.conversation_topics).filter(
+        (topic) => topic.conversationId === id,
+      );
+      if (topics.length > 0) {
+        throw new BotError("group_has_topics", `group "${id}" still has ${topics.length} topic(s)`, {
+          conversationId: id,
+          topicIds: topics.map((topic) => topic.id),
+        });
+      }
+      const bindings = Object.values(this.state.bot_runtime_bindings).filter(
+        (binding) => binding.conversationId === id,
+      );
+      if (bindings.length > 0) {
+        throw new BotError("group_has_runtime", `group "${id}" still has runtime bindings`, {
+          conversationId: id,
+          bindingIds: bindings.map((binding) => binding.id),
+        });
+      }
+      if (this.conversationWork?.hasDurableGroupWork?.(id)) {
+        throw new BotError("group_has_work", `group "${id}" still has durable conversation work`, {
+          conversationIds: [id],
+        });
+      }
       const next = structuredClone(this.state);
       delete next.conversations[id];
       await this.persist(next);

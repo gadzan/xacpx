@@ -7,6 +7,7 @@ import {
   classifyDirectBotSessionOwnership,
   classifyGroupMemberBindingOwnership,
   classifyGroupMemberBindingSessionLink,
+  classifyGroupMemberSessionOwnership,
   type BotService,
   type DirectBotRuntimeBinding,
 } from "../bots/bot-service";
@@ -562,6 +563,35 @@ export class ConversationRunService {
     });
   }
   /**
+   * PR6 Group delete (§9.1 + §9.7): teardown every remaining Topic through
+   * the verified path above, delete residual Conversation-store rows for the
+   * Group id, then remove the Group metadata record. A Topic teardown that
+   * throws (indeterminate work, release failure, ownership conflict) aborts
+   * the delete with the Group row intact for retry. Callers must not delete
+   * Group metadata around this method: `BotService.deleteGroup` stays
+   * fail-closed while Topics/bindings/durable rows exist.
+   */
+  async teardownGroupConversation(conversationId: string): Promise<void> {
+    this.assertOpen();
+    const conversation = this.requireConversation(conversationId);
+    if (conversation.kind !== "group") {
+      throw new ConversationError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
+    }
+    const topics = Object.values(this.state.conversation_topics)
+      .filter((topic) => topic.conversationId === conversationId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    for (const topic of topics) {
+      await this.teardownGroupTopic(conversationId, topic.id);
+    }
+    await this.stateMutex.run(async () => {
+      await this.beforeTeardownFinalize?.();
+      const next = structuredClone(this.state);
+      delete next.conversations[conversationId];
+      await this.persist(next);
+    });
+    this.store.deleteConversationRows(conversationId);
+  }
+  /**
    * PR6 Group Topic teardown (§9.7): mark deleting → stop/settle active Runs
    * → release all member runtimes → remove bindings → remove
    * Conversation-store rows → remove Topic metadata. Failure at any step
@@ -639,13 +669,17 @@ export class ConversationRunService {
   }
 
   /**
-   * Owned member aliases for one Group Topic. Every binding/session signal
-   * must agree: a contradictory link fails closed (throws) instead of
-   * releasing the wrong session. Stale bindings with no live session are
-   * harmless and removed by finalization.
+   * Owned member aliases for one Group Topic. Mirrors direct `ownedAliases`:
+   * pass 1 walks bindings with an alias+id cross-check (missing on both axes
+   * is a harmless stale binding removed by finalization; a partial or
+   * mismatched link fails closed), and pass 2 walks every session so a
+   * binding-less crash-window owner (session persisted, binding never
+   * published) is still released. Any contradiction throws and leaves all
+   * physical state intact for retry.
    */
   private groupMemberAliases(conversationId: string, topicId: string): string[] {
     const aliases = new Set<string>();
+    const allSessions = Object.values(this.state.sessions);
     for (const binding of Object.values(this.state.bot_runtime_bindings)) {
       if (
         binding.scope !== "group-member"
@@ -671,11 +705,17 @@ export class ConversationRunService {
         continue;
       }
       const byAlias = this.state.sessions[binding.sessionAlias];
-      if (!byAlias) {
+      const byIdMatches = allSessions.filter(
+        (session) => session.logical_session_id === binding.logicalSessionId,
+      );
+      if (!byAlias && byIdMatches.length === 0) {
         continue;
       }
       if (
-        classifyGroupMemberBindingSessionLink(
+        !byAlias
+        || byIdMatches.length !== 1
+        || byIdMatches[0]?.alias !== byAlias.alias
+        || classifyGroupMemberBindingSessionLink(
           binding,
           byAlias,
           binding.id,
@@ -687,10 +727,49 @@ export class ConversationRunService {
         throw new ConversationError(
           "runtime_ownership_conflict",
           "group member binding/session link is contradictory",
-          { binding, sessionAlias: byAlias.alias },
+          { binding, sessionAlias: byAlias?.alias },
         );
       }
       aliases.add(byAlias.alias);
+    }
+    // Binding-less crash-window owners: the session made it to disk but the
+    // binding publish never ran. Every signal must still agree with the
+    // Group Topic triple; conflicts fail closed. The expected botId comes
+    // from the binding when one exists (binding ids are triple-deterministic,
+    // so the id already pins the Bot); otherwise the owner's own botId.
+    for (const session of allSessions) {
+      const owner = session.owner;
+      if (owner?.kind !== "group-member") {
+        continue;
+      }
+      if (owner.conversationId !== undefined && owner.conversationId !== conversationId) {
+        continue;
+      }
+      if (owner.topicId !== undefined && owner.topicId !== topicId) {
+        continue;
+      }
+      const bound = this.state.bot_runtime_bindings[owner.bindingId];
+      const expectedBotId = bound?.scope === "group-member" ? bound.botId : owner.botId;
+      if (expectedBotId === undefined) {
+        continue;
+      }
+      const ownership = classifyGroupMemberSessionOwnership(
+        session,
+        expectedBotId,
+        owner.bindingId,
+        conversationId,
+        topicId,
+      );
+      if (ownership === "conflict") {
+        throw new ConversationError(
+          "runtime_ownership_conflict",
+          "group member session ownership metadata is contradictory",
+          { alias: session.alias, owner: session.owner },
+        );
+      }
+      if (ownership === "owned") {
+        aliases.add(session.alias);
+      }
     }
     return [...aliases];
   }

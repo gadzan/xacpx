@@ -659,3 +659,25 @@ test("store methods fail closed after close", async () => {
   expect(() => store.listRuns("conversation_x")).toThrow(/closed/);
   store.close();
 });
+test("hasDurableGroupWork tracks group rows and clears on topic teardown", async () => {
+  const store = await SqliteConversationStore.open(":memory:");
+  const conv = "conversation_group_1";
+  const topic = "topic_group_1";
+  expect(store.hasDurableGroupWork(conv)).toBe(false);
+  store.acceptRequest({
+    conversationId: conv,
+    topicId: topic,
+    requestId: "req-g1",
+    botId: "bot_a",
+    content: "hello group",
+    profileSnapshot: snapshot(),
+    now: NOW,
+  });
+  expect(store.hasDurableGroupWork(conv)).toBe(true);
+  store.deleteTopicRows(conv, topic);
+  // Topic rows are gone but the seq allocation row may remain; both states
+  // are meaningful: teardown must delete rows AND the group record.
+  store.deleteConversationRows(conv);
+  expect(store.hasDurableGroupWork(conv)).toBe(false);
+  store.close();
+});

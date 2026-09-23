@@ -620,6 +620,40 @@ export class SqliteConversationStore implements ConversationStore {
     ));
   }
 
+  hasDurableGroupWork(conversationId: string): boolean {
+    if (this.sqlite.get("SELECT 1 AS ok FROM runs WHERE conversation_id = ? LIMIT 1", [conversationId])) {
+      return true;
+    }
+    if (this.sqlite.get("SELECT 1 AS ok FROM messages WHERE conversation_id = ? LIMIT 1", [conversationId])) {
+      return true;
+    }
+    if (this.sqlite.get(
+      `SELECT 1 AS ok FROM pending_dispatches d
+       JOIN member_turns m ON m.id = d.member_turn_id
+       WHERE m.conversation_id = ?
+       LIMIT 1`,
+      [conversationId],
+    )) {
+      return true;
+    }
+    if (this.sqlite.get(
+      "SELECT 1 AS ok FROM conversation_lifecycle WHERE conversation_id = ? LIMIT 1",
+      [conversationId],
+    )) {
+      return true;
+    }
+    if (this.sqlite.get(
+      "SELECT 1 AS ok FROM topic_lifecycle WHERE conversation_id = ? LIMIT 1",
+      [conversationId],
+    )) {
+      return true;
+    }
+    return Boolean(this.sqlite.get(
+      "SELECT 1 AS ok FROM topic_seq WHERE conversation_id = ? LIMIT 1",
+      [conversationId],
+    ));
+  }
+
   releaseClaimToPending(input: ReleaseClaimToPendingInput): PendingDispatch {
     return this.sqlite.transaction(() => {
       const dispatch = this.requireLiveUnstartedClaim(input);

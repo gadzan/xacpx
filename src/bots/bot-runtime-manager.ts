@@ -94,9 +94,13 @@ export class BotRuntimeManager {
    * be kind=group, the Bot must belong to its membership, and the Topic must
    * belong to the Conversation. The member Bot must be enabled. No Router or
    * controller session is created here — PR7 routing calls this per selected
-   * member. Execution resolves from the member Bot profile (PR6 has no
-   * per-member execution override); the Topic ExecutionTarget workspace is
-   * validated for registration but does not override the Bot's agent.
+   * member.
+   *
+   * Effective execution is Bot agent/model/effort + Topic workspace/cwd: the
+   * Topic owns the work target (§9.2), so a Topic on `frontend` runs the
+   * member session there even when the Bot default is `backend`. Sticky
+   * identity is agent + resolved workspace. An explicit per-member
+   * `execution` override wins entirely (PR7+ explicit target path).
    */
   async getOrCreateGroupMemberSession(input: {
     botId: string;
@@ -242,16 +246,66 @@ export class BotRuntimeManager {
   }): Promise<BotRuntimeBinding> {
     input.assertStillDispatchable?.();
     const bot = this.requireEnabledBot(input.botId);
-    this.assertAcceptedStickyIdentity(bot, input.execution);
     const scope = this.resolveGroupMemberScope(bot.id, input.conversationId, input.topicId);
+    const effective = this.resolveGroupMemberExecution(bot, scope.topic, input.execution);
+    this.assertGroupMemberStickyIdentity(bot, scope.topic, input.execution);
     const scopedId = createScopedGroupMemberBindingId(scope.conversationId, scope.topicId, bot.id);
     const existing = this.findScopedGroupMemberBinding(scope.conversationId, scope.topicId, bot.id);
     if (existing && this.groupMemberBindingSessionIsLive(existing)) {
-      await this.alignGroupMemberSessionRuntime(existing, input.execution ?? bot);
+      await this.alignGroupMemberSessionRuntime(existing, effective);
       return existing;
     }
-    const session = await this.ensureGroupMemberOwnedSession(bot, scopedId, scope, input.execution);
+    const session = await this.ensureGroupMemberOwnedSession(bot, scopedId, scope, effective);
     return await this.publishGroupMemberRuntime(bot, session, scopedId, scope);
+  }
+
+  /**
+   * Effective execution for one member turn: the Bot contributes agent identity
+   * and turn-boundary settings (model/effort); the Topic contributes the work
+   * target (workspace/cwd). An explicit per-member execution override
+   * replaces the whole combination (PR7+ explicit targets carry their own).
+   */
+  private resolveGroupMemberExecution(
+    bot: BotProfile,
+    topic: ConversationTopic,
+    execution?: BotProfileExecution,
+  ): BotProfileExecution {
+    if (execution) {
+      return execution;
+    }
+    const target = topic.executionTarget;
+    return {
+      agent: bot.agent,
+      workspace: target?.workspace ?? bot.workspace,
+      ...(bot.model ? { model: bot.model } : {}),
+      ...(bot.effort ? { effort: bot.effort } : {}),
+    };
+  }
+
+  /**
+   * Sticky identity for group members is agent + resolved workspace — the
+   * axes the session actually runs on. Unlike direct sessions (where the Bot
+   * profile owns both), a Topic workspace override must not read as drift:
+   * only an agent change, or a workspace change against the *resolved*
+   * target, fails closed. cwd has no Bot-level counterpart (cwd_unsupported)
+   * and no session axis yet; it rides the ExecutionTarget as metadata until
+   * transport launch honors it, so it never triggers mismatch here.
+   */
+  private assertGroupMemberStickyIdentity(
+    bot: BotProfile,
+    topic: ConversationTopic,
+    execution?: BotProfileExecution,
+  ): void {
+    if (!execution) {
+      return;
+    }
+    const resolvedWorkspace = topic.executionTarget?.workspace ?? bot.workspace;
+    if (bot.agent !== execution.agent || resolvedWorkspace !== execution.workspace) {
+      throw new BotError(
+        "runtime_revision_mismatch",
+        `bot "${bot.id}" group execution no longer matches the accepted target`,
+      );
+    }
   }
 
   private resolveGroupMemberScope(

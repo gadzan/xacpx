@@ -314,6 +314,56 @@ test("deleteBot stays fail-closed while Group membership references the Bot", as
   await service.deleteBot(a.id);
   expect(state.bots[a.id]).toBeUndefined();
 });
+
+test("deleteGroup fails closed while topics, bindings, or durable rows exist", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  let n = 0;
+  const service = new BotService(
+    {
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    },
+    state,
+    store,
+    { now: () => new Date(NOW), createId: () => `bot_${(n += 1)}` },
+  );
+  const a = await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const b = await service.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const group = await service.createGroup({ title: "Release Team", botIds: [a.id, b.id] });
+  // A Topic alone blocks metadata delete.
+  state.conversation_topics.topic_1 = {
+    id: "topic_1",
+    conversationId: group.id,
+    title: "Sprint 1",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  await expect(service.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_topics" });
+  expect(state.conversations[group.id]).toBeDefined();
+  // A bare binding row blocks even with no topics.
+  delete state.conversation_topics.topic_1;
+  state.bot_runtime_bindings.bind_1 = {
+    id: "bind_1",
+    scope: "group-member",
+    conversationId: group.id,
+    topicId: "topic_1",
+    botId: a.id,
+    logicalSessionId: "11111111-1111-4111-8111-111111111111",
+    sessionAlias: "brt_group_bind_1",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  await expect(service.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_runtime" });
+  // Durable store rows block even with no AppState residue.
+  delete state.bot_runtime_bindings.bind_1;
+  service.setConversationWork({ hasDurableBotWork: () => false, hasDurableGroupWork: (id) => id === group.id });
+  await expect(service.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_work" });
+  service.setConversationWork({ hasDurableBotWork: () => false, hasDurableGroupWork: () => false });
+  await service.deleteGroup(group.id);
+  expect(state.conversations[group.id]).toBeUndefined();
+});
 test("group member classifiers prove exact triple ownership and fail closed on mismatch", async () => {
   const { classifyGroupMemberBindingOwnership, classifyGroupMemberSessionOwnership } =
     await import("../../../src/bots/bot-service");

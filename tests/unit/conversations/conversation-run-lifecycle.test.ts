@@ -1800,3 +1800,120 @@ test("group topic teardown releases member bindings and rows, retryable on relea
   // Group record itself survives topic teardown.
   expect(first.state.conversations[group.id]?.kind).toBe("group");
 });
+
+test("deleteGroup fails closed while topics, bindings, or durable rows exist", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Bare metadata delete is refused while a Topic exists.
+  await expect(bots.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_topics" });
+  expect(first.state.conversations[group.id]).toBeDefined();
+  // A stale binding with no Topic still blocks: seed crash residue directly.
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  const { createScopedGroupMemberBindingId: scopedId } =
+    await import("../../../src/domain/ids");
+  const staleId = scopedId(group.id, topic.id, reviewer.id);
+  first.state.bot_runtime_bindings[staleId] = {
+    id: staleId,
+    scope: "group-member",
+    conversationId: group.id,
+    topicId: topic.id,
+    botId: reviewer.id,
+    logicalSessionId: "00000000-0000-4000-8000-000000000000",
+    sessionAlias: "brt_group_stale",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  await expect(bots.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_runtime" });
+  // Full verified teardown then deletes cleanly.
+  await first.service.teardownGroupConversation(group.id);
+  expect(first.state.conversations[group.id]).toBeUndefined();
+});
+
+test("group member session runs on the Topic workspace, not the Bot default", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Frontend work", {
+    workspace: "frontend",
+    isolation: "shared-single-writer",
+  });
+  // Reviewer default is backend; the Topic owns frontend.
+  expect(reviewer.workspace).toBe("backend");
+  const member = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  const session = first.sessions.getLogicalSessionRecord(member.sessionAlias);
+  expect(session?.workspace).toBe("frontend");
+  expect(member.scope).toBe("group-member");
+});
+
+test("group topic teardown releases a binding-less crash-window member session", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Crash between session persist and binding publish: a legal
+  // group-member owner session with no binding row.
+  const { createScopedGroupMemberBindingId, ownedGroupMemberSessionAlias } =
+    await import("../../../src/domain/ids");
+  const bindingId = createScopedGroupMemberBindingId(group.id, topic.id, reviewer.id);
+  const alias = ownedGroupMemberSessionAlias(bindingId);
+  await first.sessions.createSession(alias, "codex", "backend", {
+    owner: {
+      kind: "group-member",
+      bindingId,
+      botId: reviewer.id,
+      conversationId: group.id,
+      topicId: topic.id,
+    },
+  });
+  expect(first.state.bot_runtime_bindings[bindingId]).toBeUndefined();
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  expect(first.sessions.getLogicalSessionRecord(alias) ?? undefined).toBeUndefined();
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+});
+
+test("group topic teardown fails closed when alias and logical id disagree", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const member = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Corrupt the link: point the binding at a different logical id while the
+  // alias still resolves. Teardown must fail closed with everything intact.
+  const live = first.state.sessions[member.sessionAlias]!;
+  const otherAlias = `${member.sessionAlias}-other`;
+  await first.sessions.createSession(otherAlias, "codex", "backend");
+  const other = first.state.sessions[otherAlias]!;
+  first.state.bot_runtime_bindings[member.id] = {
+    ...member,
+    logicalSessionId: other.logical_session_id,
+  };
+  await expect(first.service.teardownGroupTopic(group.id, topic.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(first.state.conversation_topics[topic.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[member.id]).toBeDefined();
+  expect(first.state.sessions[member.sessionAlias]).toBeDefined();
+});

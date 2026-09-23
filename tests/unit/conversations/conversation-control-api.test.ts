@@ -1083,5 +1083,13 @@ test("group CRUD, topic lifecycle, and teardown flow through public Control", as
   expect(member.scope).toBe("group-member");
   await control.teardownGroupTopic(group.id, topic.id);
   expect(control.getGroup(group.id).topics.map((t) => t.id)).not.toContain(topic.id);
+  // Public deleteGroup runs verified teardown (not the fail-closed metadata
+  // delete): a second topic is torn down inline and the group disappears.
+  const topic2 = await control.createGroupTopic(group.id, "Sprint 2", {
+    workspace: "backend",
+    isolation: "shared",
+  });
+  await control.deleteGroup(group.id);
+  expect(() => control.getGroup(group.id)).toThrow();
   await runtime.shutdown();
 });
