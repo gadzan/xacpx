@@ -1654,3 +1654,127 @@ test("review -> single-chunk page cannot be submitted when the delete fails", as
     await channel.stop().catch(() => {});
   }
 });
+
+
+test("a second transition is queued behind a running one, and cannot open the gate", async () => {
+  // Two interactions for the SAME elicitation may overlap: `interactionCreate`
+  // dispatches fire-and-forget and every transport call crosses an `await`. A
+  // boolean `submitGateClosed` on shared entry state is not a lock — transition
+  // A closes it and reopens it after ITS OWN continuation sync, so transition B,
+  // still editing the review's continuations, is left with a live Submit over a
+  // mixed review.
+  //
+  // The discriminator is ORDERING, not just final state: while transition A is
+  // held mid-flight, transition B must not have published anything at all. Held
+  // on transition A's FIRST continuation edit, so B is fired while A is genuinely
+  // inside `syncElicitationContinuations`.
+  const client = makeFakeClient();
+  let release: (() => void) | null = null;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holdsLeft = 1;
+  const realEdit = client.editMessage.bind(client);
+  (client as unknown as { editMessage: unknown }).editMessage = async (
+    target: unknown,
+    messageId: string,
+    body: unknown,
+  ) => {
+    if (messageId === "m2" && holdsLeft > 0) {
+      holdsLeft -= 1;
+      await held;
+    }
+    return realEdit(target as never, messageId, body as never);
+  };
+  const { channel, abort } = await startChannel(client);
+  try {
+    // 8 fields, 2 per review page. Page 0 is long, page 1 medium: both are
+    // multi-chunk, so each transition edits existing continuations.
+    const fields: ChannelElicitationRequest["fields"] = Array.from({ length: 8 }, (_, index) => ({
+      kind: "text" as const,
+      key: `f${index}`,
+      title: `Field ${index}`,
+      required: true,
+    }));
+    const lengths = [1800, 1800, 900, 900, 5, 5, 5, 5];
+    const { request: req } = request(fields);
+    channel.requestElicitation(req).catch(() => {});
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 6));
+    await wait();
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    for (let index = 0; index < 8; index += 1) {
+      client.emitButton(click(client, idFor(client, "field", index)));
+      await wait();
+      const modalId = client.modals[client.modals.length - 1]!.customId;
+      client.emitModal(modal(client, modalId, { [fields[index]!.key]: "L".repeat(lengths[index]!) }, "user-A", index));
+      await wait();
+      if (index < 7) {
+        client.emitButton(click(client, idFor(client, "next", index + 1)));
+        await wait();
+      }
+    }
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { submitGateClosed: boolean; reviewPage: number }>;
+    }).pendingElicitations;
+    expect([...store.values()][0]!.submitGateClosed).toBe(false);
+
+    const rowIds = (): string[] => (client.edited[client.edited.length - 1]!.body.components ?? [])
+      .flatMap((row) => row.components)
+      .map((component) => component.customId);
+    const page1 = rowIds().find((id) => id.endsWith(":page:1"))!;
+
+    // Transition A: page 0 -> page 1. It reaches the held m2 edit inside its
+    // continuation sync.
+    client.emitButton(click(client, page1));
+    await new Promise((r) => setTimeout(r, 25));
+
+    const whileA = client.edited.length;
+    const gateWhileA = [...store.values()][0]!.submitGateClosed;
+    // A is inside its transaction: the gate is closed and its primary has been
+    // published with Submit disabled.
+    expect(gateWhileA).toBe(true);
+    const submitWhileA = (client.edited[client.edited.length - 1]!.body.components ?? [])
+      .flatMap((row) => row.components)
+      .find((component) => component.customId.endsWith(":submit"));
+    expect(submitWhileA?.disabled).toBe(true);
+
+    // Transition B, fired while A is still held. Nothing new is published: B is
+    // queued behind A rather than interleaving. This is the assertion that fails
+    // without per-entry serialization.
+    client.emitButton(click(client, page1));
+    await new Promise((r) => setTimeout(r, 25));
+    expect(client.edited.length).toBe(whileA);
+
+    // A stale Submit while B is queued behind a running A: still refused.
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 20));
+    const storeDuring = [...store.values()][0]!;
+    expect(storeDuring.submitGateClosed).toBe(true);
+
+    // Let A finish. B then runs to completion in order.
+    release!();
+    await new Promise((r) => setTimeout(r, 120));
+    await wait();
+
+    // The final card is ONE generation: the published page indicator and the
+    // tracked page agree, and the gate is open because the last transition
+    // completed.
+    const finalEntry = [...store.values()][0]!;
+    expect(finalEntry.submitGateClosed).toBe(false);
+    const lastPrimary = client.edited[client.edited.length - 1]!;
+    const indicator = /\((\d)\/4\)/.exec(lastPrimary.body.content ?? "");
+    expect(indicator).not.toBeNull();
+    expect(finalEntry.reviewPage).toBe(Number(indicator![1]) - 1);
+    // Submit on the settled card works.
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 25));
+  } finally {
+    release?.();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});

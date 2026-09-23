@@ -225,6 +225,24 @@ export class DiscordChannel implements MessageChannelRuntime {
   private readonly activeTasks: Map<string, ActiveTask[]> = new Map();
   private readonly pendingPermissions: Map<string, PendingDiscordPermission> = new Map();
   private readonly pendingElicitations: Map<string, PendingDiscordElicitation> = new Map();
+  /**
+   * Per-elicitation serialization for non-terminal UI transitions.
+   *
+   * `interactionCreate` dispatches fire-and-forget, so two button interactions
+   * for the SAME pending elicitation can run concurrently. A boolean
+   * `submitGateClosed` on shared entry state is then not a lock: transition A
+   * closes the gate and reopens it after its own continuation sync, while
+   * transition B is still editing or deleting the review's continuations —
+   * leaving a live Submit over a mixed review. Both also write
+   * `entry.reviewPage`, so whichever async completion lands last wins.
+   *
+   * Queueing makes "one UI transition at a time" a structural property: the
+   * gate's close/reopen, the continuation mutation, and the primary publish are
+   * one uninterrupted sequence. A generation counter alone would not be enough,
+   * because two transactions could still edit the same continuation messages in
+   * place and the final UI would depend on completion order.
+   */
+  private readonly elicitationRenderQueues: Map<string, Promise<void>> = new Map();
   private readonly config: DiscordChannelConfig;
   private readonly deps: DiscordChannelDeps;
 
@@ -828,7 +846,11 @@ export class DiscordChannel implements MessageChannelRuntime {
       pending: this.pendingElicitations,
       onSettled: (settledEntry, decision) => {
         settledEntry.resolve(decision);
-        void this.renderElicitationTerminal(settledEntry, decision);
+        // Also serialized: a terminal render must not interleave with a queued
+        // UI transition for the same card, or the inert card would land under a
+        // continuation that a still-running transition is editing.
+        void this.enqueueElicitationRender(settledEntry.token, () =>
+          this.renderElicitationTerminal(settledEntry, decision)).catch(() => {});
       },
       log: (event, message, fields) => {
         void this.logger?.warn(event, message, fields);
@@ -836,7 +858,30 @@ export class DiscordChannel implements MessageChannelRuntime {
     });
     if (outcome.decided) return;
     if (!outcome.rerender) return;
-    await this.rerenderElicitationCard(entry, runtime, parsed.action, parsed.fieldIndex);
+    // Serialized per elicitation: see `elicitationRenderQueues`. The token (not
+    // the requestId) is the key because it is the correlation handle for one
+    // pending card, and a request never has two.
+    await this.enqueueElicitationRender(entry.token, () =>
+      this.rerenderElicitationCard(entry, runtime, parsed.action, parsed.fieldIndex));
+  }
+
+  /**
+   * Run `run` after every previously queued UI transition for `key` finishes.
+   *
+   * A queued item is attached with both handlers so a failing rerender does not
+   * break the chain and block every later transition for that elicitation.
+   */
+  private enqueueElicitationRender(key: string, run: () => Promise<void>): Promise<void> {
+    const previous = this.elicitationRenderQueues.get(key) ?? Promise.resolve();
+    const next = previous.then(run, run).finally(() => {
+      // Only clear the slot if it is still ours: a queued successor has already
+      // installed its own promise by the time this finally runs.
+      if (this.elicitationRenderQueues.get(key) === next) {
+        this.elicitationRenderQueues.delete(key);
+      }
+    });
+    this.elicitationRenderQueues.set(key, next);
+    return next;
   }
 
   /**
