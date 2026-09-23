@@ -925,6 +925,34 @@ test("validControlEvent accepts Conversation product events and optional turn co
       createdAt: "2026-09-16T00:00:00.000Z",
     },
   })).toBe(true);
+  expect(validControlEvent({
+    type: "conversation-run-changed",
+    run: {
+      id: "run_1",
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      requestMessageId: "cmsg_1",
+      requestId: "req",
+      mode: "automatic",
+      state: "queued",
+      profileRevision: 1,
+      createdAt: "2026-09-16T00:00:00.000Z",
+    },
+  })).toBe(true);
+  expect(validControlEvent({
+    type: "conversation-run-changed",
+    run: {
+      id: "run_1",
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      requestMessageId: "cmsg_1",
+      requestId: "req",
+      mode: "router",
+      state: "queued",
+      profileRevision: 1,
+      createdAt: "2026-09-16T00:00:00.000Z",
+    },
+  })).toBe(false);
 });
 
 test("accepts the new optional tool-step and tool-detail fields", () => {

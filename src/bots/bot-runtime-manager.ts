@@ -533,6 +533,67 @@ export class BotRuntimeManager {
     scope: { conversationId: string; topicId: string; topic: ConversationTopic },
   ): Promise<BotRuntimeBinding> {
     return await this.stateMutex.run(async () => {
+      // Commit-time revalidation: scope resolution ran before async session
+      // work, so a Group delete may have landed in between (barrier set,
+      // binding-less session swept, Group record removed). Re-read every
+      // authority inside this critical section: a missing/deleting
+      // Conversation or non-active Topic, a removed or disabled Bot, a
+      // session that no longer resolves, or an owner link that no longer
+      // matches all fail closed instead of resurrecting runtime metadata.
+      const liveConversation = this.state.conversations[scope.conversationId];
+      if (!liveConversation || liveConversation.kind !== "group") {
+        throw new BotError("conversation_not_group", `conversation "${scope.conversationId}" is not a Group`);
+      }
+      if (!liveConversation.botIds.includes(bot.id)) {
+        throw new BotError(
+          "group_member_not_member",
+          `bot "${bot.id}" is not a member of group "${scope.conversationId}"`,
+        );
+      }
+      if (liveConversation.lifecycle === "deleting") {
+        throw new BotError("conversation_deleting", `group "${scope.conversationId}" is deleting`);
+      }
+      const liveTopic = this.state.conversation_topics[scope.topicId];
+      if (!liveTopic || liveTopic.conversationId !== scope.conversationId) {
+        throw new BotError("topic_not_found", `topic "${scope.topicId}" does not belong to group "${scope.conversationId}"`);
+      }
+      if (liveTopic.status !== "active") {
+        throw new BotError("topic_deleting", `topic "${scope.topicId}" is deleting`);
+      }
+      let liveBot: BotProfile;
+      try {
+        liveBot = this.bots.getBot(bot.id);
+      } catch {
+        throw new BotError("bot_not_found", `bot "${bot.id}" does not exist`);
+      }
+      if (!liveBot.enabled) {
+        throw new BotError("bot_disabled", `bot "${bot.id}" is disabled`);
+      }
+      const current = this.sessions.getLogicalSessionRecord(session.alias)
+        ?? this.sessions.getLogicalSessionById(session.logical_session_id);
+      if (!current) {
+        throw new BotError("session_missing", `owned session for bot "${bot.id}" no longer exists`);
+      }
+      if (
+        current.alias !== session.alias
+        || current.logical_session_id !== session.logical_session_id
+      ) {
+        throw this.groupMemberOwnershipConflict(bot.id, current.alias, bindingId, scope.conversationId, current);
+      }
+      this.assertGroupMemberBindingOwnsSession(
+        {
+          id: bindingId,
+          scope: "group-member",
+          conversationId: scope.conversationId,
+          topicId: scope.topicId,
+          botId: bot.id,
+          logicalSessionId: current.logical_session_id,
+          sessionAlias: current.alias,
+          createdAt: current.created_at,
+          updatedAt: current.last_used_at,
+        },
+        current,
+      );
       const live = this.findScopedGroupMemberBinding(scope.conversationId, scope.topicId, bot.id);
       if (live && this.groupMemberBindingSessionIsLive(live)) {
         return live;
@@ -544,8 +605,8 @@ export class BotRuntimeManager {
         conversationId: scope.conversationId,
         topicId: scope.topicId,
         botId: bot.id,
-        logicalSessionId: session.logical_session_id,
-        sessionAlias: session.alias,
+        logicalSessionId: current.logical_session_id,
+        sessionAlias: current.alias,
         createdAt: live?.createdAt ?? timestamp,
         updatedAt: timestamp,
       };

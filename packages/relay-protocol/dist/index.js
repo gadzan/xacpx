@@ -529,7 +529,7 @@ function validConversationRun(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && c.mode === "explicit" && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt);
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && (c.mode === "explicit" || c.mode === "automatic") && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt);
 }
 function validMemberTurnSummary(value) {
   if (typeof value !== "object" || value === null)

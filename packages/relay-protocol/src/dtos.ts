@@ -371,7 +371,7 @@ export interface ConversationRunDto {
   topicId: string;
   requestMessageId: string;
   requestId: string;
-  mode: "explicit";
+  mode: "explicit" | "automatic";
   state: ConversationRunStateDto;
   completionReason?: string;
   profileRevision: number;

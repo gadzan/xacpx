@@ -558,7 +558,7 @@ function validConversationRun(value: unknown): boolean {
     && typeof c.topicId === "string"
     && typeof c.requestMessageId === "string"
     && typeof c.requestId === "string"
-    && c.mode === "explicit"
+    && (c.mode === "explicit" || c.mode === "automatic")
     && (c.state === "queued" || c.state === "running" || c.state === "waiting-human"
       || c.state === "completed" || c.state === "failed" || c.state === "cancelled"
       || c.state === "indeterminate")

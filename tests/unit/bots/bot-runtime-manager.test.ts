@@ -1067,3 +1067,89 @@ test("getOrCreateGroupMemberSession refuses a disabled member Bot", async () => 
     runtime.getOrCreateGroupMemberSession({ botId: tester.id, conversationId: group.id, topicId: topic }),
   ).rejects.toMatchObject({ code: "bot_disabled" });
 });
+
+test("in-flight member materialize cannot publish after the group is torn down", async () => {
+  // Window: materialize runs through ensureGroupMemberOwnedSession (session on
+  // disk, no binding yet), then a full group teardown completes, and only then
+  // does the publish critical section run. Commit-time revalidation must
+  // reject instead of resurrecting runtime metadata. No saveNow gate is
+  // needed: teardown's barrier + the publish mutex serialize the interleaving
+  // deterministically — teardown first acquires stateMutex (barrier), and the
+  // publish revalidates inside its own critical section afterwards.
+  //
+  // To force the order, pause the materializer between session-ensure and
+  // publish via the per-Bot lifecycle gate: hold a second lifecycle task for
+  // the same Bot while teardown runs. runLifecycle serializes per botId, so
+  // the materialize waits; teardown (which uses stateMutex + store barriers,
+  // not the Bot gate) completes in the window.
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const tester = await bots.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const reviewer = Object.values(state.bots).find((b) => b.name === "Reviewer")!;
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, tester.id] });
+  const topicId = "topic_gate_1";
+  state.conversation_topics[topicId] = {
+    id: topicId,
+    conversationId: group.id,
+    title: "Gated",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+    executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+  };
+  // Pause the materializer AFTER session-ensure (session on disk, no binding
+  // yet) but BEFORE the publish critical section: wrap the private publish
+  // with a gate. The gate sits outside stateMutex, so teardown below acquires
+  // the mutex freely while the materializer waits.
+  let releasePublish!: () => void;
+  const publishGate = new Promise<void>((resolve) => {
+    releasePublish = resolve;
+  });
+  let publishEntered = false;
+  const inner = (runtime as unknown as { publishGroupMemberRuntime: (...a: never[]) => Promise<unknown> })
+    .publishGroupMemberRuntime.bind(runtime);
+  (runtime as unknown as { publishGroupMemberRuntime: (...a: never[]) => Promise<unknown> })
+    .publishGroupMemberRuntime = (async (...args: never[]) => {
+      publishEntered = true;
+      await publishGate;
+      return inner(...args);
+    }) as never;
+  const materializeCall = runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId,
+  });
+  // Wait until the session is on disk and publish is actually waiting.
+  for (let i = 0; i < 200 && !publishEntered; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  expect(publishEntered).toBe(true);
+  const danglingAlias = Object.values(state.sessions).find(
+    (session) => session.owner?.kind === "group-member",
+  )?.alias;
+  expect(danglingAlias).toBeDefined();
+  // Full teardown in the window: the binding-less sweep releases the session.
+  const { ConversationRunService } = await import("../../../src/conversations/conversation-run-service");
+  const { SqliteConversationStore } = await import("../../../src/conversations/sqlite-conversation-store");
+  const { ConversationDispatcher } = await import("../../../src/conversations/conversation-dispatcher");
+  const store = await SqliteConversationStore.open(":memory:");
+  const fakeRunner = { run: async () => ({ status: "completed" as const, text: "done" }), cancel: async () => ({ outcome: "cancelled" as const }) };
+  const dispatcher = new ConversationDispatcher(store, runtime, fakeRunner as never, sessions, {});
+  const runs = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, new MemoryStateStore(), {
+    releaseOwnedSession: async (alias: string) => {
+      await sessions.removeSession(alias);
+    },
+  });
+  await runs.teardownGroupConversation(group.id);
+  expect(state.conversations[group.id]).toBeUndefined();
+  expect(state.conversation_topics[topicId]).toBeUndefined();
+  // Release the paused publish: commit-time revalidation must reject, and
+  // nothing may be resurrected — no binding, no session, no topic, no group.
+  releasePublish();
+  await expect(materializeCall).rejects.toBeInstanceOf(Error);
+  expect(state.conversations[group.id]).toBeUndefined();
+  expect(state.conversation_topics[topicId]).toBeUndefined();
+  expect(Object.values(state.bot_runtime_bindings).filter((b) => b.conversationId === group.id)).toEqual([]);
+  expect(
+    Object.values(state.sessions).filter((session) => session.owner?.kind === "group-member"),
+  ).toEqual([]);
+  store.close();
+});
