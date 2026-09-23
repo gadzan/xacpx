@@ -1484,13 +1484,14 @@ export class SqliteConversationStore implements ConversationStore {
 
   /**
    * Aggregate Run lifecycle after one MemberTurn reaches a terminal state.
-   * Member completion terminals only the member; the Run terminals when no
-   * member of the active batch is still runnable. Explicit Runs aggregate
-   * over the accepted batch (no Router follows); automatic Runs leave the
-   * non-terminal intermediate state durable for the PR8 Router, which adds
-   * later batches. Failed/cancelled/indeterminate members accumulate in
-   * failedBotIds (durable progress); unavailableBotIds is PR7+ reservation
-   * surface, defaulting empty.
+   * Member completion terminals only the member; explicit Runs terminal when
+   * no member of the active batch is still runnable (no Router follows).
+   * Automatic Runs never terminal on batch settle (except indeterminate):
+   * the batch result stays durable in non-terminal running state for the PR8
+   * Router, which decides dispatch / need-human / complete. Whole-Run human
+   * cancel still terminals via cancelRun(). Only failed members accumulate
+   * in failedBotIds; cancelled/indeterminate are read from MemberTurns.
+   * unavailableBotIds is PR7+ reservation surface, defaulting empty.
    */
   private aggregateRunAfterMemberTerminal(
     runId: string,
@@ -1510,7 +1511,7 @@ export class SqliteConversationStore implements ConversationStore {
     // (two members may share the same terminal state; the lookup would
     // attribute the second event to the first member and drop a failedBotId).
     const member = this.requireMemberTurn(memberTurnId);
-    if (member.state === "failed" || member.state === "cancelled" || member.state === "indeterminate") {
+    if (member.state === "failed") {
       const current = new Set(run.failedBotIds);
       current.add(member.botId);
       this.sqlite.run(`UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`, [JSON.stringify([...current]), runId]);
@@ -1519,6 +1520,25 @@ export class SqliteConversationStore implements ConversationStore {
       // Intermediate state: one member terminal, siblings still runnable.
       // The Run stays non-terminal (running) so claimNextDispatch keeps
       // serving the batch; PR8 Router continues from this durable state.
+      if (run.state === "queued") {
+        this.sqlite.run(`UPDATE runs SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?`, [now, runId]);
+      }
+      return this.requireRun(runId);
+    }
+    if (run.mode === "automatic") {
+      // Batch settled but the Run is not done: PR8 Router decides the next
+      // step from durable MemberTurns. Indeterminate (unproven side effects)
+      // cannot auto-continue, so it terminals directly; every other settled
+      // batch stays running awaiting routing.
+      const indeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
+      if (indeterminate.length > 0) {
+        const reason = batchMembers.length === 1 ? (memberReason ?? "started_result_unknown") : "started_result_unknown";
+        this.sqlite.run(
+          `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = ? WHERE id = ?`,
+          [reason, now, runId],
+        );
+        return this.requireRun(runId);
+      }
       if (run.state === "queued") {
         this.sqlite.run(`UPDATE runs SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?`, [now, runId]);
       }
@@ -1563,6 +1583,7 @@ export class SqliteConversationStore implements ConversationStore {
     );
     return this.requireRun(runId);
   }
+
   private requireRun(runId: string): ConversationRun {
     const run = this.getRun(runId);
     if (!run) {

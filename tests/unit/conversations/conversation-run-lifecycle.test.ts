@@ -2436,6 +2436,44 @@ test("replayed member completion is idempotent: no second message, no double pro
   first.store.close();
 });
 
+test("automatic run stays routing-eligible after the batch settles completed", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-auto-batch",
+    botId: botA.id,
+    content: "ship it",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    mode: "automatic",
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  for (const turn of accepted.memberTurns) {
+    first.store.completeExecution({
+      runId: accepted.run.id, memberTurnId: turn.id, botId: turn.botId,
+      content: `done ${turn.botId}`, sourceTurn: { sessionAlias: `sess_${turn.botId}` }, now: NOW,
+    });
+  }
+  const settled = first.store.getRun(accepted.run.id)!;
+  // Batch done, but the automatic Run must NOT terminal: PR8 Router reads
+  // durable MemberTurns and decides dispatch / need-human / complete.
+  expect(settled.state).toBe("running");
+  expect(settled.finishedAt).toBeUndefined();
+  expect(settled.consumedMemberTurns).toBe(2);
+  expect(first.store.listMemberTurns(accepted.run.id).every((turn) => turn.state === "completed")).toBe(true);
+  first.store.close();
+});
+
 test("dispatch migration crash before commit keeps the old table intact", async () => {
   const { join } = await import("node:path");
   const { mkdtempSync } = await import("node:fs");
