@@ -36,7 +36,13 @@ import type {
 } from "./types.js";
 import { t as getMessages } from "./i18n/index.js";
 import { escapeDiscordLiteralText } from "./permission-ui.js";
-import { DISCORD_ACTION_ROW_BUTTON_MAX } from "./elicitation-limits.js";
+import {
+  DISCORD_ACTION_ROW_BUTTON_MAX,
+  DISCORD_SELECT_OPTION_DESCRIPTION_MAX,
+  DISCORD_SELECT_OPTION_LABEL_MAX,
+  DISCORD_SELECT_PLACEHOLDER_MAX,
+  DISCORD_TEXT_CAPTURE_MAX,
+} from "./elicitation-limits.js";
 import { trySettle } from "./elicitation-state.js";
 import type { PendingDiscordElicitation } from "./elicitation-state.js";
 
@@ -352,7 +358,7 @@ export function buildElicitationBooleanRows(
         {
           type: 3 as const,
           customId: elicitationCustomId(token, "field", fieldIndex),
-          placeholder: escapeDiscordLiteralText(field.title),
+          placeholder: truncate(field.title, DISCORD_SELECT_PLACEHOLDER_MAX),
           options: [
             { label: messages.elicitationYes, value: "true", ...(selected === "true" ? { default: true } : {}) },
             { label: messages.elicitationNo, value: "false", ...(selected === "false" ? { default: true } : {}) },
@@ -400,8 +406,9 @@ export function buildElicitationReviewCard(
   const hasPaging = pageCount > 1;
   const clamped = Math.min(Math.max(0, page), pageCount - 1);
   const start = clamped * perPage;
-  const controls: Array<{ label: string; customId: string; style: 1 | 2 | 3 | 4 }> = request.fields
-    .slice(start, start + perPage)
+  const pageEnd = start + perPage;
+  const pageFields = request.fields.slice(start, pageEnd);
+  const controls: Array<{ label: string; customId: string; style: 1 | 2 | 3 | 4 }> = pageFields
     .map((field) => ({
       label: truncate(escapeDiscordLiteralText(`${messages.elicitationEdit}: ${field.title}`), 80),
       customId: elicitationCustomId(token, "edit", request.fields.indexOf(field)),
@@ -420,8 +427,26 @@ export function buildElicitationReviewCard(
       { label: truncate(`${messages.elicitationPageNext} ${nextPage + 1}/${pageCount}`, 80), customId: `${ELICITATION_CUSTOM_ID_PREFIX}${token}:page:${nextPage}`, style: 2 },
     ]));
   }
+  // The TEXT pages with the controls, and over exactly the same field window:
+  // rendering the whole form and then truncating to the card budget meant a long
+  // form's later answers simply were not shown, while Submit stayed enabled —
+  // the user could not review what they were sending, which is exactly what ACP
+  // review-before-send forbids. The page indicator is carried in the paging
+  // controls' labels, so the user always knows how many answers remain.
+  const pagedLines = pageCount > 1
+    ? [
+        `${lines[0]!} (${clamped + 1}/${pageCount})`,
+        lines[1]!,
+        ...pageFields.map((field) => {
+          const value = values[field.key];
+          return `**${escapeDiscordLiteralText(field.title)}**\n${escapeDiscordLiteralText(
+            value === undefined ? messages.elicitationNoAnswer : displayValue(value),
+          )}`;
+        }),
+      ]
+    : lines;
   const components = rows.flat();
-  return { content: truncate(lines.join("\n\n"), MAX_CARD_CHARS), components };
+  return { content: truncate(pagedLines.join("\n\n"), MAX_CARD_CHARS), components };
 }
 
 export function hintForField(field: ChannelElicitationField): string {
@@ -485,7 +510,7 @@ export function buildElicitationSelectRows(
         {
           type: 3 as const,
           customId: elicitationCustomId(token, "field", fieldIndex),
-          placeholder: escapeDiscordLiteralText(field.title),
+          placeholder: truncate(field.title, DISCORD_SELECT_PLACEHOLDER_MAX),
           ...(field.kind === "multi-select"
             ? {
                 ...(field.minItems !== undefined ? { minValues: field.minItems } : {}),
@@ -493,11 +518,20 @@ export function buildElicitationSelectRows(
               }
             : {}),
           options: field.options.map((option) => ({
-            label: escapeDiscordLiteralText(option.label),
+            // NOT escaped: a select option's label is not Markdown, so passing it
+            // through the message-markdown escaper would DOUBLE the backslashes
+            // Discord renders, and — worse — mean the length checked by the
+            // renderability gate (on the raw string) no longer matches the length
+            // actually sent. Discord does not interpret Markdown here, and
+            // `allowedMentions: { parse: [] }` at send time already neutralises the
+            // only injection class available in these surfaces.
+            label: truncate(option.label, DISCORD_SELECT_OPTION_LABEL_MAX),
             // The value is the correlation identity core validates; it is not
             // rendered, but it must be exact so the answer maps back.
             value: option.value,
-            ...(option.description !== undefined ? { description: escapeDiscordLiteralText(option.description) } : {}),
+            ...(option.description !== undefined
+              ? { description: truncate(option.description, DISCORD_SELECT_OPTION_DESCRIPTION_MAX) }
+              : {}),
             ...(shown.includes(option.value) ? { default: true } : {}),
           })),
         },
@@ -539,11 +573,17 @@ export function buildElicitationModal(
           label: field.title,
           required: field.required,
           ...(prefill ? { value: prefill } : {}),
-          // The platform's own upper bound. Core-side string bounds (`minLength`
-          // / `maxLength`) exist only on the ACP schema and are NOT part of the
-          // plugin contract, so the renderer does not forward them; core
-          // remains authoritative on answer validation.
-          maxLength: 4000,
+          // The schema's own bounds, pushed into the control wherever the
+          // platform can express them, so the widget enforces the same contract
+          // core does instead of the user typing something it will reject. The
+          // renderability gate has already refused any bound past the
+          // platform's capacity, so this is an exact mapping, not a clamp.
+          // Only `text` carries these — a number field is bounded numerically.
+          ...(field.kind === "text" && field.minLength !== undefined ? { minLength: field.minLength } : {}),
+          maxLength: Math.min(
+            field.kind === "text" ? field.maxLength ?? DISCORD_TEXT_CAPTURE_MAX : DISCORD_TEXT_CAPTURE_MAX,
+            DISCORD_TEXT_CAPTURE_MAX,
+          ),
         },
       },
     ],
@@ -553,17 +593,23 @@ export function buildElicitationModal(
 /**
  * Convert a modal submit into the answer value the core validator expects.
  *
- * The conversion is type-directed and never coerces: a numeric field with
- * non-numeric input produces NO answer (leaving the field unanswered) rather
- * than `NaN`, because `NaN` would serialize into a JSON-RPC response as
- * `null` and look like a valid answer to a consumer that does not re-check.
- * Core's answer validator remains authoritative either way.
+ * The conversion is type-directed and never coerces. Text is passed through
+ * EXACTLY as typed — `raw.trim()` would make `"  foo  "` and `"foo"` the same
+ * answer, while core's validator compares the raw string, so a trimmed value
+ * either gets rejected as something the user never typed or is silently
+ * rewritten. Only NUMBER parsing trims, because `Number(" 4 ")` is a numeric
+ * spelling rather than the value itself.
+ *
+ * An empty string is a LEGAL ANSWER (`minLength: 0`) and is preserved. A
+ * blank field is NOT recorded at all: "no answer" and "answered empty" are
+ * different statements in ACP, and collapsing them would let a required field
+ * pass on a form the user never filled in.
  */
 export function parseModalAnswer(field: ChannelElicitationField, raw: string): ChannelElicitationValue | undefined {
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return undefined;
   switch (field.kind) {
     case "number": {
+      const trimmed = raw.trim();
+      if (trimmed.length === 0) return undefined;
       const parsed = Number(trimmed);
       if (!Number.isFinite(parsed)) return undefined;
       // `integer` is the field's own flag: the plugin contract has no separate
@@ -577,14 +623,17 @@ export function parseModalAnswer(field: ChannelElicitationField, raw: string): C
       return parsed;
     }
     case "boolean": {
+      const trimmed = raw.trim();
       if (/^(true|yes|y|1)$/i.test(trimmed)) return true;
       if (/^(false|no|n|0)$/i.test(trimmed)) return false;
       return undefined;
     }
     case "multi-select":
-      return trimmed.split(",").map((part) => part.trim()).filter((part) => part.length > 0);
+      return raw.split(",").map((part) => part.trim()).filter((part) => part.length > 0);
     default:
-      return trimmed;
+      // Text: the exact string the user typed. `""` is a legal answer under
+      // `minLength: 0`, so it is returned rather than dropped.
+      return raw;
   }
 }
 

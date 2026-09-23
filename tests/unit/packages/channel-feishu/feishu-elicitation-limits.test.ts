@@ -159,3 +159,52 @@ test("cardElementId satisfies Feishu's element_id charset", () => {
   expect(cardElementId("9lives")).toBe("el9lives");
   expect(cardElementId("x".repeat(30)).length).toBeLessThanOrEqual(20);
 });
+
+// --- Both sides of the capture capacity bound ------------------------------
+
+test("a text minLength beyond one input's capacity is refused", () => {
+  // The other half of the maxLength check that already existed: a field that
+  // REQUIRES more characters than the input can hold is impossible, and
+  // truncating it silently would produce an answer core must reject anyway.
+  const verdict = checkElicitationRenderability([
+    { kind: "text", key: "note", title: "Note", required: true, minLength: 1001 },
+  ]);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("answer-too-long");
+});
+
+test("an option core would reject is refused rather than offered", () => {
+  const verdict = checkElicitationRenderability([
+    {
+      kind: "single-select",
+      key: "env",
+      title: "Pick",
+      required: true,
+      minLength: 2,
+      options: [{ value: "a", label: "A" }, { value: "bb", label: "BB" }],
+    },
+  ]);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("option-constraint-unsatisfiable");
+});
+
+test("a select whose options all satisfy the constraints is accepted", () => {
+  const verdict = checkElicitationRenderability([
+    {
+      kind: "single-select",
+      key: "env",
+      title: "Pick",
+      required: true,
+      minLength: 2,
+      options: [{ value: "bb", label: "BB" }],
+    },
+  ]);
+  expect(verdict.renderable).toBe(true);
+});
+
+test("a boolean field is renderable, because it renders as a two-option select", () => {
+  const verdict = checkElicitationRenderability([
+    { kind: "boolean", key: "ok", title: "OK", required: true },
+  ]);
+  expect(verdict.renderable).toBe(true);
+});

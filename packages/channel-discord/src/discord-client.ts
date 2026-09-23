@@ -37,11 +37,24 @@ export interface CreateDiscordClientOptions {
   applicationId?: string;
   intentsMessageContent: boolean;
   intentsGuildMembers: boolean;
+  /**
+   * Test seam: build the discord.js Client that `start()` attaches to. Omitting
+   * it constructs the real one. The adapter dispatch under test lives in
+   * `start()`, so an injected gateway is the only way to feed it a real-shaped
+   * interaction without a live Gateway connection.
+   */
+  createGateway?: () => unknown;
 }
 
 export function createDiscordClient(options: CreateDiscordClientOptions): DiscordClientLike {
   return new DiscordJsClient(options);
 }
+
+/**
+ * Exported for adapter-level tests that drive the interactionCreate dispatch
+ * directly. Production code goes through `createDiscordClient`.
+ */
+export { DiscordJsClient };
 
 class DiscordJsClient implements DiscordClientLike {
   private client: unknown = null;
@@ -77,11 +90,21 @@ class DiscordJsClient implements DiscordClientLike {
     if (this.options.intentsMessageContent) intents |= (GatewayIntentBits.MessageContent ?? 0);
     if (this.options.intentsGuildMembers) intents |= (GatewayIntentBits.GuildMembers ?? 0);
 
-    const client = new Client({
-      intents,
-      partials: [Partials.Channel, Partials.Message],
-      allowedMentions: { parse: [] },
-    });
+    const client = (this.options.createGateway
+      ? this.options.createGateway()
+      : new Client({
+          intents,
+          partials: [Partials.Channel, Partials.Message],
+          allowedMentions: { parse: [] },
+        })) as {
+      on: (event: string, cb: (...args: unknown[]) => void) => void;
+      once: (event: string, cb: (...args: unknown[]) => void) => void;
+      login: (token: string) => Promise<string>;
+      destroy: () => void;
+      user: { id: string; tag: string } | null;
+      channels: { fetch: (id: string) => Promise<unknown> };
+      isReady: () => boolean;
+    };
     this.client = client;
 
     client.on("messageCreate", (message: unknown) => {
@@ -99,7 +122,16 @@ class DiscordJsClient implements DiscordClientLike {
         customId?: string;
         values?: string[];
         fields?: {
-          components?: Array<{ components?: Array<{ customId?: string; value?: string }> }>;
+          /**
+           * discord.js exposes submitted modal inputs as a
+           * `Collection<customId, component>`, which structurally is a
+           * `Map`-like with `get`. The components this renderer OPENED the modal
+           * with are Discordin's Label type (18) whose real input sits at
+           * `component`, so a traversal of `components[].components[]` — the old
+           * shape — finds nothing and drops every answer.
+           */
+          fields?: Map<string, { customId?: string; value?: string }> | Record<string, { customId?: string; value?: string }>;
+          getTextInputValue?: (customId: string) => string;
         };
         options?: { data?: Array<{ name?: string; value?: unknown }> };
         channelId?: string;
@@ -206,18 +238,34 @@ class DiscordJsClient implements DiscordClientLike {
         return;
       }
       // Modal submit: the field map is keyed by the Text Input custom_id, which
-      // is the FIELD KEY. Values live in the payload, never in any id.
+      // is POSITIONAL (`f:<index>`) rather than the schema key, so a legal long
+      // key cannot exceed Discord's component id cap. Values live in the
+      // payload, never in any id.
       if (typeof anyI?.isModalSubmit === "function" && anyI.isModalSubmit()) {
         const customId = typeof anyI.customId === "string" ? anyI.customId : "";
         if (!customId || !customId.startsWith("xacpx-elicit:")) return;
         const channelId = anyI.channelId ?? anyI.channel?.id;
         const userId = anyI.user?.id ?? anyI.member?.user?.id;
         if (!channelId || !userId) return;
+        // discord.js delivers modal fields as a `Collection<customId, field>`
+        // with `getTextInputValue(customId)`. The component tree we OPEN the
+        // modal with is the Label type (18) whose child sits at
+        // `component`, not `row.components` — so the old double loop found
+        // nothing and every real modal submit arrived with an empty map,
+        // silently discarding the user's answer.
         const fields: Record<string, string> = {};
-        for (const row of anyI.fields?.components ?? []) {
-          for (const input of row.components ?? []) {
-            const key = typeof input?.customId === "string" ? input.customId : "";
-            if (key) fields[key] = typeof input?.value === "string" ? input.value : "";
+        const submitted = anyI.fields;
+        if (submitted && typeof submitted.fields === "object") {
+          const entries = submitted.fields instanceof Map
+            ? [...submitted.fields.entries()]
+            : Object.entries(submitted.fields);
+          for (const [key, component] of entries) {
+            const value = typeof component?.value === "string"
+              ? component.value
+              : typeof submitted.getTextInputValue === "function"
+                ? submitted.getTextInputValue(key)
+                : undefined;
+            if (typeof value === "string") fields[key] = value;
           }
         }
         const normalized: DiscordModalSubmitInteraction = {

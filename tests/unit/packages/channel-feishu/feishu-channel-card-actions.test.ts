@@ -42,6 +42,20 @@ function makeFakeHost(): FakeCardHost {
 function feishuClient(sent: unknown[] = []) {
   return {
     sdk: {
+      cardkit: {
+        v1: {
+          card: {
+            create: async (payload: unknown) => {
+              sent.push(payload);
+              return { data: { card_id: "card_test" } };
+            },
+            update: async (payload: unknown) => {
+              sent.push(payload);
+              return { data: {} };
+            },
+          },
+        },
+      },
       im: {
         message: {
           reply: async (payload: unknown) => {
@@ -370,6 +384,62 @@ test("requestElicitation without a card channel fails closed", async () => {
       expiresAt: Date.now() + 60_000,
       signal: new AbortController().signal,
     } as never)).rejects.toThrow(/no card-callback channel/);
+  } finally {
+    channel.logout();
+  }
+});
+
+test("stop() drains a pending form before the callback channel goes away", async () => {
+  // The lifecycle contract: shutdown must make the card inert and settle the
+  // awaiting turn BEFORE the listener is torn down. `logout()` alone never
+  // touched the pending map, so a form left open at shutdown had no drain and
+  // the turn only settled if some other path aborted its signal.
+  const host = makeFakeHost();
+  const channel = new FeishuChannel(
+    { ...FEISHU_BASE, accounts: { default: { appId: "cli_test", appSecret: "s", cardActions: CARD_ACTIONS } } },
+    {
+      createClient: () => feishuClient(),
+      createCardHost: async (options) => {
+        host.started += 1;
+        host.onAction = options.onAction;
+        return { stop: async () => { host.stopped += 1; }, port: () => 9877 };
+      },
+    } as never,
+  );
+  await channel.start({
+    logger: noopLogger(),
+    abortSignal: new AbortController().signal,
+    agent: { chat: async () => ({ text: "ok" }) },
+    activeTurns: null,
+    sessions: null,
+    quota: { onInbound: () => {} },
+    locale: "en",
+  } as never);
+  const settled = channel.requestElicitation({
+    requestId: "r-drain",
+    chatKey: "feishu:default:oc_chat",
+    requester: { senderId: "ou_a" },
+    agent: { name: "codex" },
+    message: "m",
+    mode: "form",
+    fields: [{ kind: "text", key: "n", title: "N", required: true }],
+    expiresAt: Date.now() + 60_000,
+    signal: new AbortController().signal,
+  } as never).then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  // Let the opening card send finish so the request is pending.
+  await new Promise((r) => setTimeout(r, 5));
+  try {
+    await channel.stop();
+    const outcome = await settled;
+    // Rejected, not resolved: a shutdown is not a user decision, so no
+    // responderId may be invented for it.
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toContain("stopped");
+    // And the callback listener is told to shut down.
+    expect(host.stopped).toBeGreaterThanOrEqual(1);
   } finally {
     channel.logout();
   }

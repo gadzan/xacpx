@@ -27,8 +27,8 @@
  *     produce a body that passes the token/encrypt check), but a leaked routing
  *     token in a screenshot must still not let a third party answer.
  *   - Answers never enter a callback id: they arrive in `form_value` keyed by
- *     the component `name` (a sanitized field key), and live only in this
- *     module's in-memory map.
+ *     the component `name` (the field's position, `f0`/`f1`/…), and live only in
+ *     this module's in-memory map.
  *   - External abort (timeout, turn disposal, shutdown) REPLACES the card with
  *     an inert one and rejects the promise — it never fabricates a responder.
  *   - A form the platform cannot express faithfully is refused before anything
@@ -44,8 +44,13 @@ import type {
 import { t as getMessages } from "./i18n/index.js";
 import { checkElicitationRenderability } from "./elicitation-limits.js";
 import {
+  buildElicitationContent,
   formComponentName,
+  isAnswered,
+  markSkipped,
   nextSequence,
+  nextUnresolvedFieldKey,
+  recordAnswer,
   trySettle,
   type PendingFeishuElicitation,
 } from "./elicitation-state.js";
@@ -133,17 +138,22 @@ export function parseElicitationAction(payloadValue: unknown): { token: string; 
 /**
  * Convert a submitted form value into the answer for one field.
  *
- * Type-directed and NON-COERCING: a numeric field with non-numeric input
- * produces NO answer rather than `NaN` (which would serialize as `null` and
- * look like a value to a consumer that does not re-check). Core's answer
- * validator remains authoritative; this only keeps the platform's raw string
- * from being accepted as something it is not.
+ * Type-directed and NON-COERCING. Text is passed through EXACTLY as typed:
+ * `raw.trim()` would make `"  foo  "` and `"foo"` the same answer, while core
+ * compares the raw string, so a trimmed value is either rejected as something
+ * the user never typed or silently rewritten. Only number parsing trims, and
+ * only because `Number(" 4 ")` is a spelling of the value rather than the
+ * value itself.
+ *
+ * An empty string is a LEGAL ANSWER (`minLength: 0`) and is preserved. "No
+ * answer" is tracked separately (the field is absent from `values`), so the
+ * two are never conflated.
  */
 export function parseFormAnswer(field: ChannelElicitationField, raw: string): ChannelElicitationValue | undefined {
-  const trimmed = raw.trim();
-  if (trimmed.length === 0) return undefined;
   switch (field.kind) {
     case "number": {
+      const trimmed = raw.trim();
+      if (trimmed.length === 0) return undefined;
       const parsed = Number(trimmed);
       if (!Number.isFinite(parsed)) return undefined;
       if (field.integer && !Number.isInteger(parsed)) return undefined;
@@ -152,12 +162,14 @@ export function parseFormAnswer(field: ChannelElicitationField, raw: string): Ch
       return parsed;
     }
     case "boolean": {
+      const trimmed = raw.trim();
       if (/^(true|yes|y|1)$/i.test(trimmed)) return true;
       if (/^(false|no|n|0)$/i.test(trimmed)) return false;
       return undefined;
     }
     default:
-      return trimmed;
+      // Text: exactly what the user typed, including an empty string.
+      return raw;
   }
 }
 
@@ -212,6 +224,7 @@ export class FeishuElicitationRenderer {
       sequence: 0,
       request,
       values: {},
+      skipped: new Set<string>(),
       settled: false,
       resolve: settle,
       reject: rejectPromise,
@@ -299,17 +312,14 @@ export class FeishuElicitationRenderer {
         return { handled: true, settled: false };
       }
       case "skip": {
-        // An explicit "leave this optional field blank". Distinct from a submit
-        // with empty input, which the field's own validator would keep
-        // unanswered and thereby block the advance.
-        if (entry.currentField !== undefined && entry.request.fields.some((f) => f.key === entry.currentField)) {
-          const field = entry.request.fields.find((f) => f.key === entry.currentField)!;
-          // Mark it answered-with-nothing so progression treats it as done.
-          entry.values[field.key] = entry.values[field.key] ?? "";
+        // An explicit "leave this field blank", including clearing an answer the
+        // user already gave: value -> omitted is part of review-and-modify.
+        if (entry.currentField !== undefined) {
+          markSkipped(entry, entry.currentField);
         }
-        const next = entry.request.fields.find((field) => entry.values[field.key] === undefined);
+        const next = nextUnresolvedFieldKey(entry);
         if (next) {
-          entry.currentField = next.key;
+          entry.currentField = next;
           await this.renderCurrentField(entry);
           return { handled: true, settled: false };
         }
@@ -337,7 +347,11 @@ export class FeishuElicitationRenderer {
           responderId: action.openId,
         };
         this.options.pending.delete(parsed.token);
-        await this.withdraw(entry, "terminal");
+        // The card must show what the user actually chose. `withdraw` used to
+        // translate any "terminal" into "accepted", so declining rendered an
+        // accepted card and cancelling rendered an accepted one too — the exact
+        // opposite of the decision, while the protocol decision was correct.
+        await this.withdraw(entry, parsed.action === "decline" ? "declined" : "cancelled");
         entry.resolve(decision);
         return { handled: true, settled: true };
       }
@@ -359,7 +373,7 @@ export class FeishuElicitationRenderer {
   private async submit(
     entry: PendingFeishuElicitation,
     formValues: Record<string, string>,
-  ): Promise<{ handled: boolean; settled: false }> {
+  ): Promise<{ handled: true; settled: false }> {
     if (entry.currentField !== undefined) {
       const field = entry.request.fields.find((f) => f.key === entry.currentField);
       if (field) {
@@ -369,18 +383,18 @@ export class FeishuElicitationRenderer {
         // same conversion covers it: an option VALUE is already a string.
         const value = raw === undefined ? undefined : parseFormAnswer(field, raw);
         if (value !== undefined) {
-          entry.values[field.key] = value;
+          recordAnswer(entry, field.key, value);
         }
       }
     }
-    const next = entry.request.fields.find((field) => entry.values[field.key] === undefined);
+    const next = nextUnresolvedFieldKey(entry);
     if (next) {
-      entry.currentField = next.key;
+      entry.currentField = next;
       await this.renderCurrentField(entry);
       return { handled: true, settled: false };
     }
-    // Everything collected (including the optional ones the user skipped by
-    // advancing): show the review page, which is the only path to accept.
+    // Everything has an outcome (answered or explicitly skipped): show the
+    // review page, which is the only path to accept.
     await this.renderReview(entry);
     return { handled: true, settled: false };
   }
@@ -392,7 +406,9 @@ export class FeishuElicitationRenderer {
   private async confirmReviewed(
     entry: PendingFeishuElicitation,
   ): Promise<{ handled: boolean; settled: boolean }> {
-    const missing = entry.request.fields.filter((field) => field.required && entry.values[field.key] === undefined);
+    const missing = entry.request.fields.filter(
+      (field) => field.required && !isAnswered(entry, field.key),
+    );
     if (missing.length > 0) {
       // Stay on the unanswered field and let the user fix it.
       entry.currentField = missing[0]!.key;
@@ -401,20 +417,11 @@ export class FeishuElicitationRenderer {
     }
     if (!trySettle(entry)) return { handled: false, settled: false };
     this.options.pending.delete(entry.token);
-    await this.withdraw(entry, "terminal");
-    // `null` is a valid ACP accept for an all-optional form and is deliberately
-    // distinguishable from "the channel submitted nothing" (`undefined`), so the
-    // empty case is preserved rather than normalized to `{}`. A field the user
-    // skipped is recorded as "" and dropped here: sending an empty string would
-    // be an answer the agent did not ask for.
-    const collected: Record<string, ChannelElicitationValue> = {};
-    for (const [key, value] of Object.entries(entry.values)) {
-      if (value === "") continue;
-      if (Array.isArray(value) && value.length === 0) continue;
-      collected[key] = value;
-    }
-    const content: Record<string, ChannelElicitationValue> | null =
-      Object.keys(collected).length === 0 ? null : collected;
+    // The user's OWN decision is what the terminal card must show. `withdraw`
+    // used to hard-code "accepted", so a Decline or a Cancel rendered an
+    // accepted card — the opposite of what the user just chose.
+    await this.withdraw(entry, "accepted");
+    const content = buildElicitationContent(entry);
     entry.resolve({ action: "accept", responderId: entry.requesterId, content });
     return { handled: true, settled: true };
   }
@@ -449,12 +456,16 @@ export class FeishuElicitationRenderer {
     }
   }
 
-  /** Replace the card with an inert, interaction-free one. */
-  private async withdraw(entry: PendingFeishuElicitation, kind: "terminal" | "cancelled"): Promise<void> {
+  /**
+   * Replace the card with an inert, interaction-free one showing the given
+   * terminal state. Every caller passes the reason the request ended.
+   */
+  private async withdraw(
+    entry: PendingFeishuElicitation,
+    kind: "accepted" | "declined" | "cancelled" | "expired",
+  ): Promise<void> {
     if (!entry.cardId) return;
-    const card = kind === "terminal"
-      ? buildElicitationTerminalCard("accepted")
-      : buildElicitationTerminalCard("cancelled");
+    const card = buildElicitationTerminalCard(kind);
     try {
       await this.options.transport.updateCard({
         cardId: entry.cardId,

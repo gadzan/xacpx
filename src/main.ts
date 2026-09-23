@@ -615,17 +615,29 @@ export async function buildApp(
   // with independent terminal semantics. Replace the old unconditional
   // cancel with real dispatch; every failure path still cancels.
   let elicitationInteractionCapable = false;
-  try {
-    // G9: form capability requires BOTH an implementation and a declared
-    // `form` mode. An implementation without the declaration would let the
-    // broker accept the request and then fail closed on the mode check, so
-    // advertising it would be a lie the agent pays for.
-    elicitationInteractionCapable =
-      typeof channelRegistryLike?.hasElicitationFormCapability === "function" &&
-      channelRegistryLike.hasElicitationFormCapability() === true;
-  } catch {
-    elicitationInteractionCapable = false;
-  }
+  /**
+   * Re-evaluated on every access rather than frozen once.
+   *
+   * `deps.channel` is the live registry, and `startAll()` runs AFTER this value
+   * is first read (the daemon computes it before channels exist, then spawns
+   * channels in run-console). A channel that declares `form` at construction
+   * and then fails to start — a Feishu account whose card-callback port is
+   * taken — would otherwise leave a frozen `true` while nothing can deliver a
+   * form, and the agent would be told to use a capability that cancels every
+   * request. Reading through the registry's live probe makes the failed channel
+   * visible immediately, without needing a capability refresh on the wire.
+   */
+  const isElicitationFormCapable = (): boolean => {
+    try {
+      elicitationInteractionCapable =
+        typeof channelRegistryLike?.hasElicitationFormCapability === "function" &&
+        channelRegistryLike.hasElicitationFormCapability() === true;
+    } catch {
+      elicitationInteractionCapable = false;
+    }
+    return elicitationInteractionCapable;
+  };
+  isElicitationFormCapable();
   const elicitationBroker = new ElicitationInteractionBroker({
     registry: permissionBroker.turnRegistry,
     getChannelByChatKey: (chatKey) => {
@@ -745,7 +757,8 @@ export async function buildApp(
                 bridgeEntryPath: resolveBridgeEntryPath(),
                 agentOverlays: computeAgentOverlayEntries(config),
                 permissionInteractionCapable,
-                elicitationFormCapable: elicitationInteractionCapable,
+                // Read live at spawn time, not from the pre-start snapshot.
+                elicitationFormCapable: isElicitationFormCapable(),
                 permissionMode: config.transport.permissionMode,
                 nonInteractivePermissions:
                   config.transport.nonInteractivePermissions,

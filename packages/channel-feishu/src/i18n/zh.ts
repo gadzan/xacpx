@@ -66,6 +66,8 @@ export const zh: FeishuMessages = {
   elicitationCancel: "取消",
   elicitationSubmit: "提交",
   elicitationSkip: "跳过",
+  elicitationYes: "是",
+  elicitationNo: "否",
   elicitationReview: "确认答案",
   elicitationEdit: "修改",
   elicitationProgress: (answered, total) => `已答 ${answered} / ${total} 题`,

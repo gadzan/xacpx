@@ -100,6 +100,21 @@ export interface InjectedHttpServer {
   listen(port: number, host: string, callback: () => void): void;
   close(callback?: () => void): void;
   /**
+   * Mount a listener for a non-request server event.
+   *
+   * `"error"` in particular: port contention arrives asynchronously as an
+   * `"error"` event rather than a `listen()` throw, so the teardown path that
+   * rejects startup depends on this being subscribable. `once` installs it for
+   * one delivery, which is the pattern the real `http.Server` documents.
+   */
+  once?(event: "error", listener: (error: Error) => void): void;
+  removeListener?(event: "error", listener: (error: Error) => void): void;
+  /**
+   * Test seam: emit a server event to the mounted listeners, so a test can
+   * reproduce an asynchronous bind failure without occupying a real port.
+   */
+  emitError?(error: Error): void;
+  /**
    * Mount the request listener. Returns whatever the listener returns, so a
    * caller can await request completion (Node's real `http.Server` ignores it,
    * which is exactly why an awaitable seam is needed for tests).
@@ -113,12 +128,31 @@ export function createInjectedHttpServer(): InjectedHttpServer & {
   simulate(method: string, path: string, headers: Record<string, string>, body: string): Promise<{ status: number; body: string }>;
 } {
   let listener: ((req: IncomingMessage, res: ServerResponse) => void) | null = null;
+  const errorListeners = new Set<(error: Error) => void>();
   const server = {
     listen: (_port: number, _host: string, callback: () => void): void => {
       callback();
     },
     close: (callback?: () => void): void => {
       callback?.();
+    },
+    once: (_event: "error", fn: (error: Error) => void): void => {
+      errorListeners.add(fn);
+    },
+    removeListener: (_event: "error", fn: (error: Error) => void): void => {
+      errorListeners.delete(fn);
+    },
+    /**
+     * Reproduce what Node's `http.Server` actually does on a failed bind: emit
+     * an `"error"` event AFTER `listen()` has returned. A synchronous
+     * `listen()` throw cannot express this, which is why the previous fake
+     * (and the code it covered) treated a taken port as a non-event.
+     */
+    emitError: (error: Error): void => {
+      for (const fn of [...errorListeners]) {
+        errorListeners.delete(fn);
+        fn(error);
+      }
     },
     on: (event: "request", fn: (req: IncomingMessage, res: ServerResponse) => void): void => {
       if (event === "request") listener = fn;
@@ -175,12 +209,22 @@ async function readBody(req: IncomingMessage): Promise<{ ok: true; text: string 
 /**
  * Verify a card callback's authenticity.
  *
- * Two mechanisms, both grounded in app-secret material configured out-of-band:
+ * Two independent mechanisms, both grounded in app-secret material configured
+ * out-of-band, and BOTH must hold when the corresponding headers are present:
  *
- *   1. Encrypted push — Feishu sends `{ encrypt: "<base64 AES-CBC ciphertext>" }`.
+ *   1. Request signature (mirrors `CardActionHandler.checkIsEventValidated()` in
+ *      the official SDK): Feishu sends `x-lark-request-timestamp`,
+ *      `x-lark-request-nonce` and `x-lark-signature`. The signature is
+ *      `sha256(timestamp + nonce + <secret> + rawBody)` as a hex digest, where
+ *      `<secret>` is `encryptKey` when configured (encrypted/schema callbacks)
+ *      and `verificationToken` otherwise. Without it, decrypting the body only
+ *      proves the sender held the AesKey — not that the request was not
+ *      captured and replayed later, and not that it came from Feishu at all
+ *      unless the header is checked.
+ *   2. Encrypted push — Feishu sends `{ encrypt: "<base64 AES-CBC ciphertext>" }`.
  *      Only a party holding `encryptKey` can decrypt it, so a successful decrypt
- *      proves the sender. The inner plaintext is the actual payload.
- *   2. Plaintext push + verification token — Feishu echoes the configured
+ *      proves possession of the key. The inner plaintext is the payload.
+ *   3. Plaintext push + verification token — Feishu echoes the configured
  *      `verificationToken` in the body; a constant-time mismatch is a rejection.
  *
  * A channel configured with NEITHER secret is unauthenticated by construction and
@@ -190,19 +234,61 @@ async function readBody(req: IncomingMessage): Promise<{ ok: true; text: string 
 function verifyCardRequest(
   config: FeishuCardActionConfig,
   body: string,
+  headers: Record<string, string | string[] | undefined>,
 ): { ok: true; payload: unknown } | { ok: false; reason: "unauthorized" | "malformed" } {
   const envelope = safeJson(body);
   if (envelope === undefined) return { ok: false, reason: "malformed" };
   if (typeof envelope !== "object" || envelope === null) return { ok: false, reason: "malformed" };
   const record = envelope as Record<string, unknown>;
 
+  // The signature is computed over the RAW body, so it must be checked before
+  // any parse of the ciphertext. The caller must not have modified it.
+  //
+  // Absence of the header is a REJECTION, not a skip. Feishu signs every
+  // callback; a request without a signature is either not from Feishu or comes
+  // from a configuration that disabled signing, and neither is a body this
+  // channel may turn into a responderId.
+  const timestamp = headerValue(headers, "x-lark-request-timestamp");
+  const nonce = headerValue(headers, "x-lark-request-nonce");
+  const signature = headerValue(headers, "x-lark-signature");
+  if (timestamp === undefined || nonce === undefined || signature === undefined) {
+    return { ok: false, reason: "unauthorized" };
+  }
+  // Per the SDK's `checkIsEventValidated`, an encrypted (or schema) callback is
+  // signed with the ENCRYPT key; a plaintext callback is signed with the
+  // verification token. Both are configured out-of-band, so a wrong choice
+  // means the header cannot be reproduced by anyone who lacks that secret.
+  const encrypted = typeof record.encrypt === "string";
+  const secret = encrypted
+    ? config.encryptKey
+    : config.verificationToken.length > 0
+      ? config.verificationToken
+      : config.encryptKey;
+  if (secret.length === 0) {
+    // Feishu signed the request, but we have nothing to verify it against.
+    return { ok: false, reason: "unauthorized" };
+  }
+  {
+    const expected = createHash("sha256")
+      .update(`${timestamp}${nonce}${secret}${body}`, "utf8")
+      .digest("hex");
+    if (!timingSafeEqual(expected, signature)) {
+      return { ok: false, reason: "unauthorized" };
+    }
+    // A replay is only useful inside its freshness window. Feishu's own
+    // guidance is 1800s; a timestamp outside it is a captured request.
+    if (!isFreshTimestamp(timestamp)) {
+      return { ok: false, reason: "unauthorized" };
+    }
+  }
+
   // Path 1: encrypted push. The `encrypt` field is Feishu's envelope marker.
-  if (typeof record.encrypt === "string") {
+  if (encrypted) {
     if (config.encryptKey.length === 0) {
       // An encrypted body with no key configured cannot be authenticated.
       return { ok: false, reason: "unauthorized" };
     }
-    const plaintext = decryptFeishuEnvelope(record.encrypt, config.encryptKey);
+    const plaintext = decryptFeishuEnvelope(record.encrypt as string, config.encryptKey);
     if (plaintext === undefined) return { ok: false, reason: "unauthorized" };
     const payload = safeJson(plaintext);
     if (payload === undefined) return { ok: false, reason: "malformed" };
@@ -270,6 +356,36 @@ function timingSafeEqual(a: string, b: string): boolean {
     diff |= a.charCodeAt(index) ^ b.charCodeAt(index);
   }
   return diff === 0;
+}
+
+/**
+ * Read a header Node may deliver as a string or an array, or not deliver at all.
+ * A missing header is deliberately indistinguishable from an empty one for the
+ * caller: both fail the signature check rather than being guessed at.
+ */
+function headerValue(
+  headers: Record<string, string | string[] | undefined>,
+  name: string,
+): string | undefined {
+  const raw = headers[name] ?? headers[name.toLowerCase()];
+  if (Array.isArray(raw)) return raw[0];
+  return raw;
+}
+
+/**
+ * Freshness window for the request timestamp, following Feishu's own guidance.
+ * A signature is only evidence that Feishu sent THIS request; without a window,
+ * a captured signed request can be replayed forever.
+ */
+const REQUEST_MAX_AGE_MS = 1800 * 1000;
+
+function isFreshTimestamp(timestamp: string): boolean {
+  const parsed = Number(timestamp);
+  if (!Number.isFinite(parsed) || parsed <= 0) return false;
+  const age = Date.now() - parsed * 1000;
+  // A clock skew in the future is tolerated up to the same bound: a request
+  // Feishu sent "now" can arrive with a timestamp a few seconds ahead of ours.
+  return age <= REQUEST_MAX_AGE_MS && age > -REQUEST_MAX_AGE_MS;
 }
 
 /**
@@ -356,9 +472,30 @@ export async function startFeishuCardActionHost(
   });
 
   await new Promise<void>((resolve, reject) => {
+    // Port contention is ASYNCHRONOUS: `server.listen()` throws only for
+    // argument-shape errors, and EADDRINUSE arrives later as an `"error"` event
+    // with no listener registered — which Node reports as an unhandled `error`
+    // event. Attaching the listener BEFORE listen() is the documented pattern;
+    // a try/catch around listen() alone never sees it.
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    const cleanup = (): void => {
+      if (typeof server.removeListener === "function") {
+        server.removeListener("error", onError);
+      }
+    };
+    if (typeof server.once === "function") {
+      server.once("error", onError);
+    }
     try {
-      server.listen(options.config.port, options.config.host, () => resolve());
+      server.listen(options.config.port, options.config.host, () => {
+        cleanup();
+        resolve();
+      });
     } catch (error) {
+      cleanup();
       reject(error instanceof Error ? error : new Error(String(error)));
     }
   });
@@ -400,7 +537,7 @@ async function handleRequest(
     res.end();
     return;
   }
-  const verified = verifyCardRequest(options.config, body.text);
+  const verified = verifyCardRequest(options.config, body.text, req.headers as Record<string, string | string[] | undefined>);
   if (!verified.ok) {
     // Log the class, never the body: it may contain a partially-decrypted or
     // attacker-supplied payload whose contents are not ours to record.

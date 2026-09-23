@@ -128,8 +128,10 @@ function plainText(content: string, literal = false): Record<string, unknown> {
  *
  * Deliberately small: the card is capped at 30 KB and `value` has no field cap
  * of its own, so a short opaque handle is both sufficient and safe. It carries
- * the token and the action, plus a field key when the control names one — never
- * a value, a default, or any agent text.
+ * the token and the action, plus the field's POSITION when the control names
+ * one — never a value, a default, or any agent text. Position rather than the
+ * schema key: core allows `env.prod` and a 128-char key, and the component
+ * `name` derived from it must be card-unique and platform-safe.
  */
 function routingValue(token: string, action: ElicitationUiAction, fieldIndex?: number): Record<string, unknown> {
   return {
@@ -256,7 +258,23 @@ export function buildElicitationFieldCard(
   }
 
   const formElements: Array<Record<string, unknown>> = [];
-  if (field.kind === "single-select") {
+  if (field.kind === "single-select" || field.kind === "boolean") {
+    // A boolean renders as a two-option select whose option VALUES are the
+    // literal `true` / `false` strings the parser maps back. It used to share
+    // the free-text `input`, so the user saw a blank box with no options and no
+    // hint that "yes"/"y"/"1" were the accepted spellings — a contract only the
+    // parser knew about.
+    const options = field.kind === "boolean"
+      ? [
+          { text: plainText(truncate(messages.elicitationYes, FEISHU_TEXT_CONTENT_MAX)), value: "true" },
+          { text: plainText(truncate(messages.elicitationNo, FEISHU_TEXT_CONTENT_MAX)), value: "false" },
+        ]
+      : field.options.map((option) => ({
+          text: plainText(truncate(option.label, FEISHU_TEXT_CONTENT_MAX)),
+          // The option VALUE, not the label: core validates the value, and the
+          // label is agent-controlled display text that may be truncated.
+          value: option.value,
+        }));
     formElements.push({
       tag: "select_static",
       name,
@@ -264,12 +282,7 @@ export function buildElicitationFieldCard(
       ...(initialOptionFor(field, current) !== undefined
         ? { initial_option: initialOptionFor(field, current) }
         : {}),
-      options: field.options.map((option) => ({
-        text: plainText(truncate(option.label, FEISHU_TEXT_CONTENT_MAX)),
-        // The option VALUE, not the label: core validates the value, and the
-        // label is agent-controlled display text that may be truncated.
-        value: option.value,
-      })),
+      options,
     });
   } else {
     formElements.push({
@@ -392,10 +405,15 @@ export function displayValue(value: ChannelElicitationValue | readonly string[])
  * exactly the pre-fill the ACP contract forbids committing without review.
  */
 function initialOptionFor(
-  field: Extract<ChannelElicitationField, { kind: "single-select" }>,
+  field: Extract<ChannelElicitationField, { kind: "single-select" } | { kind: "boolean" }>,
   current: ChannelElicitationValue | undefined,
 ): string | undefined {
+  // A boolean's current answer is a real boolean; the option VALUE the select
+  // carries is its string spelling.
+  if (typeof current === "boolean") return String(current);
   if (typeof current === "string") return current;
+  // A boolean field's default is likewise the string spelling.
+  if (typeof field.defaultValue === "boolean") return String(field.defaultValue);
   return field.defaultValue;
 }
 

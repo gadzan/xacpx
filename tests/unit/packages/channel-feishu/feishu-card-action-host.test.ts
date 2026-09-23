@@ -52,6 +52,24 @@ function encryptForTest(plaintext: string, encryptKey: string): string {
   return Buffer.concat([iv, body]).toString("base64");
 }
 
+/**
+ * Feishu's own signing rule (mirrored from the SDK's `checkIsEventValidated`):
+ * `sha256(timestamp + nonce + secret + rawBody)` as hex, where `secret` is the
+ * encrypt key for encrypted/schema callbacks and the verification token for
+ * plaintext ones. The host now REQUIRES these headers, so every harness call
+ * signs by default and the tests that exercise a rejection must opt out.
+ */
+function signedHeaders(secret: string, body: string, nonce = "nonce-1"): Record<string, string> {
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  return {
+    "x-lark-request-timestamp": timestamp,
+    "x-lark-request-nonce": nonce,
+    "x-lark-signature": createHash("sha256")
+      .update(`${timestamp}${nonce}${secret}${body}`, "utf8")
+      .digest("hex"),
+  };
+}
+
 async function harness(
   config = CONFIG,
 ): Promise<{
@@ -73,8 +91,15 @@ async function harness(
     },
   });
   return {
-    post: (body, headers = { "content-type": "application/json" }) =>
-      server.simulate("POST", config.path, headers, body),
+    post: (body, headers) => {
+      if (headers) return server.simulate("POST", config.path, headers, body);
+      // The signing secret depends on the push shape, mirroring the SDK: an
+      // encrypted callback is signed with the ENCRYPT key, a plaintext one with
+      // the verification token.
+      const encrypted = body.includes("\"encrypt\"");
+      const secret = encrypted ? config.encryptKey : config.verificationToken;
+      return server.simulate("POST", config.path, signedHeaders(secret, body), body);
+    },
     get: (path) => server.simulate("GET", path, {}, ""),
     seen,
     outcomes,
@@ -173,11 +198,11 @@ test("a POST to a different path is not handled", async () => {
   });
   // A valid, fully authenticated body delivered to the WRONG route is still
   // not handled: the route is part of the configuration Feishu was given.
-  const wrong = await server.simulate("POST", "/webhook/not-this-one", {}, actionBody());
+  const wrong = await server.simulate("POST", "/webhook/not-this-one", signedHeaders(CONFIG.verificationToken, actionBody()), actionBody());
   expect(wrong.status).toBe(404);
   expect(seen).toHaveLength(0);
   // And the right route still works.
-  const right = await server.simulate("POST", CONFIG.path, {}, actionBody());
+  const right = await server.simulate("POST", CONFIG.path, signedHeaders(CONFIG.verificationToken, actionBody()), actionBody());
   expect(right.status).toBe(200);
   expect(seen).toHaveLength(1);
 });
@@ -264,7 +289,7 @@ test("a rejected callback logs the reason class, not the body", async () => {
       if (fields) logged.push(fields);
     },
   });
-  await server.simulate("POST", CONFIG.path, {}, actionBody({ token: "bad" }));
+  await server.simulate("POST", CONFIG.path, signedHeaders(CONFIG.verificationToken, actionBody({ token: "bad" })), actionBody({ token: "bad" }));
   expect(logged).toHaveLength(1);
   expect(logged[0]!.reason).toBe("unauthorized");
   // No body content is ever captured: the payload may be attacker-supplied.
@@ -286,10 +311,10 @@ test("a throwing handler does not take the endpoint down", async () => {
       logged.push(event);
     },
   });
-  const first = await server.simulate("POST", CONFIG.path, {}, actionBody());
+  const first = await server.simulate("POST", CONFIG.path, signedHeaders(CONFIG.verificationToken, actionBody()), actionBody());
   expect(first.status).toBe(500);
   // The server still answers afterwards.
-  const second = await server.simulate("POST", CONFIG.path, {}, actionBody());
+  const second = await server.simulate("POST", CONFIG.path, signedHeaders(CONFIG.verificationToken, actionBody()), actionBody());
   expect(second.status).toBe(500);
   expect(logged).toContain("feishu.card.server_error");
 });

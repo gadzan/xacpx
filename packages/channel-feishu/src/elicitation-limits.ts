@@ -95,6 +95,7 @@ export type ElicitationUnsupportedReason =
   | "field-description-too-long"
   | "answer-too-long"
   | "empty-select"
+  | "option-constraint-unsatisfiable"
   | "too-many-fields";
 
 export interface ElicitationRenderability {
@@ -200,6 +201,68 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
         detail: `field ${JSON.stringify(field.key)} allows ${field.maxLength} chars; one input captures at most ${FEISHU_INPUT_MAX_LENGTH}`,
       };
     }
+    // The other side of the same capacity bound: a field that REQUIRES more
+    // characters than the input can hold is impossible to satisfy, not merely
+    // inconvenient.
+    if (field.kind === "text" && field.minLength !== undefined && field.minLength > FEISHU_INPUT_MAX_LENGTH) {
+      return {
+        renderable: false,
+        reason: "answer-too-long",
+        detail: `field ${JSON.stringify(field.key)} requires at least ${field.minLength} chars; one input captures at most ${FEISHU_INPUT_MAX_LENGTH}`,
+      };
+    }
+    // An option core is guaranteed to reject is a dead choice, exactly as on
+    // Discord: the user sees it, picks it, reviews it, and only the broker
+    // refuses. Refusing the form is more honest than hiding part of the
+    // agent's question by filtering it out.
+    if (field.kind === "single-select") {
+      const violating = field.options.find((option) => optionViolatesFieldConstraints(field, option.value));
+      if (violating) {
+        return {
+          renderable: false,
+          reason: "option-constraint-unsatisfiable",
+          detail: `field ${JSON.stringify(field.key)} offers an option that cannot satisfy its own constraints`,
+        };
+      }
+    }
   }
   return { renderable: true };
+}
+
+/**
+ * Would core accept this exact option as an answer for this field?
+ *
+ * false means the choice is dead on arrival: the user can select it, review it,
+ * and submit, and only then does the broker refuse. A form containing one is
+ * refused instead, because filtering the option silently would change the
+ * question the agent asked.
+ *
+ * Conservative by construction: it runs at render time on agent-supplied data,
+ * so a wrong `true` only ever lets a form through that core may still refuse.
+ * Core remains the authority on what a submitted answer satisfies.
+ */
+export function optionViolatesFieldConstraints(
+  field: Extract<ChannelElicitationField, { kind: "single-select" }>,
+  value: string,
+): boolean {
+  // Code POINTS, matching core's validator: "😀".length is 2 in JS but one
+  // character per the JSON Schema spec.
+  const length = [...value].length;
+  if (field.minLength !== undefined && length < field.minLength) return true;
+  if (field.maxLength !== undefined && length > field.maxLength) return true;
+  const format = field.format;
+  if (format === undefined) return false;
+  switch (format) {
+    case "email":
+      return !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+    case "uri":
+      return !/^[a-z][a-z0-9+.-]*:\S+$/i.test(value);
+    case "date":
+      return !/^\d{4}-\d{2}-\d{2}$/.test(value);
+    case "date-time":
+      return !/^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.test(value);
+    default:
+      // An unknown format is not this renderer's to reject.
+      return false;
+  }
 }

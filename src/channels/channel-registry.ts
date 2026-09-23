@@ -10,6 +10,12 @@ import type { OrchestrationTaskRecord } from "../orchestration/orchestration-typ
 
 export class MessageChannelRegistry {
   private readonly channels: Map<string, MessageChannelRuntime>;
+  /**
+   * Channels whose `start()` threw. Capability probes answer from live
+   * readiness, so a channel that advertises form support and then fails to
+   * bind is excluded until it starts successfully.
+   */
+  private readonly failedStartupChannels: Set<string> = new Set();
 
   constructor(channels: MessageChannelRuntime[]) {
     this.channels = new Map(channels.map((channel) => [channel.id, channel]));
@@ -17,6 +23,31 @@ export class MessageChannelRegistry {
 
   get size(): number {
     return this.channels.size;
+  }
+
+  /** Channel ids that failed their most recent `startAll()` attempt. */
+  failedStartupChannelIds(): string[] {
+    return [...this.failedStartupChannels];
+  }
+
+  /**
+   * Ids of channels that can deliver a form Elicitation, considering live
+   * readiness. Used by the startup gate to decide whether a failed channel
+   * actually cost a capability or merely degraded one.
+   */
+  formElicitationChannelIds(): string[] {
+    const ids: string[] = [];
+    for (const [id, channel] of this.channels) {
+      if (this.failedStartupChannels.has(id)) continue;
+      if (typeof channel.requestElicitation !== "function") continue;
+      if ((channel.elicitationModes ?? []).includes("form")) ids.push(id);
+    }
+    return ids;
+  }
+
+  /** Live form-capability read, honouring channels that failed to start. */
+  elicitationFormCapable(): boolean {
+    return this.hasElicitationFormCapability();
   }
 
   configureOrchestration(callbacks: OrchestrationDeliveryCallbacks): void {
@@ -45,6 +76,20 @@ export class MessageChannelRegistry {
     const failed = outcomes.filter(
       (r): r is PromiseRejectedResult => r.status === "rejected",
     );
+    // Record which interaction-advertising channels did NOT come up. The
+    // capability probes below answer from LIVE readiness rather than from the
+    // static declaration, because a channel that advertises form support at
+    // construction time and then fails to start has advertised a capability
+    // nothing backs — and the daemon has already told the bridge about it.
+    for (const [index, outcome] of outcomes.entries()) {
+      const channel = [...this.channels.values()][index];
+      if (!channel) continue;
+      if (outcome.status === "rejected") {
+        this.failedStartupChannels.add(channel.id);
+      } else {
+        this.failedStartupChannels.delete(channel.id);
+      }
+    }
     if (failed.length === this.channels.size) {
       throw new Error("all channels failed to start");
     }
@@ -102,12 +147,18 @@ export class MessageChannelRegistry {
 
   /**
    * True form-Elicitation capability: at least one registered runtime both
-   * implements `requestElicitation()` AND declares the `form` mode. Deliberately
-   * independent of the permission probe (G9): a channel may support approvals
-   * but cannot render a form Elicitation, and v1 forbids inferring one from the
-   * other. Implementing the method without declaring a mode is NOT support —
-   * the broker would accept the request and then fail closed on the mode check,
-   * so advertising it would be a lie the agent pays for.
+   * implements `requestElicitation()` AND declares the `form` mode AND actually
+   * started. Deliberately independent of the permission probe (G9): a channel
+   * may support approvals but cannot render a form Elicitation, and v1 forbids
+   * inferring one from the other. Implementing the method without declaring a
+   * mode is NOT support — the broker would accept the request and then fail
+   * closed on the mode check, so advertising it would be a lie the agent pays
+   * for.
+   *
+   * A channel that declares the mode and then fails to start is likewise NOT
+   * support: this probe answers from live readiness precisely because the
+   * daemon computes it once, before channels exist, and the bridge is told the
+   * answer for the rest of the run.
    */
   hasElicitationFormCapability(): boolean {
     return this.supportedElicitationModes().includes("form");
@@ -134,6 +185,10 @@ export class MessageChannelRegistry {
     const modes: Array<"form"> = [];
     for (const channel of this.channels.values()) {
       if (typeof channel.requestElicitation !== "function") continue;
+      // A channel that failed to start is not a delivery path, however its
+      // declaration reads. Excluding it here keeps the advertised capability
+      // truthful when the daemon's one-shot pre-start probe was too optimistic.
+      if (this.failedStartupChannels.has(channel.id)) continue;
       for (const mode of channel.elicitationModes ?? []) {
         if (mode === "form" && !modes.includes(mode)) modes.push(mode);
       }

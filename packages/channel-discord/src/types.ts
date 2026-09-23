@@ -101,10 +101,10 @@ export interface DiscordSelectComponent {
   options: DiscordSelectOption[];
   disabled?: boolean;
 }
-export interface DiscordModalLabel {
-  label: string;
-  component: DiscordTextInputComponent;
-}
+/**
+ * A modal's Text Input. Its `custom_id` is POSITIONAL (`f:<index>`), never the
+ * schema key — core allows a 128-char key and Discord caps component ids at 100.
+ */
 export interface DiscordTextInputComponent {
   type: 4;
   customId: string;
@@ -116,12 +116,11 @@ export interface DiscordTextInputComponent {
   value?: string;
   placeholder?: string;
 }
+
 /**
  * Modal labels each wrap exactly one Text Input (`APITextInputComponent`:
- * "Text inputs can only be used within modals"). The input's `custom_id` is the
- * FIELD KEY — never the answer — so a modal payload's component ids cannot
- * carry a value. Input count per modal is bounded by
- * `DISCORD_MODAL_INPUT_MAX` in elicitation-limits.ts.
+ * "Text inputs can only be used within modals"). Input count per modal is
+ * bounded by `DISCORD_MODAL_INPUT_MAX` in elicitation-limits.ts.
  */
 export interface DiscordModalLabel {
   label: string;
@@ -165,9 +164,10 @@ export interface DiscordSelectInteraction {
 /**
  * A modal submit.
  *
- * `fields` maps the Text Input `custom_id` to what the user typed. The
- * `custom_id` is the FIELD KEY, never the answer, so the modal payload itself
- * cannot leak a value into a component id.
+ * `fields` maps each Text Input `custom_id` to what the user typed. Those ids are
+ * POSITIONAL (`f:<index>`) rather than the schema key: core allows a 128-char
+ * key and Discord caps component ids at 100. No answer travels in any id, so a
+ * modal payload cannot leak a value into a component id.
  */
 export interface DiscordModalSubmitInteraction {
   customId: string;

@@ -20,6 +20,14 @@ interface DaemonLifecycle {
 interface ChannelRegistry {
   startAll(input: ChannelStartInput): Promise<void>;
   stopAll?(reason?: "shutdown" | "disabled" | "removed" | "logout"): void | Promise<void>;
+  /**
+   * Live interaction-capability reads. Optional so existing test doubles that
+   * only stub `startAll` keep working: when absent, the post-start
+   * truthfulness gate is skipped rather than guessing.
+   */
+  failedStartupChannelIds?(): string[];
+  formElicitationChannelIds?(): string[];
+  elicitationFormCapable?(): boolean;
 }
 
 type ChannelStartupPolicy = "require-one" | "best-effort";
@@ -324,6 +332,42 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       );
       await waitForShutdown(shutdownController.signal);
       return;
+    }
+
+    // Interaction-capability truthfulness gate.
+    //
+    // The daemon computed form-Elicitation capability BEFORE channels existed,
+    // and `startAll` tolerates partial failure — one dead channel does not stop
+    // the others. So a channel that advertised `form` and then failed to bind
+    // can leave the daemon running with a capability nothing backs: the agent
+    // would be told to render a form and every request would cancel. The
+    // registry's probe reads live readiness, so re-evaluating here sees the
+    // failure. Fatal, because the only alternative is a silent downgrade to a
+    // advertised-but-dead capability for the whole run.
+    if (typeof deps.channels.elicitationFormCapable === "function"
+      && typeof deps.channels.failedStartupChannelIds === "function") {
+      const failed = deps.channels.failedStartupChannelIds();
+      const formChannels = deps.channels.formElicitationChannelIds?.() ?? [];
+      const brokenFormChannels = formChannels.filter((id) => failed.includes(id));
+      // Only fatal when NO form-capable channel survived: a healthy one still
+      // delivers forms, so the capability is still true.
+      const anyFormCapable = deps.channels.elicitationFormCapable();
+      if (brokenFormChannels.length > 0) {
+        await runtime.logger.error(
+          anyFormCapable
+            ? "daemon.channels.elicit_form_degraded"
+            : "daemon.channels.elicit_form_lost",
+          anyFormCapable
+            ? "a form-capable channel failed to start; another still serves form elicitation"
+            : "every form-capable channel failed to start; form elicitation is no longer deliverable",
+          { brokenChannels: brokenFormChannels, failedChannels: failed },
+        );
+        if (!anyFormCapable && deps.channelStartupPolicy !== "best-effort") {
+          throw new Error(
+            `form elicitation is advertised but no form-capable channel started (failed: ${brokenFormChannels.join(", ")}); refusing startup`,
+          );
+        }
+      }
     }
 
     try {

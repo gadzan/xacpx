@@ -145,3 +145,73 @@ test("a select with zero options is rejected before it becomes an empty Discord 
   expect(verdict.renderable).toBe(false);
   expect(verdict.reason).toBe("empty-select");
 });
+
+// --- Platform capacity vs the schema's own constraints ---------------------
+//
+// Core keeps minLength/maxLength on the field, so the renderer must NOT clamp
+// them: a bound past what the user can actually type makes the field either
+// impossible or unsubmittable, and silently narrowing it changes the question.
+
+test("a text minLength beyond the input's capacity is refused, not clamped", () => {
+  const verdict = checkElicitationRenderability([
+    { kind: "text", key: "note", title: "Note", required: true, minLength: 4001 },
+  ]);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("text-min-beyond-capture");
+});
+
+test("a text maxLength beyond the input's capacity is refused, not narrowed", () => {
+  const verdict = checkElicitationRenderability([
+    { kind: "text", key: "note", title: "Note", required: true, maxLength: 5000 },
+  ]);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("text-max-beyond-capture");
+});
+
+test("a text maxLength inside the capacity is accepted and pushed to the input", () => {
+  expect(checkElicitationRenderability([
+    { kind: "text", key: "note", title: "Note", required: true, minLength: 1, maxLength: 1000 },
+  ]).renderable).toBe(true);
+});
+
+test("a select title beyond the placeholder cap is refused", () => {
+  // A String Select takes field.title as its placeholder, capped at 150. The
+  // label check (45) is for modal Text Inputs and skips select kinds, so this
+  // title was previously never checked at all.
+  const verdict = checkElicitationRenderability([
+    { kind: "single-select", key: "env", title: "X".repeat(151), required: true, options: [{ value: "a", label: "A" }] },
+  ]);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("select-placeholder-too-long");
+});
+
+test("an option core would reject is refused rather than offered", () => {
+  // core applies the field's string constraints to the CHOSEN option too, so
+  // this enum presents a choice that can only fail after the user makes it.
+  const verdict = checkElicitationRenderability([
+    {
+      kind: "single-select",
+      key: "env",
+      title: "Pick",
+      required: true,
+      minLength: 2,
+      options: [{ value: "a", label: "A" }, { value: "bb", label: "BB" }],
+    },
+  ]);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("select-option-constraint-unsatisfiable");
+});
+
+test("a select whose options all satisfy the constraints is accepted", () => {
+  const verdict = checkElicitationRenderability([
+    {
+      kind: "single-select",
+      key: "env",
+      title: "Pick",
+      required: true,
+      minLength: 2,
+      options: [{ value: "bb", label: "BB" }, { value: "cc", label: "CC" }],
+    },
+  ]);
+  expect(verdict.renderable).toBe(true);
+});

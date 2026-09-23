@@ -158,6 +158,86 @@ test("a redelivered field save cannot accept the form", async () => {
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { env: "prod" } });
 });
 
+test("a text answer keeps its exact whitespace and can be empty", async () => {
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "raw", title: "Raw", required: true },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  // Leading/trailing whitespace is part of the answer: core compares the raw
+  // string, so trimming here would submit something the user did not type.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "  padded  " } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { raw: "  padded  " } });
+});
+
+test("an answered optional field can be skipped back to omitted", async () => {
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "a", title: "A", required: true },
+    { kind: "text", key: "b", title: "B", required: false },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "alpha" } });
+  // Answer b, then go back and skip it: review-and-modify includes
+  // value -> omitted, and a Skip that could not clear the old answer made
+  // that transition impossible.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f1: "beta" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "field", f: 1 }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "skip" }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { a: "alpha" } });
+});
+
+test("an answered empty string is sent, not dropped as a skip", async () => {
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "note", title: "Note", required: false },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  // A real answer, distinct from `null` (nothing answered) and from an omitted key.
+  expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { note: "" } });
+});
+
+test("decline renders a declined card, and cancel renders a cancelled one", async () => {
+  for (const [action, phrase] of [
+    ["decline", "declined to answer"],
+    ["cancel", "cancelled"],
+  ] as const) {
+    const rec = makeRenderer();
+    const promise = rec.renderer.requestElicitation(request(ENV_FIELD), "oc_chat").then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    const { token } = await pendingEntry(rec);
+    await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: action }, formValues: {} });
+    expect(await promise).toEqual({ action, responderId: "ou_initiator" });
+    // The terminal card must show what the user chose. It used to be hard-wired
+    // to "accepted" for every terminal path, so the card contradicted the decision.
+    const last = rec.transport.updates[rec.transport.updates.length - 1]!;
+    const text = JSON.stringify(last);
+    expect(text).toContain(phrase);
+    expect(text).not.toContain("accepted");
+  }
+});
+
 test("the opening card names the correlated agent, not a message claim", () => {
   const card = buildElicitationOpeningCard(
     request(ENV_FIELD),
@@ -474,9 +554,11 @@ test("a submit with no answer for a required field keeps the card live", async (
     formValues: { f0: "" },
   });
   const entry = rec.pending.get(token)!;
-  // Not settled, nothing authored: the user gets another chance.
+  // Not settled, nothing authored: the user gets another chance. An empty
+  // string is a LEGAL answer (`minLength: 0`) and is recorded as one, so the
+  // required-field gate must reject it on length rather than on presence.
   expect(entry.settled).toBe(false);
-  expect(entry.values).toEqual({});
+  expect(entry.values).toEqual({ env: "" });
   // And it can still be completed.
   await rec.renderer.handleAction({
     openId: "ou_initiator",
@@ -620,4 +702,47 @@ test("parseElicitationAction refuses payloads the renderer did not shape", () =>
   expect(parseElicitationAction({ a: "submit" })).toBeNull();
   expect(parseElicitationAction(null)).toBeNull();
   expect(parseElicitationAction({})).toBeNull();
+});
+
+test("a boolean field renders a two-option select, not a free-text box", async () => {
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "boolean", key: "confirm", title: "Confirm", required: true },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  const card = JSON.stringify(rec.transport.updates[rec.transport.updates.length - 1]);
+  // The options must be VISIBLE to the user. This used to be a blank `input`
+  // whose accepted spellings ("yes"/"y"/"1") existed only in the parser, so the
+  // user had no way to know what to type for a boolean question.
+  expect(card).toContain("select_static");
+  expect(card).not.toContain('"tag":"input"');
+  expect(card).toContain("Yes");
+  expect(card).toContain("No");
+  // The option VALUES are the literal spellings the parser maps back, so a real
+  // boolean reaches core rather than a guessed string.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "true" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { confirm: true } });
+});
+
+test("a text answer with an empty string survives an all-optional form", async () => {
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "note", title: "Note", required: false, minLength: 0 },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  // `""` is a real answer, deliberately distinct from `null` (nothing answered).
+  expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { note: "" } });
 });

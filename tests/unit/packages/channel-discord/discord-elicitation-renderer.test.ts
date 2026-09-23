@@ -692,10 +692,11 @@ test("an agent-controlled option label renders literally in the select", async (
     await startWizard(client, channel, req, "env");
     const rows = client.edited[client.edited.length - 1]!.body.selectRows ?? [];
     const [component] = rows[0]!.components;
-    // Markup that could reshape the option is escaped; `@` is NOT in the
-    // escaper's class, so the actual mention defense is `allowedMentions`
-    // (asserted below) — the same combination permission cards rely on.
-    expect(component!.options[0]!.label).toContain("\\*\\*bold\\*\\*");
+    // A select option's label is NOT Markdown: Discord renders it literally, so
+    // escaping it here would double the backslashes the user sees. The mention
+    // defense is `allowedMentions` at send time, not label escaping — and the
+    // option VALUE (what core validates) is never touched by either.
+    expect(component!.options[0]!.label).toBe("@everyone **bold** <@123>");
     expect(component!.options[0]!.value).toBe("prod");
     expect(client.edited[client.edited.length - 1]!.body.allowedMentions?.parse).toEqual([]);
   } finally {

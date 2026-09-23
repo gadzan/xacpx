@@ -193,6 +193,56 @@ export class FeishuChannel implements MessageChannelRuntime {
     if (this.isLoggedIn()) return "feishu credentials configured";
     throw new Error("Feishu uses channel.options.appId and channel.options.appSecret; configure them instead of QR login.");
   }
+  /**
+   * Shutdown path, explicitly separate from `logout()`.
+   *
+   * `logout()` is a credential reset and predates elicitation; the registry's
+   * shutdown falls back to it for channels with no `stop()`, which used to mean
+   * a form left open when the daemon stopped had no drain at all: the card stayed
+   * interactive until the HTTP listener died underneath it, and the awaiting turn
+   * only settled if some other path happened to abort its signal.
+   *
+   * The ORDER is the contract: drain every pending form (cards inert, promises
+   * rejected) BEFORE the callback channel and clients go away, so no click can
+   * arrive into a torn-down runtime and no user is left staring at a form that
+   * silently never answers.
+   */
+  async stop(reason: "shutdown" | "disabled" | "removed" | "logout" = "shutdown"): Promise<void> {
+    await this.drainPendingElicitations(reason);
+    this.logout();
+  }
+
+  /**
+   * Withdraw every pending form on every account.
+   *
+   * Rejects rather than resolves: a shutdown is not a user decision, so no
+   * responderId may be invented for it. Each entry is withdrawn by the renderer
+   * that owns it, so the card's terminal state and its promise settle together.
+   */
+  private async drainPendingElicitations(
+    reason: "shutdown" | "disabled" | "removed" | "logout",
+  ): Promise<void> {
+    const drains: Array<Promise<void>> = [];
+    for (const [accountId, runtime] of this.accounts) {
+      if (!runtime.elicitation) continue;
+      const elicitation = runtime.elicitation;
+      for (const entry of [...elicitation.pending.values()]) {
+        drains.push(
+          elicitation.renderer.withdrawPending(entry, `feishu elicitation channel stopped (${reason})`),
+        );
+      }
+      // Stop the listener only once its forms are inert: a live endpoint after
+      // this would still authenticate and dispatch into a drained renderer.
+      if (runtime.cardHost) {
+        const host = runtime.cardHost;
+        runtime.cardHost = undefined;
+        drains.push(Promise.resolve(host.stop()).catch(() => {}));
+      }
+      void accountId;
+    }
+    await Promise.all(drains);
+  }
+
   logout(): void {
     for (const [accountId, runtime] of this.accounts) {
       // Stop the card listener first: a live endpoint after logout would still

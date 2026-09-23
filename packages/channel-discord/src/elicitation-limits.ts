@@ -58,6 +58,20 @@ export const DISCORD_MODAL_INPUT_MAX = 5;
  * Submit / Decline / Cancel.
  */
 export const DISCORD_ACTION_ROW_BUTTON_MAX = 5;
+/**
+ * A String Select's placeholder cap (Discord documents 150 characters, enforced
+ * by `@discordjs/builders`). This renderer uses `field.title` as the
+ * placeholder, so the title participates in this budget as well as the 45-char
+ * Text Input label one.
+ */
+export const DISCORD_SELECT_PLACEHOLDER_MAX = 150;
+/**
+ * What a modal Text Input actually lets a user type: the platform's own
+ * `max_length` ceiling. Core keeps `minLength`/`maxLength` on the field, so a
+ * bound past this number is either impossible to satisfy or unsubmittable, and
+ * the renderer must refuse rather than silently clamp.
+ */
+export const DISCORD_TEXT_CAPTURE_MAX = 4000;
 
 export type ElicitationUnsupportedReason =
   | "select-option-count"
@@ -65,8 +79,12 @@ export type ElicitationUnsupportedReason =
   | "select-option-value-too-long"
   | "select-option-description-too-long"
   | "select-min-max-out-of-range"
+  | "select-placeholder-too-long"
   | "field-label-too-long"
   | "field-description-too-long"
+  | "text-min-beyond-capture"
+  | "text-max-beyond-capture"
+  | "select-option-constraint-unsatisfiable"
   | "empty-select";
 
 export interface ElicitationRenderability {
@@ -144,6 +162,31 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
           detail: `field ${JSON.stringify(field.key)} requires min/max items ${bound}, limit ${DISCORD_SELECT_MIN_MAX_VALUES_MAX}`,
         };
       }
+      // A String Select takes `field.title` as its PLACEHOLDER, capped at 150.
+      // The label branch below is only reached by text/number fields (this one
+      // `continue`s), which is why the title was never checked against it.
+      if (field.title.length > DISCORD_SELECT_PLACEHOLDER_MAX) {
+        return {
+          renderable: false,
+          reason: "select-placeholder-too-long",
+          detail: `field ${JSON.stringify(field.key)} placeholder is ${field.title.length} chars, limit ${DISCORD_SELECT_PLACEHOLDER_MAX}`,
+        };
+      }
+      // An option the validator is guaranteed to refuse is a dead choice: the
+      // user sees it, picks it, reviews it, submits, and the broker cancels.
+      // Refuse the form instead — filtering it silently would change the
+      // question the agent asked.
+      if (field.kind === "single-select") {
+        const violating = field.options.find((option) =>
+          optionViolatesFieldConstraints(field, option.value));
+        if (violating) {
+          return {
+            renderable: false,
+            reason: "select-option-constraint-unsatisfiable",
+            detail: `field ${JSON.stringify(field.key)} offers an option that cannot satisfy its own constraints`,
+          };
+        }
+      }
       continue;
     }
 
@@ -164,6 +207,83 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
          detail: `field ${JSON.stringify(field.key)} description is ${(field.description ?? "").length} chars, limit 1000`,
       };
     }
+    if (field.kind === "text") {
+      // The capture capacity is fixed by the renderer (a modal Text Input's
+      // `max_length`). Core's answer validator is authoritative on bounds, so
+      // the renderer must NOT silently clamp them: a `minLength` above capacity
+      // makes the field impossible, and a `maxLength` above it makes every
+      // answer past capacity unsubmittable. Both are refusals, not truncations.
+      const minLength = field.minLength ?? 0;
+      if (minLength > DISCORD_TEXT_CAPTURE_MAX) {
+        return {
+          renderable: false,
+          reason: "text-min-beyond-capture",
+          detail: `field ${JSON.stringify(field.key)} requires at least ${minLength} chars but the platform input captures ${DISCORD_TEXT_CAPTURE_MAX}`,
+        };
+      }
+      if ((field.maxLength ?? 0) > DISCORD_TEXT_CAPTURE_MAX) {
+        return {
+          renderable: false,
+          reason: "text-max-beyond-capture",
+          detail: `field ${JSON.stringify(field.key)} allows ${field.maxLength} chars but the platform input captures ${DISCORD_TEXT_CAPTURE_MAX}`,
+        };
+      }
+    }
   }
   return { renderable: true };
+}
+
+/**
+ * Would core accept this exact option as a submitted answer?
+ *
+ * Used to reject a form whose UI offers a value the validator is GUARANTEED to
+ * refuse: core applies `minLength`/`maxLength`/`format` to the chosen option
+ * value as well as to free text, so an enum `["a","bb"]` carrying
+ * `minLength: 2` presents "a" in a dropdown, accepts the click, and only
+ * rejects at the broker — after the user has already made the choice. The
+ * alternative (silently filtering the option) would hide part of the agent's
+ * question, so the honest answer is to not render the form at all.
+ */
+export function optionViolatesFieldConstraints(
+  field: Extract<ChannelElicitationField, { kind: "single-select" }>,
+  value: string,
+): boolean {
+  const length = codePointCount(value);
+  if (field.minLength !== undefined && length < field.minLength) return true;
+  if (field.maxLength !== undefined && length > field.maxLength) return true;
+  const format = field.format;
+  if (format === undefined) return false;
+  return !likelySatisfiesFormat(format, value);
+}
+
+/**
+ * Unicode code POINTS, matching core's answer validator ("😀".length === 2 in
+ * JS but is one character per the JSON Schema spec).
+ */
+function codePointCount(value: string): number {
+  return [...value].length;
+}
+
+/**
+ * Whether a value plausibly satisfies a core-supported `format`.
+ *
+ * Deliberately CONSERVATIVE and duplicated from core rather than imported: this
+ * runs at render time on agent-supplied option values, and a wrong `false`
+ * only makes the renderer refuse a form it could have drawn. It never accepts
+ * an answer — core remains the authority on what a submitted value satisfies.
+ */
+function likelySatisfiesFormat(format: string, value: string): boolean {
+  switch (format) {
+    case "email":
+      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+    case "uri":
+      return /^[a-z][a-z0-9+.-]*:\S+$/i.test(value);
+    case "date":
+      return /^\d{4}-\d{2}-\d{2}$/.test(value);
+    case "date-time":
+      return /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.test(value);
+    default:
+      // An unknown format is not this renderer's to reject.
+      return true;
+  }
 }
