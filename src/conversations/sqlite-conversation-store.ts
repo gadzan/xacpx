@@ -115,6 +115,7 @@ interface MemberTurnRow {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  failure_reason: string | null;
   assignment_id: string | null;
   task: string | null;
   expected_output: string | null;
@@ -212,6 +213,7 @@ CREATE TABLE IF NOT EXISTS member_turns (
   created_at TEXT NOT NULL,
   started_at TEXT,
   finished_at TEXT,
+  failure_reason TEXT,
   assignment_id TEXT,
   task TEXT,
   expected_output TEXT,
@@ -363,13 +365,14 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
     state: row.state as MemberTurnState,
     triggerMessageIds: JSON.parse(row.trigger_message_ids_json) as string[],
     ...(snapshot ? { profileSnapshot: snapshot } : {}),
-    createdAt: row.created_at,
     ...(optionalString(row.started_at) ? { startedAt: row.started_at as string } : {}),
     ...(optionalString(row.finished_at) ? { finishedAt: row.finished_at as string } : {}),
+    ...(optionalString(row.failure_reason) ? { failureReason: row.failure_reason as string } : {}),
     ...(optionalString(row.assignment_id) ? { assignmentId: row.assignment_id as string } : {}),
     ...(optionalString(row.task) ? { task: row.task as string } : {}),
     ...(optionalString(row.expected_output) ? { expectedOutput: row.expected_output as string } : {}),
     ...(dependsOn.length > 0 ? { dependsOn } : {}),
+    createdAt: row.created_at,
   };
 }
 
@@ -1034,8 +1037,8 @@ export class SqliteConversationStore implements ConversationStore {
             ? "indeterminate"
             : "cancelled";
         this.sqlite.run(
-          `UPDATE member_turns SET state = ?, finished_at = ? WHERE id = ?`,
-          [state, input.now, member.id],
+          `UPDATE member_turns SET state = ?, finished_at = ?, failure_reason = ? WHERE id = ?`,
+          [state, input.now, entry.outcome === "failed" ? (entry.reason ?? "failed") : null, member.id],
         );
         this.sqlite.run(
           `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
@@ -1044,13 +1047,16 @@ export class SqliteConversationStore implements ConversationStore {
         this.finishDispatchForMemberTurn(member.id, input.now);
         settled.push({ member: this.requireMemberTurn(member.id), outcome: entry.outcome });
       }
-      // Phase 2: aggregate the Run once, from whole-batch evidence.
-      // Whole-run cancel always force-terminals (human cancel ends the Run,
-      // including automatic Runs awaiting routing). Indeterminate outranks
-      // failed; proven member evidence above is never rewritten by this step
-      // (it only sets Run-level state/reason/finished_at). Accumulate
-      // failedBotIds for EVERY failed member here: the aggregate only
-      // attributes its anchor member, which may be the unknown one.
+      // Phase 2: aggregate the Run once, from whole-batch evidence — unless
+      // deferred (a sibling physical cancel threw): then member evidence
+      // stays durable without aggregation, and retry re-derives the outcome
+      // from complete evidence. Whole-run cancel always force-terminals
+      // (human cancel ends the Run, including automatic Runs awaiting
+      // routing). Indeterminate outranks failed; proven member evidence above
+      // is never rewritten by this step (it only sets Run-level
+      // state/reason/finished_at). Accumulate failedBotIds for EVERY failed
+      // member here: the aggregate only attributes its anchor member, which
+      // may be the unknown one.
       const failedIds = new Set(this.requireRun(input.runId).failedBotIds);
       for (const entry of settled) {
         const fresh = this.requireMemberTurn(entry.member.id);
@@ -1061,17 +1067,38 @@ export class SqliteConversationStore implements ConversationStore {
       if (failedIds.size > 0) {
         this.sqlite.run(`UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`, [JSON.stringify([...failedIds]), input.runId]);
       }
-      const anchor = settled.find((entry) => entry.outcome === "unknown")?.member
-        ?? settled.find((entry) => TERMINAL_MEMBER_STATES.includes(entry.member.state))?.member
-        ?? settled[0]?.member;
-      if (!anchor) {
+      if (input.deferRunAggregate === true) {
+        return {
+          run: this.requireRun(input.runId),
+          settled: settled.map((entry) => ({
+            member: this.requireMemberTurn(entry.member.id),
+            outcome: entry.outcome,
+            ...(entry.message ? { message: entry.message } : {}),
+          })),
+        };
+      }
+      const anchorEntry = settled.find((entry) => entry.outcome === "unknown")
+        ?? settled.find((entry) => TERMINAL_MEMBER_STATES.includes(entry.member.state))
+        ?? settled[0];
+      if (!anchorEntry) {
         return { run: this.requireRun(input.runId), settled };
       }
+      // Anchor reason mirrors the anchor member's actual outcome — never a
+      // hardcoded "cancelled". Single-member runs preserve the diagnostic
+      // (failed reason, started_result_unknown); multi-member batches derive
+      // theirs in the aggregate (unknown > failed/cancelled mixes).
+      const anchorReason = anchorEntry.outcome === "unknown"
+        ? "started_result_unknown"
+        : anchorEntry.outcome === "failed"
+          ? (input.outcomes.find((o) => o.memberTurnId === anchorEntry.member.id)?.reason ?? "failed")
+          : anchorEntry.outcome === "cancelled"
+            ? "cancelled"
+            : undefined;
       const aggregated = this.aggregateRunAfterMemberTerminal(
         input.runId,
-        anchor.id,
+        anchorEntry.member.id,
         input.now,
-        "cancelled",
+        anchorReason,
         true,
       );
       return {
@@ -1298,6 +1325,9 @@ export class SqliteConversationStore implements ConversationStore {
     }
     if (!names.has("depends_on_json")) {
       this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN depends_on_json TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!names.has("failure_reason")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN failure_reason TEXT");
     }
   }
 
@@ -1664,8 +1694,8 @@ export class SqliteConversationStore implements ConversationStore {
     }
     const state = input.terminalState ?? "failed";
     this.sqlite.run(
-      `UPDATE member_turns SET state = ?, finished_at = ? WHERE id = ?`,
-      [state, input.now, input.memberTurnId],
+      `UPDATE member_turns SET state = ?, finished_at = ?, failure_reason = ? WHERE id = ?`,
+      [state, input.now, state === "failed" ? (input.reason ?? "failed") : null, input.memberTurnId],
     );
     this.sqlite.run(
       `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,

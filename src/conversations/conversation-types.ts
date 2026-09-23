@@ -142,6 +142,10 @@ export interface MemberTurnRecord {
   expectedOutput?: string;
   /** Assignment ids this turn depends on (Router dependsOn). */
   dependsOn?: string[];
+  /** Machine-readable terminal failure reason (failed only). Durable audit
+   *  evidence: preserved per-member so a sibling's unknown/cancel can never
+   *  erase which member failed and why. */
+  failureReason?: string;
 }
 
 /** Server-derived authenticated human ingress. Clients cannot mint this. */

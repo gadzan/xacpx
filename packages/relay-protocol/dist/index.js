@@ -536,7 +536,7 @@ function validMemberTurnSummary(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && typeof c.attempt === "number" && (c.origin === "human" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput) && optStrArr(c.dependsOn);
+  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && typeof c.attempt === "number" && (c.origin === "human" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput) && optStrArr(c.dependsOn) && optStr(c.failureReason);
 }
 function validControlEvent(e) {
   if (typeof e !== "object" || e === null)

@@ -157,8 +157,11 @@ export interface SettleCancelBatchInput {
   runId: string;
   outcomes: CancelMemberOutcome[];
   now: string;
+  /** Evidence-only settlement: persist member rows but skip Run aggregation.
+   *  Used when a sibling physical cancel threw — the Run outcome is
+   *  re-derived on retry from complete member evidence. */
+  deferRunAggregate?: boolean;
 }
-
 export interface SettledCancelMember {
   member: MemberTurnRecord;
   outcome: CancelMemberOutcome["outcome"];

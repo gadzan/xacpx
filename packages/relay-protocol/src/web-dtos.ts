@@ -591,7 +591,7 @@ function validMemberTurnSummary(value: unknown): boolean {
     && typeof c.createdAt === "string"
     && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt)
     && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput)
-    && optStrArr(c.dependsOn);
+    && optStrArr(c.dependsOn) && optStr(c.failureReason);
 }
 
 /** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.

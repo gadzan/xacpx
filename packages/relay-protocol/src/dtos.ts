@@ -416,6 +416,8 @@ export interface MemberTurnSummaryDto {
   task?: string;
   expectedOutput?: string;
   dependsOn?: string[];
+  /** Machine-readable terminal failure reason (failed only). */
+  failureReason?: string;
 }
 
 export interface ConversationRunDetailDto extends ConversationRunDto {

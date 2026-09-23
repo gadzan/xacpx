@@ -3132,3 +3132,112 @@ test("maxMemberTurns below the accepted member count rejects before any row", as
   expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 })).toHaveLength(0);
   first.store.close();
 });
+
+
+test("single-member cancel preserves the failed and unknown diagnostic reasons", async () => {
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  for (const [outcome, reason, state, memberState] of [
+    ["failed", "provider crashed", "failed", "failed"],
+    ["unknown", "started_result_unknown", "indeterminate", "indeterminate"],
+  ] as const) {
+    const first = await createLifecycle();
+    const bot = first.bots.getBot(BOT_ID);
+    const accepted = first.store.acceptRequest({
+      conversationId: `conv_${outcome}`,
+      topicId: `topic_${outcome}`,
+      requestId: `req-single-${outcome}`,
+      botId: bot.id,
+      content: "go",
+      profileSnapshot: snapshotBotProfile(bot, NOW),
+      now: NOW,
+    });
+    const result = first.store.settleCancelBatch({
+      runId: accepted.run.id,
+      now: NOW,
+      outcomes: outcome === "failed"
+        ? [{ memberTurnId: accepted.memberTurn.id, outcome, reason }]
+        : [{ memberTurnId: accepted.memberTurn.id, outcome }],
+    });
+    expect(result.run.state).toBe(state);
+    expect(result.run.completionReason).toBe(reason);
+    const member = first.store.getMemberTurn(accepted.memberTurn.id)!;
+    expect(member.state).toBe(memberState);
+    if (outcome === "failed") {
+      expect(member.failureReason).toBe("provider crashed");
+      expect(result.run.failedBotIds).toContain(bot.id);
+    }
+    first.store.close();
+  }
+});
+
+test("partial fan-out persists fulfilled evidence, then throws for retry", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-partial-fanout",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  for (const turn of accepted.memberTurns) {
+    const claim = first.store.claimNextDispatch({
+      now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+    })!;
+    first.store.markExecutionStarted({
+      dispatchId: claim.dispatch.id, owner: "dispatcher-a", generation: claim.dispatch.generation,
+      runId: accepted.run.id, memberTurnId: turn.id,
+      sessionAlias: `sess_${turn.botId}`, logicalSessionId: `lsess_${turn.botId}`,
+      sourceTurnId: `sturn_${turn.botId}`, now: NOW,
+    });
+  }
+  const [turnA, turnB] = accepted.memberTurns;
+  // A completes; B's physical cancel throws. Evidence for A must persist even
+  // though the batch throws; the Run stays non-terminal for safe retry.
+  // A observes a proven completion; B's physical cancel throws. A's
+  // evidence must persist even though the batch throws for retry.
+  const disp = first.dispatcher as unknown as {
+    runner: { cancel: (input: { promptRequestId: string }) => Promise<{ outcome: "completed" | "cancelled"; text?: string }> };
+  };
+  disp.runner.cancel = ((input: { promptRequestId: string }) => {
+    if (input.promptRequestId === `sturn_${botB.id}`) {
+      throw new Error("injected cancel transport failure");
+    }
+    return Promise.resolve({ outcome: "completed" as const, text: "proven late work" });
+  });
+  await expect(first.dispatcher.cancelRun(accepted.run.id)).rejects.toThrow(
+    "injected cancel transport failure",
+  );
+  const freshA = first.store.getMemberTurn(turnA!.id)!;
+  expect(freshA.state).toBe("completed");
+  const evidence = first.store.listMessages({
+    conversationId: group.id, topicId: topic.id, limit: 10,
+  }).filter((message) => message.role === "bot" && message.senderBotId === turnA!.botId);
+  expect(evidence.map((message) => message.content)).toContain("proven late work");
+  expect(first.store.getRun(accepted.run.id)?.consumedMemberTurns).toBe(1);
+  // The Run stays non-terminal (no aggregate ran) so retry can settle B.
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("running");
+  expect(first.store.getMemberTurn(turnB!.id)?.state).toBe("running");
+  // Restart-like recovery afterwards must not degrade A's proven evidence:
+  // A is completed (dispatch completed, skipped by recovery); only B, whose
+  // cancel threw with genuinely unknown outcome, goes indeterminate.
+  const recovered = first.store.recoverExpiredClaims("2026-09-15T13:00:00.000Z");
+  expect(recovered.some((r) => r.memberTurn.id === turnB!.id && r.outcome === "indeterminate")).toBe(true);
+  expect(first.store.getMemberTurn(turnA!.id)?.state).toBe("completed");
+  const evidenceAfter = first.store.listMessages({
+    conversationId: group.id, topicId: topic.id, limit: 10,
+  }).filter((message) => message.role === "bot" && message.senderBotId === turnA!.botId);
+  expect(evidenceAfter.map((message) => message.content)).toContain("proven late work");
+  first.store.close();
+});

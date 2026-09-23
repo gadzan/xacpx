@@ -151,37 +151,44 @@ export class ConversationDispatcher {
       await this.kick();
       return;
     }
-    // Snapshot-first: issue physical cancel to EVERY active member before
-    // persisting any outcome. Persisting A's result (e.g. unknown seals the
-    // automatic Run indeterminate and marks B indeterminate) must not revoke
-    // B's physical cancel: B's underlying execution may still be mutating.
-    const pending: Array<{ member: MemberTurnRecord; result: ConversationTurnCancelResult }> = [];
+    // Snapshot-first with all-settled semantics: issue physical cancel to
+    // EVERY active member. A transport throw must not abandon already
+    // observed outcomes: persist fulfilled evidence first (below), then
+    // rethrow so the barrier stays and retry covers only the unsettled rest.
+    const fulfilled: Array<{ member: MemberTurnRecord; result: ConversationTurnCancelResult }> = [];
+    let firstError: unknown;
     for (const active of outcome.activeMembers) {
       const current = this.store.getMemberTurn(active.id);
       if (!current) {
         continue;
       }
-      pending.push({
-        member: current,
-        result: await this.runner.cancel({
-          conversationId: outcome.run.conversationId,
-          topicId: outcome.run.topicId,
-          sessionAlias: current.sessionAlias ?? "",
-          queueItemId: current.queueItemId,
-          promptRequestId: current.sourceTurnId ?? "",
-        }),
-      });
+      try {
+        fulfilled.push({
+          member: current,
+          result: await this.runner.cancel({
+            conversationId: outcome.run.conversationId,
+            topicId: outcome.run.topicId,
+            sessionAlias: current.sessionAlias ?? "",
+            queueItemId: current.queueItemId,
+            promptRequestId: current.sourceTurnId ?? "",
+          }),
+        });
+      } catch (error) {
+        firstError ??= error;
+      }
     }
-    // Two-phase settlement: physical cancel already fanned out to every
-    // active member above. Persist ALL observed outcomes as member evidence
-    // in one transaction first, then aggregate the Run once. A sibling's
-    // unknown can never erase another member's proven completion/failure:
-    // A=indeterminate + B=completed yields B=completed with evidence and
-    // Run=indeterminate — never B=indeterminate.
+    // Two-phase settlement: persist ALL observed outcomes as member evidence
+    // in one transaction first, then aggregate the Run once — even when a
+    // sibling cancel threw. A sibling's unknown can never erase another
+    // member's proven completion/failure: A=indeterminate + B=completed
+    // yields B=completed with evidence and Run=indeterminate.
+    // Evidence-only when partial: with a throw pending, settle member rows
+    // but skip Run aggregation/release so retry re-derives the outcome from
+    // complete evidence instead of a half-persisted aggregate.
     const settled = this.store.settleCancelBatch({
       runId: outcome.run.id,
       now: this.now().toISOString(),
-      outcomes: pending.map((entry) => ({
+      outcomes: fulfilled.map((entry) => ({
         memberTurnId: entry.member.id,
         outcome: entry.result.outcome,
         ...(entry.result.outcome === "completed" ? { content: entry.result.text ?? "" } : {}),
@@ -190,6 +197,7 @@ export class ConversationDispatcher {
           : {}),
         ...(entry.result.outcome === "failed" ? { reason: entry.result.error ?? "failed" } : {}),
       })),
+      ...(firstError !== undefined ? { deferRunAggregate: true } : {}),
     });
     for (const entry of settled.settled) {
       if (entry.outcome === "completed" && entry.message) {
@@ -197,6 +205,9 @@ export class ConversationDispatcher {
       } else {
         this.emitRunAndMember(settled.run, entry.member.id);
       }
+    }
+    if (firstError !== undefined) {
+      throw firstError;
     }
     await this.kick();
   }

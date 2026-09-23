@@ -183,6 +183,8 @@ export interface MemberTurnSummaryDto {
   expectedOutput?: string;
   /** Assignment ids this turn depends on. */
   dependsOn?: string[];
+  /** Machine-readable terminal failure reason (failed only). */
+  failureReason?: string;
 }
 
 export interface ConversationPromptRequestDto {
@@ -361,12 +363,11 @@ export function toMemberTurnSummary(turn: MemberTurnRecord): MemberTurnSummaryDt
     state: turn.state,
     createdAt: turn.createdAt,
     ...(turn.sourceTurnId ? { promptRequestId: turn.sourceTurnId } : {}),
-    ...(turn.startedAt ? { startedAt: turn.startedAt } : {}),
-    ...(turn.finishedAt ? { finishedAt: turn.finishedAt } : {}),
     ...(turn.assignmentId ? { assignmentId: turn.assignmentId } : {}),
     ...(turn.task ? { task: turn.task } : {}),
     ...(turn.expectedOutput ? { expectedOutput: turn.expectedOutput } : {}),
     ...(turn.dependsOn && turn.dependsOn.length > 0 ? { dependsOn: [...turn.dependsOn] } : {}),
+    ...(turn.failureReason ? { failureReason: turn.failureReason } : {}),
   };
 }
 
