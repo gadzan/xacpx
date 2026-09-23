@@ -22,6 +22,8 @@ function formChannel(id: string, fails = false): MessageChannelRuntime {
     async start(): Promise<void> {
       if (fails) throw new Error("card host bind failed: EADDRINUSE");
     },
+    async stop(): Promise<void> {},
+    logout(): void {},
   } as unknown as MessageChannelRuntime;
 }
 
@@ -30,6 +32,7 @@ function plainChannel(id: string): MessageChannelRuntime {
     id,
     async start(): Promise<void> {},
     async stop(): Promise<void> {},
+    logout(): void {},
   } as unknown as MessageChannelRuntime;
 }
 
@@ -113,3 +116,75 @@ describe("live form capability", () => {
     expect(registry.hasElicitationFormCapability()).toBe(false);
   });
 });
+
+// --- Readiness is published per channel, not after allSettled ---------------
+//
+// startAll() is NOT a readiness barrier: a healthy channel's start() can stay
+// pending for the daemon's whole lifetime. A capability failure that only
+// surfaced after allSettled would therefore never surface at all.
+
+test("readiness fires the moment the failing channel's start returns", async () => {
+  // A healthy form channel whose start() never settles, plus a form channel that
+  // fails immediately. `startAll()` stays pending on the healthy one, so the
+  // ONLY observable signal is the listener — anything computed after
+  // `allSettled` would never run at all.
+  const events: Array<{ formCapable: boolean; failed: string[]; live: string[] }> = [];
+  const registry = new MessageChannelRegistry([formChannel("feishu", true), longRunningFormChannel("healthy")]);
+  registry.setElicitationReadinessListener((readiness) => {
+    events.push({
+      formCapable: readiness.formCapable,
+      failed: readiness.failedChannelIds,
+      live: readiness.formChannelIds,
+    });
+  });
+  // Deliberately not awaited: with the long-running channel it never settles.
+  void registry.startAll(startInput());
+  // Yield the event loop: the failing channel's `finally` logs (an await)
+  // before it publishes readiness.
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(events.length).toBeGreaterThan(0);
+  const last = events[events.length - 1]!;
+  // The failure is named, and it happened BEFORE allSettled resolved.
+  expect(last.failed).toEqual(["feishu"]);
+  // Degraded rather than lost: the healthy channel still delivers forms, which
+  // is why the caller must distinguish the two rather than treating any failure
+  // as a dead capability.
+  expect(last.formCapable).toBe(true);
+  expect(last.live).toEqual(["healthy"]);
+  expect(registry.declaredElicitationFormChannelIds()).toEqual(["feishu", "healthy"]);
+  expect(registry.formElicitationChannelIds()).toEqual(["healthy"]);
+  void registry.stopAll();
+});
+
+test("a capability that is fully lost is reported as such, immediately", async () => {
+  // The case the daemon must refuse on: every declared form channel failed, so
+  // the bridge's `form=true` describes nothing.
+  const events: Array<{ formCapable: boolean; failed: string[]; live: string[] }> = [];
+  const registry = new MessageChannelRegistry([formChannel("feishu", true), plainChannel("weixin")]);
+  registry.setElicitationReadinessListener((readiness) => {
+    events.push({
+      formCapable: readiness.formCapable,
+      failed: readiness.failedChannelIds,
+      live: readiness.formChannelIds,
+    });
+  });
+  void registry.startAll(startInput());
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const last = events[events.length - 1]!;
+  expect(last.formCapable).toBe(false);
+  expect(last.live).toEqual([]);
+  expect(last.failed).toEqual(["feishu"]);
+  expect(registry.hasElicitationFormCapability()).toBe(false);
+  void registry.stopAll();
+});
+
+/** A channel whose start() stays pending — the normal daemon state. */
+function longRunningFormChannel(id: string): MessageChannelRuntime {
+  return {
+    id,
+    elicitationModes: ["form"] as const,
+    requestElicitation: () => Promise.resolve({ action: "decline" as const, responderId: "u" }),
+    start: (): Promise<void> => new Promise<void>(() => {}),
+    async stop(): Promise<void> {},
+  } as unknown as MessageChannelRuntime;
+}

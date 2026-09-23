@@ -45,6 +45,7 @@ import { t as getMessages } from "./i18n/index.js";
 import { checkElicitationRenderability } from "./elicitation-limits.js";
 import {
   buildElicitationContent,
+  createAnswerMap,
   formComponentName,
   isAnswered,
   markSkipped,
@@ -223,7 +224,7 @@ export class FeishuElicitationRenderer {
       chatId,
       sequence: 0,
       request,
-      values: {},
+      values: createAnswerMap(),
       skipped: new Set<string>(),
       settled: false,
       resolve: settle,

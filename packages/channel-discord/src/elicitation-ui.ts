@@ -43,7 +43,12 @@ import {
   DISCORD_SELECT_PLACEHOLDER_MAX,
   DISCORD_TEXT_CAPTURE_MAX,
 } from "./elicitation-limits.js";
-import { trySettle } from "./elicitation-state.js";
+import {
+  buildAnswerContent,
+  markSkipped,
+  nextUnresolvedKey,
+  trySettle,
+} from "./elicitation-state.js";
 import type { PendingDiscordElicitation } from "./elicitation-state.js";
 
 export const ELICITATION_CUSTOM_ID_PREFIX = "xacpx-elicit:";
@@ -56,6 +61,7 @@ export type ElicitationUiAction =
   | "review"
   | "edit"
   | "page"
+  | "skip"
   | "submit"
   | "decline"
   | "cancel";
@@ -67,6 +73,7 @@ const ACTION_SEGMENTS: Record<ElicitationUiAction, string> = {
   review: "review",
   edit: "edit",
   page: "page",
+  skip: "skip",
   submit: "submit",
   decline: "decline",
   cancel: "cancel",
@@ -156,6 +163,7 @@ export function parseElicitationCustomId(
   switch (action) {
     case "start":
     case "review":
+    case "skip":
     case "submit":
     case "decline":
     case "cancel":
@@ -207,19 +215,63 @@ function actionRow(entries: Array<{ label: string; customId: string; style: Butt
   return [{ type: 1, components: entries.map((entry) => button(entry.label, entry.customId, entry.style)) }];
 }
 
-const MAX_CARD_CHARS = 1800;
-
 /**
  * Bound a rendered string, appending an ellipsis when it is cut.
  *
- * Truncation is a DISPLAY bound for content blocks the user reads; it is never
- * applied to anything that carries meaning the user must decide on (a button
- * label already bounded at 80, or a select option's identity). Content that
- * cannot be shown faithfully makes the whole request unrenderable via
- * `checkElicitationRenderability()` instead.
+ * Used ONLY for text that carries no decision content the user must read in
+ * full — a button label, a select placeholder. For anything the user must
+ * actually see before deciding, `chunkCardText` is the right tool: truncation
+ * there would silently hide what they are being asked.
  */
 function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+/** Hard ceiling per card. */
+const MAX_CARD_CHARS = 1800;
+
+/**
+ * Split rendered text into card-sized chunks WITHOUT losing content.
+ *
+ * Every previous version called `truncate(...)` on the joined body and accepted
+ * whatever survived. That is a correctness bug, not a cosmetic one: the agent's
+ * `message` can be 8000 characters, and a review page's answer can be 4000, so
+ * the part the user was supposed to be reading before deciding could simply be
+ * gone while the Submit control stayed enabled. ACP requires the user to be able
+ * to review what they are sending.
+ *
+ * Chunking preserves every character across several messages; the caller is
+ * responsible for attaching controls to the LAST one (or the only one).
+ */
+export function chunkCardText(text: string, limit = MAX_CARD_CHARS): string[] {
+  if (text.length <= limit) return [text];
+  const chunks: string[] = [];
+  // Split on paragraph boundaries first, then hard-cut an over-long paragraph:
+  // cutting mid-sentence at a character boundary is the last resort, and it
+  // still loses nothing because the pieces are concatenated by the reader.
+  const paragraphs = text.split("\n\n");
+  let current = "";
+  for (const paragraph of paragraphs) {
+    if (paragraph.length > limit) {
+      if (current) {
+        chunks.push(current);
+        current = "";
+      }
+      for (let offset = 0; offset < paragraph.length; offset += limit) {
+        chunks.push(paragraph.slice(offset, offset + limit));
+      }
+      continue;
+    }
+    const candidate = current ? `${current}\n\n${paragraph}` : paragraph;
+    if (candidate.length <= limit) {
+      current = candidate;
+      continue;
+    }
+    if (current) chunks.push(current);
+    current = paragraph;
+  }
+  if (current) chunks.push(current);
+  return chunks;
 }
 
 /**
@@ -229,9 +281,15 @@ function truncate(value: string, max: number): string {
  * `agent.name` is rendered from the CORRELATED agent identity, never inferred
  * from `message`: the request text is agent-controlled and could claim to be
  * from someone else.
+ *
+ * Returns `contents` — every chunk — rather than a single truncated string. The
+ * agent's message is the question the user is answering; cutting it would change
+ * what they were asked.
  */
 export function buildElicitationOpening(request: ChannelElicitationRequest, token: string): {
   content: string;
+  /** All chunks; the first is `content`, and each further one is sent after it. */
+  contents: string[];
   components: DiscordActionRow[];
 } {
   const messages = getMessages();
@@ -251,7 +309,8 @@ export function buildElicitationOpening(request: ChannelElicitationRequest, toke
     { label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 },
     { label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 },
   ]);
-  return { content: truncate(lines.join("\n\n"), MAX_CARD_CHARS), components };
+  const chunks = chunkCardText(lines.join("\n\n"));
+  return { content: chunks[0]!, contents: chunks, components };
 }
 
 /**
@@ -311,6 +370,13 @@ export function buildElicitationFieldCard(
   if (!isSelect && !isBoolean) {
     fieldControls.push({ label: messages.elicitationEdit, customId: elicitationCustomId(token, "field", position), style: 3 });
   }
+  // Skip is offered ONLY for optional fields, and it is the only way back to
+  // "no answer". A text field cleared to "" is a real answer, not an omission,
+  // so there must be a distinct control for the omission itself. A required
+  // field may never be skipped — core would reject the submission.
+  if (!field.required) {
+    fieldControls.push({ label: truncate(messages.elicitationSkip, 80), customId: elicitationCustomId(token, "skip"), style: 2 });
+  }
   // Per-field forward/back. Without these the only way to reach field N>0 is to
   // jump to the review page and use its Edit control — a detour that leaves a
   // mid-wizard user with no obvious way forward.
@@ -326,7 +392,7 @@ export function buildElicitationFieldCard(
     { label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 },
   ];
   return {
-    content: truncate(lines.join("\n\n"), MAX_CARD_CHARS),
+    content: chunkCardText(lines.join("\n\n"))[0]!,
     components: [...actionRow(fieldControls), ...actionRow(terminalControls)],
     selectRows: isSelect
       ? buildElicitationSelectRows(token, field, current, position)
@@ -387,8 +453,12 @@ export function buildElicitationReviewCard(
   const messages = getMessages();
   const lines = [`**${messages.elicitationReview}**`, messages.elicitationFromAgent(escapeDiscordLiteralText(request.agent.name))];
   for (const field of request.fields) {
-    const value = values[field.key];
-    lines.push(`**${escapeDiscordLiteralText(field.title)}**\n${escapeDiscordLiteralText(value === undefined ? messages.elicitationNoAnswer : displayValue(value))}`);
+    const present = Object.hasOwn(values, field.key);
+    lines.push(
+      `**${escapeDiscordLiteralText(field.title)}**\n${escapeDiscordLiteralText(
+        present ? displayValue(values[field.key]!) : messages.elicitationNoAnswer,
+      )}`,
+    );
   }
   // Budget: the row holds 5 buttons. Submit/Decline/Cancel always take 3, and
   // paging takes 2 when needed, so the Edit controls get whatever is left.
@@ -446,7 +516,10 @@ export function buildElicitationReviewCard(
       ]
     : lines;
   const components = rows.flat();
-  return { content: truncate(pagedLines.join("\n\n"), MAX_CARD_CHARS), components };
+  // Chunked, not truncated: a single legal answer can be 4000 characters, so a
+  // 1800-char card would hide part of what the user is being asked to approve
+  // while leaving Submit enabled. Chunking preserves it across further messages.
+  return { content: chunkCardText(pagedLines.join("\n\n"))[0]!, components };
 }
 
 export function hintForField(field: ChannelElicitationField): string {
@@ -786,6 +859,34 @@ export async function handleElicitationClick(input: ElicitationClickInput): Prom
       await input.interaction.acknowledge();
       return { decided: false, rerender: "review" };
     }
+    case "skip": {
+      // Explicit "leave this field unanswered", including clearing an answer the
+      // user already gave: value -> omitted is part of review-and-modify, and
+      // an empty string cannot stand in for it because an empty string is a real
+      // answer.
+      if (entry.currentField !== undefined) {
+        if (!entry.request.fields.some((field) => field.key === entry.currentField)) {
+          return { decided: false };
+        }
+        const field = entry.request.fields.find((f) => f.key === entry.currentField)!;
+        if (field.required) {
+          // A required field cannot be skipped; skipping it would send a form
+          // core must reject.
+          await input.interaction.replyEphemeral(messages.elicitationRequired);
+          return { decided: false };
+        }
+        markSkipped(entry, field.key);
+      }
+      const next = nextUnresolvedKey(entry);
+      if (next) {
+        entry.currentField = next;
+        await input.interaction.acknowledge();
+        return { decided: false, rerender: "field" };
+      }
+      entry.visitedReview = true;
+      await input.interaction.acknowledge();
+      return { decided: false, rerender: "review" };
+    }
     case "submit": {
       return submitAnswers(entry, input);
     }
@@ -818,7 +919,7 @@ async function submitAnswers(
   input: ElicitationClickInput,
 ): Promise<ElicitationClickOutcome> {
   const messages = getMessages();
-  const missing = entry.request.fields.filter((field) => field.required && entry.values[field.key] === undefined);
+  const missing = entry.request.fields.filter((field) => field.required && !Object.hasOwn(entry.values, field.key));
   if (missing.length > 0) {
     // Stay on the review page and point at the first gap.
     await input.interaction.replyEphemeral(`${messages.elicitationRequired}: ${missing[0]!.title}`);
@@ -828,13 +929,11 @@ async function submitAnswers(
     await input.interaction.replyEphemeral(messages.elicitationAlreadyResolved);
     return { decided: false };
   }
-  // `null` is a valid ACP accept for an all-optional form and tells core the
-  // channel deliberately submitted nothing; an empty object is not the same
-  // statement, so the distinction is preserved rather than normalized here.
-  const content: Record<string, ChannelElicitationValue> | null =
-    Object.keys(entry.values).length === 0
-      ? null
-      : { ...entry.values };
+  // `null` is ACP's "accept with no answers" and is deliberately distinct from
+  // an empty object. Built own-property-only on a null-prototype map: a spread
+  // would also inherit `toString` and friends into the answer set, and core's
+  // validator rejects keys it was not asked for.
+  const content = buildAnswerContent(entry);
   const decision: ChannelElicitationDecision = {
     action: "accept",
     responderId: input.interaction.userId,

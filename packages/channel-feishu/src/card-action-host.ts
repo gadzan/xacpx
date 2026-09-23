@@ -209,27 +209,33 @@ async function readBody(req: IncomingMessage): Promise<{ ok: true; text: string 
 /**
  * Verify a card callback's authenticity.
  *
- * Two independent mechanisms, both grounded in app-secret material configured
- * out-of-band, and BOTH must hold when the corresponding headers are present:
+ * Faithfully mirrors `RequestHandle.checkIsCardEventValidated()` /
+ * `checkIsEventValidated()` in the pinned official SDK, because the branching
+ * is not intuitive and getting it wrong silently accepts the wrong kind of
+ * sender:
  *
- *   1. Request signature (mirrors `CardActionHandler.checkIsEventValidated()` in
- *      the official SDK): Feishu sends `x-lark-request-timestamp`,
- *      `x-lark-request-nonce` and `x-lark-signature`. The signature is
- *      `sha256(timestamp + nonce + <secret> + rawBody)` as a hex digest, where
- *      `<secret>` is `encryptKey` when configured (encrypted/schema callbacks)
- *      and `verificationToken` otherwise. Without it, decrypting the body only
- *      proves the sender held the AesKey — not that the request was not
- *      captured and replayed later, and not that it came from Feishu at all
- *      unless the header is checked.
- *   2. Encrypted push — Feishu sends `{ encrypt: "<base64 AES-CBC ciphertext>" }`.
- *      Only a party holding `encryptKey` can decrypt it, so a successful decrypt
- *      proves possession of the key. The inner plaintext is the payload.
- *   3. Plaintext push + verification token — Feishu echoes the configured
- *      `verificationToken` in the body; a constant-time mismatch is a rejection.
+ *   - `'encrypt' in body || 'schema' in body` → the NEW protocol. Signature is
+ *     `sha256(timestamp + nonce + encryptKey + JSON.stringify(body))`.
+ *   - otherwise (legacy card callback, no `schema`) → the OLD protocol.
+ *     Signature is `sha1(timestamp + nonce + verificationToken + JSON.stringify(body))`.
  *
- * A channel configured with NEITHER secret is unauthenticated by construction and
- * every callback is rejected: the plugin fails closed rather than hand out an
- * identity it cannot attribute to Feishu.
+ * `schema: "2.0"` is a NEW-protocol marker, so a modern card callback uses the
+ * ENCRYPT key and SHA-256 even when it is not encrypted. Branching on
+ * `encrypt` alone sent those to the SHA-1/token path, where the signature could
+ * never match.
+ *
+ * Two layers must both hold for a new-protocol callback:
+ *
+ *   1. The request signature above. It is what makes the body a FRESH send from
+ *      Feishu rather than a captured ciphertext replayed later.
+ *   2. The `encrypt` envelope decrypts under `encryptKey` (encrypted pushes only).
+ *
+ * The decrypted body's `operator.open_id` is promoted to the ACP
+ * `responderId`, so this is a real identity trust boundary.
+ *
+ * A channel configured with NEITHER secret is unauthenticated by construction
+ * and every callback is rejected: the plugin fails closed rather than hand out
+ * an identity it cannot attribute to Feishu.
  */
 function verifyCardRequest(
   config: FeishuCardActionConfig,
@@ -241,36 +247,30 @@ function verifyCardRequest(
   if (typeof envelope !== "object" || envelope === null) return { ok: false, reason: "malformed" };
   const record = envelope as Record<string, unknown>;
 
-  // The signature is computed over the RAW body, so it must be checked before
-  // any parse of the ciphertext. The caller must not have modified it.
-  //
-  // Absence of the header is a REJECTION, not a skip. Feishu signs every
-  // callback; a request without a signature is either not from Feishu or comes
-  // from a configuration that disabled signing, and neither is a body this
-  // channel may turn into a responderId.
+  // Absence of a signature is a REJECTION, not a skip: Feishu signs every
+  // callback, so an unsigned request is either not from Feishu or from a
+  // configuration that disabled signing, and neither may become a responderId.
   const timestamp = headerValue(headers, "x-lark-request-timestamp");
   const nonce = headerValue(headers, "x-lark-request-nonce");
   const signature = headerValue(headers, "x-lark-signature");
   if (timestamp === undefined || nonce === undefined || signature === undefined) {
     return { ok: false, reason: "unauthorized" };
   }
-  // Per the SDK's `checkIsEventValidated`, an encrypted (or schema) callback is
-  // signed with the ENCRYPT key; a plaintext callback is signed with the
-  // verification token. Both are configured out-of-band, so a wrong choice
-  // means the header cannot be reproduced by anyone who lacks that secret.
-  const encrypted = typeof record.encrypt === "string";
-  const secret = encrypted
-    ? config.encryptKey
-    : config.verificationToken.length > 0
-      ? config.verificationToken
-      : config.encryptKey;
+
+  // The SDK signs `JSON.stringify(data)` — the re-serialised body, not the raw
+  // bytes. Reproducing that exactly is the whole point, so the comparison input
+  // is built the same way rather than from `body` directly.
+  const signedContent = JSON.stringify(envelope);
+  const isNewProtocol = typeof record.encrypt === "string" || typeof record.schema === "string";
+  const secret = isNewProtocol ? config.encryptKey : config.verificationToken;
+  const algorithm = isNewProtocol ? "sha256" : "sha1";
   if (secret.length === 0) {
-    // Feishu signed the request, but we have nothing to verify it against.
+    // Feishu signed the request, but we hold nothing to verify it against.
     return { ok: false, reason: "unauthorized" };
   }
   {
-    const expected = createHash("sha256")
-      .update(`${timestamp}${nonce}${secret}${body}`, "utf8")
+    const expected = createHash(algorithm)
+      .update(`${timestamp}${nonce}${secret}${signedContent}`, "utf8")
       .digest("hex");
     if (!timingSafeEqual(expected, signature)) {
       return { ok: false, reason: "unauthorized" };
@@ -282,29 +282,40 @@ function verifyCardRequest(
     }
   }
 
-  // Path 1: encrypted push. The `encrypt` field is Feishu's envelope marker.
-  if (encrypted) {
+  // New-protocol encrypted push: the `encrypt` field is the envelope marker.
+  if (typeof record.encrypt === "string") {
     if (config.encryptKey.length === 0) {
-      // An encrypted body with no key configured cannot be authenticated.
       return { ok: false, reason: "unauthorized" };
     }
-    const plaintext = decryptFeishuEnvelope(record.encrypt as string, config.encryptKey);
+    const plaintext = decryptFeishuEnvelope(record.encrypt, config.encryptKey);
     if (plaintext === undefined) return { ok: false, reason: "unauthorized" };
     const payload = safeJson(plaintext);
     if (payload === undefined) return { ok: false, reason: "malformed" };
     return { ok: true, payload };
   }
 
-  // Path 2: plaintext push authenticated by the echoed token.
-  if (config.verificationToken.length > 0) {
-    const sentToken = record.token;
-    if (typeof sentToken !== "string" || sentToken.length === 0) return { ok: false, reason: "unauthorized" };
-    if (!timingSafeEqual(sentToken, config.verificationToken)) return { ok: false, reason: "unauthorized" };
+  // New-protocol UNencrypted push: the signature already covers it, and the
+  // echoed token is a second check when the channel configured one.
+  if (isNewProtocol) {
+    if (config.verificationToken.length > 0) {
+      const sentToken = record.token;
+      if (typeof sentToken !== "string" || !timingSafeEqual(sentToken, config.verificationToken)) {
+        return { ok: false, reason: "unauthorized" };
+      }
+    }
     return { ok: true, payload: envelope };
   }
-  // No verification token configured and no encryption: nothing authenticates
-  // this channel, so no callback is accepted.
-  return { ok: false, reason: "unauthorized" };
+
+  // Legacy plaintext push: the echoed token is the only other signal, so it is
+  // required here rather than optional.
+  if (config.verificationToken.length === 0) {
+    return { ok: false, reason: "unauthorized" };
+  }
+  const sentToken = record.token;
+  if (typeof sentToken !== "string" || !timingSafeEqual(sentToken, config.verificationToken)) {
+    return { ok: false, reason: "unauthorized" };
+  }
+  return { ok: true, payload: envelope };
 }
 
 /**

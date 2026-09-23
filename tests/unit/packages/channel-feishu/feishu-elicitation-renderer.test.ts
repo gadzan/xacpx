@@ -746,3 +746,33 @@ test("a text answer with an empty string survives an all-optional form", async (
   // `""` is a real answer, deliberately distinct from `null` (nothing answered).
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { note: "" } });
 });
+
+test("a field key named __proto__ becomes an own answer property", async () => {
+  // Core allows it and defends with null-prototype output; the renderer must not
+  // undo that by writing the key into a plain object's prototype.
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "__proto__", title: "Proto", required: true },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  const entry = rec.pending.get(token)!;
+  expect(Object.getPrototypeOf(entry.values)).toBe(null);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "typed" } });
+  expect(Object.hasOwn(entry.values, "__proto__")).toBe(true);
+  expect(entry.values.__proto__).toBe("typed");
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  const decision = await promise as {
+    action: string;
+    responderId: string;
+    content: Record<string, unknown> | null;
+  };
+  expect(decision.action).toBe("accept");
+  expect(decision.content).not.toBeNull();
+  expect(Object.hasOwn(decision.content!, "__proto__")).toBe(true);
+  expect(decision.content!.__proto__).toBe("typed");
+});

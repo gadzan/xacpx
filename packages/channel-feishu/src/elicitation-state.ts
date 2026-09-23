@@ -140,6 +140,19 @@ export function recordAnswer(
 }
 
 /**
+ * Create the pending answer map.
+ *
+ * `Object.create(null)` is the point: field keys are arbitrary JSON property
+ * names, so `__proto__` must become a data property rather than a prototype
+ * write, and `constructor`/`toString` must not appear present when they are not.
+ * Presence checks use `Object.hasOwn` everywhere rather than comparing against
+ * `undefined`.
+ */
+export function createAnswerMap(): Record<string, ChannelElicitationValue> {
+  return Object.create(null) as Record<string, ChannelElicitationValue>;
+}
+
+/**
  * Build the ACP content object.
  *
  * A field appearing here was ANSWERED, so an empty string the user typed is
@@ -147,11 +160,15 @@ export function recordAnswer(
  * question the user declined to answer. When nothing was answered the result is
  * `null` — ACP's "accept with no answers" — which is deliberately distinct from
  * an empty object.
+ *
+ * Own properties only, on a null-prototype map: a plain `{}` would let an
+ * inherited `toString` be copied into the answer set, and core rejects keys it
+ * was not asked for.
  */
 export function buildElicitationContent(
   entry: PendingFeishuElicitation,
 ): Record<string, ChannelElicitationValue> | null {
-  const collected: Record<string, ChannelElicitationValue> = {};
+  const collected = createAnswerMap();
   for (const field of entry.request.fields) {
     if (!Object.hasOwn(entry.values, field.key)) continue;
     if (entry.skipped.has(field.key)) continue;

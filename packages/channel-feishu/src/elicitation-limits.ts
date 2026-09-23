@@ -32,6 +32,7 @@
  * `behaviors[].value` size, card title char count, markdown component length.
  */
 
+import { satisfiesElicitationFormat } from "xacpx/plugin-api";
 import type { ChannelElicitationField } from "xacpx/plugin-api";
 
 /** Card JSON ceiling, enforced by cardkit 200860. */
@@ -250,19 +251,8 @@ export function optionViolatesFieldConstraints(
   const length = [...value].length;
   if (field.minLength !== undefined && length < field.minLength) return true;
   if (field.maxLength !== undefined && length > field.maxLength) return true;
-  const format = field.format;
-  if (format === undefined) return false;
-  switch (format) {
-    case "email":
-      return !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-    case "uri":
-      return !/^[a-z][a-z0-9+.-]*:\S+$/i.test(value);
-    case "date":
-      return !/^\d{4}-\d{2}-\d{2}$/.test(value);
-    case "date-time":
-      return !/^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.test(value);
-    default:
-      // An unknown format is not this renderer's to reject.
-      return false;
-  }
+  // DELEGATED to core. An earlier version carried its own shape-only regexes —
+  // a date regex that accepted "2026-99-99" — which made a dead option look
+  // live, exactly the bug this function exists to prevent.
+  return !satisfiesElicitationFormat(field.format, value);
 }

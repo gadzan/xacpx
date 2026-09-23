@@ -36,22 +36,55 @@ function config(overrides: Partial<FeishuCardActionConfig> = {}): FeishuCardActi
   return { ...CARD_ACTIONS, ...overrides } as FeishuCardActionConfig;
 }
 
-/** Feishu's own signing input: timestamp + nonce + secret + raw body. */
-function signature(headers: {
-  timestamp: string;
-  nonce: string;
-}, secret: string, body: string): string {
-  return createHash("sha256")
-    .update(`${headers.timestamp}${headers.nonce}${secret}${body}`, "utf8")
+/**
+ * Feishu's own signing rule, transcribed from the pinned SDK's
+ * `RequestHandle`:
+ *
+ *   new protocol (`encrypt` or `schema` in the body) → encryptKey + SHA-256
+ *   legacy (neither)                                 → verificationToken + SHA-1
+ *
+ * over `timestamp + nonce + secret + JSON.stringify(body)`. Signing the
+ * re-serialised body, not the raw bytes, is what the SDK does, and getting
+ * either half wrong makes every real callback fail verification.
+ */
+function signature(payload: unknown, secret: string, algorithm: "sha256" | "sha1", nonce = "n-1"): string {
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  return createHash(algorithm)
+    .update(`${timestamp}${nonce}${secret}${JSON.stringify(payload)}`, "utf8")
     .digest("hex");
 }
 
-function signedHeaders(secret: string, body: string, nonce = "n-1"): Record<string, string> {
+function signedHeadersFor(
+  payload: unknown,
+  secret: string,
+  algorithm: "sha256" | "sha1",
+  nonce = "n-1",
+): Record<string, string> {
   const timestamp = String(Math.floor(Date.now() / 1000));
   return {
     "x-lark-request-timestamp": timestamp,
     "x-lark-request-nonce": nonce,
-    "x-lark-signature": signature({ timestamp, nonce }, secret, body),
+    "x-lark-signature": createHash(algorithm)
+      .update(`${timestamp}${nonce}${secret}${JSON.stringify(payload)}`, "utf8")
+      .digest("hex"),
+  };
+}
+
+/**
+ * Headers for a body that is already serialised.
+ *
+ * The signature covers `JSON.stringify(body)`, so the caller must hand over the
+ * parsed object — not the string — or the digest is computed over different
+ * bytes than Feishu signed.
+ */
+function signedHeadersForBody(jsonText: string, secret: string, algorithm: "sha256" | "sha1", nonce = "n-1"): Record<string, string> {
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  return {
+    "x-lark-request-timestamp": timestamp,
+    "x-lark-request-nonce": nonce,
+    "x-lark-signature": createHash(algorithm)
+      .update(`${timestamp}${nonce}${secret}${jsonText}`, "utf8")
+      .digest("hex"),
   };
 }
 
@@ -68,6 +101,11 @@ function encryptFeishu(payload: unknown, encryptKey: string): string {
 
 function cardBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
+    // A real card callback carries `schema`. It is also the marker that routes
+    // signing to the NEW protocol (encryptKey + SHA-256), so a test body without
+    // it silently exercised the legacy branch and pinned the wrong contract.
+    schema: "2.0",
+    token: "vt-test",
     operator: { open_id: "ou_real_operator" },
     action: { tag: "button", value: { t: "token-abc", a: "start" } },
     form_value: {},
@@ -96,8 +134,9 @@ describe("feishu card callback authentication", () => {
       },
     });
     const payload = cardBody();
-    const body = JSON.stringify({ encrypt: encryptFeishu(payload, CARD_ACTIONS.encryptKey) });
-    const result = await post(server, signedHeaders(CARD_ACTIONS.encryptKey, body), body);
+    const envelope = { encrypt: encryptFeishu(payload, CARD_ACTIONS.encryptKey) };
+    const body = JSON.stringify(envelope);
+    const result = await post(server, signedHeadersFor(JSON.parse(body), CARD_ACTIONS.encryptKey, "sha256"), body);
     expect(result.status).toBe(200);
     expect(actions[0]!.openId).toBe("ou_real_operator");
   });
@@ -133,7 +172,7 @@ describe("feishu card callback authentication", () => {
       },
     });
     const body = JSON.stringify({ encrypt: encryptFeishu(cardBody(), CARD_ACTIONS.encryptKey) });
-    const headers = signedHeaders(CARD_ACTIONS.encryptKey, body);
+    const headers = signedHeadersFor(JSON.parse(body), CARD_ACTIONS.encryptKey, "sha256");
     // Flip one hex nibble of the signature.
     headers["x-lark-signature"] = `${headers["x-lark-signature"]!.slice(0, -1)}0`;
     const result = await post(server, headers, body);
@@ -153,7 +192,7 @@ describe("feishu card callback authentication", () => {
       },
     });
     const body = JSON.stringify({ encrypt: encryptFeishu(cardBody(), CARD_ACTIONS.encryptKey) });
-    const result = await post(server, signedHeaders("attacker-guess", body), body);
+    const result = await post(server, signedHeadersFor(JSON.parse(body), "attacker-guess", "sha256"), body);
     expect(result.status).toBe(401);
     expect(actions).toHaveLength(0);
   });
@@ -170,7 +209,7 @@ describe("feishu card callback authentication", () => {
       },
     });
     const goodBody = JSON.stringify({ encrypt: encryptFeishu(cardBody(), CARD_ACTIONS.encryptKey) });
-    const headers = signedHeaders(CARD_ACTIONS.encryptKey, goodBody);
+    const headers = signedHeadersFor(JSON.parse(goodBody), CARD_ACTIONS.encryptKey, "sha256");
     // Re-encrypt a DIFFERENT operator under the same key. The signature covers
     // the raw body, so the mismatch must be caught before any decrypt.
     const evilBody = JSON.stringify({ encrypt: encryptFeishu(cardBody({ operator: { open_id: "ou_attacker" } }), CARD_ACTIONS.encryptKey) });
@@ -196,13 +235,114 @@ describe("feishu card callback authentication", () => {
     const result = await post(server, {
       "x-lark-request-timestamp": stale.timestamp,
       "x-lark-request-nonce": stale.nonce,
-      "x-lark-signature": signature(stale, CARD_ACTIONS.encryptKey, body),
+      "x-lark-signature": createHash("sha256")
+        .update(`${stale.timestamp}${stale.nonce}${CARD_ACTIONS.encryptKey}${JSON.stringify(JSON.parse(body))}`, "utf8")
+        .digest("hex"),
     }, body);
     expect(result.status).toBe(401);
     expect(actions).toHaveLength(0);
   });
 
-  test("a valid plaintext callback with a token is still accepted", async () => {
+  test("a schema-2.0 UNENCRYPTED callback uses the encrypt key + SHA-256", async () => {
+    // The SDK sends anything carrying `schema` down the NEW-protocol branch
+    // (encryptKey + SHA-256) even when it is not encrypted. Branching on
+    // `encrypt` alone routed these to SHA-1 + the verification token, where no
+    // real signature could ever match.
+    const server = createInjectedHttpServer();
+    const actions: Array<{ openId: string }> = [];
+    await startFeishuCardActionHost({
+      config: config(),
+      injectedServer: server as never,
+      onAction: (callback) => {
+        actions.push({ openId: callback.openId });
+        return Promise.resolve({ ok: true } as const);
+      },
+    });
+    const payload = cardBody({ token: CARD_ACTIONS.verificationToken });
+    const body = JSON.stringify(payload);
+    const result = await post(
+      server,
+      signedHeadersFor(payload, CARD_ACTIONS.encryptKey, "sha256"),
+      body,
+    );
+    expect(result.status).toBe(200);
+    expect(actions[0]!.openId).toBe("ou_real_operator");
+  });
+
+  test("a schema-2.0 callback signed with the verification token is rejected", async () => {
+    // The mirror of the test above: SHA-1 over the token is the LEGACY branch
+    // and must not authenticate a new-protocol callback.
+    const server = createInjectedHttpServer();
+    const actions: unknown[] = [];
+    await startFeishuCardActionHost({
+      config: config(),
+      injectedServer: server as never,
+      onAction: (callback) => {
+        actions.push(callback);
+        return Promise.resolve({ ok: true } as const);
+      },
+    });
+    const payload = cardBody();
+    const body = JSON.stringify(payload);
+    const result = await post(
+      server,
+      signedHeadersFor(payload, CARD_ACTIONS.verificationToken, "sha1"),
+      body,
+    );
+    expect(result.status).toBe(401);
+    expect(actions).toHaveLength(0);
+  });
+
+  test("a LEGACY callback (no schema) is signed with the verification token + SHA-1", async () => {
+    // Neither `encrypt` nor `schema` present: the old protocol, per the SDK.
+    const server = createInjectedHttpServer();
+    const actions: Array<{ openId: string }> = [];
+    await startFeishuCardActionHost({
+      config: config(),
+      injectedServer: server as never,
+      onAction: (callback) => {
+        actions.push({ openId: callback.openId });
+        return Promise.resolve({ ok: true } as const);
+      },
+    });
+    const payload = cardBody();
+    delete payload.schema;
+    payload.token = CARD_ACTIONS.verificationToken;
+    const body = JSON.stringify(payload);
+    const result = await post(
+      server,
+      signedHeadersFor(payload, CARD_ACTIONS.verificationToken, "sha1"),
+      body,
+    );
+    expect(result.status).toBe(200);
+    expect(actions[0]!.openId).toBe("ou_real_operator");
+  });
+
+  test("a LEGACY callback signed with the encrypt key + SHA-256 is rejected", async () => {
+    const server = createInjectedHttpServer();
+    const actions: unknown[] = [];
+    await startFeishuCardActionHost({
+      config: config(),
+      injectedServer: server as never,
+      onAction: (callback) => {
+        actions.push(callback);
+        return Promise.resolve({ ok: true } as const);
+      },
+    });
+    const payload = cardBody();
+    delete payload.schema;
+    payload.token = CARD_ACTIONS.verificationToken;
+    const body = JSON.stringify(payload);
+    const result = await post(
+      server,
+      signedHeadersFor(payload, CARD_ACTIONS.encryptKey, "sha256"),
+      body,
+    );
+    expect(result.status).toBe(401);
+    expect(actions).toHaveLength(0);
+  });
+
+  test("a valid schema-2.0 callback with a matching token is accepted", async () => {
     const server = createInjectedHttpServer();
     const actions: Array<{ openId: string }> = [];
     await startFeishuCardActionHost({
@@ -213,13 +353,19 @@ describe("feishu card callback authentication", () => {
         return Promise.resolve({ ok: true } as const);
       },
     });
-    const body = JSON.stringify(cardBody({ token: "vt-123" }));
-    const result = await post(server, signedHeaders("vt-123", body), body);
+    const payload = cardBody({ token: "vt-123" });
+    const body = JSON.stringify(payload);
+    // `schema` is present, so this is the new protocol: encryptKey + SHA-256.
+    const result = await post(
+      server,
+      signedHeadersFor(payload, CARD_ACTIONS.encryptKey, "sha256"),
+      body,
+    );
     expect(result.status).toBe(200);
     expect(actions[0]!.openId).toBe("ou_real_operator");
   });
 
-  test("a plaintext callback with the WRONG token is rejected", async () => {
+  test("a schema-2.0 callback whose echoed token mismatches is rejected", async () => {
     const server = createInjectedHttpServer();
     const actions: unknown[] = [];
     await startFeishuCardActionHost({
@@ -230,8 +376,13 @@ describe("feishu card callback authentication", () => {
         return Promise.resolve({ ok: true } as const);
       },
     });
-    const body = JSON.stringify(cardBody({ token: "vt-evil" }));
-    const result = await post(server, signedHeaders("vt-123", body), body);
+    const payload = cardBody({ token: "vt-evil" });
+    const body = JSON.stringify(payload);
+    const result = await post(
+      server,
+      signedHeadersFor(payload, CARD_ACTIONS.encryptKey, "sha256"),
+      body,
+    );
     expect(result.status).toBe(401);
     expect(actions).toHaveLength(0);
   });
@@ -243,10 +394,15 @@ describe("feishu card callback authentication", () => {
       injectedServer: server as never,
       onAction: () => Promise.resolve({ ok: true } as const),
     });
-    const body = JSON.stringify({ challenge: "ch-abc", token: CARD_ACTIONS.verificationToken });
-    // A URL-verification challenge is a PLAINTEXT push, so per the SDK the
-    // signing secret is the verification token.
-    const result = await post(server, signedHeaders(CARD_ACTIONS.verificationToken, body), body);
+    const payload = { challenge: "ch-abc", token: CARD_ACTIONS.verificationToken };
+    const body = JSON.stringify(payload);
+    // No `schema`/`encrypt` in a challenge body, so it is the legacy branch:
+    // verificationToken + SHA-1.
+    const result = await post(
+      server,
+      signedHeadersFor(payload, CARD_ACTIONS.verificationToken, "sha1"),
+      body,
+    );
     expect(result.status).toBe(200);
     expect(result.body).toContain("ch-abc");
   });

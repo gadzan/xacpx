@@ -9,7 +9,7 @@ import {
   handleElicitationClick,
   parseElicitationCustomId,
 } from "../../../../packages/channel-discord/src/elicitation-ui";
-import { trySettle } from "../../../../packages/channel-discord/src/elicitation-state";
+import { createAnswerMap, trySettle } from "../../../../packages/channel-discord/src/elicitation-state";
 import type { PendingDiscordElicitation } from "../../../../packages/channel-discord/src/elicitation-state";
 import type {
   ChannelElicitationDecision,
@@ -57,7 +57,13 @@ function makeEntry(overrides: Partial<PendingDiscordElicitation> = {}): PendingD
     requesterId: "user-A",
     target: { channelId: "c1" },
     request: request(),
-    values: {},
+    // Null-prototyped, exactly like the channel builds it: a field key can be
+    // `constructor`, and `skipped` is separate because an omitted answer is not
+    // the same statement as an empty-string answer.
+    values: createAnswerMap(),
+    skipped: new Set<string>(),
+    visitedReview: false,
+    reviewPage: 0,
     settled: false,
     resolve: () => {},
     reject: () => {},
@@ -214,6 +220,7 @@ test("every parsed control maps to a handled action", async () => {
   for (const [action, fieldIndex] of [
     ["start", undefined],
     ["review", undefined],
+    ["skip", undefined],
     ["submit", undefined],
     ["decline", undefined],
     ["cancel", undefined],
@@ -223,6 +230,6 @@ test("every parsed control maps to a handled action", async () => {
   ] as const) {
     const parsed = parseElicitationCustomId(elicitationCustomId(createElicitationToken(), action, fieldIndex));
     expect(parsed).not.toBeNull();
-    expect(["start", "review", "submit", "decline", "cancel", "field", "edit", "page"]).toContain(parsed!.action);
+    expect(["start", "review", "skip", "submit", "decline", "cancel", "field", "edit", "page"]).toContain(parsed!.action);
   }
 });

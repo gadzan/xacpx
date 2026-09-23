@@ -22,12 +22,26 @@ interface ChannelRegistry {
   stopAll?(reason?: "shutdown" | "disabled" | "removed" | "logout"): void | Promise<void>;
   /**
    * Live interaction-capability reads. Optional so existing test doubles that
-   * only stub `startAll` keep working: when absent, the post-start
-   * truthfulness gate is skipped rather than guessing.
+   * only stub `startAll` keep working: when absent, the truthfulness check is
+   * skipped rather than guessing.
    */
   failedStartupChannelIds?(): string[];
   formElicitationChannelIds?(): string[];
+  declaredElicitationFormChannelIds?(): string[];
   elicitationFormCapable?(): boolean;
+  setElicitationReadinessListener?(listener: (readiness: ElicitationReadiness) => void): void;
+}
+
+/**
+ * The live form-Elicitation picture, published as channel outcomes become known.
+ * `startAll()` is not a readiness barrier — a healthy channel's `start()` may
+ * stay pending for the daemon's whole lifetime — so this is the only signal that
+ * arrives at a knowable moment.
+ */
+export interface ElicitationReadiness {
+  formCapable: boolean;
+  formChannelIds: string[];
+  failedChannelIds: string[];
 }
 
 type ChannelStartupPolicy = "require-one" | "best-effort";
@@ -283,6 +297,7 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
     }
 
     const controlService = runtime.control;
+    let startupError: unknown;
     const channelStartPromise = deps.channels.startAll({
       agent: runtime.agent,
       abortSignal: shutdownController.signal,
@@ -334,41 +349,85 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       return;
     }
 
-    // Interaction-capability truthfulness gate.
+    // Interaction-capability truthfulness.
     //
-    // The daemon computed form-Elicitation capability BEFORE channels existed,
-    // and `startAll` tolerates partial failure — one dead channel does not stop
-    // the others. So a channel that advertised `form` and then failed to bind
-    // can leave the daemon running with a capability nothing backs: the agent
-    // would be told to render a form and every request would cancel. The
-    // registry's probe reads live readiness, so re-evaluating here sees the
-    // failure. Fatal, because the only alternative is a silent downgrade to a
-    // advertised-but-dead capability for the whole run.
-    if (typeof deps.channels.elicitationFormCapable === "function"
-      && typeof deps.channels.failedStartupChannelIds === "function") {
-      const failed = deps.channels.failedStartupChannelIds();
-      const formChannels = deps.channels.formElicitationChannelIds?.() ?? [];
-      const brokenFormChannels = formChannels.filter((id) => failed.includes(id));
-      // Only fatal when NO form-capable channel survived: a healthy one still
-      // delivers forms, so the capability is still true.
-      const anyFormCapable = deps.channels.elicitationFormCapable();
-      if (brokenFormChannels.length > 0) {
-        await runtime.logger.error(
-          anyFormCapable
-            ? "daemon.channels.elicit_form_degraded"
-            : "daemon.channels.elicit_form_lost",
-          anyFormCapable
-            ? "a form-capable channel failed to start; another still serves form elicitation"
-            : "every form-capable channel failed to start; form elicitation is no longer deliverable",
-          { brokenChannels: brokenFormChannels, failedChannels: failed },
+    // `elicitationModes` is per-channel and fixed at construction, so the daemon
+    // computed the form capability before any channel existed and told the
+    // bridge the answer once. `startAll()` tolerates partial failure and is NOT
+    // a readiness barrier — a healthy channel's `start()` can stay pending for
+    // the daemon's lifetime — so a failed form channel would otherwise leave a
+    // frozen `form=true` that every request then fails to honour.
+    //
+    // Two mechanisms, both keyed on the same live read:
+    //
+    //   1. A listener on the registry, fired as each channel's outcome becomes
+    //      known. It corrects the flag the bridge was given, immediately.
+    //   2. This explicit audit, which derives the broken set from the DECLARED
+    //      form channels minus the live ones — not by filtering the failed set
+    //      against itself, which is vacuously empty.
+    const declaredFormChannelIds = typeof deps.channels.declaredElicitationFormChannelIds === "function"
+      ? deps.channels.declaredElicitationFormChannelIds()
+      : [];
+    const liveFormChannelIds = (): string[] =>
+      typeof deps.channels.formElicitationChannelIds === "function"
+        ? deps.channels.formElicitationChannelIds()
+        : typeof deps.channels.elicitationFormCapable === "function"
+          && deps.channels.elicitationFormCapable()
+          ? declaredFormChannelIds
+          : [];
+    const auditCapability = async (logger = runtime?.logger): Promise<void> => {
+      const live = liveFormChannelIds();
+      // A form channel is broken when it declares the mode but is not live.
+      // Derived from the DECLARED set, not by filtering the failed set —
+      // filtering against itself is vacuously empty and never fires.
+      const broken = declaredFormChannelIds.filter((id) => !live.includes(id));
+      if (broken.length === 0) return;
+      if (live.length > 0) {
+        await logger?.error(
+          "daemon.channels.elicit_form_degraded",
+          "a form-capable channel failed to start; another still serves form elicitation",
+          { brokenChannels: broken, liveChannels: live },
         );
-        if (!anyFormCapable && deps.channelStartupPolicy !== "best-effort") {
-          throw new Error(
-            `form elicitation is advertised but no form-capable channel started (failed: ${brokenFormChannels.join(", ")}); refusing startup`,
-          );
-        }
+        return;
       }
+      await logger?.error(
+        "daemon.channels.elicit_form_lost",
+        "every form-capable channel failed to start; form elicitation is no longer deliverable",
+        { brokenChannels: broken },
+      );
+      // Fatal regardless of `channelStartupPolicy`, and deliberately so.
+      //
+      // `best-effort` exists so one broken non-interaction channel does not stop
+      // the daemon serving its other work. This is a different situation: the
+      // daemon ALREADY told the bridge that form Elicitation is available, the
+      // bridge told the agent, and the workers are now running with that flag
+      // baked into the RuntimeEngine at construction. Correcting it after the
+      // fact would need a capability-update channel the bridge protocol does
+      // not have, so the only honest alternatives are to refuse the run or to
+      // run while lying. Refusing is chosen: an agent that asks a form question
+      // and gets a cancel with no operator-visible cause is worse than a
+      // daemon that says why it would not start.
+      throw new Error(
+        `form elicitation is advertised but no form-capable channel started (failed: ${broken.join(", ")}); refusing startup`,
+      );
+    };
+    if (typeof deps.channels.setElicitationReadinessListener === "function") {
+      deps.channels.setElicitationReadinessListener((readiness) => {
+        if (readiness.formCapable) return;
+        // Not swallowed: a dead form capability discovered mid-startup is the
+        // same fatal condition as the audit below, and the listener runs first.
+        // It is detached because it is invoked from inside a channel's own
+        // start, where throwing would only take that channel down.
+        void auditCapability().then(undefined, (error) => {
+          shutdownController.abort();
+          startupError ??= error;
+        });
+      });
     }
+    // Give the per-channel outcomes a chance to land before the explicit audit,
+    // then always run it once so the check is not solely listener-driven.
+    await Promise.resolve();
+    if (startupError === undefined) await auditCapability();
 
     try {
       await runtime.scheduled.scheduler.start();

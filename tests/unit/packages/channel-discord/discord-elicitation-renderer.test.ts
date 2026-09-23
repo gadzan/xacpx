@@ -916,3 +916,160 @@ test("a 6-field review paginates and every field stays reachable", async () => {
     await channel.stop().catch(() => {});
   }
 });
+
+// --- Field keys that are JavaScript property names --------------------------
+//
+// core treats `__proto__`, `constructor` and `toString` as ordinary field keys
+// and builds null-prototype output to defend against exactly this. If the
+// renderer uses a plain object for its answer map, `constructor` reads back as
+// an answer to a question nobody answered, and `__proto__` writes through to the
+// dictionary's own prototype.
+
+test("a field key named constructor is not mistaken for an answer", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "constructor", title: "Constructor", required: true },
+    ]);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    // Opening card first; the review control only exists inside the wizard.
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    // Nothing has been answered yet, yet `values["constructor"]` on a plain
+    // object is the Object constructor — truthy. The submit gate must still
+    // block, and the store must not report the field complete.
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(Object.hasOwn(entry.values, "constructor")).toBe(false);
+    // Still live: the user has to actually answer it.
+    client.emitButton(click(client, idFor(client, "edit", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    const m = client.modals[client.modals.length - 1]!;
+    client.emitModal(modal(client, m.customId, { "f:0": "typed" }));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(Object.hasOwn(entry.values, "constructor")).toBe(true);
+    expect(entry.values.constructor).toBe("typed");
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 5));
+    const decision = await settled;
+    expect(decision).toEqual({
+      action: "accept",
+      responderId: "user-A",
+      content: { constructor: "typed" },
+    });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a field key named __proto__ becomes an own answer property", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "__proto__", title: "Proto", required: true },
+    ]);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    const m = client.modals[client.modals.length - 1]!;
+    client.emitModal(modal(client, m.customId, { "f:0": "proto-answer" }));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    // An own property, not a prototype mutation of the answer map.
+    expect(Object.hasOwn(entry.values, "__proto__")).toBe(true);
+    expect(entry.values.__proto__).toBe("proto-answer");
+    expect(Object.getPrototypeOf(entry.values)).toBe(null);
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 5));
+    const decision = await settled as {
+      action: string;
+      responderId: string;
+      content: Record<string, unknown> | null;
+    };
+    expect(decision.action).toBe("accept");
+    expect(decision.responderId).toBe("user-A");
+    expect(Object.hasOwn(decision.content!, "__proto__")).toBe(true);
+    expect(decision.content!.__proto__).toBe("proto-answer");
+    expect(Object.keys(decision.content!)).toEqual(["__proto__"]);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("an answered optional field can be skipped back to omitted", async () => {
+  // value -> omitted is part of ACP's review-and-modify. A cleared text field is
+  // a real empty answer, not an omission, so there must be a distinct control.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "a", title: "A", required: true },
+      { kind: "text", key: "b", title: "B", required: false },
+    ]);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    // Answer both.
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { "a": "alpha" }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "next", 1)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 1)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { "b": "beta" }, "user-A", 1));
+    await new Promise((r) => setTimeout(r, 5));
+    // We are on b's own card after the modal: Skip is here.
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown>; skipped: Set<string> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.values.b).toBe("beta");
+    client.emitButton(click(client, idFor(client, "skip")));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(Object.hasOwn(entry.values, "b")).toBe(false);
+    expect(entry.skipped.has("b")).toBe(true);
+    // Review and submit: only `a` is carried.
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 5));
+    const decision = await settled;
+    expect(decision).toEqual({
+      action: "accept",
+      responderId: "user-A",
+      content: { a: "alpha" },
+    });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});

@@ -63,7 +63,14 @@ import {
   type ElicitationUiAction,
 } from "./elicitation-ui.js";
 import type { PendingDiscordElicitation } from "./elicitation-state.js";
-import { trySettle } from "./elicitation-state.js";
+import {
+  createAnswerMap,
+  hasAnswer,
+  markSkipped,
+  nextUnresolvedKey,
+  recordAnswer,
+  trySettle,
+} from "./elicitation-state.js";
 import { createDiscordClient } from "./discord-client.js";
 import { MessageDedup, isMessageExpired } from "./message-dedup.js";
 import {
@@ -684,7 +691,8 @@ export class DiscordChannel implements MessageChannelRuntime {
       accountId: route.accountId,
       target,
       request,
-      values: {},
+      values: createAnswerMap(),
+      skipped: new Set<string>(),
       visitedReview: false,
       reviewPage: 0,
       settled: false,
@@ -728,13 +736,23 @@ export class DiscordChannel implements MessageChannelRuntime {
     request.signal.addEventListener("abort", onAbort, { once: true });
 
     try {
-      const sent = await runtime.client.sendMessage(target, {
-        content: opening.content,
-        // Pings are disabled at send time: agent-controlled text is not trusted
-        // to be mention-free, and the card is a private form for one user.
-        allowedMentions: { parse: [] },
-        components: opening.components,
-      });
+      // A long agent message is split across messages rather than cut: the
+      // question the user is answering must be readable in full. Only the LAST
+      // chunk carries the controls, and its message is the one edited in place
+      // for the rest of the wizard, so the earlier ones are plain text.
+      let sent: { messageId: string } | undefined;
+      for (let index = 0; index < opening.contents.length; index += 1) {
+        if (entry.settled) break;
+        const isLast = index === opening.contents.length - 1;
+        sent = await runtime.client.sendMessage(target, {
+          content: opening.contents[index]!,
+          // Pings are disabled at send time: agent-controlled text is not trusted
+          // to be mention-free, and the card is a private form for one user.
+          allowedMentions: { parse: [] },
+          ...(isLast ? { components: opening.components } : {}),
+        });
+      }
+      if (!sent) throw new Error("elicitation opening card produced no message");
       entry.messageId = sent.messageId;
       // Send race: the request may have settled while the send was in flight,
       // in which case the terminal edit happened before a message id existed.
@@ -868,6 +886,19 @@ export class DiscordChannel implements MessageChannelRuntime {
         }
         break;
       }
+      case "skip": {
+        // The click already marked the field skipped and advanced; this only
+        // re-renders whatever the wizard moved to.
+        const next = entry.currentField ?? nextUnresolvedKey(entry);
+        if (next === undefined) {
+          entry.visitedReview = true;
+          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, entry.reviewPage);
+          break;
+        }
+        entry.currentField = next;
+        card = fieldCard(next);
+        break;
+      }
       case "review": {
         // The field card's Next. Navigation back to a field is the review card's
         // own `edit`/`page` controls, so this is a one-way forward step.
@@ -961,10 +992,10 @@ export class DiscordChannel implements MessageChannelRuntime {
       return;
     }
     if (field.kind === "multi-select") {
-      entry.values[field.key] = [...interaction.values];
+      recordAnswer(entry, field.key, [...interaction.values]);
     } else if (field.kind === "boolean") {
       const truthy = interaction.values[0] === "true";
-      entry.values[field.key] = truthy;
+      recordAnswer(entry, field.key, truthy);
     } else {
       // Single select: exactly one value. A payload with more is not something
       // this renderer asked for, so it is not coerced into a single answer.
@@ -972,7 +1003,7 @@ export class DiscordChannel implements MessageChannelRuntime {
         await interaction.replyEphemeral(getMessages().elicitationAlreadyResolved);
         return;
       }
-      entry.values[field.key] = interaction.values[0]!;
+      recordAnswer(entry, field.key, interaction.values[0]!);
     }
     await interaction.acknowledge();
   }
@@ -1007,7 +1038,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       if (!field) continue;
       const value = parseModalAnswer(field, raw);
       if (value === undefined) continue;
-      entry.values[field.key] = value;
+      recordAnswer(entry, field.key, value);
       answered.add(field.key);
     }
     await interaction.replyEphemeral(answered.size > 0 ? getMessages().elicitationAnswerSaved : getMessages().elicitationNoAnswer);

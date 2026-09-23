@@ -8,6 +8,19 @@ import type {
 } from "./types";
 import type { OrchestrationTaskRecord } from "../orchestration/orchestration-types";
 
+/**
+ * What the daemon needs to know about form-Elicitation delivery once channel
+ * startups have had their say.
+ */
+export interface ElicitationReadiness {
+  /** Whether at least one form-capable channel is live. */
+  formCapable: boolean;
+  /** Ids of the live form-capable channels. */
+  formChannelIds: string[];
+  /** Ids of channels whose most recent start attempt failed. */
+  failedChannelIds: string[];
+}
+
 export class MessageChannelRegistry {
   private readonly channels: Map<string, MessageChannelRuntime>;
   /**
@@ -16,6 +29,7 @@ export class MessageChannelRegistry {
    * bind is excluded until it starts successfully.
    */
   private readonly failedStartupChannels: Set<string> = new Set();
+  private onElicitationReadiness: ((readiness: ElicitationReadiness) => void) | null = null;
 
   constructor(channels: MessageChannelRuntime[]) {
     this.channels = new Map(channels.map((channel) => [channel.id, channel]));
@@ -50,6 +64,42 @@ export class MessageChannelRegistry {
     return this.hasElicitationFormCapability();
   }
 
+  /**
+   * Every registered channel, for a caller that needs to reason about the
+   * declared-versus-live difference.
+   */
+  allChannels(): MessageChannelRuntime[] {
+    return [...this.channels.values()];
+  }
+
+  /**
+   * Ids of channels that DECLARE form support, regardless of whether they
+   * started. The daemon's pre-start capability read is based on exactly this
+   * set, which is what makes it the right baseline for detecting a capability
+   * that went missing.
+   */
+  declaredElicitationFormChannelIds(): string[] {
+    const ids: string[] = [];
+    for (const [id, channel] of this.channels) {
+      if (typeof channel.requestElicitation !== "function") continue;
+      if ((channel.elicitationModes ?? []).includes("form")) ids.push(id);
+    }
+    return ids;
+  }
+
+  /**
+   * Subscribe to form-capability changes.
+   *
+   * Fired from each channel's start outcome, because `startAll()` is not a
+   * readiness barrier and the daemon's pre-start probe cannot know the answer.
+   * The daemon uses this to correct what it told the bridge.
+   */
+  setElicitationReadinessListener(
+    listener: (readiness: ElicitationReadiness) => void,
+  ): void {
+    this.onElicitationReadiness = listener;
+  }
+
   configureOrchestration(callbacks: OrchestrationDeliveryCallbacks): void {
     for (const channel of this.channels.values()) {
       channel.configureOrchestration?.(callbacks);
@@ -57,41 +107,65 @@ export class MessageChannelRegistry {
   }
 
   async startAll(input: ChannelStartInput): Promise<void> {
+    const entries = [...this.channels.entries()];
     const outcomes = await Promise.allSettled(
-      [...this.channels.values()].map(async (channel) => {
+      entries.map(async ([id, channel]) => {
+        let failed = false;
         try {
           await channel.start(input);
         } catch (error) {
+          failed = true;
           const message =
             error instanceof Error ? error.message : String(error);
           await input.logger.error(
-            `channel.${channel.id}.start_failed`,
-            `channel ${channel.id} failed to start: ${message}`,
-            { channel: channel.id },
+            `channel.${id}.start_failed`,
+            `channel ${id} failed to start: ${message}`,
+            { channel: id },
           );
           throw error;
+        } finally {
+          // Record this channel's outcome AS IT HAPPENS. `allSettled` is not a
+          // readiness barrier — a healthy channel's `start()` may stay pending
+          // for the daemon's whole lifetime — so deferring this bookkeeping to
+          // after the await meant a failure that happened early was not visible
+          // until (possibly) never.
+          if (failed) {
+            this.failedStartupChannels.add(id);
+          } else {
+            this.failedStartupChannels.delete(id);
+          }
+          await this.settleElicitationReadiness();
         }
       }),
     );
     const failed = outcomes.filter(
       (r): r is PromiseRejectedResult => r.status === "rejected",
     );
-    // Record which interaction-advertising channels did NOT come up. The
-    // capability probes below answer from LIVE readiness rather than from the
-    // static declaration, because a channel that advertises form support at
-    // construction time and then fails to start has advertised a capability
-    // nothing backs — and the daemon has already told the bridge about it.
-    for (const [index, outcome] of outcomes.entries()) {
-      const channel = [...this.channels.values()][index];
-      if (!channel) continue;
-      if (outcome.status === "rejected") {
-        this.failedStartupChannels.add(channel.id);
-      } else {
-        this.failedStartupChannels.delete(channel.id);
-      }
-    }
     if (failed.length === this.channels.size) {
       throw new Error("all channels failed to start");
+    }
+  }
+
+  /**
+   * Publish the current form-Elicitation capability to the daemon.
+   *
+   * Called from each channel's start (in `finally`, so a failure publishes
+   * too). This exists because `startAll()` is NOT a readiness barrier: a healthy
+   * channel's `start()` can stay pending for the whole daemon lifetime, so
+   * anything computed once before or once after `allSettled` is computed from
+   * incomplete information. The signal is emitted the moment an interaction
+   * channel's fate is known, which is the only time it can be known.
+   */
+  private async settleElicitationReadiness(): Promise<void> {
+    if (!this.onElicitationReadiness) return;
+    try {
+      this.onElicitationReadiness({
+        formCapable: this.hasElicitationFormCapability(),
+        formChannelIds: this.formElicitationChannelIds(),
+        failedChannelIds: [...this.failedStartupChannels],
+      });
+    } catch {
+      // A readiness listener must never take a channel's start down.
     }
   }
 

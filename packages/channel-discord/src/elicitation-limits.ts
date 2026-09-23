@@ -35,6 +35,7 @@
  * measured requirement.
  */
 
+import { satisfiesElicitationFormat } from "xacpx/plugin-api";
 import type { ChannelElicitationField } from "xacpx/plugin-api";
 
 /** Discard longer labels rather than rendering a control that violates the API. */
@@ -251,9 +252,12 @@ export function optionViolatesFieldConstraints(
   const length = codePointCount(value);
   if (field.minLength !== undefined && length < field.minLength) return true;
   if (field.maxLength !== undefined && length > field.maxLength) return true;
-  const format = field.format;
-  if (format === undefined) return false;
-  return !likelySatisfiesFormat(format, value);
+  // DELEGATED to core, deliberately. An earlier version of this check carried
+  // its own shape-only regexes: a date regex that accepted "2026-99-99", and an
+  // email regex that disagreed with ajv-formats. Both made a dead option look
+  // live, which is the exact bug this function exists to prevent. One shared
+  // predicate keeps the renderer's answer identical to the validator's.
+  return !satisfiesElicitationFormat(field.format, value);
 }
 
 /**
@@ -262,28 +266,4 @@ export function optionViolatesFieldConstraints(
  */
 function codePointCount(value: string): number {
   return [...value].length;
-}
-
-/**
- * Whether a value plausibly satisfies a core-supported `format`.
- *
- * Deliberately CONSERVATIVE and duplicated from core rather than imported: this
- * runs at render time on agent-supplied option values, and a wrong `false`
- * only makes the renderer refuse a form it could have drawn. It never accepts
- * an answer — core remains the authority on what a submitted value satisfies.
- */
-function likelySatisfiesFormat(format: string, value: string): boolean {
-  switch (format) {
-    case "email":
-      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
-    case "uri":
-      return /^[a-z][a-z0-9+.-]*:\S+$/i.test(value);
-    case "date":
-      return /^\d{4}-\d{2}-\d{2}$/.test(value);
-    case "date-time":
-      return /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/.test(value);
-    default:
-      // An unknown format is not this renderer's to reject.
-      return true;
-  }
 }
