@@ -4,6 +4,8 @@ import {
   parseControlPayload,
   type AgentMessageCompletionPayload,
   type AgentMessageDeliverPayload,
+  type InteractionRequestDto,
+  type InteractionResult,
   type OrchestrationTaskDto,
   type RelayEnvelope,
   type ScheduledTaskDto,
@@ -86,6 +88,10 @@ const CONNECTOR_TIMEOUT_EXEMPT_TYPES: ReadonlySet<string> = new Set([
   MSG.commandExecute,
   MSG.sessionModelSet,
   MSG.sessionEffortSet,
+  // A human interaction window is minutes, not the 60s default. Bounded by the
+  // payload's own `expiresAt` instead of a transport timer, so a slow answer is
+  // not cut off while a dead one still expires.
+  MSG.interactionRequest,
 ]);
 
 export interface ControlBridgeOptions {
@@ -114,6 +120,15 @@ export interface ControlBridgeOptions {
       isOwner?: boolean;
     },
   ) => Promise<unknown>;
+  /**
+   * Render an interaction (permission or elicitation) for the authenticated human
+   * and resolve with their decision. Injected by the daemon (see
+   * `RelayChannel.requestElicitation`), which is what knows the core-side
+   * brokers; the bridge itself only carries the frame.
+   */
+  renderInteraction?: (
+    request: InteractionRequestDto,
+  ) => Promise<InteractionResult>;
 }
 
 function controlRpcTimeoutMs(
@@ -185,7 +200,13 @@ export function createControlBridge(
     }
 
     const deadlineAt = modelSetDeadlineAt(envelope, now);
-    void dispatchControlRequest(control, envelope, deadlineAt, options.trustedConversationPrompt)
+    void dispatchControlRequest(
+      control,
+      envelope,
+      deadlineAt,
+      options.trustedConversationPrompt,
+      options.renderInteraction,
+    )
       .then(respondOnce)
       .catch((error: unknown) => {
         const code = (error as Error & { code?: string }).code ?? "internal";
@@ -241,6 +262,7 @@ async function dispatchControlRequest(
   envelope: RelayEnvelope,
   deadlineAt?: number,
   trustedConversationPrompt?: ControlBridgeOptions["trustedConversationPrompt"],
+  renderInteraction?: ControlBridgeOptions["renderInteraction"],
 ): Promise<unknown> {
   const payload = envelope.payload;
   switch (envelope.type) {
@@ -1087,6 +1109,23 @@ async function dispatchControlRequest(
       const input = parseControlPayload(MSG.runsCancel, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.runsCancel}: malformed payload`);
       return { run: await control.cancelRun(input.runId) };
+    }
+    case MSG.interactionRequest: {
+      const input = parseControlPayload(MSG.interactionRequest, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.interactionRequest}: malformed payload`);
+      if (!renderInteraction) {
+        // No renderer injected: this connector cannot put a form in front of a
+        // human. Fail closed rather than pretending the interaction happened.
+        return errorPayload("unsupported", `${MSG.interactionRequest}: no interaction renderer`);
+      }
+      const result = await renderInteraction(input);
+      if (!result.responded) {
+        // Not a decision: the window closed, the turn went away, or the channel
+        // cannot render. Reported as an explicit non-response so the caller can
+        // distinguish it from a user's own decline.
+        return { responded: false as const, reason: result.reason ?? "aborted" };
+      }
+      return { responded: true as const, response: result.response };
     }
     default:
       return errorPayload(

@@ -88,20 +88,17 @@ async function sendConnectorRequest(
   instanceId: string,
   type: string,
   payload: unknown,
+  timeoutMs: number = TERMINAL_REQUEST_TIMEOUT_MS,
 ): Promise<unknown> {
   try {
-    return await deps.gateway.sendRequest(instanceId, type, payload, {
-      timeoutMs: TERMINAL_REQUEST_TIMEOUT_MS,
-    });
+    return await deps.gateway.sendRequest(instanceId, type, payload, { timeoutMs });
   } catch (err) {
     if (
       err instanceof Error
       && err.message === "instance-reconnected"
       && deps.gateway.isOnline(instanceId)
     ) {
-      return await deps.gateway.sendRequest(instanceId, type, payload, {
-        timeoutMs: TERMINAL_REQUEST_TIMEOUT_MS,
-      });
+      return await deps.gateway.sendRequest(instanceId, type, payload, { timeoutMs });
     }
     throw err;
   }

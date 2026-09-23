@@ -39,6 +39,8 @@ import {
   type GitPushPayload,
   type GitStatusPayload,
   type GitWorktreeCreatePayload,
+  type InteractionRequestPayload,
+  type InteractionResponsePayload,
   type OrchestrationCancelPayload,
   type OrchestrationGetPayload,
   type PromptCancelPayload,
@@ -449,6 +451,172 @@ const validateRunsCancel: Validator<RunsCancelPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? (o as unknown as RunsCancelPayload) : null;
 };
+
+/* --- relay interaction transport (shared by permission + elicitation) --- */
+
+/** Optional present-tense object field: absent or a plain object. */
+const optObj = (v: unknown): boolean => v === undefined || isObj(v);
+
+/** A plausible wall-clock `expiresAt`: a positive finite number, not NaN/Infinity. */
+const isTimestamp = (v: unknown): boolean =>
+  typeof v === "number" && Number.isFinite(v) && v > 0;
+
+const INTERACTION_KINDS = ["permission", "elicitation"] as const;
+const INTERACTION_ACTIONS = [
+  "accept",
+  "decline",
+  "cancel",
+  "allow_once",
+  "allow_always",
+  "reject_once",
+  "reject_always",
+] as const;
+const FIELD_KINDS = ["text", "single-select", "number", "boolean", "multi-select"] as const;
+
+/**
+ * One normalized form field.
+ *
+ * The field's own bounds are checked here so a hub cannot forward a shape core
+ * never produced (e.g. a 100k-char title, or a select with a million options).
+ * An out-of-range field invalidates the whole request: a partially-validated
+ * form would render a question the agent did not ask.
+ */
+function validInteractionField(v: unknown): boolean {
+  if (!isObj(v)) return false;
+  const kind = v.kind;
+  if (typeof kind !== "string" || !(FIELD_KINDS as readonly string[]).includes(kind)) return false;
+  // The key is the component name on some platforms, so it is short and bounded.
+  if (!isBoundedStr(v.key, 64)) return false;
+  if (!isBoundedStr(v.title, 200)) return false;
+  if (typeof v.required !== "boolean") return false;
+  if (!optStrOrNull(v.description)) return false;
+  if (!optNum(v.minItems) || !optNum(v.maxItems)) return false;
+  if (!optNum(v.minLength) || !optNum(v.maxLength)) return false;
+  if (!optBoolOrNull(v.integer)) return false;
+  if (!optNum(v.minimum) || !optNum(v.maximum)) return false;
+  const isSelect = kind === "single-select" || kind === "multi-select";
+  if (isSelect) {
+    const options = v.options;
+    if (!Array.isArray(options) || options.length === 0 || options.length > 200) return false;
+    for (const option of options) {
+      if (!isObj(option)) return false;
+      // `value` is the correlation identity core validates; `label` is
+      // agent-controlled display text. Both are bounded.
+      if (!isBoundedStr(option.value, 200)) return false;
+      if (!isBoundedStr(option.label, 200)) return false;
+      if (!optStrOrNull(option.description)) return false;
+    }
+  } else if (v.options !== undefined) {
+    // A non-select kind must not carry options: that is a shape core would not
+    // emit, and rendering it would invent a choice the agent never offered.
+    return false;
+  }
+  if (v.defaultValue !== undefined) {
+    const d = v.defaultValue;
+    const scalar = typeof d === "string" || typeof d === "number" || typeof d === "boolean";
+    const array = isStrArr(d);
+    if (!scalar && !array) return false;
+    // A default is core-side pre-fill that core itself would accept, so it must
+    // not be an unbounded blob either.
+    if (typeof d === "string" && d.length > 8000) return false;
+  }
+  return true;
+}
+
+/**
+ * The opened-interaction request.
+ *
+ * Requires the kind's own payload: an `elicitation` request with no
+ * `elicitation` block, or a `permission` request with no `permission` block, is
+ * rejected rather than forwarded to a renderer that has nothing to render.
+ */
+const validateInteractionRequest: Validator<InteractionRequestPayload> = (p) => {
+  const o = fields(p);
+  if (!o) return null;
+  if (!isBoundedStr(o.requestId, 128)) return null;
+  const kind = o.kind;
+  if (typeof kind !== "string" || !(INTERACTION_KINDS as readonly string[]).includes(kind)) return null;
+  if (!isTimestamp(o.expiresAt)) return null;
+  if (!optObj(o.conversation)) return null;
+  if (o.conversation !== undefined) {
+    const c = o.conversation as Record<string, unknown>;
+    // Product identity only. A hidden `brt_*` alias must never appear here.
+    if (!optStrOrNull(c.conversationId)) return null;
+    if (!optStrOrNull(c.topicId)) return null;
+    if (!optStrOrNull(c.runId)) return null;
+    if (!optStrOrNull(c.memberTurnId)) return null;
+    if (!optStrOrNull(c.promptRequestId)) return null;
+    for (const value of Object.values(c)) {
+      if (typeof value === "string" && value.startsWith("brt_")) return null;
+    }
+  }
+  if (kind === "elicitation") {
+    const e = o.elicitation;
+    if (!isObj(e)) return null;
+    const elicitation = e as Record<string, unknown>;
+    if (elicitation.mode !== "form") return null;
+    // An empty message is allowed: a schema with a good title needs no prose.
+    if (!optStrOrNull(elicitation.message)) return null;
+    if (typeof elicitation.message === "string" && elicitation.message.length > 8000) return null;
+    if (!optStrOrNull(elicitation.schemaTitle)) return null;
+    const fieldsValue = elicitation.fields;
+    // At least one field: a zero-field form is not renderable, and core would not
+    // emit one. Both boundaries agree, so a frame cannot be valid hub-side and
+    // dropped web-side (or the reverse).
+    if (!Array.isArray(fieldsValue) || fieldsValue.length === 0) return null;
+    if (fieldsValue.length > 100) return null;
+    if (!fieldsValue.every(validInteractionField)) return null;
+    if (o.permission !== undefined) return null;
+    return o as unknown as InteractionRequestPayload;
+  }
+  // permission: reserved. M3 accepts the shape so the transport is exercised,
+  // but nothing renders it yet.
+  const perm = o.permission;
+  if (!isObj(perm)) return null;
+  const permission = perm as Record<string, unknown>;
+  if (!optStrOrNull(permission.title)) return null;
+  if (!optStrOrNull(permission.kind)) return null;
+  if (!optStrOrNull(permission.summary)) return null;
+  if (!isStrArr(permission.availableOutcomes)) return null;
+  if (o.elicitation !== undefined) return null;
+  return o as unknown as InteractionRequestPayload;
+};
+
+/**
+ * The human's decision.
+ *
+ * Carries NO responder identity — the hub stamps that. A frame that smuggles one
+ * in is rejected rather than having the field silently dropped: an explicit
+ * rejection surfaces the protocol violation, whereas dropping would let a
+ * client believe it asserted an identity that was ignored.
+ */
+const validateInteractionResponse: Validator<InteractionResponsePayload> = (p) => {
+  const o = fields(p);
+  if (!o) return null;
+  if (!isBoundedStr(o.requestId, 128)) return null;
+  const kind = o.kind;
+  if (typeof kind !== "string" || !(INTERACTION_KINDS as readonly string[]).includes(kind)) return null;
+  const action = o.action;
+  if (typeof action !== "string" || !(INTERACTION_ACTIONS as readonly string[]).includes(action)) return null;
+  // Identity is never client-supplied on this path.
+  if (o.responderId !== undefined || o.senderId !== undefined || o.userId !== undefined) return null;
+  if (action === "accept") {
+    if (o.content === null || o.content === undefined) {
+      return o as unknown as InteractionResponsePayload;
+    }
+    if (!isObj(o.content)) return null;
+    // Bounded per answer so a single field cannot carry an unbounded blob.
+    for (const value of Object.values(o.content)) {
+      const scalar = typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+      const array = isStrArr(value);
+      if (!scalar && !array) return null;
+      if (typeof value === "string" && value.length > 8000) return null;
+    }
+    return o as unknown as InteractionResponsePayload;
+  }
+  if (o.content !== undefined && o.content !== null) return null;
+  return o as unknown as InteractionResponsePayload;
+};
 /** The control-RPC message types that carry a client-supplied payload to validate.
  *  Excludes: handshake (instanceRegister/instanceAuth — validated in instance-gateway),
  *  event-direction (instanceEvent/instanceNotice — boundary B via validControlEvent),
@@ -481,7 +649,8 @@ export type ControlRpcType =
   | typeof MSG.conversationsList | typeof MSG.conversationsGet
   | typeof MSG.topicsList | typeof MSG.topicsCreate
   | typeof MSG.conversationPrompt | typeof MSG.conversationHistory
-  | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel;
+  | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel
+  | typeof MSG.interactionRequest | typeof MSG.interactionRespond;
 
 /** Registry: control-RPC type → shape validator. `satisfies` locks both directions —
  *  a ControlRpcType with no validator, or a validator whose key isn't a ControlRpcType,
@@ -553,6 +722,8 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.runsGet]: validateRunsGet,
   [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel,
+  [MSG.interactionRequest]: validateInteractionRequest,
+  [MSG.interactionRespond]: validateInteractionResponse,
 } satisfies Record<ControlRpcType, Validator<unknown>>;
 
 /** The payload type bound to a control-RPC message, derived from its validator's return. */

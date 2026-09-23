@@ -9,6 +9,11 @@ import type {
   FsDiffFileDto,
   FsEntryDto,
   FsSearchHitDto,
+  InteractionFieldDto,
+  InteractionKindDto,
+  InteractionRequestDto,
+  InteractionResponseDto,
+  InteractionValueDto,
   OrchestrationTaskDto,
   PublishedAgentEndpointDto,
   ScheduledOriginDto,
@@ -136,6 +141,26 @@ export const MSG = {
   runsGet: "control.runs.get",
   runsList: "control.runs.list",
   runsCancel: "control.runs.cancel",
+  /**
+   * Hub -> connector: ask the human for a structured answer. ONE round trip: the
+   * answer arrives as this call's RPC result, so there is no separate downlink
+   * queue and no hub-side pending map to reconcile. This is the shared transport
+   * for both decision kinds (`kind`), mirroring core's split where
+   * `TurnInteractionRegistry` is shared but the permission and elicitation
+   * brokers are not.
+   *
+   * Long-lived by nature: a human interaction window is measured in minutes, so
+   * this type is exempt from the connector's 60s RPC default and bounded by the
+   * payload's own `expiresAt`.
+   */
+  interactionRequest: "control.interaction.request",
+  /**
+   * Connector -> hub: the human's decision for an opened interaction. The
+   * authoritative responder identity is STAMPED BY THE HUB from the
+   * authenticated session before the frame reaches the connector — the browser
+   * payload carries no identity field at all, so there is nothing to forge.
+   */
+  interactionRespond: "control.interaction.respond",
 } as const;
 
 export type MessageType = (typeof MSG)[keyof typeof MSG];
@@ -555,6 +580,39 @@ export interface UploadResult {
   size: number;
 }
 
+/**
+ * Opened an interaction: `InteractionRequestDto` down to the human,
+ * `InteractionResult` back up with the decision. See dtos.ts for shapes.
+ */
+export type InteractionRequestPayload = InteractionRequestDto;
+export type InteractionResponsePayload = InteractionResponseDto;
+
+/**
+ * The RPC result of an opened interaction.
+ *
+ * `responded: false` means the interaction never reached a decision inside the
+ * window — the hub or connector closed it, the turn went away, or the client is
+ * too old to answer. It is deliberately distinct from a user's `cancel`, which
+ * the human chose: an infrastructure close is not a user action, and collapsing
+ * the two would report a decision nobody made.
+ */
+export interface InteractionResult {
+  responded: boolean;
+  /** Present iff `responded`. Responder identity is stamped by the HUB. */
+  response?: InteractionResponseDto;
+  /** Bounded reason when not responded; never contains answer content. */
+  reason?: "timeout" | "aborted" | "shutdown" | "unsupported" | "channel-missing";
+}
+
+/**
+ * Upward notice that an interaction is open, so every connected browser for the
+ * account sees it without having opened it. Mirrors how a live turn is pushed to
+ * other tabs.
+ */
+export interface InteractionOpenedNotice {
+  request: InteractionRequestDto;
+}
+
 export interface PromptPayload {
   chatKey: string;
   sessionAlias: string;
@@ -928,6 +986,15 @@ export interface TerminalAttachPayload {
 export const RELAY_CAPABILITIES = {
   terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1",
   terminalMultiViewV1: "terminal.multi-view.v1",
+  /** This side can open an ACP form elicitation for a human and carry the
+   *  decision back. Both halves (hub and web) must declare it: a hub without it
+   *  never asks, so an old hub simply produces no interaction rather than a
+   *  frame the web cannot interpret. */
+  interactionElicitationFormV1: "interaction.elicitation.form.v1",
+  /** This side can carry the relay permission interaction. Reserved: the wire
+   *  shape exists so the transport is exercised, but no permission renderer is
+   *  implemented yet. Declaring it would advertise a capability that cannot
+   *  deliver, so it is deliberately absent from the map until one lands. */
 } as const;
 
 export type RelayCapability =

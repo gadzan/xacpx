@@ -24,6 +24,7 @@ import { AcpxQueueOverflowError } from "../../transport/acpx-queue-overflow";
 import { queueOverflowTipText } from "./session-recovery-handler";
 import { PermissionInteractionBroker, getGlobalPermissionBroker } from "../../permissions/permission-interaction-broker.js";
 import { resolvePermissionTurnRoute } from "../../permissions/permission-turn-route.js";
+import { resolveElicitationTurnRoute } from "../../interactions/elicitation-turn-route.js";
 import { getGlobalElicitationBroker } from "../../interactions/elicitation-interaction-broker.js";
 import { isHiddenProductSessionOwner } from "../../state/types";
 
@@ -1062,22 +1063,44 @@ async function promptWithSession(
       metadata,
       ...(accountId !== undefined ? { accountId } : {}),
     });
-    const interactionId = permissionRoute
+    // Direct Conversation turns have no permission route by policy (a product
+    // isolation key must not mint a human permission interaction), but they DO
+    // have a trusted human identity — the hub-stamped HumanIngressContext that
+    // reached this dispatch with its authorityEpoch. So an elicitation route is
+    // resolved there, or a Direct Bot turn could never receive any interaction
+    // at all: no route means no interactionId, and the broker cancels.
+    //
+    // This widens ONLY the elicitation path. The permission route above is
+    // unchanged, and the daemon's trust decision is unchanged: the caller's
+    // `resolvedOrigin` still has to be an explicit "human", and the broker still
+    // re-verifies the responder against the exact turn initiator.
+    const elicitationRoute = permissionRoute ? undefined : resolveElicitationTurnRoute({
+      isolationChatKey: chatKey,
+      ...(resolvedOrigin !== undefined ? { origin: resolvedOrigin } : {}),
+      metadata,
+      ...(accountId !== undefined ? { accountId } : {}),
+      ...(replyContextToken !== undefined ? { ingressChatKey: replyContextToken } : {}),
+      ...(metadata?.senderId !== undefined ? { senderId: metadata.senderId } : {}),
+      ...(metadata?.senderName !== undefined ? { senderName: metadata.senderName } : {}),
+      ...(metadata?.isOwner !== undefined ? { isOwner: metadata.isOwner } : {}),
+    });
+    const route = permissionRoute ?? elicitationRoute;
+    const interactionId = route
       ? PermissionInteractionBroker.createInteractionId()
       : undefined;
     let disposeInteraction: (() => void) | undefined;
-    if (interactionId && permissionRoute) {
+    if (interactionId && route) {
       // One exact-turn binding serves BOTH brokers: they share the route
       // registry (turn identity/abort) but never share terminal semantics.
       const turnContext = {
         interactionId,
-        chatKey: permissionRoute.chatKey,
+        chatKey: route.chatKey,
         origin: "human" as const,
-        ...(permissionRoute.accountId !== undefined ? { accountId: permissionRoute.accountId } : {}),
+        ...(route.accountId !== undefined ? { accountId: route.accountId } : {}),
         ...(replyContextToken !== undefined ? { replyContextToken } : {}),
-        ...(permissionRoute.senderId !== undefined ? { senderId: permissionRoute.senderId } : {}),
-        ...(permissionRoute.senderName !== undefined ? { senderName: permissionRoute.senderName } : {}),
-        ...(permissionRoute.isOwner !== undefined ? { isOwner: permissionRoute.isOwner } : {}),
+        ...(route.senderId !== undefined ? { senderId: route.senderId } : {}),
+        ...(route.senderName !== undefined ? { senderName: route.senderName } : {}),
+        ...(route.isOwner !== undefined ? { isOwner: route.isOwner } : {}),
       };
       let disposePermission: (() => void) | undefined;
       let disposeElicitation: (() => void) | undefined;

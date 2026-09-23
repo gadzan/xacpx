@@ -13,6 +13,10 @@ import {
   type ConversationRunDto,
   type ConversationRunStateDto,
   type ConversationSummaryDto,
+  type InteractionFieldDto,
+  type InteractionKindDto,
+  type InteractionRequestDto,
+  type InteractionValueDto,
   type LiveTurnSnapshotDto,
   type MemberTurnSummaryDto,
   type PlanEntryDto,
@@ -49,6 +53,82 @@ export type DirectBotPromptErrorCode = "topicRecovering" | "botDisabled" | "runI
 export type DirectBotCancelErrorCode = "ownershipUnconfirmed" | "ownershipChecking" | "cancelUnknown";
 export type DirectBotHistoryErrorCode = "discoveryFailed";
 export type DirectBotGeneralErrorCode = "instanceOffline";
+
+/**
+ * An open interaction awaiting this browser's answer.
+ *
+ * `request` is the whole hub-validated payload, so the renderer never has to
+ * reassemble a form from fields plus separate product ids. `answers` holds what
+ * the user has entered; it starts EMPTY rather than seeded from
+ * `defaultValue`, because a default the user never looked at must not be
+ * submittable — the ACP contract requires the user be able to review and modify
+ * before sending.
+ */
+export interface PendingInteractionState {
+  /** Instance this interaction was opened against; empty while unresolved. */
+  instanceId: string;
+  request: InteractionRequestDto;
+  /** The kind, kept alongside so a component does not re-derive it. */
+  kind: InteractionKindDto;
+  answers: Record<string, InteractionValueDto>;
+  /**
+   * Set once the browser received the outcome, so the UI shows what happened
+   * instead of leaving a dead form. Cleared by the caller after the notice.
+   */
+  outcome: "accepted" | "declined" | "cancelled" | "withdrawn" | null;
+  submitting: boolean;
+  /** Last submit failure, surfaced as a bounded code rather than message text. */
+  errorCode: DirectBotInteractionErrorCode | null;
+}
+
+export type DirectBotInteractionErrorCode =
+  | "connectorOutdated"
+  | "instanceOffline"
+  | "interactionGone"
+  | "submitFailed"
+  | "runNotActive";
+
+/**
+ * Whether an accept can be sent.
+ *
+ * A required field must carry an answer; an optional field may be absent. The
+ * condition is per-field and explicitly `true` for absent optionals — writing it
+ * as `required || answered !== undefined` reads the same but is wrong, because
+ * an unanswered optional then evaluates `false` and blocks the whole submit.
+ */
+function isInteractionAnswerable(state: PendingInteractionState): boolean {
+  const fields = state.request.elicitation?.fields ?? [];
+  return fields.every((field) => (field.required ? state.answers[field.key] !== undefined : true));
+}
+
+/**
+ * The answer payload for an accept.
+ *
+ * `null` when nothing was answered at all (an all-optional form the user
+ * submitted empty), which ACP treats as a distinct statement from "the channel
+ * submitted nothing" (`undefined`). An empty object would be a third, meaningless
+ * thing.
+ */
+function collectInteractionAnswers(
+  state: PendingInteractionState,
+): Record<string, InteractionValueDto> | null {
+  const keys = Object.keys(state.answers);
+  if (keys.length === 0) return null;
+  const content: Record<string, InteractionValueDto> = {};
+  for (const key of keys) {
+    const value = state.answers[key];
+    if (value === undefined) continue;
+    content[key] = value;
+  }
+  return Object.keys(content).length === 0 ? null : content;
+}
+
+/** Fields that still need an answer, for the renderer's progress line. */
+function missingInteractionFields(state: PendingInteractionState): InteractionFieldDto[] {
+  const fields = state.request.elicitation?.fields ?? [];
+  return fields.filter((field) => field.required && state.answers[field.key] === undefined);
+}
+
 class DirectBotRpcError extends Error {
   readonly code: string;
   constructor(code: string, message: string) {
@@ -336,6 +416,22 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     return planByRunId.value[currentId] ?? [];
   });
   const cancellingRunId = ref<string | null>(null);
+
+  /**
+   * Open interaction awaiting this browser's answer.
+   *
+   * One at a time by design: an elicitation belongs to one exact agent turn, and
+   * the hub opens only one per turn. If a second arrives the first is superseded
+   * rather than stacked — a stale form left on screen can be answered by mistake
+   * long after its turn moved on.
+   *
+   * `expiresAt` is the HUB's deadline (ms epoch), rendered as a client-side
+   * countdown so the user sees the window closing rather than a form that
+   * suddenly disappears. `answers` starts empty on purpose: pre-filling from
+   * anything other than an explicit edit would let a default be submitted
+   * without the user reviewing it.
+   */
+  const pendingInteraction = ref<PendingInteractionState | null>(null);
 
   // Accumulated trace parts retained per runId so completed assistant messages keep their rich cards
   const runParts = ref<Record<string, TurnPartDto[]>>({});
@@ -2064,7 +2160,111 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
   }
 
-  // Exact Run cancellation via runId
+  /**
+   * Record one field's answer, locally.
+   *
+   * Deliberately NOT an RPC: answers are held client-side until the user submits,
+   * so a half-finished form is never visible to anyone. An unknown key is ignored
+   * rather than stored, because the hub-validated field list is the authority on
+   * what this form asks.
+   */
+  function setInteractionAnswer(key: string, value: InteractionValueDto): void {
+    const current = pendingInteraction.value;
+    if (!current) return;
+    const known = current.request.elicitation?.fields.some((field) => field.key === key);
+    if (!known) return;
+    pendingInteraction.value = {
+      ...current,
+      answers: { ...current.answers, [key]: value },
+      errorCode: null,
+    };
+  }
+
+  /** Dismiss a form without answering. Records the user's own dismissal. */
+  async function declineInteraction(): Promise<void> {
+    await submitInteraction("decline");
+  }
+
+  /** Dismiss a form as abandoned. Distinct from decline: the user gave up. */
+  async function cancelInteraction(): Promise<void> {
+    await submitInteraction("cancel");
+  }
+
+  /**
+   * Send the user's decision.
+   *
+   * `decline` and `cancel` are user actions and are reported as such — they are
+   * never synthesized from a timeout or a transport failure, which close the form
+   * through `interaction-closed` instead. Collapsing the two would report a
+   * decision the user did not make.
+   *
+   * The submit is one RPC whose result carries the outcome; a transport failure
+   * sets a bounded error code and leaves the form open, because the interaction
+   * may still be answerable and the user should be able to retry.
+   */
+  async function submitInteraction(
+    action: "accept" | "decline" | "cancel",
+  ): Promise<void> {
+    const current = pendingInteraction.value;
+    if (!current || current.submitting) return;
+    // Expiry is checked FIRST. An expired form must report that the window
+    // closed, not "you left a field blank" — the incomplete-answer message would
+    // send a user looking for a field they can no longer usefully fill.
+    if (current.request.expiresAt <= Date.now()) {
+      pendingInteraction.value = { ...current, errorCode: "interactionGone" };
+      return;
+    }
+    if (action === "accept" && !isInteractionAnswerable(current)) {
+      pendingInteraction.value = { ...current, errorCode: "submitFailed" };
+      return;
+    }
+    pendingInteraction.value = { ...current, submitting: true, errorCode: null };
+    const requestId = current.request.requestId;
+    const generation = currentSelectionGeneration;
+    try {
+      const result = unwrapRpc(
+        await api.rpc<{ responded: boolean; reason?: string; response?: unknown }>(
+          current.instanceId,
+          MSG.interactionRequest,
+          {
+            requestId,
+            kind: "elicitation",
+            action,
+            ...(action === "accept" ? { content: collectInteractionAnswers(current) } : {}),
+          },
+        ),
+      );
+      // Guard against a late reply to a superseded or closed form.
+      if (generation !== currentSelectionGeneration) return;
+      if (!result.responded) {
+        const code = result.reason === "timeout"
+          ? "interactionGone"
+          : result.reason === "unsupported"
+            ? "connectorOutdated"
+            : "submitFailed";
+        pendingInteraction.value = { ...current, submitting: false, errorCode: code };
+        return;
+      }
+      const outcome = action === "accept"
+        ? "accepted"
+        : action === "decline"
+          ? "declined"
+          : "cancelled";
+      pendingInteraction.value = { ...current, submitting: false, outcome };
+    } catch (error) {
+      if (generation !== currentSelectionGeneration) return;
+      const code = error instanceof DirectBotRpcError && error.code === "unknown-type"
+        ? "connectorOutdated"
+        : "submitFailed";
+      pendingInteraction.value = { ...current, submitting: false, errorCode: code };
+    }
+  }
+
+  /** Dismiss a form that already reached a terminal outcome. */
+  function dismissResolvedInteraction(): void {
+    pendingInteraction.value = null;
+  }
+
   async function cancelCurrentRun(): Promise<void> {
     if (!instanceId.value || !activeRun.value) return;
     // Store-level double-click fence: while a cancel RPC for this Run is in
@@ -2275,6 +2475,28 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           }
         }
       }
+
+    // An open interaction is re-proven after a reconnect rather than assumed.
+    //
+    // The hub holds the real state: a form answered from another tab while this
+    // one was disconnected is already closed, and keeping it here would let the
+    // user submit an answer after its own deadline. So the local copy is checked
+    // against the live turn before the form is kept.
+    if (pendingInteraction.value && generation === currentSelectionGeneration) {
+      const interaction = pendingInteraction.value;
+      const alreadyExpired = interaction.request.expiresAt <= Date.now();
+      const runGone = !activeRun.value || !isActiveRunState(activeRun.value.state);
+      if (alreadyExpired || runGone) {
+        // The turn the form belonged to is gone or the window closed: a form with
+        // no live turn is unanswerable, and leaving it up invites a submit that
+        // cannot land.
+        pendingInteraction.value = {
+          ...interaction,
+          outcome: alreadyExpired ? "cancelled" : "withdrawn",
+          submitting: false,
+        };
+      }
+    }
   }
 
   // Handle server WebSocket events
@@ -2435,6 +2657,63 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       if (startedBotId) {
         markBotHasRuntime(event.instanceId, startedBotId);
       }
+    }
+
+    // Interaction lifecycle. Both branches are placed BEFORE the selection fence
+    // below on purpose: an open interaction must be visible and closable even if
+    // the user switches topic mid-question, otherwise the form is stranded on a
+    // conversation that is no longer displayed and its answer is unreachable.
+    if (e.type === "interaction-opened") {
+      const interaction = e.interaction;
+      // Only form elicitation has a renderer. A permission interaction arriving
+      // here is a protocol surprise (the capability is deliberately unclaimed),
+      // so it is ignored rather than shown as an unrenderable form.
+      if (interaction.kind !== "elicitation") return;
+      if (!interaction.elicitation) return;
+      const correlation = interaction.conversation;
+      // Selection-scoped when the interaction carries product identity: a form
+      // for another topic must not surface over the one being viewed.
+      if (
+        correlation
+        && (
+          correlation.conversationId !== activeConversationId.value
+          || correlation.topicId !== activeTopicId.value
+        )
+      ) {
+        return;
+      }
+      if (interaction.expiresAt <= Date.now()) {
+        // Already closed while in flight: showing it would invite an answer
+        // that cannot be accepted.
+        return;
+      }
+      pendingInteraction.value = {
+        instanceId: event.instanceId,
+        request: interaction,
+        kind: interaction.kind,
+        answers: {},
+        outcome: null,
+        submitting: false,
+        errorCode: null,
+      };
+      return;
+    }
+    if (e.type === "interaction-closed") {
+      // Close only the interaction this event names. A close for a different
+      // requestId belongs to someone else's turn (or a stale frame) and must not
+      // dismiss the form the user is currently answering.
+      if (pendingInteraction.value?.request.requestId !== e.requestId) return;
+      const reasonToOutcome = e.reason === "resolved"
+        ? "accepted"
+        : e.reason === "withdrawn"
+          ? "withdrawn"
+          : "cancelled";
+      pendingInteraction.value = {
+        ...pendingInteraction.value,
+        outcome: reasonToOutcome,
+        submitting: false,
+      };
+      return;
     }
 
     // Catalog invalidation events
@@ -2810,6 +3089,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     promptInFlight,
     promptError,
     promptErrorDetail,
+    pendingInteraction,
+    setInteractionAnswer,
+    submitInteraction,
+    declineInteraction,
+    cancelInteraction,
+    dismissResolvedInteraction,
     cancelError,
     generalError,
     generalErrorCode,
