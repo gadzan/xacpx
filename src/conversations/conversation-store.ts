@@ -47,8 +47,16 @@ export interface AcceptRequestInput {
   /** Extra members accepted in the same transaction: one MemberTurn plus one
    *  pending dispatch intent each, in durable member_index order. The legacy
    *  single `botId/profileSnapshot` is always the first member (members[0]).
-   *  Direct accepts omit this. */
+   *  Direct accepts omit this. A `primaryMember` overlay (same botId as the
+   *  legacy singular) carries assignment/provenance metadata for members[0],
+   *  so PR7 explicit assignments and router-selected first members do not
+   *  need another Store API change. */
   members?: AcceptMemberInput[];
+  /** Assignment/provenance overlay for members[0], which is always the
+   *  legacy singular botId/profileSnapshot by construction (the type omits
+   *  both, so the overlay cannot diverge the durable order). Absent ⇒
+   *  members[0] is a plain direct accept. */
+  primaryMember?: Omit<AcceptMemberInput, "botId" | "profileSnapshot">;
   /** Live Conversation dispatcher epoch. Stamped on the dispatch row so a later
    *  process or recovered claim cannot inherit human permission authority. */
   authorityEpoch?: string;

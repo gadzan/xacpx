@@ -266,6 +266,10 @@ export interface BotServiceOptions {
   stateMutex?: AsyncMutex;
   lifecycleGate?: BotLifecycleGate;
   beforeLifecycleMutation?: (input: { botId: string; op: BotLifecycleMutation }) => Promise<void>;
+  /** Test-only seam: runs between the updateGroup stale probe and gate
+   *  acquisition, so tests can deterministically interleave a racing commit.
+   *  Never wired in production. */
+  beforeGroupGatesAcquired?: () => Promise<void>;
   conversationWork?: BotConversationWork;
   /** Called after a Bot transitions false -> true. Used to wake pending
    *  durable work (e.g. Runs deferred while disabled) without a new prompt. */
@@ -280,6 +284,7 @@ export class BotService {
   private readonly stateMutex: AsyncMutex;
   private readonly lifecycleGate: BotLifecycleGate;
   private readonly beforeLifecycleMutation?: (input: { botId: string; op: BotLifecycleMutation }) => Promise<void>;
+  private readonly beforeGroupGatesAcquired?: () => Promise<void>;
   private _onBotReenabled?: (botId: string) => void;
   private conversationWork?: BotConversationWork;
   private closed = false;
@@ -295,6 +300,7 @@ export class BotService {
     this.stateMutex = options?.stateMutex ?? new AsyncMutex();
     this.lifecycleGate = options?.lifecycleGate ?? new BotLifecycleGate();
     this.beforeLifecycleMutation = options?.beforeLifecycleMutation;
+    this.beforeGroupGatesAcquired = options?.beforeGroupGatesAcquired;
     this._onBotReenabled = options?.onBotReenabled;
     this.conversationWork = options?.conversationWork;
   }
@@ -437,6 +443,15 @@ export class BotService {
         if (runtime.conversationIds.length > 0 || runtime.bindingIds.length > 0 || runtime.sessionAliases.length > 0) {
           throw new BotError("bot_in_use", `bot "${id}" still has a direct runtime`, runtime);
         }
+        // Binding-less group-member crash-window sessions carry no binding
+        // row and the session classifier above only recognizes bot-direct
+        // owners: a removed member's durable session would otherwise pass
+        // every guard and orphan an owner pointing at a deleted Bot.
+        if (this.hasGroupMemberRuntime(id)) {
+          throw new BotError("bot_in_use", `bot "${id}" still has a group-member runtime`, {
+            conversationIds: [],
+          });
+        }
         if (this.conversationWork?.hasDurableBotWork(id)) {
           throw new BotError("bot_in_use", `bot "${id}" still has durable conversation work`, {
             conversationIds: [createDirectConversationId(id)],
@@ -494,17 +509,68 @@ export class BotService {
     // cannot miss a member added mid-barrier. Non-membership edits still take
     // the union (existing membership) for the same reason. Deleting Groups
     // refuse edits: the record is about to disappear.
-    const probe = this.state.conversations[id];
-    if (probe && probe.kind === "group") {
+    //
+    // The union is a STALE probe: a concurrent updateGroup can commit a new
+    // membership after this probe reads, so acquisition re-verifies inside
+    // the gates (retry-with-widen) before updateGroupInner runs. A Bot added
+    // by the racing commit must be gated before it can be removed again —
+    // otherwise the remover never holds the added Bot's gate and a racing
+    // materializer for it publishes binding-less residue past the edit.
+    for (;;) {
+      const probe = this.state.conversations[id];
+      if (!probe || probe.kind !== "group") {
+        return await this.mutate(async () => this.updateGroupInner(id, patch));
+      }
       const previewMembership = patch.botIds !== undefined ? [...patch.botIds] : [...probe.botIds];
       const previewLead = patch.leadBotId !== undefined ? patch.leadBotId : probe.leadBotId;
       const gateSet = new Set<string>([...probe.botIds, ...previewMembership]);
       if (previewLead !== undefined && previewLead !== null) {
         gateSet.add(previewLead);
       }
-      return await this.runLifecycleAll([...gateSet], async () => this.updateGroupInner(id, patch));
+      await this.beforeGroupGatesAcquired?.();
+      // Gate keys must be live Bots: a deleted Bot id would mint a fresh
+      // mutex the materializer path never consults, silently breaking the
+      // linearization. Fail closed with the same code as membership writes.
+      for (const botId of gateSet) {
+        this.getBot(botId);
+      }
+      const committed = await this.runLifecycleAll([...gateSet], async () => {
+        const live = this.state.conversations[id];
+        if (!live || live.kind !== "group") {
+          // Deleted (or never a Group) while acquiring: inner re-reads
+          // under the same gates and fails closed with the canonical
+          // not-found code — never a silent no-op.
+          return await this.updateGroupInner(id, patch);
+        }
+        const liveMembership = live.botIds;
+        const uncovered = [...liveMembership, ...(live.leadBotId ? [live.leadBotId] : [])].filter(
+          (botId) => !gateSet.has(botId),
+        );
+        if (uncovered.length > 0) {
+          return null;
+        }
+        // Validate BEFORE committing: membership/lead/title shape errors
+        // must throw now (not retry) — retrying a deterministically
+        // invalid patch would spin forever re-acquiring the same gates.
+        if (patch.botIds !== undefined) {
+          this.requireGroupMembership(patch.botIds);
+        }
+        const livePreview = patch.botIds !== undefined ? patch.botIds : live.botIds;
+        if (patch.leadBotId !== undefined) {
+          this.requireGroupLead(patch.leadBotId, livePreview);
+        } else {
+          this.requireGroupLead(live.leadBotId, livePreview);
+        }
+        if (patch.title !== undefined) {
+          this.requireGroupTitle(patch.title);
+        }
+        return await this.updateGroupInner(id, patch);
+        },
+      );
+      if (committed !== null) {
+        return committed;
+      }
     }
-    return await this.mutate(async () => this.updateGroupInner(id, patch));
   }
 
   private async updateGroupInner(id: string, patch: UpdateGroupInput): Promise<ConversationRecord> {

@@ -1639,7 +1639,7 @@ test("Bot and Conversation RPCs dispatch to Control product IDs", async () => {
         requestId: "req",
         run: { id: "run_1", conversationId: "conversation_1", topicId: "topic_1", requestMessageId: "cmsg", requestId: "req", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "t" },
         message: { id: "cmsg", conversationId: "conversation_1", topicId: "topic_1", seq: 1, role: "human", content: "hi", createdAt: "t" },
-        memberTurn: { id: "mturn_1", runId: "run_1", conversationId: "conversation_1", topicId: "topic_1", botId: "bot_1", batch: 0, attempt: 1, origin: "human", state: "queued", createdAt: "t" },
+        memberTurn: { id: "mturn_1", runId: "run_1", conversationId: "conversation_1", topicId: "topic_1", botId: "bot_1", batch: 0, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "t" },
       };
     },
     cancelRun: async (runId: string) => {
@@ -1749,7 +1749,7 @@ test("conversation.prompt with Hub-stamped ingress uses trusted accept, not publ
         requestId: input.requestId,
         run: { id: "run_trusted", conversationId: input.conversationId, topicId: input.topicId, requestMessageId: "cmsg", requestId: input.requestId, mode: "explicit", state: "queued", profileRevision: 1, createdAt: "t" },
         message: { id: "cmsg", conversationId: input.conversationId, topicId: input.topicId, seq: 1, role: "human", content: input.text, createdAt: "t" },
-        memberTurn: { id: "mturn_t", runId: "run_trusted", conversationId: input.conversationId, topicId: input.topicId, botId: "bot_1", batch: 0, attempt: 1, origin: "human", state: "queued", createdAt: "t" },
+        memberTurn: { id: "mturn_t", runId: "run_trusted", conversationId: input.conversationId, topicId: input.topicId, botId: "bot_1", batch: 0, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "t" },
       };
     },
   });

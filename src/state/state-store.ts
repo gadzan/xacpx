@@ -1112,13 +1112,19 @@ export function parseState(
  * would leave its Topics/bindings/sessions loaded with no cleanup root,
  * and a dropped Topic/Bot would strand runtime no teardown can address.
  *
- * Fail-closed, never silent: descendants of a missing root are DROPPED into
- * the load report (with their physical cleanup handles preserved in the
- * quarantine backup StateStore.load writes), never published as live
- * orphan state. Sessions whose owner references a dropped binding stay
- * only when their triple still resolves to a live Conversation + Topic;
- * otherwise they drop too. Bots themselves are never dropped here —
- * membership edits, not load, own that transition.
+ * Physical-release-preserving: descendants of a missing root are NEVER
+ * dropped as live state here. Rootless Topics/bindings drop into the load
+ * report (pure metadata, no physical handle). Owned SESSION rows are KEPT
+ * with their ownership intact — even when their Conversation/Topic root is
+ * gone — so the verified teardown entrypoints keep working: `sessions`
+ * still resolves the alias, so strict owned-session release can still
+ * releaseLogicalSession/deleteSession, and the sweep entrypoints
+ * (`releaseGroupResidue`, topic finalization) can still enumerate and
+ * release them. The NEXT verified teardown that covers the orphan triple
+ * (or a group-scoped sweep) performs the physical release, then removes
+ * the metadata — load never deletes a physical cleanup handle. Bots
+ * themselves are never dropped here — membership edits, not load, own
+ * that transition.
  */
 function reconcileProductOwnershipGraph(
   sessions: AppState["sessions"],
@@ -1163,21 +1169,31 @@ function reconcileProductOwnershipGraph(
     }
     const conversation = conversations[binding.conversationId];
     const topic = topics[binding.topicId];
-    if (!conversation || !topic || topic.conversationId !== binding.conversationId) {
+    // The Conversation must be a live GROUP: a group-member binding pointing
+    // at a Direct Conversation is corrupted ownership — Direct teardown
+    // never sweeps it, so keeping it would strand it with no cleanup entry.
+    if (
+      !conversation
+      || conversation.kind !== "group"
+      || !topic
+      || topic.conversationId !== binding.conversationId
+    ) {
       delete bindings[id];
       dropped.push({
         section: "bot_runtime_bindings",
         key: id,
-        reason: `binding references missing conversation/topic (conversation "${binding.conversationId}", topic "${binding.topicId}"); dropped (cleanup root gone)`,
+        reason: `binding references missing/non-group conversation/topic (conversation "${binding.conversationId}", topic "${binding.topicId}"); dropped (cleanup root gone)`,
       });
     }
   }
+  // Owned sessions are NEVER dropped here, even when their root is gone: the
+  // row IS the physical cleanup handle (strict release resolves the alias).
+  // A rootless group-member session stays enumerable for the sweep
+  // entrypoints; a legacy partial owner that cannot resolve any triple is
+  // reported but kept, so a later binding repair (or explicit operator
+  // action) can still release it instead of it becoming a hidden orphan.
   for (const [alias, session] of Object.entries(sessions)) {
     const owner = session.owner;
-    // Only group-member ownership resolves through persisted Conversation +
-    // Topic rows. Direct owners resolve through the deterministic Bot plan
-    // (conversations are synthetic until teardown), so a missing record is
-    // normal crash-window state the repair path needs — never drop it here.
     if (owner?.kind !== "group-member") {
       continue;
     }
@@ -1185,16 +1201,20 @@ function reconcileProductOwnershipGraph(
     const conversationId = owner.conversationId ?? bound?.conversationId;
     const topicId = owner.topicId ?? bound?.topicId;
     if (conversationId === undefined || topicId === undefined) {
+      dropped.push({
+        section: "sessions",
+        key: alias,
+        reason: `owned session cannot resolve conversation/topic (binding "${owner.bindingId}"); kept for verified release`,
+      });
       continue;
     }
     const conversation = conversations[conversationId];
     const topic = topics[topicId];
     if (!conversation || !topic || topic.conversationId !== conversationId) {
-      delete sessions[alias];
       dropped.push({
         section: "sessions",
         key: alias,
-        reason: `owned session references missing conversation/topic (conversation "${conversationId}", topic "${topicId}"); dropped (cleanup root gone)`,
+        reason: `owned session references missing conversation/topic (conversation "${conversationId}", topic "${topicId}"); kept for verified release`,
       });
     }
   }

@@ -661,7 +661,10 @@ export class ConversationRunService {
    * Release every group-member runtime residue for a Group whose Topics are
    * all gone: live bindings (alias+id verified), exact binding-less owners,
    * and legacy partial owners resolvable through a same-group binding.
-   * Contradictory or unresolvable residue fails closed for retry.
+   * Rootless orphans (missing Topic row, kept by load reconcile with their
+   * ownership intact) sweep here too: their owner triple still names this
+   * Group, so they release by alias instead of stranding. Contradictory or
+   * unresolvable residue fails closed for retry.
    */
   private async releaseGroupResidue(conversationId: string): Promise<void> {
     const bindings = Object.values(this.state.bot_runtime_bindings).filter(
@@ -734,7 +737,10 @@ export class ConversationRunService {
       }
       // Exact binding-less crash-window owner: bindingId must be the
       // canonical id for its triple (destructive authority, same rule as
-      // groupMemberAliases). Anything else fails closed.
+      // groupMemberAliases). Anything else fails closed. The Topic row may
+      // be gone (rootless orphan kept by load reconcile): the triple still
+      // names this Group, so release by alias — no Topic-row gate here,
+      // only ownership proof.
       if (
         owner.botId === undefined
         || owner.conversationId === undefined

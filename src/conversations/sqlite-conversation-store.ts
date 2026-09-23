@@ -111,6 +111,9 @@ interface MemberTurnRow {
   batch: number;
   member_index: number | null;
   attempt: number;
+  // Legacy DBs (pre-vocabulary-split) persist origin "human". Normalize at
+  // the durable read boundary so every in-memory MemberTurnRecord speaks the
+  // new vocabulary; writers only emit "human-explicit".
   origin: string;
   state: string;
   trigger_message_ids_json: string;
@@ -382,7 +385,7 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
     batch: Number(row.batch),
     memberIndex: Number(row.member_index ?? 0),
     attempt: Number(row.attempt),
-    origin: row.origin as MemberTurnRecord["origin"],
+    origin: row.origin === "human" ? "human-explicit" : (row.origin as MemberTurnRecord["origin"]),
     state: row.state as MemberTurnState,
     triggerMessageIds: JSON.parse(row.trigger_message_ids_json) as string[],
     ...(snapshot ? { profileSnapshot: snapshot } : {}),
@@ -717,7 +720,7 @@ export class SqliteConversationStore implements ConversationStore {
                AND active.state IN ('running', 'waiting-human')
            )
            ${skipClause}
-         ORDER BY msg.seq ASC, r.created_at ASC, r.topic_id ASC
+         ORDER BY msg.seq ASC, r.created_at ASC, r.topic_id ASC, m.batch ASC, m.member_index ASC, d.id ASC
          LIMIT 1`,
         skipTopicIds,
       );
@@ -1545,11 +1548,15 @@ export class SqliteConversationStore implements ConversationStore {
     // The singular botId/profileSnapshot is always members[0]; `members`
     // holds extras (PR7/PR8), so merge as [legacy, ...extras] and write one
     // MemberTurn plus one pending dispatch intent per member in durable
-    // member_index order. Direct accepts omit `members` (single member).
+    // member_index order. Direct accepts omit `members` (single member). A
+    // `primaryMember` overlay carries assignment/provenance for members[0];
+    // its type omits botId/profileSnapshot, so it cannot diverge the durable
+    // order — members[0] is always the legacy singular by construction.
     const members = [
       {
         botId: input.botId,
         profileSnapshot: input.profileSnapshot,
+        ...(input.primaryMember ?? {}),
       },
       ...(input.members ?? []),
     ];

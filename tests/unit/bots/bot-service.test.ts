@@ -327,6 +327,54 @@ test("createGroup validates membership, lead, and opaque identity", async () => 
   expect(state.conversations[group.id]).toBeUndefined();
 });
 
+test("stale membership probe widens gates instead of dropping a just-added member", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  let releaseU2!: () => void;
+  const u2Parked = new Promise<void>((resolve) => { releaseU2 = resolve; });
+  let parkU2 = true;
+  const service = new BotService(
+    {
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    },
+    state,
+    store,
+    {
+      now: () => new Date(NOW),
+      beforeGroupGatesAcquired: async () => {
+        if (parkU2) {
+          parkU2 = false;
+          await u2Parked;
+        }
+      },
+    },
+  );
+  const a = await service.createBot({ name: "A", agent: "codex", workspace: "backend" });
+  const b = await service.createBot({ name: "B", agent: "codex", workspace: "backend" });
+  const c = await service.createBot({ name: "C", agent: "codex", workspace: "backend" });
+  const d = await service.createBot({ name: "D", agent: "codex", workspace: "backend" });
+  const group = await service.createGroup({ title: "Team", botIds: [a.id, b.id] });
+  // U2 probes stale [A,B], parks pre-acquisition. U1 commits [A,B]->[A,C].
+  const u2 = service.updateGroup(group.id, { botIds: [a.id, d.id] });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await service.updateGroup(group.id, { botIds: [a.id, c.id] });
+  expect(service.getGroup(group.id).botIds).toEqual([a.id, c.id]);
+  // Hold C externally (paused C-materializer stand-in): U2's retry must
+  // block on C's gate before it can commit the removal of C.
+  let releaseC!: () => void;
+  const cGate = new Promise<void>((resolve) => { releaseC = resolve; });
+  const extHold = service.runLifecycle(c.id, () => cGate);
+  releaseU2();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  // U2 has not committed the stale removal while C's gate is held.
+  expect(service.getGroup(group.id).botIds).toEqual([a.id, c.id]);
+  releaseC();
+  await extHold;
+  const final = await u2;
+  expect(final.botIds).toEqual([a.id, d.id]);
+});
+
 test("deleteBot stays fail-closed while Group membership references the Bot", async () => {
   const state = createEmptyState();
   const store = new MemoryStateStore();

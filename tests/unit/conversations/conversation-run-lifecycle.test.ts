@@ -2602,6 +2602,119 @@ test("teardownGroupTopic emits conversations-changed once on success", async () 
 });
 
 
+test("legacy human origin row normalizes to human-explicit on read", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-legacy-origin",
+    botId: botA.id,
+    content: "hi",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  // Simulate a pre-vocabulary-split row, then reopen: the mapper normalizes.
+  first.store.close();
+  const { Database } = await import("bun:sqlite");
+  const db = new Database(first.path);
+  db.run("UPDATE member_turns SET origin = 'human' WHERE id = ?", [accepted.memberTurn.id]);
+  db.close();
+  const { SqliteConversationStore } = await import("../../../src/conversations/sqlite-conversation-store");
+  const reopened = await SqliteConversationStore.open(first.path);
+  expect(reopened.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("human-explicit");
+  reopened.close();
+});
+
+test("primaryMember overlay carries assignment and provenance for members[0]", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-primary",
+    botId: botA.id,
+    content: "review it",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    primaryMember: {
+      provenance: "router",
+      assignmentId: "assign_a",
+      task: "Review auth",
+      expectedOutput: "approval",
+      dependsOn: [],
+    },
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  expect(accepted.memberTurns).toHaveLength(2);
+  const primary = accepted.memberTurns[0]!;
+  expect(primary.botId).toBe(botA.id);
+  expect(primary.origin).toBe("router");
+  expect(primary.assignmentId).toBe("assign_a");
+  expect(primary.task).toBe("Review auth");
+  // Without the overlay the first member keeps the orchestration default.
+  const plain = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-primary-plain",
+    botId: botA.id,
+    content: "y",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  expect(plain.memberTurns[0]?.origin).toBe("followup");
+  expect(plain.memberTurns[0]?.assignmentId).toBeUndefined();
+  first.store.close();
+});
+
+test("claim order follows durable member_index within a Run", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  // Accept order [B, A]: member_index 0 = B, 1 = A. Same seq/created_at keys —
+  // only member_index distinguishes the siblings.
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-order",
+    botId: botB.id,
+    content: "review it",
+    profileSnapshot: snapshotBotProfile(botB, NOW),
+    members: [{ botId: botA.id, profileSnapshot: snapshotBotProfile(botA, NOW) }],
+    now: NOW,
+  });
+  expect(accepted.memberTurns.map((turn) => turn.botId)).toEqual([botB.id, botA.id]);
+  expect(accepted.memberTurns.map((turn) => turn.memberIndex)).toEqual([0, 1]);
+  const first_claim = first.store.claimNextDispatch({
+    now: NOW, owner: "owner-1", leaseExpiresAt: NOW, authorityEpoch: "epoch-1",
+  });
+  expect(first_claim?.memberTurn.botId).toBe(botB.id);
+  first.store.close();
+});
+
 test("cancel targets the actually-started member, not members[0]", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
@@ -3525,6 +3638,87 @@ test("removed member runtime is still swept; removed member cannot rematerialize
   await first.service.teardownGroupTopic(group.id, topic.id);
   expect(first.sessions.getLogicalSessionRecord(bindingC.sessionAlias) ?? undefined).toBeUndefined();
   expect(first.state.bot_runtime_bindings[bindingC.id]).toBeUndefined();
+  first.store.close();
+});
+
+test("concurrent membership updates cannot drop a just-added member without its gate", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  for (const [id, name] of [["bot_carol", "Carol"], ["bot_dan", "Dan"]] as const) {
+    first.state.bots[id] = {
+      id, name, agent: "codex", workspace: "backend", enabled: true,
+      profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+    };
+  }
+  const botC = "bot_carol";
+  const botD = "bot_dan";
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  // U2 starts first and probes the stale [A,B] membership; its gate
+  // acquisition pauses until U1 has committed [A,C].
+  let u1Committed = false;
+  // U1 commits [A,C] first. U2 then proves the remover holds the added
+  // Bot's gate via gate occupancy (see below).
+  const u1 = first.bots.updateGroup(group.id, { botIds: [BOT_ID, botC] });
+  await u1;
+  u1Committed = true;
+  expect(first.bots.getGroup(group.id).botIds).toEqual([BOT_ID, botC]);
+  // C's gate held externally (paused materializer stand-in): U2's removal of
+  // C must block on C's gate, proving the remover holds the added Bot's gate.
+  let releaseC!: () => void;
+  const cGatePromise = new Promise<void>((resolve) => { releaseC = resolve; });
+  const extHold = first.bots.runLifecycle(botC, () => cGatePromise);
+  let u2Committed = false;
+  const u2 = first.bots.updateGroup(group.id, { botIds: [BOT_ID, botD] }).then((record) => {
+    u2Committed = true;
+    return record;
+  });
+  await tick();
+  await tick();
+  expect(u2Committed).toBe(false);
+  expect(first.bots.getGroup(group.id).botIds).toEqual([BOT_ID, botC]);
+  releaseC();
+  await extHold;
+  const final = await u2;
+  expect(u1Committed).toBe(true);
+  expect(final.botIds).toEqual([BOT_ID, botD]);
+  first.store.close();
+});
+test("removed member binding-less session blocks deleteBot; teardown releases it", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const botC = "bot_carol";
+  first.state.bots[botC] = {
+    id: botC,
+    name: "Carol",
+    agent: "codex",
+    workspace: "backend",
+    enabled: true,
+    profileRevision: 1,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Crash window: session durable, binding never published. Then C leaves.
+  await first.runtime.getOrCreateGroupMemberSession({
+    botId: botC, conversationId: group.id, topicId: topic.id,
+  });
+  const bindingId = (await import("../../../src/domain/ids"))
+    .createScopedGroupMemberBindingId(group.id, topic.id, botC);
+  delete first.state.bot_runtime_bindings[bindingId];
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID] });
+  // C is out of membership, has no binding, no durable Run — but the
+  // binding-less session still pins C. deleteBot must fail closed, never
+  // orphan an owner pointing at a deleted Bot.
+  await expect(first.bots.deleteBot(botC)).rejects.toMatchObject({ code: "bot_in_use" });
+  expect(first.bots.getBot(botC).id).toBe(botC);
+  // And the pre-removal runtime still sweeps through the topic teardown.
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  const aliases = Object.values(first.state.sessions).map((session) => session.alias);
+  expect(aliases.some((alias) => alias.includes(botC) || alias.includes("group"))).toBe(false);
   first.store.close();
 });
 

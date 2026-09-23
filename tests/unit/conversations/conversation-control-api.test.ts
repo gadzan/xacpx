@@ -1112,7 +1112,7 @@ test("toMemberTurnSummary projects timestamps alongside failureReason", async ()
     botId: "bot_1",
     batch: 1,
     attempt: 1,
-    origin: "human",
+    origin: "human-explicit",
     state: "failed",
     triggerMessageIds: ["cmsg_1"],
     createdAt: "2026-09-16T00:00:00.000Z",

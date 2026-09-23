@@ -285,7 +285,7 @@ test("parseState keeps PR2 bot-direct owners and scoped owners with botId", () =
   });
 });
 
-test("parseState drops owned sessions whose conversation/topic root is gone", () => {
+test("parseState keeps rootless owned sessions for verified release (never drops the handle)", () => {
   const dropped: StateLoadDroppedRecord[] = [];
   const state = parseState({
     sessions: {
@@ -316,15 +316,104 @@ test("parseState drops owned sessions whose conversation/topic root is gone", ()
       },
     },
   }, "state.json", dropped);
-  expect(state.sessions.orphan).toBeUndefined();
+  // The row IS the physical cleanup handle: dropping it would strand the
+  // live external session with no releaseLogicalSession/deleteSession path.
+  // Load keeps the ownership intact and reports it; the next verified
+  // teardown covering the triple performs the physical release.
+  expect(state.sessions.orphan?.owner).toEqual({
+    kind: "group-member",
+    bindingId: "bind_orphan",
+    botId: "bot_reviewer",
+    conversationId: "conv_gone",
+    topicId: "topic_gone",
+  });
   expect(state.sessions.plain?.alias).toBe("plain");
   expect(dropped).toEqual([
     {
       section: "sessions",
       key: "orphan",
-      reason: 'owned session references missing conversation/topic (conversation "conv_gone", topic "topic_gone"); dropped (cleanup root gone)',
+      reason: 'owned session references missing conversation/topic (conversation "conv_gone", topic "topic_gone"); kept for verified release',
     },
   ]);
+});
+
+test("parseState keeps legacy partial owners that cannot resolve a triple (reported, releasable after repair)", () => {
+  const dropped: StateLoadDroppedRecord[] = [];
+  const state = parseState({
+    bot_runtime_bindings: {
+      bind_gone: {
+        id: "bind_gone",
+        scope: "group-member",
+        conversationId: "conv_gone",
+        topicId: "topic_gone",
+        botId: "bot_reviewer",
+        logicalSessionId: "55555555-5555-4555-8555-555555555555",
+        sessionAlias: "legacy_partial",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    sessions: {
+      legacy_partial: {
+        alias: "legacy_partial",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:legacy_partial",
+        logical_session_id: "55555555-5555-4555-8555-555555555555",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: { kind: "group-member", bindingId: "bind_gone" },
+      },
+    },
+  }, "state.json", dropped);
+  // Binding dropped (missing root), session kept: no hidden orphan — the row
+  // stays enumerable and a later binding repair can re-link it for release.
+  expect(state.bot_runtime_bindings.bind_gone).toBeUndefined();
+  expect(state.sessions.legacy_partial?.owner).toEqual({ kind: "group-member", bindingId: "bind_gone" });
+  expect(dropped.map((entry) => entry.key).sort()).toEqual(["bind_gone", "legacy_partial"]);
+});
+
+test("parseState drops group-member bindings pointing at a Direct conversation", () => {
+  const dropped: StateLoadDroppedRecord[] = [];
+  const state = parseState({
+    conversations: {
+      conv_direct: {
+        id: "conv_direct",
+        kind: "bot",
+        title: "Reviewer",
+        botIds: ["bot_reviewer"],
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    conversation_topics: {
+      topic_direct: {
+        id: "topic_direct",
+        conversationId: "conv_direct",
+        title: "Default",
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    bot_runtime_bindings: {
+      bind_cross: {
+        id: "bind_cross",
+        scope: "group-member",
+        conversationId: "conv_direct",
+        topicId: "topic_direct",
+        botId: "bot_reviewer",
+        logicalSessionId: "88888888-8888-4888-8888-888888888888",
+        sessionAlias: "brt_group_cross",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+  }, "state.json", dropped);
+  // Corrupted cross-kind ownership: Direct teardown never sweeps it, so
+  // keeping it would strand it with no cleanup entry — drop with report.
+  expect(state.bot_runtime_bindings.bind_cross).toBeUndefined();
+  expect(dropped.map((entry) => entry.key).sort()).toEqual(["bind_cross"]);
 });
 
 test("parseState drops topics and bindings under a missing conversation", () => {

@@ -107,6 +107,37 @@ test("accepts the new turn-status control events", () => {
   })).not.toBeNull();
 });
 
+test("validControlEvent still accepts legacy human member origin from old connectors", () => {
+  const memberTurn = {
+    id: "mturn_1",
+    runId: "run_1",
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    botId: "bot_1",
+    batch: 1,
+    memberIndex: 0,
+    attempt: 1,
+    origin: "human",
+    state: "queued",
+    createdAt: "t",
+  };
+  expect(validControlEvent({
+    type: "member-turn-started",
+    run: {
+      id: "run_1",
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      requestMessageId: "cmsg_1",
+      requestId: "req_1",
+      mode: "explicit",
+      state: "queued",
+      profileRevision: 1,
+      createdAt: "t",
+    },
+    memberTurn,
+  })).toBe(true);
+});
+
 test("validControlEvent and parseWebServerEvent accept tool-event with delete, move, and fetch kinds", () => {
   for (const kind of ["delete", "move", "fetch"] as const) {
     const event = {
