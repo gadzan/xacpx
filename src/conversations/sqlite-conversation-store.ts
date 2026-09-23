@@ -1063,13 +1063,24 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   private ensureDispatchMultiMemberShape(): void {
-    const indexes = this.sqlite.all<{ name: string; sql: string | null }>(
-      "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'pending_dispatches'",
+    // NOTE: the legacy UNIQUE(run_id) surfaces as a sqlite_autoindex row with
+    // NULL sql in sqlite_master, so text-scanning sqlite_master cannot detect
+    // it. PRAGMA index_list/index_info is authoritative instead.
+    const indexList = this.sqlite.all<{ name: string; unique: number }>(
+      "PRAGMA index_list(pending_dispatches)",
     );
-    const uniqueRunOnly = indexes.some(
-      (index) => (index.sql ?? "").includes("UNIQUE") && (index.sql ?? "").includes("run_id")
-        && !(index.sql ?? "").includes("member_turn_id"),
-    );
+    let uniqueRunOnly = false;
+    for (const index of indexList) {
+      if (!index.unique) {
+        continue;
+      }
+      const cols = this.sqlite.all<{ name: string }>(`PRAGMA index_info("${index.name}")`);
+      const names = cols.map((col) => col.name).sort();
+      if (names.length === 1 && names[0] === "run_id") {
+        uniqueRunOnly = true;
+        break;
+      }
+    }
     if (!uniqueRunOnly) {
       this.sqlite.exec(
         "CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state)",
