@@ -1173,3 +1173,140 @@ test("review continuation messages are removed once the form is decided", async 
     await channel.stop().catch(() => {});
   }
 });
+
+test("shortening an answer deletes the review's tail continuations", async () => {
+  // 4000 A -> review needs primary + 2 continuations. Editing to 2000 B needs
+  // primary + 1. The extra continuation used to survive, so the user saw the
+  // current review AND a fragment of the previous answer underneath it, with no
+  // way to tell which one Submit sends.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const longAnswer = "A".repeat(4000);
+    const { request: req } = request([
+      { kind: "text", key: "body", title: "Body", required: true },
+    ]);
+    channel.requestElicitation(req).catch(() => {});
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: longAnswer }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+
+    // First review: create the continuations.
+    const beforeFirstReview = client.sent.length;
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 15));
+    const firstReviewContinuations = client.sent.length - beforeFirstReview;
+    expect(firstReviewContinuations).toBeGreaterThan(1);
+    // Everything from here on is the second pass: snapshot the transport right
+    // after the first review settles so its edits are not counted twice.
+    const sentBefore = client.sent.length;
+    const editedBefore = client.edited.length;
+    const deletedBefore = client.deleted.length;
+
+    // Shorten the answer.
+    const shortAnswer = "B".repeat(2000);
+    client.emitButton(click(client, idFor(client, "edit", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: shortAnswer }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+
+    // Second review.
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 15));
+
+    // What the user sees is: the primary's latest content, and every live
+    // continuation. Continuation edits land on existing messages, so the LAST
+    // edit of each is its live content.
+    const primary = client.edited[client.edited.length - 1]!;
+    // Exclude the primary by messageId, not object identity: it was captured
+    // after the slice below was built.
+    const continuationEdits = client.edited
+      .slice(editedBefore)
+      .filter((entry) => entry.messageId !== primary.messageId);
+    const liveContinuations = [
+      ...client.sent.slice(sentBefore).map((entry) => entry.body.content ?? ""),
+      // A continuation edited in place shows its latest edit.
+      ...continuationEdits.map((entry) => entry.body.content ?? ""),
+    ];
+    const visible = [primary.body.content ?? "", ...liveContinuations].join("");
+
+    // The new answer is fully present...
+    expect(visible).toContain(shortAnswer);
+    // ...and the OLD answer is nowhere. `not.toContain(longAnswer)` is the real
+    // assertion: the string is 4000 chars of one letter, so any surviving
+    // fragment large enough to show the user is caught by it.
+    expect(visible).not.toContain(longAnswer);
+    // A shorter but still multi-chunk fragment of the old answer would also be
+    // wrong, so count runs of the old letter rather than occurrences of it.
+    const oldRuns = visible.match(/A{100,}/g) ?? [];
+    expect(oldRuns).toHaveLength(0);
+
+    // Net channel state: the live continuation count SHRANK from 3 to 2. The
+    // transient `edit` teardown deleted all three while the wizard was on a field
+    // card, and the new review created two — the same end state an in-place trim
+    // would reach, which is what matters: no message holding the old answer
+    // stays live.
+    const staleDeletes = client.deleted.length - deletedBefore;
+    expect(staleDeletes).toBe(firstReviewContinuations);
+    const newSends = client.sent.slice(sentBefore).length;
+    expect(newSends).toBe(firstReviewContinuations - 1);
+    expect(liveContinuations).toHaveLength(newSends);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a failed continuation send leaves the primary's Submit alone", async () => {
+  // The primary carries Submit. If it is edited to the review while a
+  // continuation send is still in flight and that send fails, the user could
+  // approve content they never saw. Continuations are laid in first, so a failure
+  // leaves the previous card up instead of an incomplete review.
+  const client = makeFakeClient();
+  let failSends = 0;
+  const realSend = client.sendMessage.bind(client);
+  (client as unknown as { sendMessage: unknown }).sendMessage = async (target: unknown, body: unknown) => {
+    // Fail only the continuation sends (bodies WITHOUT components), so the
+    // opening card still goes out.
+    const hasComponents = Boolean((body as { components?: unknown }).components);
+    if (!hasComponents) {
+      failSends += 1;
+      throw new Error("continuation send failed");
+    }
+    return realSend(target as never, body as never);
+  };
+  const { channel, abort } = await startChannel(client);
+  try {
+    const longAnswer = "A".repeat(4000);
+    const { request: req } = request([
+      { kind: "text", key: "body", title: "Body", required: true },
+    ]);
+    channel.requestElicitation(req).catch(() => {});
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: longAnswer }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+
+    const editsBefore = client.edited.length;
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 15));
+
+    // A continuation send was attempted and failed.
+    expect(failSends).toBeGreaterThan(0);
+    // And the primary was NOT switched to the review: the user still sees the
+    // previous card rather than a review that is missing its content.
+    expect(client.edited.length).toBe(editsBefore);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});

@@ -916,49 +916,87 @@ export class DiscordChannel implements MessageChannelRuntime {
         return;
     }
     try {
+      // Continuations FIRST, primary LAST.
+      //
+      // The primary carries Submit. If it is edited to the review while a
+      // continuation send/edit is still in flight and that send fails, the user
+      // sees an incomplete review with a live Submit — they can approve content
+      // they never fully saw. Layering in the other order means a failure leaves
+      // the previous card up, and the user can retry.
+      await this.syncElicitationContinuations(entry, runtime, card.contents);
+
       await runtime.client.editMessage(entry.target, messageId, {
         content: card.content,
         allowedMentions: { parse: [] },
         components: card.components,
         ...(card.selectRows && card.selectRows.length > 0 ? { selectRows: card.selectRows } : {}),
       });
-      if (card.contents && card.contents.length > 1) {
-        const extras = card.contents.slice(1);
-        // Keep the continuation messages in step with the first one.
-        //
-        // A review of a form with a long answer needs more than 1800 chars, and
-        // showing only the first chunk while leaving Submit enabled was the
-        // original defect. Extra chunks are written to the SAME continuation
-        // messages when they already exist (so the message count does not grow
-        // on every rerender), and new ones are created when the form grew.
-        for (let index = 0; index < extras.length; index += 1) {
-          if (entry.settled) break;
-          const existing = entry.continuationMessageIds[index];
-          if (existing) {
-            await runtime.client.editMessage(entry.target, existing, {
-              content: extras[index]!,
-              allowedMentions: { parse: [] },
-            });
-            continue;
-          }
-          const created = await runtime.client.sendMessage(entry.target, {
-            content: extras[index]!,
-            allowedMentions: { parse: [] },
-          });
-          entry.continuationMessageIds.push(created.messageId);
-        }
-      } else if (entry.continuationMessageIds.length > 0) {
-        // A field card fits in one message, so any continuation left over from
-        // a previous review is now stale text sitting under a different card.
-        // Leaving it would show the user a fragment of a review they already
-        // navigated away from, next to a field card.
-        await this.discardElicitationContinuations(entry, runtime);
-      }
     } catch (error) {
       await this.logger?.warn("discord.elicitation.edit_failed", "failed to update elicitation message", {
         requestId: entry.requestId,
         message: error instanceof Error ? error.message : String(error),
       });
+    }
+  }
+
+  /**
+   * Bring this request's continuation messages in line with `contents`.
+   *
+   * The primary message shows `contents[0]`; each further chunk is a separate
+   * message. Three cases, all of which have to be handled or the channel shows
+   * the user a mixture of two answers:
+   *
+   *   - shorter than what exists → edit the survivors, DELETE the tail. Only
+   *     handling the survivors left the old ones showing the previous answer's
+   *     fragments directly under the current review.
+   *   - longer → edit the ones that exist, create the rest.
+   *   - none → a field card fits in one message, so any leftover continuation is
+   *     stale text under a different card.
+   *
+   * Continuation ids are reused rather than accumulated: creating a message per
+   * rerender would flood the channel after a few edits.
+   */
+  private async syncElicitationContinuations(
+    entry: PendingDiscordElicitation,
+    runtime: AccountRuntime,
+    contents: readonly string[] | undefined,
+  ): Promise<void> {
+    if (!contents || contents.length <= 1) {
+      // A single-chunk card (field card, or a review that now fits) must not
+      // leave continuations from a previous, longer review behind.
+      await this.discardElicitationContinuations(entry, runtime);
+      return;
+    }
+    const extras = contents.slice(1);
+    for (let index = 0; index < extras.length; index += 1) {
+      if (entry.settled) return;
+      const existing = entry.continuationMessageIds[index];
+      if (existing) {
+        await runtime.client.editMessage(entry.target, existing, {
+          content: extras[index]!,
+          allowedMentions: { parse: [] },
+        });
+        continue;
+      }
+      const created = await runtime.client.sendMessage(entry.target, {
+        content: extras[index]!,
+        allowedMentions: { parse: [] },
+      });
+      entry.continuationMessageIds.push(created.messageId);
+    }
+    // The review GREW or SHRANK: drop the ones past the new length. Their
+    // content is from an older answer, so leaving them would show the user both
+    // answers at once with no way to tell which one Submit will send.
+    if (entry.continuationMessageIds.length > extras.length) {
+      const stale = entry.continuationMessageIds.slice(extras.length);
+      entry.continuationMessageIds = entry.continuationMessageIds.slice(0, extras.length);
+      for (const id of stale) {
+        try {
+          await runtime.client.deleteMessage(entry.target, id);
+        } catch {
+          // Already gone or not deletable: cosmetic, never a request failure.
+        }
+      }
     }
   }
 
