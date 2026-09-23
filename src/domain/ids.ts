@@ -97,6 +97,30 @@ export function directConversationChatKey(conversationId: string, topicId: strin
   return `bot:${conversationId}:${topicId}`;
 }
 
+/**
+ * Inverse of {@link directConversationChatKey}.
+ *
+ * Returns undefined for a key that merely CHATs with the `bot:` prefix but does
+ * not carry both halves, so a caller cannot mint a route from `bot:garbage`.
+ * A chatKey prefix is not enough to identify a turn: the conversation and topic
+ * are what scope it, and a route built from a prefix-only key could be satisfied
+ * by any turn in any topic.
+ */
+export function parseDirectConversationChatKey(
+  chatKey: string,
+): { conversationId: string; topicId: string } | undefined {
+  if (!isDirectConversationChatKey(chatKey)) return undefined;
+  const rest = chatKey.slice("bot:".length);
+  const separator = rest.indexOf(":");
+  if (separator <= 0 || separator === rest.length - 1) return undefined;
+  const conversationId = rest.slice(0, separator);
+  const topicId = rest.slice(separator + 1);
+  // No further segments: `bot:c:t:extra` is not a key this project mints.
+  if (topicId.includes(":")) return undefined;
+  if (!conversationId || !topicId) return undefined;
+  return { conversationId, topicId };
+}
+
 /** Product TurnQueue isolation key, not a human permission return route. */
 export function isDirectConversationChatKey(chatKey: string): boolean {
   return chatKey.startsWith("bot:");
