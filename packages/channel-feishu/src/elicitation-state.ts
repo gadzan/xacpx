@@ -47,12 +47,6 @@ export interface PendingFeishuElicitation {
   /** Answers collected so far, keyed by field key. Memory only. */
   values: Record<string, ChannelElicitationValue>;
   currentField?: string;
-  /**
-   * Whether the review page is showing. Only the review page's submit may
-   * settle, so this flag is what distinguishes "save and advance" from
-   * "commit what the user reviewed".
-   */
-  visitedReview: boolean;
   settled: boolean;
   /** Terminal UI state for a send that completes after settlement (send race). */
   terminalState?: "expired" | "cancelled";

@@ -115,7 +115,7 @@ async function runFlow(
   // Field card submit: saves this field and advances.
   await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "submit" },
+    value: { t: token, a: "save" },
     formValues: { [formName]: answer },
   });
   // Review page submit: commits what the user reviewed. Only this one settles.
@@ -126,6 +126,37 @@ async function runFlow(
   });
   return promise;
 }
+
+test("a redelivered field save cannot accept the form", async () => {
+  // Feishu retries callbacks, and a user double-taps. When the last field's
+  // save also renders the review page, a redelivery of THAT callback must not
+  // be treated as a click on the review page's Submit: save and submit are
+  // different actions, so the duplicate is answered with "advance again",
+  // which is already at the end, instead of accepting.
+  const rec = makeRenderer();
+  const promise = rec.renderer.requestElicitation(request(ENV_FIELD), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "save" },
+    formValues: { f0: "prod" },
+  });
+  // Same callback twice: the field page's save action, delivered again.
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "save" },
+    formValues: { f0: "prod" },
+  });
+  const entry = rec.pending.get(token)!;
+  expect(entry.settled).toBe(false);
+  // The review page's own Submit is still the only way to accept.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { env: "prod" } });
+});
 
 test("the opening card names the correlated agent, not a message claim", () => {
   const card = buildElicitationOpeningCard(
@@ -161,7 +192,7 @@ test("the field card's submit button carries a routing token and never an answer
   const behaviors = (submit as { behaviors: Array<{ type: string; value: Record<string, unknown> }> }).behaviors;
   expect(behaviors[0]!.type).toBe("callback");
   // The routing payload is the token + action only.
-  expect(behaviors[0]!.value).toEqual({ t: "tok-abc", a: "submit" });
+  expect(behaviors[0]!.value).toEqual({ t: "tok-abc", a: "save" });
   // The ROUTING payload carries no option value. (The option label necessarily
   // appears as display text — that is the question the user answers — so the
   // absence asserted here is about the correlation handle, not the card body.)
@@ -383,7 +414,7 @@ test("a non-initiator cannot submit, and the initiator still can", async () => {
   await rec.renderer.handleAction({ openId: "ou_intruder", value: { t: token, a: "start" }, formValues: {} });
   await rec.renderer.handleAction({
     openId: "ou_intruder",
-    value: { t: token, a: "submit" },
+    value: { t: token, a: "save" },
     formValues: { f0: "prod" },
   });
   const entry = rec.pending.get(token)!;
@@ -394,7 +425,7 @@ test("a non-initiator cannot submit, and the initiator still can", async () => {
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
   await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "submit" },
+    value: { t: token, a: "save" },
     formValues: { f0: "prod" },
   });
   // Review page submit commits it.
@@ -411,7 +442,7 @@ test("an intruder's click does not move the wizard or write an answer", async ()
   const { token } = await pendingEntry(rec);
   await rec.renderer.handleAction({
     openId: "ou_intruder",
-    value: { t: token, a: "submit" },
+    value: { t: token, a: "save" },
     formValues: { f0: "prod" },
   });
   const entry = rec.pending.get(token)!;
@@ -421,7 +452,7 @@ test("an intruder's click does not move the wizard or write an answer", async ()
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
   await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "submit" },
+    value: { t: token, a: "save" },
     formValues: { f0: "staging" },
   });
   // Review page submit commits it.
@@ -439,7 +470,7 @@ test("a submit with no answer for a required field keeps the card live", async (
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
   await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "submit" },
+    value: { t: token, a: "save" },
     formValues: { f0: "" },
   });
   const entry = rec.pending.get(token)!;
@@ -449,7 +480,7 @@ test("a submit with no answer for a required field keeps the card live", async (
   // And it can still be completed.
   await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "submit" },
+    value: { t: token, a: "save" },
     formValues: { f0: "prod" },
   });
   // Review page submit commits it.
@@ -515,7 +546,7 @@ test("a token the renderer never issued is ignored", async () => {
   const { entry } = await pendingEntry(rec);
   const outcome = await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: "not-a-real-token", a: "submit" },
+    value: { t: "not-a-real-token", a: "save" },
     formValues: { f0: "prod" },
   });
   expect(outcome).toEqual({ handled: false, settled: false });

@@ -155,7 +155,7 @@ test("no cardActions config means no listener at all", async () => {
   }
 });
 
-test("a failing card bind does not take down the channel", async () => {
+test("a failing card bind fails channel start rather than advertising a dead form mode", async () => {
   const channel = new FeishuChannel(
     { ...FEISHU_BASE, accounts: { default: { appId: "cli_test", appSecret: "s", cardActions: CARD_ACTIONS } } },
     {
@@ -165,8 +165,12 @@ test("a failing card bind does not take down the channel", async () => {
       },
     } as never,
   );
-  // The WS message channel is the primary function; a taken port must not
-  // silently become a working card channel either.
+  // `elicitationModes` was decided at construction time from this config, so
+  // core has already been told "form". If the bind failure were swallowed the
+  // channel would start, keep claiming form support, and cancel every
+  // elicitation request at "no card-callback channel" — a capability that is
+  // advertised, configured, and not there. Failing start surfaces the actual
+  // cause instead.
   await expect(channel.start({
     logger: noopLogger(),
     abortSignal: new AbortController().signal,
@@ -175,9 +179,25 @@ test("a failing card bind does not take down the channel", async () => {
     sessions: null,
     quota: { onInbound: () => {} },
     locale: "en",
-  } as never)).resolves.toBeUndefined();
+  } as never)).rejects.toThrow(/EADDRINUSE/);
   try {
-    expect(channel.isLoggedIn()).toBe(true);
+    // Without cardActions configured the same account starts normally: the
+    // message channel is unaffected by a form capability it never declared.
+    const withoutCard = new FeishuChannel(FEISHU_BASE, {
+      createClient: () => feishuClient(),
+    } as never);
+    expect(withoutCard.elicitationModes).toEqual([]);
+    await withoutCard.start({
+      logger: noopLogger(),
+      abortSignal: new AbortController().signal,
+      agent: { chat: async () => ({ text: "ok" }) },
+      activeTurns: null,
+      sessions: null,
+      quota: { onInbound: () => {} },
+      locale: "en",
+    } as never);
+    expect(withoutCard.isLoggedIn()).toBe(true);
+    withoutCard.logout();
   } finally {
     channel.logout();
   }

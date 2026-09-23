@@ -56,6 +56,7 @@ import {
   ELICITATION_CUSTOM_ID_PREFIX,
   handleElicitationClick,
   parseElicitationCustomId,
+  parseElicitationFieldCustomId,
   parseElicitationModalCustomId,
   parseModalAnswer,
   type ElicitationClickOutcome,
@@ -918,7 +919,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       // Select kinds are answered in place; there is nothing to open a modal for.
       return;
     }
-    const modal = buildElicitationModal(entry.token, field, entry.values[field.key]);
+    const modal = buildElicitationModal(entry.token, field, entry.values[field.key], fieldIndex);
     try {
       await interaction.showModal(modal);
     } catch (error) {
@@ -994,15 +995,20 @@ export class DiscordChannel implements MessageChannelRuntime {
       return;
     }
     // A modal custom id is `<prefix><token>:modal`, so the field identity comes
-    // from the Text Input ids in the payload, never from the modal id.
+    // from the Text Input ids in the payload, never from the modal id. Those ids
+    // are POSITIONAL (`f:<index>`), because core allows a 128-character schema
+    // key and Discord caps component custom ids at 100 — carrying the key made
+    // a legal form's modal unopenable.
     const answered = new Set<string>();
-    for (const [key, raw] of Object.entries(interaction.fields)) {
-      const field = entry.request.fields.find((f) => f.key === key);
+    for (const [customId, raw] of Object.entries(interaction.fields)) {
+      const index = parseElicitationFieldCustomId(customId);
+      if (index === null) continue;
+      const field = entry.request.fields[index];
       if (!field) continue;
       const value = parseModalAnswer(field, raw);
       if (value === undefined) continue;
-      entry.values[key] = value;
-      answered.add(key);
+      entry.values[field.key] = value;
+      answered.add(field.key);
     }
     await interaction.replyEphemeral(answered.size > 0 ? getMessages().elicitationAnswerSaved : getMessages().elicitationNoAnswer);
   }

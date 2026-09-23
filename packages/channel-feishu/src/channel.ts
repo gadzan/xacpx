@@ -221,16 +221,16 @@ export class FeishuChannel implements MessageChannelRuntime {
   /**
    * Start the card-callback listener for one account.
    *
-   * A startup failure is logged and swallowed rather than aborting `start()`:
-   * the WS message channel is independent, and losing it would take down the
-   * channel's primary function. The consequence — card interactions
-   * unavailable for this account — is exactly what the operator asked for by
-   * configuring `cardActions`, so a failed bind must not silently look like a
-   * working card channel.
+   * Throws when the listener cannot be created, and the caller lets that fail
+   * the channel start: `elicitationModes` is decided at construction time from
+   * the config, so once an account is configured with `cardActions` the channel
+   * has already told core it can render a form. A bind failure that is swallowed
+   * leaves that advertised capability backed by nothing, and every elicitation
+   * request cancels for a reason the operator was never shown.
    */
-  private async startCardActions(account: FeishuResolvedAccountConfig): Promise<FeishuCardActionRuntime | undefined> {
+  private async startCardActions(account: FeishuResolvedAccountConfig): Promise<FeishuCardActionRuntime> {
     const cardActions = account.cardActions;
-    if (!cardActions) return undefined;
+    if (!cardActions) throw new Error(`feishu account "${account.accountId}" has no cardActions to start`);
     // Card transport built from the account's own client, so a card is always
     // sent and updated through the credentials of the account that owns it.
     const transport: FeishuCardTransport = {
@@ -296,12 +296,12 @@ export class FeishuChannel implements MessageChannelRuntime {
       if (runtime) runtime.elicitation = { renderer, pending, transport };
       return host;
     } catch (error) {
-      await this.logger?.error("feishu.card_actions_failed", "failed to start feishu card callback channel", {
+      this.logger?.error("feishu.card_actions_failed", "failed to start feishu card callback channel", {
         accountId: account.accountId,
         port: cardActions.port,
         message: error instanceof Error ? error.message : String(error),
       });
-      return undefined;
+      throw error;
     }
   }
 
@@ -437,14 +437,17 @@ export class FeishuChannel implements MessageChannelRuntime {
       // Card-callback listener, only when the account opted in. Without
       // `cardActions` the account simply never receives card interactions.
       if (account.cardActions) {
+        // A failed bind throws, and that propagates through Promise.all to fail
+        // the whole channel start. Swallowing it here is what produced a lie:
+        // `elicitationModes` is decided at CONSTRUCTION time from the config, so
+        // core had already been told "form", and every request would then cancel
+        // at "no card-callback channel" with the operator never told why.
         runtime.cardHost = await this.startCardActions(account);
-        if (runtime.cardHost) {
-          await input.logger.info("feishu.card_actions", "feishu card callback channel listening", {
-            accountId: account.accountId,
-            port: runtime.cardHost.port(),
-            path: account.cardActions.path,
-          });
-        }
+        await input.logger.info("feishu.card_actions", "feishu card callback channel listening", {
+          accountId: account.accountId,
+          port: runtime.cardHost.port(),
+          path: account.cardActions.path,
+        });
       }
       await client.startWS({
         handlers: {

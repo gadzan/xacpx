@@ -51,8 +51,9 @@ export type ElicitationUiAction =
   | "start"
   | "field"
   | "review"
-  | "skip"
+  | "save"
   | "submit"
+  | "skip"
   | "decline"
   | "cancel";
 
@@ -304,13 +305,12 @@ export function buildElicitationFieldCard(
             // unanswered, which blocks the advance and makes an all-optional
             // form uncompletable.
             ...(!field.required ? [button(messages.elicitationSkip, routingValue(token, "skip"), "default", true)] : []),
-            // The submit button saves this field and advances; the REVIEW card's
-            // submit is the only path to accept. Feishu's callback model has no
-            // way to re-open a card for editing after a form submit, so
-            // review-before-submit is expressed by sending the user back
-            // through their own answers (the "answer saved" line above)
-            // instead of a second page.
-            button(messages.elicitationSubmit, routingValue(token, "submit"), "primary", true),
+            // "save" is deliberately NOT the review page's "submit": the two are
+            // different acts, and reusing one action would let this button's
+            // semantics depend on mutable renderer state. A retried or double
+            // delivered callback could then reach the review page's commit
+            // without the user ever confirming it.
+            button(messages.elicitationSubmit, routingValue(token, "save"), "primary", true),
             button(messages.elicitationDecline, routingValue(token, "decline"), "default", true),
             button(messages.elicitationCancel, routingValue(token, "cancel"), "default", true),
           ],

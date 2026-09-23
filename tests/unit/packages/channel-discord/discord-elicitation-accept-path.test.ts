@@ -156,10 +156,17 @@ test("a submit is impossible before the review card exists", async () => {
   const token = createElicitationToken();
   const { buildElicitationFieldCard } = await import("../../../../packages/channel-discord/src/elicitation-ui");
   const fieldCard = buildElicitationFieldCard(entry.request, token, entry.request.fields[0]!, 1, undefined);
-  const fieldIds = (fieldCard.components[0]?.components ?? []).map((c) => c.customId);
+  // All rows, not just the first: a mid-wizard field card needs 6 controls, so
+  // they are split across two rows (a single action row holds 5).
+  const fieldIds = fieldCard.components.flatMap((row) => row.components.map((c) => c.customId));
   expect(fieldIds.some((id) => id.endsWith(":submit"))).toBe(false);
   expect(fieldIds.some((id) => id.endsWith(":decline"))).toBe(true);
   expect(fieldIds.some((id) => id.endsWith(":cancel"))).toBe(true);
+  // And no single row exceeds the platform's 5 buttons, which is what made a
+  // 3+ text-field form's middle field undrawable before.
+  for (const row of fieldCard.components) {
+    expect(row.components.length).toBeLessThanOrEqual(5);
+  }
 });
 
 test("a duplicate submit cannot decide twice", async () => {

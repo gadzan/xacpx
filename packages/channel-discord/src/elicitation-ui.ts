@@ -115,6 +115,19 @@ export function elicitationModalCustomId(token: string): string {
   return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ELICITATION_MODAL_ACTION}`;
 }
 
+/**
+ * Custom id for a modal's Text Input, POSITIONAL for the same reason as
+ * `elicitationCustomId`. Rendered as a bare index so the modal submit handler
+ * can tell it apart from the wrapper id (`<prefix><token>:modal`) without
+ * parsing the modal wrapper as a button custom id.
+ */
+export function elicitationFieldCustomId(fieldIndex: number): string {
+  if (!Number.isInteger(fieldIndex) || fieldIndex < 0) {
+    throw new Error("elicitation field custom id requires a non-negative field index");
+  }
+  return `f:${Math.min(fieldIndex, 999)}`;
+}
+
 export function parseElicitationCustomId(
   customId: string,
 ): { token: string; action: ElicitationUiAction; fieldIndex?: number } | null {
@@ -154,6 +167,20 @@ export function parseElicitationCustomId(
       return null;
   }
   return { token, action: action as ElicitationUiAction, ...(fieldIndex !== undefined ? { fieldIndex } : {}) };
+}
+
+/**
+ * Parse a modal Text Input custom id back to its field position.
+ *
+ * Returns null for anything that is not exactly `f:<non-negative integer>`, so
+ * a payload with an unrecognised component cannot be coerced into routing to
+ * field 0 and overwrite the wrong answer.
+ */
+export function parseElicitationFieldCustomId(customId: string): number | null {
+  const match = /^f:(\d+)$/.exec(customId);
+  if (!match) return null;
+  const index = Number(match[1]);
+  return Number.isInteger(index) && index >= 0 ? index : null;
 }
 
 type ButtonStyle = 1 | 2 | 3 | 4;
@@ -266,27 +293,35 @@ export function buildElicitationFieldCard(
   // or copied form), yielding -1 and silently dropping every position-dependent
   // control — including the forward navigation a multi-field form needs.
   const position = Math.min(Math.max(0, index - 1), Math.max(0, totalFields - 1));
-  const controls: Array<{ label: string; customId: string; style: 1 | 2 | 3 | 4 }> = [];
+  // Two rows. A single row can only hold 5 buttons, and a mid-wizard text field
+  // needs Answer + Prev + Next + Review + Decline + Cancel = 6, which Discord
+  // rejects outright — a form whose second field can never be drawn at all.
+  // Review/Decline/Cancel are terminal decisions and share one row; per-field
+  // controls live on the other so a field never loses its Answer control to
+  // navigation.
+  const fieldControls: Array<{ label: string; customId: string; style: 1 | 2 | 3 | 4 }> = [];
   // Booleans are answerable in place (yes/no are their options), so only
   // text-like fields need an "Answer" button that opens a modal.
   if (!isSelect && !isBoolean) {
-    controls.push({ label: messages.elicitationEdit, customId: elicitationCustomId(token, "field", position), style: 3 });
+    fieldControls.push({ label: messages.elicitationEdit, customId: elicitationCustomId(token, "field", position), style: 3 });
   }
   // Per-field forward/back. Without these the only way to reach field N>0 is to
   // jump to the review page and use its Edit control — a detour that leaves a
   // mid-wizard user with no obvious way forward.
   if (position > 0) {
-    controls.push({ label: truncate(messages.elicitationPrevField, 80), customId: elicitationCustomId(token, "edit", position - 1), style: 2 });
+    fieldControls.push({ label: truncate(messages.elicitationPrevField, 80), customId: elicitationCustomId(token, "edit", position - 1), style: 2 });
   }
   if (position < totalFields - 1) {
-    controls.push({ label: truncate(messages.elicitationNextField, 80), customId: elicitationCustomId(token, "next", position + 1), style: 3 });
+    fieldControls.push({ label: truncate(messages.elicitationNextField, 80), customId: elicitationCustomId(token, "next", position + 1), style: 3 });
   }
-  controls.push({ label: messages.elicitationNext, customId: elicitationCustomId(token, "review"), style: 2 });
-  controls.push({ label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 });
-  controls.push({ label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 });
+  fieldControls.push({ label: messages.elicitationNext, customId: elicitationCustomId(token, "review"), style: 2 });
+  const terminalControls: Array<{ label: string; customId: string; style: 1 | 2 | 3 | 4 }> = [
+    { label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 },
+    { label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 },
+  ];
   return {
     content: truncate(lines.join("\n\n"), MAX_CARD_CHARS),
-    components: actionRow(controls),
+    components: [...actionRow(fieldControls), ...actionRow(terminalControls)],
     selectRows: isSelect
       ? buildElicitationSelectRows(token, field, current, position)
       : isBoolean
@@ -474,17 +509,20 @@ export function buildElicitationSelectRows(
 /**
  * Build the modal for a text-like field.
  *
- * The modal's custom_id is the TOKEN only; each Text Input's custom_id is the
- * FIELD KEY. No answer travels in either, which is what makes a modal payload
- * safe to log: the answer is in the payload body, not in any identifier.
+ * The modal's custom_id is the TOKEN only. Text Input custom_ids are
+ * POSITIONAL (`f:<index>`), not the schema key: core guarantees a key is a
+ * bounded JSON property name but nothing about its character make-up or
+ * length, and Discord caps component `custom_id` at 100 characters. A legal
+ * 101-character text key therefore produced a modal the platform rejects.
+ * Positional ids are also shorter, which keeps the ids loggable.
  */
 export function buildElicitationModal(
   token: string,
   field: ChannelElicitationField,
   current: ChannelElicitationValue | undefined,
+  fieldIndex: number,
 ): ShowModalInput {
   const messages = getMessages();
-  const kind = field.kind;
   const prefill = typeof current === "string" ? current : typeof field.defaultValue === "string" ? field.defaultValue : "";
   return {
     title: truncate(messages.elicitationTitle, 45),
@@ -496,7 +534,7 @@ export function buildElicitationModal(
         label: field.title,
         component: {
           type: 4 as const,
-          customId: field.key,
+          customId: elicitationFieldCustomId(fieldIndex),
           style: field.kind === "text" ? 2 : 1,
           label: field.title,
           required: field.required,

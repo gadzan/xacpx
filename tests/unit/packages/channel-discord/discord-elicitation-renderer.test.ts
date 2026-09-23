@@ -100,12 +100,31 @@ function select(client: FakeDiscordClient, customId: string, values: string[], u
   };
 }
 
-function modal(client: FakeDiscordClient, customId: string, fields: Record<string, string>, userId = "user-A"): DiscordModalSubmitInteraction {
+/**
+ * A modal submit.
+ *
+ * The payload keys are POSITIONAL component ids (`f:<index>`), matching what the
+ * channel builds: core allows a 128-character schema key and Discord caps
+ * component ids at 100, so carrying the key would make some legal forms'
+ * modals unopenable. `fieldIndex` names the single Text Input the modal holds.
+ */
+function modal(
+  client: FakeDiscordClient,
+  customId: string,
+  fields: Record<string, string>,
+  userId = "user-A",
+  fieldIndex = 0,
+): DiscordModalSubmitInteraction {
+  const positional: Record<string, string> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    // A caller passing an already-positional key is honoured verbatim.
+    positional[key.startsWith("f:") ? key : `f:${fieldIndex}`] = value;
+  }
   return {
     customId,
     userId,
     channelId: "c1",
-    fields,
+    fields: positional,
     acknowledge: async () => {},
     replyEphemeral: async (t: string) => client.ephemerals.push(t),
   };
@@ -260,7 +279,7 @@ async function driveToSubmit(
         client.emitButton(click(client, idFor(client, "field", index)));
         await wait();
         const modalId = client.modals[client.modals.length - 1]!.customId;
-        client.emitModal(modal(client, modalId, { [field.key]: answer }));
+        client.emitModal(modal(client, modalId, { [field.key]: answer }, "user-A", index));
       }
       await wait();
     }
@@ -383,7 +402,7 @@ test("a boolean renders Yes/No as select options and produces a boolean", async 
   }
 });
 
-test("a text field opens a modal whose input ids are keys, not answers", async () => {
+test("a text field opens a modal whose input ids are positional, not keys or answers", async () => {
   const client = makeFakeClient();
   const { channel, abort } = await startChannel(client);
   try {
@@ -398,7 +417,9 @@ test("a text field opens a modal whose input ids are keys, not answers", async (
     const m = client.modals[0]!;
     // The modal id is the token namespace; the field identity is the input id.
     expect(m.customId.startsWith("xacpx-elicit:")).toBe(true);
-    expect(m.components[0]!.component.customId).toBe("note");
+    // Positional, NOT the schema key: core allows a 128-char key and Discord
+    // caps component ids at 100, so a legal long key made this modal unopenable.
+    expect(m.components[0]!.component.customId).toBe("f:0");
     // The platform's own upper bound, since the plugin contract carries no
     // core-side string bound to forward (core validates the answer itself).
     expect(m.components[0]!.component.maxLength).toBe(4000);
@@ -409,6 +430,32 @@ test("a text field opens a modal whose input ids are keys, not answers", async (
     const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
     const entry = [...store.values()][0]!;
     expect(entry.values.note).toBe("ship it");
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a long schema key still opens a modal, because the id is positional", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    // Core allows a bounded 128-char JSON property name. Discord caps component
+    // custom ids at 100, so a key-derived id made this legal form unrenderable.
+    const longKey = `k${"x".repeat(120)}`;
+    const { request: req } = request([
+      { kind: "text", key: longKey, title: "Note", required: true },
+    ]);
+    await startWizard(client, channel, req, longKey);
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(client.modals).toHaveLength(1);
+    expect(client.modals[0]!.components[0]!.component.customId).toBe("f:0");
+    client.emitModal(modal(client, client.modals[0]!.customId, { [longKey]: "answer" }));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.values[longKey]).toBe("answer");
   } finally {
     abort.abort();
     await channel.stop().catch(() => {});
@@ -561,11 +608,11 @@ test("an intruder's select or modal cannot write an answer", async () => {
     client.emitButton(click(client, idFor(client, "field", 1)));
     await new Promise((r) => setTimeout(r, 5));
     const m = client.modals[0]!;
-    client.emitModal(modal(client, m.customId, { note: "intruder value" }, "user-INTRUDER"));
+    client.emitModal(modal(client, m.customId, { note: "intruder value" }, "user-INTRUDER", 1));
     await new Promise((r) => setTimeout(r, 5));
     expect(entry.values.note).toBeUndefined();
     // And the legitimate initiator can still answer it.
-    client.emitModal(modal(client, m.customId, { note: "legit" }));
+    client.emitModal(modal(client, m.customId, { note: "legit" }, "user-A", 1));
     await new Promise((r) => setTimeout(r, 5));
     expect(entry.values.note).toBe("legit");
   } finally {
@@ -683,6 +730,34 @@ test("a required + optional form reaches BOTH fields before submitting", async (
   }
 });
 
+test("every field card fits Discord's per-row button limit", async () => {
+  // Structural and platform-facing: a mid-wizard text field needs Answer + Prev
+  // + Next + Review + Decline + Cancel = 6 controls, which exceeds the 5 buttons
+  // Discord allows per action row. Before the split the whole form's second
+  // field was a message Discord rejects, so nothing could be answered at all.
+  const token = "tok-per-row";
+  const { buildElicitationFieldCard } = await import("../../../../packages/channel-discord/src/elicitation-ui");
+  const cases = [
+    request([{ kind: "text", key: "a", title: "A", required: true }, { kind: "text", key: "b", title: "B", required: true }]).request,
+    request([{ kind: "text", key: "a", title: "A", required: true }, { kind: "number", key: "c", title: "C", required: true }]).request,
+  ];
+  for (const req of cases) {
+    for (let index = 0; index < req.fields.length; index += 1) {
+      const card = buildElicitationFieldCard(req, token, req.fields[index]!, index + 1, undefined);
+      expect(card.components.length).toBeGreaterThan(0);
+      for (const row of card.components) {
+        expect(row.components.length).toBeGreaterThan(0);
+        expect(row.components.length).toBeLessThanOrEqual(5);
+      }
+      // Answer control survives the split: the user can still open a modal.
+      const ids = card.components.flatMap((row) => row.components.map((c) => c.customId));
+      expect(ids.some((id) => id.endsWith(":field:" + index))).toBe(true);
+      expect(ids.some((id) => id.endsWith(":decline"))).toBe(true);
+      expect(ids.some((id) => id.endsWith(":cancel"))).toBe(true);
+    }
+  }
+});
+
 test("a 3+ field form is completable: the third field is reachable and answerable", async () => {
   const client = makeFakeClient();
   const { channel, abort } = await startChannel(client);
@@ -763,7 +838,7 @@ test("edit after review corrects a field and the correction reaches the decision
     // Field 1's card: its Answer control opens the modal for b.
     client.emitButton(click(client, idFor(client, "field", 1)));
     await wait();
-    client.emitModal(modal(client, client.modals[1]!.customId, { b: "second" }));
+    client.emitModal(modal(client, client.modals[1]!.customId, { b: "second" }, "user-A", 1));
     await wait();
 
     // Review -> Edit field 0 -> correct it -> review -> submit.
@@ -773,7 +848,7 @@ test("edit after review corrects a field and the correction reaches the decision
     await wait();
     client.emitButton(click(client, idFor(client, "field", 0)));
     await wait();
-    client.emitModal(modal(client, client.modals[2]!.customId, { a: "corrected" }));
+    client.emitModal(modal(client, client.modals[2]!.customId, { a: "corrected" }, "user-A", 0));
     await wait();
     client.emitButton(click(client, idFor(client, "review")));
     await wait();

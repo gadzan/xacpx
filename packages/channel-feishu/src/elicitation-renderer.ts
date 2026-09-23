@@ -212,7 +212,6 @@ export class FeishuElicitationRenderer {
       sequence: 0,
       request,
       values: {},
-      visitedReview: false,
       settled: false,
       resolve: settle,
       reject: rejectPromise,
@@ -284,7 +283,6 @@ export class FeishuElicitationRenderer {
           // A zero-field form has nothing to ask, but it is NOT a dead end: M1
           // keeps `accept` + `content: null` precisely for this, so Start goes
           // straight to the review page where Submit is the only way to accept.
-          entry.visitedReview = true;
           await this.renderReview(entry);
           return { handled: true, settled: false };
         }
@@ -296,7 +294,6 @@ export class FeishuElicitationRenderer {
         // schema key is not a valid routing id.
         if (parsed.fieldIndex !== undefined && entry.request.fields[parsed.fieldIndex]) {
           entry.currentField = entry.request.fields[parsed.fieldIndex]!.key;
-          entry.visitedReview = false;
           await this.renderCurrentField(entry);
         }
         return { handled: true, settled: false };
@@ -316,18 +313,21 @@ export class FeishuElicitationRenderer {
           await this.renderCurrentField(entry);
           return { handled: true, settled: false };
         }
-        entry.visitedReview = true;
         await this.renderReview(entry);
         return { handled: true, settled: false };
       }
-      case "submit": {
-        // Two submits exist and they mean different things: the field card's
-        // saves that field and advances, while the review page's commits what
-        // the user just reviewed. `visitedReview` is what tells them apart.
-        if (entry.visitedReview) {
-          return this.confirmReviewed(entry);
-        }
+      // Field page "save" and review page "submit" are DIFFERENT ACTIONS. They
+      // used to share `a:"submit"` and were told apart by mutable
+      // `entry.visitedReview`, which was a real bug: the callback that flips the
+      // flag to true also renders the review card, so a redelivery or
+      // double-click of that same callback reached the review branch on its
+      // second delivery and accepted the form without any click on the review
+      // page. Feishu retries callbacks, and a user double-taps.
+      case "save": {
         return this.submit(entry, action.formValues);
+      }
+      case "submit": {
+        return this.confirmReviewed(entry);
       }
       case "decline":
       case "cancel": {
@@ -381,7 +381,6 @@ export class FeishuElicitationRenderer {
     }
     // Everything collected (including the optional ones the user skipped by
     // advancing): show the review page, which is the only path to accept.
-    entry.visitedReview = true;
     await this.renderReview(entry);
     return { handled: true, settled: false };
   }
@@ -397,7 +396,6 @@ export class FeishuElicitationRenderer {
     if (missing.length > 0) {
       // Stay on the unanswered field and let the user fix it.
       entry.currentField = missing[0]!.key;
-      entry.visitedReview = false;
       await this.renderCurrentField(entry);
       return { handled: true, settled: false };
     }
