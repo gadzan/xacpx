@@ -62,6 +62,7 @@ function makeEntry(overrides: Partial<PendingDiscordElicitation> = {}): PendingD
     // the same statement as an empty-string answer.
     values: createAnswerMap(),
     skipped: new Set<string>(),
+    continuationMessageIds: [],
     visitedReview: false,
     reviewPage: 0,
     settled: false,

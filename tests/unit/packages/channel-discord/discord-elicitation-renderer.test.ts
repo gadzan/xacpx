@@ -36,6 +36,7 @@ interface FakeDiscordClient extends DiscordClientLike {
   emitModal: (interaction: DiscordModalSubmitInteraction) => void;
   sent: Array<{ channelId: string; body: OutboundBody }>;
   edited: Array<{ channelId: string; messageId: string; body: OutboundBody }>;
+  deleted: string[];
   ephemerals: string[];
   modals: ShowModalInput[];
 }
@@ -46,6 +47,7 @@ function makeFakeClient(): FakeDiscordClient {
   let onModal: ((i: DiscordModalSubmitInteraction) => void) | null = null;
   const sent: Array<{ channelId: string; body: OutboundBody }> = [];
   const edited: Array<{ channelId: string; messageId: string; body: OutboundBody }> = [];
+  const deleted: string[] = [];
   const ephemerals: string[] = [];
   const modals: ShowModalInput[] = [];
   const client: FakeDiscordClient = {
@@ -63,7 +65,9 @@ function makeFakeClient(): FakeDiscordClient {
     editMessage: async (target, messageId, body) => {
       edited.push({ channelId: target.channelId, messageId, body });
     },
-    deleteMessage: async () => {},
+    deleteMessage: async (_target, messageId) => {
+      deleted.push(messageId);
+    },
     startTyping: async () => () => {},
     addReaction: async () => {},
     destroy: async () => {},
@@ -72,6 +76,7 @@ function makeFakeClient(): FakeDiscordClient {
     emitModal: (interaction) => onModal?.(interaction),
     sent,
     edited,
+    deleted,
     ephemerals,
     modals,
   };
@@ -1068,6 +1073,101 @@ test("an answered optional field can be skipped back to omitted", async () => {
       responderId: "user-A",
       content: { a: "alpha" },
     });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+// --- A review must show the WHOLE answer ------------------------------------
+//
+// core lets a text answer be 4000 characters and a Discord card holds 1800, so
+// a real answer spans several messages. Rendering chunk[0] and dropping the rest
+// hid most of what the user was approving while leaving Submit enabled.
+
+test("a 4000-character answer is fully visible on the review before Submit", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const longAnswer = "A".repeat(4000);
+    const { request: req } = request([
+      { kind: "text", key: "body", title: "Body", required: true },
+    ]);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: longAnswer }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+    // Review. The opener is one message; the review's first chunk edits it and
+    // every further chunk goes to a continuation message.
+    const sentBefore = client.sent.length;
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 10));
+
+    // The user-visible review text = the edited card plus every continuation.
+    const visible = [
+      ...client.edited.map((entry) => entry.body.content ?? ""),
+      ...client.sent.slice(sentBefore).map((entry) => entry.body.content ?? ""),
+    ].join("");
+    // The WHOLE answer is present. The earlier failure mode was exactly this
+    // assertion at the 1800-char mark.
+    expect(visible).toContain(longAnswer);
+    expect(visible.split("A").length - 1).toBeGreaterThanOrEqual(4000);
+
+    // And Submit still works.
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 10));
+    const decision = await settled;
+    expect(decision).toEqual({
+      action: "accept",
+      responderId: "user-A",
+      content: { body: longAnswer },
+    });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("review continuation messages are removed once the form is decided", async () => {
+  // A continuation left behind shows a stale fragment of the review with no
+  // controls, which reads as a broken form.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const longAnswer = "B".repeat(4000);
+    const { request: req } = request([
+      { kind: "text", key: "body", title: "Body", required: true },
+    ]);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: longAnswer }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+    const sentBefore = client.sent.length;
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 10));
+    // Continuation messages exist while the review is up: the review needed
+    // more than one 1800-char chunk, so the extras were sent as new messages.
+    const continuationCount = client.sent.length - sentBefore;
+    expect(continuationCount).toBeGreaterThan(0);
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(await settled).toMatchObject({ action: "accept" });
+    // And they are gone after the decision.
+    expect(client.deleted.length).toBeGreaterThanOrEqual(continuationCount);
   } finally {
     abort.abort();
     await channel.stop().catch(() => {});

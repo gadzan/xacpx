@@ -449,7 +449,19 @@ export function buildElicitationReviewCard(
   token: string,
   values: Record<string, ChannelElicitationValue>,
   page = 0,
-): { content: string; components: DiscordActionRow[] } {
+): {
+  content: string;
+  /**
+   * Every chunk of the review text, in order. A single legal answer is 4000
+   * characters and a card holds 1800, so the review of a real form can span
+   * several messages. Returning only `[0]` and dropping the rest is the earlier
+   * bug: the user could not read what they were approving, while Submit stayed
+   * enabled. The caller sends/edits the continuations and attaches the controls
+   * to the FIRST chunk.
+   */
+  contents: string[];
+  components: DiscordActionRow[];
+} {
   const messages = getMessages();
   const lines = [`**${messages.elicitationReview}**`, messages.elicitationFromAgent(escapeDiscordLiteralText(request.agent.name))];
   for (const field of request.fields) {
@@ -508,9 +520,9 @@ export function buildElicitationReviewCard(
         `${lines[0]!} (${clamped + 1}/${pageCount})`,
         lines[1]!,
         ...pageFields.map((field) => {
-          const value = values[field.key];
+          const present = Object.hasOwn(values, field.key);
           return `**${escapeDiscordLiteralText(field.title)}**\n${escapeDiscordLiteralText(
-            value === undefined ? messages.elicitationNoAnswer : displayValue(value),
+            present ? displayValue(values[field.key]!) : messages.elicitationNoAnswer,
           )}`;
         }),
       ]
@@ -518,8 +530,10 @@ export function buildElicitationReviewCard(
   const components = rows.flat();
   // Chunked, not truncated: a single legal answer can be 4000 characters, so a
   // 1800-char card would hide part of what the user is being asked to approve
-  // while leaving Submit enabled. Chunking preserves it across further messages.
-  return { content: chunkCardText(pagedLines.join("\n\n"))[0]!, components };
+  // while leaving Submit enabled. Every chunk is returned so the caller can
+  // show all of them; `chunkCardText` splits without losing content.
+  const contents = chunkCardText(pagedLines.join("\n\n"));
+  return { content: contents[0]!, contents, components };
 }
 
 export function hintForField(field: ChannelElicitationField): string {

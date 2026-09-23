@@ -58,6 +58,15 @@ export interface PendingDiscordElicitation {
    */
   currentField?: string;
   /**
+   * Message ids of this request's continuation messages — the chunks past the
+   * first, which carry the rest of a long review or opening text. Tracked so
+   * they can be edited in place on the next rerender and deleted when the
+   * request settles; a leaked continuation shows a stale card forever.
+   *
+   * The FIRST message is `messageId` (the one that carries the controls).
+   */
+  continuationMessageIds: string[];
+  /**
    * Which review page the user is on. A form wider than one action row is a
    * navigable list, so the page is state rather than derived from the field.
    */

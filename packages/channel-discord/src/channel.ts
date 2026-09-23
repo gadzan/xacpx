@@ -693,6 +693,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       request,
       values: createAnswerMap(),
       skipped: new Set<string>(),
+      continuationMessageIds: [],
       visitedReview: false,
       reviewPage: 0,
       settled: false,
@@ -739,18 +740,21 @@ export class DiscordChannel implements MessageChannelRuntime {
       // A long agent message is split across messages rather than cut: the
       // question the user is answering must be readable in full. Only the LAST
       // chunk carries the controls, and its message is the one edited in place
-      // for the rest of the wizard, so the earlier ones are plain text.
+      // for the rest of the wizard, so the earlier ones are plain text and are
+      // tracked so they can be edited (review) or removed (terminal) later.
       let sent: { messageId: string } | undefined;
       for (let index = 0; index < opening.contents.length; index += 1) {
         if (entry.settled) break;
         const isLast = index === opening.contents.length - 1;
-        sent = await runtime.client.sendMessage(target, {
+        const chunk = await runtime.client.sendMessage(target, {
           content: opening.contents[index]!,
           // Pings are disabled at send time: agent-controlled text is not trusted
           // to be mention-free, and the card is a private form for one user.
           allowedMentions: { parse: [] },
           ...(isLast ? { components: opening.components } : {}),
         });
+        sent = chunk;
+        if (!isLast) entry.continuationMessageIds.push(chunk.messageId);
       }
       if (!sent) throw new Error("elicitation opening card produced no message");
       entry.messageId = sent.messageId;
@@ -836,6 +840,8 @@ export class DiscordChannel implements MessageChannelRuntime {
     if (!messageId || entry.settled) return;
     let card: {
       content: string;
+      /** Extra chunks past the first; empty when the card fits in one message. */
+      contents?: string[];
       components: DiscordActionRow[];
       selectRows?: DiscordSelectActionRow[];
     };
@@ -916,6 +922,38 @@ export class DiscordChannel implements MessageChannelRuntime {
         components: card.components,
         ...(card.selectRows && card.selectRows.length > 0 ? { selectRows: card.selectRows } : {}),
       });
+      if (card.contents && card.contents.length > 1) {
+        const extras = card.contents.slice(1);
+        // Keep the continuation messages in step with the first one.
+        //
+        // A review of a form with a long answer needs more than 1800 chars, and
+        // showing only the first chunk while leaving Submit enabled was the
+        // original defect. Extra chunks are written to the SAME continuation
+        // messages when they already exist (so the message count does not grow
+        // on every rerender), and new ones are created when the form grew.
+        for (let index = 0; index < extras.length; index += 1) {
+          if (entry.settled) break;
+          const existing = entry.continuationMessageIds[index];
+          if (existing) {
+            await runtime.client.editMessage(entry.target, existing, {
+              content: extras[index]!,
+              allowedMentions: { parse: [] },
+            });
+            continue;
+          }
+          const created = await runtime.client.sendMessage(entry.target, {
+            content: extras[index]!,
+            allowedMentions: { parse: [] },
+          });
+          entry.continuationMessageIds.push(created.messageId);
+        }
+      } else if (entry.continuationMessageIds.length > 0) {
+        // A field card fits in one message, so any continuation left over from
+        // a previous review is now stale text sitting under a different card.
+        // Leaving it would show the user a fragment of a review they already
+        // navigated away from, next to a field card.
+        await this.discardElicitationContinuations(entry, runtime);
+      }
     } catch (error) {
       await this.logger?.warn("discord.elicitation.edit_failed", "failed to update elicitation message", {
         requestId: entry.requestId,
@@ -1065,6 +1103,30 @@ export class DiscordChannel implements MessageChannelRuntime {
     await this.renderElicitationInert(entry, text);
   }
 
+  /**
+   * Delete this request's continuation messages, if any.
+   *
+   * Best-effort and never rejects: a continuation left behind is cosmetic, and
+   * failing to delete one must not take down the request it belonged to. The
+   * list is cleared either way so the ids are not retried.
+   */
+  private async discardElicitationContinuations(
+    entry: PendingDiscordElicitation,
+    runtime: AccountRuntime,
+  ): Promise<void> {
+    const ids = entry.continuationMessageIds;
+    if (ids.length === 0) return;
+    entry.continuationMessageIds = [];
+    for (const id of ids) {
+      try {
+        await runtime.client.deleteMessage(entry.target, id);
+      } catch {
+        // Already gone, or permission-limited by the platform: neither is
+        // actionable on a message the user has stopped looking at.
+      }
+    }
+  }
+
   /** Disable the controls and show a bounded terminal line. */
   private async renderElicitationInert(
     entry: PendingDiscordElicitation,
@@ -1082,6 +1144,10 @@ export class DiscordChannel implements MessageChannelRuntime {
         // Strip controls: a terminal card must be visibly inert.
         components: [],
       });
+      // The continuation messages carried the rest of the review the user was
+      // reading. Leaving them after the decision would show a stale, still
+      // interactive-looking form fragment with no controls to act on.
+      await this.discardElicitationContinuations(entry, runtime);
     } catch (error) {
       await this.logger?.warn("discord.elicitation.edit_failed", "failed to update elicitation message", {
         requestId: entry.requestId,

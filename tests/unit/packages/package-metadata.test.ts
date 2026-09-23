@@ -32,8 +32,29 @@ test("first-party channel plugins peer depend on xacpx", () => {
     expect(pkg.peerDependenciesMeta.weacpx).toBeUndefined();
     expect(pkg.publishConfig.access).toBe("public");
   }
-  expect(feishu.peerDependencies.xacpx).toBe(">=0.9.0-0");
+  expect(feishu.peerDependencies.xacpx).toBe(">=0.24.6-beta.0");
   expect(yuanbao.peerDependencies.xacpx).toBe(">=0.17.0");
+});
+
+test("plugins importing a runtime plugin-api export floor their peer above it", () => {
+  // A plugin whose source statically imports a RUNTIME named export from
+  // `xacpx/plugin-api` cannot be protected by `minXacpxVersion` alone: ESM
+  // resolves named exports while linking, before the plugin's default export
+  // runs, so the version check never gets a chance to refuse. The peer floor is
+  // the only guard, which makes "does the source import one?" the thing to test.
+  const root = readJson("package.json");
+  const rootVersion = root.version as string;
+  const consumers = [
+    "packages/channel-feishu",
+    "packages/channel-discord",
+  ] as const;
+  for (const dir of consumers) {
+    const pkg = readJson(`${dir}/package.json`);
+    const importsRuntimeExport = readFileSync(`${dir}/src/elicitation-limits.ts`, "utf8")
+      .includes("satisfiesElicitationFormat");
+    if (!importsRuntimeExport) continue;
+    expect(pkg.peerDependencies.xacpx).toBe(`>=${rootVersion}`);
+  }
 });
 
 test("deprecated weacpx compat shim forwards plugin-api to xacpx", () => {
