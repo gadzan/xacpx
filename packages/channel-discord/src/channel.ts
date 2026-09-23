@@ -268,7 +268,10 @@ export class DiscordChannel implements MessageChannelRuntime {
 
   async logout(): Promise<void> {
     this.invalidateAllPendingPermissions("cancelled");
-    this.invalidateAllPendingElicitations("cancelled");
+    // Awaited: the terminal renders are queued behind any in-flight UI
+    // transition, and `client.destroy()` below must not win that race. Draining
+    // is what leaves every card inert rather than interactive-with-no-handler.
+    await this.invalidateAllPendingElicitations("cancelled");
     await this.abortAllActiveTasks();
     for (const runtime of this.accounts.values()) {
       try {
@@ -288,7 +291,8 @@ export class DiscordChannel implements MessageChannelRuntime {
     // stale button can resolve after shutdown. For elicitation this also means
     // no stale wizard step can commit an answer after the turn is gone.
     this.invalidateAllPendingPermissions("cancelled");
-    this.invalidateAllPendingElicitations("cancelled");
+    // Drained before the clients are destroyed — see `logout()`.
+    await this.invalidateAllPendingElicitations("cancelled");
     await this.abortAllActiveTasks();
     for (const runtime of this.accounts.values()) {
       try {
@@ -748,7 +752,13 @@ export class DiscordChannel implements MessageChannelRuntime {
       if (!trySettle(entry)) return;
       entry.terminalState = "cancelled";
       cleanup();
-      void this.renderElicitationInert(entry, getMessages().elicitationCancelled).catch(() => {});
+      // On the same queue as every UI transition. A rerender already in flight
+      // can be parked mid-`syncElicitationContinuations`; publishing the Cancelled
+      // card outside the queue lets that rerender resume and repaint the terminal
+      // state back into an interactive-looking card, which for a form containing
+      // answers also re-displays text the terminal card had withdrawn.
+      void this.enqueueElicitationRender(entry.token, () =>
+        this.renderElicitationInert(entry, getMessages().elicitationCancelled)).catch(() => {});
       // Reject, never resolve: an external abort is not a user decision and
       // must not carry a responderId.
       entry.reject(new Error("elicitation request aborted"));
@@ -757,7 +767,10 @@ export class DiscordChannel implements MessageChannelRuntime {
       if (!trySettle(entry)) return;
       entry.terminalState = terminal;
       cleanup();
-      void this.renderElicitationInert(entry, getMessages().elicitationCancelled).catch(() => {});
+      // Same serialization domain as `onAbort`: expiry and send failure are
+      // terminal states too, and a running rerender must not outlive them.
+      void this.enqueueElicitationRender(entry.token, () =>
+        this.renderElicitationInert(entry, getMessages().elicitationCancelled)).catch(() => {});
       entry.reject(new Error(reason));
     };
     const msUntilExpiry = Math.max(0, request.expiresAt - Date.now());
@@ -797,8 +810,11 @@ export class DiscordChannel implements MessageChannelRuntime {
       entry.messageId = sent.messageId;
       // Send race: the request may have settled while the send was in flight,
       // in which case the terminal edit happened before a message id existed.
+      // Queued for the same reason as `onAbort`: a settled entry must end inert,
+      // and nothing later may repaint it.
       if (entry.settled && entry.terminalState) {
-        void this.renderElicitationInert(entry, getMessages().elicitationCancelled).catch(() => {});
+        void this.enqueueElicitationRender(entry.token, () =>
+          this.renderElicitationInert(entry, getMessages().elicitationCancelled)).catch(() => {});
       }
       void this.logger?.info("discord.elicitation.sent", "sent discord elicitation request", {
         requestId: request.requestId,
@@ -902,6 +918,12 @@ export class DiscordChannel implements MessageChannelRuntime {
   ): Promise<void> {
     const messageId = entry.messageId;
     if (!messageId || entry.settled) return;
+    // A settled entry ends inert. Every step below re-checks, because a terminal
+    // render may land WHILE this transition is parked on a transport `await`:
+    // by the time it resumes, the card on screen is already Cancelled, and
+    // repainting it would restore interactive content that was just withdrawn —
+    // including any answers the review was showing.
+    const live = (): boolean => !entry.settled;
     let card: {
       content: string;
       /** Extra chunks past the first; empty when the card fits in one message. */
@@ -1007,6 +1029,7 @@ export class DiscordChannel implements MessageChannelRuntime {
         || action === "page"
         || action === "skip"
         || action === "edit";
+      if (entry.settled) return;
       if (entry.visitedReview && canMutateCurrentReview && !entry.submitGateClosed) {
         // Publish the CURRENT review's text with Submit disabled. Same content
         // the user is looking at, so this is not a visual step: it only removes
@@ -1033,8 +1056,13 @@ export class DiscordChannel implements MessageChannelRuntime {
       // sees an incomplete review with a live Submit — they can approve content
       // they never fully saw. Layering in the other order means a failure leaves
       // the previous card up, and the user can retry.
+      if (!live()) return;
       await this.syncElicitationContinuations(entry, runtime, card.contents);
 
+      // A terminal render cannot have landed during the continuation sync 2014 it
+      // was queued behind this transition 2014 but the guard makes the invariant
+      // local rather than dependent on the queue staying correct.
+      if (!live()) return;
       await runtime.client.editMessage(entry.target, messageId, {
         content: card.content,
         allowedMentions: { parse: [] },
@@ -1353,24 +1381,39 @@ export class DiscordChannel implements MessageChannelRuntime {
     }
   }
 
-  private invalidateAllPendingElicitations(terminal: "expired" | "cancelled"): void {
-    if (this.pendingElicitations.size === 0) return;
+  /**
+   * Terminal-render every pending elicitation, and return a promise that settles
+   * once their queued UI work has run.
+   *
+   * The caller is `stop()`/`logout()`, which destroys the client right after.
+   * Enqueueing the terminal renders without waiting would let the destroy win
+   * the race and leave every card interactive with no controls removed, so the
+   * returned promise is what makes "drain, then destroy" real.
+   */
+  private invalidateAllPendingElicitations(terminal: "expired" | "cancelled"): Promise<void> {
+    if (this.pendingElicitations.size === 0) return Promise.resolve();
     const entries = [...this.pendingElicitations.values()];
     this.pendingElicitations.clear();
     const messages = getMessages();
+    const drains: Array<Promise<void>> = [];
     for (const entry of entries) {
       if (!trySettle(entry)) continue;
       entry.terminalState = terminal;
       try {
         entry.reject(new Error("elicitation channel stopped"));
       } catch {}
-      // Rendered directly rather than through the decision renderer: a channel
-      // stop is not a user action, so there is no responderId to carry.
-      void this.renderElicitationInert(
-        entry,
-        terminal === "expired" ? messages.elicitationExpired : messages.elicitationCancelled,
-      ).catch(() => {});
+      // Rendered through the same queue as everything else, and rendered as the
+      // entry's terminal state rather than through the decision renderer: a
+      // channel stop is not a user action, so there is no responderId to carry.
+      drains.push(
+        this.enqueueElicitationRender(entry.token, () =>
+          this.renderElicitationInert(
+            entry,
+            terminal === "expired" ? messages.elicitationExpired : messages.elicitationCancelled,
+          )),
+      );
     }
+    return Promise.all(drains).then(() => undefined, () => undefined);
   }
 
   private async handlePermissionButton(interaction: DiscordButtonInteraction): Promise<void> {

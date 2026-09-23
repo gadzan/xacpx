@@ -1778,3 +1778,130 @@ test("a second transition is queued behind a running one, and cannot open the ga
     await channel.stop().catch(() => {});
   }
 });
+
+test("an abort during a running transition leaves the card inert, never repainted", async () => {
+  // A rerender can be parked on a continuation edit when the request is aborted.
+  // The terminal render is queued behind it, so it publishes Cancelled and clears
+  // the continuations AFTER the transition finishes. Without the guard the
+  // transition would resume and repaint the Cancelled card back into an
+  // interactive-looking review — re-displaying answers the terminal card had
+  // just withdrawn.
+  const client = makeFakeClient();
+  let release: (() => void) | null = null;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holdsLeft = 1;
+  const realEdit = client.editMessage.bind(client);
+  (client as unknown as { editMessage: unknown }).editMessage = async (
+    target: unknown,
+    messageId: string,
+    body: unknown,
+  ) => {
+    // Hold on the first continuation edit of the second transition, i.e. inside
+    // `syncElicitationContinuations`.
+    if (messageId === "m2" && holdsLeft > 0) {
+      holdsLeft -= 1;
+      await held;
+    }
+    return realEdit(target as never, messageId, body as never);
+  };
+  const { channel, abort } = await startChannel(client);
+  try {
+    const fields: ChannelElicitationRequest["fields"] = Array.from({ length: 8 }, (_, index) => ({
+      kind: "text" as const,
+      key: `f${index}`,
+      title: `Field ${index}`,
+      required: true,
+    }));
+    const lengths = [1800, 1800, 900, 900, 5, 5, 5, 5];
+    const { request: req, abort: requestAbort } = request(fields);
+    channel.requestElicitation(req).catch(() => {});
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 6));
+    await wait();
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    for (let index = 0; index < 8; index += 1) {
+      client.emitButton(click(client, idFor(client, "field", index)));
+      await wait();
+      const modalId = client.modals[client.modals.length - 1]!.customId;
+      client.emitModal(modal(client, modalId, { [fields[index]!.key]: "L".repeat(lengths[index]!) }, "user-A", index));
+      await wait();
+      if (index < 7) {
+        client.emitButton(click(client, idFor(client, "next", index + 1)));
+        await wait();
+      }
+    }
+    // Open the long review first so its continuations exist.
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+
+    const rowIds = (): string[] => (client.edited[client.edited.length - 1]!.body.components ?? [])
+      .flatMap((row) => row.components)
+      .map((component) => component.customId);
+    const page1 = rowIds().find((id) => id.endsWith(":page:1"))!;
+
+    // Start the transition; it parks on the held m2 edit.
+    client.emitButton(click(client, page1));
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Abort the request while the transition is in flight.
+    const editsBeforeAbort = client.edited.length;
+    requestAbort.abort();
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Let the parked transition resume.
+    release!();
+    await new Promise((r) => setTimeout(r, 60));
+    await wait();
+
+    // The LAST primary edit must be the inert terminal card: content is the
+    // cancelled text and the controls are stripped.
+    const lastPrimary = client.edited[client.edited.length - 1]!;
+    expect(lastPrimary.messageId).toBe("m1");
+    expect(JSON.stringify(lastPrimary.body.content ?? "")).toContain("ancelled");
+    expect(lastPrimary.body.components ?? []).toHaveLength(0);
+    // No rerender edit landed after the terminal edit: the transition resumed
+    // and repainted nothing.
+    const editsAfterAbort = client.edited.filter((e) => e.messageId === "m1");
+    expect(editsAfterAbort.length).toBe(editsBeforeAbort + 1);
+    // Continuations were cleared.
+    expect(client.deleted.length).toBeGreaterThan(0);
+  } finally {
+    release?.();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("stop() drains a queued terminal render before the client is destroyed", async () => {
+  // A terminal render enqueued but not yet run would lose the race against
+  // `client.destroy()` in stop(), leaving the card interactive with no handler.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  let destroyed = false;
+  const realDestroy = client.destroy ? client.destroy.bind(client) : null;
+  (client as unknown as { destroy: unknown }).destroy = async () => {
+    destroyed = true;
+    if (realDestroy) await realDestroy();
+  };
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "body", title: "Body", required: true },
+    ]);
+    channel.requestElicitation(req).catch(() => {});
+    await new Promise((r) => setTimeout(r, 5));
+    const editsBefore = client.edited.length;
+
+    await channel.stop();
+
+    // The terminal card was published (and only then the client destroyed).
+    expect(client.edited.length).toBe(editsBefore + 1);
+    const last = client.edited[client.edited.length - 1]!;
+    expect(last.body.components ?? []).toHaveLength(0);
+    expect(destroyed).toBe(true);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
