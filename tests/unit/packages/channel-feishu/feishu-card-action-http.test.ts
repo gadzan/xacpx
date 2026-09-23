@@ -173,8 +173,13 @@ describe("feishu card callback authentication", () => {
     });
     const body = JSON.stringify({ encrypt: encryptFeishu(cardBody(), CARD_ACTIONS.encryptKey) });
     const headers = signedHeadersFor(JSON.parse(body), CARD_ACTIONS.encryptKey, "sha256");
-    // Flip one hex nibble of the signature.
-    headers["x-lark-signature"] = `${headers["x-lark-signature"]!.slice(0, -1)}0`;
+    // Flip the last hex digit to a DIFFERENT one. Appending a literal "0" is not
+    // a flip: when the digest already ends in 0 (1-in-16 per run, and it happened
+    // on macOS CI) the header is unchanged and the server correctly returns 200.
+    const original = headers["x-lark-signature"]!;
+    const last = original[original.length - 1]!;
+    headers["x-lark-signature"] = `${original.slice(0, -1)}${last === "0" ? "1" : "0"}`;
+    expect(headers["x-lark-signature"]).not.toBe(original);
     const result = await post(server, headers, body);
     expect(result.status).toBe(401);
     expect(actions).toHaveLength(0);

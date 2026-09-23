@@ -1310,3 +1310,165 @@ test("a failed continuation send leaves the primary's Submit alone", async () =>
     await channel.stop().catch(() => {});
   }
 });
+
+test("a failed stale-tail delete keeps the primary off the shorter review", async () => {
+  // Reached through review PAGING, which is the real entry point for the
+  // `slice(extras.length)` branch: page 0 is long (its answers fill several
+  // chunks), page 1 is short, so moving to it shrinks the continuation set
+  // without ever passing through a field card — the path that previously
+  // bypassed every trim by discarding everything and rebuilding.
+  const client = makeFakeClient();
+  const failsOn = new Set<string>();
+  const realDelete = client.deleteMessage.bind(client);
+  (client as unknown as { deleteMessage: unknown }).deleteMessage =
+    async (target: unknown, messageId: string) => {
+      if (failsOn.has(messageId)) {
+        const error = new Error("delete failed") as Error & { code?: string };
+        error.code = "TRANSIENT";
+        throw error;
+      }
+      return realDelete(target as never);
+    };
+  const { channel, abort } = await startChannel(client);
+  try {
+    const fields: ChannelElicitationRequest["fields"] = Array.from({ length: 8 }, (_, index) => ({
+      kind: "text" as const,
+      key: `f${index}`,
+      title: `Field ${index}`,
+      required: true,
+    }));
+    const { request: req } = request(fields);
+    void channel.requestElicitation(req).catch(() => {});
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 8));
+    const deadline = Date.now() + 5_000;
+    while (client.sent.length === 0 && Date.now() < deadline) await wait();
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    // Answer so that page 0 is LONG and page 1 is SHORT: the review's page-0 text
+    // spans several chunks and page 1's fits in fewer, so paging forward shrinks
+    // the continuation set — the `slice(extras.length)` branch. (Review pages are
+    // 2 fields wide: 5 button slots minus Submit/Decline/Cancel.)
+    for (let index = 0; index < 8; index += 1) {
+      client.emitButton(click(client, idFor(client, "field", index)));
+      await wait();
+      const modalId = client.modals[client.modals.length - 1]!.customId;
+      const content = index < 4 ? "L".repeat(1800) : "s";
+      client.emitModal(modal(client, modalId, { [fields[index]!.key]: content }, "user-A", index));
+      await wait();
+      if (index < 7) {
+        client.emitButton(click(client, idFor(client, "next", index + 1)));
+        await wait();
+      }
+    }
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+    // The review opened on page 0, whose long answers need continuations.
+    expect(client.sent.length).toBeGreaterThan(1);
+
+    // Move to page 1, whose shorter answers need FEWER chunks.
+    const rowIds = (): string[] => {
+      const rows = client.edited[client.edited.length - 1]!.body.components ?? [];
+      return rows.flatMap((r) => r.components.map((c) => c.customId));
+    };
+    let nextPage = rowIds().find((id) => /:page:[0-9]+$/.test(id) && !id.endsWith(":page:0"));
+    if (!nextPage) {
+      for (let step = 0; step < 8 && !nextPage; step += 1) {
+        nextPage = rowIds().find((id) => /:page:[0-9]+$/.test(id) && !id.endsWith(":page:0"));
+        if (nextPage) break;
+        const anyNext = rowIds().find((id) => /:page:[0-9]+$/.test(id));
+        if (!anyNext) break;
+        client.emitButton(click(client, anyNext));
+        await wait();
+      }
+    }
+    expect(nextPage).toBeDefined();
+
+    const editsBefore = client.edited.length;
+    const sendsBefore = client.sent.length;
+    // Read the live continuation count, then make EVERY continuation delete fail.
+    // Whichever subset the trim needs to remove, they are all unremovable, which
+    // is the condition under which the primary must stay put.
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { continuationMessageIds: string[] }>;
+    }).pendingElicitations;
+    const liveEntry = [...store.values()][0]!;
+    const liveContinuations = liveEntry.continuationMessageIds.length;
+    expect(liveContinuations).toBeGreaterThan(1);
+    for (const id of liveEntry.continuationMessageIds) {
+      failsOn.add(id);
+    }
+
+    client.emitButton(click(client, nextPage!));
+    await wait();
+
+    // The primary was NOT switched: its last edit is still the page-0 review, so
+    // Submit never appeared over a review that is missing its trimmed content.
+    expect(client.edited.length).toBe(editsBefore);
+    expect(client.sent.length).toBe(sendsBefore);
+    // And the ids that could not be removed are still tracked, so a later retry
+    // can finish the job rather than forgetting a live stale message.
+    const afterEntry = [...store.values()][0]!;
+    expect(afterEntry.continuationMessageIds).toEqual(liveEntry.continuationMessageIds);
+  } finally {
+    failsOn.clear();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("an Unknown Message delete is treated as a successful trim", async () => {
+  // Discord 404s an id the platform already dropped. Counting that as a failure
+  // would block the review forever on a message that is already gone.
+  const client = makeFakeClient();
+  const unknownOn = new Set<string>();
+  const realDelete = client.deleteMessage.bind(client);
+  (client as unknown as { deleteMessage: unknown }).deleteMessage =
+    async (target: unknown, messageId: string) => {
+      if (unknownOn.has(messageId)) {
+        const error = new Error("Unknown Message") as Error & { code?: number };
+        error.code = 10008;
+        throw error;
+      }
+      return realDelete(target as never);
+    };
+  const { channel, abort } = await startChannel(client);
+  try {
+    const longAnswer = "C".repeat(4000);
+    const { request: req } = request([
+      { kind: "text", key: "body", title: "Body", required: true },
+    ]);
+    const settled = channel.requestElicitation(req).then((d) => d, (e: Error) => e);
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: longAnswer }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 15));
+
+    // Shorten so the tail must be trimmed, and make those deletes 404.
+    const short = "D".repeat(1500);
+    for (const id of client.sent.slice(1).map((_, index) => `m${index + 1}`)) unknownOn.add(id);
+    client.emitButton(click(client, idFor(client, "edit", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: short }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+    const editsBefore = client.edited.length;
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 15));
+
+    // The review DID re-render: 404s are the outcome being asked for.
+    expect(client.edited.length).toBeGreaterThan(editsBefore);
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(await settled).toMatchObject({ action: "accept", content: { body: short } });
+  } finally {
+    unknownOn.clear();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});

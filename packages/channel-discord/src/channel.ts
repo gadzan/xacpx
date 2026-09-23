@@ -162,6 +162,24 @@ function resolveEffectiveReplyMode(
   return configured;
 }
 
+/**
+ * Whether a Discord error means "that message is already gone".
+ *
+ * `deleteMessage` on an id the platform no longer knows returns 404 /
+ * "Unknown Message", which is the outcome the caller wanted — retrying it can
+ * only fail again. Every other error is a real failure and must propagate, or a
+ * stale continuation would be forgotten while still being visible.
+ */
+function isUnknownMessageError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const record = error as { code?: unknown; status?: unknown; message?: unknown };
+  if (record.code === 10008) return true;
+  if (record.code === "UNKNOWN_MESSAGE") return true;
+  if (record.status === 404) return true;
+  if (typeof record.message === "string" && /unknown message/i.test(record.message)) return true;
+  return false;
+}
+
 function formatScheduledFailureText(input: ScheduledChannelMessageInput, error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return input.taskId
@@ -955,6 +973,13 @@ export class DiscordChannel implements MessageChannelRuntime {
    *
    * Continuation ids are reused rather than accumulated: creating a message per
    * rerender would flood the channel after a few edits.
+   *
+   * REJECTS when a stale tail cannot be deleted. The caller keeps this
+   * transactional on purpose: the primary carries Submit, and switching it to the
+   * new review while the old answer's tail is still live would show the user both
+   * answers at once with no way to tell which one is being submitted — the exact
+   * ambiguity the trim exists to remove. Throwing leaves the previous card up and
+   * the stale ids still tracked, so a retry can finish the job.
    */
   private async syncElicitationContinuations(
     entry: PendingDiscordElicitation,
@@ -964,7 +989,7 @@ export class DiscordChannel implements MessageChannelRuntime {
     if (!contents || contents.length <= 1) {
       // A single-chunk card (field card, or a review that now fits) must not
       // leave continuations from a previous, longer review behind.
-      await this.discardElicitationContinuations(entry, runtime);
+      await this.discardElicitationContinuations(entry, runtime, { strict: true });
       return;
     }
     const extras = contents.slice(1);
@@ -986,17 +1011,26 @@ export class DiscordChannel implements MessageChannelRuntime {
     }
     // The review GREW or SHRANK: drop the ones past the new length. Their
     // content is from an older answer, so leaving them would show the user both
-    // answers at once with no way to tell which one Submit will send.
+    // answers at once with no way to tell which one Submit will send. The tracked
+    // list is only truncated once each id is actually gone, so a failure leaves
+    // them retryable rather than orphaned from bookkeeping.
     if (entry.continuationMessageIds.length > extras.length) {
       const stale = entry.continuationMessageIds.slice(extras.length);
-      entry.continuationMessageIds = entry.continuationMessageIds.slice(0, extras.length);
       for (const id of stale) {
         try {
           await runtime.client.deleteMessage(entry.target, id);
-        } catch {
-          // Already gone or not deletable: cosmetic, never a request failure.
+        } catch (error) {
+          if (isUnknownMessageError(error)) {
+            // Already gone, which is the outcome we wanted.
+            continue;
+          }
+          // A real failure: stop, and do NOT forget the ids we could not remove.
+          // `stale` past this point plus `id` are still live on Discord, so the
+          // caller must not swap the primary out from under them.
+          throw error instanceof Error ? error : new Error(String(error));
         }
       }
+      entry.continuationMessageIds = entry.continuationMessageIds.slice(0, extras.length);
     }
   }
 
@@ -1144,24 +1178,51 @@ export class DiscordChannel implements MessageChannelRuntime {
   /**
    * Delete this request's continuation messages, if any.
    *
-   * Best-effort and never rejects: a continuation left behind is cosmetic, and
-   * failing to delete one must not take down the request it belonged to. The
-   * list is cleared either way so the ids are not retried.
+   * Two modes, because two callers have different obligations:
+   *
+   *   - default (`strict: false`) — the terminal/teardown path. A continuation
+   *     left behind after the request is decided is cosmetic, and failing to
+   *     delete one must not take the request down with it. The list is cleared
+   *     either way so the ids are not retried forever.
+   *   - `strict: true` — the in-wizard trim, where a message still showing the
+   *     PREVIOUS answer directly under the current review is an ambiguity the
+   *     user cannot resolve. There, a failed delete must reach the caller so the
+   *     primary is not switched out from under it.
+   *
+   * Either way a Discord "Unknown Message" is treated as success: that is the
+   * outcome being asked for, however it got there.
    */
   private async discardElicitationContinuations(
     entry: PendingDiscordElicitation,
     runtime: AccountRuntime,
+    options: { strict?: boolean } = {},
   ): Promise<void> {
     const ids = entry.continuationMessageIds;
     if (ids.length === 0) return;
-    entry.continuationMessageIds = [];
+    const survivors: string[] = [];
+    let lastError: unknown;
     for (const id of ids) {
       try {
         await runtime.client.deleteMessage(entry.target, id);
-      } catch {
-        // Already gone, or permission-limited by the platform: neither is
+      } catch (error) {
+        if (isUnknownMessageError(error)) continue;
+        if (options.strict) {
+          // Keep the ids we could not remove: they are still live, so the caller
+          // has to know and has to be able to retry them.
+          survivors.push(id);
+          lastError = error;
+          continue;
+        }
+        // Best-effort teardown: already gone, or not deletable. Neither is
         // actionable on a message the user has stopped looking at.
       }
+    }
+    entry.continuationMessageIds = survivors;
+    if (options.strict && lastError !== undefined) {
+      // Reject AFTER the whole sweep so a long tail does not stop at the first
+      // failure: every removable id is gone when the caller hears about it, and
+      // the ones that remain are exactly the tracked survivors.
+      throw lastError instanceof Error ? lastError : new Error(String(lastError));
     }
   }
 
