@@ -38,6 +38,7 @@ import type {
   ConversationRun,
   ConversationRunState,
   HumanIngressContext,
+  MemberTurnOrigin,
   MemberTurnRecord,
   MemberTurnState,
   PendingDispatch,
@@ -324,26 +325,42 @@ function parseBotIds(json: string | null | undefined): string[] {
 }
 
 function parseDependsOn(json: string | null | undefined): string[] {
-  if (!json) {
+  // NULL/absent (legacy rows) means no dependencies. Non-null malformed JSON
+  // is corrupt durable state: fail closed rather than silently scheduling
+  // the turn as dependency-free.
+  if (json === null || json === undefined) {
     return [];
   }
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(json) as unknown;
-    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
+    parsed = JSON.parse(json);
   } catch {
-    return [];
+    throw new ConversationError("member_turn_corrupt", "member turn has malformed dependencies");
   }
+  if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === "string")) {
+    throw new ConversationError("member_turn_corrupt", "member turn has malformed dependencies");
+  }
+  return parsed;
 }
 
 function parseMemberSnapshot(json: string | null | undefined): BotProfileSnapshot | undefined {
-  if (!json) {
+  // NULL/absent (pre-multi-member legacy rows) falls back to the Run's
+  // snapshot at claim time. Non-null malformed JSON is corrupt durable
+  // state: fail closed rather than silently executing under another
+  // member's snapshot.
+  if (json === null || json === undefined) {
     return undefined;
   }
+  let parsed: unknown;
   try {
-    return JSON.parse(json) as BotProfileSnapshot;
+    parsed = JSON.parse(json);
   } catch {
-    return undefined;
+    throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
   }
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
+  }
+  return parsed as BotProfileSnapshot;
 }
 
 function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
@@ -442,11 +459,20 @@ export class SqliteConversationStore implements ConversationStore {
     return new SqliteConversationStore(db, options);
   }
 
-  acceptRequest(input: AcceptRequestInput): AcceptRequestResult {
-    const existing = this.loadAccepted(input.conversationId, input.topicId, input.requestId);
-    if (existing) {
-      return { reused: true, ...existing };
+
+  /** Test-only seam: overwrite one row's columns (durability corruption simulation). */
+  directWriteForTest(table: string, id: string, patch: Record<string, string | null>): void {
+    const keys = Object.keys(patch);
+    if (!/^[a-z_]+$/.test(table) || keys.some((key) => !/^[a-z_]+$/.test(key))) {
+      throw new ConversationError("invalid-test-write", "test write targets must be snake_case identifiers");
     }
+    this.sqlite.run(
+      `UPDATE ${table} SET ${keys.map((key) => `${key} = ?`).join(", ")} WHERE id = ?`,
+      [...keys.map((key) => patch[key] ?? null), id],
+    );
+  }
+
+  acceptRequest(input: AcceptRequestInput): AcceptRequestResult {
     try {
       return this.sqlite.transaction(() => {
         this.assertAcceptable(input.conversationId, input.topicId);
@@ -701,9 +727,13 @@ export class SqliteConversationStore implements ConversationStore {
         input.authorityEpoch,
         parseStoredHumanIngress(row.human_ingress),
       );
+      // Provenance is durable at accept and never rewritten by claim:
+      // claiming only moves queued -> dispatched. Permission authority still
+      // derives per-dispatch from authorityEpoch + ingress (human vs
+      // orchestration), independent of this field.
       this.sqlite.run(
-        `UPDATE member_turns SET state = 'dispatched', origin = ? WHERE id = ?`,
-        [memberTurnOriginFromExecution(executionOrigin), row.member_turn_id],
+        `UPDATE member_turns SET state = 'dispatched' WHERE id = ? AND state = 'queued'`,
+        [row.member_turn_id],
       );
       if (executionOrigin !== "human") {
         this.sqlite.run(
@@ -870,6 +900,19 @@ export class SqliteConversationStore implements ConversationStore {
     return this.sqlite.transaction(() => {
       const run = this.requireRun(input.runId);
       const member = this.requireMemberTurn(input.memberTurnId);
+      // Referential fence: a settlement must never cross Run boundaries.
+      // A mismatched (runId, memberTurnId) pair fails closed with zero
+      // writes — no message, no progress, no dispatch change, no aggregate.
+      if (
+        member.runId !== run.id
+        || member.conversationId !== run.conversationId
+        || member.topicId !== run.topicId
+      ) {
+        throw new ConversationError(
+          "run_member_mismatch",
+          `member turn "${member.id}" does not belong to run "${run.id}"`,
+        );
+      }
       if (run.state === "cancelled") {
         this.finishDispatchForMemberTurn(member.id, input.now);
         if (!member.finishedAt) {
@@ -912,7 +955,10 @@ export class SqliteConversationStore implements ConversationStore {
           run.conversationId,
           run.topicId,
           seq,
-          input.botId,
+          // Sender derives from the member turn itself, never from a
+          // caller-supplied botId: a mismatched caller value cannot
+          // misattribute the transcript.
+          member.botId,
           input.content,
           run.id,
           JSON.stringify(input.sourceTurn),
@@ -1529,7 +1575,7 @@ export class SqliteConversationStore implements ConversationStore {
     );
     const ingressJson = serializeHumanIngress(input.humanIngress);
     const authorityEpoch = ingressJson ? (input.authorityEpoch ?? null) : null;
-    const memberOrigin = ingressJson && authorityEpoch ? "human" : "recovery";
+    const defaultOrigin: MemberTurnOrigin = ingressJson && authorityEpoch ? "human-explicit" : "followup";
     const seenBotIds = new Set<string>();
     const memberTurnIds: string[] = [];
     const dispatchIds: string[] = [];
@@ -1553,7 +1599,7 @@ export class SqliteConversationStore implements ConversationStore {
           input.conversationId,
           input.topicId,
           member.botId,
-          memberOrigin,
+          member.provenance ?? defaultOrigin,
           JSON.stringify([messageId]),
           JSON.stringify(member.profileSnapshot),
           input.now,
@@ -1687,6 +1733,16 @@ export class SqliteConversationStore implements ConversationStore {
       return run;
     }
     const member = this.requireMemberTurn(input.memberTurnId);
+    if (
+      member.runId !== run.id
+      || member.conversationId !== run.conversationId
+      || member.topicId !== run.topicId
+    ) {
+      throw new ConversationError(
+        "run_member_mismatch",
+        `member turn "${member.id}" does not belong to run "${run.id}"`,
+      );
+    }
     if (TERMINAL_MEMBER_STATES.includes(member.state)) {
       // Idempotent replay: this member already terminal; the aggregate
       // already observed it. No double progress count.

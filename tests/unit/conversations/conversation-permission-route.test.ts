@@ -184,7 +184,7 @@ test("authenticated human Direct Bot permission routes to the original channel a
       text: "hello",
     }, HUMAN);
     await runtime.dispatcher.kick();
-    expect(control.getRun(accepted.run.id).memberTurns[0]?.origin).toBe("human");
+    expect(control.getRun(accepted.run.id).memberTurns[0]?.origin).toBe("human-explicit");
     expect(seen).toHaveLength(1);
     expect(seen[0]?.chatKey).toBe("relay:acct");
     expect(seen[0]?.requester.senderId).toBe("acct");
@@ -230,7 +230,7 @@ test("public Conversation accept without human ingress has no permission UI", as
       ...({ humanIngress: HUMAN } as object),
     });
     await runtime.dispatcher.kick();
-    expect(control.getRun(accepted.run.id).memberTurns[0]?.origin).toBe("recovery");
+    expect(control.getRun(accepted.run.id).memberTurns[0]?.origin).toBe("followup");
     expect(minted).toBe(false);
     expect(seen).toHaveLength(0);
     await runtime.shutdown();
@@ -288,7 +288,7 @@ test("restart recovery discards saved human ingress and cannot mint permission",
       },
     });
     await restarted.runtime.dispatcher.kick();
-    expect(restarted.control.getRun(accepted.run.id).memberTurns[0]?.origin).toBe("recovery");
+    expect(restarted.control.getRun(accepted.run.id).memberTurns[0]?.origin).toBe("human-explicit");
     expect(minted).toBe(false);
     expect(seen).toHaveLength(0);
     await restarted.runtime.shutdown();

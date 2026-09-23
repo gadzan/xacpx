@@ -584,7 +584,9 @@ function validMemberTurnSummary(value: unknown): boolean {
     && typeof c.botId === "string"
     && typeof c.batch === "number"
     && typeof c.attempt === "number"
-    && (c.origin === "human" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery")
+    && (c.origin === "human-explicit" || c.origin === "human"
+      || c.origin === "router" || c.origin === "handoff" || c.origin === "followup"
+      || c.origin === "retry" || c.origin === "recovery")
     && (c.state === "queued" || c.state === "dispatched" || c.state === "running"
       || c.state === "completed" || c.state === "failed" || c.state === "cancelled"
       || c.state === "indeterminate")

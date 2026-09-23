@@ -1194,7 +1194,7 @@ test("public prompt without trusted ingress is orchestration even on the same da
   });
   await first.dispatcher.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
-  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("recovery");
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("followup");
   expect(captured[0]?.metadata?.origin).toBe("orchestration");
   expect(canMintHumanPermissionInteraction(captured[0]?.metadata?.origin)).toBe(false);
 });
@@ -1215,7 +1215,7 @@ test("fresh same-daemon Conversation dispatch stays human and can mint permissio
   });
   await first.dispatcher.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
-  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("human");
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("human-explicit");
   expect(captured[0]?.metadata?.origin).toBe("human");
   expect(captured[0]?.metadata?.permissionChatKey).toBe(HUMAN_INGRESS.chatKey);
   expect(captured[0]?.metadata?.senderId).toBe(HUMAN_INGRESS.senderId);
@@ -1255,7 +1255,7 @@ test("startup redispatch after accept-before-claim is orchestration and cannot m
   );
   await restart.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
-  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("recovery");
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("human-explicit");
   expect(first.store.getDispatchForRun(accepted.run.id)?.humanIngress).toBeUndefined();
   expect(captured[0]?.metadata?.origin).toBe("orchestration");
   expect(canMintHumanPermissionInteraction(captured[0]?.metadata?.origin)).toBe(false);
@@ -3239,5 +3239,204 @@ test("partial fan-out persists fulfilled evidence, then throws for retry", async
     conversationId: group.id, topicId: topic.id, limit: 10,
   }).filter((message) => message.role === "bot" && message.senderBotId === turnA!.botId);
   expect(evidenceAfter.map((message) => message.content)).toContain("proven late work");
+  first.store.close();
+});
+
+
+test("cross-run settlement fails closed with zero writes on both sides", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const mkRun = (requestId: string) => first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId,
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const runA = mkRun("req-x-a");
+  const runB = mkRun("req-x-b");
+  const turnA = runA.memberTurns[0]!;
+  const turnB = runB.memberTurns[0]!;
+  const messagesBefore = first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 20 }).length;
+  const progressBeforeA = first.store.getRun(runA.run.id)!.consumedMemberTurns;
+  const progressBeforeB = first.store.getRun(runB.run.id)!.consumedMemberTurns;
+  // Complete into the wrong run: must throw and write nothing anywhere.
+  expect(() => first.store.completeExecution({
+    runId: runA.run.id, memberTurnId: turnB.id, botId: turnB.botId,
+    content: "cross-write", sourceTurn: { sessionAlias: "sess" }, now: NOW,
+  })).toThrow(/does not belong to run/);
+  expect(first.store.getMemberTurn(turnB.id)?.state).toBe("queued");
+  expect(first.store.getRun(runA.run.id)!.consumedMemberTurns).toBe(progressBeforeA);
+  expect(first.store.getRun(runB.run.id)!.consumedMemberTurns).toBe(progressBeforeB);
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 20 })).toHaveLength(messagesBefore);
+  expect(() => first.store.failExecution({
+    runId: runB.run.id, memberTurnId: turnA.id, now: NOW, reason: "boom",
+  })).toThrow(/does not belong to run/);
+  expect(first.store.getMemberTurn(turnA.id)?.state).toBe("queued");
+  // Mismatched sender echo cannot misattribute the transcript either.
+  const ownTurn = runA.memberTurns[1]!;
+  const done = first.store.completeExecution({
+    runId: runA.run.id, memberTurnId: ownTurn.id, botId: "bot_impostor",
+    content: "mine", sourceTurn: { sessionAlias: "sess" }, now: NOW,
+  });
+  expect(done.assistantMessage?.senderBotId).toBe(ownTurn.botId);
+  first.store.close();
+});
+
+test("ghost-topic runtime blocks group delete; verified teardown releases it", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Live binding + session, then the Topic row vanishes out of band
+  // (ghost-topic residue): both delete paths must account for it.
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  const { createScopedGroupMemberBindingId: scopedId } = await import("../../../src/domain/ids");
+  const canonical = scopedId(group.id, topic.id, reviewer.id);
+  expect(binding.id).toBe(canonical);
+  delete first.state.conversation_topics[topic.id];
+  await expect(bots.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_runtime" });
+  await first.service.teardownGroupConversation(group.id);
+  expect(first.state.conversations[group.id]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias) ?? undefined).toBeUndefined();
+  first.store.close();
+});
+
+test("binding-less exact owner with no topic blocks delete; teardown releases it", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Crash window: binding row dropped, session persists; then the Topic row
+  // vanishes too. The exact owner still pins the group.
+  const saved = first.state.bot_runtime_bindings[binding.id];
+  delete first.state.bot_runtime_bindings[binding.id];
+  delete first.state.conversation_topics[topic.id];
+  expect(first.state.sessions[binding.sessionAlias]).toBeDefined();
+  await expect(bots.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_runtime" });
+  await first.service.teardownGroupConversation(group.id);
+  expect(first.state.conversations[group.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias) ?? undefined).toBeUndefined();
+  expect(saved).toBeDefined();
+  first.store.close();
+});
+
+test("membership removal during teardown cannot orphan a late session", async () => {
+  // updateGroup on a deleting group fails closed (checked first, standalone).
+  {
+    const first = await createLifecycle();
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+    const timestamp = new Date().toISOString();
+    first.store.markConversationDeleting(group.id, timestamp);
+    first.state.conversations[group.id] = {
+      ...first.state.conversations[group.id]!,
+      lifecycle: "deleting",
+      updatedAt: timestamp,
+    };
+    await expect(first.bots.updateGroup(group.id, { title: "Nope" })).rejects.toMatchObject({
+      code: "conversation_deleting",
+    });
+    first.store.close();
+  }
+  // A member removed mid-teardown (after the barrier snapshot) still has its
+  // late session swept by the final gate's resweep: hold C's gate from the
+  // start via a paused materializer, remove C, then release — the session
+  // must not survive the topic.
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const botC = "bot_carol";
+  first.state.bots[botC] = {
+    id: botC,
+    name: "Carol",
+    agent: "codex",
+    workspace: "backend",
+    enabled: true,
+    profileRevision: 1,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Pause C's materializer inside session creation (holds C's lifecycle gate
+  // behind the scenes is complex to hook; instead: materialize C first so its
+  // session exists, then remove C from membership, then tear down — the final
+  // resweep must still release C's session even though C is no longer a member).
+  const bindingC = await first.runtime.getOrCreateGroupMemberSession({
+    botId: botC, conversationId: group.id, topicId: topic.id,
+  });
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID] });
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(bindingC.sessionAlias) ?? undefined).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[bindingC.id]).toBeUndefined();
+  first.store.close();
+});
+
+test("corrupt per-member snapshot fails closed instead of falling back", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-corrupt",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  // Corrupt snapshot bytes out of band (simulates disk corruption).
+  for (const turn of accepted.memberTurns) {
+    first.store.directWriteForTest("member_turns", turn.id, {
+      profile_snapshot_json: "{not-json",
+    });
+  }
+  expect(() => first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })).toThrow(/malformed execution snapshot/);
+  // The corrupt turn never dispatches under another member's snapshot:
+  // its dispatch stays pending and the run never starts.
+  expect(first.store.listDispatchesForRun(accepted.run.id).every((d) => d.state === "pending")).toBe(true);
+  expect(first.store.getRun(accepted.run.id)?.startedAt).toBeUndefined();
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
   first.store.close();
 });

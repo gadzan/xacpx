@@ -482,9 +482,33 @@ export class BotService {
 
   async updateGroup(id: string, patch: UpdateGroupInput): Promise<ConversationRecord> {
     this.assertOpen();
+    // Linearize membership edits against member materialization and topic
+    // teardown: hold old ∪ new member gates while validating + writing, so a
+    // materializer cannot snapshot membership, then mint a session for a Bot
+    // that concurrently leaves the Group (binding-less orphan), and teardown
+    // cannot miss a member added mid-barrier. Non-membership edits still take
+    // the union (existing membership) for the same reason. Deleting Groups
+    // refuse edits: the record is about to disappear.
+    const probe = this.state.conversations[id];
+    if (probe && probe.kind === "group") {
+      const previewMembership = patch.botIds !== undefined ? [...patch.botIds] : [...probe.botIds];
+      const previewLead = patch.leadBotId !== undefined ? patch.leadBotId : probe.leadBotId;
+      const gateSet = new Set<string>([...probe.botIds, ...previewMembership]);
+      if (previewLead !== undefined && previewLead !== null) {
+        gateSet.add(previewLead);
+      }
+      return await this.runLifecycleAll([...gateSet], async () => this.updateGroupInner(id, patch));
+    }
+    return await this.mutate(async () => this.updateGroupInner(id, patch));
+  }
+
+  private async updateGroupInner(id: string, patch: UpdateGroupInput): Promise<ConversationRecord> {
     return await this.mutate(async () => {
       this.assertOpen();
       const existing = this.getGroup(id);
+      if (existing.lifecycle === "deleting") {
+        throw new BotError("conversation_deleting", `group "${id}" is deleting`);
+      }
       const membership = patch.botIds !== undefined ? this.requireGroupMembership(patch.botIds) : existing.botIds;
       const leadBotId = patch.leadBotId !== undefined
         ? this.requireGroupLead(patch.leadBotId, membership)
@@ -545,6 +569,30 @@ export class BotService {
         throw new BotError("group_has_runtime", `group "${id}" still has runtime bindings`, {
           conversationId: id,
           bindingIds: bindings.map((binding) => binding.id),
+        });
+      }
+      // Binding-less crash-window sessions carry no binding row but still pin
+      // ownership (and the agent identity lock). Any group-member owned
+      // session — exact, partial, or contradictory — blocks the delete; the
+      // verified teardown path releases or fails closed on it first.
+      const memberSessions = Object.values(this.state.sessions).filter(
+        (session) => session.owner?.kind === "group-member" && session.owner.conversationId === id,
+      );
+      // Legacy owners may omit conversationId: resolve through the binding
+      // row; an unresolvable legacy owner for this group still blocks.
+      const legacySessions = Object.values(this.state.sessions).filter((session) => {
+        const owner = session.owner;
+        if (owner?.kind !== "group-member" || owner.conversationId !== undefined) {
+          return false;
+        }
+        const bound = this.state.bot_runtime_bindings[owner.bindingId];
+        return bound !== undefined && bound.conversationId === id;
+      });
+      const residue = [...memberSessions, ...legacySessions];
+      if (residue.length > 0) {
+        throw new BotError("group_has_runtime", `group "${id}" still has member sessions`, {
+          conversationId: id,
+          sessionAliases: residue.map((session) => session.alias),
         });
       }
       if (this.conversationWork?.hasDurableGroupWork?.(id)) {

@@ -7,7 +7,7 @@ import { sessionMatchesExecution } from "../bots/bot-types";
 import { createSourceTurnId } from "../domain/ids";
 import type { SessionService } from "../sessions/session-service";
 import { ConversationError } from "./conversation-error";
-import { conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
+import { conversationExecutionOrigin, conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
 import type { ClaimedWork, ConversationStore } from "./conversation-store";
 import {
   emitConversationProductEvent,
@@ -320,10 +320,18 @@ export class ConversationDispatcher {
         sessionAlias: binding.sessionAlias,
         logicalSessionId: binding.logicalSessionId,
         text,
-        executionOrigin: conversationExecutionOriginFromMemberTurn(latestMember.origin),
-        ...(latestMember.origin === "human" && work.dispatch.humanIngress
-          ? { permissionRoute: work.dispatch.humanIngress }
-          : {}),
+        executionOrigin: conversationExecutionOrigin(
+          this.store.getDispatchForMemberTurn(started.id)?.authorityEpoch,
+          this.authorityEpoch,
+          this.store.getDispatchForMemberTurn(started.id)?.humanIngress,
+        ),
+        ...(() => {
+          const live = this.store.getDispatchForMemberTurn(started.id);
+          return conversationExecutionOrigin(live?.authorityEpoch, this.authorityEpoch, live?.humanIngress) === "human"
+            && live?.humanIngress
+            ? { permissionRoute: live.humanIngress }
+            : {};
+        })(),
         promptRequestId: sourceTurnId,
       });
       await this.hooks?.beforeResultPersist?.(work);

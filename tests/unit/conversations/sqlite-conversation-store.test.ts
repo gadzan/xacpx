@@ -46,7 +46,7 @@ test("acceptRequest atomically persists message, run, member turn, and pending d
   expect(accepted.run.state).toBe("queued");
   expect(accepted.run.mode).toBe("explicit");
   expect(accepted.run.profileRevision).toBe(1);
-  expect(accepted.memberTurn.origin).toBe("recovery");
+  expect(accepted.memberTurn.origin).toBe("followup");
   expect(accepted.dispatch.state).toBe("pending");
   expect(store.listMessages({ conversationId: CONV, topicId: TOPIC, limit: 10 })).toHaveLength(1);
   store.close();
@@ -458,14 +458,14 @@ test("matching authority epoch keeps human origin only with trusted ingress; mis
   });
   expect(accepted.dispatch.authorityEpoch).toBe("boot-1");
   expect(accepted.dispatch.humanIngress).toEqual(ingress);
-  expect(accepted.memberTurn.origin).toBe("human");
+  expect(accepted.memberTurn.origin).toBe("human-explicit");
   const fresh = store.claimNextDispatch({
     authorityEpoch: "boot-1",
     now: NOW,
     owner: "owner-a",
     leaseExpiresAt: "2026-09-15T12:00:30.000Z",
   });
-  expect(fresh?.memberTurn.origin).toBe("human");
+  expect(fresh?.memberTurn.origin).toBe("human-explicit");
   expect(fresh?.dispatch.humanIngress).toEqual(ingress);
   expect(fresh?.dispatch.generation).toBe(1);
   store.releaseClaimToPending({
@@ -500,14 +500,14 @@ test("epoch without trusted human ingress is orchestration even on the same daem
     authorityEpoch: "boot-1",
   });
   expect(accepted.dispatch.authorityEpoch).toBeUndefined();
-  expect(accepted.memberTurn.origin).toBe("recovery");
+  expect(accepted.memberTurn.origin).toBe("followup");
   const claimed = store.claimNextDispatch({
     authorityEpoch: "boot-1",
     now: NOW,
     owner: "owner-a",
     leaseExpiresAt: "2026-09-15T12:00:30.000Z",
   });
-  expect(claimed?.memberTurn.origin).toBe("recovery");
+  expect(claimed?.memberTurn.origin).toBe("followup");
   store.close();
 });
 
@@ -526,7 +526,7 @@ test("bot: isolation keys cannot be stored as trusted human ingress", async () =
   });
   expect(accepted.dispatch.authorityEpoch).toBeUndefined();
   expect(accepted.dispatch.humanIngress).toBeUndefined();
-  expect(accepted.memberTurn.origin).toBe("recovery");
+  expect(accepted.memberTurn.origin).toBe("followup");
   store.close();
 });
 
@@ -550,7 +550,7 @@ test("crash-before-claim with a new epoch is recovery even at generation 1", asy
     leaseExpiresAt: "2026-09-15T12:00:30.000Z",
   });
   expect(claimed?.dispatch.generation).toBe(1);
-  expect(claimed?.memberTurn.origin).toBe("recovery");
+  expect(claimed?.memberTurn.origin).toBe("followup");
   store.close();
 });
 

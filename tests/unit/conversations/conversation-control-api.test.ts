@@ -1036,7 +1036,7 @@ test("public promptConversation cannot mint human ingress; kernel stamp can", as
     } as object),
   } as never);
   await runtime.dispatcher.kick();
-  expect(control.getRun(publicAccepted.run.id).memberTurns[0]?.origin).toBe("recovery");
+  expect(control.getRun(publicAccepted.run.id).memberTurns[0]?.origin).toBe("followup");
 
   const human = await conversationKernel(control).promptConversationFromHumanIngress({
     conversationId: createDirectConversationId(bot.id),
@@ -1045,7 +1045,7 @@ test("public promptConversation cannot mint human ingress; kernel stamp can", as
     text: "hello",
   }, { chatKey: "relay:acct", senderId: "acct", accountId: "acct", isOwner: true });
   await runtime.dispatcher.kick();
-  expect(control.getRun(human.run.id).memberTurns[0]?.origin).toBe("human");
+  expect(control.getRun(human.run.id).memberTurns[0]?.origin).toBe("human-explicit");
 
   await expect(conversationKernel(control).promptConversationFromHumanIngress({
     conversationId: createDirectConversationId(bot.id),

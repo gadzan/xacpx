@@ -163,7 +163,7 @@ test("accept persisted then new process recovers once with orchestration origin"
   const detail = processB.control.getRun(accepted.run.id);
   expect(detail.state).toBe("completed");
   expect(detail.memberTurns).toHaveLength(1);
-  expect(detail.memberTurns[0]?.origin).toBe("recovery");
+  expect(detail.memberTurns[0]?.origin).toBe("followup");
   expect(origins).toEqual(["orchestration"]);
   const history = processB.control.conversationHistory({ conversationId, topicId, afterSeq: 0 });
   expect(history.messages.filter((m) => m.role === "bot").map((m) => m.content)).toEqual(["recovered-reply"]);

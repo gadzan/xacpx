@@ -405,9 +405,7 @@ export interface MemberTurnSummaryDto {
   topicId: string;
   botId: string;
   batch: number;
-  attempt: number;
-  origin: "human" | "followup" | "retry" | "recovery";
-  state: "queued" | "dispatched" | "running" | "completed" | "failed" | "cancelled" | "indeterminate";
+  origin: "human-explicit" | "router" | "handoff" | "followup" | "retry" | "recovery";
   promptRequestId?: string;
   createdAt: string;
   startedAt?: string;

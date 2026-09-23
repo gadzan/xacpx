@@ -3,6 +3,7 @@ import type {
   ConversationMessage,
   ConversationRun,
   HumanIngressContext,
+  MemberTurnOrigin,
   MemberTurnRecord,
   PendingDispatch,
 } from "./conversation-types";
@@ -19,6 +20,10 @@ export interface ListMessagesQuery {
 export interface AcceptMemberInput {
   botId: string;
   profileSnapshot: BotProfileSnapshot;
+  /** Durable provenance for this member. Defaults to human-explicit on
+   *  human-ingress accepts, orchestration-fresh "followup" otherwise;
+   *  PR7/PR8 pass router/handoff explicitly. Never inferred from names. */
+  provenance?: MemberTurnOrigin;
   /** Group assignment identity. Absent on direct (single-member) accepts. */
   assignmentId?: string;
   /** Concrete work instruction for this assignment. */
@@ -106,7 +111,9 @@ export interface MarkExecutionStartedInput {
 export interface CompleteExecutionInput {
   runId: string;
   memberTurnId: string;
-  botId: string;
+  /** Legacy caller echo; ignored for attribution. The transcript sender
+   *  always derives from the member turn. Kept optional for wire compat. */
+  botId?: string;
   content: string;
   sourceTurn: { sessionAlias: string; turnId?: string };
   now: string;

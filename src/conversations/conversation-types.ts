@@ -23,7 +23,13 @@ export type ConversationRunState =
   | "cancelled"
   | "indeterminate";
 
-export type MemberTurnOrigin = "human" | "followup" | "retry" | "recovery";
+/** Durable MemberTurn provenance: WHO caused this turn. Distinct from the
+ *  permission-interaction origin (human vs orchestration), which is derived
+ *  per-dispatch from authorityEpoch + human ingress. Fresh orchestration work
+ *  (Router-selected, handoff, followup) is NEVER "recovery": recovery means a
+ *  prior claim existed and is being redriven after failure/expiry. */
+export type MemberTurnOrigin = "human-explicit" | "router" | "handoff" | "followup" | "retry" | "recovery";
+
 export type MemberTurnState =
   | "queued"
   | "dispatched"
