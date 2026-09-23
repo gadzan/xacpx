@@ -7,6 +7,7 @@ import {
   isErrorPayload,
   MSG,
   parseControlPayload,
+  type InteractionRequestDto,
   type LiveTurnSnapshotDto,
   type PublishedAgentEndpointDto,
   type SessionCommandsSnapshotDto,
@@ -27,7 +28,12 @@ import { readRelayVersion, type UpdateCheck } from "../version.js";
 
 export interface GatewayForApp {
   isOnline(instanceId: string): boolean;
-  sendRequest(instanceId: string, type: string, payload: unknown): Promise<unknown>;
+  sendRequest(
+    instanceId: string,
+    type: string,
+    payload: unknown,
+    options?: { timeoutMs?: number },
+  ): Promise<unknown>;
   getPublishedEndpoints(accountId: string): PublishedAgentEndpointDto[];
   getWebPublishedEndpoints?(accountId: string): WebAgentDirectoryEndpointDto[];
 }
@@ -119,6 +125,67 @@ function safePreviewUrl(v: unknown): string | undefined {
 // Coarse pre-buffer ceiling for /rpc bodies: a 10MB upload as base64 inside a JSON
 // envelope is ~13.33MB; 16MB leaves headroom for envelope overhead.
 const RPC_MAX_BODY_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Extra time an interaction RPC is allowed beyond the human window.
+ *
+ * The window closes when `expiresAt` passes, but the decision that DID arrive in
+ * time still has to travel back. Without a reserve the RPC would be cut at the
+ * same moment the answer becomes valid, losing a decision the user made in time.
+ */
+const INTERACTION_RESPONSE_RESERVE_MS = 5_000;
+
+/**
+ * Validate the browser's request-to-open an interaction.
+ *
+ * The BROWSER only supplies the product identity and the kind; the form itself
+ * arrives from the connector. So there is nothing for a browser to forge here
+ * beyond which run it is asking about, which is a display concern, not an
+ * authority one — and the connector re-validates whatever the hub forwards.
+ */
+function validateInteractionRequestPayload(payload: unknown): InteractionRequestDto | null {
+  const parsed = parseControlPayload(MSG.interactionRequest, payload);
+  return parsed ?? null;
+}
+
+/**
+ * Shape the connector's outcome for the browser, stamping the responder identity.
+ *
+ * This is the ONLY place a responder identity is added, and it comes from the
+ * hub's own session authentication — never from the frame. Two consequences:
+ *
+ *   - A browser cannot assert an identity: the field is overwritten here rather
+ *     than read from the payload, so a connector or a tampered client that sets
+ *     one has no effect.
+ *   - The identity is the one the hub already trusts for this RPC, which is the
+ *     same account identity the trusted conversation prompt path stamps
+ *     (`relay:<accountId>` / `senderId: account.id`).
+ *
+ * `responded: false` keeps its reason intact: the browser must distinguish "the
+ * human never answered" from "the human chose cancel", and collapsing the two
+ * would show a user's own dismissal as an infrastructure error.
+ */
+function interactionResultForBrowser(result: unknown, accountId: string): unknown {
+  if (typeof result !== "object" || result === null) {
+    return { responded: false as const, reason: "aborted" as const };
+  }
+  const outcome = result as { responded?: unknown; reason?: unknown; response?: unknown };
+  if (outcome.responded !== true) {
+    const reason = typeof outcome.reason === "string" ? outcome.reason : "aborted";
+    return { responded: false as const, reason };
+  }
+  const response = outcome.response;
+  if (typeof response !== "object" || response === null) {
+    return { responded: false as const, reason: "aborted" as const };
+  }
+  const decision = response as Record<string, unknown>;
+  // Stamp over anything the frame carried: the hub's session is the authority.
+  return {
+    responded: true as const,
+    response: { ...decision, responderId: accountId },
+  };
+}
+
 // Design spec caps attachments at ≤5 per message; bound persisted string fields too
 // so arbitrarily long filename/mimeType can't bloat storage.
 const MAX_PERSISTED_ATTACHMENTS = 5;
@@ -614,6 +681,31 @@ export function createApp(deps: AppDeps): Hono<Vars> {
           isOwner: true,
         },
       };
+    }
+    if (body.type === MSG.interactionRequest) {
+      const interaction = validateInteractionRequestPayload(payload);
+      if (!interaction) return c.json({ error: "invalid-payload" }, 400);
+      // A human interaction window is minutes, so the connector RPC must outlive
+      // the generic request timeout or it would be killed mid-question. The bound
+      // is the interaction's OWN deadline plus a response reserve, so the
+      // connector still has room to report a decision after the window closes.
+      const windowMs = Math.max(1, interaction.expiresAt - Date.now());
+      const timeoutMs = windowMs + INTERACTION_RESPONSE_RESERVE_MS;
+      try {
+        const result = await deps.gateway.sendRequest(
+          instance.id,
+          MSG.interactionRequest,
+          interaction,
+          { timeoutMs },
+        );
+        // The browser gets the outcome with the responder identity stamped from
+        // its own authenticated session.
+        return c.json(interactionResultForBrowser(result, account.id));
+      } catch {
+        // A transport failure closes the interaction rather than hanging the
+        // browser's RPC. The browser shows the form as withdrawn.
+        return c.json({ responded: false as const, reason: "aborted" as const });
+      }
     }
     const releaseSessionRpcLocks: Array<() => void> = [];
     let persistedPromptId: number | undefined;
