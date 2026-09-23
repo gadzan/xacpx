@@ -241,6 +241,13 @@ export interface ConversationTurnCorrelationDto {
     botId: string;
     runId: string;
     memberTurnId: string;
+    /**
+     * Hub-issued id for the prompt row that started this turn, when it was
+     * pre-written. Present on the correlation so a consumer can join a turn to its
+     * originating message without a second lookup; absent for turns the hub did
+     * not pre-write.
+     */
+    promptRequestId?: string;
 }
 export interface BotSummaryDto {
     id: string;
@@ -531,6 +538,26 @@ export type ControlEventDto = {
     type: "member-turn-finished";
     run: ConversationRunDto;
     memberTurn: MemberTurnSummaryDto;
+}
+/** An interaction (permission or elicitation) opened for a human. Pushed to
+ *  every connected browser for the account, so a tab that did not open it still
+ *  sees the prompt. `chatKey`/`sessionAlias` are the runtime plumbing the web
+ *  already ignores in favour of the product keys. */
+ | {
+    type: "interaction-opened";
+    chatKey: string;
+    sessionAlias: string;
+    interaction: InteractionRequestDto;
+}
+/** An interaction ended without a browser-supplied decision (resolved,
+ *  withdrawn, or timed out). Lets web drop the pending row instead of leaving
+ *  a dead form on screen. */
+ | {
+    type: "interaction-closed";
+    chatKey: string;
+    sessionAlias: string;
+    requestId: string;
+    reason: "resolved" | "withdrawn" | "expired";
 };
 export interface TerminalAttachRequest {
     terminalId: string;
@@ -610,4 +637,75 @@ export interface PeerMessageHistoryEntry {
     status?: "sending" | "sent" | "queued" | "delivered" | "failed";
     completion?: AgentMessageCompletionMode;
     completionStatus?: "pending" | "completed" | "failed" | "cancelled";
+}
+/** Which decision model an opened interaction uses. */
+export type InteractionKindDto = "permission" | "elicitation";
+/** Terminal actions, per kind. */
+export type InteractionActionDto = "accept" | "decline" | "cancel" | "allow_once" | "allow_always" | "reject_once" | "reject_always";
+/**
+ * One normalized form field, already validated by core against ACP.
+ *
+ * Deliberately NOT the ACP SDK type: the web renderer must never be handed a raw
+ * schema, only a shape core has already bounded. `options` are present for
+ * select kinds only, and each option's `value` (not its agent-controlled label)
+ * is what the answer must carry.
+ */
+export interface InteractionFieldDto {
+    kind: "text" | "single-select" | "number" | "boolean" | "multi-select";
+    key: string;
+    title: string;
+    description?: string;
+    required: boolean;
+    options?: Array<{
+        value: string;
+        label: string;
+        description?: string;
+    }>;
+    minItems?: number;
+    maxItems?: number;
+    minLength?: number;
+    maxLength?: number;
+    /** Integer-ness for `number` fields; ACP has no separate integer kind. */
+    integer?: boolean;
+    minimum?: number;
+    maximum?: number;
+    defaultValue?: string | number | boolean | string[];
+}
+/** Answer values, by field key. Mirrors core's `ChannelElicitationValue`. */
+export type InteractionValueDto = string | number | boolean | string[];
+/** Hub -> connector, then down to the authenticated human. */
+export interface InteractionRequestDto {
+    /** xacpx broker correlation id. Ephemeral; core never persists it. */
+    requestId: string;
+    kind: InteractionKindDto;
+    /**
+     * Product identity for the web UI. Optional because an interaction on an
+     * ordinary channel turn has no Conversation product row; a Direct Bot turn
+     * does. Never a hidden `brt_*` session alias — those are runtime plumbing.
+     */
+    conversation?: ConversationTurnCorrelationDto;
+    /** Absolute ms after which the interaction is no longer answerable. */
+    expiresAt: number;
+    /** Present iff `kind === "elicitation"`. */
+    elicitation?: {
+        mode: "form";
+        message: string;
+        fields: InteractionFieldDto[];
+        schemaTitle?: string;
+    };
+    /** Present iff `kind === "permission"`. Reserved; M3 does not implement it. */
+    permission?: {
+        title?: string;
+        kind?: string;
+        summary?: string;
+        availableOutcomes: string[];
+    };
+}
+/** Connector -> hub, then up to core. Carries NO responder identity. */
+export interface InteractionResponseDto {
+    requestId: string;
+    kind: InteractionKindDto;
+    action: InteractionActionDto;
+    /** Elicitation `accept` only. `null` is a valid all-optional accept. */
+    content?: Record<string, InteractionValueDto> | null;
 }

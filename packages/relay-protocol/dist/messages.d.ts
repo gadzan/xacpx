@@ -1,4 +1,4 @@
-import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotSummaryDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, TopicSummaryDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotSummaryDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, TopicSummaryDto } from "./dtos.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
     readonly instanceAuth: "instance.auth";
@@ -99,6 +99,26 @@ export declare const MSG: {
     readonly runsGet: "control.runs.get";
     readonly runsList: "control.runs.list";
     readonly runsCancel: "control.runs.cancel";
+    /**
+     * Hub -> connector: ask the human for a structured answer. ONE round trip: the
+     * answer arrives as this call's RPC result, so there is no separate downlink
+     * queue and no hub-side pending map to reconcile. This is the shared transport
+     * for both decision kinds (`kind`), mirroring core's split where
+     * `TurnInteractionRegistry` is shared but the permission and elicitation
+     * brokers are not.
+     *
+     * Long-lived by nature: a human interaction window is measured in minutes, so
+     * this type is exempt from the connector's 60s RPC default and bounded by the
+     * payload's own `expiresAt`.
+     */
+    readonly interactionRequest: "control.interaction.request";
+    /**
+     * Connector -> hub: the human's decision for an opened interaction. The
+     * authoritative responder identity is STAMPED BY THE HUB from the
+     * authenticated session before the frame reaches the connector — the browser
+     * payload carries no identity field at all, so there is nothing to forge.
+     */
+    readonly interactionRespond: "control.interaction.respond";
 };
 export type MessageType = (typeof MSG)[keyof typeof MSG];
 export interface ErrorPayload {
@@ -480,6 +500,36 @@ export interface UploadResult {
     mimeType: string;
     size: number;
 }
+/**
+ * Opened an interaction: `InteractionRequestDto` down to the human,
+ * `InteractionResult` back up with the decision. See dtos.ts for shapes.
+ */
+export type InteractionRequestPayload = InteractionRequestDto;
+export type InteractionResponsePayload = InteractionResponseDto;
+/**
+ * The RPC result of an opened interaction.
+ *
+ * `responded: false` means the interaction never reached a decision inside the
+ * window — the hub or connector closed it, the turn went away, or the client is
+ * too old to answer. It is deliberately distinct from a user's `cancel`, which
+ * the human chose: an infrastructure close is not a user action, and collapsing
+ * the two would report a decision nobody made.
+ */
+export interface InteractionResult {
+    responded: boolean;
+    /** Present iff `responded`. Responder identity is stamped by the HUB. */
+    response?: InteractionResponseDto;
+    /** Bounded reason when not responded; never contains answer content. */
+    reason?: "timeout" | "aborted" | "shutdown" | "unsupported" | "channel-missing";
+}
+/**
+ * Upward notice that an interaction is open, so every connected browser for the
+ * account sees it without having opened it. Mirrors how a live turn is pushed to
+ * other tabs.
+ */
+export interface InteractionOpenedNotice {
+    request: InteractionRequestDto;
+}
 export interface PromptPayload {
     chatKey: string;
     sessionAlias: string;
@@ -849,6 +899,11 @@ export interface TerminalAttachPayload {
 export declare const RELAY_CAPABILITIES: {
     readonly terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1";
     readonly terminalMultiViewV1: "terminal.multi-view.v1";
+    /** This side can open an ACP form elicitation for a human and carry the
+     *  decision back. Both halves (hub and web) must declare it: a hub without it
+     *  never asks, so an old hub simply produces no interaction rather than a
+     *  frame the web cannot interpret. */
+    readonly interactionElicitationFormV1: "interaction.elicitation.form.v1";
 };
 export type RelayCapability = (typeof RELAY_CAPABILITIES)[keyof typeof RELAY_CAPABILITIES];
 /** Stable browser-facing terminal error codes (i18n by code, not message text). */

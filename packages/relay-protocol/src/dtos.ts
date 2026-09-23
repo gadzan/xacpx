@@ -261,6 +261,13 @@ export interface ConversationTurnCorrelationDto {
   botId: string;
   runId: string;
   memberTurnId: string;
+  /**
+   * Hub-issued id for the prompt row that started this turn, when it was
+   * pre-written. Present on the correlation so a consumer can join a turn to its
+   * originating message without a second lookup; absent for turns the hub did
+   * not pre-write.
+   */
+  promptRequestId?: string;
 }
 
 export interface BotSummaryDto {
