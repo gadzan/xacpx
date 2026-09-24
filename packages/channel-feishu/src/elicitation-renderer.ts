@@ -225,6 +225,29 @@ export class FeishuElicitationRenderer {
     const token = createElicitationToken();
     const opening = buildElicitationOpeningCard(request, token);
 
+    // THE OPENING CARD'S OWN 30 KB BUDGET. The per-component gate above bounds
+    // each markdown component independently (28,000 chars), but the card budget
+    // is an AGGREGATE over the whole serialized card — chrome, header, every
+    // component, and the JSON envelope together. Several individually legal
+    // pieces therefore still overflow: a 4,666-char `~` message escapes to
+    // 27,996 chars (just inside the per-component bound) alongside a 1,000-char
+    // `~` schema description at 6,000 gives 33,996 chars of content before a
+    // single byte of card structure, so the card is ~35 KB.
+    //
+    // Checked here rather than in the field-level gate because the size is a
+    // property of the BUILT card, and this is the earliest point at which the
+    // real thing exists — before `sendCard`, so a refusal costs the operator
+    // nothing and the user never sees a half-sent question.
+    const openingVerdict = fitsCardBudget(opening);
+    if (!openingVerdict.renderable) {
+      this.options.log?.("feishu.elicitation.unsupported", "cancelled unrenderable elicitation", {
+        requestId: request.requestId,
+        reason: openingVerdict.reason ?? "unknown",
+        detail: openingVerdict.detail ?? "",
+      });
+      throw new Error(`elicitation form is not renderable on Feishu: ${openingVerdict.reason ?? "unknown"}`);
+    }
+
     // The review card is where a form can grow past Feishu's 30 KB card budget:
     // every field's label and answer lands in one card, and the escaped form of
     // an answer can be several times its raw length. Sizing the WORST-CASE

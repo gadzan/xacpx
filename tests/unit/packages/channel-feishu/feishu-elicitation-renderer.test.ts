@@ -1017,3 +1017,45 @@ test("a minLength violation is caught before the card is withdrawn", async () =>
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { note: "long enough" } });
 });
+
+test("an opening card whose pieces are individually legal but jointly over 30KB is refused before any send", async () => {
+  // The per-component gate bounds each markdown component at 28,000 chars, but
+  // the card budget is an AGGREGATE over the serialized card. So a request whose
+  // every piece is legal on its own can still be unrenderable: a 4,666-char `~`
+  // message escapes to 27,996 (inside the per-component bound) and a 1,000-char
+  // `~` schema description to 6,000 — 33,996 chars of content before any card
+  // structure, ~35 KB in total.
+  //
+  // Both pieces respect core's raw limits too (8,000 for message, 1,000 for
+  // schema description), so only the assembled card reveals the overflow. Without
+  // this check the gate says renderable and the first `sendCard` is rejected by
+  // CardKit.
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [];
+  const request = {
+    requestId: "r-aggregate",
+    chatKey: "feishu:default:oc_chat",
+    requester: { senderId: "ou_initiator" },
+    agent: { name: "codex" },
+    message: "~".repeat(4666),
+    mode: "form",
+    schemaDescription: "~".repeat(1000),
+    fields,
+    expiresAt: Date.now() + 60_000,
+    signal: new AbortController().signal,
+  } as unknown as ChannelElicitationRequest;
+
+  // The field-level gate is satisfied: it is the aggregate that fails.
+  expect(checkElicitationRenderability(fields, request).renderable).toBe(true);
+
+  const outcome = await rec.renderer.requestElicitation(request, "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  expect(outcome).toBeInstanceOf(Error);
+  expect((outcome as Error).message).toContain("card-too-large");
+  // Nothing was sent: the refusal happens before the transport is touched.
+  expect(rec.transport.sent).toHaveLength(0);
+  // And nothing is left pending.
+  expect(rec.pending.size).toBe(0);
+});
