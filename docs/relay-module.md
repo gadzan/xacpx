@@ -124,6 +124,17 @@
   helper），完全离线可装、无需 PATH 上有任何 RMUX。发布包：https://github.com/Helvesec/rmux/releases
   （`rmux-0.10.0-windows-x86_64.zip`，固定 SHA-256 在 `scripts/rmux-release.mjs`）。
 
+## 实例桌面（RFB/VNC，默认关闭）
+
+权威设计见 `docs/superpowers/specs/2026-09-24-relay-web-desktop-rfb-design.md`。Phase A 只交付 Linux + Windows VncAuth 单 viewer；macOS ARD 与多 viewer 是后续阶段。
+
+- **配置**：`channels[].options.desktop`（见 `docs/config-reference.md`）；默认 `enabled=false`，不声明 `desktop.rfb.v1`。目标 host 固定 `127.0.0.1`（不可配置），`port` 默认 5900，`maxStreams` 固定 1。
+- **能力**：connector 启用后声明 `desktop.rfb.v1`；不保证此刻 5900 正在监听，真正 open 时重新 probe。`desktop.ard-auth.v1` / `desktop.multi-view.v1` / `desktop.remote-resize.v1` 在实现前不得声明。
+- **控制面**：浏览器 `/ws` 发 `desktop-open` → Hub 校验持有关系 + 在线 + 能力 → 预留单 stream → 发 `instance.desktop.prepare`（只带 streamId/ticket/expiresAt，不带 host/port）→ connector probe 本机 RFB 成功后 Hub 给浏览器发 `desktop-opened`（`wsPath=/desktop/observe?ticket=…`，60s TTL）。错误码稳定：`desktop-disabled` / `desktop-busy` / `desktop-rfb-unavailable` / `desktop-not-rfb` / `desktop-auth-unsupported` / `desktop-stream-timeout` / `desktop-instance-offline` / `desktop-protocol-error`。prepare 截止 10s（不复用 120s agent RPC 超时），浏览器 RPC 截止 15s。
+- **归属**：每个 stream 从 reserve 起终身绑定发起 `/ws` 的 hub-stamped viewerId（pending 与已配对 binary 共用同一归属表；`desktop-opened` 成功不解绑）。prepare 返回后重验 owner 仍存活才 mint browser ticket；control socket close 立即 cancel 该 viewer 名下全部 stream；`desktop-close` 非 owner 直接拒绝。
+- **connector**：`packages/channel-relay/src/desktop/`（config、RFB probe、platform guidance、tunnel runtime）。prepare 前 probe `127.0.0.1:<port>`：RFB banner + security 列表；仅 VncAuth（含 Tight 子协商）可接受；None 默认拒绝；VeNCrypt/TLS/专有认证与 ARD 返回 `desktop-auth-unsupported`（ARD 需 Phase B connector 预认证）。stream 关闭只关 TCP/tunnel，不停系统 VNC server；stop/logout/disconnect 清所有 tunnel。
+- **平台**：Windows 用 TightVNC（interactive user session + VncAuth + loopback，service session 不算可靠桌面源；锁屏/UAC/登录屏不保证）；Linux 优先 TigerVNC/x11vnc（标准 VncAuth），WayVNC 仅 legacy VncAuth 兼容模式（`relax_encryption` + `allow_broken_crypto`，弱安全过渡；默认安全配置报 `desktop-auth-unsupported`），GNOME VeNCrypt 不支持；macOS Phase A 仅标准 VncAuth，ARD 明确报 unsupported。
+
 ## Web Push（桌面系统通知）
 
 - 用途：基于 W3C 标准 Web Push / VAPID 协议，在任务或交互回合完成时向该账号已订阅的浏览器推送系统通知（标签页在后台或已关闭也能收到）。触发来源：

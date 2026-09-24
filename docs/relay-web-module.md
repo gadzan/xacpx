@@ -480,6 +480,15 @@ Git 状态使用 `control.git.status`；写 RPC 为 `control.git.stage/unstage/u
 实现入口：`packages/relay-web/src/stores/terminal.ts`、`TerminalTab.vue`、recovery reducer
 （`src/lib/terminal-recovery.ts`）。权威状态机见 RMUX terminal design spec。
 
+## 实例桌面（RFB/VNC 看板行为）
+
+当实例在线且具备 `desktop.rfb.v1` 时，顶栏出现 Desktop 入口（实例级，不属于任何 session）。点击后打开实例级 Desktop 面板（`DesktopTab.vue` + `stores/desktop.ts` + `lib/desktop-client.ts`）。
+
+- **协议**：面板先经 `/ws` 发 `desktop-open`（15s 截止），拿到 `desktop-opened`（`streamId` + 单次 `wsPath=/desktop/observe?ticket=…` + `security`）后，用独立 WebSocket 连二进制面，再由 noVNC（`@novnc/novnc`，动态 import，`rfb-*.js` 独立 chunk）完成 RFB handshake。VNC 密码只存当前 tab/store 内存，不进 localStorage/sessionStorage；页面刷新或重连必须重新 `desktop-open`（不复用 ticket）。关闭面板发 `desktop-close` + 关 WS。
+- **状态**：opening → auth-required（VNC 密码）→ connecting → open；busy/unavailable/auth-unsupported/offline 有独立错误码文案；`desktop-instance-offline` / `desktop-stream-timeout` / `events-offline` 可重试。`security=ard` 明确报 Phase B 未支持，不伪装成网络问题。
+- **显示**：Fit / Actual（`scaleViewport`，`resizeSession=false`）；v1 无 viewer count / take-control（多 viewer 需服务端 RFB view-only filter，见设计 Phase C）。
+- **边界**：Windows 锁屏/UAC/登录屏不保证；macOS ARD 账号认证是 Phase B；多 viewer、录像、文件传输、剪贴板自动同步都不做。
+
 ## PWA（可安装 + 应用壳缓存）
 
 看板是可安装的 PWA：支持「添加到主屏 / 安装为独立窗口」，并对应用壳（JS/CSS/字体/图标/`index.html`）做 Service Worker 预缓存以加速二次加载。它是 **WS 实时控制台**，所以 PWA 的目标是「可安装 + 秒开」，**不做离线数据**——断网时壳能开，但实时数据仍需 WS 重连。

@@ -104,10 +104,13 @@ feat(channel-relay): add loopback RFB desktop probe
 - random single-use ticket；
 - TTL 60s；
 - account/instance/side binding；
-- v1 instance single-stream reservation；
+- v1 instance single-stream reservation（原子 check+insert）；
+- account 并发上限 8（`DESKTOP_MAX_STREAMS_PER_ACCOUNT`，同样原子 reservation，超限返回 `desktop-busy`）；
 - preparing/waiting-browser/active/closed state；
 - pair browser connector sockets；
 - close propagation；
+- open/prepare failure/close/offline 全部释放 reservation + 撤销 tickets；
+- preparing 过期在 reserve 前同步回收（`sweepExpired`）；
 - instance offline / reconnect fencing cleanup；
 - hard bufferedAmount cap。
 
@@ -161,13 +164,14 @@ feat(relay): route desktop binary websocket upgrades
 流程：
 
 1. browser /ws 发 desktop-open；
-2. 验证 account 拥有 instance + online + desktop.rfb.v1；
-3. reserve stream；
+2. 验证 account 拥有 instance + online + desktop.rfb.v1，读取 control socket 的 hub-stamped viewerId；
+3. reserve stream 并立即绑定 `streamId → { viewerId, accountId, instanceId }`（lifetime 归属，pending 与已配对 binary 共用）；
 4. mint connector ticket；
 5. request instance.desktop.prepare；
-6. connector 准备成功后 mint browser ticket；
-7. targeted desktop-opened 只发给原 socket；
-8. 失败回滚 reservation/tickets。
+6. prepare 返回后重验 owner 仍存活（viewerId 一致 + 归属记录仍在），再 mint browser ticket；
+7. targeted desktop-opened 只发给原 socket；发送失败回滚；
+8. control socket close 立即 cancel 该 viewer 名下全部 stream；desktop-close 校验同 viewer 才允许；
+9. 失败回滚 reservation/tickets/归属记录。
 
 prepare deadline 建议 10s，不能复用 120s 普通 agent RPC 超时。
 
@@ -248,6 +252,8 @@ test(relay): hard-gate desktop RFB binary tunnel
 
 - packages/relay-web/package.json
 - bun.lock
+- packages/relay-web/vite.config.ts（dev server 增加 `/desktop/observe` → 8787 的 `ws: true` proxy，与 `/ws` 同源）
+- packages/relay-web/src/pwa-options.ts（SW navigateFallbackDenylist 增加 `/desktop/(observe|instance)`，避免缓存 HTML 污染 noVNC 握手）
 
 新增：
 
@@ -344,7 +350,8 @@ Windows 指导：
 
 Linux 指导：
 
-- TigerVNC/x11vnc/WayVNC；
+- TigerVNC/x11vnc（标准 VncAuth，优先）；
+- WayVNC 仅 legacy VncAuth 兼容模式（`relax_encryption` + `allow_broken_crypto`，弱安全过渡，默认安全配置会被拒绝）；
 - GNOME VeNCrypt v1 unsupported。
 
 如果已有 channel doctor seam，增加 desktop probe summary；否则先把 open error 做到足够可诊断，不为本功能新建大 doctor 框架。

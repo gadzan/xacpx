@@ -28,11 +28,7 @@
 7. **v1 不允许 hub 指定任意 target host/port。** channel-relay 只连接配置中的 loopback port，防止 Desktop tunnel 退化为通用内网 TCP 代理。
 8. **v1 一台实例同一时刻只允许一个 Desktop viewer。** 先把观看/控制主链路做正确；多 viewer / take-control 只有在服务端 RFB view-only filter 完成后再开放。
 9. **Windows v1 采用 TightVNC attach 模式。** 推荐运行在已登录的 interactive user session；不把 Windows service session 当作可靠桌面来源。
-10. **Linux 支持 TigerVNC/x11vnc/WayVNC attach。** GNOME Remote Desktop 的 VeNCrypt 不纳入 v1。
-11. **macOS 先支持标准 VncAuth 兼容模式，ARD account auth 单独作为下一阶段。** ARD 需要 connector-side RFB pre-auth，不能把 macOS 账号密码塞进 URL 或日志。
-12. **Desktop 默认关闭。** 只有 channel-relay 显式启用并声明 desktop.rfb.v1 后，relay-web 才显示入口。
-13. **浏览器断开只关闭 tunnel，不停止本机 VNC server。** 页面重开时申请新 ticket、新建 RFB 连接即可恢复当前桌面。
-14. **不在 xacpx core 增加 VNC 依赖。** Desktop 所有实例侧能力归 packages/channel-relay；core 不知道 RFB/noVNC/TightVNC。
+10. **Linux 优先 TigerVNC/x11vnc attach（标准 VncAuth）。** GNOME Remote Desktop 的 VeNCrypt 不纳入 v1；WayVNC 仅在其显式配置 legacy VncAuth 兼容模式（`relax_encryption` + `allow_broken_crypto`）时可用，上游将其标记为弱安全的过渡兼容——默认安全配置的 WayVNC 会被 probe 以 `desktop-auth-unsupported` 拒绝。
 
 ## 2. 当前架构可复用部分
 
@@ -135,13 +131,12 @@ relay-web noVNC
 
 ### 5.2 Linux
 
-支持：
+优先（标准 VncAuth，开箱即用）：
 
 - TigerVNC / Xtigervnc（优先，X11/XFCE）；
-- x11vnc（已有 X11 display）；
-- WayVNC（Wayland）。
+- x11vnc（已有 X11 display）。
 
-v1 只要求它们提供标准 RFB endpoint。GNOME Remote Desktop 常见的 VeNCrypt 路线不在 v1 支持集合。
+WayVNC（Wayland）仅在其显式启用 legacy VncAuth 兼容（`relax_encryption` + `allow_broken_crypto`）时可用；这是上游标记为弱安全的过渡兼容模式，默认安全配置（VeNCrypt/TLS）的 WayVNC 会被 probe 以 `desktop-auth-unsupported` 拒绝。GNOME Remote Desktop 的 VeNCrypt 路线同样不在 v1 支持集合。v1 只要求 endpoint 提供标准 RFB + VncAuth。
 
 后续可增加 desktop.managed=true（Linux only），由 channel-relay 启动受控 TigerVNC/XFCE；该能力不应阻塞 attach-mode 首发。
 
@@ -153,8 +148,6 @@ macOS Screen Sharing 底层仍可提供 RFB，但认证与普通 VncAuth 不同�
 
 - Phase A：支持配置为标准 VncAuth 的 RFB endpoint；
 - Phase B：增加 connector-side ARD account pre-auth。账号密码只在 browser -> authenticated control request -> connector 的短生命周期内使用，不落盘、不进入 URL、不返回 RPC result。connector 完成 ARD handshake 后，向 browser 暴露已认证的 RFB stream。
-
-Phase B 完成前，relay-web 必须明确提示“当前 Screen Sharing 提供 ARD authentication；此版本尚不支持”，不能把认证失败伪装成网络问题。
 
 ## 6. 包边界
 
@@ -403,20 +396,11 @@ packages/relay/src/gateway/desktop-ticket-store.ts
 - accountId/instanceId 由 hub 权威绑定；
 - 一个 ticket 只能 consume 一次；
 - v1 每 instance 最多一个 active/preparing stream；
-- browser 先断或 connector 先断都关闭另一侧；
+- 每 account 最多 8 个并发 active/preparing stream（`DESKTOP_MAX_STREAMS_PER_ACCOUNT`），reservation 为原子 check+insert；
+- pending prepare 绑定发起 `/ws` 的 control socket/viewerId：prepare 返回后重验 owner 仍存活才 mint browser ticket；control socket close 立即 cancel 该 viewer 名下全部 stream（含已配对 binary）；desktop-close 校验同 viewer；
+- browser binary 先断或 connector 先断都关闭另一侧；
 - preparing 超时自动回收；
 - instance control socket supersede/offline 立即关闭该 instance 的 stream。
-
-## 12. channel-relay DesktopTunnelRuntime
-
-建议落点：
-
-~~~text
-packages/channel-relay/src/desktop/config.ts
-packages/channel-relay/src/desktop/rfb-probe.ts
-packages/channel-relay/src/desktop/desktop-tunnel-runtime.ts
-packages/channel-relay/src/desktop/platform-guidance.ts
-~~~
 
 内部职责：
 
