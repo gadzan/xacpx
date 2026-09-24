@@ -793,6 +793,11 @@ export class DiscordChannel implements MessageChannelRuntime {
       // for the rest of the wizard, so the earlier ones are plain text and are
       // tracked so they can be edited (review) or removed (terminal) later.
       let sent: { messageId: string } | undefined;
+      // Continuations are tracked as they are sent rather than afterwards: a
+      // mid-way `sendMessage` failure must roll them back, and by then
+      // `entry.messageId` is still unset — the terminal renderer keys off it and
+      // would return immediately, leaving these messages in the chat as a
+      // fragment of the question with no controls and no handler.
       for (let index = 0; index < opening.contents.length; index += 1) {
         if (entry.settled) break;
         const isLast = index === opening.contents.length - 1;
@@ -821,6 +826,13 @@ export class DiscordChannel implements MessageChannelRuntime {
       });
     } catch (error) {
       eagerSettle("cancelled", "elicitation send failed");
+      // Roll back anything this opening already published. A multi-message
+      // opening is a partial transaction: the chunks before the failure are
+      // already in the chat, `entry.messageId` is still unset (it is assigned
+      // only after every chunk succeeds), and `renderElicitationInert` returns
+      // immediately without a primary id — so those chunks would stay behind as
+      // a fragment of the question with no controls and no handler, forever.
+      await this.discardElicitationContinuations(entry, runtime).catch(() => {});
       await this.logger?.warn("discord.elicitation.send_failed", "failed to send elicitation request", {
         requestId: request.requestId,
         message: error instanceof Error ? error.message : String(error),

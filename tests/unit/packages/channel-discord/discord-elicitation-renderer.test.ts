@@ -412,7 +412,7 @@ test("a text field opens a modal whose input ids are positional, not keys or ans
   const { channel, abort } = await startChannel(client);
   try {
     const { request: req } = request([
-      { kind: "text", key: "note", title: "Note", required: true },
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
     ]);
     await startWizard(client, channel, req, "note");
     const answerId = idFor(client, "field", 0);
@@ -449,7 +449,7 @@ test("a long schema key still opens a modal, because the id is positional", asyn
     // custom ids at 100, so a key-derived id made this legal form unrenderable.
     const longKey = `k${"x".repeat(120)}`;
     const { request: req } = request([
-      { kind: "text", key: longKey, title: "Note", required: true },
+      { kind: "text", key: longKey, title: "Note", required: true, maxLength: 4000 },
     ]);
     await startWizard(client, channel, req, longKey);
     client.emitButton(click(client, idFor(client, "field", 0)));
@@ -559,7 +559,7 @@ test("date/email/uri fields arrive as text and pass through for core to validate
     // which core validates — so the renderer must NOT reject a value it does
     // not recognize the shape of.
     const { request: req } = request([
-      { kind: "text", key: "mail", title: "Email", required: true },
+      { kind: "text", key: "mail", title: "Email", required: true, maxLength: 4000 },
     ]);
     await startWizard(client, channel, req, "mail");
     client.emitButton(click(client, idFor(client, "field", 0)));
@@ -590,7 +590,7 @@ test("an intruder's select or modal cannot write an answer", async () => {
         required: true,
         options: [{ value: "prod", label: "Production" }],
       },
-      { kind: "text", key: "note", title: "Note", required: true },
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
     ]);
     await startWizard(client, channel, req, "env");
     const rows = client.edited[client.edited.length - 1]!.body.selectRows ?? [];
@@ -721,8 +721,8 @@ test("a required + optional form reaches BOTH fields before submitting", async (
   const { channel, abort } = await startChannel(client);
   try {
     const { request: req } = request([
-      { kind: "text", key: "a", title: "A", required: true },
-      { kind: "text", key: "b", title: "B", required: false },
+      { kind: "text", key: "a", title: "A", required: true, maxLength: 4000 },
+      { kind: "text", key: "b", title: "B", required: false, maxLength: 4000 },
     ]);
     const decision = await driveToSubmit(client, channel, req, { a: "alpha", b: "beta" });
     expect(decision).toEqual({
@@ -744,8 +744,8 @@ test("every field card fits Discord's per-row button limit", async () => {
   const token = "tok-per-row";
   const { buildElicitationFieldCard } = await import("../../../../packages/channel-discord/src/elicitation-ui");
   const cases = [
-    request([{ kind: "text", key: "a", title: "A", required: true }, { kind: "text", key: "b", title: "B", required: true }]).request,
-    request([{ kind: "text", key: "a", title: "A", required: true }, { kind: "number", key: "c", title: "C", required: true }]).request,
+    request([{ kind: "text", key: "a", title: "A", required: true, maxLength: 4000 }, { kind: "text", key: "b", title: "B", required: true, maxLength: 4000 }]).request,
+    request([{ kind: "text", key: "a", title: "A", required: true, maxLength: 4000 }, { kind: "number", key: "c", title: "C", required: true }]).request,
   ];
   for (const req of cases) {
     for (let index = 0; index < req.fields.length; index += 1) {
@@ -771,7 +771,7 @@ test("a 3+ field form is completable: the third field is reachable and answerabl
     // The third field is REQUIRED, so a wizard that cannot reach it can never
     // submit: this is the shape that was previously a dead end.
     const { request: req } = request([
-      { kind: "text", key: "f1", title: "F1", required: true },
+      { kind: "text", key: "f1", title: "F1", required: true, maxLength: 4000 },
       { kind: "number", key: "f2", title: "F2", required: true },
       { kind: "single-select", key: "f3", title: "F3", required: true, options: [{ value: "c", label: "C" }] },
     ]);
@@ -793,7 +793,7 @@ test("an all-optional form submitted empty accepts with null content", async () 
   try {
     const { request: req } = request([
       { kind: "single-select", key: "opt1", title: "Opt 1", required: false, options: [{ value: "x", label: "X" }] },
-      { kind: "text", key: "opt2", title: "Opt 2", required: false },
+      { kind: "text", key: "opt2", title: "Opt 2", required: false, maxLength: 4000 },
     ]);
     const decision = await driveToSubmit(client, channel, req, {});
     // `null` is ACP's "accept with no answers"; `{}` is a different statement.
@@ -822,8 +822,8 @@ test("edit after review corrects a field and the correction reaches the decision
   const { channel, abort } = await startChannel(client);
   try {
     const { request: req } = request([
-      { kind: "text", key: "a", title: "A", required: true },
-      { kind: "text", key: "b", title: "B", required: true },
+      { kind: "text", key: "a", title: "A", required: true, maxLength: 4000 },
+      { kind: "text", key: "b", title: "B", required: true, maxLength: 4000 },
     ]);
     const settled = channel.requestElicitation(req).then(
       (d) => d,
@@ -876,7 +876,7 @@ test("a 6-field review paginates and every field stays reachable", async () => {
   try {
     const fields = Array.from(
       { length: 6 },
-      (_, i) => ({ kind: "text" as const, key: `k${i}`, title: `K${i}`, required: true }),
+      (_, i) => ({ kind: "text" as const, key: `k`, title: `K`, required: true, maxLength: 4000 }),
     );
     const { request: req } = request(fields);
     const settled = channel.requestElicitation(req).then(
@@ -935,7 +935,7 @@ test("a field key named constructor is not mistaken for an answer", async () => 
   const { channel, abort } = await startChannel(client);
   try {
     const { request: req } = request([
-      { kind: "text", key: "constructor", title: "Constructor", required: true },
+      { kind: "text", key: "constructor", title: "Constructor", required: true, maxLength: 4000 },
     ]);
     const settled = channel.requestElicitation(req).then(
       (d) => d,
@@ -986,7 +986,7 @@ test("a field key named __proto__ becomes an own answer property", async () => {
   const { channel, abort } = await startChannel(client);
   try {
     const { request: req } = request([
-      { kind: "text", key: "__proto__", title: "Proto", required: true },
+      { kind: "text", key: "__proto__", title: "Proto", required: true, maxLength: 4000 },
     ]);
     const settled = channel.requestElicitation(req).then(
       (d) => d,
@@ -1033,8 +1033,8 @@ test("an answered optional field can be skipped back to omitted", async () => {
   const { channel, abort } = await startChannel(client);
   try {
     const { request: req } = request([
-      { kind: "text", key: "a", title: "A", required: true },
-      { kind: "text", key: "b", title: "B", required: false },
+      { kind: "text", key: "a", title: "A", required: true, maxLength: 4000 },
+      { kind: "text", key: "b", title: "B", required: false, maxLength: 4000 },
     ]);
     const settled = channel.requestElicitation(req).then(
       (d) => d,
@@ -1091,7 +1091,7 @@ test("a 4000-character answer is fully visible on the review before Submit", asy
   try {
     const longAnswer = "A".repeat(4000);
     const { request: req } = request([
-      { kind: "text", key: "body", title: "Body", required: true },
+      { kind: "text", key: "body", title: "Body", required: true, maxLength: 4000 },
     ]);
     const settled = channel.requestElicitation(req).then(
       (d) => d,
@@ -1143,7 +1143,7 @@ test("review continuation messages are removed once the form is decided", async 
   try {
     const longAnswer = "B".repeat(4000);
     const { request: req } = request([
-      { kind: "text", key: "body", title: "Body", required: true },
+      { kind: "text", key: "body", title: "Body", required: true, maxLength: 4000 },
     ]);
     const settled = channel.requestElicitation(req).then(
       (d) => d,
@@ -1184,7 +1184,7 @@ test("shortening an answer deletes the review's tail continuations", async () =>
   try {
     const longAnswer = "A".repeat(4000);
     const { request: req } = request([
-      { kind: "text", key: "body", title: "Body", required: true },
+      { kind: "text", key: "body", title: "Body", required: true, maxLength: 4000 },
     ]);
     channel.requestElicitation(req).catch(() => {});
     await new Promise((r) => setTimeout(r, 5));
@@ -1285,7 +1285,7 @@ test("a failed continuation send leaves the primary's Submit alone", async () =>
   try {
     const longAnswer = "A".repeat(4000);
     const { request: req } = request([
-      { kind: "text", key: "body", title: "Body", required: true },
+      { kind: "text", key: "body", title: "Body", required: true, maxLength: 4000 },
     ]);
     channel.requestElicitation(req).catch(() => {});
     await new Promise((r) => setTimeout(r, 5));
@@ -1348,6 +1348,7 @@ test("a failed stale-tail delete keeps the primary off the shorter review", asyn
       key: `f${index}`,
       title: `Field ${index}`,
       required: true,
+      maxLength: 4000,
     }));
     const { request: req } = request(fields);
     void channel.requestElicitation(req).catch(() => {});
@@ -1447,7 +1448,7 @@ test("an Unknown Message delete is treated as a successful trim", async () => {
   try {
     const longAnswer = "C".repeat(4000);
     const { request: req } = request([
-      { kind: "text", key: "body", title: "Body", required: true },
+      { kind: "text", key: "body", title: "Body", required: true, maxLength: 4000 },
     ]);
     const settled = channel.requestElicitation(req).then((d) => d, (e: Error) => e);
     await new Promise((r) => setTimeout(r, 5));
@@ -1506,7 +1507,7 @@ test("review -> Edit -> field card cannot be submitted when the continuation del
   try {
     const longAnswer = "A".repeat(4000);
     const { request: req } = request([
-      { kind: "text", key: "body", title: "Body", required: true },
+      { kind: "text", key: "body", title: "Body", required: true, maxLength: 4000 },
     ]);
     channel.requestElicitation(req).catch(() => {});
     const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 8));
@@ -1583,6 +1584,7 @@ test("review -> single-chunk page cannot be submitted when the delete fails", as
       key: `f${index}`,
       title: `Field ${index}`,
       required: true,
+      maxLength: 4000,
     }));
     const lengths = [1800, 1800, 5, 5, 5, 5, 5, 5];
     const { request: req } = request(fields);
@@ -1695,6 +1697,7 @@ test("a second transition is queued behind a running one, and cannot open the ga
       key: `f${index}`,
       title: `Field ${index}`,
       required: true,
+      maxLength: 4000,
     }));
     const lengths = [1800, 1800, 900, 900, 5, 5, 5, 5];
     const { request: req } = request(fields);
@@ -1813,6 +1816,7 @@ test("an abort during a running transition leaves the card inert, never repainte
       key: `f${index}`,
       title: `Field ${index}`,
       required: true,
+      maxLength: 4000,
     }));
     const lengths = [1800, 1800, 900, 900, 5, 5, 5, 5];
     const { request: req, abort: requestAbort } = request(fields);
@@ -1887,7 +1891,7 @@ test("stop() drains a queued terminal render before the client is destroyed", as
   };
   try {
     const { request: req } = request([
-      { kind: "text", key: "body", title: "Body", required: true },
+      { kind: "text", key: "body", title: "Body", required: true, maxLength: 4000 },
     ]);
     channel.requestElicitation(req).catch(() => {});
     await new Promise((r) => setTimeout(r, 5));
@@ -1930,9 +1934,9 @@ test("two concurrent Skip interactions cannot skip two different fields", async 
   const { channel, abort } = await startChannel(client);
   try {
     const { request: req } = request([
-      { kind: "text", key: "a", title: "A", required: false },
-      { kind: "text", key: "b", title: "B", required: false },
-      { kind: "text", key: "c", title: "C", required: false },
+      { kind: "text", key: "a", title: "A", required: false, maxLength: 4000 },
+      { kind: "text", key: "b", title: "B", required: false, maxLength: 4000 },
+      { kind: "text", key: "c", title: "C", required: false, maxLength: 4000 },
     ]);
     channel.requestElicitation(req).catch(() => {});
     const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 6));
@@ -1977,6 +1981,83 @@ test("two concurrent Skip interactions cannot skip two different fields", async 
     await wait();
   } finally {
     release?.();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a review whose answer core would reject never reaches the Accepted card", async () => {
+  // Submit checked required-presence only, and a known-format text answer is
+  // stored raw on both channels. So an email field of "not-an-email" went:
+  // review -> Submit -> card turns Accepted -> the broker rejects it and the
+  // turn ends as cancel. The user saw success followed by a cancellation.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const fields = [
+      { kind: "text" as const, key: "mail", title: "Email", required: true, maxLength: 4000, format: "email" },
+    ];
+    const { request: req } = request(fields);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 8));
+    await wait();
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    // Answer with something the email format must refuse.
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await wait();
+    const modalId = client.modals[client.modals.length - 1]!.customId;
+    client.emitModal(modal(client, modalId, { mail: "not-an-email" }, "user-A", 0));
+    await wait();
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 40));
+    const painted = client.edited.map((entry) => JSON.stringify(entry.body)).join("\n");
+    expect(painted).not.toContain("accepted");
+    const stillPending = (channel as unknown as { pendingElicitations: Map<string, unknown> }).pendingElicitations;
+    expect(stillPending.size).toBe(1);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a failed opening send rolls back the chunks it already published", async () => {
+  // A multi-message opening is several `sendMessage` round trips. When a later
+  // one throws, `entry.messageId` is still unset — it is assigned only after
+  // every chunk succeeds — so the terminal render has no primary id to edit and
+  // returns immediately. The chunks already in the chat then survive the request
+  // as a fragment of the question with no controls and no handler.
+  const client = makeFakeClient();
+  const failFrom = 2;
+  const realSend = client.sendMessage.bind(client);
+  let sends = 0;
+  (client as unknown as { sendMessage: unknown }).sendMessage = async (target: never, body: never) => {
+    sends += 1;
+    if (sends >= failFrom) throw new Error("discord send failed");
+    return realSend(target, body);
+  };
+  const { channel, abort } = await startChannel(client);
+  try {
+    // A long message forces several opening chunks.
+    const { request: req } = request(
+      [{ kind: "text", key: "a", title: "A", required: true, maxLength: 4000 }],
+    );
+    req.message = "X".repeat(6000);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    await new Promise((r) => setTimeout(r, 60));
+    // The request failed, and every chunk it had already sent is gone.
+    expect(await settled).toBeInstanceOf(Error);
+    expect(sends).toBeGreaterThanOrEqual(failFrom);
+    expect(client.deleted.length).toBeGreaterThanOrEqual(1);
+  } finally {
     abort.abort();
     await channel.stop().catch(() => {});
   }

@@ -243,19 +243,40 @@ export class FeishuChannel implements MessageChannelRuntime {
     await Promise.all(drains);
   }
 
-  logout(): void {
-    for (const [accountId, runtime] of this.accounts) {
-      // Stop the card listener first: a live endpoint after logout would still
-      // authenticate and dispatch card actions into a torn-down channel.
-      if (runtime.cardHost) {
-        void runtime.cardHost.stop().catch(() => {});
-        runtime.cardHost = undefined;
-      }
-      runtime.client.stop();
-      clearMessageUnavailableForAccount(accountId);
-      clearFeishuQueueForAccount(accountId);
+  /**
+   * Stop one account's inbound surfaces and drop it from the registry.
+   *
+   * The card listener goes first, and that order is the contract: a live
+   * endpoint after the client is gone would still authenticate and dispatch
+   * card actions into a torn-down renderer.
+   *
+   * The listener's shutdown promise is returned rather than swallowed so each
+   * caller decides its own policy: `logout()` is synchronous and has nobody
+   * left to tell, so it ignores the promise; the failed-start rollback awaits
+   * it, because there "probably not listening" is not good enough — see
+   * `rollbackFailedStart()`.
+   */
+  private stopAccountInbound(accountId: string, runtime: AccountRuntime): Promise<void> | null {
+    let listenerStopped: Promise<void> | null = null;
+    if (runtime.cardHost) {
+      const host = runtime.cardHost;
+      runtime.cardHost = undefined;
+      listenerStopped = Promise.resolve(host.stop()).catch(() => {});
     }
-    this.accounts.clear();
+    runtime.client.stop();
+    clearMessageUnavailableForAccount(accountId);
+    clearFeishuQueueForAccount(accountId);
+    this.accounts.delete(accountId);
+    return listenerStopped;
+  }
+
+  logout(): void {
+    // Snapshot the entries: `stopAccountInbound` deletes as it goes, which also
+    // leaves the registry empty here. The listener shutdown is intentionally
+    // left unawaited — logout is synchronous and has nobody left to tell.
+    for (const [accountId, runtime] of [...this.accounts]) {
+      void this.stopAccountInbound(accountId, runtime);
+    }
     // Owner assertions are per-account, per-membership; drop them so a
     // reconfigured restart never trusts a previous login's chat roster. The
     // epoch bump also rejects lookups still in flight from the old lifecycle
@@ -469,45 +490,124 @@ export class FeishuChannel implements MessageChannelRuntime {
       accounts: eligible.map((account) => account.accountId),
     });
 
-    const startups = eligible.map(async (account) => {
-      const client = this.deps.createClient?.(account) ?? createFeishuLarkClient({
-        appId: account.appId,
-        appSecret: account.appSecret,
-        domain: account.domain,
-      });
-      const probe = await client.probeBot().catch((error) => {
-        void input.logger.error("feishu.probe_failed", "failed to probe feishu bot identity", {
-          accountId: account.accountId,
-          message: error instanceof Error ? error.message : String(error),
-        });
-        return {} as { botOpenId?: string; botName?: string };
-      });
-      const runtime: AccountRuntime = { account, client, ...(probe.botOpenId ? { botOpenId: probe.botOpenId } : {}) };
-      this.accounts.set(account.accountId, runtime);
-      // Card-callback listener, only when the account opted in. Without
-      // `cardActions` the account simply never receives card interactions.
-      if (account.cardActions) {
-        // A failed bind throws, and that propagates through Promise.all to fail
-        // the whole channel start. Swallowing it here is what produced a lie:
-        // `elicitationModes` is decided at CONSTRUCTION time from the config, so
-        // core had already been told "form", and every request would then cancel
-        // at "no card-callback channel" with the operator never told why.
-        runtime.cardHost = await this.startCardActions(account);
-        await input.logger.info("feishu.card_actions", "feishu card callback channel listening", {
-          accountId: account.accountId,
-          port: runtime.cardHost.port(),
-          path: account.cardActions.path,
-        });
-      }
-      await client.startWS({
-        handlers: {
-          "im.message.receive_v1": (data) => this.handleMessageEvent(account.accountId, data),
-        },
-        abortSignal: input.abortSignal,
-      });
-    });
+    // Runtimes THIS call installs, against a snapshot of what was already
+    // installed. Rolled back if any account fails, and deliberately NOT just
+    // `new Set(this.accounts.keys())`: a previous successful start (the same
+    // channel instance re-started after a failed one, or after a hot-reload)
+    // left live receivers in that map, and tearing those down on a later
+    // failure would take a working channel down with the broken one.
+    const priorAccounts = new Map(this.accounts);
+    const installedByThisStart = new Set<string>();
 
-    await Promise.all(startups);
+    try {
+      const startups = eligible.map(async (account) => {
+        const client = this.deps.createClient?.(account) ?? createFeishuLarkClient({
+          appId: account.appId,
+          appSecret: account.appSecret,
+          domain: account.domain,
+        });
+        const probe = await client.probeBot().catch((error) => {
+          void input.logger.error("feishu.probe_failed", "failed to probe feishu bot identity", {
+            accountId: account.accountId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          return {} as { botOpenId?: string; botName?: string };
+        });
+        const runtime: AccountRuntime = { account, client, ...(probe.botOpenId ? { botOpenId: probe.botOpenId } : {}) };
+        this.accounts.set(account.accountId, runtime);
+        installedByThisStart.add(account.accountId);
+        // Card-callback listener, only when the account opted in. Without
+        // `cardActions` the account simply never receives card interactions.
+        if (account.cardActions) {
+          // A failed bind throws, and that propagates out of this startup to
+          // fail the whole channel start. Swallowing it here is what produced a
+          // lie: `elicitationModes` is decided at CONSTRUCTION time from the
+          // config, so core had already been told "form", and every request
+          // would then cancel at "no card-callback channel" with the operator
+          // never told why.
+          runtime.cardHost = await this.startCardActions(account);
+          await input.logger.info("feishu.card_actions", "feishu card callback channel listening", {
+            accountId: account.accountId,
+            port: runtime.cardHost.port(),
+            path: account.cardActions.path,
+          });
+        }
+        await client.startWS({
+          handlers: {
+            "im.message.receive_v1": (data) => this.handleMessageEvent(account.accountId, data),
+          },
+          abortSignal: input.abortSignal,
+        });
+      });
+
+      // All account startups are attempted to completion, THEN the outcome is
+      // judged: waiting for the last startup is what makes the rollback below
+      // sound.
+      const outcomes = await Promise.allSettled(startups);
+      const failure = outcomes.find(
+        (outcome): outcome is PromiseRejectedResult => outcome.status === "rejected",
+      );
+      // Fail-fast on the FIRST rejection in `eligible` order, but only after
+      // every startup has settled. `Promise.all` would have rethrown the moment
+      // beta failed while alpha was still mid-install, and rolling back then is
+      // a race: alpha's suspended `startWS`/`startCardActions` would resume
+      // AFTER the rollback and install a receiver on the runtime object we had
+      // already dropped, leaking a live listener the failed channel never owns.
+      // Settling first means there is nothing left in flight to leak.
+      if (failure) throw failure.reason;
+    } catch (error) {
+      await this.rollbackFailedStart(installedByThisStart, priorAccounts);
+      throw error;
+    }
+  }
+
+  /**
+   * Undo the installations of a failed `start()` call, then let the caller
+   * rethrow.
+   *
+   * WHY THIS EXISTS: a channel-level startup failure used to leave the
+   * accounts that had already come up installed. The registry marked feishu
+   * failed and dropped it from the advertised form capability, while its live
+   * WebSocket receiver and card listener kept delivering events into a channel
+   * nobody was watching — a logically failed channel still processing messages.
+   *
+   * Each teardown is best-effort and awaited: a throw from one teardown must
+   * not skip the rest, so the rollback is sequential and individually guarded.
+   * When `start()` rejects, no feishu inbound receiver survives it.
+   *
+   * @param installed - Account ids installed by the failed call. Ids missing
+   *   from `this.accounts` are skipped, so rollback can never delete a runtime
+   *   from an earlier, still-valid start.
+   * @param priorAccounts - The registry snapshot taken before the failed call.
+   *   An account it already held keeps its previous runtime restored after the
+   *   failed call's replacement is torn down.
+   */
+  private async rollbackFailedStart(
+    installed: ReadonlySet<string>,
+    priorAccounts: ReadonlyMap<string, AccountRuntime>,
+  ): Promise<void> {
+    for (const accountId of [...installed]) {
+      const runtime = this.accounts.get(accountId);
+      if (!runtime) continue;
+      try {
+        // `stopAccountInbound` is synchronous up to the listener shutdown
+        // promise, so the runtime leaves the map before any await settles.
+        await this.stopAccountInbound(accountId, runtime);
+      } catch {
+        // Best-effort by design: the WS client is already stopped and the
+        // entry already deleted at this point, so there is nothing left to
+        // defend and the original start error is preserved as the cause.
+      }
+      // A successful earlier start (same instance, rolled back hot-reload) had
+      // installed this account; rollback must not turn its failure into an
+      // outage for the survivor. The old runtime was never touched — only its
+      // slot in the map was overwritten — so restoring it keeps that channel
+      // exactly as live as it was.
+      const previous = priorAccounts.get(accountId);
+      if (previous && !this.accounts.has(accountId)) {
+        this.accounts.set(accountId, previous);
+      }
+    }
   }
 
   async notifyTaskCompletion(task: OrchestrationTaskRecord): Promise<void> {

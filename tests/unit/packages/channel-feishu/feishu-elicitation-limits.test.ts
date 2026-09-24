@@ -7,7 +7,12 @@ import {
   FEISHU_SELECT_OPTION_MAX,
   FEISHU_TEXT_CONTENT_MAX,
   FEISHU_UNDOCUMENTED_LIMITS,
+  fitsCardBudget,
 } from "../../../../packages/channel-feishu/src/elicitation-limits";
+import {
+  buildElicitationOpeningCard,
+  buildWorstCaseReviewCard,
+} from "../../../../packages/channel-feishu/src/elicitation-cards";
 import type { ChannelElicitationField } from "xacpx/plugin-api";
 import { formComponentName, cardElementId } from "../../../../packages/channel-feishu/src/elicitation-state";
 import { setChannelLocale } from "../../../../packages/channel-feishu/src/i18n/index";
@@ -22,7 +27,11 @@ beforeAll(() => {
   setChannelLocale("en");
 });
 
-const TEXT: ChannelElicitationField = { kind: "text", key: "note", title: "Note", required: true };
+// A declared `maxLength` is REQUIRED to render: the gate refuses a text field
+// without one, because the accepted answer domain is then unbounded and an input
+// cannot express that. Core only validates the bound when it is present, so
+// "absent" means larger than the platform's capacity, not "no limit".
+const TEXT: ChannelElicitationField = { kind: "text", key: "note", title: "Note", required: true, maxLength: 1000 };
 
 const SINGLE: ChannelElicitationField = {
   kind: "single-select",
@@ -166,11 +175,34 @@ test("a text minLength beyond one input's capacity is refused", () => {
   // The other half of the maxLength check that already existed: a field that
   // REQUIRES more characters than the input can hold is impossible, and
   // truncating it silently would produce an answer core must reject anyway.
+  // `maxLength` is declared so the field reaches the min-bound check rather
+  // than being refused earlier for having no bound at all.
   const verdict = checkElicitationRenderability([
-    { kind: "text", key: "note", title: "Note", required: true, minLength: 1001 },
+    { kind: "text", key: "note", title: "Note", required: true, minLength: 1001, maxLength: 2000 },
   ]);
   expect(verdict.renderable).toBe(false);
   expect(verdict.reason).toBe("answer-too-long");
+});
+
+test("a text field with no maxLength is refused, not narrowed to a default", () => {
+  // `maxLengthFor` used to default the widget to 1000, which silently redefined
+  // the agent's question as "at most 1000 chars" while the schema's accepted
+  // domain was unbounded. Core validates the bound only when present, so absent
+  // strictly means LARGER than one input can capture.
+  const verdict = checkElicitationRenderability([
+    { kind: "text", key: "note", title: "Note", required: false },
+  ]);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("answer-unbounded");
+  expect(verdict.detail).toContain("no maxLength");
+  // A declared bound inside the platform capacity still renders.
+  expect(checkElicitationRenderability([
+    { kind: "text", key: "note", title: "Note", required: false, maxLength: 1000 },
+  ]).renderable).toBe(true);
+  // A declared bound past it is still the explicit-capacity refusal.
+  expect(checkElicitationRenderability([
+    { kind: "text", key: "note", title: "Note", required: false, maxLength: 1001 },
+  ]).reason).toBe("answer-too-long");
 });
 
 test("an option core would reject is refused rather than offered", () => {
@@ -207,4 +239,71 @@ test("a boolean field is renderable, because it renders as a two-option select",
     { kind: "boolean", key: "ok", title: "OK", required: true },
   ]);
   expect(verdict.renderable).toBe(true);
+});
+
+test("the card JSON budget is measured in serialized BYTES, not source chars", () => {
+  // The declared 30 KB ceiling was never actually enforced against a built card,
+  // so a form could pass the field-level gate and then have `card.update` fail
+  // on the review page — after the user filled the whole form in. Both
+  // directions are pinned here: an over-budget worst case is refused, and a
+  // normal form is left alone.
+  const big: ChannelElicitationField[] = Array.from({ length: 40 }, (_, index) => ({
+    kind: "text",
+    key: `k${String(index).padStart(2, "0")}`,
+    title: `T${index}`,
+    required: false,
+    maxLength: FEISHU_INPUT_MAX_LENGTH,
+  }));
+  const worst = buildWorstCaseReviewCard(
+    { requestId: "r", chatKey: "cx", agent: { name: "codex" }, fields: big, requester: { senderId: "ou" } } as never,
+    "a".repeat(32),
+  );
+  const verdict = fitsCardBudget(worst);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("card-too-large");
+  expect(verdict.detail).toContain("limit 30720");
+
+  const small = fitsCardBudget(
+    buildWorstCaseReviewCard(
+      {
+        requestId: "r",
+        chatKey: "cx",
+        agent: { name: "codex" },
+        fields: [{ kind: "text", key: "a", title: "A", required: false, maxLength: 100 }],
+        requester: { senderId: "ou" },
+      } as never,
+      "a".repeat(32),
+    ),
+  );
+  expect(small.renderable).toBe(true);
+});
+
+test("escaping a high-expansion question is bounded in escaped space", () => {
+  // Truncating the RAW text and escaping afterwards destroyed the question: 100
+  // legal `<` expand to 500 chars, and the old raw bound cut the result back down
+  // so the user read a mangled fragment instead of the agent's text. The visible
+  // entities must now all be present.
+  const message = `Choose: ${"<".repeat(100)}END`;
+  const card = buildElicitationOpeningCard(
+    {
+      requestId: "r",
+      chatKey: "cx",
+      agent: { name: "codex" },
+      message,
+      fields: [],
+      requester: { senderId: "ou" },
+    } as never,
+    "a".repeat(32),
+  );
+  const elements = (card.body as { elements: Array<{ content?: string }> }).elements;
+  const rendered = elements.map((element) => element.content ?? "").join("\n");
+  // Every one of the 100 characters survived, and the tail is intact.
+  expect((rendered.match(/&#60;/g) ?? []).length).toBe(100);
+  // Checked on the element that carries the message, not the joined card body:
+  // the opening card also renders an empty-trailing element set, so a
+  // `endsWith` on the join would see a trailing newline instead of the message.
+  expect(rendered.trimEnd().endsWith("END")).toBe(true);
+  // And it is escaped exactly ONCE: a double escape renders the literal text
+  // "amp;#60;" to the user.
+  expect(rendered).not.toContain("amp;#60;");
 });

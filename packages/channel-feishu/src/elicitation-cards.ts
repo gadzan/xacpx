@@ -41,10 +41,11 @@ import type {
 import { t as getMessages } from "./i18n/index.js";
 import {
   FEISHU_CARD_BODY_MAX_CHARS,
+  FEISHU_INPUT_MAX_LENGTH,
   FEISHU_INPUT_PLACEHOLDER_MAX,
   FEISHU_TEXT_CONTENT_MAX,
 } from "./elicitation-limits.js";
-import { formComponentName } from "./elicitation-state.js";
+import { createAnswerMap, formComponentName } from "./elicitation-state.js";
 
 /** Routing identity for a control. Values, never answers. */
 export type ElicitationUiAction =
@@ -97,11 +98,32 @@ export function escapeFeishuCardText(value: string): string {
     .replace(/^>/gm, "&#62;");
 }
 
+/**
+ * Bound an ALREADY-ESCAPED string without escaping it again.
+ *
+ * Every caller of `markdown`/`plainText` has already escaped its text, so the
+ * body-size bound must not re-escape: doing so would write `&amp;#60;` where the
+ * platform expects `&#60;`, and the user would literally read "amp;#60;".
+ *
+ * Bound in escaped space (the size the platform counts) and cut on entity
+ * boundaries so the tail is never a partial `&#6`.
+ */
+function boundRendered(rendered: string, max: number): string {
+  if (rendered.length <= max) return rendered;
+  let end = Math.max(0, max - 1);
+  const lastAmp = rendered.lastIndexOf("&", end);
+  const lastSemi = rendered.lastIndexOf(";", end);
+  if (lastAmp > lastSemi) end = lastAmp;
+  return `${rendered.slice(0, end)}…`;
+}
+
 function markdown(content: string, elementId?: string): Record<string, unknown> {
   return {
     tag: "markdown",
     ...(elementId ? { element_id: elementId } : {}),
-    content: truncate(content, MAX_CARD_CHARS),
+    // `content` arrives ALREADY escaped from every caller, so it is bounded in
+    // escaped space but never escaped again: see `boundRendered`.
+    content: boundRendered(content, MAX_CARD_CHARS),
     text_align: "left",
     text_size: "normal_v2",
   };
@@ -120,7 +142,12 @@ function markdown(content: string, elementId?: string): Record<string, unknown> 
  * otherwise ping everyone in the chat.
  */
 function plainText(content: string, literal = false): Record<string, unknown> {
-  return { tag: "plain_text", content: truncate(literal ? content : escapeFeishuCardText(content), 100) };
+  // Escape FIRST, then bound the rendered form. The old order truncated the raw
+  // text to 100 chars and escaped afterwards, so a 100-char option label of all
+  // `<` expanded to ~500 chars and was then cut back to 100 — the user read a
+  // mangled label instead of the agent's text.
+  const rendered = literal ? content : escapeFeishuCardText(content);
+  return { tag: "plain_text", content: boundRendered(rendered, FEISHU_TEXT_CONTENT_MAX) };
 }
 
 /**
@@ -157,7 +184,7 @@ function button(
 ): Record<string, unknown> {
   return {
     tag: "button",
-    text: plainText(truncate(label, FEISHU_TEXT_CONTENT_MAX), literal),
+    text: plainText(label, literal),
     type,
     behaviors: [{ type: "callback", value }],
   };
@@ -174,7 +201,7 @@ function inertCard(title: string, lines: readonly string[]): Record<string, unkn
   return {
     schema: "2.0",
     config: { streaming_mode: false, update_multi: true },
-    header: { title: plainText(truncate(title, FEISHU_TEXT_CONTENT_MAX), true) },
+    header: { title: plainText(title, true) },
     body: { elements: lines.map((line) => markdown(escapeFeishuCardText(line))) },
   };
 }
@@ -199,7 +226,7 @@ export function buildElicitationOpeningCard(
   return {
     schema: "2.0",
     config: { streaming_mode: false, update_multi: true },
-    header: { title: plainText(truncate(messages.elicitationTitle, FEISHU_TEXT_CONTENT_MAX), true) },
+    header: { title: plainText(messages.elicitationTitle, true) },
     body: {
       elements: [
         ...lines.map((line) => markdown(line)),
@@ -266,11 +293,11 @@ export function buildElicitationFieldCard(
     // parser knew about.
     const options = field.kind === "boolean"
       ? [
-          { text: plainText(truncate(messages.elicitationYes, FEISHU_TEXT_CONTENT_MAX)), value: "true" },
-          { text: plainText(truncate(messages.elicitationNo, FEISHU_TEXT_CONTENT_MAX)), value: "false" },
+          { text: plainText(messages.elicitationYes), value: "true" },
+          { text: plainText(messages.elicitationNo), value: "false" },
         ]
       : field.options.map((option) => ({
-          text: plainText(truncate(option.label, FEISHU_TEXT_CONTENT_MAX)),
+          text: plainText(option.label),
           // The option VALUE, not the label: core validates the value, and the
           // label is agent-controlled display text that may be truncated.
           value: option.value,
@@ -278,7 +305,7 @@ export function buildElicitationFieldCard(
     formElements.push({
       tag: "select_static",
       name,
-      placeholder: plainText(truncate(field.title, FEISHU_INPUT_PLACEHOLDER_MAX)),
+      placeholder: plainText(field.title),
       ...(initialOptionFor(field, current) !== undefined
         ? { initial_option: initialOptionFor(field, current) }
         : {}),
@@ -292,9 +319,9 @@ export function buildElicitationFieldCard(
       // place that passed `field.title` through raw, and Feishu renders `<at>`
       // tags in plain_text — so an agent-written title could ping @everyone in
       // the form the user is filling in.
-      label: { tag: "plain_text", content: escapeFeishuCardText(truncate(field.title, FEISHU_TEXT_CONTENT_MAX)) },
+      label: { tag: "plain_text", content: escapeFeishuCardText(field.title) },
       label_position: "top",
-      placeholder: plainText(truncate(field.title, FEISHU_INPUT_PLACEHOLDER_MAX)),
+      placeholder: plainText(field.title),
       required: field.required,
       max_length: maxLengthFor(field),
       ...(prefillFor(field, current) !== undefined ? { default_value: prefillFor(field, current) } : {}),
@@ -304,7 +331,7 @@ export function buildElicitationFieldCard(
   return {
     schema: "2.0",
     config: { streaming_mode: false, update_multi: true },
-    header: { title: plainText(truncate(messages.elicitationTitle, FEISHU_TEXT_CONTENT_MAX), true) },
+    header: { title: plainText(messages.elicitationTitle, true) },
     body: {
       elements: [
         ...lines.map((line) => markdown(line)),
@@ -317,7 +344,11 @@ export function buildElicitationFieldCard(
             // past one: submitting with an empty value leaves the field
             // unanswered, which blocks the advance and makes an all-optional
             // form uncompletable.
-            ...(!field.required ? [button(messages.elicitationSkip, routingValue(token, "skip"), "default", true)] : []),
+            // The field's own position, not a bare action: see the handler. A
+            // Skip that names its field is idempotent when Feishu retries the
+            // callback or a user double-taps, instead of skipping whatever the
+            // shared cursor has moved to.
+            ...(!field.required ? [button(messages.elicitationSkip, routingValue(token, "skip", request.fields.indexOf(field)), "default", true)] : []),
             // "save" is deliberately NOT the review page's "submit": the two are
             // different acts, and reusing one action would let this button's
             // semantics depend on mutable renderer state. A retried or double
@@ -354,7 +385,7 @@ export function buildElicitationReviewCard(
   return {
     schema: "2.0",
     config: { streaming_mode: false, update_multi: true },
-    header: { title: plainText(truncate(messages.elicitationReview, FEISHU_TEXT_CONTENT_MAX), true) },
+    header: { title: plainText(messages.elicitationReview, true) },
     body: {
       elements: [
         ...lines.map((line) => markdown(line)),
@@ -432,10 +463,54 @@ function prefillFor(
 /**
  * The input's `max_length`, capped by the platform's own 1000.
  *
- * Core's answer validator remains authoritative; this only keeps the platform
- * from rejecting a bound it does not accept.
+ * Only reached for a field the gate has already accepted, which now requires a
+ * declared `maxLength` — so this is a genuine clamp of a DECLARED bound, not a
+ * default invented for one that was absent. Core's answer validator remains
+ * authoritative on what a submitted answer satisfies.
  */
 function maxLengthFor(field: ChannelElicitationField): number {
   const desired = "maxLength" in field && typeof field.maxLength === "number" ? field.maxLength : undefined;
-  return Math.min(desired ?? 1000, 1000);
+  return Math.min(desired ?? FEISHU_INPUT_MAX_LENGTH, FEISHU_INPUT_MAX_LENGTH);
+}
+
+/**
+ * The review card this form will render once every answer is collected.
+ *
+ * Used by the renderability gate to size the WORST case the request can produce.
+ * Scheduled answers are the largest agent-authored strings that can land in a
+ * card, so any smaller sample would pass the budget check and then have
+ * `card.update` fail on review — after the user has already filled the form in.
+ *
+ * The maximum is per-field and bounded by what the platform's own `input` can
+ * hold (`maxLengthFor`), so the sample is the biggest the form can ever ask for
+ * rather than an arbitrary number.
+ */
+export function buildWorstCaseReviewCard(
+  request: ChannelElicitationRequest,
+  token: string,
+): Record<string, unknown> {
+  const values = createAnswerMap();
+  for (const field of request.fields) {
+    if (field.kind === "boolean") {
+      values[field.key] = true;
+      continue;
+    }
+    if (field.kind === "number") {
+      values[field.key] = 0;
+      continue;
+    }
+    if (field.kind === "single-select") {
+      // A legal option, not a sprawling string: a select's answer is one of the
+      // values core offered, so its longest rendering is the widest label.
+      const widest = field.options.reduce(
+        (best, option) => (option.label.length > best.label.length ? option : best),
+        field.options[0]!,
+      );
+      values[field.key] = widest.value;
+      continue;
+    }
+    // text / multi-select: the widest answer the platform's input can capture.
+    values[field.key] = "x".repeat(maxLengthFor(field));
+  }
+  return buildElicitationReviewCard(request, token, values as Record<string, ChannelElicitationValue>);
 }

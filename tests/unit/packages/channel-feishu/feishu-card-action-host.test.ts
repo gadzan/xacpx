@@ -295,12 +295,28 @@ test("a truncated encrypt envelope is rejected, not partially parsed", async () 
 });
 
 test("a legacy callback still authenticates on the verification token alone", async () => {
-  // No encryptKey configured, and a body with NEITHER `encrypt` nor `schema`:
-  // the legacy branch, where verificationToken + SHA-1 is the whole contract.
+  // A body with NEITHER `encrypt` NOR `schema`: the legacy branch, where
+  // verificationToken + SHA-1 is the whole contract. The payload is shaped
+  // deliberately to MISS the new-protocol markers — the encryptKey being set is
+  // irrelevant here, so this still exercises the branch it was written for.
   const h = await harness({ ...CONFIG, encryptKey: "", verificationToken: "v-token-1" });
   const legacy = JSON.parse(actionBody()) as Record<string, unknown>;
   delete legacy.schema;
   legacy.token = "v-token-1";
+  const response = await h.post(JSON.stringify(legacy));
+  expect(response.status).toBe(200);
+  expect(h.seen[0]!.openId).toBe("ou_real_operator");
+});
+
+test("a legacy push delivered alongside an encryptKey still uses the token branch", async () => {
+  // Feishu can deliver either protocol regardless of what is configured, so a
+  // fully-configured endpoint must still authenticate a legacy (unmarked) push
+  // on the echoed token with SHA-1 — signing it with the encrypt key and
+  // SHA-256 here would be rejected, which is what makes this a real branch
+  // assertion rather than a mirror of the new-protocol path.
+  const h = await harness(CONFIG);
+  const legacy = JSON.parse(actionBody()) as Record<string, unknown>;
+  delete legacy.schema;
   const response = await h.post(JSON.stringify(legacy));
   expect(response.status).toBe(200);
   expect(h.seen[0]!.openId).toBe("ou_real_operator");
@@ -364,18 +380,27 @@ test("extractCardAction refuses payloads the renderer did not shape", async () =
   expect(extractCardAction({})).toBeNull();
 });
 
-test("config rejects a card endpoint with no secrets", () => {
+test("config rejects a card endpoint with no encryptKey", () => {
+  // Token-only used to parse here, and it is exactly the broken state: the host
+  // signs every new-protocol callback with the encrypt key, so a config
+  // carrying only the verification token would start cleanly and then 401
+  // every real click. The parse must refuse that config instead of shipping it.
+  expect(() => parseFeishuChannelConfig({
+    appId: "a", appSecret: "b",
+    accounts: { default: { appId: "a", appSecret: "b", cardActions: { port: 9871, verificationToken: "t" } } },
+  })).toThrow(/encryptKey is required: without the new-protocol signing key every card action would be rejected with 401/);
+
   expect(() => parseFeishuChannelConfig({
     appId: "a", appSecret: "b",
     accounts: { default: { appId: "a", appSecret: "b", cardActions: { port: 9871 } } },
-  })).toThrow(/encryptKey and\/or verificationToken/);
+  })).toThrow(/encryptKey is required/);
 });
 
 test("config rejects a non-integer or out-of-range port", () => {
   for (const port of ["9871", 0, 70000, 1.5]) {
     expect(() => parseFeishuChannelConfig({
       appId: "a", appSecret: "b",
-      accounts: { default: { appId: "a", appSecret: "b", cardActions: { port, verificationToken: "t" } } },
+      accounts: { default: { appId: "a", appSecret: "b", cardActions: { port, encryptKey: "k", verificationToken: "t" } } },
     })).toThrow(/port must be an integer/);
   }
 });
@@ -383,12 +408,29 @@ test("config rejects a non-integer or out-of-range port", () => {
 test("config defaults the bind host to loopback and the path to /webhook/card", () => {
   const parsed = parseFeishuChannelConfig({
     appId: "a", appSecret: "b",
-    accounts: { default: { appId: "a", appSecret: "b", cardActions: { port: 9871, verificationToken: "t" } } },
+    accounts: { default: { appId: "a", appSecret: "b", cardActions: { port: 9871, encryptKey: "k", verificationToken: "t" } } },
   });
   // Loopback by default: a public interface must be an explicit operator choice.
   expect(parsed.accounts[0]!.cardActions).toEqual({
-    encryptKey: "",
+    encryptKey: "k",
     verificationToken: "t",
+    host: "127.0.0.1",
+    port: 9871,
+    path: "/webhook/card",
+  });
+});
+
+test("config accepts a token-free card endpoint: the token is a second factor", () => {
+  // The encrypt key alone is a complete contract: it signs the new-protocol push
+  // and IS the authenticity proof for an encrypted one. An operator running
+  // modern cards only may leave the token unset, which parses to "".
+  const parsed = parseFeishuChannelConfig({
+    appId: "a", appSecret: "b",
+    accounts: { default: { appId: "a", appSecret: "b", cardActions: { port: 9871, encryptKey: "k" } } },
+  });
+  expect(parsed.accounts[0]!.cardActions).toEqual({
+    encryptKey: "k",
+    verificationToken: "",
     host: "127.0.0.1",
     port: 9871,
     path: "/webhook/card",
@@ -399,8 +441,8 @@ test("config keeps cardActions per account instead of sharing one listener", () 
   const parsed = parseFeishuChannelConfig({
     appId: "a", appSecret: "b",
     accounts: {
-      alpha: { appId: "a1", appSecret: "s1", cardActions: { port: 9001, verificationToken: "t1" } },
-      beta: { appId: "a2", appSecret: "s2", cardActions: { port: 9002, verificationToken: "t2" } },
+      alpha: { appId: "a1", appSecret: "s1", cardActions: { port: 9001, encryptKey: "k1", verificationToken: "t1" } },
+      beta: { appId: "a2", appSecret: "s2", cardActions: { port: 9002, encryptKey: "k2", verificationToken: "t2" } },
     },
   });
   expect(parsed.accounts[0]!.cardActions!.port).toBe(9001);

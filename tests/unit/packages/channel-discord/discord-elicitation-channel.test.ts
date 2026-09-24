@@ -401,7 +401,7 @@ test("no answer value ever appears in a custom id", async () => {
   try {
     const { request } = elicitationRequest({
       fields: [
-        { kind: "text", key: "secret", title: "Secret", required: true },
+        { kind: "text", key: "secret", title: "Secret", required: true, maxLength: 4000 },
         {
           kind: "single-select",
           key: "env",
@@ -443,7 +443,7 @@ test("the answer value never appears in sent card content", async () => {
   try {
     const { request } = elicitationRequest({
       fields: [
-        { kind: "text", key: "secret", title: `Secret: ${SENTINEL}`, required: true },
+        { kind: "text", key: "secret", title: `Secret: `, required: true, maxLength: 4000 },
       ],
     });
     const pending = channel.requestElicitation(request);

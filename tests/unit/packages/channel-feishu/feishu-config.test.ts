@@ -299,3 +299,51 @@ test("parseFeishuChannelConfig accepts trustGroupOwner and per-account override"
 test("parseFeishuChannelConfig rejects non-boolean trustGroupOwner", () => {
   expect(() => parseFeishuChannelConfig({ appId: "x", appSecret: "y", trustGroupOwner: "yes" })).toThrow("trustGroupOwner must be a boolean");
 });
+
+test("parseFeishuChannelConfig rejects a card endpoint with no encryptKey", () => {
+  // Token-only used to parse here, and it is exactly the broken state: the host
+  // signs every new-protocol callback with the encrypt key, so a config
+  // carrying only the verification token would start cleanly and then 401
+  // every real click. The parse must refuse that config instead of shipping it.
+  expect(() => parseFeishuChannelConfig({
+    appId: "x",
+    appSecret: "y",
+    accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871, verificationToken: "t" } } },
+  })).toThrow(/encryptKey is required: without the new-protocol signing key every card action would be rejected with 401/);
+
+  // Blank/whitespace-only keys are the same failure with extra steps.
+  expect(() => parseFeishuChannelConfig({
+    appId: "x",
+    appSecret: "y",
+    accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871, encryptKey: "  " } } },
+  })).toThrow(/encryptKey is required/);
+});
+
+test("parseFeishuChannelConfig accepts encryptKey with and without a verificationToken", () => {
+  const withToken = parseFeishuChannelConfig({
+    appId: "x",
+    appSecret: "y",
+    accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871, encryptKey: "k", verificationToken: "t" } } },
+  });
+  expect(withToken.accounts[0]!.cardActions).toEqual({
+    encryptKey: "k",
+    verificationToken: "t",
+    host: "127.0.0.1",
+    port: 9871,
+    path: "/webhook/card",
+  });
+
+  // The token is a second factor, not the primary: omitting it is legal.
+  const withoutToken = parseFeishuChannelConfig({
+    appId: "x",
+    appSecret: "y",
+    accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871, encryptKey: "k" } } },
+  });
+  expect(withoutToken.accounts[0]!.cardActions).toEqual({
+    encryptKey: "k",
+    verificationToken: "",
+    host: "127.0.0.1",
+    port: 9871,
+    path: "/webhook/card",
+  });
+});

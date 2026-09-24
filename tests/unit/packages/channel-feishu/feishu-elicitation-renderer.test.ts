@@ -161,7 +161,7 @@ test("a redelivered field save cannot accept the form", async () => {
 test("a text answer keeps its exact whitespace and can be empty", async () => {
   const rec = makeRenderer();
   const fields: ChannelElicitationRequest["fields"] = [
-    { kind: "text", key: "raw", title: "Raw", required: true },
+    { kind: "text", key: "raw", title: "Raw", required: true, maxLength: 1000 },
   ];
   const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
     (d) => d,
@@ -179,8 +179,8 @@ test("a text answer keeps its exact whitespace and can be empty", async () => {
 test("an answered optional field can be skipped back to omitted", async () => {
   const rec = makeRenderer();
   const fields: ChannelElicitationRequest["fields"] = [
-    { kind: "text", key: "a", title: "A", required: true },
-    { kind: "text", key: "b", title: "B", required: false },
+    { kind: "text", key: "a", title: "A", required: true, maxLength: 1000 },
+    { kind: "text", key: "b", title: "B", required: false, maxLength: 1000 },
   ];
   const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
     (d) => d,
@@ -194,7 +194,7 @@ test("an answered optional field can be skipped back to omitted", async () => {
   // that transition impossible.
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f1: "beta" } });
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "field", f: 1 }, formValues: {} });
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "skip" }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "skip", f: 1 }, formValues: {} });
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { a: "alpha" } });
 });
@@ -202,7 +202,7 @@ test("an answered optional field can be skipped back to omitted", async () => {
 test("an answered empty string is sent, not dropped as a skip", async () => {
   const rec = makeRenderer();
   const fields: ChannelElicitationRequest["fields"] = [
-    { kind: "text", key: "note", title: "Note", required: false },
+    { kind: "text", key: "note", title: "Note", required: false, maxLength: 1000 },
   ];
   const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
     (d) => d,
@@ -283,7 +283,7 @@ test("the field card's submit button carries a routing token and never an answer
 
 test("a text field renders an input bounded by the platform's max_length", () => {
   const field: ChannelElicitationRequest["fields"] = [
-    { kind: "text", key: "note", title: "Note", required: true },
+    { kind: "text", key: "note", title: "Note", required: true, maxLength: 1000 },
   ];
   const card = buildElicitationFieldCard(request(field), "tok", field[0]!, 1, undefined);
   const form = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements.find((e) => e.tag === "form");
@@ -326,7 +326,7 @@ test("the card is non-streaming so an interaction can update it", () => {
 test("the review card has one Edit per field so answers are modifiable", () => {
   const fields: ChannelElicitationRequest["fields"] = [
     ...ENV_FIELD,
-    { kind: "text", key: "note", title: "Note", required: false },
+    { kind: "text", key: "note", title: "Note", required: false, maxLength: 1000 },
   ];
   const card = buildElicitationReviewCard(request(fields), "tok", { env: "staging" });
   const column = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements.find((e) => e.tag === "column_set");
@@ -427,7 +427,7 @@ test("an over-long field label is refused rather than clipped into a different q
 
 test("a small mixed form renders", () => {
   const verdict = checkElicitationRenderability([
-    { kind: "text", key: "a", title: "A", required: true },
+    { kind: "text", key: "a", title: "A", required: true, maxLength: 1000 },
     ENV_FIELD[0]!,
     { kind: "boolean", key: "b", title: "B", required: true },
     { kind: "number", key: "n", title: "N", required: false, integer: true },
@@ -607,7 +607,7 @@ test("an all-optional form submitted with no answers yields a null content", asy
   // not `undefined`, both of which are different statements.
   await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "skip" },
+    value: { t: token, a: "skip", f: 0 },
     formValues: {},
   });
   // The skip advanced to review; this submit commits the empty form.
@@ -733,7 +733,7 @@ test("a boolean field renders a two-option select, not a free-text box", async (
 test("a text answer with an empty string survives an all-optional form", async () => {
   const rec = makeRenderer();
   const fields: ChannelElicitationRequest["fields"] = [
-    { kind: "text", key: "note", title: "Note", required: false, minLength: 0 },
+    { kind: "text", key: "note", title: "Note", required: false, minLength: 0, maxLength: 1000 },
   ];
   const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
     (d) => d,
@@ -752,7 +752,7 @@ test("a field key named __proto__ becomes an own answer property", async () => {
   // undo that by writing the key into a plain object's prototype.
   const rec = makeRenderer();
   const fields: ChannelElicitationRequest["fields"] = [
-    { kind: "text", key: "__proto__", title: "Proto", required: true },
+    { kind: "text", key: "__proto__", title: "Proto", required: true, maxLength: 1000 },
   ];
   const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
     (d) => d,
@@ -775,4 +775,122 @@ test("a field key named __proto__ becomes an own answer property", async () => {
   expect(decision.content).not.toBeNull();
   expect(Object.hasOwn(decision.content!, "__proto__")).toBe(true);
   expect(decision.content!.__proto__).toBe("typed");
+});
+
+test("a redelivered Skip callback re-skips the same field, not the next one", async () => {
+  // Skip resolved its field from the shared `entry.currentField` cursor. Feishu
+  // retries card callbacks and users double-tap, so the SAME Skip callback
+  // arriving twice advanced the cursor between the two deliveries and skipped a
+  // DIFFERENT field — deleting an answer it already had. No true concurrency is
+  // needed: the sequence is enough.
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "a", title: "A", required: false, maxLength: 1000 },
+    { kind: "text", key: "b", title: "B", required: false, maxLength: 1000 },
+    { kind: "text", key: "c", title: "C", required: false, maxLength: 1000 },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { entry, token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  // A's own card. Give B an answer so a stray skip of B is observable as a loss.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "field", f: 1 }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f1: "beta" } });
+  // Back to A, then deliver A's Skip TWICE.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "field", f: 0 }, formValues: {} });
+  expect(entry.currentField).toBe("a");
+  const skipA = { openId: "ou_initiator", value: { t: token, a: "skip", f: 0 }, formValues: {} };
+  await rec.renderer.handleAction(skipA);
+  // Redelivery of the very same callback: same token, same action, same field.
+  await rec.renderer.handleAction(skipA);
+  expect([...entry.skipped]).toEqual(["a"]);
+  // B is answered, so the first UNRESOLVED field is C — not B, and certainly not
+  // a field the duplicate skipped.
+  expect(entry.currentField).toBe("c");
+  // B's answer survived the duplicate Skip. This is the loss the bug caused.
+  expect(entry.values.b).toBe("beta");
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { b: "beta" } });
+});
+
+test("a Skip callback with no field position is rejected", async () => {
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "a", title: "A", required: false, maxLength: 1000 },
+    { kind: "text", key: "b", title: "B", required: false, maxLength: 1000 },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { entry, token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  expect(entry.currentField).toBe("a");
+  // No `f` at all: refusing is safer than guessing from the cursor.
+  const result = await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "skip" }, formValues: {} });
+  expect(result.handled).toBe(false);
+  expect(entry.skipped.size).toBe(0);
+  expect(entry.currentField).toBe("a");
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "skip", f: 1 }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "skip", f: 0 }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: null });
+});
+
+test("an answer core would reject never reaches the Accepted card", async () => {
+  // The review submit used to check required-presence only. `parseFormAnswer`
+  // returns text raw — even `minLength` is unchecked — so `{minLength: 5}` with
+  // "x", or an email field of "not-an-email", went: review -> Submit -> card
+  // shows Accepted -> the broker rejects it and the turn ends as cancel. The
+  // user saw success and then a cancellation, with the form already inert.
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [
+    {
+      kind: "text",
+      key: "mail",
+      title: "Email",
+      required: true,
+      maxLength: 100,
+      format: "email",
+    },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "not-an-email" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  // Not settled: the renderer bounced back to the field so the answer can be
+  // corrected, and the card never became a terminal "accepted".
+  expect(rec.pending.size).toBe(1);
+  const terminalText = rec.transport.updates.map((update) => JSON.stringify(update)).join("\n");
+  expect(terminalText).not.toContain("accepted");
+  // Correcting it now succeeds.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "dev@example.com" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { mail: "dev@example.com" } });
+});
+
+test("a minLength violation is caught before the card is withdrawn", async () => {
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "note", title: "Note", required: true, maxLength: 100, minLength: 5 },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "x" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(rec.pending.size).toBe(1);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "long enough" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { note: "long enough" } });
 });

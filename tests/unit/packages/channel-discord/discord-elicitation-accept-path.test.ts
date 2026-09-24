@@ -44,7 +44,7 @@ function request(overrides: Partial<ChannelElicitationRequest> = {}): ChannelEli
           { value: "staging", label: "Staging" },
         ],
       },
-      { kind: "text", key: "note", title: "Note", required: false },
+      { kind: "text", key: "note", title: "Note", required: false, maxLength: 4000 },
     ],
     ...overrides,
   };

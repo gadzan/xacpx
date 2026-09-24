@@ -95,6 +95,8 @@ export type ElicitationUnsupportedReason =
   | "field-label-too-long"
   | "field-description-too-long"
   | "answer-too-long"
+  | "answer-unbounded"
+  | "card-too-large"
   | "empty-select"
   | "option-constraint-unsatisfiable"
   | "too-many-fields";
@@ -121,6 +123,37 @@ export const FEISHU_UNDOCUMENTED_LIMITS: readonly string[] = [
 
 function longest(values: readonly string[]): number {
   return values.reduce((max, value) => Math.max(max, value.length), 0);
+}
+
+/**
+ * Would this card fit inside Feishu's card JSON budget?
+ *
+ * A SEPARATE check from `checkElicitationRenderability` because it needs the
+ * BUILT card, while the field-level gate runs before anything is sent. Calling
+ * it on the assembled card is the only honest way to answer: the card's real size
+ * is a property of the escaped text, the per-field chrome, and the routing
+ * payloads together, none of which is visible from the schema alone.
+ */
+export function fitsCardBudget(card: unknown): ElicitationRenderability {
+  const size = measureElicitationCardBytes(card);
+  if (size <= FEISHU_CARD_JSON_MAX_BYTES) return { renderable: true };
+  return {
+    renderable: false,
+    reason: "card-too-large",
+    detail: `card is ${size} bytes serialized; limit ${FEISHU_CARD_JSON_MAX_BYTES}`,
+  };
+}
+
+/**
+ * Serialized size of a card, in bytes, exactly as Feishu will receive it.
+ *
+ * CardKit validates the JSON PAYLOAD of `card.data` (error 200860 "Card content
+ * exceeds limit") at 30 KB, which is a byte count of the serialized string — not
+ * a JS `.length` of the source text, and not a count of elements. Feishu also
+ * receives UTF-8, so a multi-byte character costs 2-4 bytes against the budget.
+ */
+export function measureElicitationCardBytes(card: unknown): number {
+  return Buffer.byteLength(JSON.stringify(card), "utf8");
 }
 
 /**
@@ -202,6 +235,21 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
         detail: `field ${JSON.stringify(field.key)} allows ${field.maxLength} chars; one input captures at most ${FEISHU_INPUT_MAX_LENGTH}`,
       };
     }
+    // NO DECLARED BOUND is the same refusal, not a licence to invent one.
+    //
+    // `maxLength` is optional in the plugin contract and core only validates it
+    // when present, so an absent bound means the accepted domain is everything up
+    // to the aggregate answer policy — strictly larger than one input can hold.
+    // `maxLengthFor` used to default the widget to 1000, which quietly narrowed
+    // the agent's question to the renderer's own choice: any longer answer the
+    // agent would have accepted became unreachable before core ever saw it.
+    if (field.kind === "text" && field.maxLength === undefined) {
+      return {
+        renderable: false,
+        reason: "answer-unbounded",
+        detail: `field ${JSON.stringify(field.key)} declares no maxLength, so its answers are not bounded to the ${FEISHU_INPUT_MAX_LENGTH} chars one input captures`,
+      };
+    }
     // The other side of the same capacity bound: a field that REQUIRES more
     // characters than the input can hold is impossible to satisfy, not merely
     // inconvenient.
@@ -255,4 +303,68 @@ export function optionViolatesFieldConstraints(
   // a date regex that accepted "2026-99-99" — which made a dead option look
   // live, exactly the bug this function exists to prevent.
   return !satisfiesElicitationFormat(field.format, value);
+}
+
+/**
+ * The first collected answer core is guaranteed to reject, or null when every
+ * answer satisfies its field.
+ *
+ * The review-page submit runs this BEFORE the card is withdrawn as "accepted".
+ * Without it a user could review, submit, watch the card say Accepted, and only
+ * then have the broker cancel the turn — the card contradicts the protocol
+ * result, and nobody gets the chance to correct a typo. Core stays the
+ * authority; this only asks its question while the form is still editable.
+ *
+ * Limited to what is deterministic and renderer-known, exactly like
+ * `optionViolatesFieldConstraints`: the length bounds and the ACP known formats
+ * through the shared predicate. Agent `pattern` is never executed (core refuses
+ * it too — a resource-exhaustion vector), and a number's range is enforced by
+ * the widget at input time.
+ */
+export function findRejectedAnswer(
+  fields: readonly ChannelElicitationField[],
+  values: Readonly<Record<string, unknown>>,
+): { key: string; reason: string } | null {
+  for (const field of fields) {
+    if (!Object.hasOwn(values, field.key)) {
+      // Absent is a SKIP, legal for an optional field; a required gap is the
+      // caller's own missing-field check.
+      continue;
+    }
+    const value = values[field.key];
+    if (field.kind === "text") {
+      if (typeof value !== "string") continue;
+      const length = [...value].length;
+      if (field.minLength !== undefined && length < field.minLength) {
+        return { key: field.key, reason: `shorter than ${field.minLength} characters` };
+      }
+      if (field.maxLength !== undefined && length > field.maxLength) {
+        return { key: field.key, reason: `longer than ${field.maxLength} characters` };
+      }
+      if (!satisfiesElicitationFormat(field.format, value)) {
+        return { key: field.key, reason: `not a valid ${field.format ?? "string"}` };
+      }
+      continue;
+    }
+    if (field.kind === "single-select") {
+      if (typeof value !== "string") continue;
+      if (!field.options.some((option) => option.value === value)) {
+        return { key: field.key, reason: "not an offered option" };
+      }
+      if (!satisfiesElicitationFormat(field.format, value)) {
+        return { key: field.key, reason: `not a valid ${field.format ?? "string"}` };
+      }
+      continue;
+    }
+    if (field.kind === "multi-select") {
+      if (!Array.isArray(value)) continue;
+      for (const item of value) {
+        if (typeof item !== "string" || !field.options.some((option) => option.value === item)) {
+          return { key: field.key, reason: "not an offered option" };
+        }
+      }
+      continue;
+    }
+  }
+  return null;
 }

@@ -8,7 +8,11 @@ import {
 import type { ChannelElicitationField } from "xacpx/plugin-api";
 
 function text(key: string, title = "What is the target?"): ChannelElicitationField {
-  return { kind: "text", key, title, required: true };
+  // A declared `maxLength`: the renderability gate refuses a text field that
+  // omits it, because an unbounded answer domain cannot be expressed by a
+  // modal input. Core treats the bound as optional and only validates it when
+  // present, so "absent" means "larger than the widget" — not "no limit".
+  return { kind: "text", key, title, required: true, maxLength: 4000 };
 }
 
 function single(key: string, count: number): ChannelElicitationField {
@@ -154,7 +158,7 @@ test("a select with zero options is rejected before it becomes an empty Discord 
 
 test("a text minLength beyond the input's capacity is refused, not clamped", () => {
   const verdict = checkElicitationRenderability([
-    { kind: "text", key: "note", title: "Note", required: true, minLength: 4001 },
+    { kind: "text", key: "note", title: "Note", required: true, minLength: 4001, maxLength: 5000 },
   ]);
   expect(verdict.renderable).toBe(false);
   expect(verdict.reason).toBe("text-min-beyond-capture");
@@ -214,4 +218,26 @@ test("a select whose options all satisfy the constraints is accepted", () => {
     },
   ]);
   expect(verdict.renderable).toBe(true);
+});
+
+test("a text field with no maxLength is refused, not narrowed to the widget's default", () => {
+  // The modal used to substitute 4000 when the field omitted `maxLength`, so the
+  // renderer silently redefined the agent's question as "at most 4000 chars"
+  // while the schema's actual accepted domain was unbounded. Core validates the
+  // bound only when it is present, so absent strictly means LARGER than 4000 —
+  // an answer the agent would accept became unreachable on the platform.
+  const verdict = checkElicitationRenderability([
+    { kind: "text", key: "note", title: "Note", required: false },
+  ]);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("text-unbounded");
+  expect(verdict.detail).toContain("no maxLength");
+  // A declared bound inside the platform capacity still renders.
+  expect(checkElicitationRenderability([
+    { kind: "text", key: "note", title: "Note", required: false, maxLength: 4000 },
+  ]).renderable).toBe(true);
+  // A declared bound past it is still the explicit-capacity refusal.
+  expect(checkElicitationRenderability([
+    { kind: "text", key: "note", title: "Note", required: false, maxLength: 4001 },
+  ]).reason).toBe("text-max-beyond-capture");
 });

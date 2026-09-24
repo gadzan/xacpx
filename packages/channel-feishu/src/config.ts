@@ -45,21 +45,39 @@ export interface FeishuResolvedAccountConfig {
    * connection cannot carry — it subscribes to events only. So this is a
    * separate, opt-in HTTP surface.
    *
-   * `encryptKey` and `verificationToken` are what make the callback
-   * authenticated: they verify that a request really came from Feishu's open
-   * platform, which is the trust anchor the plugin's identity check needs.
-   * Without them the channel stays unsupported rather than trusting payload
-   * text. The port is a required companion: an unauthenticated listener on a
-   * shared host is worse than no listener at all.
+   * `encryptKey` is what makes the callback authenticated: it is the new-protocol
+   * signing secret, so it is the trust anchor the plugin's identity check needs.
+   * The port is a required companion: an unauthenticated listener on a shared
+   * host is worse than no listener at all.
    */
   cardActions?: FeishuCardActionConfig;
 }
 
-/** Opt-in card-callback (webhook) listener for one account. */
+/**
+ * Opt-in card-callback (webhook) listener for one account.
+ *
+ * `encryptKey` is REQUIRED. `verifyCardRequest` picks the signing secret by
+ * protocol: a new-protocol callback (one carrying `encrypt` or `schema`) is
+ * verified with SHA-256 over the encrypt key, and an empty key there is
+ * `unauthorized`. Every button the renderer emits carries `schema: "2.0"`, so
+ * every real click is new-protocol — a token-only config would start cleanly,
+ * advertise form support, and then 401 on 100% of clicks. The token is a second
+ * factor on the new-protocol push, not an alternative to the key.
+ */
 export interface FeishuCardActionConfig {
-  /** Decryption key for encrypted pushes; also the trust anchor for authenticity. */
+  /**
+   * Decryption key for encrypted pushes; also the new-protocol signing secret.
+   * Required, and never `""` on a config that came through `parseFeishuChannelConfig`:
+   * parsing rejects a missing or blank key (see `parseCardActions`).
+   */
   encryptKey: string;
-  /** Token Feishu echoes on every callback; rejected when it does not match. */
+  /**
+   * Second factor only. Feishu echoes it on every callback and the host
+   * cross-checks it when it is set. It is additionally REQUIRED for a legacy
+   * (no `schema`, no `encrypt`) push, which no renderer button produces. An
+   * operator who only runs modern cards may leave this unset, which parses to
+   * `""` rather than to a missing field.
+   */
   verificationToken: string;
   /** Loopback interface to bind. Defaults to 127.0.0.1 — a private surface. */
   host: string;
@@ -202,23 +220,33 @@ const DEFAULT_CARD_ACTION_PATH = "/webhook/card";
  * An operator who wrote `cardActions` clearly intends the channel to exist, and
  * an endpoint that never comes up (because, say, the port was a string) would
  * look exactly like "the feature does not work" at runtime.
+ *
+ * `encryptKey` is REQUIRED for the same reason, one layer up. It is the
+ * new-protocol signing secret, and every button the renderer emits carries
+ * `schema: "2.0"`, so a real click always lands in that branch. Accepting a
+ * token-only config here would produce a channel that starts, advertises form
+ * support, and 401s every single click. `verificationToken` stays OPTIONAL
+ * because the host only needs it as a second factor on the new-protocol push.
  */
 function parseCardActions(raw: unknown, path: string): FeishuCardActionConfig | undefined {
   if (raw === undefined) return undefined;
   if (raw === false) return undefined;
   if (!isRecord(raw)) throw new Error(`${path} must be an object`);
   const encryptKey = stringOptional(raw.encryptKey, `${path}.encryptKey`);
-  const verificationToken = stringOptional(raw.verificationToken, `${path}.verificationToken`);
-  if (!encryptKey && !verificationToken) {
-    throw new Error(`${path} requires encryptKey and/or verificationToken: an unauthenticated card endpoint cannot verify that a callback came from Feishu`);
+  if (encryptKey === undefined) {
+    throw new Error(
+      `${path}.encryptKey is required: without the new-protocol signing key every card action would be rejected with 401`,
+    );
   }
+  const verificationToken = stringOptional(raw.verificationToken, `${path}.verificationToken`);
   const port = raw.port;
   if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`${path}.port must be an integer between 1 and 65535`);
   }
   const host = stringOptional(raw.host, `${path}.host`) ?? DEFAULT_CARD_ACTION_HOST;
   return {
-    encryptKey: encryptKey ?? "",
+    // No `?? ""` fallback: the required-key check above already narrowed this.
+    encryptKey,
     verificationToken: verificationToken ?? "",
     host,
     port,

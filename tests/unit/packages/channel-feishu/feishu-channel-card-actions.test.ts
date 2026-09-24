@@ -380,7 +380,7 @@ test("requestElicitation without a card channel fails closed", async () => {
       agent: { name: "codex" },
       message: "m",
       mode: "form",
-      fields: [{ kind: "text", key: "n", title: "N", required: true }],
+      fields: [{ kind: "text", key: "n", title: "N", required: true, maxLength: 1000 }],
       expiresAt: Date.now() + 60_000,
       signal: new AbortController().signal,
     } as never)).rejects.toThrow(/no card-callback channel/);
@@ -422,7 +422,7 @@ test("stop() drains a pending form before the callback channel goes away", async
     agent: { name: "codex" },
     message: "m",
     mode: "form",
-    fields: [{ kind: "text", key: "n", title: "N", required: true }],
+    fields: [{ kind: "text", key: "n", title: "N", required: true, maxLength: 1000 }],
     expiresAt: Date.now() + 60_000,
     signal: new AbortController().signal,
   } as never).then(

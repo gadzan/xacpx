@@ -42,7 +42,11 @@ import type {
 } from "xacpx/plugin-api";
 
 import { t as getMessages } from "./i18n/index.js";
-import { checkElicitationRenderability } from "./elicitation-limits.js";
+import {
+  checkElicitationRenderability,
+  fitsCardBudget,
+  findRejectedAnswer,
+} from "./elicitation-limits.js";
 import {
   buildElicitationContent,
   createAnswerMap,
@@ -60,6 +64,7 @@ import {
   buildElicitationOpeningCard,
   buildElicitationReviewCard,
   buildElicitationTerminalCard,
+  buildWorstCaseReviewCard,
 } from "./elicitation-cards.js";
 
 /** What the renderer needs from the channel to send and update cards. */
@@ -129,10 +134,16 @@ export function parseElicitationAction(payloadValue: unknown): { token: string; 
   if (typeof action !== "string" || action.length === 0) return null;
   // Positional, like Discord: a schema key is not a valid routing id.
   const fieldIndex = record.f;
+  const positional = typeof fieldIndex === "number" && Number.isInteger(fieldIndex) && fieldIndex >= 0 ? fieldIndex : undefined;
+  // `skip` MUST carry a position. Resolving it from mutable renderer state is
+  // what let a retried or double-tapped Skip act on a different field than the
+  // button that produced the callback, so a positionless Skip is rejected
+  // outright rather than silently reinterpreted.
+  if (action === "skip" && positional === undefined) return null;
   return {
     token,
     action,
-    ...(typeof fieldIndex === "number" && Number.isInteger(fieldIndex) && fieldIndex >= 0 ? { fieldIndex } : {}),
+    ...(positional !== undefined ? { fieldIndex: positional } : {}),
   };
 }
 
@@ -207,6 +218,22 @@ export class FeishuElicitationRenderer {
 
     const token = createElicitationToken();
     const opening = buildElicitationOpeningCard(request, token);
+
+    // The review card is where a form can grow past Feishu's 30 KB card budget:
+    // every field's label and answer lands in one card, and the escaped form of
+    // an answer can be several times its raw length. Sizing the WORST-CASE
+    // review here, before anything is sent, is what keeps this from being a
+    // `card.update` failure after the user has filled the whole form in.
+    const worstReview = buildWorstCaseReviewCard(request, token);
+    const reviewVerdict = fitsCardBudget(worstReview);
+    if (!reviewVerdict.renderable) {
+      this.options.log?.("feishu.elicitation.unsupported", "cancelled unrenderable elicitation", {
+        requestId: request.requestId,
+        reason: reviewVerdict.reason ?? "unknown",
+        detail: reviewVerdict.detail ?? "",
+      });
+      throw new Error(`elicitation form is not renderable on Feishu: ${reviewVerdict.reason ?? "unknown"}`);
+    }
 
     let settle: (decision: ChannelElicitationDecision) => void = () => {};
     let rejectPromise: (error: Error) => void = () => {};
@@ -315,9 +342,20 @@ export class FeishuElicitationRenderer {
       case "skip": {
         // An explicit "leave this field blank", including clearing an answer the
         // user already gave: value -> omitted is part of review-and-modify.
-        if (entry.currentField !== undefined) {
-          markSkipped(entry, entry.currentField);
-        }
+        //
+        // The field comes from the interaction's OWN position, never from
+        // `entry.currentField`. Feishu retries card callbacks and users
+        // double-tap, and the cursor advances as soon as the first Skip lands —
+        // so a redelivery of the same old callback used to skip a DIFFERENT
+        // field, and if that field already had an answer, `markSkipped` deleted
+        // it. Naming the field makes the duplicate a no-op on the same field.
+        const named = parsed.fieldIndex !== undefined ? entry.request.fields[parsed.fieldIndex] : undefined;
+        if (!named) return { handled: false, settled: false };
+        if (named.required) return { handled: false, settled: false };
+        markSkipped(entry, named.key);
+        // Park on the named field so a stale interaction from an older card still
+        // moves to the correct next question.
+        entry.currentField = named.key;
         const next = nextUnresolvedFieldKey(entry);
         if (next) {
           entry.currentField = next;
@@ -414,6 +452,25 @@ export class FeishuElicitationRenderer {
       // Stay on the unanswered field and let the user fix it.
       entry.currentField = missing[0]!.key;
       await this.renderCurrentField(entry);
+      return { handled: true, settled: false };
+    }
+    // Ask core's own question about the collected answers BEFORE the card is
+    // withdrawn as "accepted". Core re-validates either way, but skipping this
+    // meant the user reviewed, submitted, saw Accepted, and only then had the
+    // broker cancel the turn for a typo — with no chance left to correct it.
+    const rejected = findRejectedAnswer(entry.request.fields, entry.values);
+    if (rejected) {
+      const field = entry.request.fields.find((candidate) => candidate.key === rejected.key);
+      if (field) {
+        // Back to the offending field so the answer is editable again.
+        entry.currentField = field.key;
+        await this.renderCurrentField(entry);
+        this.options.log?.("feishu.elicitation.answer_rejected", "answer does not satisfy its field constraints", {
+          requestId: entry.requestId,
+          fieldKey: field.key,
+          reason: rejected.reason,
+        });
+      }
       return { handled: true, settled: false };
     }
     if (!trySettle(entry)) return { handled: false, settled: false };

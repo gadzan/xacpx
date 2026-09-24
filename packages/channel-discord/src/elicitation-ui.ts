@@ -42,6 +42,7 @@ import {
   DISCORD_SELECT_OPTION_LABEL_MAX,
   DISCORD_SELECT_PLACEHOLDER_MAX,
   DISCORD_TEXT_CAPTURE_MAX,
+  findRejectedAnswer,
 } from "./elicitation-limits.js";
 import {
   buildAnswerContent,
@@ -694,6 +695,10 @@ export function buildElicitationModal(
           // platform's capacity, so this is an exact mapping, not a clamp.
           // Only `text` carries these — a number field is bounded numerically.
           ...(field.kind === "text" && field.minLength !== undefined ? { minLength: field.minLength } : {}),
+          // The gate also refuses a text field that declares NO `maxLength`, so
+          // reaching this line with `undefined` is impossible for a renderable
+          // form. The fallback exists only so the type is total; it is never the
+          // value a user is actually given.
           maxLength: Math.min(
             field.kind === "text" ? field.maxLength ?? DISCORD_TEXT_CAPTURE_MAX : DISCORD_TEXT_CAPTURE_MAX,
             DISCORD_TEXT_CAPTURE_MAX,
@@ -980,6 +985,20 @@ async function submitAnswers(
   if (missing.length > 0) {
     // Stay on the review page and point at the first gap.
     await input.interaction.replyEphemeral(`${messages.elicitationRequired}: ${missing[0]!.title}`);
+    return { decided: false };
+  }
+  // Check what the user is about to send against the field's own constraints
+  // BEFORE the card can turn "Accepted". Core re-validates regardless, but
+  // without this the user saw a successful card and then a cancelled turn for a
+  // typo the renderer could have caught while the form was still editable.
+  const rejected = findRejectedAnswer(entry.request.fields, entry.values);
+  if (rejected) {
+    // Back to the offending field so the answer can be corrected.
+    const index = entry.request.fields.findIndex((field) => field.key === rejected.key);
+    entry.currentField = entry.request.fields[index]?.key ?? entry.currentField;
+    await input.interaction.replyEphemeral(
+      `${entry.request.fields[index]?.title ?? rejected.key}: ${rejected.reason}`,
+    );
     return { decided: false };
   }
   if (!trySettle(entry)) {

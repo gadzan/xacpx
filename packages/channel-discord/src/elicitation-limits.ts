@@ -85,6 +85,7 @@ export type ElicitationUnsupportedReason =
   | "field-description-too-long"
   | "text-min-beyond-capture"
   | "text-max-beyond-capture"
+  | "text-unbounded"
   | "select-option-constraint-unsatisfiable"
   | "empty-select";
 
@@ -222,11 +223,32 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
           detail: `field ${JSON.stringify(field.key)} requires at least ${minLength} chars but the platform input captures ${DISCORD_TEXT_CAPTURE_MAX}`,
         };
       }
-      if ((field.maxLength ?? 0) > DISCORD_TEXT_CAPTURE_MAX) {
+      if (field.maxLength !== undefined && field.maxLength > DISCORD_TEXT_CAPTURE_MAX) {
         return {
           renderable: false,
           reason: "text-max-beyond-capture",
           detail: `field ${JSON.stringify(field.key)} allows ${field.maxLength} chars but the platform input captures ${DISCORD_TEXT_CAPTURE_MAX}`,
+        };
+      }
+      // NO DECLARED BOUND is the same refusal, not a licence to invent one.
+      //
+      // `maxLength` is optional in the plugin contract and core only validates
+      // it when present, so an absent bound means the accepted domain is
+      // everything up to the aggregate answer policy — strictly larger than
+      // this modal can capture. Defaulting the input to 4000 (as the modal does
+      // when the field omits the bound) quietly narrows the agent's question to
+      // what the widget happens to allow: the user can only ever submit the
+      // renderer's choice of maximum, and a longer answer the agent would have
+      // accepted is rejected by the platform before core ever sees it.
+      //
+      // Refusing the whole form is the honest outcome, exactly as the two
+      // bounds above do: the platform cannot express what was asked, so it says
+      // so instead of substituting a different question.
+      if (field.maxLength === undefined) {
+        return {
+          renderable: false,
+          reason: "text-unbounded",
+          detail: `field ${JSON.stringify(field.key)} declares no maxLength, so its answers are not bounded to the ${DISCORD_TEXT_CAPTURE_MAX} chars a modal input can capture`,
         };
       }
     }
@@ -258,6 +280,73 @@ export function optionViolatesFieldConstraints(
   // live, which is the exact bug this function exists to prevent. One shared
   // predicate keeps the renderer's answer identical to the validator's.
   return !satisfiesElicitationFormat(field.format, value);
+}
+
+/**
+ * The first answer core is guaranteed to reject, or null when every collected
+ * answer satisfies its field.
+ *
+ * The renderer runs this BEFORE committing a review. Without it a user could
+ * review, submit, watch the card turn "Accepted", and only then have the broker
+ * cancel the turn — the card contradicts the protocol result, and the user is
+ * never given the chance to fix what they typed. Core remains the authority;
+ * this only moves its verdict to a moment when the form is still editable.
+ *
+ * Deliberately limited to what is DETERMINISTIC and renderer-known: the length
+ * bounds and the ACP known formats, via the same shared predicate the option
+ * check uses. Agent-supplied `pattern` is never executed here (see core's
+ * `validateElicitationAnswer`), and number bounds are enforced by the widget at
+ * input time, so both are left to core.
+ */
+export function findRejectedAnswer(
+  fields: readonly ChannelElicitationField[],
+  values: Readonly<Record<string, unknown>>,
+): { key: string; reason: string } | null {
+  for (const field of fields) {
+    if (!Object.hasOwn(values, field.key)) {
+      // Absent is a SKIP, which core accepts for an optional field. A required
+      // gap is caught by the caller's own missing-field check.
+      continue;
+    }
+    const value = values[field.key];
+    if (field.kind === "text") {
+      if (typeof value !== "string") continue;
+      const chars = codePointCount(value);
+      if (field.minLength !== undefined && chars < field.minLength) {
+        return { key: field.key, reason: `shorter than ${field.minLength} characters` };
+      }
+      if (field.maxLength !== undefined && chars > field.maxLength) {
+        return { key: field.key, reason: `longer than ${field.maxLength} characters` };
+      }
+      if (!satisfiesElicitationFormat(field.format, value)) {
+        return { key: field.key, reason: `not a valid ${field.format ?? "string"}` };
+      }
+      continue;
+    }
+    // A select answer must be one the agent offered: the dead-choice case the
+    // option gate already refuses at form level, restated for a value recorded
+    // before the gate existed.
+    if (field.kind === "single-select") {
+      if (typeof value !== "string") continue;
+      if (!field.options.some((option) => option.value === value)) {
+        return { key: field.key, reason: "not an offered option" };
+      }
+      if (!satisfiesElicitationFormat(field.format, value)) {
+        return { key: field.key, reason: `not a valid ${field.format ?? "string"}` };
+      }
+      continue;
+    }
+    if (field.kind === "multi-select") {
+      if (!Array.isArray(value)) continue;
+      for (const item of value) {
+        if (typeof item !== "string" || !field.options.some((option) => option.value === item)) {
+          return { key: field.key, reason: "not an offered option" };
+        }
+      }
+      continue;
+    }
+  }
+  return null;
 }
 
 /**
