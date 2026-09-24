@@ -1074,6 +1074,50 @@ test("teardown fails closed on controller residue cross-kind to a Direct root", 
   first.store.close();
 });
 
+test("teardown fails closed on conversation-exact controller owner with stale topicId", async () => {
+  const first = await createLifecycle();
+  const { createDirectConversationId, createDirectTopicId } = await import("../../../src/domain/ids");
+  const bot = first.bots.getBot(BOT_ID);
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-direct-controller-stale-topic",
+    content: "hello",
+  });
+  expect(accepted.run.conversationId).toBe(conversationId);
+  // Persist only the Conversation row: the deterministic default Topic is
+  // synthetic (no AppState row), so directTopicIds cannot contain it — but
+  // the conversation-exact owner must still fence.
+  first.state.conversations[conversationId] = {
+    id: conversationId, kind: "bot", title: bot.name, botIds: [bot.id],
+    createdAt: NOW, updatedAt: NOW,
+  };
+  for (const topicIdValue of [topicId, "topic_stale_missing"] as const) {
+    const alias = `controller_stale_${topicIdValue.slice(-8)}`;
+    first.state.sessions[alias] = {
+      alias,
+      agent: "codex",
+      workspace: "backend",
+      transport_session: `backend:${alias}`,
+      logical_session_id: `aaaaaaaa-aaaa-4aaa-aaaa-${topicIdValue.slice(-8).padStart(8, "0")}aaaaaaaa`.slice(0, 36),
+      created_at: NOW,
+      last_used_at: NOW,
+      owner: { kind: "group-controller", bindingId: "missing_binding", conversationId, topicId: topicIdValue },
+    };
+    await expect(first.service.teardownDirectConversation(BOT_ID)).rejects.toMatchObject({
+      code: "runtime_ownership_conflict",
+    });
+    expect(first.state.conversations[conversationId]).toBeDefined();
+    expect(first.sessions.getLogicalSessionRecord(alias)?.alias).toBe(alias);
+    expect(first.store.isConversationDeleting(conversationId)).toBe(false);
+    delete first.state.sessions[alias];
+  }
+  expect(first.physical.deleteCalls).toBe(0);
+  expect(first.physical.releaseCalls).toBe(0);
+  first.store.close();
+});
+
 test("teardown fails closed when PR2 bindingId and conversationId disagree", async () => {
   const first = await createLifecycle();
   const conversationId = createDirectConversationId(BOT_ID);

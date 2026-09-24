@@ -873,13 +873,11 @@ export class ConversationRunService {
         return false;
       }
       if (owner.conversationId !== undefined) {
-        if (owner.conversationId !== conversationId) {
-          return false;
-        }
-        // Exact conversation on this Direct root: an absent topicId still
-        // fences (the Conversation row itself is the cleanup root); a
-        // present topicId must name one of its Topics to count.
-        return owner.topicId === undefined || directTopicIds.has(owner.topicId);
+        // Conversation-exact fences, full stop: the Conversation row itself
+        // is the cleanup root this teardown deletes. A stale/synthetic
+        // topicId alongside is more contradiction evidence, never a pass —
+        // same rule as the Group fence.
+        return owner.conversationId === conversationId;
       }
       const bound = owner.bindingId !== undefined
         ? this.state.bot_runtime_bindings[owner.bindingId]
