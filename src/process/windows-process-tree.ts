@@ -12,9 +12,11 @@ export interface BatchTarget {
    * caller could only observe the process through a WMI/CIM snapshot, so the
    * creationDate is quantized to 6-digit microseconds (1-9 ticks below the
    * kernel's FILETIME) and the executablePath is the create-time launcher path.
-   * Both are then compared with tolerance instead of exactly, exactly as a
-   * CIM-derived descendant is. Default "handle" keeps the exact compare for
-   * callers that probed a retained handle.
+   * The worker then treats the record like a CIM-derived descendant: the creation
+   * date is compared with tolerance, and the path is not compared at all (a CIM
+   * path is never a handle image under a symlinked launcher). Note this makes the
+   * match WIDER, not tighter, than the handle-derived contract. Default "handle"
+   * keeps the exact compare for callers that probed a retained handle.
    */
   fingerprintSource?: WindowsDescendantFingerprintSource;
 }
@@ -174,6 +176,8 @@ export function decodeWindowsTreeWorkerResponse(value: unknown, root: BatchTarge
       return null;
     }
     seen.add(target.pid);
+    const provenance = decodeFingerprintSource(item.fingerprintSource);
+    if (provenance === null) return null;
     outcomes.push({
       target,
       outcome: item.outcome as KillOutcome,
@@ -181,7 +185,7 @@ export function decodeWindowsTreeWorkerResponse(value: unknown, root: BatchTarge
       ...(typeof item.executablePath === "string" ? { executablePath: item.executablePath } : {}),
       // Absent = the entry's fingerprint came from the caller (the root), which
       // the caller already knows is handle-derived; nothing to reinterpret.
-      ...(decodeFingerprintSource(item.fingerprintSource) ? { fingerprintSource: decodeFingerprintSource(item.fingerprintSource)! } : {}),
+      ...(provenance === undefined ? {} : { fingerprintSource: provenance }),
     });
   }
 
@@ -208,11 +212,20 @@ const DESCENDANT_FINGERPRINT_SOURCES: Partial<Record<WindowsDescendantFingerprin
   unknown: true,
 };
 
-function decodeFingerprintSource(value: unknown): WindowsDescendantFingerprintSource | undefined {
+/**
+ * Decodes the provenance field of a worker record.
+ *   `undefined` — absent, legal: the caller supplied the values itself;
+ *   a valid source — legal;
+ *   `null` — malformed (present but not a known source), and the caller must
+ *   reject the whole response. Treating it as absent would silently downgrade
+ *   the record to the wider CIM replay contract (±9 ticks, no path equality),
+ *   so a corrupt provenance must fail closed like a malformed creationDate.
+ */
+function decodeFingerprintSource(value: unknown): WindowsDescendantFingerprintSource | null | undefined {
   if (value === undefined || value === null) return undefined;
   return DESCENDANT_FINGERPRINT_SOURCES[value as WindowsDescendantFingerprintSource]
     ? value as WindowsDescendantFingerprintSource
-    : undefined;
+    : null;
 }
 
 /**
@@ -244,6 +257,8 @@ export function decodeWindowsDescendantsResponse(value: unknown, parentPid: numb
     if (typeof item.outcome !== "string" || !OUTCOMES.has(item.outcome as KillOutcome)) return null;
     const creationDate = decodeCreationDate(item.creationDate);
     if (creationDate === undefined) return null;
+    const provenance = decodeFingerprintSource(item.fingerprintSource);
+    if (provenance === null) return null;
     seen.add(pid);
     outcomes.push({
       pid,
@@ -251,7 +266,7 @@ export function decodeWindowsDescendantsResponse(value: unknown, parentPid: numb
       creationDate,
       commandLine: typeof item.commandLine === "string" && item.commandLine.length > 0 ? item.commandLine : null,
       executablePath: typeof item.executablePath === "string" && item.executablePath.length > 0 ? item.executablePath : null,
-      ...(decodeFingerprintSource(item.fingerprintSource) ? { fingerprintSource: decodeFingerprintSource(item.fingerprintSource)! } : {}),
+      ...(provenance === undefined ? {} : { fingerprintSource: provenance }),
     });
   }
   const leftover: WindowsDescendantLeftover[] = [];
@@ -264,6 +279,8 @@ export function decodeWindowsDescendantsResponse(value: unknown, parentPid: numb
     if (!Number.isSafeInteger(item.parentPid) || Number(item.parentPid) <= 0) return null;
     const creationDate = decodeCreationDate(item.creationDate);
     if (creationDate === undefined) return null;
+    const provenance = decodeFingerprintSource(item.fingerprintSource);
+    if (provenance === null) return null;
     seen.add(pid);
     leftover.push({
       pid,
@@ -271,7 +288,7 @@ export function decodeWindowsDescendantsResponse(value: unknown, parentPid: numb
       creationDate,
       commandLine: typeof item.commandLine === "string" && item.commandLine.length > 0 ? item.commandLine : null,
       executablePath: typeof item.executablePath === "string" && item.executablePath.length > 0 ? item.executablePath : null,
-      ...(decodeFingerprintSource(item.fingerprintSource) ? { fingerprintSource: decodeFingerprintSource(item.fingerprintSource)! } : {}),
+      ...(provenance === undefined ? {} : { fingerprintSource: provenance }),
     });
   }
   const recomputed =
@@ -765,12 +782,12 @@ if($request.action -eq 'terminate-one-cim'){
 $root=[pscustomobject]@{pid=[int]$request.root.pid;creationDate=[string]$request.root.creationDate;commandLine=$request.root.commandLine;executablePath=$request.root.executablePath}
 $handles=@{}
 $nodes=New-Object Collections.ArrayList
-# A caller that could only observe this pid through CIM (e.g. the reaper replaying
-# a residual whose fingerprint was NEVER handle-derived) gets the CIM tolerance
-# for BOTH fields, exactly like a CIM-derived descendant: the quantized
-# creationDate cannot satisfy an exact compare, and the executablePath may be a
-# create-time launcher alias. Everything else keeps the exact, handle-derived
-# contract, so a genuinely replaced pid is still refused.
+# A caller that could only observe this pid through CIM (the reaper replaying a
+# residual whose fingerprint was NEVER handle-derived) gets the CIM tolerance for
+# the creationDate (±9 ticks for a quantized 6-digit microsecond value) and NO path
+# comparison, exactly like a CIM-derived descendant. That is deliberately the
+# WIDER match; everything else keeps the exact, handle-derived contract, so a
+# genuinely replaced pid is still refused.
 $rootCim=([string]$request.root.fingerprintSource -eq 'cim')
 $rootCheck=OpenVerified $root $rootCim
 $root|Add-Member -NotePropertyName fingerprintSource -NotePropertyValue $(if($rootCim){'cim'}else{'handle'}) -Force

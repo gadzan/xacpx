@@ -1018,3 +1018,24 @@ test("descendants decoder rejects a malformed creationDate on a leftover too", (
   };
   expect(decodeWindowsDescendantsResponse(garbage, 4242)).toBeNull();
 });
+
+test("descendants decoder rejects a malformed fingerprintSource", () => {
+  // A corrupt provenance must fail closed. Treating it as absent would classify
+  // the record as CIM, which REPLACES the exact handle comparison with the wider
+  // replay contract (±9 ticks, no path equality).
+  const payload = {
+    verified: false,
+    outcomes: [{ pid: 5001, outcome: "access-denied", creationDate: "133830000000000000", commandLine: "x", executablePath: "C:\\x.exe", fingerprintSource: "bogus" }],
+    leftover: [],
+  };
+  expect(decodeWindowsDescendantsResponse(payload, 4242)).toBeNull();
+});
+
+test("descendants decoder rejects a malformed fingerprintSource on a leftover too", () => {
+  const payload = {
+    verified: false,
+    outcomes: [],
+    leftover: [{ pid: 5001, parentPid: 4242, creationDate: "133830000000000000", commandLine: "x", executablePath: "C:\\x.exe", fingerprintSource: "bogus" }],
+  };
+  expect(decodeWindowsDescendantsResponse(payload, 4242)).toBeNull();
+});

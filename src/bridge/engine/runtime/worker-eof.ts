@@ -161,9 +161,9 @@ export interface ProcessIdentity {
 export const CREATION_IDENTITY_TOLERANCE_TICKS = 9n;
 
 /**
- * True when both records name the same process. A null creation time is only
- * compatible with another null (a pid without a creation time cannot be proven
- * to be the same process, so it never merges away).
+ * True when both records name the same process. A null creation time matches only
+ * another null, so such records always collapse into one entry — they still carry
+ * their other evidence, but they can never be matched against a non-null one.
  */
 export function sameProcessIdentity(a: ProcessIdentity, b: ProcessIdentity): boolean {
   if (a.pid !== b.pid) return false;
@@ -200,29 +200,49 @@ function publicationIdentity(item: ProcessIdentity): string {
  * what an earlier attempt already captured.
  */
 export function mergeEvidence(a: TerminateDescendantsResult, b: TerminateDescendantsResult): TerminateDescendantsResult {
-  const outcomes = mergeByIdentity(a.outcomes, b.outcomes);
-  // An outcome for a process always supersedes a leftover entry for the same
-  // one, so one process contributes at most one record and the durable filename
-  // `${ownerToken}-${pid}.json` stays unambiguous — letting a leftover coexist
-  // would make two records compete for it and read-back could never prove
-  // publication complete.
+  // Both lists participate in ONE arbitration per process, so provenance and
+  // completeness decide any collision — including an outcome meeting a leftover.
+  // An outcome carrying a weaker fingerprint must not silently displace a
+  // stronger leftover: the discarded record is exactly what would have been
+  // spooled with exact handle fencing.
+  const arbitrated = mergeByIdentity<MergedEvidence>([
+    ...a.outcomes,
+    ...a.leftover,
+  ], [
+    ...b.outcomes,
+    ...b.leftover,
+  ]);
+  // The survivor keeps the KIND it won as, so a process is represented once and
+  // only once: either resolved (an outcome) or still required (a leftover). This
+  // is what keeps the durable filename `${ownerToken}-${pid}.json` unambiguous —
+  // two records for one pid could never both be proven published.
   return {
     verified: a.verified || b.verified,
-    outcomes,
-    leftover: mergeByIdentity(a.leftover, b.leftover)
-      .filter((item) => !outcomes.some((outcome) => sameProcessIdentity(outcome, item))),
+    outcomes: arbitrated.filter((item): item is WindowsDescendantOutcome => "outcome" in item),
+    leftover: arbitrated.filter((item): item is WindowsDescendantLeftover => !("outcome" in item)),
   };
 }
 
 /**
+ * An arbitrated evidence record: either kind, discriminated by `parentPid`
+ * (present only on leftovers) as `mergeByIdentity` preserves the input object
+ * verbatim.
+ */
+type MergedEvidence = WindowsDescendantOutcome | WindowsDescendantLeftover;
+
+/**
  * The evidence shape shared by outcomes and leftovers: a process identity plus
- * the observation fields `winsOver` compares when picking the survivor.
+ * the observation fields `winsOver` compares when picking the survivor. An
+ * `outcome` is absent on a leftover, which is correct: a leftover is by
+ * definition an unresolved process, i.e. never "resolved".
  */
 interface MergeableEvidence extends ProcessIdentity {
   outcome?: KillOutcome;
   fingerprintSource?: WindowsDescendantFingerprintSource;
   commandLine: string | null;
   executablePath: string | null;
+  /** Present only on leftovers; carried through so the kind survives arbitration. */
+  parentPid?: number;
 }
 
 /**
@@ -254,16 +274,17 @@ function mergeByIdentity<T extends MergeableEvidence>(a: readonly T[], b: readon
 /**
  * True when `next` should replace `current` as the retained record for one
  * process identity, in order:
- *   1. safety       — an unresolved process must stay required evidence;
+ *   1. resolution  — an explicitly SAFE outcome resolves the process; a leftover
+ *                    (no outcome) is unresolved and must stay required evidence;
  *   2. provenance   — handle > cim > unknown (kernel values are authoritative);
  *   3. completeness — a full fingerprint can become durable evidence, an
  *                     incomplete one cannot, and must not block discharge;
  *   4. incumbent    — otherwise keep the first observation (deterministic).
  */
 function winsOver(next: MergeableEvidence, current: MergeableEvidence): boolean {
-  const nextSafe = next.outcome === undefined || next.outcome in SAFE_OUTCOMES;
-  const currentSafe = current.outcome === undefined || current.outcome in SAFE_OUTCOMES;
-  if (nextSafe !== currentSafe) return nextSafe;
+  const nextResolved = next.outcome !== undefined && next.outcome in SAFE_OUTCOMES;
+  const currentResolved = current.outcome !== undefined && current.outcome in SAFE_OUTCOMES;
+  if (nextResolved !== currentResolved) return nextResolved;
   const nextRank = provenanceRank(next.fingerprintSource);
   const currentRank = provenanceRank(current.fingerprintSource);
   if (nextRank !== currentRank) return nextRank > currentRank;
@@ -296,8 +317,9 @@ function residualFor(
     commandLine: candidate.commandLine ?? "",
     executablePath: candidate.executablePath ?? "",
     // Only a handle-derived fingerprint is trustworthy under an exact compare;
-    // anything else (including an unattributed one) is treated as CIM-derived,
-    // which is the stricter, always-safe classification.
+    // anything else (including an unattributed one) is recorded as CIM-derived,
+    // which demands the WIDER replay match (±9 ticks, no path equality). That is
+    // the intended default for a record whose provenance is unknown.
     fingerprintSource: candidate.fingerprintSource === "handle" ? "handle" : "cim",
   };
 }
@@ -349,7 +371,7 @@ async function publishRequired(
   // small enough that the extra reads cost nothing.
   const passes = options.spoolRetryPasses ?? 3;
   for (let pass = 0; pass < passes; pass += 1) {
-    const present = await durableIdentities(registry);
+    const present = await durableIdentities(registry, discharge);
     // A read that fails must not be mistaken for "everything is written".
     if (present === null) return false;
     const pending = complete.filter((item) => !present.has(publicationIdentity(item)));
@@ -371,23 +393,36 @@ async function publishRequired(
     }
   }
   // Final proof: every required identity must be present in the registry RIGHT
-  // NOW, by exact identity. A residual file is keyed by pid alone, so two
-  // distinct identities sharing a pid cannot both be durable — proving them from
-  // one file would be a false proof of ownership for the record that was
-  // overwritten.
-  const present = await durableIdentities(registry);
+  // NOW, by exact identity AND as a record THIS discharge wrote. A residual file
+  // is keyed by pid alone, so two distinct identities sharing a pid cannot both
+  // be durable — proving them from one file would be a false proof of ownership
+  // for the record that was overwritten.
+  const present = await durableIdentities(registry, discharge);
   return fullyPublishable && present !== null && complete.every((item) => present.has(publicationIdentity(item)));
 }
 
 /**
- * Exact identities currently durable in the registry, or null when the registry
- * cannot be read (which is NOT the same as "nothing is written").
+ * Exact identities currently durable **for this discharge**, or null when the
+ * registry cannot be read (which is NOT the same as "nothing is written").
+ *
+ * Scoped by `generationId` and `ownerToken`: a residual left by an EARLIER
+ * generation names the same process with the same fingerprint, and treating it
+ * as proof would let the current discharge skip writing its own record and then
+ * claim "spooled". The fence handshake that lifts the fence is generation-bound
+ * (`runtime-worker-manager` only counts records whose `generationId` matches),
+ * so it would not see the foreign record — a false terminal proof that then lets
+ * a successor owner in.
  */
-async function durableIdentities(registry: OrphanRegistry): Promise<Set<string> | null> {
+async function durableIdentities(
+  registry: OrphanRegistry,
+  discharge: { ownerToken: string; generationId: string },
+): Promise<Set<string> | null> {
   const records = await registry.readCategory("residuals").catch(() => null);
   if (!records) return null;
   return new Set(
     records.flatMap(({ record }) => ("pid" in record && "creationDate" in record
+      && record.generationId === discharge.generationId
+      && record.ownerToken === discharge.ownerToken
       ? [publicationIdentity({ pid: record.pid, creationDate: record.creationDate })]
       : [])),
   );

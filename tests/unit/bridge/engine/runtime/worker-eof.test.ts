@@ -895,3 +895,126 @@ test("windows: a required identity whose file was overwritten is rewritten, not 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("windows: a foreign generation's residual must not prove the current discharge durable", async () => {
+  // The fence handshake that lifts the fence is generation-bound
+  // (`runtime-worker-manager` only counts records whose `generationId` matches),
+  // so a durable proof that ignores generation would let the CURRENT worker
+  // claim "spooled" on evidence it did not write — and the successor owner's
+  // handshake would not find it, lifting the fence on a false terminal proof.
+  const dir = await mkdtemp(join(tmpdir(), "eof-foreign-gen-"));
+  try {
+    const registry = new OrphanRegistry(dir);
+    await registry.initialize();
+    const pid = 5002;
+    const creationDate = "133801632000000003";
+    // A residual left by an EARLIER generation, naming the same process with the
+    // same fingerprint.
+    await registry.writeResidual({
+      schemaVersion: 1,
+      kind: "residual",
+      ownerToken: "00000000-0000-4000-8000-0000000000ff",
+      pid,
+      creationDate,
+      commandLine: "old",
+      executablePath: "C:\\old.exe",
+      agentCommand: "codex",
+      generationId: "00000000-0000-4000-8000-00000000000f",
+      killAttempts: 0,
+    });
+
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => ({
+        verified: false,
+        outcomes: [{ pid, outcome: "access-denied", creationDate, commandLine: "new", executablePath: "C:\\new.exe", fingerprintSource: "cim" }],
+        leftover: [],
+      }),
+      maxRounds: 2,
+      roundDelayMs: 1,
+      runtimeDir: dir,
+      agentCommand: () => "codex",
+      generationId: "00000000-0000-4000-8000-000000000001",
+      ownerToken: "00000000-0000-4000-8000-000000000002",
+    });
+
+    // Foreign evidence cannot satisfy this discharge. The current worker must
+    // write its OWN residual: only then is its evidence durable in the namespace
+    // that the fence handshake will check.
+    const records = await registry.readCategory("residuals");
+    // The foreign record has a different ownerToken, so it lives in a different
+    // file; both exist.
+    expect(records).toHaveLength(2);
+    const owned = records.map(({ record }) => record).filter((record) => record.generationId === "00000000-0000-4000-8000-000000000001");
+    expect(owned).toHaveLength(1);
+    expect(owned[0]).toMatchObject({
+      pid,
+      creationDate,
+      generationId: "00000000-0000-4000-8000-000000000001",
+      ownerToken: "00000000-0000-4000-8000-000000000002",
+    });
+    expect(outcome).toBe("spooled");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("merge: a weaker CIM outcome must not displace a stronger handle leftover for the same process", () => {
+  // Round 1 S2 discovered P and verified it through a handle (complete, resolved
+  // image, kernel creation time). Round 2 saw P already in S1 but OpenProcess was
+  // transiently denied, so it reports an INCOMPLETE, CIM-derived unsafe outcome.
+  // The stronger leftover must survive: it is what would have been spooled with
+  // exact fencing, and replacing it downgrades the durable record to a CIM
+  // replay — or makes it unpublishable.
+  const merged = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [{
+      pid: 5002,
+      parentPid: 5001,
+      creationDate: "133801632000000017",
+      commandLine: "node adapter.js",
+      executablePath: "C:\\real\\node.exe",
+      fingerprintSource: "handle",
+    }] },
+    { verified: false, outcomes: [{
+      pid: 5002,
+      outcome: "access-denied",
+      creationDate: "133801632000000010",
+      commandLine: null,
+      executablePath: null,
+      fingerprintSource: "cim",
+    }], leftover: [] },
+  );
+  // The handle-derived complete record is what remains required evidence.
+  expect(merged.outcomes).toHaveLength(0);
+  expect(merged.leftover).toHaveLength(1);
+  const survivor = merged.leftover[0]!;
+  expect(survivor.fingerprintSource).toBe("handle");
+  expect(survivor.executablePath).toBe("C:\\real\\node.exe");
+  expect(survivor.commandLine).toBe("node adapter.js");
+});
+
+test("merge: a safe outcome still resolves a leftover for the same process", () => {
+  // The other side of the same arbitration: an explicitly safe outcome DOES
+  // retire the leftover, because the process is now resolved.
+  const merged = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [{
+      pid: 5002,
+      parentPid: 5001,
+      creationDate: "133801632000000017",
+      commandLine: "node adapter.js",
+      executablePath: "C:\\real\\node.exe",
+      fingerprintSource: "handle",
+    }] },
+    { verified: false, outcomes: [{
+      pid: 5002,
+      outcome: "killed",
+      creationDate: "133801632000000010",
+      commandLine: "node adapter.js",
+      executablePath: "C:\\real\\node.exe",
+      fingerprintSource: "handle",
+    }], leftover: [] },
+  );
+  expect(merged.leftover).toHaveLength(0);
+  expect(merged.outcomes).toHaveLength(1);
+  expect(merged.outcomes[0]!.outcome).toBe("killed");
+});
