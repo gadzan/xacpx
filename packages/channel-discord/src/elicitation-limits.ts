@@ -36,7 +36,9 @@
  */
 
 import { satisfiesElicitationFormat } from "xacpx/plugin-api";
-import type { ChannelElicitationField } from "xacpx/plugin-api";
+import type { ChannelElicitationField, ChannelElicitationRequest, ChannelElicitationValue } from "xacpx/plugin-api";
+import { t as getMessages } from "./i18n/index.js";
+import { escapeDiscordLiteralText } from "./permission-ui.js";
 
 /** Discard longer labels rather than rendering a control that violates the API. */
 export const DISCORD_SELECT_OPTION_LABEL_MAX = 100;
@@ -87,42 +89,94 @@ export const DISCORD_TEXT_CAPTURE_MAX = 4000;
 export const FIELD_CARD_TEXT_MAX = 1800;
 
 /**
- * Length of `value` after Discord's Markdown escaping.
+ * Bound on the "Answer saved" echo in a field card's own text.
  *
- * `escapeDiscordLiteralText` writes one `\` before each Markdown metacharacter,
- * so every escaped character contributes exactly 2 units and everything else 1.
- * Summing that is an exact match for the escaper's output length — not an
- * approximation — measured here rather than by importing the escaper, because
- * elicitation-ui.ts imports this module and the reverse edge would be a cycle.
+ * A field card repeats an answer the user already typed; it does not ask them to
+ * read it as the question. The full value is always on the review page, which
+ * chunks and is the surface ACP requires review before sending. Bounding the echo
+ * is what lets a field page stay a single message after a 4000-character answer.
  */
-function escapedDiscordLength(value: string): number {
-  let total = 0;
-  for (const character of value) {
-    total += isDiscordMarkdownMeta(character) ? 2 : 1;
-  }
-  return total;
-}
+export const FIELD_CARD_ANSWER_ECHO_MAX = 200;
 
-/** Characters `escapeDiscordLiteralText` prefixes with a backslash. */
-function isDiscordMarkdownMeta(character: string): boolean {
-  return DISCORD_MARKDOWN_META.has(character);
+/** Cut a rendered string to `max`, appending an ellipsis when it is cut. */
+function truncate(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max - 1)}...`;
 }
 
 /**
- * The escape set `escapeDiscordLiteralText` covers, verbatim.
+ * The complete static text of a field card, in render order.
  *
- * Kept as a literal mirror of the regex `[<\\`*_~>|[\]()#]` in permission-ui.ts
- * so the two cannot drift. If that regex ever changes, this set must change with
- * it — the gate's refusal would otherwise be measured against the wrong output
- * length. `DISCORD_ESCAPE_SET` in the test pins the equality.
+ * ONE definition, used by both the card builder and the renderability gate, so
+ * the two cannot disagree about what a field page renders. When the gate kept
+ * its own hand-copied subset (title + description + default), it under-measured:
+ * the builder also emits the "Question N of M" label, the agent line, the hint,
+ * and — once a value exists — the "Answer saved" line. A description the gate
+ * sized at ~1750 escaped chars therefore rendered to ~1818, produced a second
+ * chunk, and the field card kept only the first.
+ *
+ * Lives here rather than in elicitation-ui.ts because the GATE has to build the
+ * same text in order to measure it, and ui.ts already imports this module — the
+ * reverse edge would be a cycle. `escapeDiscordLiteralText` and `hintForField`
+ * come along for the same reason, re-exported so existing import paths hold.
+ *
+ * `current` is the answer already collected, which only appears once the user has
+ * answered. The gate passes `undefined`, because the initial render is the
+ * baseline every branch has to fit.
  */
-const DISCORD_MARKDOWN_META = new Set([
-  "<", "\\", "`", "*", "_", "~", ">", "|", "[", "]", "(", ")", "#",
-]);
+export function buildElicitationFieldLines(
+  request: ChannelElicitationRequest,
+  field: ChannelElicitationField,
+  index: number,
+  current: ChannelElicitationValue | undefined,
+): string[] {
+  const messages = getMessages();
+  const lines = [
+    `**${messages.elicitationFieldLabel(index, request.fields.length)}**`,
+    messages.elicitationFromAgent(escapeDiscordLiteralText(request.agent.name)),
+    `**${escapeDiscordLiteralText(field.title)}**`,
+  ];
+  if (field.description) lines.push(escapeDiscordLiteralText(field.description));
+  lines.push(escapeDiscordLiteralText(hintForField(field)));
+  if (field.defaultValue !== undefined && current === undefined) {
+    lines.push(escapeDiscordLiteralText(`_${displayValue(field.defaultValue)}_`));
+  }
+  if (current !== undefined) {
+    // Show what is already collected so a user returning to a field can see
+    // their current answer instead of re-entering blindly.
+    //
+    // BOUNDED, because this line REPEATS what the user typed rather than asking
+    // them something: a 4000-character answer would make the field card several
+    // messages, and a field page must stay one (see the chunk guard below). The
+    // full answer is always visible on the review page, which chunks properly and
+    // is the surface ACP requires the user to review before sending. So cutting
+    // this echo loses nothing the user cannot see elsewhere.
+    lines.push(`${messages.elicitationAnswerSaved} ${escapeDiscordLiteralText(truncate(displayValue(current), FIELD_CARD_ANSWER_ECHO_MAX))}`);
+  }
+  return lines;
+}
 
-/** A field default rendered the way the card shows it. */
-function displayValue(value: string | number | boolean): string {
-  return String(value);
+/** A field default or answer rendered the way the card shows it. */
+function displayValue(value: string | number | boolean | readonly string[]): string {
+  return Array.isArray(value) ? value.join(", ") : String(value);
+}
+
+/** The hint line under a field's title, mirroring `hintForField` in elicitation-ui. */
+function hintForField(field: ChannelElicitationField): string {
+  const messages = getMessages();
+  // The plugin-facing contract has exactly five kinds: text, boolean, number,
+  // single-select, multi-select. A date/email/uri ACP field arrives as `text`
+  // with the format constraint on its schema, and core validates the answer.
+  switch (field.kind) {
+    case "single-select":
+    case "multi-select":
+      return messages.elicitationFieldHint;
+    case "number":
+      return messages.elicitationNumberHint;
+    case "boolean":
+      return messages.elicitationFieldHint;
+    default:
+      return messages.elicitationTextHint;
+  }
 }
 
 export type ElicitationUnsupportedReason =
@@ -290,32 +344,37 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
     }
     // A FIELD PAGE IS ONE MESSAGE, and the escape can make it several.
     //
-    // The gate measures a description by RAW length (core allows 1000), but
-    // `escapeDiscordLiteralText` doubles every Markdown metacharacter, so 1000
-    // `*` chars become ~2000 escaped ones. Added to the title, the agent identity
-    // and the hint, that is more than one 1800-char message — and the field card
-    // is the question the user is answering, so cutting it would change what was
-    // asked. The review and opening cards chunk; a field page cannot, because a
-    // wizard step re-renders from several directions and a continuation set
-    // written by one while another is in flight misaligns, leaving the previous
-    // answer visible under the current one.
+    // The gate used to measure a description by RAW length (core allows 1000),
+    // and then by a hand-copied title+description+default subset. Neither matched
+    // what the builder actually emits: `buildElicitationFieldCard` also prints the
+    // "Question N of M" label, the agent line, the hint, and — once a value
+    // exists — the "Answer saved" line. A description the subset sized at ~1750
+    // escaped chars therefore rendered to ~1818, produced a second chunk, and the
+    // field card kept only the first, silently cutting the question.
     //
-    // Refused rather than truncated, exactly like every other condition above the
-    // renderer cannot express.
+    // The gate now builds the EXACT text the builder builds, through the one
+    // shared definition, so the budget and the card cannot drift apart.
     //
-    // Measured conservatively without importing the escaper (which would cycle:
-    // elicitation-ui.ts imports this module): `escapeDiscordLiteralText` writes
-    // one `\` per Markdown metacharacter, so each escaped character costs exactly
-    // 2 units and every other character 1. Summing 2 per metacharacter and 1 per
-    // everything else is therefore an EXACT match for the escaper's output, not an
-    // approximation, and it cannot drift from it.
-    const renderedFieldText = [
-      field.title,
-      field.description ?? "",
-      "",
-      field.defaultValue !== undefined ? displayValue(field.defaultValue) : "",
-    ].join("\n\n");
-    const escapedLength = escapedDiscordLength(renderedFieldText);
+    // `current` is undefined because the initial render is the baseline: every
+    // branch of the card has to fit it, and a later "Answer saved" line is
+    // re-checked by the renderer when the answer lands.
+    const fieldLines = buildElicitationFieldLines(
+      {
+        requestId: "",
+        chatKey: "",
+        agent: { name: "" },
+        message: "",
+        mode: "form",
+        fields,
+        requester: { senderId: "" },
+        expiresAt: 0,
+        signal: undefined as unknown as AbortSignal,
+      } as ChannelElicitationRequest,
+      field,
+      fields.indexOf(field) + 1,
+      undefined,
+    );
+    const escapedLength = fieldLines.join("\n\n").length;
     if (escapedLength > FIELD_CARD_TEXT_MAX) {
       return {
         renderable: false,

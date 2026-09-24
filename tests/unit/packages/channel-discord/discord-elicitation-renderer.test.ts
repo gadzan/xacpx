@@ -12,6 +12,7 @@ import type {
 } from "../../../../packages/channel-discord/src/types";
 import { setChannelLocale } from "../../../../packages/channel-discord/src/i18n";
 import { buildElicitationFieldCard } from "../../../../packages/channel-discord/src/elicitation-ui";
+import { buildElicitationFieldLines } from "../../../../packages/channel-discord/src/elicitation-limits";
 import { buildElicitationOpening } from "../../../../packages/channel-discord/src/elicitation-ui";
 import { checkElicitationRenderability } from "../../../../packages/channel-discord/src/elicitation-limits";
 import type { ChannelElicitationField, ChannelElicitationRequest } from "xacpx/plugin-api";
@@ -2474,4 +2475,90 @@ test("a field description whose rendered text would overflow one message is refu
   expect(checkElicitationRenderability([
     { kind: "text", key: "note", title: "Note", required: true, maxLength: 100, description: "a".repeat(1000) },
   ]).renderable).toBe(true);
+});
+
+test("the gate's field budget is the builder's, not a subset of it", async () => {
+  // The gate used to size title + description + default by hand, so it UNDER-
+  // measured by everything else the builder emits: the "Question N of M" label,
+  // the agent line, the hint, and the "Answer saved" line.
+  //
+  // This is the boundary case that slipped through: English locale, agent
+  // `codex`, title `Note`, description of 870 `*`. The subset measured ~1750
+  // escaped chars and passed; the real field body measured ~1818, so
+  // `chunkCardText` produced a SECOND chunk and the card kept only the first —
+  // the tail of the question was silently dropped with the controls still live.
+  //
+  // The gate now builds the exact text the builder builds, through one shared
+  // definition. Assert the two agree, at this boundary and on both sides of it,
+  // rather than pinning a number that a future wording change would invalidate.
+  const build = (
+    description: string,
+  ): { verdict: { renderable: boolean; reason?: string }; escapedBody: string; fitsOneMessage: boolean } => {
+    const field: ChannelElicitationField = {
+      kind: "text",
+      key: "note",
+      title: "Note",
+      required: true,
+      maxLength: 100,
+      description,
+    };
+    const request = {
+      requestId: "r",
+      chatKey: "c",
+      agent: { name: "codex" },
+      message: "m",
+      mode: "form",
+      fields: [field],
+      requester: { senderId: "ou" },
+      expiresAt: Date.now() + 60_000,
+      signal: new AbortController().signal,
+    } as unknown as ChannelElicitationRequest;
+    const verdict = checkElicitationRenderability([field]);
+    // Every agent-controlled character here doubles, so the escaped field body
+    // crosses the 1800-char budget at about 865 stars.
+    const escapedBody = buildElicitationFieldLines(request, field, 1, undefined).join("\n\n");
+    return { verdict, escapedBody, fitsOneMessage: escapedBody.length <= 1800 };
+  };
+
+  // The two decisions must AGREE, in both directions, at the boundary and either
+  // side of it. The old subset gate said `renderable: true` here while the real
+  // card needed a second message, which is exactly the silent truncation.
+  for (const [stars, expectedFits] of [[800, true], [860, true], [865, false], [900, false]] as const) {
+    const built = build("*".repeat(stars));
+    expect(built.fitsOneMessage).toBe(expectedFits);
+    expect(built.verdict.renderable).toBe(expectedFits);
+    if (expectedFits) continue;
+    expect(built.verdict.reason).toBe("field-text-too-long");
+  }
+
+  // And the builder refuses to produce a card the gate would have passed: if it
+  // ever needs a second message, that is a gate/builder disagreement and must be
+  // loud rather than a truncated question.
+  const overflowing: ChannelElicitationField = {
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    maxLength: 100,
+    description: "*".repeat(900),
+  };
+  expect(() =>
+    buildElicitationFieldCard(
+      {
+        requestId: "r",
+        chatKey: "c",
+        agent: { name: "codex" },
+        message: "m",
+        mode: "form",
+        fields: [overflowing],
+        requester: { senderId: "ou" },
+        expiresAt: Date.now() + 60_000,
+        signal: new AbortController().signal,
+      } as unknown as ChannelElicitationRequest,
+      "tok",
+      overflowing,
+      1,
+      undefined,
+    ),
+  ).toThrow(/needs \d+ messages/);
 });

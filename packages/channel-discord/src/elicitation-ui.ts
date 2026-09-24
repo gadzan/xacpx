@@ -43,6 +43,7 @@ import {
   DISCORD_SELECT_PLACEHOLDER_MAX,
   DISCORD_TEXT_CAPTURE_MAX,
   findRejectedAnswer,
+  buildElicitationFieldLines,
 } from "./elicitation-limits.js";
 import {
   buildAnswerContent,
@@ -403,21 +404,7 @@ export function buildElicitationFieldCard(
   modalAction: boolean;
 } {
   const messages = getMessages();
-  const lines = [
-    `**${messages.elicitationFieldLabel(index, request.fields.length)}**`,
-    messages.elicitationFromAgent(escapeDiscordLiteralText(request.agent.name)),
-    `**${escapeDiscordLiteralText(field.title)}**`,
-  ];
-  if (field.description) lines.push(escapeDiscordLiteralText(field.description));
-  lines.push(escapeDiscordLiteralText(hintForField(field)));
-  if (field.defaultValue !== undefined && current === undefined) {
-    lines.push(escapeDiscordLiteralText(`_${displayValue(field.defaultValue)}_`));
-  }
-  if (current !== undefined) {
-    // Show what is already collected so a user returning to a field can see
-    // their current answer instead of re-entering blindly.
-    lines.push(`${messages.elicitationAnswerSaved} ${escapeDiscordLiteralText(displayValue(current))}`);
-  }
+  const lines = buildElicitationFieldLines(request, field, index, current);
   const isSelect = field.kind === "single-select" || field.kind === "multi-select";
   const isBoolean = field.kind === "boolean";
   const totalFields = request.fields.length;
@@ -468,7 +455,7 @@ export function buildElicitationFieldCard(
   const chunked = chunkCardText(lines.join("\n\n"));
   // A field card is ONE message, and it must stay that way.
   //
-  // Returning every chunk here would hand the channel a wizard step whose text
+  // Returning every chunk here would hand the channel a Wizard step whose text
   // spans several messages, and that is where this gets unsound: a field card is
   // re-rendered from an interaction, from a modal, and from a review->Edit jump,
   // and a continuation set written by one of those while another is still in
@@ -476,13 +463,20 @@ export function buildElicitationFieldCard(
   // the PREVIOUS answer, and creates a new message instead of reusing it. The
   // user is then shown both answers with no way to tell which one Submit sends.
   //
-  // So the renderability gate is what keeps a field page renderable: it refuses a
-  // form whose rendered field text cannot fit one message. This slice is the
-  // fallback for a disagreement between the gate and the builder, and cutting to
-  // the first chunk is at least a drawable card with reachable controls.
+  // So the renderability gate is what keeps a field page renderable: it builds
+  // this exact text through `buildElicitationFieldLines` — the SAME definition —
+  // and refuses a form whose field text cannot fit one message. If the builder and
+  // the gate ever disagree again, that is a bug in one of them, and it must be
+  // loud: throwing surfaces it instead of quietly cutting the question the user is
+  // answering, which is the failure this whole budget exists to prevent.
+  if (chunked.length > 1) {
+    throw new Error(
+      `elicitation field card for ${JSON.stringify(field.key)} needs ${chunked.length} messages; the renderability gate should have refused it`,
+    );
+  }
   return {
     content: chunked[0]!,
-    contents: chunked.slice(0, 1),
+    contents: chunked,
     components: [...actionRow(fieldControls), ...actionRow(terminalControls)],
     selectRows: isSelect
       ? buildElicitationSelectRows(token, field, current, position)
