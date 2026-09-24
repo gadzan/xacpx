@@ -5,6 +5,7 @@ import type { BotProfile, BotRuntimeBinding } from "../bots/bot-types";
 import type { ConversationRecord, ConversationTopic } from "../conversations/conversation-types";
 import { writePrivateFileAtomic } from "../util/private-file.js";
 import { createEmptyState, type AppState, type LogicalSession, type LogicalSessionOwner } from "./types";
+import { createScopedGroupMemberBindingId } from "../domain/ids";
 import type { ScheduledTaskRecord, ScheduledTaskStatus } from "../scheduled/scheduled-types";
 import {
   createEmptyOrchestrationState,
@@ -1111,20 +1112,18 @@ export function parseState(
  * above only check shape; without this step a quarantined Group record
  * would leave its Topics/bindings/sessions loaded with no cleanup root,
  * and a dropped Topic/Bot would strand runtime no teardown can address.
- *
  * Physical-release-preserving: descendants of a missing root are NEVER
  * dropped as live state here. Rootless Topics/bindings drop into the load
- * report (pure metadata, no physical handle). Owned SESSION rows are KEPT
- * with their ownership intact — even when their Conversation/Topic root is
- * gone — so the verified teardown entrypoints keep working: `sessions`
- * still resolves the alias, so strict owned-session release can still
- * releaseLogicalSession/deleteSession, and the sweep entrypoints
- * (`releaseGroupResidue`, topic finalization) can still enumerate and
- * release them. The NEXT verified teardown that covers the orphan triple
- * (or a group-scoped sweep) performs the physical release, then removes
- * the metadata — load never deletes a physical cleanup handle. Bots
- * themselves are never dropped here — membership edits, not load, own
- * that transition.
+ * report (pure metadata, no physical handle). A rootless CANONICAL exact
+ * group-member session is KEPT with ownership intact as the physical cleanup
+ * handle for the activation orphan sweep
+ * (recoverRootlessGroupMemberSessions): `sessions` still resolves the alias,
+ * so strict owned-session release can still
+ * releaseLogicalSession/deleteSession without any Group/Topic metadata. A
+ * non-canonical or triple-less owner demotes to a plain session (reported,
+ * reversible via quarantine) so it can never pin a lock or hide with no
+ * entrypoint. Bots themselves are never dropped here — membership edits,
+ * not load, own that transition.
  */
 function reconcileProductOwnershipGraph(
   sessions: AppState["sessions"],
@@ -1188,10 +1187,10 @@ function reconcileProductOwnershipGraph(
   }
   // Owned sessions are NEVER dropped here, even when their root is gone: the
   // row IS the physical cleanup handle (strict release resolves the alias).
-  // A rootless group-member session stays enumerable for the sweep
-  // entrypoints; a legacy partial owner that cannot resolve any triple is
-  // reported but kept, so a later binding repair (or explicit operator
-  // action) can still release it instead of it becoming a hidden orphan.
+  // A rootless CANONICAL group-member session stays owned for the activation
+  // orphan sweep (recoverRootlessGroupMemberSessions); a non-canonical or
+  // triple-less owner demotes to a plain session below, so no permanent
+  // hidden lock can form around an unprovable triple.
   for (const [alias, session] of Object.entries(sessions)) {
     const owner = session.owner;
     if (owner?.kind !== "group-member") {
@@ -1201,16 +1200,44 @@ function reconcileProductOwnershipGraph(
     const conversationId = owner.conversationId ?? bound?.conversationId;
     const topicId = owner.topicId ?? bound?.topicId;
     if (conversationId === undefined || topicId === undefined) {
+      // Legacy partial owner that resolves no triple: no destructive
+      // authority exists, so no orphan sweep could ever release it while
+      // keeping the group-member kind. Demote to a plain session (drop the
+      // owner) and report: the physical handle stays resolvable by alias,
+      // ordinary session tooling applies, and no permanent hidden lock can
+      // form around an unprovable triple. Reversible via the quarantine
+      // backup; a later binding repair can re-link it if needed.
+      delete session.owner;
       dropped.push({
         section: "sessions",
         key: alias,
-        reason: `owned session cannot resolve conversation/topic (binding "${owner.bindingId}"); kept for verified release`,
+        reason: `owned session cannot resolve conversation/topic (binding "${owner.bindingId}"); owner demoted to plain session`,
       });
       continue;
     }
     const conversation = conversations[conversationId];
     const topic = topics[topicId];
     if (!conversation || !topic || topic.conversationId !== conversationId) {
+      // Rootless: the cleanup root is gone, so no Group/Topic teardown can
+      // ever cover this triple. Only a CANONICAL exact owner — kind +
+      // botId + conversationId + topicId + canonical bindingId — carries
+      // destructive authority for the activation orphan sweep; it stays with
+      // ownership intact as the physical cleanup handle (reported). Anything
+      // else (non-canonical bindingId, or any field missing) demotes to a
+      // plain session: the handle stays resolvable by alias, ordinary
+      // tooling applies, and it can never pin an identity lock or hide with
+      // no entrypoint. Reversible via the quarantine backup.
+      const canonical = owner.botId !== undefined
+        && owner.bindingId === createScopedGroupMemberBindingId(conversationId, topicId, owner.botId);
+      if (!canonical) {
+        delete session.owner;
+        dropped.push({
+          section: "sessions",
+          key: alias,
+          reason: `owned session references missing conversation/topic (conversation "${conversationId}", topic "${topicId}") with non-canonical ownership; owner demoted to plain session`,
+        });
+        continue;
+      }
       dropped.push({
         section: "sessions",
         key: alias,

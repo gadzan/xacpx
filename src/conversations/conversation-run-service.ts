@@ -125,6 +125,7 @@ export class ConversationRunService {
   async activateAfterConsumerLock(): Promise<void> {
     this.assertOpen();
     try {
+      await this.recoverRootlessGroupMemberSessions();
       await this.dispatcher.kick();
     } catch (error) {
       this.activation = "unavailable";
@@ -1240,7 +1241,6 @@ export class ConversationRunService {
     }
     return [...aliases];
   }
-
   private async releaseAlias(alias: string): Promise<void> {
     try {
       await this.releaseOwnedSession(alias);
@@ -1253,6 +1253,84 @@ export class ConversationRunService {
         error instanceof Error ? error.message : String(error),
         { alias },
       );
+    }
+  }
+
+  /**
+   * Activation orphan sweep: release rootless group-member sessions whose
+   * Conversation/Topic root is gone (load reconcile kept them with exact
+   * canonical ownership as the physical cleanup handle). Runs inside
+   * activateAfterConsumerLock BEFORE the first dispatcher kick, while the
+   * daemon holds the consumer lock: no dispatcher can claim work for these
+   * sessions, and no materializer can publish a binding for them (any live
+   * Group with the same id would have been quarantined too — and a live
+   * Group makes the owner non-rootless, so it is skipped here).
+   *
+   * Destructive authority is the load-time canonical rule: kind +
+   * botId + conversationId + topicId + canonical bindingId, with the triple
+   * still rootless at sweep time (re-checked inside the Bot lifecycle gate,
+   * so a concurrently recreated Group/Topic or repaired binding wins and
+   * the session is left alone). The Bot gate serializes against a racing
+   * materializer for the same Bot: either it publishes first (owner becomes
+   * non-rootless or the alias disappears → skip) or the sweep releases
+   * first (its later publish fence fails closed on the missing session).
+   * Non-canonical rootless owners were already demoted to plain sessions at
+   * load and never appear here. A release failure fails activation (consumer
+   * stays unavailable) — never a silent skip.
+   */
+  private async recoverRootlessGroupMemberSessions(): Promise<void> {
+    const candidates = Object.values(this.state.sessions).filter((session) => {
+      const owner = session.owner;
+      if (owner?.kind !== "group-member" || owner.botId === undefined) {
+        return false;
+      }
+      const conversationId = owner.conversationId;
+      const topicId = owner.topicId;
+      if (conversationId === undefined || topicId === undefined) {
+        return false;
+      }
+      if (owner.bindingId !== createScopedGroupMemberBindingId(conversationId, topicId, owner.botId)) {
+        return false;
+      }
+      const conversation = this.state.conversations[conversationId];
+      const topic = this.state.conversation_topics[topicId];
+      return !conversation || !topic || topic.conversationId !== conversationId;
+    });
+    for (const session of candidates) {
+      const owner = session.owner;
+      if (owner?.kind !== "group-member") {
+        continue;
+      }
+      const botId = owner.botId;
+      const conversationId = owner.conversationId;
+      const topicId = owner.topicId;
+      if (botId === undefined || conversationId === undefined || topicId === undefined) {
+        continue;
+      }
+      const canonicalBindingId = createScopedGroupMemberBindingId(conversationId, topicId, botId);
+      await this.bots.runLifecycle(botId, async () => {
+        const live = this.sessions.getLogicalSessionRecord(session.alias);
+        if (!live || live.owner?.kind !== "group-member" || live.owner.botId !== botId) {
+          return;
+        }
+        // Re-check rootlessness inside the gate: a concurrently recreated
+        // Group/Topic (or repaired binding) restores the cleanup root, and
+        // the ordinary teardown paths own it from there — never release
+        // under a live root.
+        const liveConversation = this.state.conversations[conversationId];
+        const liveTopic = this.state.conversation_topics[topicId];
+        if (liveConversation && liveTopic && liveTopic.conversationId === conversationId) {
+          return;
+        }
+        if (
+          live.owner?.conversationId !== conversationId
+          || live.owner?.topicId !== topicId
+          || live.owner?.bindingId !== canonicalBindingId
+        ) {
+          return;
+        }
+        await this.releaseAlias(session.alias);
+      });
     }
   }
 

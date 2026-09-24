@@ -3637,6 +3637,95 @@ test("ghost-topic runtime blocks group delete; verified teardown releases it", a
   first.store.close();
 });
 
+test("activation releases a rootless canonical group-member session and unlocks the Bot", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID, conversationId: group.id, topicId: topic.id,
+  });
+  const alias = binding.sessionAlias;
+  expect(first.sessions.getLogicalSessionRecord(alias)).toBeDefined();
+  // Quarantine the Group root out of band (malformed record drop): Topic and
+  // binding reconcile away, the exact session row stays as the handle.
+  delete first.state.conversations[group.id];
+  const { parseState } = await import("../../../src/state/state-store");
+  const dropped: { section: string; key: string; reason: string }[] = [];
+  const reloaded = parseState(JSON.parse(JSON.stringify({
+    ...first.state,
+    bots: first.state.bots,
+    conversations: first.state.conversations,
+    conversation_topics: first.state.conversation_topics,
+    bot_runtime_bindings: first.state.bot_runtime_bindings,
+    sessions: first.state.sessions,
+  })), "state.json", dropped);
+  expect(reloaded.sessions[alias]?.owner?.kind).toBe("group-member");
+  // Rebuild the runtime on the reconciled state and activate: the orphan
+  // sweep must verified-release the session (physical handle executed).
+  for (const key of Object.keys(first.state.sessions)) {
+    if (!(key in reloaded.sessions)) delete first.state.sessions[key];
+  }
+  Object.assign(first.state.sessions, reloaded.sessions);
+  for (const key of Object.keys(first.state.conversation_topics)) {
+    if (!(key in reloaded.conversation_topics)) delete first.state.conversation_topics[key];
+  }
+  Object.assign(first.state.conversation_topics, reloaded.conversation_topics);
+  for (const key of Object.keys(first.state.bot_runtime_bindings)) {
+    if (!(key in reloaded.bot_runtime_bindings)) delete first.state.bot_runtime_bindings[key];
+  }
+  Object.assign(first.state.bot_runtime_bindings, reloaded.bot_runtime_bindings);
+  for (const key of Object.keys(first.state.conversations)) {
+    if (!(key in reloaded.conversations)) delete first.state.conversations[key];
+  }
+  Object.assign(first.state.conversations, reloaded.conversations);
+  const physicalBefore = first.physical.releaseCalls + first.physical.deleteCalls;
+  await first.service.activateAfterConsumerLock();
+  expect(first.service.isConsumerActivated()).toBe(true);
+  expect(first.sessions.getLogicalSessionRecord(alias)).toBeNull();
+  expect(first.physical.releaseCalls + first.physical.deleteCalls).toBeGreaterThan(physicalBefore);
+  // The Bot is no longer runtime-locked: agent edit succeeds.
+  await expect(first.bots.updateBot(BOT_ID, { agent: "claude" })).resolves.toMatchObject({ agent: "claude" });
+  first.store.close();
+});
+
+test("non-canonical rootless owner demotes to plain session at load (no lock, no hide)", async () => {
+  const { parseState } = await import("../../../src/state/state-store");
+  const dropped: { section: string; key: string; reason: string }[] = [];
+  const state = parseState({
+    bots: {
+      bot_b: {
+        id: "bot_b", name: "B", agent: "codex", workspace: "backend", enabled: true,
+        profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+      },
+    },
+    sessions: {
+      weird: {
+        alias: "weird",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:weird",
+        logical_session_id: "55555555-5555-4555-8555-555555555555",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: {
+          kind: "group-member",
+          bindingId: "bind_not_canonical",
+          botId: "bot_b",
+          conversationId: "conv_gone",
+          topicId: "topic_gone",
+        },
+      },
+    },
+  }, "state.json", dropped);
+  // Demoted: ordinary session again — resolvable, unhidden, non-locking.
+  expect(state.sessions.weird?.owner).toBeUndefined();
+  expect(dropped.some((entry) => entry.key === "weird" && entry.reason.includes("demoted"))).toBe(true);
+});
+
 test("missing-topic durable run is cancelled and reconciled, never row-deleted live", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
