@@ -2146,8 +2146,8 @@ export class SqliteConversationStore implements ConversationStore {
             ],
           );
           this.sqlite.run(
-            `UPDATE member_turns SET state = 'completed', failure_reason = NULL WHERE id = ?`,
-            [member.id],
+            `UPDATE member_turns SET state = 'completed', failure_reason = NULL, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+            [input.now, member.id],
           );
           if (!alreadyCounted) {
             this.sqlite.run(
@@ -2159,8 +2159,8 @@ export class SqliteConversationStore implements ConversationStore {
           pendingMessage = this.getMessage(messageId);
         } else {
           this.sqlite.run(
-            `UPDATE member_turns SET state = 'failed', failure_reason = ? WHERE id = ?`,
-            [input.reason ?? "failed", member.id],
+            `UPDATE member_turns SET state = 'failed', failure_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+            [input.reason ?? "failed", input.now, member.id],
           );
           if (!alreadyCounted) {
             this.sqlite.run(
