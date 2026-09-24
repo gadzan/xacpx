@@ -152,14 +152,19 @@ async function realPathOfNode(): Promise<string> {
   return stdout.stdout.trim();
 }
 
-test("encoded Windows worker command line stays below the CreateProcess ceiling", () => {
+test("encoded Windows worker command lines stay below the CreateProcess ceiling", () => {
   // `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand <encoded>`
   // is 67 fixed chars plus the base64 payload. The hard ceiling is 32767 chars
   // (CreateProcessW); this asserts a slightly tighter budget so future script
-  // growth fails loudly instead of silently truncating. The current payload is
-  // ~29 KB so headroom is intentionally small.
-  const encoded = Buffer.from(WINDOWS_TREE_WORKER_SCRIPT, "utf16le").toString("base64");
-  expect(67 + encoded.length).toBeLessThan(32_500);
+  // growth fails loudly instead of silently truncating. The current payloads are
+  // ~31 KB (tree) and ~25 KB (descendants) so headroom is intentionally small.
+  for (const [name, script] of [
+    ["tree", WINDOWS_TREE_WORKER_SCRIPT],
+    ["descendants", WINDOWS_DESCENDANTS_WORKER_SCRIPT],
+  ] as const) {
+    const encoded = Buffer.from(script, "utf16le").toString("base64");
+    expect(67 + encoded.length, `${name} worker script encoded payload`).toBeLessThan(32_500);
+  }
 });
 
 // Regression: the real worker must actually run on Windows. Piping the script
@@ -332,8 +337,30 @@ windowsTest("real worker converges a three-level descendant tree and keeps the p
     expect(() => process.kill(childPid, 0)).not.toThrow();
     expect(() => process.kill(grandchildPid, 0)).not.toThrow();
 
-    const result = await terminateWindowsDescendantsOf(rootProcess.pid!);
-    expect(result.verified).toBe(true);
+    // The pid files are written by the processes themselves, so they can be
+    // readable before CIM has published the row — and OpenProcess on a process
+    // whose CIM row is still settling can return access-denied. Wait for CIM
+    // visibility of BOTH descendants before starting the kill transaction,
+    // otherwise this test measures process-creation timing, not the worker.
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const [childCim, grandchildCim] = await Promise.all([
+        cimExecutablePath(childPid),
+        cimExecutablePath(grandchildPid),
+      ]);
+      if (childCim && grandchildCim) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    // OpenProcess(PROCESS_ALL_ACCESS) on a very recently created process can
+    // transiently return ERROR_ACCESS_DENIED on Windows, which the worker
+    // correctly fails closed on. Retry the attempt until it converges instead
+    // of asserting on the OS's willingness to hand out a handle.
+    let result: Awaited<ReturnType<typeof terminateWindowsDescendantsOf>> | null = null;
+    for (let attempt = 0; attempt < 10 && result?.verified !== true; attempt += 1) {
+      result = await terminateWindowsDescendantsOf(rootProcess.pid!);
+      if (result?.verified !== true) await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    expect(result?.verified).toBe(true);
     expect(() => process.kill(rootProcess.pid!, 0)).not.toThrow();
     let childGone = false;
     let grandchildGone = false;
@@ -767,15 +794,18 @@ windowsTest("real worker kills a child whose CIM image path differs from the han
     }
     expect(childPid).toBeGreaterThan(0);
 
-    // CIM visibility lags spawn; poll until both pids are queryable.
+    // CIM visibility lags spawn. queryWindowsProcessIdentity can already
+    // succeed (handle-derived) while the CIM row still has no commandLine, so
+    // polling for a non-null identity is NOT enough — poll for the field the
+    // test actually depends on.
     let childIdentity: WindowsProcessIdentity | null = null;
     let rootIdentity: WindowsProcessIdentity | null = null;
-    for (let attempt = 0; attempt < 100 && (!childIdentity || !rootIdentity); attempt += 1) {
-      if (!childIdentity) childIdentity = await queryWindowsProcessIdentity(childPid);
+    for (let attempt = 0; attempt < 100 && (!childIdentity?.commandLine || !rootIdentity); attempt += 1) {
+      if (!childIdentity?.commandLine) childIdentity = await queryWindowsProcessIdentity(childPid);
       if (!rootIdentity) rootIdentity = await queryWindowsProcessIdentity(rootProcess.pid!);
-      if (!childIdentity || !rootIdentity) await new Promise((resolve) => setTimeout(resolve, 50));
+      if (!childIdentity?.commandLine || !rootIdentity) await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    expect(childIdentity).not.toBeNull();
+    expect(childIdentity?.commandLine).toBeTruthy();
     expect(rootIdentity).not.toBeNull();
 
     // Precondition: the two path SOURCES really disagree for the child. Without
@@ -787,7 +817,6 @@ windowsTest("real worker kills a child whose CIM image path differs from the han
     expect(childCimPath.toLowerCase()).not.toBe((await handleImagePath(childPid)).toLowerCase());
     // And identity must still report the commandLine — the image-path gate that
     // used to drop it under a symlinked launcher is gone.
-    expect(childIdentity!.commandLine).toBeTruthy();
     expect(childIdentity!.commandLine!.toLowerCase().startsWith(shimExecutable.toLowerCase())).toBe(true);
 
     const result = await terminateWindowsProcessTree({
@@ -810,6 +839,77 @@ windowsTest("real worker kills a child whose CIM image path differs from the han
       }
       expect(gone).toBe(true);
     }
+  } finally {
+    try { rootProcess.kill("SIGKILL"); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 60_000);
+
+// Same defect class, second stage: the descendants worker reports a killed
+// descendant's identity, and worker-eof spools every unsafe outcome/leftover as
+// a durable residual. The reaper then feeds that residual's executablePath back
+// to terminateWindowsProcessTree as a strictly-compared ROOT fingerprint
+// ($cim=$false). If the descendants worker reports the CIM create-time alias
+// instead of the handle-derived image, the reaper condemns the record
+// 'skipped-replaced' forever and the fence can never discharge. Pin that the
+// reported image is the RESOLVED one.
+windowsTest("real descendants worker reports the resolved image, not the CIM alias", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "desc-image-canonical-"));
+  const realNode = await realPathOfNode();
+  const link = join(dir, "shim");
+  const shimExecutable = join(link, process.platform === "win32" ? "node.exe" : "node");
+  const childPidFile = join(dir, "child.pid");
+  // Root spawns its child through the junction: the child's CIM ExecutablePath
+  // is the alias, its handle image is the real file. terminate-descendants-of
+  // kills it (parent stays alive) and must report the RESOLVED path.
+  const rootScript = [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    `const child = spawn(${JSON.stringify(shimExecutable)}, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });`,
+    `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n");
+  await symlink(dirname(realNode), link, "junction");
+  const rootProcess = spawn("node", ["-e", rootScript], { stdio: "ignore", windowsHide: true });
+  try {
+    let childPid = 0;
+    for (let attempt = 0; attempt < 200 && !childPid; attempt += 1) {
+      try {
+        childPid = Number.parseInt(await readFile(childPidFile, "utf8"), 10) || 0;
+      } catch { /* not written yet */ }
+      if (!childPid) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(childPid).toBeGreaterThan(0);
+
+    let rootProbe: Awaited<ReturnType<typeof probeWindowsProcessIdentity>> | null = null;
+    for (let attempt = 0; attempt < 100 && !rootProbe; attempt += 1) {
+      rootProbe = await probeWindowsProcessIdentity(rootProcess.pid!);
+      if (!rootProbe) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(rootProbe?.status).toBe("found");
+    if (rootProbe?.status !== "found") return;
+
+    // Precondition: the child's two path sources really disagree, so the
+    // assertion below is meaningful rather than trivially true.
+    const childCimPath = await cimExecutablePath(childPid);
+    const childQfpi = await handleImagePath(childPid);
+    expect(childCimPath.toLowerCase()).not.toBe(childQfpi.toLowerCase());
+
+    const result = await terminateWindowsDescendantsOf(rootProcess.pid!, {
+      expectedParentCreationDate: rootProbe.identity.creationDate,
+      workerDeadlineMs: null,
+    });
+
+    expect(result.verified).toBe(true);
+    const childOutcome = result.outcomes.find((item) => item.pid === childPid);
+    expect(childOutcome).toBeDefined();
+    expect(["killed", "already-exited"]).toContain(childOutcome!.outcome);
+    // The durable-evidence field must be the resolved image, never the alias:
+    // this exact string becomes a reaper root fingerprint later.
+    expect(childOutcome!.executablePath).toBe(childQfpi);
+    expect(childOutcome!.executablePath).not.toBe(childCimPath);
+    // The parent survives — this action never kills its root.
+    expect(() => process.kill(rootProcess.pid!, 0)).not.toThrow();
   } finally {
     try { rootProcess.kill("SIGKILL"); } catch {}
     await rm(dir, { recursive: true, force: true });

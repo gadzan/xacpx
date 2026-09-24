@@ -463,7 +463,13 @@ function OpenVerified($node, $cim) {
 }
 
 function CL($h){try{[XacpxNativeProcess]::Close($h)}catch{}}
-function VF($p){$c=OpenVerified $p $true;if($c.ok){$open[$p.pid]=$c.handle}else{$ov[$p.pid]=$c.status;CL $c.handle}}
+# On success the handle-derived image REPLACES the CIM create-time path on the
+# node itself. The CIM value is a launcher alias under any symlinked/junctioned
+# shim, and this node is later spooled as a durable residual whose
+# executablePath the reaper hands back to terminateWindowsProcessTree as a
+# strictly-compared ROOT fingerprint — an alias there would be condemned
+# 'skipped-replaced' forever and the record could never discharge.
+function VF($p){$c=OpenVerified $p $true;if($c.ok){$p.executablePath=$c.image;$open[$p.pid]=$c.handle}else{$ov[$p.pid]=$c.status;CL $c.handle}}
 if($request.action -eq 'identity'){
   $h=[XacpxNativeProcess]::Open([uint32]$request.pid)
   if($h -eq [IntPtr]::Zero){
@@ -634,7 +640,13 @@ function OpenVerified($node, $cim) {
 }
 
 function CL($h){try{[XacpxNativeProcess]::Close($h)}catch{}}
-function VF($p){$c=OpenVerified $p $true;if($c.ok){$open[$p.pid]=$c.handle}else{$ov[$p.pid]=$c.status;CL $c.handle}}
+# On success the handle-derived image REPLACES the CIM create-time path on the
+# node itself. The CIM value is a launcher alias under any symlinked/junctioned
+# shim, and this node is later spooled as a durable residual whose
+# executablePath the reaper hands back to terminateWindowsProcessTree as a
+# strictly-compared ROOT fingerprint — an alias there would be condemned
+# 'skipped-replaced' forever and the record could never discharge.
+function VF($p){$c=OpenVerified $p $true;if($c.ok){$p.executablePath=$c.image;$open[$p.pid]=$c.handle}else{$ov[$p.pid]=$c.status;CL $c.handle}}
 if($request.action -eq 'identity'){
   $h=[XacpxNativeProcess]::Open([uint32]$request.pid)
   if($h -eq [IntPtr]::Zero){
