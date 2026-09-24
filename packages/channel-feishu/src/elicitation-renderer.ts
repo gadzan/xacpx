@@ -206,6 +206,31 @@ export class FeishuElicitationRenderer {
    * `cancel` for external aborts, so no responderId is ever invented here.
    */
   async requestElicitation(request: ChannelElicitationRequest, chatId: string): Promise<ChannelElicitationDecision> {
+    // A form is PRIVATE TO ITS REQUESTER, and the destination has to prove it.
+    //
+    // The card carries the agent's question AND the user's answers, and a group
+    // chat shows both to every member — so an elicitation asked in a group
+    // publishes what the user told the agent. Authorising who may CLICK never
+    // limited who may SEE, which is a different and much wider audience.
+    //
+    // `chatType` is the channel's own ingress fact, not a guess made here, which
+    // is why this needs no extra REST lookup of the chat type. Anything other than
+    // `"direct"` — including a channel that reports nothing — fails closed: only a
+    // provably 1:1 destination may render a form. The check runs before the card
+    // is built, so no question and no answer can reach a group.
+    //
+    // `elicitationModes` stays `["form"]` at channel scope because the plugin
+    // capability contract has no route-scoped notion; this per-turn refusal is what
+    // closes the gap.
+    if (request.chatType !== "direct") {
+      this.options.log?.("feishu.elicitation.route_not_private", "refused elicitation on a non-private route", {
+        requestId: request.requestId,
+        chatType: request.chatType ?? "unreported",
+      });
+      throw new Error(
+        `elicitation form is only renderable on a private route; this turn reported ${request.chatType ?? "no chatType"}`,
+      );
+    }
     // The request is passed alongside the fields so the gate can also measure
     // the opening card's agent-authored text (message, schema title and
     // description) in ESCAPED space. Without it, a high-expansion question —

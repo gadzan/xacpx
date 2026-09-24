@@ -418,6 +418,8 @@ test("stop() drains a pending form before the callback channel goes away", async
   const settled = channel.requestElicitation({
     requestId: "r-drain",
     chatKey: "feishu:default:oc_chat",
+    // A provably private route: the drain test is about lifecycle, not privacy.
+    chatType: "direct",
     requester: { senderId: "ou_a" },
     agent: { name: "codex" },
     message: "m",

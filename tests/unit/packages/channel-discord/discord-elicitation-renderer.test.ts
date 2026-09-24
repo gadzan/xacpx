@@ -205,6 +205,9 @@ function request(fields: ChannelElicitationRequest["fields"]): {
     request: {
       requestId: "rr-1",
       chatKey: "discord:default:g:c1",
+      // A provably private route, so a form may be rendered at all. Tests that
+      // care about route privacy set this explicitly.
+      chatType: "direct",
       requester: { senderId: "user-A", senderName: "Ada", isOwner: true },
       agent: { name: "codex" },
       message: "Fill this in",
@@ -2561,4 +2564,86 @@ test("the gate's field budget is the builder's, not a subset of it", async () =>
       undefined,
     ),
   ).toThrow(/needs \d+ messages/);
+});
+
+test("a form asked on a group route is refused before anything is sent", async () => {
+  // The card carries the agent's question AND the user's answers. In a guild every
+  // member reads both, so an elicitation asked in a group publishes what the user
+  // told the agent — an API key, a token, a name. Authorising who may CLICK never
+  // limited who may SEE.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
+    ]);
+    // A group turn reports `group` from the channel's own ingress metadata.
+    req.chatType = "group";
+    const outcome = await channel.requestElicitation(req).then(
+      () => "resolved",
+      (e: Error) => e.message,
+    );
+    expect(outcome).toContain("only renderable on a private route");
+    expect(outcome).toContain("group");
+    // Nothing was posted: no question and no controls reached the channel, so
+    // there is nothing for a member to read and nothing for the user to answer.
+    expect(client.sent).toHaveLength(0);
+    expect(client.edited).toHaveLength(0);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a form asked on an unreported route is refused, not treated as direct", async () => {
+  // Absent is not the same as private. A channel that reports no `chatType` has
+  // not established a 1:1 destination, and treating that as `direct` would be the
+  // fail-open this gate exists to prevent.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
+    ]);
+    // Delete what the helper set, so the request carries no `chatType` at all:
+    // that is the case where a channel reported nothing and the renderer has no
+    // evidence of a private destination.
+    delete (req as { chatType?: string }).chatType;
+    const outcome = await channel.requestElicitation(req).then(
+      () => "resolved",
+      (e: Error) => e.message,
+    );
+    expect(outcome).toContain("only renderable on a private route");
+    expect(outcome).toContain("no chatType");
+    expect(client.sent).toHaveLength(0);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a form asked on a direct private route still works", async () => {
+  // The control: a provably 1:1 destination renders normally, so the gate is not
+  // refusing forms outright.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
+    ]);
+    req.chatType = "direct";
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    // The opening went out with its controls.
+    expect(client.sent.length).toBeGreaterThan(0);
+    client.emitButton(click(client, idFor(client, "decline")));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(await settled).toEqual({ action: "decline", responderId: "user-A" });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
 });

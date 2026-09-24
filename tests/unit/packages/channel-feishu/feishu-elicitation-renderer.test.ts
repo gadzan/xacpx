@@ -35,6 +35,9 @@ function request(fields: ChannelElicitationRequest["fields"], message = "Which e
   return {
     requestId: "req-1",
     chatKey: "feishu:default:oc_chat",
+    // A provably private route, so a form may be rendered at all. Tests that
+    // care about route privacy set this explicitly.
+    chatType: "direct",
     requester: { senderId: "ou_initiator", senderName: "Ada", isOwner: true },
     agent: { name: "codex", sessionAlias: "backend" },
     message,
@@ -1035,6 +1038,8 @@ test("an opening card whose pieces are individually legal but jointly over 30KB 
   const request = {
     requestId: "r-aggregate",
     chatKey: "feishu:default:oc_chat",
+    // A provably private route: this test is about the card budget, not privacy.
+    chatType: "direct",
     requester: { senderId: "ou_initiator" },
     agent: { name: "codex" },
     message: "~".repeat(4666),
@@ -1058,4 +1063,36 @@ test("an opening card whose pieces are individually legal but jointly over 30KB 
   expect(rec.transport.sent).toHaveLength(0);
   // And nothing is left pending.
   expect(rec.pending.size).toBe(0);
+});
+
+test("a form asked on a group route is refused before any card is created", async () => {
+  // The card carries the agent's question AND the user's answers, and a group chat
+  // shows both to every member. Authorising who may CLICK never limited who may
+  // SEE.
+  const rec = makeRenderer();
+  const outcome = await rec.renderer.requestElicitation({ ...request(ENV_FIELD), chatType: "group" }, "oc_chat").then(
+    () => "resolved",
+    (e: Error) => e,
+  );
+  expect(outcome).toBeInstanceOf(Error);
+  expect((outcome as Error).message).toContain("only renderable on a private route");
+  expect((outcome as Error).message).toContain("group");
+  // Nothing was created, so neither the question nor an answer can reach the group.
+  expect(rec.transport.sent).toHaveLength(0);
+  expect(rec.pending.size).toBe(0);
+});
+
+test("a form asked on an unreported route is refused, not treated as direct", async () => {
+  // Absent is not the same as private: a channel that reports no `chatType` has
+  // not established a 1:1 destination.
+  const rec = makeRenderer();
+  const req = request(ENV_FIELD) as { chatType?: string };
+  delete req.chatType;
+  const outcome = await rec.renderer.requestElicitation(req as never, "oc_chat").then(
+    () => "resolved",
+    (e: Error) => e,
+  );
+  expect(outcome).toBeInstanceOf(Error);
+  expect((outcome as Error).message).toContain("no chatType");
+  expect(rec.transport.sent).toHaveLength(0);
 });
