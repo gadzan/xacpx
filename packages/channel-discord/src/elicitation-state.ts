@@ -89,8 +89,19 @@ export interface PendingDiscordElicitation {
    */
   visitedReview: boolean;
   settled: boolean;
-  /** Terminal UI state for a send that completes after settlement (send race). */
-  terminalState?: "expired" | "cancelled";
+  /**
+   * Terminal UI state for a send that completes after settlement (send race).
+   *
+   * Covers BOTH sources of settlement, because the send race does not care which
+   * one fired: an abort or expiry is `"cancelled"`/`"expired"`, and a USER's own
+   * Decline or Cancel is the word for what they chose. Without the user cases the
+   * terminal render of a decision that lands while the opening is still in flight
+   * was silently dropped — the promise resolved correctly, but the card kept its
+   * live Start/Decline/Cancel controls with nothing left to answer them, which is
+   * the same "a settled card must end visibly inert" invariant every other
+   * terminal path already honours.
+   */
+  terminalState?: "expired" | "cancelled" | "declined" | "accepted";
   resolve: (decision: ChannelElicitationDecision) => void;
   reject: (error: Error) => void;
 }

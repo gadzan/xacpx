@@ -2136,12 +2136,51 @@ test("an abort mid-opening accounts for every message it actually published", as
   }
 });
 
-test("an explicit Decline whose opening send finishes in flight still resolves the turn", async () => {
+test("a Decline whose opening send finishes in flight resolves AND terminalises the card", async () => {
   // The FINAL chunk carrying the controls can land AFTER the user has already
-  // clicked Decline on it. That message is then real, so the request must resolve
-  // with the user's decision — not reject. Reporting a legitimate decline as a
-  // rejection is what the previous "record after the settle check" ordering did,
-  // and what CI caught on both Linux and macOS.
+  // clicked Decline on it. Two things must both hold:
+  //
+  //   - the request resolves with the user's decision, not a rejection;
+  //   - the freshly-landed primary ends visibly inert, because "a settled card
+  //     must never be left looking answerable" is the invariant every other
+  //     terminal path honours.
+  //
+  // The promise side was fixed by taking ownership before the settle check. The
+  // UI side needs the terminal STATE recorded: the terminal render that fires
+  // when the decision arrives runs before `entry.messageId` exists and returns
+  // immediately, so the send-race replay has to know what the user actually chose.
+  // Without that, `terminalState` stayed unset for a user decision and the card
+  // kept its live Start/Decline/Cancel controls with nothing left to answer them.
+  const { outcome, terminal } = await runOpeningSendRace("decline");
+  expect(outcome).toEqual({ action: "decline", responderId: "user-A" });
+  // The card the user is left with says what they chose and has no controls.
+  expect(terminal.content).toContain("declined");
+  expect(terminal.components).toEqual([]);
+});
+
+test("a Cancel whose opening send finishes in flight resolves AND terminalises the card", async () => {
+  // Same race, other control: Cancel must not be reported as a cancellation the
+  // user did not choose, and its card must end inert too.
+  const { outcome, terminal } = await runOpeningSendRace("cancel");
+  expect(outcome).toEqual({ action: "cancel", responderId: "user-A" });
+  expect(terminal.content).not.toContain("declined");
+  expect(terminal.content).toContain("cancelled");
+  expect(terminal.components).toEqual([]);
+});
+
+/**
+ * Drive the final-chunk send race: the opening's last send is held while the user
+ * clicks the named control, then released.
+ *
+ * Returns the decision the request settled with and the LAST edit applied to the
+ * primary message, which is where the terminal card lands.
+ */
+async function runOpeningSendRace(
+  action: "decline" | "cancel",
+): Promise<{
+  outcome: unknown;
+  terminal: { content: string; components: unknown[] };
+}> {
   const client = makeFakeClient();
   const realSend = client.sendMessage.bind(client);
   let release!: () => void;
@@ -2175,18 +2214,28 @@ test("an explicit Decline whose opening send finishes in flight still resolves t
     );
     // Let the opening publish its text chunks and park on the final one.
     await new Promise((r) => setTimeout(r, 15));
-    // The user declines on the card they can already see.
-    client.emitButton(click(client, idFor(client, "decline")));
+    // The user decides on the card they can already see.
+    client.emitButton(click(client, idFor(client, action)));
     // Now the final send lands: the controls exist, and the turn is already
-    // decided. The decision must win.
+    // decided. The decision must win, and the card must end up inert.
     release();
     const outcome = await Promise.race([
       settled,
       new Promise((r) => setTimeout(() => r("timeout"), 1000)),
     ]);
-    expect(outcome).toEqual({ action: "decline", responderId: "user-A" });
+    // Wait for the queued terminal render to run: the enqueue is asynchronous to
+    // the decision, so a terminal card can land just after the promise settles.
+    await new Promise((r) => setTimeout(r, 30));
+    const last = client.edited[client.edited.length - 1]!;
+    return {
+      outcome,
+      terminal: {
+        content: String(last.body.content ?? ""),
+        components: (last.body.components ?? []) as unknown[],
+      },
+    };
   } finally {
     release?.();
     await channel.stop().catch(() => {});
   }
-});
+}

@@ -197,6 +197,25 @@ function parseChatKeyToTarget(chatKey: string): DeliveryTarget | null {
   return { channelId: parsed.channelId, ...(parsed.guildId ? { guildId: parsed.guildId } : {}) };
 }
 
+/**
+ * The terminal wording for a recorded terminal state.
+ *
+ * Every terminal path funnels through here so a card always names the outcome the
+ * daemon actually settled with. Before this existed the send-race terminal render
+ * hard-coded "cancelled", which told a user who pressed Decline that they had
+ * cancelled — the same card-contradicts-decision class the decline and cancel
+ * render paths already fixed.
+ */
+function terminalTextFor(state: NonNullable<PendingDiscordElicitation["terminalState"]>): string {
+  const messages = getMessages();
+  switch (state) {
+    case "expired": return messages.elicitationExpired;
+    case "declined": return messages.elicitationDeclined;
+    case "accepted": return messages.elicitationAccepted;
+    default: return messages.elicitationCancelled;
+  }
+}
+
 export class DiscordChannel implements MessageChannelRuntime {
   readonly id = "discord";
   readonly nativeSessionListFormat: "cards" | "table" = "cards";
@@ -850,9 +869,15 @@ export class DiscordChannel implements MessageChannelRuntime {
       // in which case the terminal edit happened before a message id existed.
       // Queued for the same reason as `onAbort`: a settled entry must end inert,
       // and nothing later may repaint it.
+      //
+      // The card must show what the user actually chose, so the recorded terminal
+      // state supplies the wording. A generic "cancelled" here would tell a user
+      // who pressed Decline that they cancelled it — the same contradiction the
+      // decline/cancel paths already fixed elsewhere.
       if (entry.settled && entry.terminalState) {
+        const terminal = entry.terminalState;
         void this.enqueueElicitationRender(entry.token, () =>
-          this.renderElicitationInert(entry, getMessages().elicitationCancelled)).catch(() => {});
+          this.renderElicitationInert(entry, terminalTextFor(terminal))).catch(() => {});
       }
       void this.logger?.info("discord.elicitation.sent", "sent discord elicitation request", {
         requestId: request.requestId,
@@ -906,6 +931,17 @@ export class DiscordChannel implements MessageChannelRuntime {
       interaction,
       pending: this.pendingElicitations,
       onSettled: (settledEntry, decision) => {
+        // Record the terminal state the card must end in, BEFORE anything can
+        // observe it missing. A send-race terminal render runs when the opening
+        // finishes landing after this point, and it needs the word for what the
+        // user actually chose — not the generic "cancelled" an external abort
+        // would use, which would have rendered their Decline as a cancellation.
+        settledEntry.terminalState =
+          decision.action === "accept"
+            ? "accepted"
+            : decision.action === "decline"
+              ? "declined"
+              : "cancelled";
         settledEntry.resolve(decision);
         // Also serialized: a terminal render must not interleave with a queued
         // UI transition for the same card, or the inert card would land under a
