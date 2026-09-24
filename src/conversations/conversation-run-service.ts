@@ -791,6 +791,56 @@ export class ConversationRunService {
     );
   }
   /**
+   * Topic-scoped controller fence: the same residue rules as the Group
+   * fence, narrowed to one Topic. A controller binding on this exact
+   * (conversation, topic) pair, an exact owner triple, a binding-resolved
+   * partial owner, or a conversation-less partial owner naming this topicId
+   * all block the Topic teardown — the Topic row is the only cleanup root a
+   * topicId-linked partial owner can prove. The global ambiguous gate also
+   * applies: an owner proving nothing either way blocks every verified
+   * delete, Topic or Group.
+   */
+  private assertNoTopicControllerResidue(conversationId: string, topicId: string): void {
+    this.assertNoAmbiguousGroupControllerSessions();
+    const bindings = Object.values(this.state.bot_runtime_bindings).filter(
+      (binding) => binding.scope === "group-controller"
+        && binding.conversationId === conversationId
+        && binding.topicId === topicId,
+    );
+    const sessions = Object.values(this.state.sessions).filter((session) => {
+      const owner = session.owner;
+      if (owner?.kind !== "group-controller") {
+        return false;
+      }
+      if (owner.conversationId !== undefined) {
+        if (owner.conversationId !== conversationId) {
+          return false;
+        }
+        // Exact triple on this Group: an absent topicId cannot prove THIS
+        // topic, so only an exact topicId match fences the Topic teardown.
+        return owner.topicId === topicId;
+      }
+      const bound = owner.bindingId !== undefined
+        ? this.state.bot_runtime_bindings[owner.bindingId]
+        : undefined;
+      if (bound !== undefined) {
+        return bound.conversationId === conversationId && bound.topicId === topicId;
+      }
+      return owner.topicId !== undefined && owner.topicId === topicId;
+    });
+    if (bindings.length === 0 && sessions.length === 0) {
+      return;
+    }
+    throw new ConversationError(
+      "group_has_controller",
+      `topic "${topicId}" has provisional controller runtime with no verified release path`,
+      {
+        bindingIds: bindings.map((binding) => binding.id),
+        sessionAliases: sessions.map((session) => session.alias),
+      },
+    );
+  }
+  /**
    * Release every group-member runtime residue for a Group whose Topics are
    * all gone: live bindings (alias+id verified), exact binding-less owners,
    * and legacy partial owners resolvable through a same-group binding.
@@ -959,6 +1009,12 @@ export class ConversationRunService {
   async teardownGroupTopic(conversationId: string, topicId: string): Promise<void> {
     this.assertOpen();
     this.requireGroupTopic(conversationId, topicId);
+    // Pre-check before the deleting barrier: a provisional controller row
+    // attributing to this Topic is that Topic's only cleanup root. The Group
+    // fence cannot help here — this is a public Control/RPC path that never
+    // passes through it. Fail closed while the Topic row still exists; the
+    // finalize gate re-checks for a controller row landing mid-teardown.
+    this.assertNoTopicControllerResidue(conversationId, topicId);
     const timestamp = this.now().toISOString();
     // Linearize against member materialization: hold every involved Bot
     // lifecycle gate WHILE setting the deleting barrier, so no materializer
@@ -1039,6 +1095,11 @@ export class ConversationRunService {
             await this.releaseAlias(alias);
           }
         }
+        // A controller row attributing to this Topic has no release path:
+        // re-check inside the gate (it could have landed mid-teardown) and
+        // fail closed before deleting the Topic row — the only cleanup root
+        // a topicId-linked partial owner can prove.
+        this.assertNoTopicControllerResidue(conversationId, topicId);
         await this.stateMutex.run(async () => {
           const next = structuredClone(this.state);
           for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {

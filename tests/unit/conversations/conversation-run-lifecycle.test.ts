@@ -4111,8 +4111,9 @@ test("provisional controller residue blocks verified group delete, never orphans
   });
   first.state.bot_runtime_bindings.controller_x = {
     id: "controller_x",
+    scope: "group-controller",
     conversationId: group.id,
-    topicId: "t",
+    topicId: topic.id,
     logicalSessionId: "99999999-9999-4999-8999-999999999999",
     sessionAlias: "group:controller",
     createdAt: NOW,
@@ -4126,7 +4127,7 @@ test("provisional controller residue blocks verified group delete, never orphans
     logical_session_id: "99999999-9999-4999-8999-999999999999",
     created_at: NOW,
     last_used_at: NOW,
-    owner: { kind: "group-controller", bindingId: "controller_x", conversationId: group.id, topicId: "t" },
+    owner: { kind: "group-controller", bindingId: "controller_x", conversationId: group.id, topicId: topic.id },
   };
   await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
     code: "group_has_controller",
@@ -4141,6 +4142,31 @@ test("provisional controller residue blocks verified group delete, never orphans
   expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 })).not.toHaveLength(0);
   expect(first.state.bot_runtime_bindings.controller_x).toBeDefined();
   expect(first.sessions.getLogicalSessionRecord("controller_sess")?.alias).toBe("controller_sess");
+  first.store.close();
+});
+
+test("controller binding row alone fences verified group delete", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  // No session at all: the binding row alone must still block the delete.
+  first.state.bot_runtime_bindings.controller_only = {
+    id: "controller_only",
+    scope: "group-controller",
+    conversationId: group.id,
+    topicId: "t",
+    logicalSessionId: "77777777-7777-4777-8777-777777777777",
+    sessionAlias: "group:controller-only",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "group_has_controller",
+  });
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings.controller_only).toBeDefined();
   first.store.close();
 });
 
@@ -4171,6 +4197,51 @@ test("controller partial owner via live topicId blocks group delete pre-destruct
   });
   expect(first.state.conversation_topics[topic.id]).toBeDefined();
   expect(first.sessions.getLogicalSessionRecord("controller_partial")?.alias).toBe("controller_partial");
+  first.store.close();
+});
+
+test("controller partial owner via live topicId blocks topic teardown pre-destruction", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(reviewer.id);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-topic-controller-fence",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  // Same legal partial owner as the Group-level test — but torn down at the
+  // Topic level, which never passes through the Group fence.
+  first.state.sessions.controller_partial_topic = {
+    alias: "controller_partial_topic",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:controller_partial_topic",
+    logical_session_id: "66666666-6666-4666-8666-666666666666",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-controller", bindingId: "missing_binding", topicId: topic.id },
+  };
+  await expect(first.service.teardownGroupTopic(group.id, topic.id)).rejects.toMatchObject({
+    code: "group_has_controller",
+  });
+  // Nothing destructive happened: Topic row, durable rows, and the partial
+  // session all survive — the owner never degrades to ambiguous.
+  expect(first.state.conversation_topics[topic.id]).toBeDefined();
+  expect(first.store.listRuns(group.id, topic.id)).not.toHaveLength(0);
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 })).not.toHaveLength(0);
+  expect(first.sessions.getLogicalSessionRecord("controller_partial_topic")?.alias).toBe("controller_partial_topic");
   first.store.close();
 });
 
