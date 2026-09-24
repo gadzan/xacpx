@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { connectEvents, sendSubscribe, TerminalRequestError, isRetryableTerminalError } from "../api/events";
-import { useInstancesStore, supportsRmuxTerminal } from "../stores/instances";
+import { useInstancesStore, supportsRmuxTerminal, supportsDesktop } from "../stores/instances";
 import { useChatStore, loadPersistedSelection } from "../stores/chat";
 import { useDirectBotsStore, loadPersistedBotSelection } from "../stores/direct-bots";
 import { useTasksStore } from "../stores/tasks";
@@ -10,6 +10,7 @@ import { useNoticesStore } from "../stores/notices";
 import { useConnectionStore } from "../stores/connection";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore, terminalLocalKey } from "../stores/terminal";
+import { useDesktopStore } from "../stores/desktop";
 import { detachSessionTerminal } from "../lib/session-terminal";
 import { pushToast } from "../lib/use-toasts";
 import { migrateAwayFromLegacyTerminalIds } from "../lib/terminal-sessions";
@@ -20,6 +21,7 @@ import FileViewer from "../components/FileViewer.vue";
 import TaskPanel from "../components/TaskPanel.vue";
 import FilesPanel from "../components/FilesPanel.vue";
 import TerminalTab from "../components/TerminalTab.vue";
+import DesktopTab from "../components/DesktopTab.vue";
 import CenterTabStrip from "../components/CenterTabStrip.vue";
 import NoticeToast from "../components/NoticeToast.vue";
 import ActionToast from "../components/ActionToast.vue";
@@ -31,7 +33,7 @@ import { useThemeStore } from "../stores/theme";
 import { createEdgeSwipe } from "../lib/edge-swipe";
 import { clampPanelWidth, createPanelResize } from "../lib/resize-panel";
 import { setNotificationClickHandler, initTabFocusTracker } from "../lib/local-notification";
-import { Search, Moon, Sun, Settings, X, Menu, FileText, List, PanelLeftClose, PanelLeftOpen, SquareTerminal } from "lucide-vue-next";
+import { Search, Moon, Sun, Settings, X, Menu, FileText, List, Monitor, PanelLeftClose, PanelLeftOpen, SquareTerminal } from "lucide-vue-next";
 
 const theme = useThemeStore();
 const instances = useInstancesStore();
@@ -39,6 +41,7 @@ const chat = useChatStore();
 const tasks = useTasksStore();
 const directBotsStore = useDirectBotsStore();
 const terminals = useTerminalStore();
+const desktops = useDesktopStore();
 const notices = useNoticesStore();
 const conn = useConnectionStore();
 const centerTabs = useCenterTabsStore();
@@ -56,6 +59,8 @@ function onSwMessage(event: MessageEvent): void {
 const leftOpen = ref(false);
 const rightOpen = ref(false);
 const rightTab = ref<"tasks" | "files">("files");
+/** Instance-level Desktop tab (not a per-session center tab): one viewer per instance. */
+const desktopTabOpen = ref(false);
 function closeDrawers() {
   leftOpen.value = false;
   rightOpen.value = false;
@@ -254,6 +259,25 @@ const terminalCapable = computed(() => {
   return !!inst && supportsRmuxTerminal(inst);
 });
 
+const desktopCapable = computed(() => {
+  const id = chat.instanceId;
+  if (!id) return false;
+  const inst = instances.byId(id);
+  return !!inst && supportsDesktop(inst);
+});
+
+function openDesktop(): void {
+  if (!chat.instanceId || !desktopCapable.value) return;
+  desktops.viewFor(chat.instanceId);
+  desktopTabOpen.value = true;
+  rightOpen.value = false;
+}
+
+function closeDesktop(): void {
+  if (chat.instanceId) desktops.close(chat.instanceId);
+  desktopTabOpen.value = false;
+}
+
 // A file/diff/terminal tab opened for the current session takes over the center column.
 // On mobile, opening one also closes the right drawer so the pane is actually visible.
 watch(
@@ -271,6 +295,10 @@ function onGlobalKey(e: KeyboardEvent) {
 }
 
 function onSelect(instanceId: string, alias: string) {
+  if (chat.instanceId && chat.instanceId !== instanceId) {
+    desktops.close(chat.instanceId);
+    desktopTabOpen.value = false;
+  }
   directBotsStore.clearSelection();
   chat.select(instanceId, alias);
   void chat.loadHistory().catch(() => {});
@@ -343,8 +371,9 @@ onMounted(async () => {
     tasks.applyEvent(event);
     notices.applyEvent(event);
     terminals.applyEvent(event);
+    desktops.applyEvent(event);
+    if (event.kind === "instance-status" && event.online === false) desktopTabOpen.value = false;
   }, onStatus);
-  // Setup notification click routing
   setNotificationClickHandler((instId, alias) => onSelect(instId, alias));
   if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
     navigator.serviceWorker.addEventListener("message", onSwMessage);
@@ -430,6 +459,18 @@ onUnmounted(() => {
           @click="currentKey && terminalCapable && centerTabs.openTerminal(currentKey)"
         >
           <SquareTerminal :size="15" />
+        </button>
+        <button
+          v-if="desktopCapable"
+          data-test="toggle-desktop"
+          :aria-label='$t("desktop.title")'
+          :title='$t("desktop.title")'
+          :disabled="!chat.instanceId"
+          class="grid h-7 w-7 place-items-center rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
+          :class="desktopTabOpen ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-fg-muted hover:bg-raised'"
+          @click="desktopTabOpen ? closeDesktop() : openDesktop()"
+        >
+          <Monitor :size="15" />
         </button>
         <button
           data-test="theme-toggle"
@@ -548,6 +589,10 @@ onUnmounted(() => {
                          :instance-id="keyInstance(key)" :session-alias="keyAlias(key)"
                          @close="requestCloseTab(key, tab.id)" />
           </template>
+          <DesktopTab v-if="desktopTabOpen && chat.instanceId" class="absolute inset-0 z-20"
+                      :instance-id="chat.instanceId"
+                      :instance-name="instances.byId(chat.instanceId)?.name ?? chat.instanceId"
+                      @close="closeDesktop()" />
         </div>
       </div>
 
