@@ -777,7 +777,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       // state back into an interactive-looking card, which for a form containing
       // answers also re-displays text the terminal card had withdrawn.
       void this.enqueueElicitationRender(entry.token, () =>
-        this.renderElicitationInert(entry, getMessages().elicitationCancelled)).catch(() => {});
+        this.renderElicitationInert(entry, terminalTextFor("cancelled"))).catch(() => {});
       // Reject, never resolve: an external abort is not a user decision and
       // must not carry a responderId.
       entry.reject(new Error("elicitation request aborted"));
@@ -788,8 +788,14 @@ export class DiscordChannel implements MessageChannelRuntime {
       cleanup();
       // Same serialization domain as `onAbort`: expiry and send failure are
       // terminal states too, and a running rerender must not outlive them.
+      //
+      // The wording comes from the RECORDED state, not from a literal here. An
+      // expiry hard-coded to "cancelled" rendered one of two different outcomes
+      // depending only on whether the opening had finished landing in time, so
+      // the same request showed "Request cancelled." normally and "Request
+      // expired." when the send raced the timer.
       void this.enqueueElicitationRender(entry.token, () =>
-        this.renderElicitationInert(entry, getMessages().elicitationCancelled)).catch(() => {});
+        this.renderElicitationInert(entry, terminalTextFor(terminal))).catch(() => {});
       entry.reject(new Error(reason));
     };
     const msUntilExpiry = Math.max(0, request.expiresAt - Date.now());
@@ -1373,13 +1379,17 @@ export class DiscordChannel implements MessageChannelRuntime {
     entry: PendingDiscordElicitation,
     decision: ChannelElicitationDecision,
   ): Promise<void> {
-    const messages = getMessages();
-    const text = decision.action === "accept"
-      ? messages.elicitationAccepted
+    // Routed through the same mapping as every other terminal path, so there is
+    // exactly one place where a settled outcome becomes card text. Mapping the
+    // decision to its state here (rather than duplicating the wording) is what
+    // keeps a Decline from ever rendering as a cancellation, on this path or on
+    // the send-race replay.
+    const state = decision.action === "accept"
+      ? "accepted"
       : decision.action === "decline"
-        ? messages.elicitationDeclined
-        : messages.elicitationCancelled;
-    await this.renderElicitationInert(entry, text);
+        ? "declined"
+        : "cancelled";
+    await this.renderElicitationInert(entry, terminalTextFor(state));
   }
 
   /**
@@ -1486,12 +1496,11 @@ export class DiscordChannel implements MessageChannelRuntime {
       // Rendered through the same queue as everything else, and rendered as the
       // entry's terminal state rather than through the decision renderer: a
       // channel stop is not a user action, so there is no responderId to carry.
+      // The wording comes from the same one mapping every terminal path uses, so
+      // a stop cannot label an expiry as a cancellation either.
       drains.push(
         this.enqueueElicitationRender(entry.token, () =>
-          this.renderElicitationInert(
-            entry,
-            terminal === "expired" ? messages.elicitationExpired : messages.elicitationCancelled,
-          )),
+          this.renderElicitationInert(entry, terminalTextFor(terminal))),
       );
     }
     return Promise.all(drains).then(() => undefined, () => undefined);

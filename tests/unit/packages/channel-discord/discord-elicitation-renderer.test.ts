@@ -2239,3 +2239,70 @@ async function runOpeningSendRace(
     await channel.stop().catch(() => {});
   }
 }
+
+test("a plain expiry renders as expired, not cancelled", async () => {
+  // The send-race path already rendered an expiry through the recorded terminal
+  // state; the ordinary path hard-coded "cancelled". So the SAME outcome showed
+  // two different cards depending only on whether the opening had finished
+  // landing before the timer fired — "Request cancelled." normally, "Request
+  // expired." when the send raced it. Every terminal path now takes its wording
+  // from one mapping, so the race cannot change what the user is told.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    // Expire almost immediately so the timer fires after the opening has fully
+    // landed — the ordinary, non-send-race case.
+    const { request: req } = request([
+      { kind: "text", key: "a", title: "A", required: true, maxLength: 4000 },
+    ]);
+    req.expiresAt = Date.now() + 40;
+    const settled = channel.requestElicitation(req).then(
+      () => "resolved",
+      (e: Error) => e.message,
+    );
+    // Let the opening land in full first.
+    await new Promise((r) => setTimeout(r, 25));
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(await settled).toContain("expired");
+    // The card the user is left with names the outcome that happened and has no
+    // controls, exactly like every other terminal state.
+    const last = client.edited[client.edited.length - 1]!;
+    const content = String(last.body.content ?? "");
+    expect(content).toContain("expired");
+    expect(content).not.toContain("cancelled");
+    expect((last.body.components ?? []) as unknown[]).toEqual([]);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a channel stop renders an expired form as expired, not cancelled", async () => {
+  // The same hard-coded wording existed on the stop path: an entry that expired
+  // and then saw the channel stop would have been relabelled "cancelled" by the
+  // second terminal render, overwriting the correct one.
+  const client = makeFakeClient();
+  const { channel } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "a", title: "A", required: true, maxLength: 4000 },
+    ]);
+    req.expiresAt = Date.now() + 30;
+    const settled = channel.requestElicitation(req).then(
+      () => "resolved",
+      (e: Error) => e.message,
+    );
+    await new Promise((r) => setTimeout(r, 25));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(await settled).toContain("expired");
+    // Stopping the channel must not relabel the card.
+    await channel.stop();
+    const last = client.edited[client.edited.length - 1]!;
+    const content = String(last.body.content ?? "");
+    expect(content).toContain("expired");
+    expect(content).not.toContain("cancelled");
+  } finally {
+    await channel.logout();
+  }
+});
