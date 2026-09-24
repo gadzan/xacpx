@@ -180,7 +180,12 @@ function elicitationRequest(overrides: Partial<ChannelElicitationRequest> = {}):
     abort,
     request: {
       requestId: `r-${Math.random().toString(36).slice(2, 8)}`,
-      chatKey: "discord:default:g:c1",
+      // A DM route: provably private, so a form may be rendered at all. The
+      // previous `g:` (guild) key with no `chatType` was both self-contradictory
+      // as a positive fixture and refused by the route-privacy gate. Group and
+      // unreported routes are covered separately as REFUSAL cases.
+      chatKey: "discord:default:dm:c1",
+      chatType: "direct",
       accountId: "default",
       replyContextToken: "m1",
       requester: { senderId: "user-A", senderName: "Ada", isOwner: true },
@@ -536,6 +541,52 @@ test("the request message is presented to the user", async () => {
     void channel.requestElicitation(request).catch(() => {});
     await new Promise((r) => setTimeout(r, 10));
     expect(client.sent[0]!.body.content).toContain("Which region should I deploy to?");
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a form on a guild route is refused rather than shown to the channel", async () => {
+  // The positive fixtures above are DM routes. A group destination publishes the
+  // agent's question AND the user's answers to every member, so it must be
+  // refused before anything is sent.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request } = elicitationRequest({
+      chatKey: "discord:default:g:c1",
+      chatType: "group",
+    } as Partial<ChannelElicitationRequest>);
+    const message = await channel.requestElicitation(request).then(
+      () => "resolved",
+      (error: Error) => error.message,
+    );
+    expect(message).toContain("route-not-private");
+    expect(client.sent).toHaveLength(0);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a form on an unreported route is refused, not treated as direct", async () => {
+  // Absent is not the same as private. A channel that reports no `chatType` has
+  // not established a 1:1 destination.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request } = elicitationRequest({
+      chatKey: "discord:default:g:c1",
+    } as Partial<ChannelElicitationRequest>);
+    // The helper sets `chatType: "direct"`; remove it to model the unreported case.
+    delete (request as { chatType?: string }).chatType;
+    const message = await channel.requestElicitation(request).then(
+      () => "resolved",
+      (error: Error) => error.message,
+    );
+    expect(message).toContain("route-not-private");
+    expect(client.sent).toHaveLength(0);
   } finally {
     abort.abort();
     await channel.stop().catch(() => {});

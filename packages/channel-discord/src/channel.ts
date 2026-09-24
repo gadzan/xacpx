@@ -728,24 +728,19 @@ export class DiscordChannel implements MessageChannelRuntime {
     //
     // `chatType` is the channel's own ingress fact rather than a guess made here.
     // Anything other than `"direct"`, including a channel that reports nothing,
-    // fails closed: only a provably 1:1 destination may render a form. This runs
-    // before the opening is built, so nothing is posted and no answer can land in
-    // a group message.
+    // fails closed: only a provably 1:1 destination may render a form. The gate
+    // runs before the opening is built, so nothing is posted and no answer can
+    // land in a group message.
     //
     // `elicitationModes` stays `["form"]` at channel scope — the plugin
     // capability contract has no route-scoped notion — so the per-turn refusal is
     // what closes the gap.
-    if (request.chatType !== "direct") {
-      await this.logger?.warn("discord.elicitation.route_not_private", "refused elicitation on a non-private route", {
-        requestId: request.requestId,
-        chatKey: request.chatKey,
-        chatType: request.chatType ?? "unreported",
-      });
-      throw new Error(
-        `elicitation form is only renderable on a private route; this turn reported ${request.chatType ?? "no chatType"}`,
-      );
-    }
-    const verdict = checkElicitationRenderability(request.fields);
+    //
+    // The REQUEST is handed to the gate as well as the fields: the field budget
+    // is measured over the text `buildElicitationFieldCard` actually builds, and
+    // only the request carries the `chatType` that decides whether a form may be
+    // shown at all.
+    const verdict = checkElicitationRenderability(request.fields, request);
     if (!verdict.renderable) {
       await this.logger?.warn("discord.elicitation.unsupported", "cancelled unrenderable elicitation", {
         requestId: request.requestId,

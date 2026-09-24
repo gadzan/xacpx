@@ -55,6 +55,19 @@ export interface PendingFeishuElicitation {
    */
   skipped: Set<string>;
   currentField?: string;
+  /**
+   * Set when a callback advanced the wizard while the opening send was still in
+   * flight.
+   *
+   * The card is visible to the user the moment Feishu delivers it, but `cardId`
+   * is not recorded until `sendCard` resolves. A `start`/`field`/`skip` callback
+   * arriving in that window would set the cursor and then return immediately from
+   * `renderCurrentField` (no id to update), so the user's click was acknowledged
+   * and then lost — they were left on the opening card with no visible change and
+   * had to click again. `requestElicitation` replays the render once the id
+   * exists.
+   */
+  pendingRender?: boolean;
   settled: boolean;
   /**
    * Terminal UI state, set by whichever path settled this request.

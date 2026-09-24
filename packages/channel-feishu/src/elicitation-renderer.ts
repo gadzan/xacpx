@@ -343,35 +343,55 @@ export class FeishuElicitationRenderer {
         //
         // `terminalState` is the discriminator: only the external paths set it. A
         // user decision records its action in `decisionAction` instead.
-        this.options.pending.delete(token);
-        if (entry.terminalState !== undefined) {
-          const terminal = entry.terminalState;
-          await this.withdraw(entry, terminal === "expired" ? "expired" : "cancelled");
-          throw new Error("elicitation aborted before the card was sent");
-        }
-        // The user already decided: their terminal render ran before `cardId`
-        // existed and returned immediately, so publish the outcome they chose now
-        // that the card can be updated.
-        //
-        // RETURN the decision rather than throwing. `requestElicitation` is the
-        // one call the bridge awaits, and by this point `done` is already
-        // resolved with the user's decision — but this method's control flow is
-        // still inside the SEND's try block, so a throw here would replace that
-        // resolution with a rejection. The send is no longer part of the turn's
-        // outcome; the decision is, and it has to be what comes back out.
-        const action = entry.decisionAction;
-        await this.withdraw(
-          entry,
-          action === "decline" ? "declined" : action === "accept" ? "accepted" : "cancelled",
-        );
-        if (entry.decision === undefined) {
-          throw new Error("elicitation settled while its card was being sent");
-        }
-        return entry.decision;
+      this.options.pending.delete(token);
+      if (entry.terminalState !== undefined) {
+        const terminal = entry.terminalState;
+        await this.withdraw(entry, terminal === "expired" ? "expired" : "cancelled");
+        throw new Error("elicitation aborted before the card was sent");
+      }
+      // The user already decided: their terminal render ran before `cardId`
+      // existed and returned immediately, so publish the outcome they chose now
+      // that the card can be updated.
+      //
+      // RETURN the decision rather than throwing. `requestElicitation` is the
+      // one call the bridge awaits, and by this point `done` is already
+      // resolved with the user's decision — but this method's control flow is
+      // still inside the SEND's try block, so a throw here would replace that
+      // resolution with a rejection. The send is no longer part of the turn's
+      // outcome; the decision is, and it has to be what comes back out.
+      //
+      // The terminal update is FIRE-AND-FORGET, not awaited. `withdraw` is a
+      // `card.update` round trip, and holding the turn's return value behind it
+      // re-introduces exactly the defect the decision paths fix: a CardKit
+      // request that never returns would swallow a Decline the user already
+      // made. The decision is in hand; the card is cosmetic, and it may finish
+      // settling after this method has already returned it.
+      const action = entry.decisionAction;
+      const decision = entry.decision;
+      if (decision === undefined) {
+        throw new Error("elicitation settled while its card was being sent");
+      }
+      void this.withdraw(
+        entry,
+        action === "decline" ? "declined" : action === "accept" ? "accepted" : "cancelled",
+      ).catch(() => {});
+      return decision;
       }
       this.options.log?.("feishu.elicitation.sent", "sent feishu elicitation request", {
         requestId: request.requestId,
       });
+      // A callback that advanced the wizard while the send was in flight could
+      // not render (no card id yet). Now that the id exists, honour it — otherwise
+      // the user's click was acknowledged and then silently lost, leaving them on
+      // the opening card to click again.
+      if (entry.pendingRender && !entry.settled) {
+        entry.pendingRender = false;
+        if (entry.currentField === undefined) {
+          await this.renderReview(entry);
+        } else {
+          await this.renderCurrentField(entry);
+        }
+      }
     } catch (error) {
       if (!entry.settled) trySettle(entry);
       this.options.pending.delete(token);
@@ -417,9 +437,16 @@ export class FeishuElicitationRenderer {
           // A zero-field form has nothing to ask, but it is NOT a dead end: M1
           // keeps `accept` + `content: null` precisely for this, so Start goes
           // straight to the review page where Submit is the only way to accept.
+          this.markPendingRender(entry);
           await this.renderReview(entry);
           return { handled: true, settled: false };
         }
+        // The card is already on screen — Feishu delivered it before `sendCard`
+        // resolved — so a click here is real, but `renderCurrentField` has no
+        // `cardId` to update yet. Recording that a render is owed lets
+        // `requestElicitation` replay it the moment the id exists, instead of
+        // acknowledging the click and leaving the user on the opening card.
+        this.markPendingRender(entry);
         await this.renderCurrentField(entry);
         return { handled: true, settled: false };
       }
@@ -604,6 +631,18 @@ export class FeishuElicitationRenderer {
     return { handled: true, settled: true };
   }
 
+  /**
+   * Record that the wizard advanced but its render could not land yet.
+   *
+   * Set unconditionally by the advancing callbacks and cleared by whichever render
+   * actually succeeds, so the flag means "owed" rather than "owed at the opening
+   * send" — a later callback that renders fine resets it and the replay after the
+   * send is then a no-op.
+   */
+  private markPendingRender(entry: PendingFeishuElicitation): void {
+    entry.pendingRender = true;
+  }
+
   /** Re-render the card for the current field, in place. */
   private async renderCurrentField(entry: PendingFeishuElicitation): Promise<void> {
     if (!entry.cardId || entry.settled) return;
@@ -624,6 +663,8 @@ export class FeishuElicitationRenderer {
         sequence: nextSequence(entry),
         card,
       });
+      // The render landed, so nothing is owed for this step.
+      entry.pendingRender = false;
     } catch (error) {
       // A failed re-render is not a decision: the card stays live and the user
       // can retry, so the request is unsettled and Feishu's own retry applies.
@@ -691,6 +732,8 @@ export class FeishuElicitationRenderer {
         sequence: nextSequence(entry),
         card,
       });
+      // The render landed, so nothing is owed for this step.
+      entry.pendingRender = false;
     } catch (error) {
       this.options.log?.("feishu.elicitation.update_failed", "failed to render review card", {
         requestId: entry.requestId,

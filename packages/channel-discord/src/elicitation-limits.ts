@@ -98,6 +98,33 @@ export const FIELD_CARD_TEXT_MAX = 1800;
  */
 export const FIELD_CARD_ANSWER_ECHO_MAX = 200;
 
+/**
+ * The worst "Answer saved" line a field card can carry, as an answer VALUE.
+ *
+ * The gate must reserve space for the echo, not just the initial render: a user
+ * returning to an answered field gets an extra line, and an initial body near the
+ * limit would otherwise overflow on the second render — after the answer had
+ * already been given, when refusing is no longer possible.
+ *
+ * `"x"` repeated to the echo bound is the worst case for a text field (no escape
+ * expansion). A select's worst case is its widest option value, joined for a
+ * multi-select, which is what the card would actually echo.
+ */
+function boundedAnswerEcho(field: ChannelElicitationField): ChannelElicitationValue | undefined {
+  if (field.kind === "number") return 0;
+  if (field.kind === "boolean") return true;
+  if (field.kind === "single-select") {
+    return field.options.reduce(
+      (widest, option) => (option.value.length > widest.length ? option.value : widest),
+      field.options[0]?.value ?? "",
+    );
+  }
+  if (field.kind === "multi-select") {
+    return field.options.map((option) => option.value);
+  }
+  return "x".repeat(FIELD_CARD_ANSWER_ECHO_MAX);
+}
+
 /** Cut a rendered string to `max`, appending an ellipsis when it is cut. */
 function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}...`;
@@ -189,6 +216,7 @@ export type ElicitationUnsupportedReason =
   | "field-label-too-long"
   | "field-description-too-long"
   | "field-text-too-long"
+  | "route-not-private"
   | "text-min-beyond-capture"
   | "text-max-beyond-capture"
   | "text-unbounded"
@@ -215,10 +243,22 @@ function longest(values: readonly string[]): number {
  * merely too long to show untruncated), so a log reader sees the decisive
  * cause first.
  */
-export function checkElicitationRenderability(fields: readonly ChannelElicitationField[]): ElicitationRenderability {
+export function checkElicitationRenderability(
+  fields: readonly ChannelElicitationField[],
+  request?: ChannelElicitationRequest,
+): ElicitationRenderability {
+  // PRIVACY: a form is private to its requester, and the destination has to prove
+  // it. See the Discord channel's own gate for the full reasoning; the field-level
+  // half still needs the request to know the route, because the agent's question
+  // AND the user's answers both go into the chat.
+  if (request !== undefined && request.chatType !== "direct") {
+    return {
+      renderable: false,
+      reason: "route-not-private",
+      detail: `a form is only renderable on a private route; this turn reported ${request.chatType ?? "no chatType"}`,
+    };
+  }
   for (const field of fields) {
-    if (field.kind === "boolean") continue;
-
     // An agent-supplied `pattern` is preserved by core as DISPLAY metadata and
     // deliberately never executed — unbounded agent regex is a resource
     // exhaustion vector. That decision leaves the renderer holding a real schema
@@ -239,6 +279,43 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
         detail: `field ${JSON.stringify(field.key)} carries a pattern constraint, which this renderer can neither display nor enforce`,
       };
     }
+    // A FIELD PAGE IS ONE MESSAGE, and the escape can make it several.
+    //
+    // Checked for EVERY field kind, so it runs BEFORE the select branch's
+    // `continue` rather than after it. A single-select with a 1000-char
+    // description of `*` used to sail through this gate and then throw in the
+    // builder when the user pressed Start, because the select branch was the one
+    // that skipped the budget.
+    //
+    // The text is built through the SAME definition the builder uses, with the
+    // SAME request — including the real `agent.name`, which a synthetic request
+    // under-measured by exactly the agent-name length. That was the hole the
+    // boundary regression missed by testing either side of it rather than on it.
+    //
+    // The answer echo is reserved at its maximum too: a user returning to an
+    // answered field adds an "Answer saved" line, and an initial body near the
+    // limit would otherwise overflow on the SECOND render, after the answer had
+    // already been given.
+    if (request !== undefined) {
+      const fieldLines = buildElicitationFieldLines(
+        request,
+        field,
+        fields.indexOf(field) + 1,
+        boundedAnswerEcho(field),
+      );
+      const escapedLength = fieldLines.join("\n\n").length;
+      if (escapedLength > FIELD_CARD_TEXT_MAX) {
+        return {
+          renderable: false,
+          reason: "field-text-too-long",
+          detail: `field ${JSON.stringify(field.key)} renders to ${escapedLength} escaped chars, limit ${FIELD_CARD_TEXT_MAX}`,
+        };
+      }
+    }
+    // The remaining kind-specific checks below all describe TEXT-like fields; a
+    // boolean has already passed the pattern and budget checks above, both of
+    // which apply to every kind.
+    if (field.kind === "boolean") continue;
     if (field.kind === "single-select" || field.kind === "multi-select") {
       if (field.options.length === 0) {
         return {
@@ -278,24 +355,37 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
           detail: `field ${JSON.stringify(field.key)} option description is ${worstDescription} chars, limit ${DISCORD_SELECT_OPTION_DESCRIPTION_MAX}`,
         };
       }
-      // The platform rejects a select whose min/max contract exceeds its option
-      // budget outright; catching it here avoids a message that Discord itself
-      // will refuse to accept.
+      // A multi-select's bounds are normalised EXACTLY as the component builder
+      // normalises them, so the gate judges the domain the user is actually
+      // given. Judging raw schema values here produced two opposite errors:
       //
-      // The effective max is `maxItems ?? option count` — the same normalisation
-      // the component builder applies — so a `maxItems` past the platform's
-      // 25-value limit is caught here rather than silently narrowing the answer
-      // domain. Omitting `maxItems` cannot trip this: the option count is
-      // already bounded above by the platform limit.
-      const bound = field.kind === "multi-select"
-        ? Math.max(field.minItems ?? 0, field.maxItems ?? field.options.length)
-        : 0;
-      if (bound > DISCORD_SELECT_MIN_MAX_VALUES_MAX) {
-        return {
-          renderable: false,
-          reason: "select-min-max-out-of-range",
-          detail: `field ${JSON.stringify(field.key)} requires min/max items ${bound}, limit ${DISCORD_SELECT_MIN_MAX_VALUES_MAX}`,
-        };
+      //   minValues > maxValues. `{ options: 2, minItems: 3 }` — the gate saw
+      //   `max(3, 0) = 3`, allowed it, and the builder then emitted
+      //   `minValues: 3, maxValues: 2`, a component Discord rejects outright.
+      //   A false rejection. `{ options: 2, maxItems: 40 }` — the gate refused a
+      //   form whose answer domain is at most the two values actually offered,
+      //   because it compared the raw 40 against the platform's 25.
+      //
+      // An absent `maxItems` means "any number of the offered options", which IS
+      // bounded — by how many options there are.
+      if (field.kind === "multi-select") {
+        const minValues = field.minItems ?? 0;
+        const maxValues = Math.min(field.maxItems ?? field.options.length, field.options.length);
+        // min > max is unsatisfiable: no selection can satisfy it.
+        if (minValues > maxValues) {
+          return {
+            renderable: false,
+            reason: "select-min-max-out-of-range",
+            detail: `field ${JSON.stringify(field.key)} requires at least ${minValues} selections but only ${maxValues} are offered`,
+          };
+        }
+        if (minValues > DISCORD_SELECT_MIN_MAX_VALUES_MAX || maxValues > DISCORD_SELECT_MIN_MAX_VALUES_MAX) {
+          return {
+            renderable: false,
+            reason: "select-min-max-out-of-range",
+            detail: `field ${JSON.stringify(field.key)} requires ${minValues}..${maxValues} selections, platform limit ${DISCORD_SELECT_MIN_MAX_VALUES_MAX}`,
+          };
+        }
       }
       // A String Select takes `field.title` as its PLACEHOLDER, capped at 150.
       // The label branch below is only reached by text/number fields (this one
@@ -340,46 +430,6 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
         renderable: false,
         reason: "field-description-too-long",
          detail: `field ${JSON.stringify(field.key)} description is ${(field.description ?? "").length} chars, limit 1000`,
-      };
-    }
-    // A FIELD PAGE IS ONE MESSAGE, and the escape can make it several.
-    //
-    // The gate used to measure a description by RAW length (core allows 1000),
-    // and then by a hand-copied title+description+default subset. Neither matched
-    // what the builder actually emits: `buildElicitationFieldCard` also prints the
-    // "Question N of M" label, the agent line, the hint, and — once a value
-    // exists — the "Answer saved" line. A description the subset sized at ~1750
-    // escaped chars therefore rendered to ~1818, produced a second chunk, and the
-    // field card kept only the first, silently cutting the question.
-    //
-    // The gate now builds the EXACT text the builder builds, through the one
-    // shared definition, so the budget and the card cannot drift apart.
-    //
-    // `current` is undefined because the initial render is the baseline: every
-    // branch of the card has to fit it, and a later "Answer saved" line is
-    // re-checked by the renderer when the answer lands.
-    const fieldLines = buildElicitationFieldLines(
-      {
-        requestId: "",
-        chatKey: "",
-        agent: { name: "" },
-        message: "",
-        mode: "form",
-        fields,
-        requester: { senderId: "" },
-        expiresAt: 0,
-        signal: undefined as unknown as AbortSignal,
-      } as ChannelElicitationRequest,
-      field,
-      fields.indexOf(field) + 1,
-      undefined,
-    );
-    const escapedLength = fieldLines.join("\n\n").length;
-    if (escapedLength > FIELD_CARD_TEXT_MAX) {
-      return {
-        renderable: false,
-        reason: "field-text-too-long",
-        detail: `field ${JSON.stringify(field.key)} renders to ${escapedLength} escaped chars, limit ${FIELD_CARD_TEXT_MAX}`,
       };
     }
     if (field.kind === "text") {

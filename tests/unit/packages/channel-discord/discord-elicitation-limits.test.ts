@@ -4,8 +4,26 @@ import {
   checkElicitationRenderability,
   DISCORD_SELECT_OPTION_COUNT_MAX,
   DISCORD_TEXT_INPUT_LABEL_MAX,
+  buildElicitationFieldLines,
+  FIELD_CARD_ANSWER_ECHO_MAX,
 } from "../../../../packages/channel-discord/src/elicitation-limits";
-import type { ChannelElicitationField } from "xacpx/plugin-api";
+import type { ChannelElicitationField, ChannelElicitationRequest } from "xacpx/plugin-api";
+
+/** A request the gate can measure the field cards against. */
+function requestFor(fields: readonly ChannelElicitationField[]): ChannelElicitationRequest {
+  return {
+    requestId: "r",
+    chatKey: "discord:default:dm:c1",
+    chatType: "direct",
+    requester: { senderId: "user-A" },
+    agent: { name: "codex" },
+    message: "m",
+    mode: "form",
+    fields,
+    expiresAt: Date.now() + 60_000,
+    signal: new AbortController().signal,
+  };
+}
 
 function text(key: string, title = "What is the target?"): ChannelElicitationField {
   // A declared `maxLength`: the renderability gate refuses a text field that
@@ -263,4 +281,105 @@ test("a field carrying an agent pattern is refused, not rendered unconstrained",
   }
   expect(checkElicitationRenderability([text("target")]).renderable).toBe(true);
   expect(checkElicitationRenderability([single("env", 3)]).renderable).toBe(true);
+});
+
+test("a multi-select the platform cannot express is refused, not clamped", () => {
+  // Two opposite errors, both from the gate judging raw schema values the builder
+  // normalises away.
+  //
+  //   1. minValues > maxValues. `{ options: 2, minItems: 3 }` — the gate used to
+  //      see `max(3, 0) = 3`, allow it, and the builder emitted
+  //      `minValues: 3, maxValues: 2`, a component Discord rejects outright.
+  //   2. A false rejection. `{ options: 2, maxItems: 40 }` — the answer domain is
+  //      at most the two values offered, but the gate refused it for exceeding the
+  //      platform's 25.
+  const options = [
+    { value: "a", label: "A" },
+    { value: "b", label: "B" },
+  ];
+  // Unsatisfiable: three selections required from two options.
+  const unsatisfiable = checkElicitationRenderability([
+    { kind: "multi-select", key: "k", title: "K", required: true, minItems: 3, options },
+  ]);
+  expect(unsatisfiable.renderable).toBe(false);
+  expect(unsatisfiable.reason).toBe("select-min-max-out-of-range");
+  expect(unsatisfiable.detail).toContain("2 are offered");
+
+  // Bounded by what is offered, so it is fine despite `maxItems: 40`.
+  expect(checkElicitationRenderability([
+    { kind: "multi-select", key: "k", title: "K", required: true, maxItems: 40, options },
+  ]).renderable).toBe(true);
+
+  // A genuinely over-capacity schema is still refused.
+  expect(checkElicitationRenderability([
+    { kind: "multi-select", key: "k", title: "K", required: true, minItems: 30, options },
+  ]).reason).toBe("select-min-max-out-of-range");
+});
+
+test("the field budget covers every field kind, not just text", () => {
+  // A single-select branch used to `continue` before the budget ran, so a select
+  // with a 1000-char description of `*` escaped to ~2000 chars, passed the gate,
+  // and then threw in the builder when the user pressed Start.
+  const options = [{ value: "prod", label: "Production" }];
+  const fields = [
+    { kind: "single-select" as const, key: "env", title: "Environment", required: true, description: "*".repeat(1000), options },
+    { kind: "boolean" as const, key: "ok", title: "OK", required: true, description: "*".repeat(1000) },
+  ];
+  for (const field of fields) {
+    const verdict = checkElicitationRenderability([field], requestFor([field]));
+    expect(verdict.renderable).toBe(false);
+    expect(verdict.reason).toBe("field-text-too-long");
+  }
+});
+
+test("the field budget reserves room for the answer echo", async () => {
+  // The gate only measured the initial render. A user returning to an ANSWERED
+  // field adds an "Answer saved" line, so an initial body near the limit would
+  // overflow on the second render — after the answer had already been given, when
+  // refusing is no longer possible.
+  //
+  // Core caps a description at 1000 raw chars, so use an expanding description to
+  // reach the same boundary: every `*` doubles, so 950 of them is ~1900 escaped.
+  const withEcho = [{
+    kind: "text" as const,
+    key: "note",
+    title: "Note",
+    required: true,
+    maxLength: 1000,
+    description: "*".repeat(950),
+  }];
+  const verdict = checkElicitationRenderability(withEcho, requestFor(withEcho));
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("field-text-too-long");
+
+  // The same field, small enough for BOTH the initial body and the reserved echo,
+  // is allowed — so the refusal above is the echo's doing, not the description's
+  // raw length alone.
+  const roomForEcho = [{
+    kind: "text" as const,
+    key: "note",
+    title: "Note",
+    required: true,
+    maxLength: 1000,
+    description: "*".repeat(750),
+  }];
+  expect(checkElicitationRenderability(roomForEcho, requestFor(roomForEcho)).renderable).toBe(true);
+  // Confirm the reserve is real: building the card with a maximum answer would
+  // overflow, which is exactly the second render this protects.
+  const overflow = buildElicitationFieldLines(
+    requestFor(withEcho),
+    withEcho[0]!,
+    1,
+    "x".repeat(FIELD_CARD_ANSWER_ECHO_MAX),
+  ).join("\n\n");
+  expect(overflow.length).toBeGreaterThan(1800);
+  // The accepted field stays inside the limit WITH its echo, which is why it is
+  // allowed: initial body + reserved echo <= budget.
+  const fits = buildElicitationFieldLines(
+    requestFor(roomForEcho),
+    roomForEcho[0]!,
+    1,
+    "x".repeat(FIELD_CARD_ANSWER_ECHO_MAX),
+  ).join("\n\n");
+  expect(fits.length).toBeLessThanOrEqual(1800);
 });

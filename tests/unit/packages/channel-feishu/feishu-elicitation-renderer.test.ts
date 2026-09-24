@@ -1205,3 +1205,92 @@ test("a hung terminal card update cannot swallow an Accept decision", async () =
     content: { env: "prod" },
   });
 });
+
+test("a Start clicked while the opening send is in flight still advances the card", async () => {
+  // The card is visible the moment Feishu delivers it, but `cardId` is not
+  // recorded until `sendCard` resolves. A Start in that window used to set the
+  // cursor, return immediately from `renderCurrentField` (no id to update), and
+  // get acknowledged — leaving the user on the opening card to click again.
+  const rec = makeRenderer();
+  const realSend = rec.transport.sendCard.bind(rec.transport);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let held2 = true;
+  (rec.transport as { sendCard: unknown }).sendCard = async (input: { card: unknown; chatId: string }) => {
+    const result = await realSend(input as never);
+    if (held2) await held;
+    return result;
+  };
+  const promise = rec.renderer.requestElicitation(request(ENV_FIELD), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  // The card is delivered but the send promise is still parked.
+  await new Promise((r) => setTimeout(r, 5));
+  const entry = [...rec.pending.values()][0]!;
+  const updatesBefore = rec.transport.updates.length;
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: entry.token, a: "start" },
+    formValues: {},
+  });
+  // Release the send; the owed field render must land.
+  held2 = false;
+  release();
+  await new Promise((r) => setTimeout(r, 20));
+  expect(rec.transport.updates.length).toBeGreaterThan(updatesBefore);
+  // The card the user ends on is the FIELD card, not the opening card.
+  const last = rec.transport.updates[rec.transport.updates.length - 1]!;
+  expect(JSON.stringify(last)).not.toContain("Start");
+  entry.settled = true;
+  entry.reject(new Error("test done"));
+  await promise;
+});
+
+test("a hung terminal update cannot swallow a Decline that raced the opening send", async () => {
+  // The combination of the two other races. `sendCard` is held, the user Declines
+  // while it is held, and then the terminal `card.update` never returns. The
+  // decision must still come back — a CardKit request that hangs may not keep a
+  // user's own answer from reaching core.
+  const rec = makeRenderer();
+  const realSend = rec.transport.sendCard.bind(rec.transport);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let held2 = true;
+  (rec.transport as { sendCard: unknown }).sendCard = async (input: { card: unknown; chatId: string }) => {
+    const result = await realSend(input as never);
+    if (held2) await held;
+    return result;
+  };
+  // Every update after the decline is a terminal one, and it never returns.
+  let declined = false;
+  const realUpdate = rec.transport.updateCard.bind(rec.transport);
+  (rec.transport as { updateCard: unknown }).updateCard = async (input: never) => {
+    if (declined) return new Promise<void>(() => {});
+    return realUpdate(input);
+  };
+  const promise = rec.renderer.requestElicitation(request(ENV_FIELD), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  await new Promise((r) => setTimeout(r, 5));
+  const entry = [...rec.pending.values()][0]!;
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: entry.token, a: "decline" },
+    formValues: {},
+  });
+  declined = true;
+  // Release the opening send with the terminal update now hung.
+  held2 = false;
+  release();
+  const outcome = await Promise.race([
+    promise,
+    new Promise((r) => setTimeout(() => r("timeout"), 800)),
+  ]);
+  expect(outcome).toEqual({ action: "decline", responderId: "ou_initiator" });
+});
