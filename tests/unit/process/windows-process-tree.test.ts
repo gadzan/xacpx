@@ -351,10 +351,12 @@ windowsTest("real worker converges a three-level descendant tree and keeps the p
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
 
-    // OpenProcess(PROCESS_ALL_ACCESS) on a very recently created process can
-    // transiently return ERROR_ACCESS_DENIED on Windows, which the worker
-    // correctly fails closed on. Retry the attempt until it converges instead
-    // of asserting on the OS's willingness to hand out a handle.
+    // OpenProcess with the worker's minimal mask
+    // (SYNCHRONIZE | QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, 0x00101001)
+    // on a very recently created process can transiently return
+    // ERROR_ACCESS_DENIED on Windows, which the worker correctly fails closed
+    // on. Retry the attempt until it converges instead of asserting on the OS's
+    // willingness to hand out a handle.
     let result: Awaited<ReturnType<typeof terminateWindowsDescendantsOf>> | null = null;
     for (let attempt = 0; attempt < 10 && result?.verified !== true; attempt += 1) {
       result = await terminateWindowsDescendantsOf(rootProcess.pid!);
@@ -881,10 +883,13 @@ windowsTest("real descendants worker reports the resolved image, not the CIM ali
     }
     expect(childPid).toBeGreaterThan(0);
 
+    // probeWindowsProcessIdentity returns an OBJECT for every state
+    // ('found' | 'missing' | 'unavailable'), so a plain truthiness check ends the
+    // loop on the first probe even when it is unusable. Retry on the STATUS.
     let rootProbe: Awaited<ReturnType<typeof probeWindowsProcessIdentity>> | null = null;
-    for (let attempt = 0; attempt < 100 && !rootProbe; attempt += 1) {
+    for (let attempt = 0; attempt < 100 && rootProbe?.status !== "found"; attempt += 1) {
       rootProbe = await probeWindowsProcessIdentity(rootProcess.pid!);
-      if (!rootProbe) await new Promise((resolve) => setTimeout(resolve, 50));
+      if (rootProbe?.status !== "found") await new Promise((resolve) => setTimeout(resolve, 50));
     }
     expect(rootProbe?.status).toBe("found");
     if (rootProbe?.status !== "found") return;
