@@ -145,16 +145,18 @@ const EMPTY_EVIDENCE: TerminateDescendantsResult = { verified: false, outcomes: 
  * satisfy.
  *
  * `pid` alone is not identity either on Windows (reuse), so the creation time is
- * part of it. Creation times are compared within the CIM quantization window
- * (±9 ticks): the same process is reported with a CIM-quantized value one round
- * and the kernel's FILETIME the next, and those are different numbers for ONE
- * process (measured 43/48 non-zero on a live host). Two records whose creation
- * times are farther apart than that are different processes and both stay
- * required evidence.
+ * part of it. `fingerprintSource` records HOW that creation time was obtained,
+ * which decides what equality means: CIM quantizes 6-digit microseconds down to
+ * a FILETIME tick grid, so a CIM value can be 0–9 ticks BELOW the kernel value
+ * for the SAME process. Comparing without that attribution is not an
+ * equivalence relation — it is a plain `abs(delta) <= 9` band, which can bridge
+ * two distinct pid incarnations (CIM_A ~ handle_A and handle_A ~ CIM_B "proves"
+ * CIM_A ~ CIM_B even when the kernel values are 18 ticks apart).
  */
 export interface ProcessIdentity {
   pid: number;
   creationDate: string | null;
+  fingerprintSource?: WindowsDescendantFingerprintSource;
 }
 
 /** CIM creationDate precision: 6-digit microseconds vs FILETIME's 100ns. */
@@ -165,13 +167,40 @@ export const CREATION_IDENTITY_TOLERANCE_TICKS = 9n;
  * compatible with ANOTHER null: two null-creation records DO collapse into one
  * entry (neither can be matched against a non-null one, so there is nothing to
  * separate them), while a null never merges with a timestamped record.
+ *
+ * Attribution decides what timestamp equality means, because the relation must
+ * stay transitive — merge compares each new observation against the SURVIVOR,
+ * which a previous round may have canonicalized:
+ *   handle ↔ handle — exact. The kernel value has no quantization.
+ *   cim ↔ cim       — exact. Both CIM rows for one process quantize the same
+ *                      way, so one timestamped value represents the process.
+ *   handle ↔ cim     — the CIM value may be 0–9 ticks BELOW the kernel value, so
+ *                      only `0 <= handle - cim <= 9` is the same process. A NEGATIVE
+ *                      delta is impossible for one process and proves a different one.
+ *   unknown/absent  — exact: no attribution means no tolerance may be granted.
+ *
+ * With that, CIM_A ~ handle_A and handle_A ~ CIM_B imply handle_A ~ handle_B,
+ * which requires `handle_B - handle_A == 0`; a pid reused 18 ticks later is
+ * correctly a DIFFERENT process and both records stay required evidence.
  */
 export function sameProcessIdentity(a: ProcessIdentity, b: ProcessIdentity): boolean {
   if (a.pid !== b.pid) return false;
   if (a.creationDate === null || b.creationDate === null) return a.creationDate === b.creationDate;
-  const delta = BigInt(a.creationDate) - BigInt(b.creationDate);
-  const magnitude = delta < 0n ? -delta : delta;
-  return magnitude <= CREATION_IDENTITY_TOLERANCE_TICKS;
+  const aHandle = a.fingerprintSource === "handle";
+  const bHandle = b.fingerprintSource === "handle";
+  if (aHandle === bHandle) {
+    // Same attribution: both values come from one source, so they must match
+    // bit for bit. Two CIM rows of one process quantize to the same number.
+    return a.creationDate === b.creationDate;
+  }
+  // One kernel value, one quantized value: the quantized one can only sit
+  // below, within the quantization window. Anything else is a different
+  // process (see the three-observation bridge regression).
+  const [handle, cim] = aHandle
+    ? [a.creationDate, b.creationDate] as const
+    : [b.creationDate, a.creationDate] as const;
+  const offset = BigInt(handle) - BigInt(cim);
+  return offset >= 0n && offset <= CREATION_IDENTITY_TOLERANCE_TICKS;
 }
 
 /**

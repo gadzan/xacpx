@@ -596,11 +596,53 @@ test("windows: a residual whose fingerprint came from CIM replays with creation 
 test("evidence identity is stable when the worker canonicalizes the creation time across rounds", () => {
   // VF() writes the handle creation time back on success, so the SAME process is
   // reported with a CIM-quantized value one round and the kernel FILETIME the
-  // next — different numbers, one process (measured 43/48 non-zero on a live
-  // host, deltas 1-9 ticks). Identity must not split on that.
-  const quantized = { pid: 5002, creationDate: "133801632000000010" };
-  const exact = { pid: 5002, creationDate: "133801632000000017" };
+  // next — different numbers, ONE process (measured 43/48 non-zero on a live
+  // host, deltas 1-9 ticks). CIM quantizes 6-digit microseconds DOWN onto the
+  // 100ns tick grid, so the kernel value is 0-9 ticks ABOVE the CIM one.
+  const quantized = { pid: 5002, creationDate: "133801632000000010", fingerprintSource: "cim" as const };
+  const exact = { pid: 5002, creationDate: "133801632000000017", fingerprintSource: "handle" as const };
   expect(sameProcessIdentity(quantized, exact)).toBe(true);
+  expect(sameProcessIdentity(exact, quantized)).toBe(true);
+});
+
+test("identity is provenance-aware: a canonicalized record must not bridge two distinct pid incarnations", () => {
+  // The ±9 band is NOT an equivalence relation. A plain magnitude test would
+  // chain: CIM_A ~ handle_A (|010-011| = 1) AND handle_A ~ CIM_B (|011-020| = 9),
+  // "proving" CIM_A ~ CIM_B for processes whose kernel values are 18 ticks
+  // apart — a reused pid merged away with the earlier incarnation.
+  const cimA = { pid: 5002, creationDate: "133801632000000010", fingerprintSource: "cim" as const };
+  const handleA = { pid: 5002, creationDate: "133801632000000011", fingerprintSource: "handle" as const };
+  const cimB = { pid: 5002, creationDate: "133801632000000020", fingerprintSource: "cim" as const };
+  const handleB = { pid: 5002, creationDate: "133801632000000029", fingerprintSource: "handle" as const };
+
+  // Same process, observed at two precisions: CIM quantizes DOWN, so the
+  // kernel value is 0-9 ticks ABOVE the CIM one.
+  expect(sameProcessIdentity(cimA, handleA)).toBe(true);
+  // The two kernel values are 18 ticks apart: DIFFERENT processes that reused
+  // the pid, no matter which observation of each is compared.
+  expect(sameProcessIdentity(handleA, handleB)).toBe(false);
+  expect(sameProcessIdentity(cimA, cimB)).toBe(false);
+  // The bridge itself: a canonicalized handle record must not absorb a
+  // different incarnation's CIM row, in EITHER direction.
+  expect(sameProcessIdentity(handleA, cimB)).toBe(false);
+  expect(sameProcessIdentity(handleB, cimA)).toBe(false);
+
+  // Negative offset is impossible for one process (CIM only quantizes down),
+  // so a "handle below CIM" pair is also a different process.
+  expect(sameProcessIdentity(
+    { pid: 5003, creationDate: "133801632000000010", fingerprintSource: "handle" },
+    { pid: 5003, creationDate: "133801632000000019", fingerprintSource: "cim" },
+  )).toBe(false);
+
+  // Unattributed values grant NO tolerance: no provenance, no ±9.
+  expect(sameProcessIdentity(
+    { pid: 5004, creationDate: "133801632000000010" },
+    { pid: 5004, creationDate: "133801632000000017" },
+  )).toBe(false);
+  expect(sameProcessIdentity(
+    { pid: 5004, creationDate: "133801632000000010", fingerprintSource: "unknown" },
+    { pid: 5004, creationDate: "133801632000000017", fingerprintSource: "unknown" },
+  )).toBe(false);
 });
 
 test("evidence identity keeps a reused pid separate", () => {
@@ -669,10 +711,11 @@ test("merge: a creation-date-canonicalized safe outcome resolves the earlier qua
 
 test("merge: a complete fingerprint replaces an incomplete one for the same process", () => {
   // Round 1 could not see the commandLine or the resolved path yet. Round 2
-  // observes the complete fingerprint for the SAME process (creation times within
-  // the identity tolerance). An incomplete record can never become durable
-  // evidence, so the complete one must REPLACE it — otherwise the incomplete one
-  // occupies the identity and blocks discharge forever.
+  // observes the complete fingerprint for the SAME process (CIM quantizes DOWN,
+  // so a kernel value 1-2 ticks above the CIM one is the same process). An
+  // incomplete record can never become durable evidence, so the complete one
+  // must REPLACE it — otherwise the incomplete one occupies the identity and
+  // blocks discharge forever.
   const merged = mergeEvidence(
     { verified: false, outcomes: [], leftover: [] },
     {
@@ -693,13 +736,15 @@ test("merge: a complete fingerprint replaces an incomplete one for the same proc
     outcomes: [{
       pid: 5002,
       outcome: "access-denied",
-      creationDate: "133801632000000012",
+      creationDate: "133801632000000010",
       commandLine: "node adapter.js",
       executablePath: "C:\\shim\\node.exe",
       fingerprintSource: "cim",
     }],
     leftover: [],
   });
+  // Both observations are CIM-derived from ONE hold of the process's row, so the
+  // later (more complete) snapshot replaces the earlier one.
   expect(second.outcomes).toHaveLength(1);
   expect(second.outcomes[0]!.executablePath).toBe("C:\\shim\\node.exe");
   expect(second.outcomes[0]!.commandLine).toBe("node adapter.js");
@@ -728,7 +773,7 @@ test("merge: an incomplete fingerprint never replaces a complete one for the sam
     outcomes: [{
       pid: 5002,
       outcome: "access-denied",
-      creationDate: "133801632000000010",
+      creationDate: "133801632000000012",
       commandLine: null,
       executablePath: null,
       fingerprintSource: "cim",
@@ -1008,7 +1053,7 @@ test("merge: a safe outcome still resolves a leftover for the same process", () 
     { verified: false, outcomes: [{
       pid: 5002,
       outcome: "killed",
-      creationDate: "133801632000000010",
+      creationDate: "133801632000000017",
       commandLine: "node adapter.js",
       executablePath: "C:\\real\\node.exe",
       fingerprintSource: "handle",
@@ -1115,4 +1160,118 @@ test("windows: a complete CIM round after an incomplete handle round converges i
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("windows: a pid reused after convergence keeps its own durable identity", async () => {
+  // The non-transitive-identity bridge, end to end. Round 0 sees P1 unsafe
+  // (CIM ...010). Round 1 verifies P1 through a handle, so the SURVIVOR is
+  // canonicalized to the kernel value ...011 and P1 is resolved; the same round
+  // already reports the pid reused by P2 (kernel ...029, first observed through
+  // CIM as ...020) as unsafe. Round 2 repeats that merged state, so publication
+  // runs against evidence holding BOTH identities.
+  //
+  // A plain ±9 magnitude relation would chain P1(CIM 010) ~ P1(handle 011) and
+  // P1(handle 011) ~ P2(CIM 020), so the resolved P1 record would absorb P2 and
+  // discard its unsafe evidence — and `publishRequired` would then report
+  // "spooled" with NO residual for a live process: a false terminal proof that
+  // hands the pid's ownership to a successor. The comparator is provenance-aware
+  // (handle-vs-handle is exact), so the 18-tick pair stays two identities and P2
+  // publishes under its OWN creation time.
+  const dir = await mkdtemp(join(tmpdir(), "eof-pidreuse-bridge-"));
+  try {
+    const rounds: TerminateDescendantsResult[] = [
+      {
+        verified: false,
+        outcomes: [{
+          pid: 5002, outcome: "access-denied",
+          creationDate: "133801632000000010", commandLine: "old", executablePath: "C:\\old.exe",
+          fingerprintSource: "cim" as const,
+        }],
+        leftover: [{ pid: 6001, parentPid: 5002, ...FULL, fingerprintSource: "cim" as const }],
+      },
+      {
+        verified: false,
+        outcomes: [
+          {
+            pid: 5002, outcome: "killed",
+            creationDate: "133801632000000011", commandLine: "old", executablePath: "C:\\real.exe",
+            fingerprintSource: "handle" as const,
+          },
+          {
+            // A DIFFERENT process that reused the pid: kernel ...029, reported
+            // through CIM as ...020 — exactly 9 ticks below the canonicalized P1
+            // value, which is where the plain band bridges them.
+            pid: 5002, outcome: "access-denied",
+            creationDate: "133801632000000020", commandLine: "new", executablePath: "C:\\new.exe",
+            fingerprintSource: "cim" as const,
+          },
+        ],
+        leftover: [{ pid: 6001, parentPid: 5002, ...FULL, fingerprintSource: "cim" as const }],
+      },
+    ];
+    let call = 0;
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => {
+        const round = rounds[Math.min(call, rounds.length - 1)]!;
+        call += 1;
+        return round;
+      },
+      maxRounds: 3,
+      roundDelayMs: 1,
+      runtimeDir: dir,
+      agentCommand: () => "codex",
+      generationId: "00000000-0000-4000-8000-000000000001",
+      ownerToken: "00000000-0000-4000-8000-000000000002",
+    });
+
+    const registry = new OrphanRegistry(dir);
+    const residuals = await registry.readCategory("residuals");
+    // P2 is unresolved, so it is required evidence. Publication is all-or-nothing
+    // and every required identity here is complete, so the verdict may only be
+    // "spooled" if the pid's durable record names P2's OWN identity.
+    expect(outcome).toBe("spooled");
+    expect(residuals).toHaveLength(2);
+    const forPid = residuals.filter((entry) => entry.record.pid === 5002);
+    expect(forPid).toHaveLength(1);
+    // A residual file is keyed by pid alone, so this single record must carry
+    // the identity the reaper will replay for THIS process — never the earlier
+    // incarnation's kernel time, which would prove nothing about P2.
+    expect(forPid[0]!.record.creationDate).toBe("133801632000000020");
+    expect(forPid[0]!.record.fingerprintSource).toBe("cim");
+    expect(forPid[0]!.record.commandLine).toBe("new");
+    expect(residuals.some((entry) => entry.record.pid === 6001)).toBe(true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("windows: the same pid reused 18 ticks later must not inherit the earlier incarnation's resolution", async () => {
+  // Comparator-level pin of the exact bridge the full-diff review found, using
+  // the values the real worker produces (CIM quantizes DOWN by 0-9 ticks).
+  const p1Cim = { pid: 5002, creationDate: "133801632000000010", fingerprintSource: "cim" as const };
+  const p1Handle = { pid: 5002, creationDate: "133801632000000011", fingerprintSource: "handle" as const };
+  const p2Cim = { pid: 5002, creationDate: "133801632000000020", fingerprintSource: "cim" as const };
+  const p2Handle = { pid: 5002, creationDate: "133801632000000029", fingerprintSource: "handle" as const };
+
+  // Round 1 merged the CIM observation into the canonicalized handle one.
+  const afterP1 = mergeEvidence(
+    { verified: false, outcomes: [{ pid: 5002, outcome: "access-denied", ...p1Cim, commandLine: "old", executablePath: "C:\\old.exe" }], leftover: [] },
+    { verified: false, outcomes: [{ pid: 5002, outcome: "killed", ...p1Handle, commandLine: "old", executablePath: "C:\\real.exe" }], leftover: [] },
+  );
+  expect(afterP1.outcomes).toHaveLength(1);
+  expect(afterP1.outcomes[0]!.outcome).toBe("killed");
+
+  // Round 3 adds P2. Under a plain ±9 band P2's CIM row would be 9 ticks from
+  // the canonicalized P1 record and get absorbed; the safe outcome would then
+  // discard P2's unsafe evidence entirely.
+  const afterP2 = mergeEvidence(afterP1, {
+    verified: false,
+    outcomes: [{ pid: 5002, outcome: "access-denied", ...p2Cim, commandLine: "new", executablePath: "C:\\new.exe" }],
+    leftover: [],
+  });
+  expect(afterP2.outcomes.filter((item) => item.pid === 5002)).toHaveLength(2);
+  const p2 = afterP2.outcomes.filter((item) => item.pid === 5002).find((item) => item.outcome === "access-denied");
+  expect(p2).toBeDefined();
+  expect(p2!.creationDate).toBe("133801632000000020");
 });

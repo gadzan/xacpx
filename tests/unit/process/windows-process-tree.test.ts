@@ -152,6 +152,31 @@ async function realPathOfNode(): Promise<string> {
   return stdout.stdout.trim();
 }
 
+test("tree worker compares ancestry ordering against the SAME snapshot, never the canonicalized kernel value", () => {
+  // The child window and the parent window come from ONE CIM snapshot, so the
+  // parent side of the ordering check must stay that snapshot value. After
+  // OpenVerified succeeds the traversal node holds the kernel FILETIME, and a
+  // CIM-quantized child (1-9 ticks BELOW the kernel value) measured against it
+  // reads as "child predates parent" even when the child was created later.
+  // Reading the parent from the traversal node would abort every legitimate
+  // parent/child pair created within the same 1µs CIM bucket as
+  // rootOutcome: query-failed.
+  const orderingChecks = WINDOWS_TREE_WORKER_SCRIPT.match(
+    /creationDate.{0,120}?predates parent/g,
+  ) ?? [];
+  // Both the initial traversal and the one append pass order their children.
+  expect(orderingChecks).toHaveLength(2);
+  for (const check of orderingChecks) {
+    // The parent side is $byPid[...] — the snapshot row — never the traversal node.
+    expect(check).toContain("$byPid[$p.parentPid].creationDate");
+    expect(check).not.toContain("$parent.creationDate");
+  }
+
+  // The canonicalizing write-back must still be present: it is what makes the
+  // spooled residual replayable under the exact handle contract.
+  expect(WINDOWS_TREE_WORKER_SCRIPT).toContain("$p.creationDate=$check.creation");
+});
+
 test("encoded Windows worker command lines stay below the CreateProcess ceiling", () => {
   // `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand <encoded>`
   // is 67 fixed chars plus the base64 payload. The hard ceiling is 32767 chars
