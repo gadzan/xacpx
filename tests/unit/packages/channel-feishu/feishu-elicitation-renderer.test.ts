@@ -1096,3 +1096,112 @@ test("a form asked on an unreported route is refused, not treated as direct", as
   expect((outcome as Error).message).toContain("no chatType");
   expect(rec.transport.sent).toHaveLength(0);
 });
+
+
+test("an opening send that lands after Decline resolves with the Decline", async () => {
+  // Same race, resolved: hold `sendCard`, let the user Decline while it is held,
+  // then release. The promise must settle with the user's decision and the card
+  // must end in the Decline terminal state, not a cancellation.
+  const rec = makeRenderer();
+  const realSend = rec.transport.sendCard.bind(rec.transport);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let held2 = true;
+  (rec.transport as { sendCard: unknown }).sendCard = async (input: { card: unknown; chatId: string }) => {
+    const result = await realSend(input as never);
+    if (held2) await held;
+    return result;
+  };
+  const promise = rec.renderer.requestElicitation(request(ENV_FIELD), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  // Let the card be recorded, then the user declines while the send is held.
+  await new Promise((r) => setTimeout(r, 5));
+  const entry = [...rec.pending.values()][0]!;
+  // Drive the decline through the renderer's own callback path: the entry exists
+  // and `cardId` is already recorded because ownership is taken first.
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: entry.token, a: "decline" },
+    formValues: {},
+  });
+  // Release the held send.
+  held2 = false;
+  release();
+  const outcome = await Promise.race([
+    promise,
+    new Promise((r) => setTimeout(() => r("timeout"), 800)),
+  ]);
+  expect(outcome).toEqual({ action: "decline", responderId: "ou_initiator" });
+});
+
+test("a hung terminal card update cannot swallow a Decline decision", async () => {
+  // `withdraw` is a `card.update` round trip. When the decision's promise was
+  // resolved AFTER it, a CardKit request that never returned also never delivered
+  // the decision: `pending` was already cleared, so a retry found no entry, `done`
+  // never settled, and core could only time the turn out.
+  const rec = makeRenderer();
+  (rec.transport as { updateCard: unknown }).updateCard = () => new Promise<void>(() => {});
+  const promise = rec.renderer.requestElicitation(request(ENV_FIELD), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  await new Promise((r) => setTimeout(r, 5));
+  const entry = [...rec.pending.values()][0]!;
+  const clicked = rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: entry.token, a: "decline" },
+    formValues: {},
+  });
+  // The DECISION resolves promptly even though the terminal update never will.
+  const outcome = await Promise.race([
+    promise,
+    new Promise((r) => setTimeout(() => r("timeout"), 800)),
+  ]);
+  expect(outcome).toEqual({ action: "decline", responderId: "ou_initiator" });
+  await Promise.race([clicked, new Promise((r) => setTimeout(r, 30))]);
+});
+
+test("a hung terminal card update cannot swallow an Accept decision", async () => {
+  // Same ordering, on the review submit path: the accepted answer must reach core
+  // even if the "Accepted" card update never returns.
+  const rec = makeRenderer();
+  // The wizard's own re-renders must still work, so only the TERMINAL update
+  // hangs. It is the one fired after the decision is recorded.
+  let decisions = 0;
+  const realUpdate = rec.transport.updateCard.bind(rec.transport);
+  (rec.transport as { updateCard: unknown }).updateCard = async (input: never) => {
+    const card = (input as { card: unknown }).card as { body?: unknown } | undefined;
+    // A terminal card has no interactive component; a field/review card does.
+    const interactive = JSON.stringify(card ?? {}).includes('callback');
+    if (!interactive) {
+      decisions += 1;
+      return new Promise<void>(() => {});
+    }
+    return realUpdate(input);
+  };
+  const promise = rec.renderer.requestElicitation(request(ENV_FIELD), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  await new Promise((r) => setTimeout(r, 5));
+  const token = [...rec.pending.keys()][0]!;
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "prod" } });
+  // Fired, not awaited: the hung update also blocks the CLICK's own promise, and
+  // what is being asserted is the REQUEST promise.
+  void rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(decisions).toBe(1);
+  const outcome = await Promise.race([
+    promise,
+    new Promise((r) => setTimeout(() => r("timeout"), 800)),
+  ]);
+  expect(outcome).toEqual({
+    action: "accept",
+    responderId: "ou_initiator",
+    content: { env: "prod" },
+  });
+});

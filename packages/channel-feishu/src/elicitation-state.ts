@@ -56,8 +56,28 @@ export interface PendingFeishuElicitation {
   skipped: Set<string>;
   currentField?: string;
   settled: boolean;
-  /** Terminal UI state for a send that completes after settlement (send race). */
+  /**
+   * Terminal UI state, set by whichever path settled this request.
+   *
+   * EXTERNAL settlements (abort, expiry, send failure) record
+   * `"expired"`/`"cancelled"` here. A USER decision does NOT set this — it records
+   * its own action in `decisionAction` and the decision itself in `decision`
+   * instead. The distinction is load-bearing for the send race: a `sendCard` still
+   * in flight must not read a user settlement as an external abort and reject the
+   * turn, so the two have to be distinguishable.
+   */
   terminalState?: "expired" | "cancelled";
+  /** The user's own terminal action, when the settlement was a user decision. */
+  decisionAction?: "accept" | "decline" | "cancel";
+  /**
+   * The user's decision, recorded when it was made.
+   *
+   * The send race needs it: by the time the in-flight `sendCard` returns, the
+   * `done` promise has already resolved with this decision, so `requestElicitation`
+   * returns it directly instead of letting its own control flow replace a
+   * resolution with a rejection.
+   */
+  decision?: ChannelElicitationDecision;
   resolve: (decision: ChannelElicitationDecision) => void;
   reject: (error: Error) => void;
 }

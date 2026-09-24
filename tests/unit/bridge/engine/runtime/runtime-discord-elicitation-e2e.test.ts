@@ -176,6 +176,10 @@ test("a protocol-faithful agent elicits, Discord renders it, the same turn resum
       const request: ChannelElicitationRequest = {
         requestId: String((payload as { elicitationRequestId?: string }).elicitationRequestId ?? "e2e-1"),
         chatKey,
+        // This turn is a DM, so the route is provably private and a form may be
+        // rendered at all. In production this comes from the channel's own
+        // `ChatRequestMetadata`; the E2E states it explicitly for the same reason.
+        chatType: "direct",
         requester: { senderId: "user-A", senderName: "Ada", isOwner: true },
         agent: {
           name: "mock-agent",
@@ -290,6 +294,8 @@ test("the user's explicit decline resumes the same ACP turn", async () => {
       const request = {
         requestId: "e2e-decline",
         chatKey: "discord:default:g:c1",
+        // A DM route: provably private, so a form may be rendered.
+        chatType: "direct" as const,
         requester: { senderId: "user-A" },
         agent: { name: "mock-agent" },
         message: "Which environment?",
@@ -365,6 +371,8 @@ test("the user's explicit cancel resumes the same ACP turn", async () => {
       const request = {
         requestId: "e2e-cancel",
         chatKey: "discord:default:g:c1",
+        // A DM route: provably private, so a form may be rendered.
+        chatType: "direct" as const,
         requester: { senderId: "user-A" },
         agent: { name: "mock-agent" },
         message: "Which environment?",

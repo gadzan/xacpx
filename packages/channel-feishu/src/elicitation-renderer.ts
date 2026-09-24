@@ -319,17 +319,56 @@ export class FeishuElicitationRenderer {
         chatId,
         ...(request.replyContextToken ? { replyToMessageId: request.replyContextToken } : {}),
       });
-      if (entry.settled) {
-        // The turn settled while the send was in flight (an abort that landed
-        // during the card.create round trip). The card now exists but nobody
-        // will read it, so withdraw it rather than leaving a live form.
-        entry.cardId = sent.cardId;
-        entry.messageId = sent.messageId;
-        await this.withdraw(entry, "cancelled");
-        throw new Error("elicitation aborted before the card was sent");
-      }
+      // OWNERSHIP OF THE SEND FIRST, THEN SETTLEMENT.
+      //
+      // A successful `sendCard` is an external fact — the card exists in the chat
+      // and the daemon now owns it. Recording it before looking at `settled` is
+      // what keeps a user decision from being misread as an abort: the same
+      // ordering bug Discord had, where the FINAL send landing after a Decline
+      // threw "aborted" and a legitimate decision was reported as a rejection.
       entry.cardId = sent.cardId;
       entry.messageId = sent.messageId;
+      if (entry.settled) {
+        // The turn settled while the send was in flight. WHICH kind of settlement
+        // matters, because they end the turn differently:
+        //
+        //   - a USER decision (decline/cancel/accept): `handleAction` already
+        //     RESOLVED the promise. The awaiting turn must keep that decision.
+        //     Rejecting here is what turned a legitimate Decline into a core-side
+        //     cancel, and rewriting the card as "cancelled" told the user they
+        //     cancelled something they declined.
+        //   - an EXTERNAL withdrawal (timeout, abort, channel stop): the promise
+        //     was REJECTED, and the card is now a live form nobody will answer, so
+        //     it must be withdrawn and this call must throw.
+        //
+        // `terminalState` is the discriminator: only the external paths set it. A
+        // user decision records its action in `decisionAction` instead.
+        this.options.pending.delete(token);
+        if (entry.terminalState !== undefined) {
+          const terminal = entry.terminalState;
+          await this.withdraw(entry, terminal === "expired" ? "expired" : "cancelled");
+          throw new Error("elicitation aborted before the card was sent");
+        }
+        // The user already decided: their terminal render ran before `cardId`
+        // existed and returned immediately, so publish the outcome they chose now
+        // that the card can be updated.
+        //
+        // RETURN the decision rather than throwing. `requestElicitation` is the
+        // one call the bridge awaits, and by this point `done` is already
+        // resolved with the user's decision — but this method's control flow is
+        // still inside the SEND's try block, so a throw here would replace that
+        // resolution with a rejection. The send is no longer part of the turn's
+        // outcome; the decision is, and it has to be what comes back out.
+        const action = entry.decisionAction;
+        await this.withdraw(
+          entry,
+          action === "decline" ? "declined" : action === "accept" ? "accepted" : "cancelled",
+        );
+        if (entry.decision === undefined) {
+          throw new Error("elicitation settled while its card was being sent");
+        }
+        return entry.decision;
+      }
       this.options.log?.("feishu.elicitation.sent", "sent feishu elicitation request", {
         requestId: request.requestId,
       });
@@ -439,13 +478,26 @@ export class FeishuElicitationRenderer {
           action: parsed.action,
           responderId: action.openId,
         };
+        // Record WHICH settlement this was, before anything can observe it
+        // missing. The send race needs it: a `sendCard` still in flight must not
+        // read this settlement as an external abort and reject the user's turn.
+        entry.decisionAction = parsed.action;
+        entry.decision = decision;
         this.options.pending.delete(parsed.token);
+        // SETTLE THE PROTOCOL FIRST, THEN RENDER.
+        //
+        // `withdraw` is a `card.update` network round trip. Holding the turn's
+        // promise behind it means a CardKit request that never returns also never
+        // delivers the decision: `pending` is already cleared so a retry finds no
+        // entry, `done` never settles, and core can only time the turn out. The
+        // same ordering Discord's paths already use — atomic protocol state, then
+        // best-effort terminal UI.
+        entry.resolve(decision);
         // The card must show what the user actually chose. `withdraw` used to
         // translate any "terminal" into "accepted", so declining rendered an
         // accepted card and cancelling rendered an accepted one too — the exact
         // opposite of the decision, while the protocol decision was correct.
         await this.withdraw(entry, parsed.action === "decline" ? "declined" : "cancelled");
-        entry.resolve(decision);
         return { handled: true, settled: true };
       }
       default:
@@ -528,13 +580,27 @@ export class FeishuElicitationRenderer {
       return { handled: true, settled: false };
     }
     if (!trySettle(entry)) return { handled: false, settled: false };
+    const content = buildElicitationContent(entry);
+    const decision: ChannelElicitationDecision = {
+      action: "accept",
+      responderId: entry.requesterId,
+      content,
+    };
+    // Record the settlement kind, for the same reason the decline path does.
+    entry.decisionAction = "accept";
+    entry.decision = decision;
     this.options.pending.delete(entry.token);
+    // SETTLE THE PROTOCOL FIRST, THEN RENDER.
+    //
+    // `withdraw` is a `card.update` round trip; holding the turn's promise behind
+    // it lets a hung CardKit request swallow a decision the user made. Core still
+    // re-validates the answer, so settling first never bypasses validation — it
+    // only stops a cosmetic network call from being able to lose a decision.
+    entry.resolve(decision);
     // The user's OWN decision is what the terminal card must show. `withdraw`
     // used to hard-code "accepted", so a Decline or a Cancel rendered an
     // accepted card — the opposite of what the user just chose.
     await this.withdraw(entry, "accepted");
-    const content = buildElicitationContent(entry);
-    entry.resolve({ action: "accept", responderId: entry.requesterId, content });
     return { handled: true, settled: true };
   }
 
@@ -602,8 +668,14 @@ export class FeishuElicitationRenderer {
     if (!trySettle(entry)) return;
     entry.terminalState = "cancelled";
     this.options.pending.delete(entry.token);
-    await this.withdraw(entry, "cancelled");
+    // REJECT FIRST, THEN RENDER — the same ordering the user-decision paths use.
+    //
+    // An external withdrawal is not a user decision, so this rejects with no
+    // responderId. It must also not sit behind a `card.update` round trip: the
+    // channel's stop path awaits every drain, so one CardKit request that never
+    // returns would hold the whole daemon shutdown open behind a cosmetic update.
     entry.reject(new Error(reason));
+    await this.withdraw(entry, "cancelled");
   }
 
   /**

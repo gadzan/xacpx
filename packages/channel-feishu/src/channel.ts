@@ -260,6 +260,10 @@ export class FeishuChannel implements MessageChannelRuntime {
       if (!runtime.elicitation) continue;
       const elicitation = runtime.elicitation;
       for (const entry of [...elicitation.pending.values()]) {
+        // `withdrawPending` settles the AWAITING TURN synchronously and only then
+        // makes a best-effort `card.update`. That update is a network round trip,
+        // and awaiting it here would let one hung CardKit request hold the whole
+        // daemon shutdown open behind a cosmetic change — so it is bounded below.
         drains.push(
           elicitation.renderer.withdrawPending(entry, `feishu elicitation channel stopped (${reason})`),
         );
@@ -273,7 +277,17 @@ export class FeishuChannel implements MessageChannelRuntime {
       }
       void accountId;
     }
-    await Promise.all(drains);
+    // BOUND the wait: every turn has already been settled synchronously, so what
+    // is left is cosmetic card work. A refused or hung `card.update` must not be
+    // able to keep the daemon from shutting down. 2s is generous for one HTTP
+    // round trip per form and still bounded.
+    await Promise.race([
+      Promise.all(drains).then(() => undefined, () => undefined),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 2_000);
+        if (typeof timer.unref === "function") timer.unref();
+      }),
+    ]);
   }
 
   /**
