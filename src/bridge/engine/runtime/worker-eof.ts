@@ -310,7 +310,6 @@ function residualFor(
  */
 async function publishRequired(
   evidence: TerminateDescendantsResult,
-  published: Set<string>,
   discharge: { ownerToken: string; generationId: string },
   options: ConvergeOrphansOptions,
 ): Promise<boolean> {
@@ -339,16 +338,27 @@ async function publishRequired(
     generationId: discharge.generationId,
     killAttempts: 0,
   } satisfies Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath" | "fingerprintSource">;
+  // The registry is the ONLY authority on what is durable. `published` is not a
+  // cross-round cache: a residual file is keyed by pid alone, so a later write
+  // for a DIFFERENT identity of the same pid silently overwrites an earlier one.
+  // "A write succeeded once" is therefore not "A is still durable", and trusting
+  // it would leave a required identity unwritten forever while the read-back
+  // keeps failing — the worker keeps ownership (correct) but can never converge
+  // even once writing would succeed (livelock). Deciding solely from the current
+  // registry content keeps the state model one-layered, and the evidence set is
+  // small enough that the extra reads cost nothing.
   const passes = options.spoolRetryPasses ?? 3;
   for (let pass = 0; pass < passes; pass += 1) {
-    const pending = complete.filter((item) => !published.has(publicationIdentity(item)));
+    const present = await durableIdentities(registry);
+    // A read that fails must not be mistaken for "everything is written".
+    if (present === null) return false;
+    const pending = complete.filter((item) => !present.has(publicationIdentity(item)));
     let failed = 0;
     for (const candidate of pending) {
       const record = residualFor(candidate, base);
       if (!decodeResidualRecord(record)) return false;
       try {
         await registry.writeResidual(record);
-        published.add(publicationIdentity(candidate));
       } catch {
         failed += 1;
       }
@@ -360,19 +370,27 @@ async function publishRequired(
       await promise;
     }
   }
-  // Read-back verification: publication is proven by registry content whose EXACT
-  // identity (pid + retained creation time, no tolerance) matches the required
-  // one. A residual file is keyed by pid alone, so two distinct identities
-  // sharing a pid cannot both be durable — proving them with one file would be a
-  // false proof of ownership for the record that was overwritten.
+  // Final proof: every required identity must be present in the registry RIGHT
+  // NOW, by exact identity. A residual file is keyed by pid alone, so two
+  // distinct identities sharing a pid cannot both be durable — proving them from
+  // one file would be a false proof of ownership for the record that was
+  // overwritten.
+  const present = await durableIdentities(registry);
+  return fullyPublishable && present !== null && complete.every((item) => present.has(publicationIdentity(item)));
+}
+
+/**
+ * Exact identities currently durable in the registry, or null when the registry
+ * cannot be read (which is NOT the same as "nothing is written").
+ */
+async function durableIdentities(registry: OrphanRegistry): Promise<Set<string> | null> {
   const records = await registry.readCategory("residuals").catch(() => null);
-  if (!records) return false;
-  const present = new Set(
+  if (!records) return null;
+  return new Set(
     records.flatMap(({ record }) => ("pid" in record && "creationDate" in record
       ? [publicationIdentity({ pid: record.pid, creationDate: record.creationDate })]
       : [])),
   );
-  return fullyPublishable && complete.every((item) => present.has(publicationIdentity(item)));
 }
 
 async function attemptOnce(options: ConvergeOrphansOptions): Promise<TerminateDescendantsResult> {
@@ -415,9 +433,6 @@ export async function convergeOrphansBeforeExit(options: ConvergeOrphansOptions 
   // After the first publication pass, every further round retries both
   // convergence and publication until discharge is terminal.
   let evidence = EMPTY_EVIDENCE;
-  // One stable proof namespace for the whole discharge: records published by
-  // different rounds share it, so the read-back can match them exactly.
-  const published = new Set<string>();
   const discharge = {
     ownerToken: options.ownerToken ?? randomUUID(),
     generationId: options.generationId ?? randomUUID(),
@@ -429,7 +444,7 @@ export async function convergeOrphansBeforeExit(options: ConvergeOrphansOptions 
     // failure on the retry must not be outrun by an early spool, and the
     // retry must not be skipped because round zero already published.
     if (round >= 1) {
-      if (await publishRequired(evidence, published, discharge, options)) return "spooled";
+      if (await publishRequired(evidence, discharge, options)) return "spooled";
       if (options.maxRounds !== undefined && round + 1 >= options.maxRounds) return "unresolved";
     }
     await delay(options.roundDelayMs ?? 2_000);

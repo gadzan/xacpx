@@ -833,3 +833,65 @@ test("windows: one residual file must not prove TWO unsafe identities durable", 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("windows: a required identity whose file was overwritten is rewritten, not cached", async () => {
+  // Three stages, all in ONE discharge (one ownerToken, one registry).
+  //
+  // Stage 1-2: A and B are two DISTINCT processes sharing pid 5002 (creation
+  //   times 10 ticks apart). Both unsafe, so both required. A residual file is
+  //   keyed by pid alone, so B overwrites A and the read-back correctly fails.
+  // Stage 3: B is resolved (killed), leaving only A required. A must now be
+  //   WRITTEN and proven durable, so the discharge converges to "spooled".
+  //
+  // The failure this pins: `published` used to mean "a write succeeded once", so
+  // after stage 1 A stayed in the set and was never rewritten — while the file on
+  // disk held B. Every later round then repeated the same failed read-back, an
+  // unrecoverable livelock.
+  const dir = await mkdtemp(join(tmpdir(), "eof-overwrite-recover-"));
+  try {
+    const a = "133801632000000003";
+    const b = "133801632000000013";
+    let round = 0;
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => {
+        round += 1;
+        if (round <= 2) {
+          return {
+            verified: false,
+            outcomes: [
+              { pid: 5002, outcome: "access-denied", creationDate: a, commandLine: "first", executablePath: "C:\\first.exe", fingerprintSource: "cim" },
+              { pid: 5002, outcome: "query-failed", creationDate: b, commandLine: "second", executablePath: "C:\\second.exe", fingerprintSource: "cim" },
+            ],
+            leftover: [],
+          };
+        }
+        // B is resolved; only A remains required evidence.
+        return {
+          verified: false,
+          outcomes: [
+            { pid: 5002, outcome: "access-denied", creationDate: a, commandLine: "first", executablePath: "C:\\first.exe", fingerprintSource: "cim" },
+            { pid: 5002, outcome: "killed", creationDate: b, commandLine: "second", executablePath: "C:\\second.exe", fingerprintSource: "handle" },
+          ],
+          leftover: [],
+        };
+      },
+      maxRounds: 6,
+      roundDelayMs: 1,
+      runtimeDir: dir,
+      agentCommand: () => "codex",
+      generationId: "00000000-0000-4000-8000-000000000001",
+      ownerToken: "00000000-0000-4000-8000-000000000002",
+    });
+    // Converges once A alone can be made durable.
+    expect(outcome).toBe("spooled");
+    // And the file on disk really does hold A now.
+    const registry = new OrphanRegistry(dir);
+    await registry.initialize();
+    const records = await registry.readCategory("residuals");
+    expect(records).toHaveLength(1);
+    expect(records[0]!.record).toMatchObject({ pid: 5002, creationDate: a });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
