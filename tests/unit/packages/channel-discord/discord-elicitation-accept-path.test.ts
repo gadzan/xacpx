@@ -217,11 +217,13 @@ test("trySettle is the only way to settle and it wins exactly once", () => {
 
 test("every parsed control maps to a handled action", async () => {
   // A custom id that parses but has no handler branch would silently no-op,
-  // so the action set is pinned against the parser's own.
+  // so the action set is pinned against the parser's own. `skip` carries a field
+  // position now: an action without one is dropped outright rather than falling
+  // back to a cursor, which is what made two stale Skips skip two fields.
   for (const [action, fieldIndex] of [
     ["start", undefined],
     ["review", undefined],
-    ["skip", undefined],
+    ["skip", 3],
     ["submit", undefined],
     ["decline", undefined],
     ["cancel", undefined],
@@ -233,4 +235,9 @@ test("every parsed control maps to a handled action", async () => {
     expect(parsed).not.toBeNull();
     expect(["start", "review", "skip", "submit", "decline", "cancel", "field", "edit", "page"]).toContain(parsed!.action);
   }
+  // A Skip with no position must NOT parse: refusing it is safer than guessing
+  // the field from mutable state.
+  expect(parseElicitationCustomId(elicitationCustomId(createElicitationToken(), "start"))).not.toBeNull();
+  const token = createElicitationToken();
+  expect(parseElicitationCustomId(`${ELICITATION_CUSTOM_ID_PREFIX}${token}:skip`)).toBeNull();
 });

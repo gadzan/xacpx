@@ -1058,7 +1058,7 @@ test("an answered optional field can be skipped back to omitted", async () => {
     const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown>; skipped: Set<string> }> }).pendingElicitations;
     const entry = [...store.values()][0]!;
     expect(entry.values.b).toBe("beta");
-    client.emitButton(click(client, idFor(client, "skip")));
+    client.emitButton(click(client, idFor(client, "skip", 1)));
     await new Promise((r) => setTimeout(r, 5));
     expect(Object.hasOwn(entry.values, "b")).toBe(false);
     expect(entry.skipped.has("b")).toBe(true);
@@ -1901,6 +1901,82 @@ test("stop() drains a queued terminal render before the client is destroyed", as
     expect(last.body.components ?? []).toHaveLength(0);
     expect(destroyed).toBe(true);
   } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("two concurrent Skip interactions cannot skip two different fields", async () => {
+  // Skip resolved its field from the shared `entry.currentField` cursor at
+  // handling time, which runs BEFORE the render queue. Two stale Skips delivered
+  // together therefore skipped two DIFFERENT fields, and a field that already had
+  // an answer lost it. The fix names the field in the custom id, so a duplicate
+  // re-skips the same field.
+  const client = makeFakeClient();
+  let release: (() => void) | null = null;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holdsLeft = 1;
+  const realAck = async (): Promise<void> => {};
+  // Hold the first Skip's ACK so the second is guaranteed to be handled while the
+  // first is still in flight, which is the interleaving that used to skip B.
+  const heldAcknowledge = async (): Promise<void> => {
+    if (holdsLeft > 0) {
+      holdsLeft -= 1;
+      await held;
+    }
+  };
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "a", title: "A", required: false },
+      { kind: "text", key: "b", title: "B", required: false },
+      { kind: "text", key: "c", title: "C", required: false },
+    ]);
+    channel.requestElicitation(req).catch(() => {});
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 6));
+    await wait();
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    // Field A's card is in front of us.
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { skipped: Set<string>; currentField?: string }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.currentField).toBe("a");
+
+    // The SAME Skip control (A's), twice. The first holds its ACK, so the
+    // second is handled while the first is still in flight — the interleaving
+    // that used to skip B.
+    const skipA = idFor(client, "skip", 0);
+    const firstClick = click(client, skipA);
+    const secondClick = click(client, skipA);
+    const editsBefore = client.edited.length;
+    // Emit both back to back; the hold keeps the first in flight while the
+    // second enters.
+    client.emitButton({ ...firstClick, acknowledge: heldAcknowledge });
+    await wait();
+    client.emitButton({ ...secondClick, acknowledge: realAck });
+    await wait();
+
+    // Only A is skipped. B was NOT skipped by the duplicate.
+    expect([...entry.skipped]).toEqual(["a"]);
+    // And the cursor is on B, the first unresolved field.
+    expect(entry.currentField).toBe("b");
+    // Both interactions were acknowledged (the hold was released by the handler
+    // completing), and no third field was touched.
+    release!();
+    await new Promise((r) => setTimeout(r, 40));
+    expect(client.edited.length).toBeGreaterThan(editsBefore);
+    // A submit now carries only A's absence: B and C are still unanswered, so the
+    // required-gate is not involved — they are optional and simply omitted.
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+    client.emitButton(click(client, idFor(client, "submit")));
+    await wait();
+  } finally {
+    release?.();
     abort.abort();
     await channel.stop().catch(() => {});
   }

@@ -104,7 +104,7 @@ export function createElicitationToken(): string {
  * maps it back to the exact field.
  */
 export function elicitationCustomId(token: string, action: ElicitationUiAction, fieldIndex?: number): string {
-  if (action === "page" || action === "next") {
+  if (action === "page" || action === "next" || action === "skip") {
     if (fieldIndex === undefined || !Number.isInteger(fieldIndex) || fieldIndex < 0) {
       throw new Error(`elicitation custom id action "${action}" requires a page index`);
     }
@@ -163,12 +163,19 @@ export function parseElicitationCustomId(
   switch (action) {
     case "start":
     case "review":
-    case "skip":
     case "submit":
     case "decline":
     case "cancel":
       if (segments.length !== 1) return null;
       break;
+    // POSITIONAL, like `field`/`edit`/`next`. `skip` used to carry no field
+    // identity and resolved the field from the shared `entry.currentField`
+    // cursor at handling time. Two stale Skip interactions delivered together
+    // therefore skipped two DIFFERENT fields — the cursor advanced between them
+    // — and if the second field already had an answer, `markSkipped` deleted it.
+    // Being positional makes a Skip idempotent on the field it names: a duplicate
+    // re-skips the same field, which is a no-op.
+    case "skip":
     case "field":
     case "edit":
     case "page":
@@ -378,7 +385,13 @@ export function buildElicitationFieldCard(
   // so there must be a distinct control for the omission itself. A required
   // field may never be skipped — core would reject the submission.
   if (!field.required) {
-    fieldControls.push({ label: truncate(messages.elicitationSkip, 80), customId: elicitationCustomId(token, "skip"), style: 2 });
+    fieldControls.push({
+      label: truncate(messages.elicitationSkip, 80),
+      // The field's own position, not a bare action: see the codec. A Skip that
+      // names its field is idempotent when Discord retries or a user double-taps.
+      customId: elicitationCustomId(token, "skip", position),
+      style: 2,
+    });
   }
   // Per-field forward/back. Without these the only way to reach field N>0 is to
   // jump to the review page and use its Edit control — a detour that leaves a
@@ -892,19 +905,26 @@ export async function handleElicitationClick(input: ElicitationClickInput): Prom
       // user already gave: value -> omitted is part of review-and-modify, and
       // an empty string cannot stand in for it because an empty string is a real
       // answer.
-      if (entry.currentField !== undefined) {
-        if (!entry.request.fields.some((field) => field.key === entry.currentField)) {
-          return { decided: false };
-        }
-        const field = entry.request.fields.find((f) => f.key === entry.currentField)!;
-        if (field.required) {
-          // A required field cannot be skipped; skipping it would send a form
-          // core must reject.
-          await input.interaction.replyEphemeral(messages.elicitationRequired);
-          return { decided: false };
-        }
-        markSkipped(entry, field.key);
+      //
+      // The field comes from the interaction's OWN position, never from
+      // `entry.currentField`. That cursor is mutable and two Skip interactions
+      // delivered together would otherwise skip two DIFFERENT fields — the
+      // second reading a cursor the first had already advanced — and a field
+      // that already had an answer would lose it. Naming the field makes a
+      // duplicate Skip a no-op on the same field.
+      const named = parsed.fieldIndex !== undefined ? entry.request.fields[parsed.fieldIndex] : undefined;
+      if (!named) return { decided: false };
+      if (named.required) {
+        // A required field cannot be skipped; skipping it would send a form
+        // core must reject.
+        await input.interaction.replyEphemeral(messages.elicitationRequired);
+        return { decided: false };
       }
+      markSkipped(entry, named.key);
+      // Park the wizard on the field the Skip named, so a stale interaction from
+      // an older card still moves to the correct next question rather than
+      // wherever the cursor happens to be.
+      entry.currentField = named.key;
       const next = nextUnresolvedKey(entry);
       if (next) {
         entry.currentField = next;
