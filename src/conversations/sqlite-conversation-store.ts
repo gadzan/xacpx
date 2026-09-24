@@ -12,6 +12,7 @@ import type {
   AcceptRequestInput,
   AcceptRequestResult,
   AssertLiveDispatchForMaterializeInput,
+  ReconcileLateResult,
   CancelMemberOutcome,
   CancelRunResult,
   ClaimedWork,
@@ -29,6 +30,7 @@ import type {
   SettleCancelBatchResult,
   SettledCancelMember,
 } from "./conversation-store";
+import { MAX_AUTOMATIC_MEMBER_TURNS, MAX_QUEUED_RUNS_PER_TOPIC } from "./conversation-store";
 import {
   conversationExecutionOrigin,
   parseHumanIngress,
@@ -479,6 +481,18 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   acceptRequest(input: AcceptRequestInput): AcceptRequestResult {
+    // Idempotent replay short-circuits BEFORE the bounded-queue check: a
+    // retry of an already-accepted request at a full queue must return the
+    // existing Run, never fail `topic_queue_full`. loadAccepted throws
+    // `accepted_request_incomplete` for a crash-window row set — same
+    // contract as the unique-violation fallback below.
+    const existing = this.getRunByRequestId(input.conversationId, input.topicId, input.requestId);
+    if (existing) {
+      const reused = this.loadAccepted(input.conversationId, input.topicId, input.requestId);
+      if (reused) {
+        return { reused: true, ...reused };
+      }
+    }
     try {
       return this.sqlite.transaction(() => {
         this.assertAcceptable(input.conversationId, input.topicId);
@@ -828,6 +842,25 @@ export class SqliteConversationStore implements ConversationStore {
       "SELECT 1 AS ok FROM topic_seq WHERE conversation_id = ? LIMIT 1",
       [conversationId],
     ));
+  }
+
+  hasNonterminalGroupMemberWork(conversationId: string, botId: string): boolean {
+    const row = this.sqlite.get<{ ok: number }>(
+      `SELECT 1 AS ok FROM member_turns
+       WHERE conversation_id = ? AND bot_id = ?
+         AND state IN ('queued', 'dispatched', 'running')
+       LIMIT 1`,
+      [conversationId, botId],
+    );
+    return Boolean(row);
+  }
+
+  listNonterminalRunRoots(): Array<{ conversationId: string; topicId: string }> {
+    const rows = this.sqlite.all<{ conversation_id: string; topic_id: string }>(
+      `SELECT DISTINCT conversation_id, topic_id FROM runs
+       WHERE state IN ('queued', 'running', 'waiting-human')`,
+    );
+    return rows.map((row) => ({ conversationId: row.conversation_id, topicId: row.topic_id }));
   }
 
   releaseClaimToPending(input: ReleaseClaimToPendingInput): PendingDispatch {
@@ -1576,6 +1609,23 @@ export class SqliteConversationStore implements ConversationStore {
     if (this.isTopicDeleting(topicId)) {
       throw new ConversationError("topic_deleting", `topic "${topicId}" is deleting`);
     }
+    // §21 bounded queue: nonterminal Runs (active + queued) per Topic are
+    // capped so a public Conversation cannot grow SQLite unboundedly with
+    // fresh requestIds. One-active-Run-per-Topic dispatch serialization is
+    // enforced separately at claim time; this is the accept-time bound.
+    const counted = this.sqlite.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM runs
+       WHERE conversation_id = ? AND topic_id = ?
+         AND state IN ('queued', 'running', 'waiting-human')`,
+      [conversationId, topicId],
+    );
+    const nonterminal = Number(counted?.n ?? 0);
+    if (nonterminal >= MAX_QUEUED_RUNS_PER_TOPIC) {
+      throw new ConversationError(
+        "topic_queue_full",
+        `topic "${topicId}" already has ${nonterminal} nonterminal runs (max ${MAX_QUEUED_RUNS_PER_TOPIC})`,
+      );
+    }
   }
 
   private insertAccepted(input: AcceptRequestInput): AcceptRequestResult {
@@ -1597,14 +1647,25 @@ export class SqliteConversationStore implements ConversationStore {
       },
       ...(input.members ?? []),
     ];
-    const maxMemberTurns = input.maxMemberTurns ?? members.length;
+    const mode = input.mode ?? "explicit";
+    // Automatic Runs default to the durable budget guardrail (§14.2): the
+    // first batch settling must leave routing headroom, so the default is
+    // the 24-turn cap rather than members.length. Explicit Runs stay bounded
+    // by their accepted member list.
+    const maxMemberTurns = input.maxMemberTurns
+      ?? (mode === "automatic" ? MAX_AUTOMATIC_MEMBER_TURNS : members.length);
     if (!Number.isInteger(maxMemberTurns) || maxMemberTurns < members.length) {
       throw new ConversationError(
         "invalid-max-member-turns",
         `maxMemberTurns (${String(input.maxMemberTurns)}) must be a positive integer >= accepted member count (${members.length})`,
       );
     }
-    const mode = input.mode ?? "explicit";
+    if (mode === "automatic" && maxMemberTurns > MAX_AUTOMATIC_MEMBER_TURNS) {
+      throw new ConversationError(
+        "invalid-max-member-turns",
+        `maxMemberTurns (${maxMemberTurns}) exceeds the automatic Run budget cap (${MAX_AUTOMATIC_MEMBER_TURNS})`,
+      );
+    }
     const runSnapshot = input.profileSnapshot;
     this.sqlite.run(
       `INSERT INTO messages (
@@ -1937,44 +1998,170 @@ export class SqliteConversationStore implements ConversationStore {
       }
       return this.requireRun(runId);
     }
-    // All batch members terminal: derive the outcome from the whole batch,
-    // never from the last event's reason — except single-member Runs, which
-    // preserve the member's diagnostic reason (e.g. runtime_revision_mismatch
-    // on direct drift). Precedence: any indeterminate (unproven side effects)
-    // outranks failed; any failed-or-cancelled mix is failed; unanimous
-    // cancel is cancelled; unanimous completed completes.
+    return this.classifySettledBatch(runId, batchMembers, now, memberReason);
+  }
+
+  /**
+   * Final Run classification once every batch member is terminal. Derive the
+   * outcome from the whole batch, never from the last event's reason —
+   * except single-member Runs, which preserve the member's diagnostic reason
+   * (e.g. runtime_revision_mismatch on direct drift).
+   *
+   * Precedence: indeterminate (unproven side effects) > failed > cancelled >
+   * completed. A completed+cancelled mix is a HUMAN STOP whose proven
+   * completions keep their evidence: no member actually failed, so the Run
+   * classifies as cancelled (human-cancelled), never execution-failed. The
+   * cancelled branch always writes the canonical human-cancelled reason —
+   * memberReason is a caller echo ("cancelled") that must not leak into the
+   * durable completionReason.
+   */
+  private classifySettledBatch(
+    runId: string,
+    batchMembers: MemberTurnRecord[],
+    now: string,
+    memberReason?: string,
+  ): ConversationRun {
     const indeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
-    const failed = batchMembers.filter((turn) => turn.state === "failed");
-    const cancelled = batchMembers.filter((turn) => turn.state === "cancelled");
     if (indeterminate.length > 0) {
       const reason = batchMembers.length === 1 ? (memberReason ?? "started_result_unknown") : "started_result_unknown";
       this.sqlite.run(
-        `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = ? WHERE id = ?`,
+        `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
         [reason, now, runId],
       );
       return this.requireRun(runId);
     }
-    if (failed.length > 0 || cancelled.length > 0) {
-      if (cancelled.length === batchMembers.length) {
-        const reason = batchMembers.length === 1 ? (memberReason ?? "human-cancelled") : "human-cancelled";
-        this.sqlite.run(
-          `UPDATE runs SET state = 'cancelled', completion_reason = ?, finished_at = ? WHERE id = ?`,
-          [reason, now, runId],
-        );
-        return this.requireRun(runId);
-      }
+    const failed = batchMembers.filter((turn) => turn.state === "failed");
+    if (failed.length > 0) {
       const reason = batchMembers.length === 1 ? (memberReason ?? "execution-failed") : "execution-failed";
       this.sqlite.run(
-        `UPDATE runs SET state = 'failed', completion_reason = ?, finished_at = ? WHERE id = ?`,
+        `UPDATE runs SET state = 'failed', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
         [reason, now, runId],
+      );
+      return this.requireRun(runId);
+    }
+    const cancelled = batchMembers.filter((turn) => turn.state === "cancelled");
+    if (cancelled.length > 0) {
+      this.sqlite.run(
+        `UPDATE runs SET state = 'cancelled', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+        ["human-cancelled", now, runId],
       );
       return this.requireRun(runId);
     }
     this.sqlite.run(
-      `UPDATE runs SET state = 'completed', completion_reason = ?, finished_at = ? WHERE id = ?`,
+      `UPDATE runs SET state = 'completed', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
       ["members-completed", now, runId],
     );
     return this.requireRun(runId);
+  }
+
+  /**
+   * Indeterminate reconciliation for a late provider result (§14.3): the
+   * cancel-settlement timeout already sealed the scheduling outcome as
+   * indeterminate; the provider settling afterwards is DURABLE EVIDENCE, not
+   * a scheduling decision. A proven completion/failure reclassifies exactly
+   * the indeterminate member it belongs to (message row + member state) and
+   * re-derives the Run from whole-batch evidence via classifySettledBatch —
+   * so teardown's "reconcile indeterminate" step has a real result instead of
+   * a permanent seal. Never resurrects scheduling: a clean cancelled Run, a
+   * live Run, or an already-proven member is a no-op, and consumed_member_turns
+   * was already counted at the original indeterminate settlement.
+   */
+  reconcileLateResult(input: {
+    runId: string;
+    memberTurnId: string;
+    outcome: "completed" | "failed";
+    content?: string;
+    reason?: string;
+    sourceTurn: { sessionAlias: string; turnId?: string };
+    now: string;
+  }): ReconcileLateResult {
+    return this.sqlite.transaction(() => {
+      const run = this.requireRun(input.runId);
+      const member = this.requireMemberTurn(input.memberTurnId);
+      // Same referential + source-correlation fences as completeExecution:
+      // a late result may only ever reclassify its own started member.
+      if (
+        member.runId !== run.id
+        || member.conversationId !== run.conversationId
+        || member.topicId !== run.topicId
+      ) {
+        throw new ConversationError(
+          "run_member_mismatch",
+          `member turn "${member.id}" does not belong to run "${run.id}"`,
+        );
+      }
+      if (
+        (member.sessionAlias !== undefined && input.sourceTurn.sessionAlias !== member.sessionAlias)
+        || (member.sourceTurnId !== undefined && input.sourceTurn.turnId !== member.sourceTurnId)
+      ) {
+        throw new ConversationError(
+          "source_turn_mismatch",
+          `source turn does not match member turn "${member.id}" execution identity`,
+        );
+      }
+      // Reconcile ONLY the indeterminate-sealed case. Clean cancelled Runs
+      // stay sealed (late completion never resurrects a cancel the user
+      // requested); live Runs and already-proven members have nothing to
+      // reconcile. No dispatch, progress, or scheduling state changes.
+      if (run.state !== "indeterminate" || member.state !== "indeterminate") {
+        return { run, memberTurn: member, reconciled: false };
+      }
+      let message: ConversationMessage | undefined;
+      if (input.outcome === "completed") {
+        const seq = this.allocateSeq(run.conversationId, run.topicId);
+        const messageId = this.ids.messageId();
+        this.sqlite.run(
+          `INSERT INTO messages (
+             id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
+           ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+          [
+            messageId,
+            run.conversationId,
+            run.topicId,
+            seq,
+            member.botId,
+            input.content ?? "",
+            run.id,
+            JSON.stringify(input.sourceTurn),
+            input.now,
+          ],
+        );
+        this.sqlite.run(
+          `UPDATE member_turns SET state = 'completed', failure_reason = NULL WHERE id = ?`,
+          [member.id],
+        );
+        message = this.getMessage(messageId);
+      } else {
+        this.sqlite.run(
+          `UPDATE member_turns SET state = 'failed', failure_reason = ? WHERE id = ?`,
+          [input.reason ?? "failed", member.id],
+        );
+        if (!run.failedBotIds.includes(member.botId)) {
+          const current = new Set(run.failedBotIds);
+          current.add(member.botId);
+          this.sqlite.run(
+            `UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`,
+            [JSON.stringify([...current]), input.runId],
+          );
+        }
+      }
+      this.finishDispatchForMemberTurn(member.id, input.now);
+      const members = this.listMemberTurns(run.id);
+      const batch = run.activeBatch ?? 1;
+      const batchMembers = members.filter((turn) => turn.batch === batch);
+      const reconciledRun = this.classifySettledBatch(
+        run.id,
+        batchMembers,
+        input.now,
+        input.outcome === "failed" ? (input.reason ?? "execution-failed") : undefined,
+      );
+      return {
+        run: reconciledRun,
+        memberTurn: this.requireMemberTurn(member.id),
+        ...(message ? { message } : {}),
+        reconciled: true,
+      };
+    });
   }
 
   private requireRun(runId: string): ConversationRun {

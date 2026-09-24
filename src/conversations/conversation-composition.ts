@@ -109,6 +109,13 @@ export async function createConversationRuntime(
     ...(input.ownerId ? { ownerId: input.ownerId } : {}),
     ...(input.onProductEvent ? { onProductEvent: input.onProductEvent } : {}),
   });
+  // §14.3 late-result evidence: a provider settling after the cancel-settle
+  // deadline sealed the Run must reach the store's indeterminate
+  // reconciliation instead of being dropped. Wiring lives here (not in the
+  // runner constructor) because the dispatcher owns the store.
+  runner.setLateResultHandler((runInput, result) => {
+    dispatcher.reconcileLateProviderResult(runInput, result);
+  });
   const runs = new ConversationRunService(
     store,
     bots,

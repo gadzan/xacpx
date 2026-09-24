@@ -327,6 +327,46 @@ test("createGroup validates membership, lead, and opaque identity", async () => 
   expect(state.conversations[group.id]).toBeUndefined();
 });
 
+test("updateGroup repairs membership dangling from a load-quarantined Bot", async () => {
+  const { parseState } = await import("../../../src/state/state-store");
+  const dropped: { section: string; key: string; reason: string }[] = [];
+  const parsed = parseState({
+    bots: {
+      bot_a: {
+        id: "bot_a", name: "A", agent: "codex", workspace: "backend", enabled: true,
+        profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+      },
+      bot_b: {
+        id: "bot_b", name: "B", agent: "codex", workspace: "backend", enabled: true,
+        profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+      },
+      bad_c: { id: "bad_c", name: "C" },
+    },
+    conversations: {
+      team: {
+        id: "team", kind: "group", title: "Team", botIds: ["bot_a", "bot_b", "bad_c"],
+        createdAt: NOW, updatedAt: NOW,
+      },
+    },
+  }, "state.json", dropped);
+  // The Group record survives (repair must be possible); the dangling
+  // reference is reported explicitly in the load report.
+  expect(parsed.conversations.team).toBeDefined();
+  expect(parsed.bots.bad_c).toBeUndefined();
+  expect(dropped.some((entry) =>
+    entry.section === "conversations"
+    && entry.key === "team"
+    && entry.reason.includes('missing bot "bad_c"'),
+  )).toBe(true);
+  // Repair: removing the dead member succeeds even though it cannot gate,
+  // and a title-only patch on the dangling Group succeeds too.
+  const { service } = createService(parsed);
+  const repaired = await service.updateGroup("team", { botIds: ["bot_a", "bot_b"] });
+  expect(repaired.botIds).toEqual(["bot_a", "bot_b"]);
+  const renamed = await service.updateGroup("team", { title: "Team 2" });
+  expect(renamed.title).toBe("Team 2");
+});
+
 test("stale membership probe widens gates instead of dropping a just-added member", async () => {
   const state = createEmptyState();
   const store = new MemoryStateStore();

@@ -12,7 +12,7 @@ import {
   type GroupMemberRuntimeBinding,
 } from "../bots/bot-service";
 import { planDirectConversation, presentDefaultDirectTopic, presentDirectConversation } from "./direct-conversation";
-import { createDirectBindingId, createDirectTopicId, createScopedGroupMemberBindingId, createTopicId } from "../domain/ids";
+import { createDirectBindingId, createDirectConversationId, createDirectTopicId, createScopedGroupMemberBindingId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
@@ -127,6 +127,7 @@ export class ConversationRunService {
     try {
       await this.recoverRootlessGroupMemberSessions();
       this.assertNoAmbiguousGroupMemberSessions();
+      this.assertNonterminalWorkHasAuthority();
       await this.dispatcher.kick();
     } catch (error) {
       this.activation = "unavailable";
@@ -1346,6 +1347,48 @@ export class ConversationRunService {
         }
         await this.releaseAlias(session.alias);
       });
+    }
+  }
+
+  /**
+   * Pre-kick authority check for durable nonterminal work (§21: the store
+   * is canonical, but AppState owns the mutable authority roots). Every
+   * nonterminal Run root must still have an owner that can execute it: a
+   * Group root needs its live Group + Topic rows; a Direct root needs either
+   * its persisted Conversation row or a live Bot planning it. A root whose
+   * authority was quarantined at load (or deleted out of band) would poison
+   * the drain — the dispatcher would claim it, fail materialize, and release
+   * the claim back to pending forever. Fail activation with the actionable
+   * roots instead; the operator restores the root or reconciles the work.
+   */
+  private assertNonterminalWorkHasAuthority(): void {
+    const roots = this.store.listNonterminalRunRoots();
+    const unrooted = roots.filter((root) => {
+      const conversation = this.state.conversations[root.conversationId];
+      if (conversation?.kind === "group") {
+        const topic = this.state.conversation_topics[root.topicId];
+        return !topic || topic.conversationId !== root.conversationId;
+      }
+      if (conversation?.kind === "bot") {
+        const topic = this.state.conversation_topics[root.topicId];
+        if (topic) {
+          return topic.conversationId !== root.conversationId;
+        }
+        // Absent Topic row is the synthetic default only when it matches the
+        // Bot's deterministic default Topic id; any other id whose row is
+        // gone was a persisted Topic that lost its root.
+        const botId = conversation.botIds[0];
+        return botId === undefined || root.topicId !== createDirectTopicId(botId);
+      }
+      // No persisted Conversation row: a Direct root is planned from its Bot.
+      return !this.bots.listBots().some((bot) => createDirectConversationId(bot.id) === root.conversationId);
+    });
+    if (unrooted.length > 0) {
+      throw new ConversationError(
+        "conversation_work_unrooted",
+        `activation blocked: ${unrooted.length} nonterminal run root(s) reference missing Group/Topic/Bot authority`,
+        { roots: unrooted },
+      );
     }
   }
 

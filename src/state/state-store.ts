@@ -1088,10 +1088,11 @@ export function parseState(
   const orchestration = parseOrchestrationState(raw.orchestration, dropped, migrated);
   repairExternalCoordinatorIdentityCollisions(parsedSessions, orchestration, dropped);
 
+  const bots = parseBotProfiles(raw.bots, dropped);
   const conversations = parseConversations(raw.conversations, dropped);
   const conversationTopics = parseConversationTopics(raw.conversation_topics, dropped);
   const bindings = parseBotRuntimeBindings(raw.bot_runtime_bindings, dropped);
-  reconcileProductOwnershipGraph(parsedSessions, conversations, conversationTopics, bindings, dropped);
+  reconcileProductOwnershipGraph(parsedSessions, conversations, conversationTopics, bindings, bots, dropped);
 
   return {
     sessions: parsedSessions,
@@ -1099,7 +1100,7 @@ export function parseState(
     native_session_lists: parseNativeSessionLists(raw.native_session_lists),
     orchestration,
     scheduled_tasks: parseScheduledTasks(raw.scheduled_tasks, dropped),
-    bots: parseBotProfiles(raw.bots, dropped),
+    bots,
     conversations,
     conversation_topics: conversationTopics,
     bot_runtime_bindings: bindings,
@@ -1131,8 +1132,29 @@ function reconcileProductOwnershipGraph(
   conversations: Record<string, ConversationRecord>,
   topics: Record<string, ConversationTopic>,
   bindings: Record<string, BotRuntimeBinding>,
+  bots: Record<string, BotProfile>,
   dropped: StateLoadDroppedRecord[],
 ): void {
+  // Dangling Group membership: a Bot quarantined at load leaves Groups
+  // referencing it. The Group record itself is KEPT (updateGroup can repair
+  // the membership — old members that no longer exist gate nothing); every
+  // dangling reference is reported so the operator sees which Groups need
+  // the repair edit. Never drops the Group: dropping it would quarantine a
+  // repairable record and strand its Topics/bindings rootlessly.
+  for (const conversation of Object.values(conversations)) {
+    if (conversation.kind !== "group") {
+      continue;
+    }
+    for (const botId of conversation.botIds) {
+      if (!bots[botId]) {
+        dropped.push({
+          section: "conversations",
+          key: conversation.id,
+          reason: `group references missing bot "${botId}"; membership kept — remove it via updateGroup`,
+        });
+      }
+    }
+  }
   const groupReferencedTopics = new Set<string>();
   for (const binding of Object.values(bindings)) {
     if (binding.scope === "group-member") {

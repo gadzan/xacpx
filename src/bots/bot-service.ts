@@ -258,6 +258,12 @@ export interface BotConversationWork {
    *  implementers (tests) keep working; absence means "unknown, do not
    *  block". */
   hasDurableGroupWork?: (conversationId: string) => boolean;
+  /** True when a nonterminal MemberTurn in this Conversation references the
+   *  Bot. Membership removal must wait until that work terminals (PR6
+   *  freeze: removed-member durable work has no correct interpretation —
+   *  its claims would requeue forever). Optional so older implementers
+   *  (tests) keep working; absence means "unknown, do not block". */
+  hasNonterminalGroupMemberWork?: (conversationId: string, botId: string) => boolean;
 }
 
 export interface BotServiceOptions {
@@ -528,10 +534,18 @@ export class BotService {
         gateSet.add(previewLead);
       }
       await this.beforeGroupGatesAcquired?.();
-      // Gate keys must be live Bots: a deleted Bot id would mint a fresh
-      // mutex the materializer path never consults, silently breaking the
-      // linearization. Fail closed with the same code as membership writes.
-      for (const botId of gateSet) {
+      // Existence is required only for NEW membership and the (new) lead:
+      // those must be live Bots a materializer could actually target. OLD
+      // members stay as gate keys for linearization only — a load-quarantined
+      // Bot can never start a materializer (its mutex is minted but never
+      // contended), and requiring its existence would make the Group
+      // unrepairable: even a healthy `botIds` patch or a title edit would
+      // fail bot_not_found before any gate is acquired.
+      const mustExist = new Set<string>(patch.botIds !== undefined ? patch.botIds : []);
+      if (patch.leadBotId !== undefined && patch.leadBotId !== null) {
+        mustExist.add(patch.leadBotId);
+      }
+      for (const botId of mustExist) {
         this.getBot(botId);
       }
       const committed = await this.runLifecycleAll([...gateSet], async () => {
@@ -554,6 +568,22 @@ export class BotService {
         // invalid patch would spin forever re-acquiring the same gates.
         if (patch.botIds !== undefined) {
           this.requireGroupMembership(patch.botIds);
+          // PR6 authority freeze: removing a member that still has
+          // nonterminal durable work has no correct interpretation — its
+          // claims would requeue forever (materialize fails
+          // group_member_not_member; the generic pre-start path releases the
+          // claim back to pending). Refuse the removal; retry once the Run
+          // terminals or is cancelled. Adding members is never blocked.
+          const removed = live.botIds.filter((botId) => !patch.botIds!.includes(botId));
+          for (const botId of removed) {
+            if (this.conversationWork?.hasNonterminalGroupMemberWork?.(id, botId)) {
+              throw new BotError(
+                "group_member_has_work",
+                `bot "${botId}" still has nonterminal work in group "${id}"; wait for the Run to finish or cancel it first`,
+                { botId, conversationId: id },
+              );
+            }
+          }
         }
         const livePreview = patch.botIds !== undefined ? patch.botIds : live.botIds;
         if (patch.leadBotId !== undefined) {

@@ -66,6 +66,11 @@ export interface ControlConversationTurnRunnerOptions {
   now?: () => number;
   /** Bound on how long cancel/run wait for a proven terminal prompt result. */
   cancelSettleTimeoutMs?: number;
+  /** Late provider settlement after the scheduling outcome was decided
+   *  (cancel timeout sealed the Run). §14.3: late results never schedule, but
+   *  their durable evidence must not be dropped — the handler routes the
+   *  proven result into the store's indeterminate reconciliation path. */
+  onLateResult?: (input: ConversationTurnRunInput, result: ConversationTurnRunResult) => void;
 }
 
 interface TrackedExecution {
@@ -106,12 +111,20 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
   private readonly settledTtlMs: number;
   private readonly cancelSettleTimeoutMs: number;
   private readonly now: () => number;
+  private onLateResult?: (input: ConversationTurnRunInput, result: ConversationTurnRunResult) => void;
 
   constructor(private readonly control: ControlTurnSeam, options?: ControlConversationTurnRunnerOptions) {
     this.settledMax = options?.settledMax ?? 2_000;
     this.settledTtlMs = options?.settledTtlMs ?? 24 * 60 * 60_000;
     this.cancelSettleTimeoutMs = options?.cancelSettleTimeoutMs ?? CANCEL_DRAIN_TIMEOUT_MS;
     this.now = options?.now ?? (() => Date.now());
+    this.onLateResult = options?.onLateResult;
+  }
+
+  /** Composition seam: wire the dispatcher's durable-evidence path once both
+   *  exist. Overrides the constructor option when both are provided. */
+  setLateResultHandler(handler: (input: ConversationTurnRunInput, result: ConversationTurnRunResult) => void): void {
+    this.onLateResult = handler;
   }
 
   hasTrackedExecution(promptRequestId: string): boolean {
@@ -150,8 +163,8 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
       },
     });
     void provider.then(
-      (result) => this.finishTracked(tracked, this.mapPromptResult(result)),
-      (error) => this.finishTracked(tracked, {
+      (result) => this.settleProviderResult(input, tracked, this.mapPromptResult(result)),
+      (error) => this.settleProviderResult(input, tracked, {
         status: "failed",
         error: error instanceof Error ? error.message : String(error),
       }),
@@ -211,6 +224,27 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
     tracked.finishedAt = this.now();
     this.pruneSettled();
     tracked.resolveDone(result);
+  }
+
+  /**
+   * Provider settlement with the scheduling/evidence split (§14.3): the
+   * FIRST settlement decides the scheduling outcome (returned to run/cancel).
+   * A settlement arriving AFTER that — typically the provider completing past
+   * the cancel-settle deadline that sealed the Run as indeterminate — must
+   * not change the already-decided outcome, but it is proven evidence about
+   * work that possibly mutated state: hand it to onLateResult instead of
+   * dropping it. No handler wired (unit tests): drop, same as before.
+   */
+  private settleProviderResult(
+    input: ConversationTurnRunInput,
+    tracked: TrackedExecution,
+    result: ConversationTurnRunResult,
+  ): void {
+    if (tracked.finished) {
+      this.onLateResult?.(input, result);
+      return;
+    }
+    this.finishTracked(tracked, result);
   }
 
   private pruneSettled(): void {

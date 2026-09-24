@@ -255,6 +255,11 @@ async function createLifecycle(options: {
     hooks: options.hooks,
     ...(options.leaseMs !== undefined ? { leaseMs: options.leaseMs } : {}),
   });
+  if (runner instanceof ControlConversationTurnRunner) {
+    runner.setLateResultHandler((runInput, result) => {
+      dispatcher.reconcileLateProviderResult(runInput, result);
+    });
+  }
   dispatcherHolder.current = dispatcher;
   const service = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, stateStore, {
     now: nowFn,
@@ -1334,7 +1339,7 @@ test("pre-start retry after internal failure is orchestration", async () => {
   expect(canMintHumanPermissionInteraction(fakeRunner(first.runner).runs[0]?.executionOrigin)).toBe(false);
 });
 
-test("wedged provider cancel returns, marks indeterminate, and cannot resurrect", async () => {
+test("wedged provider cancel seals indeterminate, then reconciles on late completion", async () => {
   const hang = deferred<ChatResponse>();
   let sourceTurnId = "";
   const started = deferred();
@@ -1361,20 +1366,31 @@ test("wedged provider cancel returns, marks indeterminate, and cannot resurrect"
   await first.service.cancelRun(accepted.run.id);
   expect(Date.now() - cancelStarted).toBeLessThan(1_000);
   await drain;
+  // The cancel-settle deadline sealed the scheduling outcome as unknown.
   expect(first.store.getRun(accepted.run.id)?.state).toBe("indeterminate");
   expect(first.store.getMemberTurn(accepted.memberTurn.id)?.state).toBe("indeterminate");
+  // The provider settling AFTER the deadline is durable evidence (§14.3):
+  // it must not be dropped, and it reconciles the seal to the proven
+  // outcome — without resurrecting scheduling.
   hang.resolve({ text: "late-completion" });
   await tick();
   await tick();
-  expect(first.store.getRun(accepted.run.id)?.state).toBe("indeterminate");
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.state).toBe("completed");
   expect(first.store.listMessages({
     conversationId: accepted.run.conversationId,
     topicId: accepted.run.topicId,
     limit: 10,
-  }).filter((message) => message.role === "bot")).toEqual([]);
-  await expect(first.service.teardownDirectConversation(BOT_ID)).rejects.toMatchObject({
-    code: "conversation_indeterminate",
-  });
+  }).filter((message) => message.role === "bot").map((message) => message.content)).toContain("late-completion");
+  // No dispatch may escape a terminal Run: late evidence never schedules.
+  expect(first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })).toBeUndefined();
+  // Teardown now has a definite reconcile result instead of a permanent
+  // conversation_indeterminate block.
+  await first.service.teardownDirectConversation(BOT_ID);
+  expect(first.store.listRuns(accepted.run.conversationId)).toEqual([]);
+  first.store.close();
 });
 
 test("createDirectTopic during teardown drain fails conversation_deleting", async () => {
@@ -2165,29 +2181,34 @@ test("second member dispatches against its own execution snapshot, not the first
     workspace: "backend",
     isolation: "shared-single-writer",
   });
-  // Reviewer runs codex/backend; Tester runs claude/frontend: disjoint axes so
-  // a snapshot mix-up fails loudly instead of passing by coincidence.
+  const target = topic.executionTarget!;
+  // Agents stay disjoint (codex vs claude) so a snapshot mix-up fails loudly,
+  // but the Bot default workspaces deliberately DIVERGE from the Topic
+  // target: the group seam must put the Topic's workspace into every member
+  // snapshot, never the Bot default (§9.2 Topic owns the work target).
   await first.bots.updateBot(TESTER_ID, { agent: "claude", workspace: "frontend" });
   const botA = first.bots.getBot(BOT_ID);
   const botB = first.bots.getBot(TESTER_ID);
-  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const { snapshotGroupMemberProfile } = await import("../../../src/bots/bot-types");
   const accepted = first.store.acceptRequest({
     conversationId: group.id,
     topicId: topic.id,
     requestId: "req-snap",
     botId: botA.id,
     content: "review it",
-    profileSnapshot: snapshotBotProfile(botA, NOW),
+    profileSnapshot: snapshotGroupMemberProfile(botA, target, NOW),
     members: [{
       botId: botB.id,
-      profileSnapshot: snapshotBotProfile(botB, NOW),
+      profileSnapshot: snapshotGroupMemberProfile(botB, target, NOW),
       assignmentId: "assign_b",
       task: "Write tests",
     }],
     now: NOW,
   });
   const turnB = accepted.memberTurns.find((turn) => turn.botId === botB.id)!;
-  expect(turnB.profileSnapshot?.execution).toMatchObject({ agent: "claude", workspace: "frontend" });
+  // Per-member isolation: Tester's own agent, but the Topic's workspace —
+  // not Tester's `frontend` default.
+  expect(turnB.profileSnapshot?.execution).toMatchObject({ agent: "claude", workspace: "backend" });
   // Claim order is seq-stable: claim A first, then B must still be claimable
   // (Run stays non-terminal with a runnable sibling) and carry B's snapshot.
   const claimA = first.store.claimNextDispatch({
@@ -2195,11 +2216,13 @@ test("second member dispatches against its own execution snapshot, not the first
   });
   expect(claimA?.memberTurn.botId).toBe(botA.id);
   expect(claimA?.memberSnapshot.execution).toMatchObject({ agent: "codex", workspace: "backend" });
+  expect(claimA?.memberSnapshot.execution.workspace).toBe(target.workspace);
   const claimB = first.store.claimNextDispatch({
     now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
   });
   expect(claimB?.memberTurn.botId).toBe(botB.id);
-  expect(claimB?.memberSnapshot.execution).toMatchObject({ agent: "claude", workspace: "frontend" });
+  expect(claimB?.memberSnapshot.execution).toMatchObject({ agent: "claude", workspace: "backend" });
+  expect(claimB?.memberSnapshot.execution.workspace).toBe(target.workspace);
   expect(claimB?.run.state).not.toBe("completed");
   first.store.close();
 });
@@ -3282,7 +3305,19 @@ test("automatic cancel that races a member completion still terminals the run", 
       });
     }
     const run = first.store.getRun(accepted.run.id)!;
-    expect(["completed", "failed"]).toContain(run.state);
+    // Completed+cancelled is a human stop, not an execution failure: the
+    // proven completion keeps its evidence and the Run cancels. A real
+    // failure still classifies failed.
+    if (outcome === "completed") {
+      expect(run.state).toBe("cancelled");
+      expect(run.completionReason).toBe("human-cancelled");
+      expect(first.store.listMessages({
+        conversationId: group.id, topicId: topic.id, limit: 10,
+      }).some((message) => message.role === "bot" && message.content === "late done")).toBe(true);
+    } else {
+      expect(run.state).toBe("failed");
+      expect(run.completionReason).toBe("execution-failed");
+    }
     expect(run.finishedAt).toBeDefined();
     // No new dispatch may escape after cancel.
     expect(first.store.claimNextDispatch({
@@ -3443,6 +3478,231 @@ test("partial fan-out persists fulfilled evidence, then throws for retry", async
   first.store.close();
 });
 
+
+test("human Stop over completed+queued members classifies cancelled, never failed", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-stop-mix",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  // A completes first; B is still queued when the human Stops the whole Run.
+  const claim = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claim.dispatch.id, owner: "dispatcher-a", generation: claim.dispatch.generation,
+    runId: accepted.run.id, memberTurnId: claim.memberTurn.id,
+    sessionAlias: "sess_a", logicalSessionId: "lsess_a", sourceTurnId: "sturn_a", now: NOW,
+  });
+  first.store.completeExecution({
+    runId: accepted.run.id, memberTurnId: claim.memberTurn.id, botId: claim.memberTurn.botId,
+    content: "done a", sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" }, now: NOW,
+  });
+  const stopped = first.store.cancelRun(accepted.run.id, NOW);
+  // No member actually failed: completed evidence stays, the queued member
+  // cancels, and the Run itself is cancelled/human-cancelled — not failed.
+  expect(stopped.run.state).toBe("cancelled");
+  expect(stopped.run.completionReason).toBe("human-cancelled");
+  expect(stopped.run.failedBotIds).toEqual([]);
+  expect(first.store.getMemberTurn(accepted.memberTurns[1]!.id)?.state).toBe("cancelled");
+  expect(first.store.listMessages({
+    conversationId: group.id, topicId: topic.id, limit: 10,
+  }).some((message) => message.role === "bot" && message.content === "done a")).toBe(true);
+  first.store.close();
+});
+
+test("single-member human Stop writes the canonical human-cancelled reason", async () => {
+  const first = await createLifecycle();
+  const bot = first.bots.getBot(BOT_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: `conv_reason`, topicId: `topic_reason`,
+    requestId: "req-stop-single", botId: bot.id, content: "go",
+    profileSnapshot: snapshotBotProfile(bot, NOW), now: NOW,
+  });
+  const stopped = first.store.cancelRun(accepted.run.id, NOW);
+  expect(stopped.run.state).toBe("cancelled");
+  // The caller-echo reason ("cancelled") must never leak into the durable
+  // completionReason: the design vocabulary is human-cancelled.
+  expect(stopped.run.completionReason).toBe("human-cancelled");
+  first.store.close();
+});
+
+test("membership removal waits for the removed member's nonterminal work", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const botC = "bot_carol";
+  first.state.bots[botC] = {
+    id: botC, name: "Carol", agent: "codex", workspace: "backend", enabled: true,
+    profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-remove-work",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botC, profileSnapshot: snapshotBotProfile(first.state.bots[botC]!, NOW) }],
+    now: NOW,
+  });
+  expect(first.store.hasNonterminalGroupMemberWork(group.id, botC)).toBe(true);
+  // Removing C while C's MemberTurn is still queued has no correct
+  // interpretation: refused with the actionable code.
+  await expect(first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID] })).rejects.toMatchObject({
+    code: "group_member_has_work",
+  });
+  expect(first.bots.getGroup(group.id).botIds).toContain(botC);
+  // Settle the Run, then the same removal succeeds.
+  first.store.cancelRun(accepted.run.id, NOW);
+  expect(first.store.hasNonterminalGroupMemberWork(group.id, botC)).toBe(false);
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID] });
+  expect(first.bots.getGroup(group.id).botIds).toEqual([BOT_ID, TESTER_ID]);
+  first.store.close();
+});
+
+test("activation fails closed when nonterminal work loses its authority root", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-unrooted",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  expect(accepted.run.state).toBe("queued");
+  // The Group authority vanishes out of band (same shape a load-time
+  // quarantine of the Group record leaves behind).
+  delete first.state.conversations[group.id];
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "conversation_work_unrooted" });
+  const detail = (error as { details?: { roots?: { conversationId: string }[] } }).details;
+  expect(detail?.roots?.map((root) => root.conversationId)).toContain(group.id);
+  expect(first.service.isConsumerActivated()).toBe(false);
+  first.store.close();
+});
+
+test("activation passes with a healthy direct queued run (authority intact)", async () => {
+  const first = await createLifecycle();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-activate-ok",
+    content: "hello",
+  });
+  await first.service.activateAfterConsumerLock();
+  expect(first.service.isConsumerActivated()).toBe(true);
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+  first.store.close();
+});
+
+test("topic queue cap bounds nonterminal runs; idempotent replay bypasses the cap", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const { MAX_QUEUED_RUNS_PER_TOPIC } = await import("../../../src/conversations/conversation-store");
+  const accept = (requestId: string) => first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId,
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  for (let i = 0; i < MAX_QUEUED_RUNS_PER_TOPIC; i++) {
+    accept(`req-q-${i}`);
+  }
+  expect(() => accept("req-q-overflow")).toThrow(
+    expect.objectContaining({ code: "topic_queue_full" }),
+  );
+  // An idempotent replay of an already-accepted request at a FULL queue must
+  // return the existing Run, never fail the cap.
+  const replay = accept("req-q-0");
+  expect(replay.reused).toBe(true);
+  // Settling one run frees a slot again.
+  const firstRun = first.store.getRunByRequestId(group.id, topic.id, "req-q-0")!;
+  first.store.cancelRun(firstRun.id, NOW);
+  const next = accept("req-q-overflow");
+  expect(next.reused).toBe(false);
+  first.store.close();
+});
+
+test("automatic Run budget defaults to the 24 guardrail; explicit Runs are not capped", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const { MAX_AUTOMATIC_MEMBER_TURNS } = await import("../../../src/conversations/conversation-store");
+  const accept = (requestId: string, extra: { mode?: "automatic" | "explicit"; maxMemberTurns?: number } = {}) =>
+    first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId,
+      botId: botA.id,
+      content: "go",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+      now: NOW,
+      ...extra,
+    });
+  // Default automatic budget: the durable guardrail, not members.length —
+  // a settled first batch leaves routing headroom.
+  const auto = accept("req-auto-default", { mode: "automatic" });
+  expect(auto.run.maxMemberTurns).toBe(MAX_AUTOMATIC_MEMBER_TURNS);
+  expect(auto.run.maxMemberTurns).toBe(24);
+  expect(() => accept("req-auto-over", { mode: "automatic", maxMemberTurns: MAX_AUTOMATIC_MEMBER_TURNS + 1 }))
+    .toThrow(/automatic Run budget cap/);
+  const atCap = accept("req-auto-24", { mode: "automatic", maxMemberTurns: MAX_AUTOMATIC_MEMBER_TURNS });
+  expect(atCap.run.maxMemberTurns).toBe(MAX_AUTOMATIC_MEMBER_TURNS);
+  // Explicit Runs stay bounded by their accepted member list only.
+  const explicitBig = accept("req-exp-big", { mode: "explicit", maxMemberTurns: 30 });
+  expect(explicitBig.run.maxMemberTurns).toBe(30);
+  first.store.close();
+});
 
 test("cross-run settlement fails closed with zero writes on both sides", async () => {
   const first = await createLifecycle();

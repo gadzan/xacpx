@@ -211,6 +211,31 @@ export interface CancelRunResult {
   activeMembers: MemberTurnRecord[];
 }
 
+/**
+ * §21 durable-store guardrail: one Topic may hold at most this many
+ * nonterminal Runs (active + queued). Later accepts fail `topic_queue_full`;
+ * idempotent replays of already-accepted requests always succeed.
+ */
+export const MAX_QUEUED_RUNS_PER_TOPIC = 64;
+
+/**
+ * §14.2 automatic-Run member-turn budget: a guardrail against runaway Router
+ * loops, not a completion definition. Automatic Runs default to this cap when
+ * the caller does not pass an explicit smaller budget; explicit Runs are
+ * bounded by their accepted member list and are not subject to this cap.
+ */
+export const MAX_AUTOMATIC_MEMBER_TURNS = 24;
+
+/** Result of routing a late provider settlement into the store (§14.3):
+ *  `reconciled` is true only when an indeterminate seal was reclassified by
+ *  the proven outcome; every other Run state is an evidence no-op. */
+export interface ReconcileLateResult {
+  run: ConversationRun;
+  memberTurn: MemberTurnRecord;
+  message?: ConversationMessage;
+  reconciled: boolean;
+}
+
 export interface ConversationStore {
   acceptRequest(input: AcceptRequestInput): AcceptRequestResult;
   getRun(runId: string): ConversationRun | undefined;
@@ -245,6 +270,27 @@ export interface ConversationStore {
    *  state, cancelled, unknown), then aggregate the Run once. Proven member
    *  outcomes are never overwritten by a sibling's unknown. */
   settleCancelBatch(input: SettleCancelBatchInput): SettleCancelBatchResult;
+  /** Indeterminate reconciliation for a late provider result: persists the
+   *  proven outcome as durable evidence and reclassifies an indeterminate
+   *  seal (member + Run) to its proven terminal state. Never resurrects
+   *  scheduling — cancelled/live/proven Runs are no-ops. */
+  reconcileLateResult(input: {
+    runId: string;
+    memberTurnId: string;
+    outcome: "completed" | "failed";
+    content?: string;
+    reason?: string;
+    sourceTurn: { sessionAlias: string; turnId?: string };
+    now: string;
+  }): ReconcileLateResult;
+  /** True when a nonterminal MemberTurn in this Conversation references the
+   *  Bot. Membership removal must wait until that work terminals (PR6
+   *  freeze: removed-member durable work has no correct interpretation). */
+  hasNonterminalGroupMemberWork(conversationId: string, botId: string): boolean;
+  /** Distinct nonterminal (conversation, topic) roots. Activation validates
+   *  each still has a live Group/Topic or Direct-plan authority before the
+   *  first kick; a missing root is fail-closed actionable recovery. */
+  listNonterminalRunRoots(): Array<{ conversationId: string; topicId: string }>;
   markConversationDeleting(conversationId: string, now: string): void;
   markTopicDeleting(topicId: string, conversationId: string, now: string): void;
   isConversationDeleting(conversationId: string): boolean;

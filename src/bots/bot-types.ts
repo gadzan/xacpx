@@ -75,6 +75,25 @@ export function snapshotBotProfile(bot: BotProfile, capturedAt: string): BotProf
   };
 }
 
+/**
+ * Group MemberTurn accepted snapshot (§9.2: the Topic owns the work target).
+ * Agent identity and turn-boundary settings (agent/model/effort) come from
+ * the accepted Bot profile; the workspace comes from the accepted Topic
+ * ExecutionTarget — the Bot default workspace never leaks into group member
+ * execution. Runtime resolution (`resolveGroupMemberExecution`) and the
+ * accepted sticky-identity check (`assertGroupMemberStickyIdentity`) both
+ * compare against the Topic target, so this is the only accepted-snapshot
+ * constructor a group member turn may use.
+ */
+export function snapshotGroupMemberProfile(
+  bot: BotProfile,
+  topicTarget: { workspace: string },
+  capturedAt: string,
+): BotProfileSnapshot {
+  const base = snapshotBotProfile(bot, capturedAt);
+  return { ...base, execution: { ...base.execution, workspace: topicTarget.workspace } };
+}
+
 interface BotRuntimeBindingBase {
   id: string;
   conversationId: string;

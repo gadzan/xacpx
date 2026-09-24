@@ -170,12 +170,12 @@ test("parseState drops malformed Bot and Conversation records and reports them",
   expect(state.conversation_topics).toEqual({});
   expect(state.bot_runtime_bindings).toEqual({});
   expect(dropped).toEqual([
+    { section: "bots", key: "bad-enabled", reason: "malformed bot profile" },
     { section: "conversations", key: "bad-group", reason: "malformed conversation record" },
     { section: "conversations", key: "lead-outside", reason: "malformed conversation record" },
     { section: "conversations", key: "dup-members", reason: "malformed conversation record" },
     { section: "conversation_topics", key: "bad-status", reason: "malformed conversation topic" },
     { section: "bot_runtime_bindings", key: "controller-with-bot", reason: "malformed bot runtime binding" },
-    { section: "bots", key: "bad-enabled", reason: "malformed bot profile" },
   ]);
 });
 

@@ -16,6 +16,8 @@ import {
 } from "./conversation-product-events";
 import type {
   ConversationTurnCancelResult,
+  ConversationTurnRunInput,
+  ConversationTurnRunResult,
   ConversationTurnRunner,
 } from "./conversation-turn-runner";
 import { TERMINAL_MEMBER_STATES, type MemberTurnRecord } from "./conversation-types";
@@ -471,6 +473,57 @@ export class ConversationDispatcher {
       reason: result.error ?? "failed",
     });
     this.emitRunAndMember(run, started.id);
+  }
+
+  /**
+   * Late provider settlement reached the dispatcher through the runner's
+   * onLateResult seam (§14.3): the cancel-settle deadline already sealed the
+   * Run's scheduling outcome, so this NEVER re-invokes the provider, claims
+   * work, or kicks the drain. It only persists the proven result as durable
+   * audit evidence via the store's indeterminate reconciliation — when the
+   * Run was sealed indeterminate, that reclassifies it to the proven outcome
+   * so teardown can reconcile; every other Run state is an evidence no-op.
+   * A reconciliation/store failure is swallowed: the durable indeterminate
+   * seal keeps teardown fail-closed, and nothing in the provider settlement
+   * path is in a position to observe or retry the error.
+   */
+  reconcileLateProviderResult(input: ConversationTurnRunInput, result: ConversationTurnRunResult): void {
+    try {
+      if (result.status === "completed") {
+        const reconciled = this.store.reconcileLateResult({
+          runId: input.runId,
+          memberTurnId: input.memberTurnId,
+          outcome: "completed",
+          content: result.text ?? "",
+          sourceTurn: { sessionAlias: input.sessionAlias, turnId: input.promptRequestId },
+          now: this.now().toISOString(),
+        });
+        if (reconciled.reconciled) {
+          this.emitTerminalProjection(reconciled.run, reconciled.memberTurn, reconciled.message);
+        }
+        return;
+      }
+      if (result.status === "failed") {
+        const reconciled = this.store.reconcileLateResult({
+          runId: input.runId,
+          memberTurnId: input.memberTurnId,
+          outcome: "failed",
+          reason: result.error ?? "failed",
+          sourceTurn: { sessionAlias: input.sessionAlias, turnId: input.promptRequestId },
+          now: this.now().toISOString(),
+        });
+        if (reconciled.reconciled) {
+          this.emitRunAndMember(reconciled.run, reconciled.memberTurn.id);
+        }
+        return;
+      }
+      // A late "cancelled" carries no new evidence: the seal already recorded
+      // the stronger unknown/cancelled outcome. Drop it.
+    } catch {
+      // Evidence persistence must never crash the provider settlement chain.
+      // The durable indeterminate seal (and its fences) remain the source of
+      // truth for teardown; retry is the operator's reconcile path.
+    }
   }
 
   private emitTerminalProjection(

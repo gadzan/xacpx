@@ -150,6 +150,48 @@ test("wedged abort settles cancel and run as unknown after the deadline", async 
   })).toEqual({ outcome: "unknown" });
 });
 
+test("late provider completion after the cancel deadline is handed to onLateResult, not dropped", async () => {
+  const control = fakeControl();
+  const late = deferred<{ ok: boolean; text?: string }>();
+  control.setPrompt(async () => {
+    await control.hang.promise;
+    return await late.promise;
+  });
+  const lateResults: Array<{ text?: string; status: string }> = [];
+  const seenInputs: string[] = [];
+  const runner = new ControlConversationTurnRunner(control, {
+    cancelSettleTimeoutMs: 20,
+    onLateResult: (runInput, result) => {
+      seenInputs.push(runInput.promptRequestId);
+      lateResults.push({ text: result.text, status: result.status });
+    },
+  });
+  const running = runner.run({ ...input, promptRequestId: "sturn_late" });
+  await waitUntil(() => runner.hasTrackedExecution("sturn_late"));
+  const cancel = await runner.cancel({
+    conversationId: input.conversationId,
+    topicId: input.topicId,
+    sessionAlias: input.sessionAlias,
+    promptRequestId: "sturn_late",
+  });
+  expect(cancel).toEqual({ outcome: "unknown" });
+  expect(await running).toMatchObject({ status: "cancelled", unknown: true });
+  expect(lateResults).toEqual([]);
+  // The provider settling after the deadline is proven evidence: it reaches
+  // the reconciliation seam with its execution identity intact — while the
+  // already-decided scheduling outcome (unknown) never changes.
+  late.resolve({ ok: true, text: "late-completion" });
+  await tick();
+  expect(lateResults).toEqual([{ text: "late-completion", status: "completed" }]);
+  expect(seenInputs).toEqual(["sturn_late"]);
+  expect(await runner.cancel({
+    conversationId: input.conversationId,
+    topicId: input.topicId,
+    sessionAlias: input.sessionAlias,
+    promptRequestId: "sturn_late",
+  })).toEqual({ outcome: "unknown" });
+});
+
 test("settled execution cache keeps late cancel completed until TTL/max eviction", async () => {
   let now = 1_000;
   const control = fakeControl();
