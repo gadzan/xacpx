@@ -478,14 +478,16 @@ export class ConversationDispatcher {
   /**
    * Late provider settlement reached the dispatcher through the runner's
    * onLateResult seam (§14.3): the cancel-settle deadline already sealed the
-   * Run's scheduling outcome, so this NEVER re-invokes the provider, claims
-   * work, or kicks the drain. It only persists the proven result as durable
-   * audit evidence via the store's indeterminate reconciliation — when the
-   * Run was sealed indeterminate, that reclassifies it to the proven outcome
-   * so teardown can reconcile; every other Run state is an evidence no-op.
-   * A reconciliation/store failure is swallowed: the durable indeterminate
-   * seal keeps teardown fail-closed, and nothing in the provider settlement
-   * path is in a position to observe or retry the error.
+   * scheduling outcome (Run indeterminate, or fan-out still awaiting
+   * siblings), so this NEVER re-invokes the provider, claims work, or kicks
+   * the drain. It only persists the proven result as durable evidence via
+   * the store's reconciliation — a sealed indeterminate member reclassifies
+   * (and re-derives the Run); a live Run under durable cancel intent records
+   * member evidence only for the pending batch settlement. Every other Run
+   * state is an evidence no-op. A reconciliation/store failure is swallowed:
+   * the durable indeterminate seal keeps teardown fail-closed, and nothing
+   * in the provider settlement path is in a position to observe or retry
+   * the error.
    */
   reconcileLateProviderResult(input: ConversationTurnRunInput, result: ConversationTurnRunResult): void {
     try {

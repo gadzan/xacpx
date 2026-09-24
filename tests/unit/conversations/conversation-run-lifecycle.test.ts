@@ -3118,6 +3118,98 @@ test("dispatcher cancelRun cancels every started member exactly", async () => {
   first.store.close();
 });
 
+test("late completion landing mid-cancel-fan-out survives batch settlement", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-late-mid-fanout",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const claimA = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claimA.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: claimA.run.id, memberTurnId: claimA.memberTurn.id,
+    sessionAlias: "sess_a", logicalSessionId: "lsess_a", sourceTurnId: "sturn_a", now: NOW,
+  });
+  const claimB = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claimB.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: claimB.run.id, memberTurnId: claimB.memberTurn.id,
+    sessionAlias: "sess_b", logicalSessionId: "lsess_b", sourceTurnId: "sturn_b", now: NOW,
+  });
+  // Park B's physical cancel so A's late proof lands mid-fan-out: A already
+  // timed out unknown, B still blocked, the Run not yet aggregated.
+  const bEntered = deferred();
+  const bRelease = deferred();
+  const disp = first.dispatcher as unknown as {
+    runner: { cancel: (input: { promptRequestId: string }) => Promise<{ outcome: "cancelled" | "unknown" }> };
+  };
+  const origCancel = disp.runner.cancel.bind(disp.runner);
+  disp.runner.cancel = (async (input: { promptRequestId: string }) => {
+    if (input.promptRequestId === "sturn_a") {
+      return { outcome: "unknown" };
+    }
+    if (input.promptRequestId === "sturn_b") {
+      bEntered.resolve();
+      await bRelease.promise;
+    }
+    return origCancel(input);
+  });
+  const cancelling = first.dispatcher.cancelRun(claimA.run.id);
+  await bEntered.promise;
+  // Durable cancel intent exists, but nothing aggregated yet.
+  expect(first.store.getRun(claimA.run.id)?.state).toBe("running");
+  expect(first.store.getMemberTurn(claimA.memberTurn.id)?.state).toBe("running");
+  const late = first.store.reconcileLateResult({
+    runId: claimA.run.id,
+    memberTurnId: claimA.memberTurn.id,
+    outcome: "completed",
+    content: "late A",
+    sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" },
+    now: NOW,
+  });
+  expect(late.reconciled).toBe(true);
+  expect(first.store.getMemberTurn(claimA.memberTurn.id)?.state).toBe("completed");
+  // Member evidence only: the Run must NOT aggregate early while B is pending.
+  expect(first.store.getRun(claimA.run.id)?.state).toBe("running");
+  bRelease.resolve();
+  await cancelling;
+  const memberA = first.store.getMemberTurn(claimA.memberTurn.id)!;
+  const memberB = first.store.getMemberTurn(claimB.memberTurn.id)!;
+  expect(memberA.state).toBe("completed");
+  expect(memberB.state).toBe("cancelled");
+  expect(first.store.listMessages({
+    conversationId: group.id, topicId: topic.id, limit: 10,
+  }).filter((message) => message.role === "bot" && message.content === "late A")).toHaveLength(1);
+  const run = first.store.getRun(claimA.run.id)!;
+  expect(run.state).toBe("cancelled");
+  expect(run.completionReason).toBe("human-cancelled");
+  expect(run.consumedMemberTurns).toBe(2);
+  expect(first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })).toBeUndefined();
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  first.store.close();
+});
+
 test("unknown on first active member never skips the second physical cancel", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);

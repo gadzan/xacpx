@@ -2055,16 +2055,18 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   /**
-   * Indeterminate reconciliation for a late provider result (§14.3): the
+   * Late provider proof reconciliation (§14.3) across two windows: the
    * cancel-settlement timeout already sealed the scheduling outcome as
-   * indeterminate; the provider settling afterwards is DURABLE EVIDENCE, not
-   * a scheduling decision. A proven completion/failure reclassifies exactly
-   * the indeterminate member it belongs to (message row + member state) and
-   * re-derives the Run from whole-batch evidence via classifySettledBatch —
-   * so teardown's "reconcile indeterminate" step has a real result instead of
-   * a permanent seal. Never resurrects scheduling: a clean cancelled Run, a
-   * live Run, or an already-proven member is a no-op, and consumed_member_turns
-   * was already counted at the original indeterminate settlement.
+   * indeterminate (reclassify that member + re-derive the Run), OR the Run
+   * is still live under durable cancel intent with the batch unsettled
+   * (persist member evidence only; settleCancelBatch reads it from fresh
+   * member states). The provider settling afterwards is DURABLE EVIDENCE,
+   * not a scheduling decision — so teardown's "reconcile indeterminate"
+   * step has a real result instead of a permanent seal. Never resurrects
+   * scheduling: a clean cancelled Run, a live Run without cancel intent, or
+   * an already-proven member is a no-op (no dispatch/progress/scheduling
+   * changes beyond the evidence write), and consumed_member_turns is counted
+   * exactly once via the batch fence.
    */
   reconcileLateResult(input: {
     runId: string;
@@ -2098,6 +2100,90 @@ export class SqliteConversationStore implements ConversationStore {
           "source_turn_mismatch",
           `source turn does not match member turn "${member.id}" execution identity`,
         );
+      }
+      // Two reconciliation windows (§14.3):
+      // (a) Sealed Run: cancel settlement already aggregated the Run to
+      //     indeterminate. A proven late result reclassifies exactly the
+      //     indeterminate member it belongs to and re-derives the Run.
+      // (b) Live Run under durable cancel intent: store.cancelRun() wrote the
+      //     cancel intent (completion_reason) but the fan-out has not settled
+      //     the batch yet. Persist MEMBER EVIDENCE ONLY — no Run aggregate;
+      //     settleCancelBatch derives the final outcome from fresh member
+      //     states (its terminal-member fence skips this member, so progress
+      //     is never double-counted). Without (b), a proof landing mid-fan-out
+      //     would be dropped and the batch would seal indeterminate despite
+      //     observed evidence.
+      // Clean cancelled Runs stay sealed (late completion never resurrects a
+      // cancel the user requested); live Runs WITHOUT cancel intent and
+      // already-proven members have nothing to reconcile. No dispatch,
+      // progress, or scheduling state changes beyond member evidence.
+      if (!TERMINAL_RUN_STATES.includes(run.state)) {
+        if (run.completionReason == null || TERMINAL_MEMBER_STATES.includes(member.state) || !member.startedAt) {
+          return { run, memberTurn: member, reconciled: false };
+        }
+        // Progress was already counted when this member settled indeterminate
+        // (deferred batch evidence); a still-running member counts now, and
+        // the later batch settlement skips it via its terminal-member fence.
+        const alreadyCounted = member.state === "indeterminate";
+        let pendingMessage: ConversationMessage | undefined;
+        if (input.outcome === "completed") {
+          const seq = this.allocateSeq(run.conversationId, run.topicId);
+          const messageId = this.ids.messageId();
+          this.sqlite.run(
+            `INSERT INTO messages (
+               id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
+             ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+            [
+              messageId,
+              run.conversationId,
+              run.topicId,
+              seq,
+              member.botId,
+              input.content ?? "",
+              run.id,
+              JSON.stringify(input.sourceTurn),
+              input.now,
+            ],
+          );
+          this.sqlite.run(
+            `UPDATE member_turns SET state = 'completed', failure_reason = NULL WHERE id = ?`,
+            [member.id],
+          );
+          if (!alreadyCounted) {
+            this.sqlite.run(
+              `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+              [run.id],
+            );
+          }
+          this.finishDispatchForMemberTurn(member.id, input.now);
+          pendingMessage = this.getMessage(messageId);
+        } else {
+          this.sqlite.run(
+            `UPDATE member_turns SET state = 'failed', failure_reason = ? WHERE id = ?`,
+            [input.reason ?? "failed", member.id],
+          );
+          if (!alreadyCounted) {
+            this.sqlite.run(
+              `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+              [run.id],
+            );
+          }
+          if (!run.failedBotIds.includes(member.botId)) {
+            const current = new Set(run.failedBotIds);
+            current.add(member.botId);
+            this.sqlite.run(
+              `UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`,
+              [JSON.stringify([...current]), input.runId],
+            );
+          }
+          this.finishDispatchForMemberTurn(member.id, input.now);
+        }
+        return {
+          run: this.requireRun(input.runId),
+          memberTurn: this.requireMemberTurn(member.id),
+          ...(pendingMessage ? { message: pendingMessage } : {}),
+          reconciled: true,
+        };
       }
       // Reconcile ONLY the indeterminate-sealed case. Clean cancelled Runs
       // stay sealed (late completion never resurrects a cancel the user

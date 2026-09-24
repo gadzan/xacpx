@@ -227,8 +227,10 @@ export const MAX_QUEUED_RUNS_PER_TOPIC = 64;
 export const MAX_AUTOMATIC_MEMBER_TURNS = 24;
 
 /** Result of routing a late provider settlement into the store (§14.3):
- *  `reconciled` is true only when an indeterminate seal was reclassified by
- *  the proven outcome; every other Run state is an evidence no-op. */
+ *  `reconciled` is true when proven evidence persisted — either by
+ *  reclassifying an indeterminate seal (member + Run) or by recording member
+ *  evidence under durable cancel intent for the pending batch settlement.
+ *  Every other Run state is an evidence no-op. */
 export interface ReconcileLateResult {
   run: ConversationRun;
   memberTurn: MemberTurnRecord;
@@ -268,12 +270,17 @@ export interface ConversationStore {
   /** Two-phase cancel settlement: persist every member's observed physical
    *  cancel outcome as member evidence first (completed evidence, failed
    *  state, cancelled, unknown), then aggregate the Run once. Proven member
-   *  outcomes are never overwritten by a sibling's unknown. */
+   *  outcomes are never overwritten by a sibling's unknown — including a
+   *  late proof that landed mid-fan-out: members already terminal keep their
+   *  evidence and outcome via the idempotent fence (no double progress). */
   settleCancelBatch(input: SettleCancelBatchInput): SettleCancelBatchResult;
-  /** Indeterminate reconciliation for a late provider result: persists the
-   *  proven outcome as durable evidence and reclassifies an indeterminate
-   *  seal (member + Run) to its proven terminal state. Never resurrects
-   *  scheduling — cancelled/live/proven Runs are no-ops. */
+  /** Late provider proof reconciliation (§14.3) across two windows: (a) an
+   *  indeterminate-sealed Run reclassifies the sealed member and re-derives
+   *  the Run; (b) a live Run under durable cancel intent persists MEMBER
+   *  EVIDENCE ONLY (no Run aggregate) so the pending batch settlement reads
+   *  it from fresh member states. Never resurrects scheduling — clean
+   *  cancelled Runs, Runs without cancel intent, and already-proven members
+   *  are no-ops. */
   reconcileLateResult(input: {
     runId: string;
     memberTurnId: string;
