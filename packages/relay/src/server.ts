@@ -4,6 +4,8 @@ import { serve, type ServerType } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 
 import {
+  DESKTOP_TICKET_TTL_MS,
+  DESKTOP_WS_MAX_PAYLOAD_BYTES,
   MAX_TOOL_STEPS, MSG, REASONING_CAP, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP,
   type AgentCommandDto, type ControlEventDto, type ConversationTurnCorrelationDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceRecoveryAckPayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
   type InstanceStateSnapshotDto, type ScheduledOriginDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
@@ -19,6 +21,7 @@ import { RecoveryReceiptStore } from "./stores/recovery-receipts.js";
 import { TurnSlotAnchorStore, canonicalRecoveryId } from "./stores/turn-slot-anchors.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
+import { DesktopStreamGateway } from "./gateway/desktop-stream-gateway.js";
 import { PushNotifier, vapidFromEnv, validateVapidConfig, type VapidConfig } from "./push.js";
 import { PushSubscriptionStore } from "./stores/push-subscriptions.js";
 import { handleConnectorTerminalEvent, handleWebClientMessage } from "./gateway/web-inbound.js";
@@ -116,6 +119,7 @@ export interface RelayRuntime {
   pushNotifier: PushNotifier;
   gateway: InstanceGateway;
   webGateway: WebGateway;
+  desktop: DesktopStreamGateway;
   stateSnapshot(instanceId: string): InstanceStateSnapshotDto;
   app: ReturnType<typeof createApp>;
   pendingWebPromptsCount?(): number;
@@ -143,6 +147,17 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   const instances = new InstanceStore(db);
   const messages = new MessageStore(db);
   let gatewayRef: InstanceGateway | null = null;
+  // Desktop streams bind to the requesting control socket's viewerId for their
+  // whole lifetime (pending prepare AND the paired binary session): a
+  // control-socket close cancels its streams, and desktop-close from any other
+  // viewer is rejected. Ownership is hub-stamped, never browser-supplied.
+  const desktopStreamOwners = new Map<string, { viewerId: string; accountId: string; instanceId: string }>();
+  const desktop = new DesktopStreamGateway({
+    logger,
+    onStreamClosed: (streamId) => {
+      desktopStreamOwners.delete(streamId);
+    },
+  });
   const webGateway = new WebGateway({
     logger,
     onAttachmentDetached: (info) => {
@@ -150,6 +165,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         attachmentId: info.attachmentId,
         viewerId: info.viewerId,
       });
+    },
+    onViewerClosed: (viewerId) => {
+      for (const [streamId, owner] of [...desktopStreamOwners]) {
+        if (owner.viewerId !== viewerId) continue;
+        desktopStreamOwners.delete(streamId);
+        desktop.closeStream(streamId, "viewer-disconnected");
+      }
     },
   });
   const pushSubscriptions = new PushSubscriptionStore(db);
@@ -390,6 +412,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     },
     onStatusChange: (instanceId, accountId, online) => {
       if (!online) {
+        desktop.closeForInstance(instanceId, "instance-offline");
         const prefix = `${instanceId}\0`;
         for (const k of turnBuffers.keys()) if (k.startsWith(prefix)) turnBuffers.delete(k);
         for (const k of sessionUsage.keys()) if (k.startsWith(prefix)) sessionUsage.delete(k);
@@ -1112,6 +1135,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     pushNotifier,
     gateway,
     webGateway,
+    desktop,
     stateSnapshot,
     pendingWebPromptsCount: () => pendingWebPrompts.size,
     app,
@@ -1189,7 +1213,22 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
   if (dedicated) {
     wss = new WebSocketServer({ port: options.wsPort, host });
     await new Promise<void>((resolve) => wss!.on("listening", () => resolve()));
-    wss.on("connection", (socket) => runtime.gateway.handleConnection(socket));
+    // Dedicated gateway listener serves instance control AND the connector
+    // desktop binary plane on the same port (never a separate VNC port):
+    // control handshakes at `/`/`/gateway`, desktop tickets at `/desktop/instance`.
+    wss.on("connection", (socket, req) => {
+      const path = (req?.url ?? "").split("?")[0] ?? "";
+      if (path === "/desktop/instance") {
+        const ticket = desktopTicketFromUrl(req?.url ?? "");
+        if (!ticket) { try { socket.close(4403, "missing-ticket"); } catch { /* gone */ } return; }
+        const attached = runtime.desktop.attachConnector(ticket, adaptDesktopSocket(socket));
+        if (!attached.ok) {
+          try { socket.close(4403, attached.reason); } catch { /* already gone */ }
+        }
+        return;
+      }
+      runtime.gateway.handleConnection(socket);
+    });
   } else {
     gatewayWss = new WebSocketServer({ noServer: true });
   }
@@ -1198,6 +1237,11 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
   // authenticated client cannot force ws to buffer an arbitrarily large subscribe
   // array or terminal paste before protocol validation runs.
   const webWss = new WebSocketServer({ noServer: true, maxPayload: WEB_CLIENT_MAX_PAYLOAD_BYTES });
+  // Desktop binary plane: independent connections so framebuffer bursts never
+  // share head-of-line blocking with /ws control. 1 MiB matches the hub's
+  // DESKTOP_WS_MAX_PAYLOAD_BYTES frame gate.
+  const desktopBrowserWss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
+  const desktopConnectorWss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
   httpServer.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const path = (req.url ?? "").split("?")[0] ?? "";
     if (path === "/ws") {
@@ -1211,7 +1255,47 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
           gateway: runtime.gateway,
           webGateway: runtime.webGateway,
           stateSnapshot: runtime.stateSnapshot,
+          desktop: {
+            reserve: (reserveAccountId, instanceId) => {
+              const reserved = runtime.desktop.streamRegistry.reserve({
+                accountId: reserveAccountId,
+                instanceId,
+                ttlMs: DESKTOP_TICKET_TTL_MS,
+              });
+              if (!reserved.ok) return reserved;
+              return { ok: true as const, streamId: reserved.record.streamId };
+            },
+            mintConnectorTicket: (streamId, ticketAccountId, instanceId) =>
+              runtime.desktop.ticketStore.mintTicket({ streamId, accountId: ticketAccountId, instanceId, side: "connector" }),
+            mintBrowserTicket: (streamId, ticketAccountId, instanceId) =>
+              runtime.desktop.ticketStore.mintTicket({ streamId, accountId: ticketAccountId, instanceId, side: "browser" }),
+            markReady: (streamId, security) => runtime.desktop.reportConnectorReady(streamId, security),
+            cancel: (streamId, reason) => {
+              desktopStreamOwners.delete(streamId);
+              runtime.desktop.closeStream(streamId, reason);
+            },
+            ownsStream: (streamId, ownerViewerId) => desktopStreamOwners.get(streamId)?.viewerId === ownerViewerId,
+            trackOwner: (streamId, owner) => {
+              desktopStreamOwners.set(streamId, owner);
+            },
+          },
         }, account.id, ws, String(data)));
+      });
+      return;
+    }
+    // Browser desktop binary plane (same HTTP/dashboard port as /ws, separate
+    // connection): cookie-authenticated, then single-use ticket in the query.
+    if (path === "/desktop/observe") {
+      const token = parseCookie(req.headers.cookie ?? "")["xrelay_session"];
+      const account = token ? runtime.accounts.getSessionAccount(token) : null;
+      if (!account) { socket.destroy(); return; }
+      const ticket = desktopTicketFromUrl(req.url ?? "");
+      if (!ticket) { socket.destroy(); return; }
+      desktopBrowserWss.handleUpgrade(req, socket, head, (ws) => {
+        const attached = runtime.desktop.attachBrowser(ticket, adaptDesktopSocket(ws));
+        if (!attached.ok) {
+          try { ws.close(4403, attached.reason); } catch { /* already gone */ }
+        }
       });
       return;
     }
@@ -1220,6 +1304,19 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     // cookie gate here. In dedicated mode `gatewayWss` is undefined → reject.
     if (gatewayWss && (path === "/" || path === "/gateway" || path.startsWith("/gateway/"))) {
       gatewayWss.handleUpgrade(req, socket, head, (ws) => runtime.gateway.handleConnection(ws));
+      return;
+    }
+    // Connector desktop binary plane. Merged mode shares the HTTP port;
+    // dedicated --ws-port mode serves it on the gateway listener below.
+    if (path === "/desktop/instance") {
+      const ticket = desktopTicketFromUrl(req.url ?? "");
+      if (!ticket) { socket.destroy(); return; }
+      desktopConnectorWss.handleUpgrade(req, socket, head, (ws) => {
+        const attached = runtime.desktop.attachConnector(ticket, adaptDesktopSocket(ws));
+        if (!attached.ok) {
+          try { ws.close(4403, attached.reason); } catch { /* already gone */ }
+        }
+      });
       return;
     }
     socket.destroy();
@@ -1234,12 +1331,43 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     close: async () => {
       stopMaintenance();
       await new Promise<void>((resolve) => webWss.close(() => resolve()));
+      await new Promise<void>((resolve) => desktopBrowserWss.close(() => resolve()));
+      await new Promise<void>((resolve) => desktopConnectorWss.close(() => resolve()));
       if (gatewayWss) await new Promise<void>((resolve) => gatewayWss!.close(() => resolve()));
       if (wss) await new Promise<void>((resolve) => wss!.close(() => resolve()));
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
       runtime.close();
     },
   };
+}
+/** Extract the single-use `ticket` query param from a desktop upgrade URL. */
+export function desktopTicketFromUrl(url: string): string | null {
+  const query = url.split("?")[1] ?? "";
+  for (const part of query.split("&")) {
+    const idx = part.indexOf("=");
+    if (idx === -1) continue;
+    if (part.slice(0, idx) !== "ticket") continue;
+    const ticket = decodeURIComponent(part.slice(idx + 1));
+    return ticket.length > 0 ? ticket : null;
+  }
+  return null;
+}
+
+/** Adapt a `ws` binary socket to the desktop gateway's narrow socket surface. */
+function adaptDesktopSocket(ws: {
+  send(data: Uint8Array): void;
+  close(code?: number, reason?: string): void;
+  readonly bufferedAmount: number;
+  on(event: "message", listener: (data: unknown, isBinary: boolean) => void): unknown;
+  on(event: "close", listener: () => void): unknown;
+}): {
+  send(data: Uint8Array): void;
+  close(code?: number, reason?: string): void;
+  readonly bufferedAmount: number;
+  on(event: "message", listener: (data: unknown, isBinary: boolean) => void): unknown;
+  on(event: "close", listener: () => void): unknown;
+} {
+  return ws;
 }
 
 function parseCookie(header: string): Record<string, string> {
