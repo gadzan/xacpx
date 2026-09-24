@@ -20,6 +20,8 @@ import {
   type ConversationPromptPayload,
   type ConversationsGetPayload,
   type ConversationsListPayload,
+  type DesktopCancelPayload,
+  type DesktopPreparePayload,
   type GroupsCreatePayload,
   type GroupsDeletePayload,
   type GroupsGetPayload,
@@ -89,6 +91,8 @@ import {
   type WorkspacesRemovePayload,
 } from "./messages.js";
 import {
+  MAX_DESKTOP_STREAM_ID_LENGTH,
+  MAX_DESKTOP_TICKET_LENGTH,
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
@@ -375,6 +379,24 @@ const validateTerminalTerminate: Validator<TerminalTerminatePayload> = (p) => {
     ? (o as unknown as TerminalTerminatePayload)
     : null;
 };
+const validateDesktopPrepare: Validator<DesktopPreparePayload> = (p) => {
+  const o = fields(p);
+  return o
+    && isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH)
+    && isBoundedStr(o.ticket, MAX_DESKTOP_TICKET_LENGTH)
+    && isNonNegInt(o.expiresAt)
+    && o.host === undefined
+    && o.port === undefined
+    && o.target === undefined
+    ? (o as unknown as DesktopPreparePayload)
+    : null;
+};
+const validateDesktopCancelEvent: Validator<DesktopCancelPayload> = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH)
+    ? (o as unknown as DesktopCancelPayload)
+    : null;
+};
 const validateUpload: Validator<UploadPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.filename) && isStr(o.content) && isStr(o.mimeType) ? (o as unknown as UploadPayload) : null;
@@ -525,6 +547,7 @@ export type ControlRpcType =
   | typeof MSG.terminalCreate | typeof MSG.terminalAttach
   | typeof MSG.terminalOpen | typeof MSG.terminalTakeControl
   | typeof MSG.terminalResync | typeof MSG.terminalTerminate
+  | typeof MSG.desktopPrepare
   | typeof MSG.upload
   | typeof MSG.botsGet | typeof MSG.botsCreate | typeof MSG.botsUpdate | typeof MSG.botsDelete
   | typeof MSG.conversationsList | typeof MSG.conversationsGet
@@ -590,6 +613,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.terminalTakeControl]: validateTerminalTakeControl,
   [MSG.terminalResync]: validateTerminalResync,
   [MSG.terminalTerminate]: validateTerminalTerminate,
+  [MSG.desktopPrepare]: validateDesktopPrepare,
   [MSG.upload]: validateUpload,
   [MSG.botsGet]: validateBotsGet,
   [MSG.botsCreate]: validateBotsCreate,
@@ -774,6 +798,25 @@ export function parseTerminalEventPayload<T extends TerminalEventType>(
   const validate = TERMINAL_EVENT_PAYLOAD_VALIDATORS[type] as unknown as Validator<TerminalEventPayloadFor<T>>;
   return validate(payload);
 }
+/** Desktop cancel is the only fire-and-forget desktop control event. */
+export type DesktopEventType = typeof MSG.desktopCancel;
+
+export const DESKTOP_EVENT_PAYLOAD_VALIDATORS = {
+  [MSG.desktopCancel]: validateDesktopCancelEvent,
+} satisfies Record<DesktopEventType, Validator<unknown>>;
+
+export type DesktopEventPayloadFor<T extends DesktopEventType> = T extends DesktopEventType
+  ? DesktopCancelPayload
+  : never;
+
+/** Validate a desktop event payload (never the binary framebuffer path). */
+export function parseDesktopEventPayload(
+  type: DesktopEventType,
+  payload: unknown,
+): DesktopCancelPayload | null {
+  const validate = DESKTOP_EVENT_PAYLOAD_VALIDATORS[type] as unknown as Validator<DesktopCancelPayload>;
+  return validate(payload);
+}
 
 // --- Type-level binding assertions -------------------------------------------------
 // These live here, not in the test file: `tests/` is outside every tsconfig's `include`,
@@ -799,3 +842,5 @@ type _gitDiscardBound = Expect<Equal<PayloadFor<typeof MSG.gitDiscard>, GitPaths
 type _terminalOpenBound = Expect<Equal<PayloadFor<typeof MSG.terminalOpen>, TerminalOpenPayload>>;
 type _terminalTerminateBound = Expect<Equal<PayloadFor<typeof MSG.terminalTerminate>, TerminalTerminatePayload>>;
 type _terminalInputEventBound = Expect<Equal<TerminalEventPayloadFor<typeof MSG.terminalInput>, TerminalInputPayload>>;
+type _desktopPrepareBound = Expect<Equal<PayloadFor<typeof MSG.desktopPrepare>, DesktopPreparePayload>>;
+type _desktopCancelBound = Expect<Equal<DesktopEventPayloadFor<typeof MSG.desktopCancel>, DesktopCancelPayload>>;

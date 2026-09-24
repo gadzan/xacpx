@@ -118,6 +118,11 @@ export const MSG = {
   terminalDetach: "instance.terminal.detach",
   terminalViewerEvent: "instance.terminal.viewer-event",
   terminalResourceExit: "instance.terminal.resource-exit",
+  // Instance desktop (RFB/VNC) over an independent binary WebSocket (additive;
+  // prepare is req/res, cancel is a hub→connector event; framebuffer never
+  // enters the control envelope).
+  desktopPrepare: "instance.desktop.prepare",
+  desktopCancel: "instance.desktop.cancel",
   // Agent messaging across daemons via Relay Hub
   instanceAgentEndpointsSync: "instance.agent-endpoints.sync",
   agentMessageRoute: "instance.agent-message.route",
@@ -979,6 +984,7 @@ export interface TerminalAttachPayload {
 export const RELAY_CAPABILITIES = {
   terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1",
   terminalMultiViewV1: "terminal.multi-view.v1",
+  desktopRfbV1: "desktop.rfb.v1",
 } as const;
 
 export type RelayCapability =
@@ -1148,6 +1154,46 @@ export interface TerminalResourceExitPayload {
   reason: string;
   code?: number;
 }
+
+// --- Instance desktop (RFB/VNC) over an independent binary WebSocket ---
+/** RFB auth surfaced to the browser. v1 serves `vnc-auth` only; `ard` is a
+ *  Phase B placeholder so connectors can report it as explicitly unsupported. */
+export type DesktopSecurityKind = "vnc-auth" | "ard";
+
+/** Hub → connector `instance.desktop.prepare` request. Carries stream identity
+ *  only — never a target host/port. The connector always dials its own frozen
+ *  desktop config (loopback + configured port). */
+export interface DesktopPreparePayload {
+  streamId: string;
+  /** Single-use connector ticket for the `/desktop/instance` binary upgrade. */
+  ticket: string;
+  /** Epoch ms when the ticket/stream reservation expires. */
+  expiresAt: number;
+}
+
+export interface DesktopPrepareResult {
+  streamId: string;
+  security: DesktopSecurityKind;
+}
+
+/** Hub → connector `instance.desktop.cancel` event (fire-and-forget). */
+export interface DesktopCancelPayload {
+  streamId: string;
+}
+
+/** Stable browser-facing desktop error codes (i18n by code, not message text). */
+export const DESKTOP_ERROR_CODES = [
+  "desktop-disabled",
+  "desktop-busy",
+  "desktop-rfb-unavailable",
+  "desktop-not-rfb",
+  "desktop-auth-unsupported",
+  "desktop-stream-timeout",
+  "desktop-instance-offline",
+  "desktop-protocol-error",
+] as const;
+
+export type DesktopErrorCode = (typeof DESKTOP_ERROR_CODES)[number];
 
 // --- Agent Messaging across Relay ---
 export interface InstanceAgentEndpointsSyncPayload {
