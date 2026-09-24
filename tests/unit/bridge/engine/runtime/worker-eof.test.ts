@@ -5,7 +5,6 @@ import { join } from "node:path";
 
 import {
   convergeOrphansBeforeExit,
-  evidenceIdentity,
   mergeEvidence,
   sameProcessIdentity,
 } from "../../../../../src/bridge/engine/runtime/worker-eof";
@@ -464,10 +463,11 @@ test("evidence identity is stable when the worker canonicalizes a shim path acro
   // The descendants worker replaces a shim-launched child's CIM executablePath
   // with the resolved image once a handle is available, so the SAME process is
   // observed with two different paths. Identity must not split on that, or the
-  // stale alias record stays required evidence forever.
+  // stale alias record stays required evidence forever. Path is evidence, not
+  // identity: `sameProcessIdentity` ignores it entirely.
   const alias = { pid: 5002, creationDate: "133801632000000010", commandLine: "node adapter.js", executablePath: "C:\\shim\\node.exe" };
   const resolved = { pid: 5002, creationDate: "133801632000000010", commandLine: "node adapter.js", executablePath: "C:\\real\\node.exe" };
-  expect(evidenceIdentity(alias)).toBe(evidenceIdentity(resolved));
+  expect(sameProcessIdentity(alias, resolved)).toBe(true);
 });
 
 test("merge: a later safe outcome resolves an earlier unsafe one for the SAME process, keeping the handle fingerprint", () => {
@@ -600,15 +600,15 @@ test("evidence identity is stable when the worker canonicalizes the creation tim
   // host, deltas 1-9 ticks). Identity must not split on that.
   const quantized = { pid: 5002, creationDate: "133801632000000010" };
   const exact = { pid: 5002, creationDate: "133801632000000017" };
-  expect(evidenceIdentity(quantized)).toBe(evidenceIdentity(exact));
   expect(sameProcessIdentity(quantized, exact)).toBe(true);
 });
 
 test("evidence identity keeps a reused pid separate", () => {
   // Same pid, creation times far apart: a different process that reused the pid.
   // Both must stay required evidence.
-  expect(sameProcessIdentity({ pid: 5002, creationDate: "133801632000000000" }, { pid: 5002, creationDate: "133801632000100000" })).toBe(false);
-  expect(evidenceIdentity({ pid: 5002, creationDate: "133801632000000000" })).not.toBe(evidenceIdentity({ pid: 5002, creationDate: "133801632000100000" }));
+  const reused = { pid: 5002, creationDate: "133801632000000000" };
+  const fresh = { pid: 5002, creationDate: "133801632000100000" };
+  expect(sameProcessIdentity(reused, fresh)).toBe(false);
 });
 
 test("evidence identity is stable when a CIM commandLine is still missing", () => {
@@ -618,7 +618,7 @@ test("evidence identity is stable when a CIM commandLine is still missing", () =
   // unpublishable identity.
   const withoutCommandLine = { pid: 5002, creationDate: "133801632000000010" };
   const withCommandLine = { pid: 5002, creationDate: "133801632000000010" };
-  expect(evidenceIdentity(withoutCommandLine)).toBe(evidenceIdentity(withCommandLine));
+  expect(sameProcessIdentity(withoutCommandLine, withCommandLine)).toBe(true);
 });
 
 test("merge: a creation-date-canonicalized safe outcome resolves the earlier quantized unsafe one", () => {
@@ -740,17 +740,15 @@ test("merge: an incomplete fingerprint never replaces a complete one for the sam
   expect(second.outcomes[0]!.commandLine).toBe("node adapter.js");
 });
 
-test("merge: two DIFFERENT processes whose creation times share a bucket both survive", () => {
-  // The publication index bucketizes the creation time to 2*tolerance+1 = 19
-  // ticks, so two times 10-18 ticks apart land in the SAME bucket while the
-  // comparator correctly reports them as DIFFERENT processes. Bucketing is an
-  // index only: merge membership must never be decided by it, or one process's
-  // evidence silently overwrites the other's.
+test("merge: two DIFFERENT processes whose creation times are 10 ticks apart both survive", () => {
+  // delta = 10 exceeds the 9-tick identity tolerance, so these are DIFFERENT
+  // processes that reused the pid — even though a 19-tick publication bucket
+  // would group them. Membership is decided only by `sameProcessIdentity`, so
+  // neither record may overwrite the other's evidence.
   const a = "133801632000000003";
   const b = "133801632000000013";
   expect(BigInt(b) - BigInt(a)).toBe(10n);
   expect(sameProcessIdentity({ pid: 5002, creationDate: a }, { pid: 5002, creationDate: b })).toBe(false);
-  expect(evidenceIdentity({ pid: 5002, creationDate: a })).toBe(evidenceIdentity({ pid: 5002, creationDate: b }));
 
   const merged = mergeEvidence(
     { verified: false, outcomes: [], leftover: [] },
@@ -780,14 +778,14 @@ test("merge: two DIFFERENT processes whose creation times share a bucket both su
     leftover: [],
   });
   // BOTH stay required evidence: neither is the same process, so neither can
-  // resolve the other, even though they share a publication bucket.
+  // resolve the other.
   expect(second.outcomes).toHaveLength(2);
   expect(second.outcomes.find((item) => item.creationDate === a)!.outcome).toBe("access-denied");
   expect(second.outcomes.find((item) => item.creationDate === b)!.outcome).toBe("killed");
   expect(second.verified).toBe(false);
 });
 
-test("merge: different processes sharing a bucket survive in leftovers too", () => {
+test("merge: different processes 10 ticks apart survive in leftovers too", () => {
   const a = "133801632000000003";
   const b = "133801632000000013";
   const merged = mergeEvidence(
@@ -796,4 +794,42 @@ test("merge: different processes sharing a bucket survive in leftovers too", () 
   );
   expect(merged.leftover).toHaveLength(2);
   expect(merged.leftover.map((item) => item.creationDate).sort()).toEqual([a, b].sort());
+});
+
+test("windows: one residual file must not prove TWO unsafe identities durable", async () => {
+  // Two DISTINCT processes share pid 5002 (creation times 10 ticks apart, so the
+  // comparator correctly reports them as different processes). Both are unsafe,
+  // so both are required evidence. A residual file is keyed by pid alone, so one
+  // file can only hold one of them — proving both durable from a single file
+  // would be a false proof of ownership and would let the worker exit with the
+  // other process's evidence lost.
+  const dir = await mkdtemp(join(tmpdir(), "eof-false-proof-"));
+  try {
+    const a = "133801632000000003";
+    const b = "133801632000000013";
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => ({
+        verified: false,
+        outcomes: [
+          { pid: 5002, outcome: "access-denied", creationDate: a, commandLine: "first", executablePath: "C:\\first.exe", fingerprintSource: "cim" },
+          { pid: 5002, outcome: "query-failed", creationDate: b, commandLine: "second", executablePath: "C:\\second.exe", fingerprintSource: "cim" },
+        ],
+        leftover: [],
+      }),
+      maxRounds: 3,
+      roundDelayMs: 1,
+      runtimeDir: dir,
+      agentCommand: () => "codex",
+      generationId: "00000000-0000-4000-8000-000000000001",
+      ownerToken: "00000000-0000-4000-8000-000000000002",
+    });
+    // Fail closed: the worker must NOT claim "spooled" while one identity's
+    // evidence is provably absent from the registry.
+    expect(outcome).toBe("unresolved");
+    const files = await readdir(join(dir, "orphans", "residuals"));
+    expect(files).toHaveLength(1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

@@ -174,26 +174,23 @@ export function sameProcessIdentity(a: ProcessIdentity, b: ProcessIdentity): boo
 }
 
 /**
- * Stable publication index for one process identity: which spool pass already
- * wrote a record, and whether the registry read-back contains it.
+ * Exact publication identity: `pid` + the retained creation time, with NO
+ * tolerance.
  *
- * This is an INDEX, not the identity decision. Merge/publication membership is
- * decided by `sameProcessIdentity`; this key only has to be stable across the
- * precision with which one process is reported. The creation time is therefore
- * bucketized to the CIM tolerance so a quantized observation and its exact
- * kernel counterpart share a key. The bucket width (`2 * tolerance + 1` ticks)
- * means two records 10–18 ticks apart can share a key while being DIFFERENT
- * processes — which is exactly why the key must never be used to decide that two
- * records are the same process.
+ * This is deliberately stricter than `sameProcessIdentity`, because it answers a
+ * different question — "is THIS record durable?", not "is this the same
+ * process?". A residual file is keyed by pid alone (`${ownerToken}-${pid}.json`),
+ * so two distinct identities that share a pid (a reused pid, creation times 10+
+ * ticks apart) cannot both be durable. Any tolerance here would let one file
+ * prove both were published, i.e. a false proof of ownership for the process
+ * whose evidence was silently overwritten.
+ *
+ * Deliberately NOT exported: publication has exactly one decision point
+ * (`publishRequired`), and a second consumer would have to re-derive the
+ * filename/read-back correspondence to stay correct.
  */
-export function evidenceIdentity(item: ProcessIdentity): string {
-  if (item.creationDate === null) return `${item.pid}|`;
-  return `${item.pid}|${bucketFloor(item.creationDate)}`;
-}
-
-function bucketFloor(creationDate: string): bigint {
-  const width = CREATION_IDENTITY_TOLERANCE_TICKS * 2n + 1n;
-  return BigInt(creationDate) - (BigInt(creationDate) % width);
+function publicationIdentity(item: ProcessIdentity): string {
+  return `${item.pid}|${item.creationDate ?? ""}`;
 }
 
 /**
@@ -344,14 +341,14 @@ async function publishRequired(
   } satisfies Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath" | "fingerprintSource">;
   const passes = options.spoolRetryPasses ?? 3;
   for (let pass = 0; pass < passes; pass += 1) {
-    const pending = complete.filter((item) => !published.has(evidenceIdentity(item)));
+    const pending = complete.filter((item) => !published.has(publicationIdentity(item)));
     let failed = 0;
     for (const candidate of pending) {
       const record = residualFor(candidate, base);
       if (!decodeResidualRecord(record)) return false;
       try {
         await registry.writeResidual(record);
-        published.add(evidenceIdentity(candidate));
+        published.add(publicationIdentity(candidate));
       } catch {
         failed += 1;
       }
@@ -363,17 +360,19 @@ async function publishRequired(
       await promise;
     }
   }
-  // Read-back verification: publication is proven by registry content naming the
-  // same process (pid + creation-time bucket), so a same-pid record from a
-  // different (reused) process proves nothing.
+  // Read-back verification: publication is proven by registry content whose EXACT
+  // identity (pid + retained creation time, no tolerance) matches the required
+  // one. A residual file is keyed by pid alone, so two distinct identities
+  // sharing a pid cannot both be durable — proving them with one file would be a
+  // false proof of ownership for the record that was overwritten.
   const records = await registry.readCategory("residuals").catch(() => null);
   if (!records) return false;
   const present = new Set(
     records.flatMap(({ record }) => ("pid" in record && "creationDate" in record
-      ? [evidenceIdentity({ pid: record.pid, creationDate: record.creationDate })]
+      ? [publicationIdentity({ pid: record.pid, creationDate: record.creationDate })]
       : [])),
   );
-  return fullyPublishable && complete.every((item) => present.has(evidenceIdentity(item)));
+  return fullyPublishable && complete.every((item) => present.has(publicationIdentity(item)));
 }
 
 async function attemptOnce(options: ConvergeOrphansOptions): Promise<TerminateDescendantsResult> {
