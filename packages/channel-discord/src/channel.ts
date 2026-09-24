@@ -1018,7 +1018,12 @@ export class DiscordChannel implements MessageChannelRuntime {
       components: DiscordActionRow[];
       selectRows?: DiscordSelectActionRow[];
     };
-    const fieldCard = (key: string): { content: string; components: DiscordActionRow[]; selectRows?: DiscordSelectActionRow[] } => {
+    const fieldCard = (key: string): {
+      content: string;
+      components: DiscordActionRow[];
+      selectRows?: DiscordSelectActionRow[];
+      contents?: string[];
+    } => {
       const field = entry.request.fields.find((f) => f.key === key);
       if (!field) throw new Error(`wizard field ${JSON.stringify(key)} is not in the request`);
       return buildElicitationFieldCard(entry.request, entry.token, field, entry.request.fields.indexOf(field) + 1, entry.values[field.key]);
@@ -1310,7 +1315,17 @@ export class DiscordChannel implements MessageChannelRuntime {
     if (!field) return;
     // The field identity also proves the answer's kind, so it is used below by
     // the branch that writes the value.
-    if (interaction.values.length === 0) {
+    //
+    // An EMPTY selection is a LEGAL ANSWER for a multi-select, not a non-answer:
+    // core's validator accepts `[]` and only limits its length when the schema
+    // declares `minItems`. Discord delivers an empty selection when the user
+    // clears the control, so treating it as "no answer" merged two distinct
+    // things — an explicit empty array and an omitted field — and made a
+    // `minItems: 0` answer impossible to express at all.
+    //
+    // For a SINGLE select an empty delivery is still not an answer: there is
+    // exactly one legal value, and clearing it says nothing the schema asked for.
+    if (interaction.values.length === 0 && field.kind !== "multi-select") {
       await interaction.replyEphemeral(getMessages().elicitationFieldHint);
       return;
     }

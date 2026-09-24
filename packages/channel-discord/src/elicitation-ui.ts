@@ -242,6 +242,43 @@ function truncate(value: string, max: number): string {
 const MAX_CARD_CHARS = 1800;
 
 /**
+ * Where a Discord message may be cut without losing content.
+ *
+ * Two kinds of boundary must never be crossed, and a raw
+ * `paragraph.slice(offset, offset + limit)` crosses both:
+ *
+ *   - inside an ESCAPE ATOM. `escapeDiscordLiteralText` writes `\` before every
+ *     Markdown metacharacter, so `>` becomes `\>`. Cutting between those two
+ *     characters leaves the next message starting with a BARE `>`, which Discord
+ *     renders as a blockquote — the escape was spent and the structure the
+ *     escaper removed is back. The same applies to `\*`, `\_`, `\``, `\~`, `\#`.
+ *   - inside a surrogate pair. JS slices by UTF-16 code unit, so a cut between
+ *     the halves of an emoji emits one unpaired surrogate per message and the
+ *     character is unrecoverable on both sides.
+ *
+ * Backing up to a boundary is safe in both directions and never changes what the
+ * reader sees, because the pieces are concatenated by the reader.
+ */
+function safeCutEnd(text: string, offset: number, limit: number): number {
+  let end = Math.min(offset + limit, text.length);
+  // The cut landed between a `\` and the metacharacter it introduces: pull the
+  // whole escape atom into this chunk, so the next message never opens with a
+  // bare metacharacter. `intro === end - 1` means the `\` is the last character
+  // that would be kept, and its partner would start the next chunk.
+  const intro = text.lastIndexOf("\\", end - 1);
+  if (intro !== -1 && intro >= offset && intro === end - 1) {
+    end = intro;
+  }
+  // Back up over a high surrogate whose low half would be split off.
+  while (end > offset) {
+    const code = text.charCodeAt(end - 1);
+    if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+    else break;
+  }
+  return end;
+}
+
+/**
  * Split rendered text into card-sized chunks WITHOUT losing content.
  *
  * Every previous version called `truncate(...)` on the joined body and accepted
@@ -253,6 +290,10 @@ const MAX_CARD_CHARS = 1800;
  *
  * Chunking preserves every character across several messages; the caller is
  * responsible for attaching controls to the LAST one (or the only one).
+ *
+ * A cut moves BACKWARD to a boundary that keeps both the escape atoms and the
+ * surrogate pairs whole, so a chunk boundary can never reactivate escaped Markdown
+ * (`>` in particular renders as a blockquote) or split a character.
  */
 export function chunkCardText(text: string, limit = MAX_CARD_CHARS): string[] {
   if (text.length <= limit) return [text];
@@ -268,8 +309,12 @@ export function chunkCardText(text: string, limit = MAX_CARD_CHARS): string[] {
         chunks.push(current);
         current = "";
       }
-      for (let offset = 0; offset < paragraph.length; offset += limit) {
-        chunks.push(paragraph.slice(offset, offset + limit));
+      for (let offset = 0; offset < paragraph.length;) {
+        const end = safeCutEnd(paragraph, offset, limit);
+        // A pathological run of escape introducers could make the safe cut
+        // empty; advance by one so the loop always terminates.
+        chunks.push(paragraph.slice(offset, Math.max(end, offset + 1)));
+        offset = Math.max(end, offset + 1);
       }
       continue;
     }
@@ -341,6 +386,18 @@ export function buildElicitationFieldCard(
   current: ChannelElicitationValue | undefined,
 ): {
   content: string;
+  /**
+   * Every chunk of the field text, in order — the same shape as the opening and
+   * review cards.
+   *
+   * Taking only `[0]` was the bug: the renderability gate measures a description
+   * by RAW length (core allows 1000), but escaping expands Markdown metacharacters
+   * up to 2x, so a 1000-char description of `*` chars becomes ~2000 escaped chars.
+   * Added to the title, agent identity and hint, that is several chunks, and every
+   * one past the first was silently discarded — the question the user was
+   * answering was cut off while the controls stayed enabled.
+   */
+  contents: string[];
   components: DiscordActionRow[];
   selectRows: DiscordSelectActionRow[];
   modalAction: boolean;
@@ -408,8 +465,24 @@ export function buildElicitationFieldCard(
     { label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 },
     { label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 },
   ];
+  const chunked = chunkCardText(lines.join("\n\n"));
+  // A field card is ONE message, and it must stay that way.
+  //
+  // Returning every chunk here would hand the channel a wizard step whose text
+  // spans several messages, and that is where this gets unsound: a field card is
+  // re-rendered from an interaction, from a modal, and from a review->Edit jump,
+  // and a continuation set written by one of those while another is still in
+  // flight ends up misaligned — the review edits continuation 0, leaves 1 holding
+  // the PREVIOUS answer, and creates a new message instead of reusing it. The
+  // user is then shown both answers with no way to tell which one Submit sends.
+  //
+  // So the renderability gate is what keeps a field page renderable: it refuses a
+  // form whose rendered field text cannot fit one message. This slice is the
+  // fallback for a disagreement between the gate and the builder, and cutting to
+  // the first chunk is at least a drawable card with reachable controls.
   return {
-    content: chunkCardText(lines.join("\n\n"))[0]!,
+    content: chunked[0]!,
+    contents: chunked.slice(0, 1),
     components: [...actionRow(fieldControls), ...actionRow(terminalControls)],
     selectRows: isSelect
       ? buildElicitationSelectRows(token, field, current, position)
@@ -628,8 +701,34 @@ export function buildElicitationSelectRows(
           placeholder: truncate(field.title, DISCORD_SELECT_PLACEHOLDER_MAX),
           ...(field.kind === "multi-select"
             ? {
-                ...(field.minItems !== undefined ? { minValues: field.minItems } : {}),
-                ...(field.maxItems !== undefined ? { maxValues: field.maxItems } : {}),
+                // Discord's String Select DEFAULTS to 1/1 when a bound is
+                // omitted, so leaving them out silently redefines the schema:
+                // a multi-select with no bounds became "pick exactly one", and
+                // `{ minItems: 2 }` with no `maxItems` became a component
+                // demanding at least 2 while allowing at most 1 — self-
+                // contradictory, and rejected by the platform.
+                //
+                // Both bounds are therefore stated EXPLICITLY, normalised to the
+                // domain core will actually accept:
+                //
+                //   minValues = minItems ?? 0 — core accepts an empty selection
+                //                         unless the schema says otherwise;
+                //   maxValues = maxItems ?? option count — the schema's real
+                //                         upper bound is "any number of the
+                //                         offered options", which is bounded
+                //                         by how many there are (Discord caps a
+                //                         select at 25 options, and the
+                //                         renderability gate already limits the
+                //                         count far below that).
+                //
+                // The platform allows at most 25, so a schema whose bound or
+                // option set exceeds it cannot be expressed and is refused by
+                // the gate rather than clamped here.
+                minValues: field.minItems ?? 0,
+                maxValues: Math.min(
+                  field.maxItems ?? field.options.length,
+                  field.options.length,
+                ),
               }
             : {}),
           options: field.options.map((option) => ({

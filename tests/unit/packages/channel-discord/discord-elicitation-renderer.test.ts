@@ -11,7 +11,10 @@ import type {
   ShowModalInput,
 } from "../../../../packages/channel-discord/src/types";
 import { setChannelLocale } from "../../../../packages/channel-discord/src/i18n";
-import type { ChannelElicitationRequest } from "xacpx/plugin-api";
+import { buildElicitationFieldCard } from "../../../../packages/channel-discord/src/elicitation-ui";
+import { buildElicitationOpening } from "../../../../packages/channel-discord/src/elicitation-ui";
+import { checkElicitationRenderability } from "../../../../packages/channel-discord/src/elicitation-limits";
+import type { ChannelElicitationField, ChannelElicitationRequest } from "xacpx/plugin-api";
 import type { ChannelStartInput } from "xacpx/plugin-api";
 
 /**
@@ -626,7 +629,11 @@ test("an intruder's select or modal cannot write an answer", async () => {
   }
 });
 
-test("an empty select is not recorded as an answer", async () => {
+test("an empty multi-select selection is a LEGAL answer, not a non-answer", async () => {
+  // Core's validator accepts `[]` for a multi-select and only limits its length
+  // when the schema declares `minItems`. Treating an empty delivery as "no answer"
+  // merged two distinct statements — an explicit empty array and an omitted field
+  // — and made a `minItems: 0` answer impossible to express at all.
   const client = makeFakeClient();
   const { channel, abort } = await startChannel(client);
   try {
@@ -636,6 +643,7 @@ test("an empty select is not recorded as an answer", async () => {
         key: "tags",
         title: "Tags",
         required: false,
+        minItems: 0,
         options: [{ value: "a", label: "Alpha" }],
       },
     ]);
@@ -643,13 +651,83 @@ test("an empty select is not recorded as an answer", async () => {
     const rows = client.edited[client.edited.length - 1]!.body.selectRows ?? [];
     client.emitSelect(select(client, rows[0]!.components[0]!.customId, []));
     await new Promise((r) => setTimeout(r, 5));
-    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { values: Record<string, unknown> }>;
+    }).pendingElicitations;
     const entry = [...store.values()][0]!;
-    expect(entry.values.tags).toBeUndefined();
+    // Present, and an empty array — NOT absent, and NOT a skip.
+    expect(Object.hasOwn(entry.values, "tags")).toBe(true);
+    expect(entry.values.tags).toEqual([]);
   } finally {
     abort.abort();
     await channel.stop().catch(() => {});
   }
+});
+
+test("an empty single-select delivery is still not an answer", async () => {
+  // The mirror image: a single select has exactly one legal value, so clearing it
+  // says nothing the schema asked for. The multi-select carve-out above must not
+  // have widened this.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "single-select", key: "env", title: "Env", required: false, options: [{ value: "a", label: "Alpha" }] },
+    ]);
+    await startWizard(client, channel, req, "env");
+    const rows = client.edited[client.edited.length - 1]!.body.selectRows ?? [];
+    client.emitSelect(select(client, rows[0]!.components[0]!.customId, []));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { values: Record<string, unknown> }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(Object.hasOwn(entry.values, "env")).toBe(false);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a multi-select build states both bounds so the platform cannot narrow them", () => {
+  // A String Select DEFAULTS to 1/1 when a bound is omitted, so leaving them out
+  // silently redefined the schema: no bounds meant "pick exactly one", and
+  // `{ minItems: 2 }` with no `maxItems` produced a component demanding at least
+  // 2 while allowing at most 1 — self-contradictory and rejected by Discord.
+  const build = (
+    field: Extract<ChannelElicitationField, { kind: "multi-select" }>,
+  ): Record<string, unknown> => {
+    setChannelLocale("en");
+    const card = buildElicitationFieldCard(
+      { requestId: "r", chatKey: "c", agent: { name: "codex" }, message: "m", mode: "form", fields: [field], requester: { senderId: "u" }, expiresAt: 0, signal: new AbortController().signal } as never,
+      "tok",
+      field,
+      1,
+      undefined,
+    );
+    return (card.selectRows[0]!.components[0] as unknown as Record<string, unknown>);
+  };
+
+  const options = [
+    { value: "a", label: "Alpha" },
+    { value: "b", label: "Beta" },
+    { value: "c", label: "Gamma" },
+  ];
+  // No bounds: the accepted domain is "any number of the offered options",
+  // expressed explicitly rather than left to Discord's 1/1 default.
+  const unbounded = build({ kind: "multi-select", key: "k", title: "K", required: false, options });
+  expect(unbounded.minValues).toBe(0);
+  expect(unbounded.maxValues).toBe(3);
+
+  // `minItems` only: min is the schema's own, max is the option count.
+  const minOnly = build({ kind: "multi-select", key: "k", title: "K", required: false, minItems: 2, options });
+  expect(minOnly.minValues).toBe(2);
+  expect(minOnly.maxValues).toBe(3);
+
+  // Both declared: both are the schema's own values.
+  const both = build({ kind: "multi-select", key: "k", title: "K", required: false, minItems: 1, maxItems: 2, options });
+  expect(both.minValues).toBe(1);
+  expect(both.maxValues).toBe(2);
 });
 
 test("a pre-set default appears selected in the select render", async () => {
@@ -1226,11 +1304,17 @@ test("shortening an answer deletes the review's tail continuations", async () =>
     const primary = client.edited[client.edited.length - 1]!;
     // Exclude the primary by messageId, not object identity: it was captured
     // after the slice below was built.
+    const deletedSet = new Set(client.deleted.slice(deletedBefore));
+    // A deleted message is not live, whatever was last written to it.
     const continuationEdits = client.edited
       .slice(editedBefore)
-      .filter((entry) => entry.messageId !== primary.messageId);
+      .filter((entry) => entry.messageId !== primary.messageId && !deletedSet.has(entry.messageId));
     const liveContinuations = [
-      ...client.sent.slice(sentBefore).map((entry) => entry.body.content ?? ""),
+      // Only what was SENT and not later DELETED is live: the review trims the
+      // ones past its length, and a continuation deleted in that trim is gone.
+      ...client.sent.slice(sentBefore)
+        .filter((entry) => !deletedSet.has(entry.messageId))
+        .map((entry) => entry.body.content ?? ""),
       // A continuation edited in place shows its latest edit.
       ...continuationEdits.map((entry) => entry.body.content ?? ""),
     ];
@@ -2305,4 +2389,89 @@ test("a channel stop renders an expired form as expired, not cancelled", async (
   } finally {
     await channel.logout();
   }
+});
+
+test("chunking cannot reactivate escaped Markdown or split a surrogate pair", () => {
+  // Two boundaries a raw `slice(offset, offset + 1800)` crosses, and both are
+  // correctness bugs rather than cosmetic ones:
+  //
+  //   - it can cut between the `\` of an escape atom and the metacharacter it
+  //     introduces, so the NEXT message opens with a BARE `>` — a blockquote, the
+  //     structure the escaper removed, restored by the chunker;
+  //   - it can cut between a surrogate pair's halves, emitting one unpaired
+  //     surrogate per message so the character is unrecoverable on both sides.
+  const build = (message: string): string[] => {
+    const opening = buildElicitationOpening(
+      {
+        requestId: "r",
+        chatKey: "c",
+        agent: { name: "codex" },
+        message,
+        mode: "form",
+        fields: [],
+        requester: { senderId: "ou" },
+        expiresAt: Date.now() + 60_000,
+        signal: new AbortController().signal,
+      } as never,
+      "a".repeat(32),
+    );
+    return opening.contents;
+  };
+
+  // Structural repro: `"x" + ">".repeat(1000)`. Escaped, that is `\>` repeated
+  // 1000 times, so 1800 code units land exactly between a `\` and its `>`.
+  const structural = build(`x${">".repeat(1000)}`);
+  expect(structural.length).toBeGreaterThan(1);
+  // The FIRST message is the renderer's own header, which deliberately opens with
+  // `**`. Every CONTINUATION is pure agent text, and a continuation opening with a
+  // bare metacharacter is exactly the reactivation this test is for.
+  for (const chunk of structural.slice(1)) {
+    expect(chunk.startsWith(">")).toBe(false);
+    expect(chunk.startsWith("#")).toBe(false);
+    expect(chunk.startsWith("|")).toBe(false);
+    expect(chunk.startsWith("`")).toBe(false);
+    expect(chunk.startsWith("*")).toBe(false);
+    expect(chunk.startsWith("_")).toBe(false);
+    expect(chunk.startsWith("~")).toBe(false);
+  }
+  // The escape atoms survive intact: no chunk ends on a lone `\`.
+  for (const chunk of structural) {
+    expect(chunk.endsWith("\\")).toBe(false);
+  }
+  // And nothing was lost: the concatenation still renders the original text once
+  // Discord processes the escapes, which means every atom is whole.
+  expect(structural.map((chunk) => chunk.replace(/\\/g, "")).join("")).toContain(">".repeat(1000));
+
+  // Surrogate repro: fill past the first boundary with ASCII, then an emoji.
+  const withEmoji = build(`${"a".repeat(1799)}😀${"b".repeat(200)}`);
+  expect(withEmoji.length).toBeGreaterThan(1);
+  // Code-point count is the load-bearing check: a split surrogate pair shows up as
+  // one MORE UTF-16 unit than code points. The emoji is one code point worth two
+  // units, so a whole chunk with the emoji in it has cps === len - 1, and a split
+  // would leave an unpaired half on each side with cps === len.
+  for (const chunk of withEmoji) {
+    expect([...chunk].length).toBe(chunk.length - (chunk.includes("\u{1F600}") ? 1 : 0));
+  }
+  // The emoji is in exactly one message and intact.
+  expect(withEmoji.filter((chunk) => chunk.includes("😀"))).toHaveLength(1);
+});
+
+test("a field description whose rendered text would overflow one message is refused", () => {
+  // A field page must stay a SINGLE message. The gate used to judge a description
+  // by RAW length (core allows 1000), but escaping doubles every Markdown
+  // metacharacter, so 1000 `*` chars become ~2000 escaped ones — more than one
+  // 1800-char card — and the field card took only `[0]`, silently cutting the
+  // question while its controls stayed enabled.
+  const verdict = checkElicitationRenderability([
+    { kind: "text", key: "note", title: "Note", required: true, maxLength: 100, description: "*".repeat(1000) },
+  ]);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("field-text-too-long");
+  expect(verdict.detail).toContain("escaped chars");
+
+  // A plain ASCII description of the same raw length fits, because nothing
+  // escapes.
+  expect(checkElicitationRenderability([
+    { kind: "text", key: "note", title: "Note", required: true, maxLength: 100, description: "a".repeat(1000) },
+  ]).renderable).toBe(true);
 });

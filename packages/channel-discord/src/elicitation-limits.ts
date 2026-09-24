@@ -74,6 +74,57 @@ export const DISCORD_SELECT_PLACEHOLDER_MAX = 150;
  */
 export const DISCORD_TEXT_CAPTURE_MAX = 4000;
 
+/**
+ * Hard ceiling for a field card's rendered text.
+ *
+ * A field page must stay a SINGLE message: the opening and review cards chunk
+ * across messages, but a wizard step re-renders from several directions (an
+ * interaction, a modal, a review->Edit jump) and a continuation set written by
+ * one while another is in flight misaligns — leaving the previous answer visible
+ * under the current one with no way to tell which one Submit sends. So the gate
+ * refuses a field whose rendered text cannot fit, rather than chunking it.
+ */
+export const FIELD_CARD_TEXT_MAX = 1800;
+
+/**
+ * Length of `value` after Discord's Markdown escaping.
+ *
+ * `escapeDiscordLiteralText` writes one `\` before each Markdown metacharacter,
+ * so every escaped character contributes exactly 2 units and everything else 1.
+ * Summing that is an exact match for the escaper's output length — not an
+ * approximation — measured here rather than by importing the escaper, because
+ * elicitation-ui.ts imports this module and the reverse edge would be a cycle.
+ */
+function escapedDiscordLength(value: string): number {
+  let total = 0;
+  for (const character of value) {
+    total += isDiscordMarkdownMeta(character) ? 2 : 1;
+  }
+  return total;
+}
+
+/** Characters `escapeDiscordLiteralText` prefixes with a backslash. */
+function isDiscordMarkdownMeta(character: string): boolean {
+  return DISCORD_MARKDOWN_META.has(character);
+}
+
+/**
+ * The escape set `escapeDiscordLiteralText` covers, verbatim.
+ *
+ * Kept as a literal mirror of the regex `[<\\`*_~>|[\]()#]` in permission-ui.ts
+ * so the two cannot drift. If that regex ever changes, this set must change with
+ * it — the gate's refusal would otherwise be measured against the wrong output
+ * length. `DISCORD_ESCAPE_SET` in the test pins the equality.
+ */
+const DISCORD_MARKDOWN_META = new Set([
+  "<", "\\", "`", "*", "_", "~", ">", "|", "[", "]", "(", ")", "#",
+]);
+
+/** A field default rendered the way the card shows it. */
+function displayValue(value: string | number | boolean): string {
+  return String(value);
+}
+
 export type ElicitationUnsupportedReason =
   | "select-option-count"
   | "select-option-label-too-long"
@@ -83,6 +134,7 @@ export type ElicitationUnsupportedReason =
   | "select-placeholder-too-long"
   | "field-label-too-long"
   | "field-description-too-long"
+  | "field-text-too-long"
   | "text-min-beyond-capture"
   | "text-max-beyond-capture"
   | "text-unbounded"
@@ -175,8 +227,14 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
       // The platform rejects a select whose min/max contract exceeds its option
       // budget outright; catching it here avoids a message that Discord itself
       // will refuse to accept.
+      //
+      // The effective max is `maxItems ?? option count` — the same normalisation
+      // the component builder applies — so a `maxItems` past the platform's
+      // 25-value limit is caught here rather than silently narrowing the answer
+      // domain. Omitting `maxItems` cannot trip this: the option count is
+      // already bounded above by the platform limit.
       const bound = field.kind === "multi-select"
-        ? Math.max(field.minItems ?? 0, field.maxItems ?? 0)
+        ? Math.max(field.minItems ?? 0, field.maxItems ?? field.options.length)
         : 0;
       if (bound > DISCORD_SELECT_MIN_MAX_VALUES_MAX) {
         return {
@@ -228,6 +286,41 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
         renderable: false,
         reason: "field-description-too-long",
          detail: `field ${JSON.stringify(field.key)} description is ${(field.description ?? "").length} chars, limit 1000`,
+      };
+    }
+    // A FIELD PAGE IS ONE MESSAGE, and the escape can make it several.
+    //
+    // The gate measures a description by RAW length (core allows 1000), but
+    // `escapeDiscordLiteralText` doubles every Markdown metacharacter, so 1000
+    // `*` chars become ~2000 escaped ones. Added to the title, the agent identity
+    // and the hint, that is more than one 1800-char message — and the field card
+    // is the question the user is answering, so cutting it would change what was
+    // asked. The review and opening cards chunk; a field page cannot, because a
+    // wizard step re-renders from several directions and a continuation set
+    // written by one while another is in flight misaligns, leaving the previous
+    // answer visible under the current one.
+    //
+    // Refused rather than truncated, exactly like every other condition above the
+    // renderer cannot express.
+    //
+    // Measured conservatively without importing the escaper (which would cycle:
+    // elicitation-ui.ts imports this module): `escapeDiscordLiteralText` writes
+    // one `\` per Markdown metacharacter, so each escaped character costs exactly
+    // 2 units and every other character 1. Summing 2 per metacharacter and 1 per
+    // everything else is therefore an EXACT match for the escaper's output, not an
+    // approximation, and it cannot drift from it.
+    const renderedFieldText = [
+      field.title,
+      field.description ?? "",
+      "",
+      field.defaultValue !== undefined ? displayValue(field.defaultValue) : "",
+    ].join("\n\n");
+    const escapedLength = escapedDiscordLength(renderedFieldText);
+    if (escapedLength > FIELD_CARD_TEXT_MAX) {
+      return {
+        renderable: false,
+        reason: "field-text-too-long",
+        detail: `field ${JSON.stringify(field.key)} renders to ${escapedLength} escaped chars, limit ${FIELD_CARD_TEXT_MAX}`,
       };
     }
     if (field.kind === "text") {
@@ -363,6 +456,16 @@ export function findRejectedAnswer(
         if (typeof item !== "string" || !field.options.some((option) => option.value === item)) {
           return { key: field.key, reason: "not an offered option" };
         }
+      }
+      // The schema's own item bounds, checked before the review is committed so
+      // the user can correct a selection instead of seeing Accepted and then a
+      // cancellation. An empty array is LEGAL — core accepts `[]` and only limits
+      // the length when `minItems`/`maxItems` are declared.
+      if (field.minItems !== undefined && value.length < field.minItems) {
+        return { key: field.key, reason: `selects fewer than ${field.minItems}` };
+      }
+      if (field.maxItems !== undefined && value.length > field.maxItems) {
+        return { key: field.key, reason: `selects more than ${field.maxItems}` };
       }
       continue;
     }
