@@ -215,6 +215,19 @@ function decodeFingerprintSource(value: unknown): WindowsDescendantFingerprintSo
     : undefined;
 }
 
+/**
+ * A creation time is either absent (null) or a canonical FILETIME. Anything else
+ * — an arbitrary string from a malformed worker payload — fails the whole
+ * response closed rather than reaching `sameProcessIdentity`, which parses it
+ * with `BigInt()` and would throw. A throwing decoder also loses the normal
+ * `unverified` result the caller is designed to handle.
+ */
+function decodeCreationDate(value: unknown): string | null | undefined {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string" || parseCanonicalFileTime(value) === null) return undefined;
+  return value;
+}
+
 export function decodeWindowsDescendantsResponse(value: unknown, parentPid: number): TerminateDescendantsResult | null {
   if (!value || typeof value !== "object") return null;
   const response = value as Record<string, unknown>;
@@ -229,11 +242,13 @@ export function decodeWindowsDescendantsResponse(value: unknown, parentPid: numb
     const pid = Number(item.pid);
     if (pid === parentPid || seen.has(pid)) return null;
     if (typeof item.outcome !== "string" || !OUTCOMES.has(item.outcome as KillOutcome)) return null;
+    const creationDate = decodeCreationDate(item.creationDate);
+    if (creationDate === undefined) return null;
     seen.add(pid);
     outcomes.push({
       pid,
       outcome: item.outcome as KillOutcome,
-      creationDate: item.creationDate === null || item.creationDate === undefined || item.creationDate === "" ? null : String(item.creationDate),
+      creationDate,
       commandLine: typeof item.commandLine === "string" && item.commandLine.length > 0 ? item.commandLine : null,
       executablePath: typeof item.executablePath === "string" && item.executablePath.length > 0 ? item.executablePath : null,
       ...(decodeFingerprintSource(item.fingerprintSource) ? { fingerprintSource: decodeFingerprintSource(item.fingerprintSource)! } : {}),
@@ -247,11 +262,13 @@ export function decodeWindowsDescendantsResponse(value: unknown, parentPid: numb
     const pid = Number(item.pid);
     if (pid === parentPid || seen.has(pid)) return null;
     if (!Number.isSafeInteger(item.parentPid) || Number(item.parentPid) <= 0) return null;
+    const creationDate = decodeCreationDate(item.creationDate);
+    if (creationDate === undefined) return null;
     seen.add(pid);
     leftover.push({
       pid,
       parentPid: Number(item.parentPid),
-      creationDate: item.creationDate === null || item.creationDate === undefined || item.creationDate === "" ? null : String(item.creationDate),
+      creationDate,
       commandLine: typeof item.commandLine === "string" && item.commandLine.length > 0 ? item.commandLine : null,
       executablePath: typeof item.executablePath === "string" && item.executablePath.length > 0 ? item.executablePath : null,
       ...(decodeFingerprintSource(item.fingerprintSource) ? { fingerprintSource: decodeFingerprintSource(item.fingerprintSource)! } : {}),

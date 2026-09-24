@@ -668,9 +668,11 @@ test("merge: a creation-date-canonicalized safe outcome resolves the earlier qua
 });
 
 test("merge: a complete fingerprint replaces an incomplete one for the same process", () => {
-  // Same process, same provenance, same safety, but round 1 could not see the
-  // commandLine yet. An incomplete record can never become durable evidence, so
-  // it must not sit in the way of the complete one.
+  // Round 1 could not see the commandLine or the resolved path yet. Round 2
+  // observes the complete fingerprint for the SAME process (creation times within
+  // the identity tolerance). An incomplete record can never become durable
+  // evidence, so the complete one must REPLACE it — otherwise the incomplete one
+  // occupies the identity and blocks discharge forever.
   const merged = mergeEvidence(
     { verified: false, outcomes: [], leftover: [] },
     {
@@ -679,6 +681,41 @@ test("merge: a complete fingerprint replaces an incomplete one for the same proc
         pid: 5002,
         outcome: "access-denied",
         creationDate: "133801632000000010",
+        commandLine: null,
+        executablePath: null,
+        fingerprintSource: "cim",
+      }],
+      leftover: [],
+    },
+  );
+  const second = mergeEvidence(merged, {
+    verified: false,
+    outcomes: [{
+      pid: 5002,
+      outcome: "access-denied",
+      creationDate: "133801632000000012",
+      commandLine: "node adapter.js",
+      executablePath: "C:\\shim\\node.exe",
+      fingerprintSource: "cim",
+    }],
+    leftover: [],
+  });
+  expect(second.outcomes).toHaveLength(1);
+  expect(second.outcomes[0]!.executablePath).toBe("C:\\shim\\node.exe");
+  expect(second.outcomes[0]!.commandLine).toBe("node adapter.js");
+});
+
+test("merge: an incomplete fingerprint never replaces a complete one for the same process", () => {
+  // Reverse direction: a later observation that lost the commandLine must not
+  // erase a complete record for the same process.
+  const merged = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [] },
+    {
+      verified: false,
+      outcomes: [{
+        pid: 5002,
+        outcome: "access-denied",
+        creationDate: "133801632000000012",
         commandLine: "node adapter.js",
         executablePath: "C:\\shim\\node.exe",
         fingerprintSource: "cim",
@@ -691,7 +728,7 @@ test("merge: a complete fingerprint replaces an incomplete one for the same proc
     outcomes: [{
       pid: 5002,
       outcome: "access-denied",
-      creationDate: "133801632000000012",
+      creationDate: "133801632000000010",
       commandLine: null,
       executablePath: null,
       fingerprintSource: "cim",
@@ -701,4 +738,62 @@ test("merge: a complete fingerprint replaces an incomplete one for the same proc
   expect(second.outcomes).toHaveLength(1);
   expect(second.outcomes[0]!.executablePath).toBe("C:\\shim\\node.exe");
   expect(second.outcomes[0]!.commandLine).toBe("node adapter.js");
+});
+
+test("merge: two DIFFERENT processes whose creation times share a bucket both survive", () => {
+  // The publication index bucketizes the creation time to 2*tolerance+1 = 19
+  // ticks, so two times 10-18 ticks apart land in the SAME bucket while the
+  // comparator correctly reports them as DIFFERENT processes. Bucketing is an
+  // index only: merge membership must never be decided by it, or one process's
+  // evidence silently overwrites the other's.
+  const a = "133801632000000003";
+  const b = "133801632000000013";
+  expect(BigInt(b) - BigInt(a)).toBe(10n);
+  expect(sameProcessIdentity({ pid: 5002, creationDate: a }, { pid: 5002, creationDate: b })).toBe(false);
+  expect(evidenceIdentity({ pid: 5002, creationDate: a })).toBe(evidenceIdentity({ pid: 5002, creationDate: b }));
+
+  const merged = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [] },
+    {
+      verified: false,
+      outcomes: [{
+        pid: 5002,
+        outcome: "access-denied",
+        creationDate: a,
+        commandLine: "node adapter.js",
+        executablePath: "C:\\first\\node.exe",
+        fingerprintSource: "cim",
+      }],
+      leftover: [],
+    },
+  );
+  const second = mergeEvidence(merged, {
+    verified: false,
+    outcomes: [{
+      pid: 5002,
+      outcome: "killed",
+      creationDate: b,
+      commandLine: "node adapter.js",
+      executablePath: "C:\\second\\node.exe",
+      fingerprintSource: "handle",
+    }],
+    leftover: [],
+  });
+  // BOTH stay required evidence: neither is the same process, so neither can
+  // resolve the other, even though they share a publication bucket.
+  expect(second.outcomes).toHaveLength(2);
+  expect(second.outcomes.find((item) => item.creationDate === a)!.outcome).toBe("access-denied");
+  expect(second.outcomes.find((item) => item.creationDate === b)!.outcome).toBe("killed");
+  expect(second.verified).toBe(false);
+});
+
+test("merge: different processes sharing a bucket survive in leftovers too", () => {
+  const a = "133801632000000003";
+  const b = "133801632000000013";
+  const merged = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [{ pid: 5002, parentPid: 5001, creationDate: a, commandLine: "first", executablePath: "C:\\first.exe", fingerprintSource: "cim" }] },
+    { verified: false, outcomes: [], leftover: [{ pid: 5002, parentPid: 5001, creationDate: b, commandLine: "second", executablePath: "C:\\second.exe", fingerprintSource: "cim" }] },
+  );
+  expect(merged.leftover).toHaveLength(2);
+  expect(merged.leftover.map((item) => item.creationDate).sort()).toEqual([a, b].sort());
 });

@@ -174,31 +174,26 @@ export function sameProcessIdentity(a: ProcessIdentity, b: ProcessIdentity): boo
 }
 
 /**
- * Stable key for one process identity, used as the merge/publication index and
- * as the durable filename basis. The creation time is bucketized to the CIM
- * tolerance so the same process observed once quantized and once exactly yields
- * the SAME key. A bucket is `2 * tolerance + 1` ticks wide, so any two values
- * within the tolerance always share a bucket while values belonging to genuinely
- * different processes stay apart; the retained record always keeps its own exact
- * creationDate, so bucketing only affects grouping, never the durable value.
+ * Stable publication index for one process identity: which spool pass already
+ * wrote a record, and whether the registry read-back contains it.
+ *
+ * This is an INDEX, not the identity decision. Merge/publication membership is
+ * decided by `sameProcessIdentity`; this key only has to be stable across the
+ * precision with which one process is reported. The creation time is therefore
+ * bucketized to the CIM tolerance so a quantized observation and its exact
+ * kernel counterpart share a key. The bucket width (`2 * tolerance + 1` ticks)
+ * means two records 10–18 ticks apart can share a key while being DIFFERENT
+ * processes — which is exactly why the key must never be used to decide that two
+ * records are the same process.
  */
 export function evidenceIdentity(item: ProcessIdentity): string {
   if (item.creationDate === null) return `${item.pid}|`;
   return `${item.pid}|${bucketFloor(item.creationDate)}`;
 }
 
-/**
- * Bucket floor, rounded to a multiple of the bucket width. Two values within the
- * tolerance can still straddle a boundary, so callers MUST resolve identity with
- * `sameProcessIdentity` over the candidate bucket's neighbourhood — `bucketFloor`
- * alone is an index, not the identity decision.
- */
-function bucketFloor(creationDate: string | null): bigint {
-  if (creationDate === null) return 0n;
-  const ticks = BigInt(creationDate);
+function bucketFloor(creationDate: string): bigint {
   const width = CREATION_IDENTITY_TOLERANCE_TICKS * 2n + 1n;
-  // Floor division for non-negative FILETIME values.
-  return ticks - (ticks % width);
+  return BigInt(creationDate) - (BigInt(creationDate) % width);
 }
 
 /**
@@ -208,63 +203,55 @@ function bucketFloor(creationDate: string | null): bigint {
  * what an earlier attempt already captured.
  */
 export function mergeEvidence(a: TerminateDescendantsResult, b: TerminateDescendantsResult): TerminateDescendantsResult {
-  const outcomes = mergeOutcomes(a.outcomes, b.outcomes);
-  const leftover = mergeLeftover(a.leftover, b.leftover);
+  const outcomes = mergeByIdentity(a.outcomes, b.outcomes);
   // An outcome for a process always supersedes a leftover entry for the same
-  // one. `outcomes` is keyed by process identity, so one process contributes at
-  // most one record and the durable filename `${ownerToken}-${pid}.json` stays
-  // unambiguous — letting a leftover coexist would make two records compete for
-  // it and read-back could never prove publication complete.
+  // one, so one process contributes at most one record and the durable filename
+  // `${ownerToken}-${pid}.json` stays unambiguous — letting a leftover coexist
+  // would make two records compete for it and read-back could never prove
+  // publication complete.
   return {
     verified: a.verified || b.verified,
     outcomes,
-    leftover: leftover.filter((item) => !outcomes.some((outcome) => sameProcessIdentity(outcome, item))),
+    leftover: mergeByIdentity(a.leftover, b.leftover)
+      .filter((item) => !outcomes.some((outcome) => sameProcessIdentity(outcome, item))),
   };
 }
 
 /**
- * Merge two outcome lists by process identity. Two records naming the same
- * process collapse to one; `winsOver` decides which survives. Lookup is by
- * bucket first and then across the two neighbouring buckets, because two values
- * within the identity tolerance can still straddle a bucket boundary.
+ * The evidence shape shared by outcomes and leftovers: a process identity plus
+ * the observation fields `winsOver` compares when picking the survivor.
  */
-function mergeOutcomes(a: WindowsDescendantOutcome[], b: WindowsDescendantOutcome[]): WindowsDescendantOutcome[] {
-  const byBucket = new Map<string, WindowsDescendantOutcome>();
-  for (const item of [...a, ...b]) {
-    const existing = findSameProcess(byBucket, item);
-    if (!existing || winsOver(item, existing)) byBucket.set(evidenceIdentity(existing ?? item), item);
-  }
-  return [...byBucket.values()];
-}
-
-function mergeLeftover(a: WindowsDescendantLeftover[], b: WindowsDescendantLeftover[]): WindowsDescendantLeftover[] {
-  const byBucket = new Map<string, WindowsDescendantLeftover>();
-  for (const item of [...a, ...b]) {
-    const existing = findSameProcess(byBucket, item);
-    if (!existing || winsOver(item, existing)) byBucket.set(evidenceIdentity(existing ?? item), item);
-  }
-  return [...byBucket.values()];
+interface MergeableEvidence extends ProcessIdentity {
+  outcome?: KillOutcome;
+  fingerprintSource?: WindowsDescendantFingerprintSource;
+  commandLine: string | null;
+  executablePath: string | null;
 }
 
 /**
- * The already-merged record that names the same process as `item`, if any.
- * Examines the item's own bucket plus both neighbours; only same-pid entries
- * inside the creation tolerance qualify, so a reused pid with a far-apart
- * creation time is a different process and is never merged away.
+ * Merge two evidence lists by process identity: two records naming the same
+ * process collapse to one (`winsOver` picks the survivor), and records naming
+ * DIFFERENT processes all survive.
+ *
+ * This is a linear scan over `sameProcessIdentity` rather than a bucketed map.
+ * A bucket cannot serve as a map key: its width is `2 * tolerance + 1` ticks, so
+ * two creation times 10–18 ticks apart — provably DIFFERENT processes by the
+ * comparator — land in the same bucket and one would silently overwrite the
+ * other's evidence, discarding an unresolved ownership record. Evidence sets
+ * here are tiny (an adapter tree), so the scan costs nothing and correctness is
+ * directly readable from the comparator it calls.
  */
-function findSameProcess<T extends ProcessIdentity>(merged: Map<string, T>, item: T): T | null {
-  for (const key of neighbourhoodKeys(item)) {
-    const candidate = merged.get(key);
-    if (candidate && sameProcessIdentity(candidate, item)) return candidate;
+function mergeByIdentity<T extends MergeableEvidence>(a: readonly T[], b: readonly T[]): T[] {
+  const merged: T[] = [];
+  for (const item of [...a, ...b]) {
+    const index = merged.findIndex((existing) => sameProcessIdentity(existing, item));
+    if (index === -1) {
+      merged.push(item);
+      continue;
+    }
+    if (winsOver(item, merged[index]!)) merged[index] = item;
   }
-  return null;
-}
-
-function neighbourhoodKeys(item: ProcessIdentity): string[] {
-  if (item.creationDate === null) return [evidenceIdentity(item)];
-  const width = CREATION_IDENTITY_TOLERANCE_TICKS * 2n + 1n;
-  const floor = bucketFloor(item.creationDate);
-  return [floor - width, floor, floor + width].map((value) => `${item.pid}|${value}`);
+  return merged;
 }
 
 /**
@@ -276,10 +263,7 @@ function neighbourhoodKeys(item: ProcessIdentity): string[] {
  *                     incomplete one cannot, and must not block discharge;
  *   4. incumbent    — otherwise keep the first observation (deterministic).
  */
-function winsOver(
-  next: { outcome?: KillOutcome; fingerprintSource?: WindowsDescendantFingerprintSource; creationDate: string | null; commandLine: string | null; executablePath: string | null },
-  current: { outcome?: KillOutcome; fingerprintSource?: WindowsDescendantFingerprintSource; creationDate: string | null; commandLine: string | null; executablePath: string | null },
-): boolean {
+function winsOver(next: MergeableEvidence, current: MergeableEvidence): boolean {
   const nextSafe = next.outcome === undefined || next.outcome in SAFE_OUTCOMES;
   const currentSafe = current.outcome === undefined || current.outcome in SAFE_OUTCOMES;
   if (nextSafe !== currentSafe) return nextSafe;

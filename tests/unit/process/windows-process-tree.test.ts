@@ -990,3 +990,31 @@ windowsTest("real worker applies the CIM creation tolerance to a CIM-sourced roo
     try { refusedVictim.kill("SIGKILL"); } catch {}
   }
 }, 60_000);
+
+test("descendants decoder rejects a malformed creationDate instead of parsing it later", () => {
+  // The merge compares creation times with BigInt(), so an unchecked string from
+  // a corrupt worker payload would throw there instead of failing closed here.
+  const payload = {
+    verified: false,
+    outcomes: [{ pid: 5001, outcome: "access-denied", creationDate: "not-a-filetime", commandLine: "x", executablePath: "C:\\x.exe" }],
+    leftover: [],
+  };
+  expect(decodeWindowsDescendantsResponse(payload, 4242)).toBeNull();
+});
+
+test("descendants decoder rejects a malformed creationDate on a leftover too", () => {
+  const payload = {
+    verified: false,
+    outcomes: [],
+    leftover: [{ pid: 5001, parentPid: 4242, creationDate: "", commandLine: "x", executablePath: "C:\\x.exe" }],
+  };
+  // An empty creationDate means "absent", which is legal.
+  expect(decodeWindowsDescendantsResponse(payload, 4242)?.leftover[0]?.creationDate).toBeNull();
+
+  const garbage = {
+    verified: false,
+    outcomes: [],
+    leftover: [{ pid: 5001, parentPid: 4242, creationDate: "garbage", commandLine: "x", executablePath: "C:\\x.exe" }],
+  };
+  expect(decodeWindowsDescendantsResponse(garbage, 4242)).toBeNull();
+});
