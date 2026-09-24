@@ -213,6 +213,11 @@ function buildResiduals(source: ResidualSource, outcomes: ProcessTreeOutcome[]):
   for (const entry of outcomes) {
     if (entry.target.pid === source.pid || TERMINAL.has(entry.outcome)) continue;
     if (!RESIDUAL.has(entry.outcome) || !entry.target.creationDate || !entry.commandLine || !entry.executablePath) return null;
+    // The tree terminator replaces both fingerprint fields with the kernel
+    // values for every descendant it verified through a retained handle, so
+    // those entries replay with the exact compare. The root (and anything the
+    // worker could not verify) keeps what the caller supplied, which on this
+    // path is always CIM-derived.
     residuals.push({
       kind: "residual",
       ownerToken: source.ownerToken,
@@ -220,11 +225,7 @@ function buildResiduals(source: ResidualSource, outcomes: ProcessTreeOutcome[]):
       creationDate: entry.target.creationDate,
       commandLine: entry.commandLine,
       executablePath: entry.executablePath,
-      // The tree terminator snapshots creationDate from CIM (6-digit microsecond
-      // quantization, 1-9 ticks below the kernel value) even when it resolves
-      // the image through a retained handle, so this record is NOT wholly
-      // handle-derived and its replay must not demand an exact creation match.
-      fingerprintSource: "cim",
+      fingerprintSource: entry.fingerprintSource === "handle" ? "handle" : "cim",
       agentCommand: source.agentCommand,
       generationId: source.generationId,
       killAttempts: 0,

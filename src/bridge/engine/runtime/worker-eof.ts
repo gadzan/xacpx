@@ -134,22 +134,71 @@ export interface ConvergeOrphansOptions {
 const EMPTY_EVIDENCE: TerminateDescendantsResult = { verified: false, outcomes: [], leftover: [] };
 
 /**
- * Stable evidence identity. On Windows a pid is NOT identity (reuse), so every
- * merge/publication decision is keyed on the observed process fingerprint; two
- * records sharing a pid but differing in creationDate are DIFFERENT processes
- * and both stay required evidence.
+ * A process identity, NOT a fingerprint. `commandLine` and `executablePath` are
+ * deliberately excluded: both are OBSERVATION fields whose value depends on how
+ * the process was reached (a shim alias vs the resolved image) or on what the
+ * CIM row happened to publish yet (the row can lag the handle-derived identity),
+ * so keying on them splits ONE process into several identities. A split leaves
+ * a stale record required forever — it is spooled as a residual for a process
+ * that is already dead, and two "identities" for one pid compete for the single
+ * durable filename `${ownerToken}-${pid}.json`, which read-back can never
+ * satisfy.
  *
- * `executablePath` is deliberately NOT part of the key: the descendants worker
- * canonicalizes a shim-launched child's path from its CIM alias to the resolved
- * image once a handle is available, so the SAME process can be observed with a
- * different path across rounds (e.g. access-denied first, killed later).
- * Including it would split one process into two identities, leaving a stale
- * record that can never discharge and, worse, two records for the same pid
- * competing for one durable filename. `pid + creationDate` already identify the
- * process, and `commandLine` is the CIM row's stable argv0+args.
+ * `pid` alone is not identity either on Windows (reuse), so the creation time is
+ * part of it. Creation times are compared within the CIM quantization window
+ * (±9 ticks): the same process is reported with a CIM-quantized value one round
+ * and the kernel's FILETIME the next, and those are different numbers for ONE
+ * process (measured 43/48 non-zero on a live host). Two records whose creation
+ * times are farther apart than that are different processes and both stay
+ * required evidence.
  */
-export function evidenceIdentity(item: { pid: number; creationDate: string | null; commandLine: string | null }): string {
-  return `${item.pid}|${item.creationDate ?? ""}|${item.commandLine ?? ""}`;
+export interface ProcessIdentity {
+  pid: number;
+  creationDate: string | null;
+}
+
+/** CIM creationDate precision: 6-digit microseconds vs FILETIME's 100ns. */
+export const CREATION_IDENTITY_TOLERANCE_TICKS = 9n;
+
+/**
+ * True when both records name the same process. A null creation time is only
+ * compatible with another null (a pid without a creation time cannot be proven
+ * to be the same process, so it never merges away).
+ */
+export function sameProcessIdentity(a: ProcessIdentity, b: ProcessIdentity): boolean {
+  if (a.pid !== b.pid) return false;
+  if (a.creationDate === null || b.creationDate === null) return a.creationDate === b.creationDate;
+  const delta = BigInt(a.creationDate) - BigInt(b.creationDate);
+  const magnitude = delta < 0n ? -delta : delta;
+  return magnitude <= CREATION_IDENTITY_TOLERANCE_TICKS;
+}
+
+/**
+ * Stable key for one process identity, used as the merge/publication index and
+ * as the durable filename basis. The creation time is bucketized to the CIM
+ * tolerance so the same process observed once quantized and once exactly yields
+ * the SAME key. A bucket is `2 * tolerance + 1` ticks wide, so any two values
+ * within the tolerance always share a bucket while values belonging to genuinely
+ * different processes stay apart; the retained record always keeps its own exact
+ * creationDate, so bucketing only affects grouping, never the durable value.
+ */
+export function evidenceIdentity(item: ProcessIdentity): string {
+  if (item.creationDate === null) return `${item.pid}|`;
+  return `${item.pid}|${bucketFloor(item.creationDate)}`;
+}
+
+/**
+ * Bucket floor, rounded to a multiple of the bucket width. Two values within the
+ * tolerance can still straddle a boundary, so callers MUST resolve identity with
+ * `sameProcessIdentity` over the candidate bucket's neighbourhood — `bucketFloor`
+ * alone is an index, not the identity decision.
+ */
+function bucketFloor(creationDate: string | null): bigint {
+  if (creationDate === null) return 0n;
+  const ticks = BigInt(creationDate);
+  const width = CREATION_IDENTITY_TOLERANCE_TICKS * 2n + 1n;
+  // Floor division for non-negative FILETIME values.
+  return ticks - (ticks % width);
 }
 
 /**
@@ -159,51 +208,89 @@ export function evidenceIdentity(item: { pid: number; creationDate: string | nul
  * what an earlier attempt already captured.
  */
 export function mergeEvidence(a: TerminateDescendantsResult, b: TerminateDescendantsResult): TerminateDescendantsResult {
-  const byIdentity = new Map<string, WindowsDescendantOutcome>();
-  for (const item of [...a.outcomes, ...b.outcomes]) {
-    const key = evidenceIdentity(item);
-    const existing = byIdentity.get(key);
-    // A safe outcome resolves an unsafe one; when BOTH records describe the same
-    // process with the same safety, keep the better-fingerprinted record. A
-    // handle-derived fingerprint is authoritative (kernel creation time, resolved
-    // image), while a CIM one is quantized / aliased — so a later CIM observation
-    // must never overwrite a handle-derived one for the same process.
-    if (!existing || winsOver(item, existing)) byIdentity.set(key, item);
-  }
-  const leftover = new Map<string, WindowsDescendantLeftover>();
-  for (const item of [...a.leftover, ...b.leftover]) {
-    const key = evidenceIdentity(item);
-    const existing = leftover.get(key);
-    if (!existing || winsOver(item, existing)) leftover.set(key, item);
-  }
-  for (const key of byIdentity.keys()) leftover.delete(key);
-  const outcomes = [...byIdentity.values()];
-  const remaining = [...leftover.values()];
+  const outcomes = mergeOutcomes(a.outcomes, b.outcomes);
+  const leftover = mergeLeftover(a.leftover, b.leftover);
+  // An outcome for a process always supersedes a leftover entry for the same
+  // one. `outcomes` is keyed by process identity, so one process contributes at
+  // most one record and the durable filename `${ownerToken}-${pid}.json` stays
+  // unambiguous — letting a leftover coexist would make two records compete for
+  // it and read-back could never prove publication complete.
   return {
-    // Attempt-level proof, never recomputed from accumulated evidence: an
-    // empty merged set must NOT count as a verified empty tree. Only a real
-    // terminate-descendants-of attempt whose own final snapshot showed every
-    // discovered descendant safe and none remaining proves discharge.
     verified: a.verified || b.verified,
     outcomes,
-    leftover: remaining,
+    leftover: leftover.filter((item) => !outcomes.some((outcome) => sameProcessIdentity(outcome, item))),
   };
 }
 
 /**
+ * Merge two outcome lists by process identity. Two records naming the same
+ * process collapse to one; `winsOver` decides which survives. Lookup is by
+ * bucket first and then across the two neighbouring buckets, because two values
+ * within the identity tolerance can still straddle a bucket boundary.
+ */
+function mergeOutcomes(a: WindowsDescendantOutcome[], b: WindowsDescendantOutcome[]): WindowsDescendantOutcome[] {
+  const byBucket = new Map<string, WindowsDescendantOutcome>();
+  for (const item of [...a, ...b]) {
+    const existing = findSameProcess(byBucket, item);
+    if (!existing || winsOver(item, existing)) byBucket.set(evidenceIdentity(existing ?? item), item);
+  }
+  return [...byBucket.values()];
+}
+
+function mergeLeftover(a: WindowsDescendantLeftover[], b: WindowsDescendantLeftover[]): WindowsDescendantLeftover[] {
+  const byBucket = new Map<string, WindowsDescendantLeftover>();
+  for (const item of [...a, ...b]) {
+    const existing = findSameProcess(byBucket, item);
+    if (!existing || winsOver(item, existing)) byBucket.set(evidenceIdentity(existing ?? item), item);
+  }
+  return [...byBucket.values()];
+}
+
+/**
+ * The already-merged record that names the same process as `item`, if any.
+ * Examines the item's own bucket plus both neighbours; only same-pid entries
+ * inside the creation tolerance qualify, so a reused pid with a far-apart
+ * creation time is a different process and is never merged away.
+ */
+function findSameProcess<T extends ProcessIdentity>(merged: Map<string, T>, item: T): T | null {
+  for (const key of neighbourhoodKeys(item)) {
+    const candidate = merged.get(key);
+    if (candidate && sameProcessIdentity(candidate, item)) return candidate;
+  }
+  return null;
+}
+
+function neighbourhoodKeys(item: ProcessIdentity): string[] {
+  if (item.creationDate === null) return [evidenceIdentity(item)];
+  const width = CREATION_IDENTITY_TOLERANCE_TICKS * 2n + 1n;
+  const floor = bucketFloor(item.creationDate);
+  return [floor - width, floor, floor + width].map((value) => `${item.pid}|${value}`);
+}
+
+/**
  * True when `next` should replace `current` as the retained record for one
- * process identity. Safety is the first discriminator (an unresolved process
- * must stay required evidence); provenance is the second, so the record that
- * survives carries the strongest available fingerprint.
+ * process identity, in order:
+ *   1. safety       — an unresolved process must stay required evidence;
+ *   2. provenance   — handle > cim > unknown (kernel values are authoritative);
+ *   3. completeness — a full fingerprint can become durable evidence, an
+ *                     incomplete one cannot, and must not block discharge;
+ *   4. incumbent    — otherwise keep the first observation (deterministic).
  */
 function winsOver(
-  next: { outcome?: KillOutcome; fingerprintSource?: WindowsDescendantFingerprintSource },
-  current: { outcome?: KillOutcome; fingerprintSource?: WindowsDescendantFingerprintSource },
+  next: { outcome?: KillOutcome; fingerprintSource?: WindowsDescendantFingerprintSource; creationDate: string | null; commandLine: string | null; executablePath: string | null },
+  current: { outcome?: KillOutcome; fingerprintSource?: WindowsDescendantFingerprintSource; creationDate: string | null; commandLine: string | null; executablePath: string | null },
 ): boolean {
   const nextSafe = next.outcome === undefined || next.outcome in SAFE_OUTCOMES;
   const currentSafe = current.outcome === undefined || current.outcome in SAFE_OUTCOMES;
   if (nextSafe !== currentSafe) return nextSafe;
-  return provenanceRank(next.fingerprintSource) > provenanceRank(current.fingerprintSource);
+  const nextRank = provenanceRank(next.fingerprintSource);
+  const currentRank = provenanceRank(current.fingerprintSource);
+  if (nextRank !== currentRank) return nextRank > currentRank;
+  // A complete fingerprint can become durable evidence; an incomplete one
+  // cannot, and must not sit in the way of one that can.
+  const nextComplete = next.creationDate !== null && next.commandLine !== null && next.executablePath !== null;
+  const currentComplete = current.creationDate !== null && current.commandLine !== null && current.executablePath !== null;
+  return nextComplete !== currentComplete && nextComplete;
 }
 
 function provenanceRank(source: WindowsDescendantFingerprintSource | undefined): number {
@@ -292,15 +379,14 @@ async function publishRequired(
       await promise;
     }
   }
-  // Read-back verification: publication is proven by registry content whose
-  // full process identity (pid + creationDate + commandLine) matches the
-  // required one — a same-pid record from a different (reused) process proves
-  // nothing.
+  // Read-back verification: publication is proven by registry content naming the
+  // same process (pid + creation-time bucket), so a same-pid record from a
+  // different (reused) process proves nothing.
   const records = await registry.readCategory("residuals").catch(() => null);
   if (!records) return false;
   const present = new Set(
     records.flatMap(({ record }) => ("pid" in record && "creationDate" in record
-      ? [evidenceIdentity({ pid: record.pid, creationDate: record.creationDate, commandLine: record.commandLine ?? null })]
+      ? [evidenceIdentity({ pid: record.pid, creationDate: record.creationDate })]
       : [])),
   );
   return fullyPublishable && complete.every((item) => present.has(evidenceIdentity(item)));

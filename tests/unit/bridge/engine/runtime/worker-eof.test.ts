@@ -7,6 +7,7 @@ import {
   convergeOrphansBeforeExit,
   evidenceIdentity,
   mergeEvidence,
+  sameProcessIdentity,
 } from "../../../../../src/bridge/engine/runtime/worker-eof";
 import { type TerminateDescendantsResult } from "../../../../../src/process/windows-process-tree";
 import {
@@ -320,20 +321,25 @@ test("windows: total-failure attempts on both rounds do not exit verified", asyn
 test("merge: same pid with a different creationDate is a distinct identity", () => {
   // Review round 22 Blocking 2: pid reuse must not let a later killed outcome
   // for a NEW process resolve an earlier unsafe identity of a DIFFERENT one.
+  // The two creation dates differ by far more than the CIM identity tolerance
+  // (9 ticks): a reused pid's process was created a different time entirely, so
+  // these must stay two required identities. Values within the tolerance are the
+  // SAME process observed at different precision and DO merge (see the
+  // canonicalization regression below).
   const a = mergeEvidence({ verified: false, outcomes: [], leftover: [] }, {
     verified: false,
-    outcomes: [{ pid: 5002, outcome: "access-denied", creationDate: "133801632000000001", commandLine: "x", executablePath: "C:\\x.exe" }],
+    outcomes: [{ pid: 5002, outcome: "access-denied", creationDate: "133801632000000000", commandLine: "x", executablePath: "C:\\x.exe" }],
     leftover: [],
   });
   const b = mergeEvidence(a, {
     verified: false,
-    outcomes: [{ pid: 5002, outcome: "killed", creationDate: "133801632000000002", commandLine: "y", executablePath: "C:\\y.exe" }],
+    outcomes: [{ pid: 5002, outcome: "killed", creationDate: "133801632000100000", commandLine: "y", executablePath: "C:\\y.exe" }],
     leftover: [],
   });
   expect(b.verified).toBe(false);
   // The OLD process (A) is still required evidence, unresolved.
   expect(b.outcomes.map((item) => item.pid).filter((pid) => pid === 5002)).toHaveLength(2);
-  expect(b.outcomes.find((item) => item.creationDate === "133801632000000001")?.outcome).toBe("access-denied");
+  expect(b.outcomes.find((item) => item.creationDate === "133801632000000000")?.outcome).toBe("access-denied");
 });
 
 test("windows: a stale same-pid record cannot fake durable ownership for a reused pid", async () => {
@@ -342,9 +348,11 @@ test("windows: a stale same-pid record cannot fake durable ownership for a reuse
     const registry = new OrphanRegistry(dir);
     await registry.initialize();
     // Pre-existing record from a PRIOR discharge: pid 5002, creationDate A.
+    // B below was created a DIFFERENT time entirely (well outside the 9-tick
+    // identity tolerance), so it is a different process that reused the pid.
     await registry.writeResidual({
       schemaVersion: 1, kind: "residual", ownerToken: "00000000-0000-4000-8000-0000000000aa",
-      pid: 5002, creationDate: "133801632000000001", commandLine: "old", executablePath: "C:\\old.exe",
+      pid: 5002, creationDate: "133801632000000000", commandLine: "old", executablePath: "C:\\old.exe",
       agentCommand: "codex", generationId: "00000000-0000-4000-8000-000000000001", killAttempts: 0,
     });
     // Block the CURRENT discharge's record for pid 5002 (creationDate B):
@@ -356,7 +364,7 @@ test("windows: a stale same-pid record cannot fake durable ownership for a reuse
       platform: "win32",
       terminateDescendants: async () => ({
         verified: false,
-        outcomes: [{ pid: 5002, outcome: "access-denied", creationDate: "133801632000000002", commandLine: "new", executablePath: "C:\\new.exe" }],
+        outcomes: [{ pid: 5002, outcome: "access-denied", creationDate: "133801632000100000", commandLine: "new", executablePath: "C:\\new.exe" }],
         leftover: [],
       }),
       maxRounds: 2,
@@ -583,4 +591,114 @@ test("windows: a residual whose fingerprint came from CIM replays with creation 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("evidence identity is stable when the worker canonicalizes the creation time across rounds", () => {
+  // VF() writes the handle creation time back on success, so the SAME process is
+  // reported with a CIM-quantized value one round and the kernel FILETIME the
+  // next — different numbers, one process (measured 43/48 non-zero on a live
+  // host, deltas 1-9 ticks). Identity must not split on that.
+  const quantized = { pid: 5002, creationDate: "133801632000000010" };
+  const exact = { pid: 5002, creationDate: "133801632000000017" };
+  expect(evidenceIdentity(quantized)).toBe(evidenceIdentity(exact));
+  expect(sameProcessIdentity(quantized, exact)).toBe(true);
+});
+
+test("evidence identity keeps a reused pid separate", () => {
+  // Same pid, creation times far apart: a different process that reused the pid.
+  // Both must stay required evidence.
+  expect(sameProcessIdentity({ pid: 5002, creationDate: "133801632000000000" }, { pid: 5002, creationDate: "133801632000100000" })).toBe(false);
+  expect(evidenceIdentity({ pid: 5002, creationDate: "133801632000000000" })).not.toBe(evidenceIdentity({ pid: 5002, creationDate: "133801632000100000" }));
+});
+
+test("evidence identity is stable when a CIM commandLine is still missing", () => {
+  // The CIM row can lag the handle-derived identity, so one round reports
+  // commandLine null and a later one the full argv. commandLine is evidence, not
+  // identity: a null must not fork the process into a second, permanently
+  // unpublishable identity.
+  const withoutCommandLine = { pid: 5002, creationDate: "133801632000000010" };
+  const withCommandLine = { pid: 5002, creationDate: "133801632000000010" };
+  expect(evidenceIdentity(withoutCommandLine)).toBe(evidenceIdentity(withCommandLine));
+});
+
+test("merge: a creation-date-canonicalized safe outcome resolves the earlier quantized unsafe one", () => {
+  // Round 1: access-denied leaves an unsafe record with the CIM creation time and
+  // the shim alias. Round 2: the same process is verified through a handle,
+  // killed, and reports the kernel creation time plus the resolved image — a
+  // DIFFERENT creationDate for the same process. It must still resolve round 1
+  // and the surviving record must keep the handle-derived fingerprint. Another
+  // process is still unresolved, so the round is not verified.
+  const round1 = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [] },
+    {
+      verified: false,
+      outcomes: [{
+        pid: 5002,
+        outcome: "access-denied",
+        creationDate: "133801632000000010",
+        commandLine: "node adapter.js",
+        executablePath: "C:\\shim\\node.exe",
+        fingerprintSource: "cim",
+      }],
+      leftover: [],
+    },
+  );
+  const merged = mergeEvidence(round1, {
+    verified: false,
+    outcomes: [{
+      pid: 5002,
+      outcome: "killed",
+      creationDate: "133801632000000017",
+      commandLine: "node adapter.js",
+      executablePath: "C:\\real\\node.exe",
+      fingerprintSource: "handle",
+    }],
+    leftover: [{ pid: 5003, parentPid: 5002, creationDate: "133801632000000020", commandLine: "child", executablePath: "C:\\child.exe", fingerprintSource: "cim" }],
+  });
+  expect(merged.verified).toBe(false);
+  // ONE record for pid 5002, not one per creation-time representation.
+  expect(merged.outcomes.filter((item) => item.pid === 5002)).toHaveLength(1);
+  const survivor = merged.outcomes.find((item) => item.pid === 5002)!;
+  expect(survivor.outcome).toBe("killed");
+  expect(survivor.creationDate).toBe("133801632000000017");
+  expect(survivor.executablePath).toBe("C:\\real\\node.exe");
+  expect(survivor.fingerprintSource).toBe("handle");
+  // The still-unresolved process remains required evidence.
+  expect(merged.leftover.map((item) => item.pid)).toEqual([5003]);
+});
+
+test("merge: a complete fingerprint replaces an incomplete one for the same process", () => {
+  // Same process, same provenance, same safety, but round 1 could not see the
+  // commandLine yet. An incomplete record can never become durable evidence, so
+  // it must not sit in the way of the complete one.
+  const merged = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [] },
+    {
+      verified: false,
+      outcomes: [{
+        pid: 5002,
+        outcome: "access-denied",
+        creationDate: "133801632000000010",
+        commandLine: "node adapter.js",
+        executablePath: "C:\\shim\\node.exe",
+        fingerprintSource: "cim",
+      }],
+      leftover: [],
+    },
+  );
+  const second = mergeEvidence(merged, {
+    verified: false,
+    outcomes: [{
+      pid: 5002,
+      outcome: "access-denied",
+      creationDate: "133801632000000012",
+      commandLine: null,
+      executablePath: null,
+      fingerprintSource: "cim",
+    }],
+    leftover: [],
+  });
+  expect(second.outcomes).toHaveLength(1);
+  expect(second.outcomes[0]!.executablePath).toBe("C:\\shim\\node.exe");
+  expect(second.outcomes[0]!.commandLine).toBe("node adapter.js");
 });

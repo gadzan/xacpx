@@ -931,3 +931,62 @@ windowsTest("real descendants worker reports the resolved image, not the CIM ali
     await rm(dir, { recursive: true, force: true });
   }
 }, 60_000);
+
+// The reaper replays a residual whose fingerprint was only ever observable
+// through CIM. Such a creationDate is quantized to 6-digit microseconds and
+// differs from the kernel's FILETIME by 1-9 ticks, so the tree worker must
+// accept that tolerance for a CIM-sourced ROOT — while still refusing a
+// genuinely different process. This pins the safety boundary directly in the
+// PowerShell worker rather than at a mocked seam.
+windowsTest("real worker applies the CIM creation tolerance to a CIM-sourced root and still refuses a replaced one", async () => {
+  // Each assertion needs its OWN process: a successful tree kill terminates it,
+  // and a second call would then observe 'already-exited' rather than the
+  // outcome under test.
+  const settled = async (target: ReturnType<typeof spawn>) => {
+    let probe: Awaited<ReturnType<typeof probeWindowsProcessIdentity>> | null = null;
+    for (let attempt = 0; attempt < 100 && probe?.status !== "found"; attempt += 1) {
+      probe = await probeWindowsProcessIdentity(target.pid!);
+      if (probe?.status !== "found") await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return probe;
+  };
+  const spawnVictim = () => spawn("node", ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
+
+  // A CIM-sourced root 5 ticks off the kernel value must still be killed.
+  const toleratedVictim = spawnVictim();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const probe = await settled(toleratedVictim);
+    expect(probe?.status).toBe("found");
+    if (probe?.status !== "found") return;
+    const result = await terminateWindowsProcessTree({
+      pid: toleratedVictim.pid!,
+      creationDate: (BigInt(probe.identity.creationDate) - 5n).toString(),
+      fingerprintSource: "cim",
+    });
+    expect(result.rootOutcome).toBe("killed");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(() => process.kill(toleratedVictim.pid!, 0)).toThrow();
+  } finally {
+    try { toleratedVictim.kill("SIGKILL"); } catch {}
+  }
+
+  // The very same offset WITHOUT the CIM provenance is a replaced pid and must be
+  // refused — the exact compare is what makes pid reuse detectable.
+  const refusedVictim = spawnVictim();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const probe = await settled(refusedVictim);
+    expect(probe?.status).toBe("found");
+    if (probe?.status !== "found") return;
+    const refused = await terminateWindowsProcessTree({
+      pid: refusedVictim.pid!,
+      creationDate: (BigInt(probe.identity.creationDate) - 5n).toString(),
+    });
+    expect(refused.rootOutcome).toBe("skipped-replaced");
+    // The innocent process survives — a mismatched root kill must not fire.
+    expect(() => process.kill(refusedVictim.pid!, 0)).not.toThrow();
+  } finally {
+    try { refusedVictim.kill("SIGKILL"); } catch {}
+  }
+}, 60_000);
