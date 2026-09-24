@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { isHiddenProductSessionOwner } from "../../../src/state/types";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -375,6 +376,65 @@ test("parseState keeps triple-less ambiguous owners hidden for operator recovery
   expect(state.sessions.legacy_partial?.owner).toEqual({ kind: "group-member", bindingId: "bind_gone" });
   expect(state.sessions.legacy_partial?.alias).toBe("legacy_partial");
   expect(dropped.some((entry) => entry.key === "legacy_partial" && entry.reason.includes("requires operator recovery"))).toBe(true);
+});
+
+test("parseState keeps cross-kind group-member session owners hidden for operator recovery", () => {
+  const dropped: StateLoadDroppedRecord[] = [];
+  const state = parseState({
+    bots: {
+      bot_b: {
+        id: "bot_b", name: "B", agent: "codex", workspace: "backend", enabled: true,
+        profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+      },
+    },
+    conversations: {
+      conv_direct: {
+        id: "conv_direct", kind: "bot", title: "Reviewer", botIds: ["bot_b"],
+        createdAt: NOW, updatedAt: NOW,
+      },
+    },
+    conversation_topics: {
+      topic_direct: {
+        id: "topic_direct", conversationId: "conv_direct", title: "Default",
+        status: "active", createdAt: NOW, updatedAt: NOW,
+      },
+    },
+    sessions: {
+      cross: {
+        alias: "cross",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:cross",
+        logical_session_id: "99999999-9999-4999-8999-999999999999",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: {
+          kind: "group-member",
+          // Canonical for the (conv_direct, topic_direct, bot_b) triple — so
+          // this exercises the kind fence, not the canonical fence.
+          bindingId: "bind_5ffa2af9be2a759132a4a27d320243fa",
+          botId: "bot_b",
+          conversationId: "conv_direct",
+          topicId: "topic_direct",
+        },
+      },
+    },
+  }, "state.json", dropped);
+  // Cross-kind contradiction: the root EXISTS but is a Direct Conversation,
+  // which no Group teardown can cover and no Direct teardown sweeps. Keep
+  // verbatim-hidden (never auto-release under a kind contradiction, never
+  // reinterpret as unowned) and report for operator recovery.
+  expect(state.sessions.cross?.owner).toEqual({
+    kind: "group-member",
+    bindingId: "bind_5ffa2af9be2a759132a4a27d320243fa",
+    botId: "bot_b",
+    conversationId: "conv_direct",
+    topicId: "topic_direct",
+  });
+  expect(isHiddenProductSessionOwner(state.sessions.cross?.owner)).toBe(true);
+  expect(dropped.some(
+    (entry) => entry.key === "cross" && entry.reason.includes("ambiguous cross-kind"),
+  )).toBe(true);
 });
 
 test("parseState drops group-member bindings pointing at a Direct conversation", () => {

@@ -1263,9 +1263,11 @@ export class ConversationRunService {
    * canonical ownership as the physical cleanup handle). Runs inside
    * activateAfterConsumerLock BEFORE the first dispatcher kick, while the
    * daemon holds the consumer lock: no dispatcher can claim work for these
-   * sessions, and no materializer can publish a binding for them (any live
-   * Group with the same id would have been quarantined too — and a live
-   * Group makes the owner non-rootless, so it is skipped here).
+   * sessions, and no materializer can publish a binding for them. Any live
+   * root — Group or Direct kind — exempts the candidate here: Group-rooted
+   * owners belong to the ordinary teardown paths, and Direct-kind roots are
+   * kind contradictions for the ambiguous gate below (never auto-release
+   * under a contradiction).
    *
    * Destructive authority is the load-time canonical rule: kind +
    * botId + conversationId + topicId + canonical bindingId, with the triple
@@ -1275,11 +1277,12 @@ export class ConversationRunService {
    * materializer for the same Bot: either it publishes first (owner becomes
    * non-rootless or the alias disappears → skip) or the sweep releases
    * first (its later publish fence fails closed on the missing session).
-   * Ambiguous rootless owners (triple-less or non-canonical) never appear
-   * here: load keeps them hidden and assertNoAmbiguousGroupMemberSessions
-   * (run right after this sweep) fails activation on them instead — they
-   * need operator repair, not auto-release. A release failure fails
-   * activation (consumer stays unavailable) — never a silent skip.
+   * Ambiguous owners (triple-less, non-canonical, or cross-kind Direct
+   * root) never appear here: load keeps them hidden and
+   * assertNoAmbiguousGroupMemberSessions (run right after this sweep) fails
+   * activation on them instead — they need operator repair, not
+   * auto-release. A release failure fails activation (consumer stays
+   * unavailable) — never a silent skip.
    */
   private async recoverRootlessGroupMemberSessions(): Promise<void> {
     const candidates = Object.values(this.state.sessions).filter((session) => {
@@ -1297,7 +1300,14 @@ export class ConversationRunService {
       }
       const conversation = this.state.conversations[conversationId];
       const topic = this.state.conversation_topics[topicId];
-      return !conversation || !topic || topic.conversationId !== conversationId;
+      // Only a MISSING root is sweepable. Any live root — Group or Direct
+      // kind — exempts: Group-rooted owners belong to the ordinary teardown
+      // paths, and Direct-kind roots are kind contradictions for the
+      // ambiguous gate below (never auto-release under a contradiction).
+      if (conversation && topic && topic.conversationId === conversationId) {
+        return false;
+      }
+      return true;
     });
     for (const session of candidates) {
       const owner = session.owner;
@@ -1322,6 +1332,8 @@ export class ConversationRunService {
         // under a live root.
         const liveConversation = this.state.conversations[conversationId];
         const liveTopic = this.state.conversation_topics[topicId];
+        // Any live root exempts (see candidate filter): Group roots belong
+        // to ordinary teardown; Direct roots are gate territory.
         if (liveConversation && liveTopic && liveTopic.conversationId === conversationId) {
           return;
         }
@@ -1340,8 +1352,9 @@ export class ConversationRunService {
   /**
    * Fail-closed gate for ambiguous group-member ownership. Runs right after
    * the canonical orphan sweep in activateAfterConsumerLock: any
-   * triple-less or non-canonical group-member owner still present (load
-   * keeps it verbatim-hidden, so it never auto-releases) blocks activation
+   * triple-less, non-canonical, or cross-kind-Direct group-member owner
+   * still present (load keeps it verbatim-hidden, so it never auto-releases)
+   * blocks activation
    * with an actionable error — alias, bindingId, and the recorded
    * conversation/topic triple (or its absence). The consumer stays
    * unavailable until an operator repairs the triple from the quarantine
@@ -1368,8 +1381,9 @@ export class ConversationRunService {
       // Canonical-but-still-rootless here means the sweep above skipped it
       // (repaired-then-reripped triple, or the alias vanished and reappeared
       // under the gate): that is ambiguous NOW, so block rather than assume.
-      // Live-rooted owners return false — the ordinary teardown paths own them.
-      if (!conversation || !topic || topic.conversationId !== conversationId) {
+      // Live-GROUP-rooted owners return false — the ordinary teardown paths
+      // own them. A Direct-kind root is a kind contradiction: block.
+      if (conversation?.kind !== "group" || !topic || topic.conversationId !== conversationId) {
         return true;
       }
       return false;

@@ -1218,31 +1218,41 @@ function reconcileProductOwnershipGraph(
     }
     const conversation = conversations[conversationId];
     const topic = topics[topicId];
-    if (!conversation || !topic || topic.conversationId !== conversationId) {
-      // Rootless: the cleanup root is gone, so no Group/Topic teardown can
-      // ever cover this triple. A CANONICAL exact owner — kind + botId +
-      // conversationId + topicId + canonical bindingId — carries destructive
-      // authority for the activation orphan sweep and stays as the physical
-      // cleanup handle (reported). Anything else is AMBIGUOUS: it cannot be
-      // auto-released (no authority) and must NOT be reinterpreted as
-      // unowned — dropping the ownership record without a verified physical
-      // release would resurface a possibly live product runtime as an
-      // ordinary session. Keep it hidden and fail activation closed on it
-      // until an operator repairs/releases it. Reversible via quarantine.
+    // A group-member owner resolves ONLY through a live GROUP root: a
+    // group-member session pointing at a Direct Conversation is corrupted
+    // cross-kind ownership (same class as the binding fence above — Direct
+    // teardown only sweeps bot-direct owners, Group teardown requires a
+    // Group record, ordinary ops reject it as hidden). Missing root and
+    // cross-kind root are both "no valid Group cleanup root": keep the owner
+    // verbatim-hidden and report it as ambiguous — never auto-release under
+    // a kind contradiction, and never reinterpret as unowned.
+    const rootValid = conversation?.kind === "group"
+      && topic !== undefined
+      && topic.conversationId === conversationId;
+    if (!rootValid) {
+      // Missing root and cross-kind root are both "no valid Group cleanup
+      // root": keep the owner verbatim-hidden and report it as ambiguous —
+      // never auto-release under a kind contradiction, and never reinterpret
+      // as unowned. A CANONICAL exact owner whose root is merely MISSING
+      // stays as the physical cleanup handle for the activation orphan sweep;
+      // every other shape (non-canonical bindingId, or a Direct-kind root)
+      // fails activation closed until an operator repairs/releases it.
+      // Reversible via quarantine.
+      const missing = !conversation || !topic || topic.conversationId !== conversationId;
       const canonical = owner.botId !== undefined
         && owner.bindingId === createScopedGroupMemberBindingId(conversationId, topicId, owner.botId);
-      if (!canonical) {
+      if (missing && canonical) {
         dropped.push({
           section: "sessions",
           key: alias,
-          reason: `owned session references missing conversation/topic (conversation "${conversationId}", topic "${topicId}") with non-canonical ownership; ambiguous ownership kept hidden — requires operator recovery`,
+          reason: `owned session references missing conversation/topic (conversation "${conversationId}", topic "${topicId}"); kept for verified release`,
         });
         continue;
       }
       dropped.push({
         section: "sessions",
         key: alias,
-        reason: `owned session references missing conversation/topic (conversation "${conversationId}", topic "${topicId}"); kept for verified release`,
+        reason: `owned session references invalid group root (conversation "${conversationId}", topic "${topicId}"); ambiguous cross-kind ownership kept hidden — requires operator recovery`,
       });
     }
   }

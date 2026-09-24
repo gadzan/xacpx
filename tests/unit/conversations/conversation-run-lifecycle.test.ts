@@ -3820,6 +3820,52 @@ test("terminal settleCancelBatch with a foreign member fails closed (no mismatch
   first.store.close();
 });
 
+test("activation fails closed on cross-kind group-member session (Direct root, untouched)", async () => {
+  const first = await createLifecycle();
+  const { createScopedGroupMemberBindingId, createDirectConversationId, createDirectTopicId } =
+    await import("../../../src/domain/ids");
+  const botId = BOT_ID;
+  const conversationId = createDirectConversationId(botId);
+  const topicId = createDirectTopicId(botId);
+  // A live Direct Conversation/Topic root plus a CANONICAL group-member owner
+  // over the same triple: the kind contradiction must block activation —
+  // never swept (no missing root), never surfaced as ordinary.
+  first.state.conversations[conversationId] = {
+    id: conversationId, kind: "bot", title: "Reviewer", botIds: [botId],
+    createdAt: NOW, updatedAt: NOW,
+  };
+  first.state.conversation_topics[topicId] = {
+    id: topicId, conversationId, title: "Default", status: "active",
+    createdAt: NOW, updatedAt: NOW,
+  };
+  first.state.sessions.cross_owned = {
+    alias: "cross_owned",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:cross_owned",
+    logical_session_id: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: {
+      kind: "group-member",
+      bindingId: createScopedGroupMemberBindingId(conversationId, topicId, botId),
+      botId,
+      conversationId,
+      topicId,
+    },
+  };
+  const releasesBefore = first.physical.releaseCalls + first.physical.deleteCalls;
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "ambiguous_group_ownership" });
+  const detail = (error as { details?: { sessions?: { alias: string }[] } }).details;
+  expect(detail?.sessions?.map((entry) => entry.alias)).toContain("cross_owned");
+  expect(first.service.isConsumerActivated()).toBe(false);
+  // Physical session untouched; row and ownership intact for the operator.
+  expect(first.physical.releaseCalls + first.physical.deleteCalls).toBe(releasesBefore);
+  expect(first.sessions.getLogicalSessionRecord("cross_owned")?.owner?.kind).toBe("group-member");
+  first.store.close();
+});
+
 test("missing-topic durable run is cancelled and reconciled, never row-deleted live", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
