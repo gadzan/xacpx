@@ -394,7 +394,7 @@ test("topic runs list prefers the executing Run and otherwise the oldest queued 
     memberTurnId: runtime.store.listMemberTurns(first.run.id)[0]!.id,
     botId: bot.id,
     content: "done",
-    sourceTurn: { sessionAlias: "alias" },
+    sourceTurn: { sessionAlias: "alias", turnId: "source" },
     now: NOW,
   });
   const afterComplete = control.listTopicRuns(conversationId, topicId);

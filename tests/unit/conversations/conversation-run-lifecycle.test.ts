@@ -3495,6 +3495,121 @@ test("cross-run settlement fails closed with zero writes on both sides", async (
   first.store.close();
 });
 
+test("unstarted member completion accepts any sourceTurn (no execution identity yet)", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-noidentity",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  const turn = accepted.memberTurns[0]!;
+  expect(turn.sessionAlias).toBeUndefined();
+  expect(turn.sourceTurnId).toBeUndefined();
+  const done = first.store.completeExecution({
+    runId: accepted.run.id, memberTurnId: turn.id,
+    content: "direct write", sourceTurn: { sessionAlias: "any" }, now: NOW,
+  });
+  expect(done.assistantMessage?.sourceTurn).toEqual({ sessionAlias: "any" });
+  first.store.close();
+});
+
+test("settlement cross-product fails closed: wrong run, wrong source, zero writes", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const mkRun = (requestId: string) => first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId,
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const runA = mkRun("req-fence-a");
+  const runB = mkRun("req-fence-b");
+  const turnA = runA.memberTurns[0]!;
+  const turnB = runB.memberTurns[0]!;
+  // Start A's member so it carries execution identity for the source fence.
+  const claimA = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  const startedA = first.store.markExecutionStarted({
+    dispatchId: claimA.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: runA.run.id, memberTurnId: claimA.memberTurn.id,
+    sessionAlias: "sess_a", logicalSessionId: "lsess_a", sourceTurnId: "sturn_a", now: NOW,
+  });
+  const snapshot = () => ({
+    messages: first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 50 }).length,
+    progressA: first.store.getRun(runA.run.id)!.consumedMemberTurns,
+    progressB: first.store.getRun(runB.run.id)!.consumedMemberTurns,
+    stateA: first.store.getMemberTurn(turnA.id)?.state,
+    stateB: first.store.getMemberTurn(turnB.id)?.state,
+    startedState: first.store.getMemberTurn(startedA.id)?.state,
+    dispatchA: first.store.getDispatchForMemberTurn(turnA.id)?.state,
+    dispatchB: first.store.getDispatchForMemberTurn(turnB.id)?.state,
+  });
+  const before = snapshot();
+  // Direction 1: Run A + MemberTurn B (both complete and fail paths).
+  expect(() => first.store.completeExecution({
+    runId: runA.run.id, memberTurnId: turnB.id,
+    content: "cross", sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" }, now: NOW,
+  })).toThrow(/does not belong to run/);
+  expect(() => first.store.failExecution({
+    runId: runB.run.id, memberTurnId: turnA.id, now: NOW, reason: "boom",
+  })).toThrow(/does not belong to run/);
+  expect(() => first.store.settleCancelBatch({
+    runId: runA.run.id, now: NOW,
+    outcomes: [{ memberTurnId: turnB.id, outcome: "cancelled" }],
+  })).toThrow(/does not belong to run/);
+  // Correct pair, wrong source identity: must not misattribute provenance.
+  expect(() => first.store.completeExecution({
+    runId: runA.run.id, memberTurnId: startedA.id,
+    content: "cross-source", sourceTurn: { sessionAlias: "sess_other", turnId: "sturn_a" }, now: NOW,
+  })).toThrow(/source turn does not match/);
+  expect(() => first.store.completeExecution({
+    runId: runA.run.id, memberTurnId: startedA.id,
+    content: "cross-source", sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_other" }, now: NOW,
+  })).toThrow(/source turn does not match/);
+  expect(() => first.store.settleCancelBatch({
+    runId: runA.run.id, now: NOW,
+    outcomes: [{
+      memberTurnId: startedA.id, outcome: "completed", content: "x",
+      sourceTurn: { sessionAlias: "sess_other", turnId: "sturn_a" },
+    }],
+  })).toThrow(/source turn does not match/);
+  // Zero writes anywhere: both runs, all members, both dispatches, messages.
+  expect(snapshot()).toEqual(before);
+  // The correct pair with the correct source still settles.
+  const done = first.store.completeExecution({
+    runId: runA.run.id, memberTurnId: startedA.id,
+    content: "mine", sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" }, now: NOW,
+  });
+  expect(done.assistantMessage?.senderBotId).toBe(turnA.botId);
+  expect(done.assistantMessage?.sourceTurn).toEqual({ sessionAlias: "sess_a", turnId: "sturn_a" });
+  first.store.close();
+});
+
 test("ghost-topic runtime blocks group delete; verified teardown releases it", async () => {
   const first = await createLifecycle();
   const bots = first.bots;
@@ -3519,6 +3634,37 @@ test("ghost-topic runtime blocks group delete; verified teardown releases it", a
   expect(first.state.conversations[group.id]).toBeUndefined();
   expect(first.state.bot_runtime_bindings[binding.id]).toBeUndefined();
   expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias) ?? undefined).toBeUndefined();
+  first.store.close();
+});
+
+test("missing-topic durable run is cancelled and reconciled, never row-deleted live", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-ghost-run",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  // Topic metadata vanishes out of band; the durable run is now ghost-topic.
+  delete first.state.conversation_topics[topic.id];
+  await first.service.teardownGroupConversation(group.id);
+  // The run reconciled to terminal through the cancel path (not deleted live).
+  const settled = first.store.getRun(accepted.run.id);
+  expect(settled).toBeUndefined();
+  const remaining = first.store.listRuns(group.id);
+  expect(remaining).toEqual([]);
+  expect(first.state.conversations[group.id]).toBeUndefined();
   first.store.close();
 });
 

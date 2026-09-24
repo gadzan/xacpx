@@ -31,7 +31,6 @@ import type {
 } from "./conversation-store";
 import {
   conversationExecutionOrigin,
-  memberTurnOriginFromExecution,
   parseHumanIngress,
 } from "./conversation-execution";
 import type {
@@ -924,6 +923,20 @@ export class SqliteConversationStore implements ConversationStore {
           `member turn "${member.id}" does not belong to run "${run.id}"`,
         );
       }
+      // Source correlation fence: the persisted sourceTurn must join exactly
+      // to this member's execution-start identity. A caller-supplied alias or
+      // turn id pointing at another turn's session would otherwise write a
+      // transcript row that misattributes provenance. Unstarted members carry
+      // no identity yet, so there is nothing to join against — skip there.
+      if (
+        (member.sessionAlias !== undefined && input.sourceTurn.sessionAlias !== member.sessionAlias)
+        || (member.sourceTurnId !== undefined && input.sourceTurn.turnId !== member.sourceTurnId)
+      ) {
+        throw new ConversationError(
+          "source_turn_mismatch",
+          `source turn does not match member turn "${member.id}" execution identity`,
+        );
+      }
       if (run.state === "cancelled") {
         this.finishDispatchForMemberTurn(member.id, input.now);
         if (!member.finishedAt) {
@@ -1054,6 +1067,19 @@ export class SqliteConversationStore implements ConversationStore {
           continue;
         }
         if (entry.outcome === "completed") {
+          // Source correlation fence (same invariant as completeExecution):
+          // a completed entry's sourceTurn must join to this member's
+          // execution-start identity, never another turn's session.
+          if (
+            (member.sessionAlias !== undefined
+              && (entry.sourceTurn?.sessionAlias ?? member.sessionAlias ?? "") !== member.sessionAlias)
+            || (member.sourceTurnId !== undefined && entry.sourceTurn?.turnId !== member.sourceTurnId)
+          ) {
+            throw new ConversationError(
+              "source_turn_mismatch",
+              `source turn does not match member turn "${member.id}" execution identity`,
+            );
+          }
           const seq = this.allocateSeq(run.conversationId, run.topicId);
           const messageId = this.ids.messageId();
           this.sqlite.run(
