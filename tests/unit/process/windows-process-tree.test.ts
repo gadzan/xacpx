@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   decodeWindowsDescendantsResponse,
@@ -15,6 +15,7 @@ import {
   WINDOWS_TREE_WORKER_SCRIPT,
   WINDOWS_DESCENDANTS_WORKER_SCRIPT,
   type BatchTarget,
+  type WindowsProcessIdentity,
   terminateWindowsDescendantsOf,
 } from "../../../src/process/windows-process-tree";
 import { parseCanonicalFileTime } from "../../../src/process/windows-process-identity";
@@ -111,6 +112,45 @@ test("token snapshots and residual termination reject malformed worker responses
 });
 
 const windowsTest = process.platform === "win32" ? test : test.skip;
+
+/**
+ * `Win32_Process.ExecutablePath` for a live pid — the CREATE-TIME path recorded
+ * in the process parameters, i.e. the exact string the worker compares against
+ * the kernel-resolved image. Separate from `handleImagePath` on purpose: a
+ * fixture must prove the two SOURCES disagree, not compare one value with itself.
+ */
+async function cimExecutablePath(pid: number): Promise<string> {
+  const stdout = spawnSync("powershell.exe", [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+    `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').ExecutablePath`,
+  ], { encoding: "utf8" });
+  if (stdout.status !== 0) throw new Error(`CIM lookup failed for pid ${pid}: ${stdout.stderr}`);
+  return stdout.stdout.trim();
+}
+
+/**
+ * The image path as the kernel resolves it (QueryFullProcessImageName) — the
+ * side of the comparison the worker's `Image()` returns. Deliberately separate
+ * from `queryWindowsProcessIdentity` so a fixture cannot "prove" divergence by
+ * comparing a value against itself.
+ */
+async function handleImagePath(pid: number): Promise<string> {
+  const probe = await probeWindowsProcessIdentity(pid);
+  if (probe.status !== "found") throw new Error(`pid ${pid} is not probeable`);
+  return probe.identity.executablePath;
+}
+
+/**
+ * Absolute path of the node.exe this host resolves bare "node" to. The kernel
+ * may be Bun (process.execPath is bun.exe), so the junction target must be
+ * resolved through a real short-lived node, not assumed.
+ */
+async function realPathOfNode(): Promise<string> {
+  const script = "process.stdout.write(process.execPath)";
+  const stdout = spawnSync("node", ["-e", script], { encoding: "utf8" });
+  if (stdout.status !== 0) throw new Error(`node is unavailable: ${stdout.stderr}`);
+  return stdout.stdout.trim();
+}
 
 test("encoded Windows worker command line stays below the CreateProcess ceiling", () => {
   // `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand <encoded>`
@@ -685,3 +725,94 @@ windowsTest("real descendants-of with the CORRECT parent fingerprint converges t
     try { victim.kill("SIGKILL"); } catch {}
   }
 }, 30_000);
+
+// Regression: a CIM-derived child's `Win32_Process.ExecutablePath` is the
+// CREATE-TIME path recorded in the process parameters, while the worker's
+// `Image()` resolves the image file object. Under a symlinked launcher shim
+// (fnm multishell, volta, nvm-windows) these are different strings for the
+// SAME process. OpenVerified used to compare them, condemned the child
+// 'skipped-replaced', and aborted the whole batch — which made Windows
+// daemon stop impossible on such hosts. This fixture manufactures the
+// divergence deterministically (a junction needs no elevation) so the
+// contract holds on ANY Windows host, not only on fnm ones.
+windowsTest("real worker kills a child whose CIM image path differs from the handle image path", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "cim-image-mismatch-"));
+  // Resolve the real node.exe the way the rest of this file does (bare "node"
+  // through PATH) so the junction points at the directory that actually holds
+  // it, not at this Bun kernel's own directory.
+  const realNode = await realPathOfNode();
+  const link = join(dir, "shim");
+  const shimExecutable = join(link, process.platform === "win32" ? "node.exe" : "node");
+  const childPidFile = join(dir, "child.pid");
+  // The ROOT is spawned normally and spawns the child through the junction, so
+  // only the child carries a divergent image path — the shape of the
+  // fnm-launched bridge child sitting under the daemon root.
+  const rootScript = [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    `const child = spawn(${JSON.stringify(shimExecutable)}, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });`,
+    `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n");
+  // The junction must exist BEFORE the root spawns its child through it.
+  await symlink(dirname(realNode), link, "junction");
+  const rootProcess = spawn("node", ["-e", rootScript], { stdio: "ignore", windowsHide: true });
+  try {
+    let childPid = 0;
+    for (let attempt = 0; attempt < 200 && !childPid; attempt += 1) {
+      try {
+        childPid = Number.parseInt(await readFile(childPidFile, "utf8"), 10) || 0;
+      } catch { /* not written yet */ }
+      if (!childPid) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(childPid).toBeGreaterThan(0);
+
+    // CIM visibility lags spawn; poll until both pids are queryable.
+    let childIdentity: WindowsProcessIdentity | null = null;
+    let rootIdentity: WindowsProcessIdentity | null = null;
+    for (let attempt = 0; attempt < 100 && (!childIdentity || !rootIdentity); attempt += 1) {
+      if (!childIdentity) childIdentity = await queryWindowsProcessIdentity(childPid);
+      if (!rootIdentity) rootIdentity = await queryWindowsProcessIdentity(rootProcess.pid!);
+      if (!childIdentity || !rootIdentity) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(childIdentity).not.toBeNull();
+    expect(rootIdentity).not.toBeNull();
+
+    // Precondition: the two path SOURCES really disagree for the child. Without
+    // this the test would pass trivially even if the fixture silently failed to
+    // create a divergence (e.g. a future Node that normalizes the image path).
+    // CIM ExecutablePath is the create-time path (through the junction);
+    // handleImagePath is the kernel-resolved image file. They MUST differ.
+    const childCimPath = await cimExecutablePath(childPid);
+    expect(childCimPath.toLowerCase()).not.toBe((await handleImagePath(childPid)).toLowerCase());
+    // And identity must still report the commandLine — the image-path gate that
+    // used to drop it under a symlinked launcher is gone.
+    expect(childIdentity!.commandLine).toBeTruthy();
+    expect(childIdentity!.commandLine!.toLowerCase().startsWith(shimExecutable.toLowerCase())).toBe(true);
+
+    const result = await terminateWindowsProcessTree({
+      pid: rootProcess.pid!,
+      creationDate: rootIdentity!.creationDate,
+      workerDeadlineMs: null,
+    }, { workerDeadlineMs: null });
+
+    expect(result.rootOutcome).toBe("killed");
+    // The mismatched child converges instead of aborting the whole batch with
+    // rootOutcome query-failed — the exact regression this pins.
+    const childOutcome = result.outcomes.find((item) => item.target.pid === childPid);
+    expect(childOutcome).toBeDefined();
+    expect(["killed", "already-exited"]).toContain(childOutcome!.outcome);
+
+    for (const pid of [rootProcess.pid!, childPid]) {
+      let gone = false;
+      for (let attempt = 0; attempt < 200 && !gone; attempt += 1) {
+        try { process.kill(pid, 0); } catch { gone = true; }
+        if (!gone) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(gone).toBe(true);
+    }
+  } finally {
+    try { rootProcess.kill("SIGKILL"); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 60_000);
