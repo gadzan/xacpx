@@ -81,7 +81,7 @@ export class ConversationRunService {
     private readonly bots: BotService,
     private readonly runtime: BotRuntimeManager,
     private readonly dispatcher: ConversationDispatcher,
-    private readonly sessions: Pick<SessionService, "getLogicalSessionRecord" | "getLogicalSessionById">,
+    private readonly sessions: Pick<SessionService, "getLogicalSessionRecord">,
     private readonly state: AppState,
     private readonly stateStore: SessionWriter,
     options: ConversationRunServiceOptions,
@@ -622,6 +622,11 @@ export class ConversationRunService {
     if (conversation.kind !== "group") {
       throw new ConversationError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
     }
+    // Pre-check before anything destructive: the provisional controller
+    // scope has no verified release path, so its residue must block the
+    // delete while every Topic row and durable row still exists. The
+    // finalize section re-checks (a controller row could land mid-teardown).
+    this.assertNoGroupControllerResidue(conversationId);
     // Barrier first: once the Group is marked deleting, createGroupTopic and
     // any new Group work fail closed, so no Topic created concurrently can
     // outlive this teardown and become an orphan. Mirrors
@@ -670,16 +675,13 @@ export class ConversationRunService {
     // fail-closed BotService.deleteGroup guard still sees the durable rows.
     // Deleting the record first would strand rows no guard can see.
     this.store.deleteConversationRows(conversationId);
-    // Provisional group-controller scope has no teardown authority: the
-    // schema still accepts it, but no controller runtime exists to release
-    // it — auto-releasing an unknown future owner would be fail-open, and
-    // deleting the Group under it would orphan a hidden session. Fail closed
-    // with the barrier intact until an operator migrates/handles it.
-    this.assertNoGroupControllerResidue(conversationId);
     // Final residue fence: no group-member binding or owned session may
     // survive the Group record. Ghost-topic bindings/sessions (Topic row
     // already gone) and binding-less crash-window owners are all covered —
     // either verified-released here or fail closed with barrier intact.
+    // (Controller residue was pre-checked before anything destructive and is
+    // re-checked at finalize: a controller row landing mid-teardown still
+    // blocks the Group record delete with the barrier intact.)
     await this.releaseGroupResidue(conversationId);
     await this.stateMutex.run(async () => {
       await this.beforeTeardownFinalize?.();
@@ -694,13 +696,25 @@ export class ConversationRunService {
   /**
    * Provisional group-controller bindings/sessions have no verified release
    * path (no controller runtime exists yet). Block the Group delete while
-   * any reference this Group — by live binding row or by session owner
-   * (exact or binding-resolved) — instead of orphaning hidden state the
-   * schema keeps accepting.
+   * any reference this Group — by live binding row, by exact session owner,
+   * by binding-resolved partial owner, or by a topicId that names a live
+   * Topic of this Group — instead of orphaning hidden state the schema keeps
+   * accepting.
    */
   private assertNoGroupControllerResidue(conversationId: string): void {
+    // A controller owner that proves NO link to this Group is not this
+    // Group's residue; one that proves nothing either way (no conversation,
+    // no live binding, no live topic link) cannot be attributed — but it
+    // also must never survive the loss of its possible cleanup roots. Fail
+    // those closed globally so a delete can never drop a root silently.
+    this.assertNoAmbiguousGroupControllerSessions();
     const bindings = Object.values(this.state.bot_runtime_bindings).filter(
       (binding) => binding.scope === "group-controller" && binding.conversationId === conversationId,
+    );
+    const groupTopicIds = new Set(
+      Object.values(this.state.conversation_topics)
+        .filter((topic) => topic.conversationId === conversationId)
+        .map((topic) => topic.id),
     );
     const sessions = Object.values(this.state.sessions).filter((session) => {
       const owner = session.owner;
@@ -713,7 +727,12 @@ export class ConversationRunService {
       const bound = owner.bindingId !== undefined
         ? this.state.bot_runtime_bindings[owner.bindingId]
         : undefined;
-      return bound !== undefined && bound.conversationId === conversationId;
+      if (bound !== undefined) {
+        return bound.conversationId === conversationId;
+      }
+      // No conversation and no live binding to resolve through: a topicId
+      // naming a live Topic of this Group still proves attribution.
+      return owner.topicId !== undefined && groupTopicIds.has(owner.topicId);
     });
     if (bindings.length === 0 && sessions.length === 0) {
       return;
@@ -724,6 +743,50 @@ export class ConversationRunService {
       {
         bindingIds: bindings.map((binding) => binding.id),
         sessionAliases: sessions.map((session) => session.alias),
+      },
+    );
+  }
+  /**
+   * Global fail-closed for unattributable controller owners: no
+   * conversationId, no live binding to resolve through, and no topicId
+   * naming a live Topic. Such an owner proves nothing about which Group it
+   * belongs to — deleting ANY Group/Topic could strand it as a permanent
+   * hidden session. Block every verified Group delete until an operator
+   * repairs or explicitly releases it.
+   */
+  private assertNoAmbiguousGroupControllerSessions(): void {
+    const blocked = Object.values(this.state.sessions).filter((session) => {
+      const owner = session.owner;
+      if (owner?.kind !== "group-controller") {
+        return false;
+      }
+      if (owner.conversationId !== undefined) {
+        return false;
+      }
+      const bound = owner.bindingId !== undefined
+        ? this.state.bot_runtime_bindings[owner.bindingId]
+        : undefined;
+      if (bound !== undefined) {
+        return false;
+      }
+      if (owner.topicId === undefined) {
+        return true;
+      }
+      return this.state.conversation_topics[owner.topicId] === undefined;
+    });
+    if (blocked.length === 0) {
+      return;
+    }
+    throw new ConversationError(
+      "ambiguous_controller_ownership",
+      `activation blocked: ${blocked.length} group-controller session(s) with unattributable ownership require operator recovery`,
+      {
+        sessions: blocked.map((session) => ({
+          alias: session.alias,
+          bindingId: session.owner?.bindingId,
+          conversationId: session.owner?.conversationId,
+          topicId: session.owner?.topicId,
+        })),
       },
     );
   }
@@ -755,16 +818,19 @@ export class ConversationRunService {
           { binding },
         );
       }
-      // Same two-axis rule as groupMemberAliases: missing on BOTH the alias
-      // row and the logical-id scan is a harmless stale binding removed at
-      // finalize time. Present on exactly one axis — or on both but pointing
-      // at different sessions — is a mismatch that must fail closed: the
-      // session it resolves to is Group residue and deleting the binding
-      // first would lose the only clue needed to find it (a partial owner
-      // resolves through the live binding row). An exact link releases.
+      // Same two-axis rule as groupMemberAliases: scan every session for the
+      // logical id and require exactly one match on the same alias. Missing
+      // on BOTH axes is a harmless stale binding removed at finalize time.
+      // Present on exactly one axis — or duplicated/ambiguous on the id axis
+      // — must fail closed: the session it resolves to is Group residue and
+      // deleting the binding first would lose the only clue a partial owner
+      // needs to find it. An exact link releases. (A single find() is NOT
+      // enough here: logical ids carry no global uniqueness quarantine, so a
+      // duplicated id must conflict rather than release the first hit.)
       const byAlias = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
-      const byId = this.sessions.getLogicalSessionById(binding.logicalSessionId);
-      const byIdMatches = byId ? [byId] : [];
+      const byIdMatches = Object.values(this.state.sessions).filter(
+        (session) => session.logical_session_id === binding.logicalSessionId,
+      );
       if (!byAlias && byIdMatches.length === 0) {
         await this.deleteBindingRow(binding.id);
         continue;

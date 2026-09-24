@@ -4094,12 +4094,23 @@ test("provisional controller residue blocks verified group delete, never orphans
   const reviewer = Object.values(first.state.bots)[0]!;
   seedTesterBot(first.state);
   const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
-  // A provisional group-controller binding/session the schema still accepts:
-  // no controller runtime exists, so verified teardown must fail closed
-  // instead of deleting the Group under hidden state.
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(reviewer.id);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-controller-fence",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
   first.state.bot_runtime_bindings.controller_x = {
     id: "controller_x",
-    scope: "group-controller",
     conversationId: group.id,
     topicId: "t",
     logicalSessionId: "99999999-9999-4999-8999-999999999999",
@@ -4120,9 +4131,77 @@ test("provisional controller residue blocks verified group delete, never orphans
   await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
     code: "group_has_controller",
   });
+  // Fence runs before anything destructive: the Group row, its Topics, the
+  // controller rows, and every durable Conversation row still exist.
   expect(first.state.conversations[group.id]).toBeDefined();
+  expect(Object.values(first.state.conversation_topics).filter(
+    (topic) => topic.conversationId === group.id,
+  )).not.toHaveLength(0);
+  expect(first.store.listRuns(group.id)).not.toHaveLength(0);
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 })).not.toHaveLength(0);
   expect(first.state.bot_runtime_bindings.controller_x).toBeDefined();
   expect(first.sessions.getLogicalSessionRecord("controller_sess")?.alias).toBe("controller_sess");
+  first.store.close();
+});
+
+test("controller partial owner via live topicId blocks group delete pre-destruction", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Partial owner: no conversationId, no live binding — but the topicId
+  // names a live Topic of this Group, which proves attribution.
+  first.state.sessions.controller_partial = {
+    alias: "controller_partial",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:controller_partial",
+    logical_session_id: "88888888-8888-4888-8888-888888888888",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-controller", bindingId: "missing_binding", topicId: topic.id },
+  };
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "group_has_controller",
+  });
+  expect(first.state.conversation_topics[topic.id]).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord("controller_partial")?.alias).toBe("controller_partial");
+  first.store.close();
+});
+
+test("duplicated logical id on a ghost binding fails closed, never releases", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Two sessions share the binding's logical id: the id axis is ambiguous,
+  // so even though the alias axis resolves, the residue must conflict
+  // rather than release the first hit.
+  const live = first.sessions.getLogicalSessionRecord(binding.sessionAlias)!;
+  first.state.sessions.duplicate_shadow = {
+    ...structuredClone(live),
+    alias: "duplicate_shadow",
+  };
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias)?.alias).toBe(binding.sessionAlias);
+  expect(first.sessions.getLogicalSessionRecord("duplicate_shadow")?.alias).toBe("duplicate_shadow");
   first.store.close();
 });
 
