@@ -126,6 +126,7 @@ export class ConversationRunService {
     this.assertOpen();
     try {
       await this.recoverRootlessGroupMemberSessions();
+      this.assertNoAmbiguousGroupMemberSessions();
       await this.dispatcher.kick();
     } catch (error) {
       this.activation = "unavailable";
@@ -1274,9 +1275,11 @@ export class ConversationRunService {
    * materializer for the same Bot: either it publishes first (owner becomes
    * non-rootless or the alias disappears → skip) or the sweep releases
    * first (its later publish fence fails closed on the missing session).
-   * Non-canonical rootless owners were already demoted to plain sessions at
-   * load and never appear here. A release failure fails activation (consumer
-   * stays unavailable) — never a silent skip.
+   * Ambiguous rootless owners (triple-less or non-canonical) never appear
+   * here: load keeps them hidden and assertNoAmbiguousGroupMemberSessions
+   * (run right after this sweep) fails activation on them instead — they
+   * need operator repair, not auto-release. A release failure fails
+   * activation (consumer stays unavailable) — never a silent skip.
    */
   private async recoverRootlessGroupMemberSessions(): Promise<void> {
     const candidates = Object.values(this.state.sessions).filter((session) => {
@@ -1332,6 +1335,61 @@ export class ConversationRunService {
         await this.releaseAlias(session.alias);
       });
     }
+  }
+
+  /**
+   * Fail-closed gate for ambiguous group-member ownership. Runs right after
+   * the canonical orphan sweep in activateAfterConsumerLock: any
+   * triple-less or non-canonical group-member owner still present (load
+   * keeps it verbatim-hidden, so it never auto-releases) blocks activation
+   * with an actionable error — alias, bindingId, and the recorded
+   * conversation/topic triple (or its absence). The consumer stays
+   * unavailable until an operator repairs the triple from the quarantine
+   * backup or explicitly releases the alias. Canonical rootless owners never
+   * reach this gate (the sweep above released them); live-rooted owners are
+   * owned by the ordinary teardown paths, not by activation.
+   */
+  private assertNoAmbiguousGroupMemberSessions(): void {
+    const blocked = Object.values(this.state.sessions).filter((session) => {
+      const owner = session.owner;
+      if (owner?.kind !== "group-member") {
+        return false;
+      }
+      const conversationId = owner.conversationId;
+      const topicId = owner.topicId;
+      if (conversationId === undefined || topicId === undefined || owner.botId === undefined) {
+        return true;
+      }
+      if (owner.bindingId !== createScopedGroupMemberBindingId(conversationId, topicId, owner.botId)) {
+        return true;
+      }
+      const conversation = this.state.conversations[conversationId];
+      const topic = this.state.conversation_topics[topicId];
+      // Canonical-but-still-rootless here means the sweep above skipped it
+      // (repaired-then-reripped triple, or the alias vanished and reappeared
+      // under the gate): that is ambiguous NOW, so block rather than assume.
+      // Live-rooted owners return false — the ordinary teardown paths own them.
+      if (!conversation || !topic || topic.conversationId !== conversationId) {
+        return true;
+      }
+      return false;
+    });
+    if (blocked.length === 0) {
+      return;
+    }
+    throw new ConversationError(
+      "ambiguous_group_ownership",
+      `activation blocked: ${blocked.length} group-member session(s) with ambiguous ownership require operator recovery`,
+      {
+        sessions: blocked.map((session) => ({
+          alias: session.alias,
+          bindingId: session.owner?.bindingId,
+          botId: session.owner?.botId,
+          conversationId: session.owner?.conversationId,
+          topicId: session.owner?.topicId,
+        })),
+      },
+    );
   }
 
   private async persist(next: AppState): Promise<void> {

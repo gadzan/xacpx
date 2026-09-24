@@ -1042,11 +1042,24 @@ export class SqliteConversationStore implements ConversationStore {
   settleCancelBatch(input: SettleCancelBatchInput): SettleCancelBatchResult {
     return this.sqlite.transaction(() => {
       const run = this.requireRun(input.runId);
+      // Referential fence FIRST (same invariant as the write path below):
+      // resolve every outcome member and prove it belongs to input.runId
+      // before the terminal idempotent early-return. Otherwise a terminal
+      // Run A + MemberTurn B would return a mismatched pair to the caller,
+      // and future event projection could emit the wrong Run/member join.
+      // Zero writes happen on this path either way; the fence keeps the
+      // returned join referentially sound.
+      const members = input.outcomes.map((entry) => this.requireMemberTurn(entry.memberTurnId));
+      for (const member of members) {
+        if (member.runId !== input.runId) {
+          throw new ConversationError("stale_claim", `member turn "${member.id}" does not belong to run "${input.runId}"`);
+        }
+      }
       if (TERMINAL_RUN_STATES.includes(run.state)) {
         return {
           run,
-          settled: input.outcomes.map((entry) => ({
-            member: this.requireMemberTurn(entry.memberTurnId),
+          settled: input.outcomes.map((entry, index) => ({
+            member: members[index]!,
             outcome: entry.outcome,
           })),
         };
@@ -1057,11 +1070,9 @@ export class SqliteConversationStore implements ConversationStore {
       // never overwrites a sibling's proven evidence, and proven evidence
       // is never downgraded by a later unknown.
       const settled: SettledCancelMember[] = [];
-      for (const entry of input.outcomes) {
-        const member = this.requireMemberTurn(entry.memberTurnId);
-        if (member.runId !== input.runId) {
-          throw new ConversationError("stale_claim", `member turn "${entry.memberTurnId}" does not belong to run "${input.runId}"`);
-        }
+      for (let index = 0; index < input.outcomes.length; index++) {
+        const entry = input.outcomes[index]!;
+        const member = members[index]!;
         if (TERMINAL_MEMBER_STATES.includes(member.state)) {
           settled.push({ member, outcome: entry.outcome });
           continue;

@@ -337,7 +337,7 @@ test("parseState keeps rootless owned sessions for verified release (never drops
   ]);
 });
 
-test("parseState demotes legacy partial owners that resolve no triple (plain session, reported)", () => {
+test("parseState keeps triple-less ambiguous owners hidden for operator recovery", () => {
   const dropped: StateLoadDroppedRecord[] = [];
   const state = parseState({
     bot_runtime_bindings: {
@@ -366,14 +366,15 @@ test("parseState demotes legacy partial owners that resolve no triple (plain ses
       },
     },
   }, "state.json", dropped);
-  // Binding dropped (missing root); the session demotes to a plain session:
-  // no triple means no destructive authority, so it must neither pin an
-  // identity lock nor hide from ordinary tooling. The handle stays
-  // resolvable by alias; the quarantine backup preserves the raw owner.
+  // Binding dropped (missing root); the triple-less session keeps its owner
+  // VERBATIM: deleting the ownership record without a verified physical
+  // release would resurface possibly-live product runtime as an ordinary
+  // session (fail-open). It stays hidden, ordinary ops reject it, and
+  // activation fails closed until an operator recovers it.
   expect(state.bot_runtime_bindings.bind_gone).toBeUndefined();
-  expect(state.sessions.legacy_partial?.owner).toBeUndefined();
+  expect(state.sessions.legacy_partial?.owner).toEqual({ kind: "group-member", bindingId: "bind_gone" });
   expect(state.sessions.legacy_partial?.alias).toBe("legacy_partial");
-  expect(dropped.some((entry) => entry.key === "legacy_partial" && entry.reason.includes("demoted"))).toBe(true);
+  expect(dropped.some((entry) => entry.key === "legacy_partial" && entry.reason.includes("requires operator recovery"))).toBe(true);
 });
 
 test("parseState drops group-member bindings pointing at a Direct conversation", () => {
@@ -485,11 +486,11 @@ test("owner metadata round-trips through save and load", async () => {
   expect(onDiskBefore.sessions.owned?.owner?.kind).toBe("group-member");
   const loader = new StateStore(path);
   const loaded = await loader.load();
-  // Unresolvable partial owner demotes at load (no triple ⇒ no destructive
-  // authority); the on-disk bytes below prove save itself never demotes.
-  expect(loaded.sessions.owned?.owner).toBeUndefined();
+  // Unresolvable partial owner stays verbatim-hidden at load (fail-closed:
+  // never reinterpreted as unowned without a verified physical release).
+  expect(loaded.sessions.owned?.owner).toEqual({ kind: "group-member", bindingId: "bind_g" });
   expect(loader.lastLoadReport?.dropped.some(
-    (entry) => entry.key === "owned" && entry.reason.includes("demoted"),
+    (entry) => entry.key === "owned" && entry.reason.includes("requires operator recovery"),
   )).toBe(true);
   expect(loaded.bots.bot_a?.name).toBe("Reviewer");
   expect(loaded.sessions.owned?.logical_session_id).toBe("44444444-4444-4444-8444-444444444444");

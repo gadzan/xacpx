@@ -1113,17 +1113,18 @@ export function parseState(
  * would leave its Topics/bindings/sessions loaded with no cleanup root,
  * and a dropped Topic/Bot would strand runtime no teardown can address.
  * Physical-release-preserving: descendants of a missing root are NEVER
- * dropped as live state here. Rootless Topics/bindings drop into the load
- * report (pure metadata, no physical handle). A rootless CANONICAL exact
- * group-member session is KEPT with ownership intact as the physical cleanup
- * handle for the activation orphan sweep
- * (recoverRootlessGroupMemberSessions): `sessions` still resolves the alias,
- * so strict owned-session release can still
- * releaseLogicalSession/deleteSession without any Group/Topic metadata. A
- * non-canonical or triple-less owner demotes to a plain session (reported,
- * reversible via quarantine) so it can never pin a lock or hide with no
- * entrypoint. Bots themselves are never dropped here — membership edits,
- * not load, own that transition.
+ * dropped as live state here, and ambiguous ownership is NEVER reinterpreted
+ * as unowned (that would resurface possibly-live product runtime as an
+ * ordinary session without a verified release). Rootless Topics/bindings
+ * drop into the load report (pure metadata, no physical handle). A rootless
+ * CANONICAL exact group-member session is KEPT with ownership intact as the
+ * physical cleanup handle for the activation orphan sweep
+ * (recoverRootlessGroupMemberSessions). A triple-less or non-canonical
+ * group-member owner is AMBIGUOUS: kept verbatim (stays hidden, ordinary
+ * ops reject it) and reported, and activation fails closed on it until an
+ * operator repairs the triple or explicitly releases the alias. Bots
+ * themselves are never dropped here — membership edits, not load, own
+ * that transition.
  */
 function reconcileProductOwnershipGraph(
   sessions: AppState["sessions"],
@@ -1188,9 +1189,9 @@ function reconcileProductOwnershipGraph(
   // Owned sessions are NEVER dropped here, even when their root is gone: the
   // row IS the physical cleanup handle (strict release resolves the alias).
   // A rootless CANONICAL group-member session stays owned for the activation
-  // orphan sweep (recoverRootlessGroupMemberSessions); a non-canonical or
-  // triple-less owner demotes to a plain session below, so no permanent
-  // hidden lock can form around an unprovable triple.
+  // orphan sweep (recoverRootlessGroupMemberSessions); an ambiguous owner
+  // (triple-less or non-canonical) stays verbatim-hidden and fails
+  // activation closed — never demoted to a plain session.
   for (const [alias, session] of Object.entries(sessions)) {
     const owner = session.owner;
     if (owner?.kind !== "group-member") {
@@ -1200,18 +1201,18 @@ function reconcileProductOwnershipGraph(
     const conversationId = owner.conversationId ?? bound?.conversationId;
     const topicId = owner.topicId ?? bound?.topicId;
     if (conversationId === undefined || topicId === undefined) {
-      // Legacy partial owner that resolves no triple: no destructive
-      // authority exists, so no orphan sweep could ever release it while
-      // keeping the group-member kind. Demote to a plain session (drop the
-      // owner) and report: the physical handle stays resolvable by alias,
-      // ordinary session tooling applies, and no permanent hidden lock can
-      // form around an unprovable triple. Reversible via the quarantine
-      // backup; a later binding repair can re-link it if needed.
-      delete session.owner;
+      // Legacy partial owner that resolves no triple: destructive authority
+      // can never be established, so no sweep may release it — but deleting
+      // the ownership record without a verified physical release would be
+      // fail-open (the session would resurface as an ordinary session).
+      // Keep the owner verbatim (stays hidden, ordinary ops reject it) and
+      // report: activation fails closed on it (see
+      // assertNoAmbiguousGroupMemberSessions) until an operator repairs the
+      // triple from the quarantine backup or explicitly releases the alias.
       dropped.push({
         section: "sessions",
         key: alias,
-        reason: `owned session cannot resolve conversation/topic (binding "${owner.bindingId}"); owner demoted to plain session`,
+        reason: `owned session cannot resolve conversation/topic (binding "${owner.bindingId}"); ambiguous ownership kept hidden — requires operator recovery`,
       });
       continue;
     }
@@ -1219,22 +1220,22 @@ function reconcileProductOwnershipGraph(
     const topic = topics[topicId];
     if (!conversation || !topic || topic.conversationId !== conversationId) {
       // Rootless: the cleanup root is gone, so no Group/Topic teardown can
-      // ever cover this triple. Only a CANONICAL exact owner — kind +
-      // botId + conversationId + topicId + canonical bindingId — carries
-      // destructive authority for the activation orphan sweep; it stays with
-      // ownership intact as the physical cleanup handle (reported). Anything
-      // else (non-canonical bindingId, or any field missing) demotes to a
-      // plain session: the handle stays resolvable by alias, ordinary
-      // tooling applies, and it can never pin an identity lock or hide with
-      // no entrypoint. Reversible via the quarantine backup.
+      // ever cover this triple. A CANONICAL exact owner — kind + botId +
+      // conversationId + topicId + canonical bindingId — carries destructive
+      // authority for the activation orphan sweep and stays as the physical
+      // cleanup handle (reported). Anything else is AMBIGUOUS: it cannot be
+      // auto-released (no authority) and must NOT be reinterpreted as
+      // unowned — dropping the ownership record without a verified physical
+      // release would resurface a possibly live product runtime as an
+      // ordinary session. Keep it hidden and fail activation closed on it
+      // until an operator repairs/releases it. Reversible via quarantine.
       const canonical = owner.botId !== undefined
         && owner.bindingId === createScopedGroupMemberBindingId(conversationId, topicId, owner.botId);
       if (!canonical) {
-        delete session.owner;
         dropped.push({
           section: "sessions",
           key: alias,
-          reason: `owned session references missing conversation/topic (conversation "${conversationId}", topic "${topicId}") with non-canonical ownership; owner demoted to plain session`,
+          reason: `owned session references missing conversation/topic (conversation "${conversationId}", topic "${topicId}") with non-canonical ownership; ambiguous ownership kept hidden — requires operator recovery`,
         });
         continue;
       }

@@ -3692,7 +3692,7 @@ test("activation releases a rootless canonical group-member session and unlocks 
   first.store.close();
 });
 
-test("non-canonical rootless owner demotes to plain session at load (no lock, no hide)", async () => {
+test("non-canonical rootless owner stays hidden and blocks activation until operator recovery", async () => {
   const { parseState } = await import("../../../src/state/state-store");
   const dropped: { section: string; key: string; reason: string }[] = [];
   const state = parseState({
@@ -3721,9 +3721,103 @@ test("non-canonical rootless owner demotes to plain session at load (no lock, no
       },
     },
   }, "state.json", dropped);
-  // Demoted: ordinary session again — resolvable, unhidden, non-locking.
-  expect(state.sessions.weird?.owner).toBeUndefined();
-  expect(dropped.some((entry) => entry.key === "weird" && entry.reason.includes("demoted"))).toBe(true);
+  // Ambiguous: kept verbatim-hidden (never reinterpreted as unowned), and
+  // activation must fail closed with an actionable recovery error.
+  const { isHiddenProductSessionOwner } = await import("../../../src/state/types");
+  const { assertOrdinarySessionAddressable } = await import("../../../src/sessions/ordinary-session-guard");
+  expect(state.sessions.weird?.owner).toEqual({
+    kind: "group-member",
+    bindingId: "bind_not_canonical",
+    botId: "bot_b",
+    conversationId: "conv_gone",
+    topicId: "topic_gone",
+  });
+  expect(isHiddenProductSessionOwner(state.sessions.weird?.owner)).toBe(true);
+  expect(() => assertOrdinarySessionAddressable(state.sessions.weird?.owner)).toThrow(
+    expect.objectContaining({ code: "hidden_session" }),
+  );
+  expect(dropped.some(
+    (entry) => entry.key === "weird" && entry.reason.includes("requires operator recovery"),
+  )).toBe(true);
+  // Ordinary Sessions list must not surface it.
+  const aliases = Object.values(state.sessions)
+    .filter((session) => !isHiddenProductSessionOwner(session.owner))
+    .map((session) => session.alias);
+  expect(aliases).not.toContain("weird");
+});
+
+test("activation fails closed on ambiguous group-member ownership (actionable recovery)", async () => {
+  const first = await createLifecycle();
+  first.state.sessions.ambiguous = {
+    alias: "ambiguous",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:ambiguous",
+    logical_session_id: "77777777-7777-4777-8777-777777777777",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: {
+      kind: "group-member",
+      bindingId: "bind_not_canonical",
+      botId: BOT_ID,
+      conversationId: "conv_gone",
+      topicId: "topic_gone",
+    },
+  };
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "ambiguous_group_ownership" });
+  const detail = (error as { details?: { sessions?: { alias: string }[] } }).details;
+  expect(detail?.sessions?.map((s) => s.alias)).toContain("ambiguous");
+  expect(first.service.isConsumerActivated()).toBe(false);
+  // Nothing was released or deleted: the handle and the row both survive for
+  // the operator (quarantine backup preserves the raw bytes too).
+  expect(first.sessions.getLogicalSessionRecord("ambiguous")?.alias).toBe("ambiguous");
+  first.store.close();
+});
+
+test("terminal settleCancelBatch with a foreign member fails closed (no mismatched pair)", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const mkRun = (requestId: string) => first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId,
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const runA = mkRun("req-term-a");
+  const runB = mkRun("req-term-b");
+  // Terminalize run A through the cancel path (all members never started).
+  const terminal = first.store.cancelRun(runA.run.id, NOW);
+  expect(terminal.run.state).toBe("cancelled");
+  // A foreign member on a TERMINAL run must still fail closed — the fence
+  // runs before the idempotent early-return, so the caller can never observe
+  // a mismatched Run/member join.
+  expect(() => first.store.settleCancelBatch({
+    runId: runA.run.id,
+    now: NOW,
+    outcomes: [{ memberTurnId: runB.memberTurns[0]!.id, outcome: "cancelled" }],
+  })).toThrow(/does not belong to run/);
+  // The same-run member on the terminal run stays idempotent.
+  const same = first.store.settleCancelBatch({
+    runId: runA.run.id,
+    now: NOW,
+    outcomes: [{ memberTurnId: runA.memberTurns[0]!.id, outcome: "cancelled" }],
+  });
+  expect(same.run.id).toBe(runA.run.id);
+  expect(same.settled[0]?.member.runId).toBe(runA.run.id);
+  first.store.close();
 });
 
 test("missing-topic durable run is cancelled and reconciled, never row-deleted live", async () => {
