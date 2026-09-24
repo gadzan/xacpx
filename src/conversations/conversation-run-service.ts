@@ -548,6 +548,10 @@ export class ConversationRunService {
     await this.bots.runLifecycle(botId, async () => {
       // Validate every ownership signal before making teardown externally visible.
       // A contradiction must leave the Conversation active and all physical state intact.
+      // A group-controller row pointing at this Direct root is a cross-kind
+      // contradiction: Direct teardown owns no controller release path, and
+      // deleting the Direct metadata would orphan the hidden session.
+      this.assertNoDirectControllerResidue(botId, conversationId);
       this.ownedAliases(botId, conversationId);
       this.store.markConversationDeleting(conversationId, timestamp);
       await this.markAppStateDeleting(conversationId);
@@ -841,6 +845,64 @@ export class ConversationRunService {
     );
   }
   /**
+   * Direct cross-kind contradiction fence: a group-controller row is only
+   * valid against a Group root, so any controller binding/session that
+   * resolves to this Direct Conversation (or one of its Topics) is corrupt
+   * ownership. Verified Direct teardown owns no controller release path —
+   * fail closed before the deleting barrier instead of orphaning the hidden
+   * session when the Direct metadata is deleted. Runs inside the Bot gate
+   * alongside ownedAliases so the check is linearizable with the barrier.
+   * The global ambiguous gate applies too: an unattributable controller
+   * owner blocks every verified delete, Direct included.
+   */
+  private assertNoDirectControllerResidue(botId: string, conversationId: string): void {
+    this.assertNoAmbiguousGroupControllerSessions();
+    const directTopicIds = new Set(
+      Object.values(this.state.conversation_topics)
+        .filter((topic) => topic.conversationId === conversationId)
+        .map((topic) => topic.id),
+    );
+    const bindings = Object.values(this.state.bot_runtime_bindings).filter(
+      (binding) => binding.scope === "group-controller"
+        && (binding.conversationId === conversationId
+          || (binding.topicId !== undefined && directTopicIds.has(binding.topicId))),
+    );
+    const sessions = Object.values(this.state.sessions).filter((session) => {
+      const owner = session.owner;
+      if (owner?.kind !== "group-controller") {
+        return false;
+      }
+      if (owner.conversationId !== undefined) {
+        if (owner.conversationId !== conversationId) {
+          return false;
+        }
+        // Exact conversation on this Direct root: an absent topicId still
+        // fences (the Conversation row itself is the cleanup root); a
+        // present topicId must name one of its Topics to count.
+        return owner.topicId === undefined || directTopicIds.has(owner.topicId);
+      }
+      const bound = owner.bindingId !== undefined
+        ? this.state.bot_runtime_bindings[owner.bindingId]
+        : undefined;
+      if (bound !== undefined) {
+        return bound.conversationId === conversationId
+          || (bound.topicId !== undefined && directTopicIds.has(bound.topicId));
+      }
+      return owner.topicId !== undefined && directTopicIds.has(owner.topicId);
+    });
+    if (bindings.length === 0 && sessions.length === 0) {
+      return;
+    }
+    throw new ConversationError(
+      "runtime_ownership_conflict",
+      `direct conversation "${conversationId}" (bot "${botId}") has contradictory group-controller runtime with no verified release path`,
+      {
+        bindingIds: bindings.map((binding) => binding.id),
+        sessionAliases: sessions.map((session) => session.alias),
+      },
+    );
+  }
+  /**
    * Release every group-member runtime residue for a Group whose Topics are
    * all gone: live bindings (alias+id verified), exact binding-less owners,
    * and legacy partial owners resolvable through a same-group binding.
@@ -1095,12 +1157,14 @@ export class ConversationRunService {
             await this.releaseAlias(alias);
           }
         }
-        // A controller row attributing to this Topic has no release path:
-        // re-check inside the gate (it could have landed mid-teardown) and
-        // fail closed before deleting the Topic row — the only cleanup root
-        // a topicId-linked partial owner can prove.
-        this.assertNoTopicControllerResidue(conversationId, topicId);
         await this.stateMutex.run(async () => {
+          // A controller row attributing to this Topic has no release path:
+          // check INSIDE the final mutex with the Group path's atomicity — a
+          // controller row written through the same mutex after the gate
+          // check must still block the Topic row delete in the same critical
+          // section. Fail closed before deleting the Topic row — the only
+          // cleanup root a topicId-linked partial owner can prove.
+          this.assertNoTopicControllerResidue(conversationId, topicId);
           const next = structuredClone(this.state);
           for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
             if (

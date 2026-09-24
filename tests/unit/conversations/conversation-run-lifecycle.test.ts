@@ -1019,6 +1019,61 @@ test("teardown fails before deleting when explicit Bot ownership conflicts with 
   expect(first.physical.releaseCalls).toBe(0);
 });
 
+test("teardown fails closed on controller residue cross-kind to a Direct root", async () => {
+  const first = await createLifecycle();
+  const { createDirectConversationId, createDirectTopicId } = await import("../../../src/domain/ids");
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const bot = first.bots.getBot(BOT_ID);
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-direct-controller-fence",
+    content: "hello",
+  });
+  expect(accepted.run.conversationId).toBe(conversationId);
+  // Default Direct roots are synthetic: persist the Conversation + Topic
+  // rows so the partial owner below resolves through a live Topic root
+  // (not the ambiguous gate) and the fence failure is attributable to the
+  // cross-kind controller contradiction.
+  first.state.conversations[conversationId] = {
+    id: conversationId, kind: "bot", title: bot.name, botIds: [bot.id],
+    createdAt: NOW, updatedAt: NOW,
+  };
+  first.state.conversation_topics[topicId] = {
+    id: topicId, conversationId, title: "Default", status: "active",
+    createdAt: NOW, updatedAt: NOW,
+  };
+  // Poisoned-but-schema-valid: a provisional controller owner pointing at
+  // the Direct Topic (no live binding to resolve through). Direct teardown
+  // owns no controller release path, so it must fail closed with every row
+  // intact instead of orphaning the hidden session.
+  first.state.sessions.controller_direct = {
+    alias: "controller_direct",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:controller_direct",
+    logical_session_id: "55555555-5555-4555-8555-555555555555",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-controller", bindingId: "missing_binding", topicId },
+  };
+  await expect(first.service.teardownDirectConversation(BOT_ID)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(first.state.conversations[conversationId]).toBeDefined();
+  expect(Object.values(first.state.conversation_topics).some(
+    (topic) => topic.conversationId === conversationId,
+  )).toBe(true);
+  expect(first.store.listRuns(conversationId)).not.toHaveLength(0);
+  expect(first.store.listMessages({ conversationId, topicId, limit: 10 })).not.toHaveLength(0);
+  expect(first.sessions.getLogicalSessionRecord("controller_direct")?.alias).toBe("controller_direct");
+  expect(first.store.isConversationDeleting(conversationId)).toBe(false);
+  expect(first.physical.deleteCalls).toBe(0);
+  expect(first.physical.releaseCalls).toBe(0);
+  first.store.close();
+});
+
 test("teardown fails closed when PR2 bindingId and conversationId disagree", async () => {
   const first = await createLifecycle();
   const conversationId = createDirectConversationId(BOT_ID);
