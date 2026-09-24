@@ -11,9 +11,13 @@ import {
   buildElicitationFieldCard,
   buildElicitationOpeningCard,
   buildElicitationReviewCard,
+  buildWorstCaseReviewCard,
   escapeFeishuCardText,
 } from "../../../../packages/channel-feishu/src/elicitation-cards";
-import { checkElicitationRenderability } from "../../../../packages/channel-feishu/src/elicitation-limits";
+import {
+  checkElicitationRenderability,
+  measureElicitationCardBytes,
+} from "../../../../packages/channel-feishu/src/elicitation-limits";
 import type { ChannelElicitationDecision, ChannelElicitationRequest } from "xacpx/plugin-api";
 import { setChannelLocale } from "../../../../packages/channel-feishu/src/i18n/index";
 
@@ -27,13 +31,13 @@ beforeAll(() => {
   setChannelLocale("en");
 });
 
-function request(fields: ChannelElicitationRequest["fields"]): ChannelElicitationRequest {
+function request(fields: ChannelElicitationRequest["fields"], message = "Which environment should I deploy to?"): ChannelElicitationRequest {
   return {
     requestId: "req-1",
     chatKey: "feishu:default:oc_chat",
     requester: { senderId: "ou_initiator", senderName: "Ada", isOwner: true },
     agent: { name: "codex", sessionAlias: "backend" },
-    message: "Which environment should I deploy to?",
+    message,
     mode: "form",
     fields,
     expiresAt: Date.now() + 60_000,
@@ -425,6 +429,34 @@ test("an over-long field label is refused rather than clipped into a different q
   expect(verdict.reason).toBe("field-label-too-long");
 });
 
+test("a field label that is legal raw but too long ESCAPED is refused, not clipped", () => {
+  // The label is the question, so it must be shown in full. It used to be judged
+  // by RAW length: 100 `<` sat exactly at the 100-char bound, passed, expanded
+  // to 500 escaped chars as `input.label` / the bold heading, and was then cut
+  // back to 100 by the safety net — the user read a fragment of the question.
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "note", title: "<".repeat(100), required: true, maxLength: 100 },
+  ];
+  const verdict = checkElicitationRenderability(fields);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("field-label-too-long");
+  // Both lengths are named so an operator can see the raw length was fine.
+  expect(verdict.detail).toContain("100 chars raw");
+  expect(verdict.detail).toContain("500 escaped");
+});
+
+test("a short ASCII label still renders", () => {
+  // The ordinary case must be untouched by the stricter bound: a normal label
+  // is neither too long raw nor too long escaped.
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "single-select", key: "env", title: "Environment", required: true, options: [
+      { value: "prod", label: "Production" },
+      { value: "staging", label: "Staging" },
+    ] },
+  ];
+  expect(checkElicitationRenderability(fields).renderable).toBe(true);
+});
+
 test("a small mixed form renders", () => {
   const verdict = checkElicitationRenderability([
     { kind: "text", key: "a", title: "A", required: true, maxLength: 1000 },
@@ -667,6 +699,97 @@ test("an unrenderable form is refused before any card is sent", async () => {
   expect(outcome).toBeInstanceOf(Error);
   expect((outcome as Error).message).toContain("not renderable");
   expect(rec.transport.sent).toHaveLength(0);
+});
+
+test("a message too large to show faithfully is refused before any card is sent", () => {
+  // The opening card renders `message` as a markdown component whose content is
+  // the ESCAPED text, bounded by FEISHU_CARD_BODY_MAX_CHARS. That bound used to
+  // be enforced only by the `boundRendered` cut, so `"<".repeat(8000)` — 40,000
+  // chars once escaped — was sliced back to 28,000 and the user was shown a
+  // fragment of entity codes instead of what the agent asked. The form is now
+  // refused whole: the request cancels rather than the question changing.
+  //
+  // Driven through `checkElicitationRenderability(fields, request)` — the entry
+  // point the renderer's `requestElicitation` gate uses, with the request added
+  // as the optional second argument. See the report: the renderer needs to pass
+  // it, and until it does this refusal is only reachable through the gate.
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "n", title: "N", required: true, maxLength: 100 },
+  ];
+  const verdict = checkElicitationRenderability(request(fields, "<".repeat(8000)).fields, {
+    message: "<".repeat(8000),
+  });
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("card-text-too-large");
+  expect(verdict.detail).toContain("8000 chars raw");
+  expect(verdict.detail).toContain("40000 escaped");
+
+  // The field-only form still renders: the refusal is about the message, not
+  // about the fields.
+  expect(checkElicitationRenderability(fields).renderable).toBe(true);
+});
+
+test("a message that fits after escaping is shown in full by the opening card", () => {
+  // The gate must not overreach: a message inside the escaped budget renders,
+  // and every character of it survives — the safety net must not be what carries
+  // this, because a cut is the bug being fixed.
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "n", title: "N", required: true, maxLength: 100 },
+  ];
+  const message = "Choose: " + "<".repeat(4000) + "END";
+  expect(checkElicitationRenderability(fields, { message }).renderable).toBe(true);
+  const card = buildElicitationOpeningCard(request(fields, message), "tok");
+  const elements = (card.body as { elements: Array<{ content?: string }> }).elements;
+  const rendered = elements.map((element) => element.content ?? "").join("\n");
+  // Every one of the agent's characters is present as an entity. Asserted on the
+  // element that carries the message, not on the joined card body: the opening
+  // card renders the field summary AFTER the message, so a trailing check on the
+  // join would see the summary rather than the message's own tail.
+  expect((rendered.match(/&#60;/g) ?? []).length).toBe(4000);
+  const messageElement = elements.find((element) => element.content?.includes("END"));
+  expect(messageElement?.content?.endsWith("END")).toBe(true);
+  // Escaped exactly ONCE, so the user reads the literal characters back.
+  expect(messageElement?.content).not.toContain("amp;#60;");
+});
+
+test("the worst-case review card is no longer optimistic", () => {
+  // The review card is where a form can outgrow Feishu's 30 KB budget: every
+  // field's label and answer lands in one card, and the escaped form of an
+  // answer is several times its raw length. Sizing that WORST case before
+  // anything is sent is what keeps this from being a `card.update` failure after
+  // the user filled the whole form in.
+  //
+  // The sample used to be `"x".repeat(maxLength)` — a 1x character — so a real
+  // answer of 1000 `<` (5x escaped) made the estimate 5x short and the gate
+  // blessed a card the review page would then overflow. The sample is now the
+  // widest escape of a full-length answer.
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "note", title: "Note", required: false, maxLength: 1000 },
+  ];
+  const worst = buildWorstCaseReviewCard(request(fields), "a".repeat(32));
+  const worstBytes = measureElicitationCardBytes(worst);
+  // The concrete number, so a regression back to the optimistic sample shows up
+  // as a byte count rather than only as a card that fails in production.
+  expect(worstBytes).toBe(7165);
+
+  // The estimate must DOMINATE the real card a user can produce: a maximal
+  // `~` answer (6x escaped) is the largest answer this field can legally hold,
+  // so the worst-case card has to be at least that big.
+  const maximalAnswer = buildElicitationReviewCard(
+    request(fields),
+    "a".repeat(32),
+    { note: "~".repeat(1000) },
+  );
+  expect(worstBytes).toBeGreaterThanOrEqual(measureElicitationCardBytes(maximalAnswer));
+
+  // The old sample's size, for contrast. The gap IS the bug.
+  const optimistic = buildElicitationReviewCard(
+    request(fields),
+    "a".repeat(32),
+    { note: "x".repeat(1000) },
+  );
+  expect(measureElicitationCardBytes(optimistic)).toBe(2165);
+  expect(worstBytes).toBeGreaterThan(measureElicitationCardBytes(optimistic) * 3);
 });
 
 test("a number answer is parsed as a number, and a bad one is not stored", async () => {

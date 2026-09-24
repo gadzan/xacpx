@@ -55,14 +55,19 @@ export interface FeishuResolvedAccountConfig {
 
 /**
  * Opt-in card-callback (webhook) listener for one account.
+/**
+ * `encryptKey` is REQUIRED, and so is `verificationToken`. `verifyCardRequest`
+ * picks the signing secret by protocol: a new-protocol callback (one carrying
+ * `encrypt` or `schema`) is verified with SHA-256 over the encrypt key, and a
+ * legacy push (no `schema`, no `encrypt`) with SHA-1 over the token.
  *
- * `encryptKey` is REQUIRED. `verifyCardRequest` picks the signing secret by
- * protocol: a new-protocol callback (one carrying `encrypt` or `schema`) is
- * verified with SHA-256 over the encrypt key, and an empty key there is
- * `unauthorized`. Every button the renderer emits carries `schema: "2.0"`, so
- * every real click is new-protocol — a token-only config would start cleanly,
- * advertise form support, and then 401 on 100% of clicks. The token is a second
- * factor on the new-protocol push, not an alternative to the key.
+ * Every button the renderer emits carries `schema: "2.0"`, so every real click
+ * is new-protocol — which is why the key is mandatory. The URL-verification
+ * challenge Feishu POSTs when the endpoint is first configured carries NEITHER
+ * marker, so it lands in the legacy branch, which is why the token is mandatory
+ * too: the challenge is read after the signature check, so an endpoint missing
+ * either secret rejects that handshake before it can echo the challenge and the
+ * channel can never finish being configured.
  */
 export interface FeishuCardActionConfig {
   /**
@@ -72,11 +77,13 @@ export interface FeishuCardActionConfig {
    */
   encryptKey: string;
   /**
-   * Second factor only. Feishu echoes it on every callback and the host
-   * cross-checks it when it is set. It is additionally REQUIRED for a legacy
-   * (no `schema`, no `encrypt`) push, which no renderer button produces. An
-   * operator who only runs modern cards may leave this unset, which parses to
-   * `""` rather than to a missing field.
+   * The legacy (no `schema`, no `encrypt`) signing secret, and the token Feishu
+   * echoes on every callback for the host to cross-check.
+   *
+   * REQUIRED, not optional: the URL-verification challenge arrives on the
+   * legacy path, and it is read only after the signature verifies — so a
+   * config without this token starts, serves every click, and still fails the
+   * handshake that puts the endpoint into service.
    */
   verificationToken: string;
   /** Loopback interface to bind. Defaults to 127.0.0.1 — a private surface. */
@@ -221,12 +228,22 @@ const DEFAULT_CARD_ACTION_PATH = "/webhook/card";
  * an endpoint that never comes up (because, say, the port was a string) would
  * look exactly like "the feature does not work" at runtime.
  *
- * `encryptKey` is REQUIRED for the same reason, one layer up. It is the
- * new-protocol signing secret, and every button the renderer emits carries
- * `schema: "2.0"`, so a real click always lands in that branch. Accepting a
- * token-only config here would produce a channel that starts, advertises form
- * support, and 401s every single click. `verificationToken` stays OPTIONAL
- * because the host only needs it as a second factor on the new-protocol push.
+ * BOTH SECRETS ARE REQUIRED, because this endpoint has to complete two
+ * different handshakes and each one needs its own key:
+ *
+ *   - a card ACTION. Every button the renderer emits carries `schema: "2.0"`, so
+ *     a real click lands in the new-protocol branch and is verified against
+ *     `encryptKey` with SHA-256.
+ *   - the URL-VERIFICATION challenge. Feishu delivers that with no `schema` and
+ *     no `encrypt` field, which is the legacy branch — verified against
+ *     `verificationToken` with SHA-1, and the echoed token is required there.
+ *
+ * The challenge is read AFTER the signature check (see `handleRequest`), so a
+ * config missing either secret cannot merely degrade on that one path: the
+ * request is rejected before the challenge is ever looked at. Requiring only
+ * `encryptKey` therefore produces a channel that starts, advertises form
+ * support, answers every click, and still cannot finish being configured —
+ * which is the same dead-configuration failure this gate exists to prevent.
  */
 function parseCardActions(raw: unknown, path: string): FeishuCardActionConfig | undefined {
   if (raw === undefined) return undefined;
@@ -235,19 +252,24 @@ function parseCardActions(raw: unknown, path: string): FeishuCardActionConfig | 
   const encryptKey = stringOptional(raw.encryptKey, `${path}.encryptKey`);
   if (encryptKey === undefined) {
     throw new Error(
-      `${path}.encryptKey is required: without the new-protocol signing key every card action would be rejected with 401`,
+      `${path}.encryptKey is required: card actions are signed with it, so without it every click would be rejected with 401`,
     );
   }
   const verificationToken = stringOptional(raw.verificationToken, `${path}.verificationToken`);
+  if (verificationToken === undefined) {
+    throw new Error(
+      `${path}.verificationToken is required: the URL-verification challenge arrives on the legacy (token + SHA-1) path, so without it the endpoint cannot finish being configured`,
+    );
+  }
   const port = raw.port;
   if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`${path}.port must be an integer between 1 and 65535`);
   }
   const host = stringOptional(raw.host, `${path}.host`) ?? DEFAULT_CARD_ACTION_HOST;
   return {
-    // No `?? ""` fallback: the required-key check above already narrowed this.
+    // No `?? ""` fallbacks: the required checks above already narrowed both.
     encryptKey,
-    verificationToken: verificationToken ?? "",
+    verificationToken,
     host,
     port,
     path: stringOptional(raw.path, `${path}.path`) ?? DEFAULT_CARD_ACTION_PATH,

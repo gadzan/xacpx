@@ -13,6 +13,13 @@
  * and picks a conservative bound derived from a documented one, rather than
  * inventing a number.
  *
+ * TEXT IS JUDGED BY ITS ESCAPED LENGTH. Agent text reaches a card through
+ * `escapeFeishuCardText`, which expands a character up to 6x, so the raw
+ * `.length` of the agent's text is not the size a component budget applies to.
+ * Measuring raw length is what let a 100-char option label of all `<` pass the
+ * 100-char bound and then get clipped: the user read a mangled fragment of the
+ * agent's label. See `escapedLength`.
+ *
  * Documented limits (sources cited inline at each constant):
  *
  *   - Card JSON: 30 KB, enforced (cardkit v1 card create/update error 200860
@@ -97,6 +104,7 @@ export type ElicitationUnsupportedReason =
   | "answer-too-long"
   | "answer-unbounded"
   | "card-too-large"
+  | "card-text-too-large"
   | "empty-select"
   | "option-constraint-unsatisfiable"
   | "too-many-fields";
@@ -121,8 +129,77 @@ export const FEISHU_UNDOCUMENTED_LIMITS: readonly string[] = [
   "markdown component content length (no per-component cap; the 28,000-char body budget from the repo's streaming card is used)",
 ];
 
-function longest(values: readonly string[]): number {
-  return values.reduce((max, value) => Math.max(max, value.length), 0);
+/**
+ * Escape agent-controlled text for a Feishu card markdown component.
+ *
+ * `&#60;` (`<`) is the load-bearing escape: it prevents `<at id=...>`,
+ * `<link ...>`, `<a href=...>` and every other Feishu markup tag from forming.
+ *
+ * Feishu card markdown additionally supports: `**bold**` / `__bold__`,
+ * `*italic*`, `~~strikethrough~~`, `` `code` ``, `> quote`, `#` headings,
+ * `---` dividers, `|` pipe tables and `[text](url)` links. Every one of those
+ * characters is escaped so agent text cannot reshape the card — a heading that
+ * hides the question, a table that buries it, or bold that makes a line look
+ * like a header the platform wrote.
+ *
+ * Feishu's own escaping guidance is HTML-entity form (`&#number;`), which a
+ * markdown component renders back as the literal character. Ordering matters:
+ * `&` is escaped first so the entities written for other characters are not
+ * themselves re-escaped.
+ *
+ * WHY IT LIVES HERE rather than in elicitation-cards.ts: BOTH modules need it —
+ * the card builders to escape, and this gate to MEASURE what they escaped — and
+ * elicitation-cards.ts already imports this module's limits. Putting the
+ * escaper here keeps the dependency a one-way edge (cards -> limits). Had it
+ * stayed in cards.ts, limits would have had to import it back, and the resulting
+ * cycle throws a TDZ `ReferenceError` on `MAX_CARD_CHARS` whenever the gate
+ * module is reached first (which is every caller). `elicitation-cards.ts`
+ * re-exports it so the historical import path still works.
+ */
+export function escapeFeishuCardText(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&#60;")
+    .replace(/>/g, "&#62;")
+    .replace(/\[/g, "&#91;")
+    .replace(/\]/g, "&#93;")
+    .replace(/\*/g, "&#42;")
+    .replace(/_/g, "&#95;")
+    .replace(/`/g, "&#96;")
+    .replace(/~/g, "&#126;")
+    .replace(/\|/g, "&#124;")
+    .replace(/^#/gm, "&#35;")
+    .replace(/^>/gm, "&#62;");
+}
+
+/**
+ * Length of `value` as the card platform will COUNT it: escaped.
+ *
+ * The single most load-bearing measurement in this module. Every Feishu
+ * markdown / plain_text component receives agent text through
+ * `escapeFeishuCardText` first, and that escaper expands a character up to 6x
+ * (`~` and `|` become 6-char entities; `<`, `[`, `*`, `_`, `` ` `` and `#`
+ * become 5-char ones). So the raw `.length` of agent text is NOT the size the
+ * component budget applies to, and judging it by raw length was the BUG:
+ * `"<".repeat(100)` measured 100, passed the 100-char option-label bound, then
+ * expanded to 500 escaped chars and got clipped back to 100 by the safety net —
+ * the user read a mangled fragment of the agent's label instead of the label.
+ *
+ * Measured through the real escaper rather than a hardcoded multiplier, so a
+ * change to the escaper can never leave this gate quietly optimistic.
+ */
+export function escapedLength(value: string): number {
+  return escapeFeishuCardText(value).length;
+}
+
+/**
+ * Widest of the given strings in ESCAPED space.
+ *
+ * The budget a component is measured against is its escaped size, so "widest"
+ * has to mean widest after escaping — see `escapedLength`.
+ */
+function longestEscaped(values: readonly string[]): number {
+  return values.reduce((max, value) => Math.max(max, escapedLength(value)), 0);
 }
 
 /**
@@ -162,8 +239,32 @@ export function measureElicitationCardBytes(card: unknown): number {
  * Ordering is deliberate: structural impossibilities (a field kind the platform
  * cannot express) are reported before cosmetic ones, so a log reader sees the
  * decisive cause first.
+ *
+ * The optional `request` argument extends the gate to the OPENING card's
+ * agent-authored text (`message`, `schemaTitle`, `schemaDescription`), which
+ * lives on the request rather than on any field. It is optional so every
+ * existing field-only caller keeps compiling and behaving exactly as before;
+ * the one caller that has the whole request should pass it, because without it
+ * a message too large to render faithfully was only caught by the
+ * `boundRendered` BACKSTOP — the very truncation this gate exists to prevent.
  */
-export function checkElicitationRenderability(fields: readonly ChannelElicitationField[]): ElicitationRenderability {
+export function checkElicitationRenderability(
+  fields: readonly ChannelElicitationField[],
+  request?: ElicitationCardText,
+): ElicitationRenderability {
+  const fieldsVerdict = checkElicitationFieldsRenderability(fields);
+  if (!fieldsVerdict.renderable) return fieldsVerdict;
+  // The request's own text is checked LAST: a form that cannot be expressed at
+  // all (multi-select, unbounded answer) is the decisive cause, and reporting
+  // a long message first would hide it.
+  if (request) return checkElicitationCardTextRenderability(request);
+  return fieldsVerdict;
+}
+
+/** Field-level half of the gate. See `checkElicitationRenderability`. */
+export function checkElicitationFieldsRenderability(
+  fields: readonly ChannelElicitationField[],
+): ElicitationRenderability {
   // A form is one card per field, so the field count is bounded by how many
   // cards a single elicitation can traverse. This is a policy bound, not a
   // platform one: Feishu documents no interaction-count limit.
@@ -199,12 +300,17 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
           detail: `field ${JSON.stringify(field.key)} has ${field.options.length} options, renderer budget ${FEISHU_SELECT_OPTION_MAX}`,
         };
       }
-      const worstLabel = longest(field.options.map((option) => option.label));
-      if (worstLabel > FEISHU_TEXT_CONTENT_MAX) {
+      // Judged in ESCAPED space, which is the size `plainText` actually emits
+      // and the size the 100-char component budget applies to. The raw length
+      // is reported alongside it so an operator can see why a 90-char label was
+      // refused: `"<".repeat(90)` is only 90 raw chars but 450 escaped ones.
+      const widestLabel = longestEscaped(field.options.map((option) => option.label));
+      if (widestLabel > FEISHU_TEXT_CONTENT_MAX) {
+        const widestRaw = Math.max(...field.options.map((option) => option.label.length));
         return {
           renderable: false,
           reason: "select-option-label-too-long",
-          detail: `field ${JSON.stringify(field.key)} option label is ${worstLabel} chars, limit ${FEISHU_TEXT_CONTENT_MAX}`,
+          detail: `field ${JSON.stringify(field.key)} option label is ${widestRaw} chars raw but ${widestLabel} escaped, limit ${FEISHU_TEXT_CONTENT_MAX} escaped`,
         };
       }
     }
@@ -212,18 +318,25 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
     // A label IS the question (input.label). Feishu documents no cap, so the
     // documented placeholder cap is used as the bound: a label longer than the
     // placeholder may render differently from what was asked.
-    if (field.title.length > FEISHU_TEXT_CONTENT_MAX) {
+    //
+    // Measured in ESCAPED space for the same reason the option label is: the
+    // title becomes `input.label` AND the field card's bold heading, and both
+    // render the escaped form. Judging the raw length let a 100-char title of
+    // all `<` through, which then expanded to ~500 and was clipped — the user
+    // saw part of the question the agent asked. Refusing is the honest answer.
+    const escapedTitle = escapedLength(field.title);
+    if (escapedTitle > FEISHU_TEXT_CONTENT_MAX) {
       return {
         renderable: false,
         reason: "field-label-too-long",
-        detail: `field ${JSON.stringify(field.key)} label is ${field.title.length} chars, limit ${FEISHU_TEXT_CONTENT_MAX}`,
+        detail: `field ${JSON.stringify(field.key)} label is ${field.title.length} chars raw but ${escapedTitle} escaped, limit ${FEISHU_TEXT_CONTENT_MAX} escaped`,
       };
     }
-    if ((field.description ?? "").length > FEISHU_CARD_BODY_MAX_CHARS) {
+    if (escapedLength(field.description ?? "") > FEISHU_CARD_BODY_MAX_CHARS) {
       return {
         renderable: false,
         reason: "field-description-too-long",
-        detail: `field ${JSON.stringify(field.key)} description is ${(field.description ?? "").length} chars, limit ${FEISHU_CARD_BODY_MAX_CHARS}`,
+        detail: `field ${JSON.stringify(field.key)} description is ${(field.description ?? "").length} chars raw but ${escapedLength(field.description ?? "")} escaped, limit ${FEISHU_CARD_BODY_MAX_CHARS} escaped`,
       };
     }
     // An answer the platform cannot capture would be silently truncated into a
@@ -273,6 +386,74 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
           detail: `field ${JSON.stringify(field.key)} offers an option that cannot satisfy its own constraints`,
         };
       }
+    }
+  }
+  return { renderable: true };
+}
+
+/**
+ * The request-scoped text the opening card renders.
+ *
+ * Declared as its own shape rather than a `Pick<ChannelElicitationRequest, …>`
+ * so a caller may pass only the members it has: `message` is REQUIRED on a real
+ * request, but `schemaTitle` / `schemaDescription` are optional there, and a
+ * `Pick` would drag those requirements onto every caller of the gate.
+ */
+export interface ElicitationCardText {
+  readonly message?: string;
+  readonly schemaTitle?: string;
+  readonly schemaDescription?: string;
+}
+
+/**
+ * Would the OPENING card show the agent's own text faithfully?
+ *
+ * The opening card's message, schema title and schema description are each
+ * rendered by `buildElicitationOpeningCard` as a markdown component whose
+ * content is the ESCAPED agent text, bounded by `FEISHU_CARD_BODY_MAX_CHARS`.
+ * Until this gate existed, that bound was enforced only by `boundRendered` —
+ * the safety net that CUTS. So a `message` of `"<".repeat(8000)` expanded to
+ * ~40,000 chars and was cut back to 28,000: the user was shown a fragment of
+ * entity codes and none of the characters the agent actually sent. That is the
+ * question being changed, which is the one thing a renderer may never do.
+ *
+ * A card that cannot show the message faithfully is REFUSED, so the request
+ * cancels before a single card is sent.
+ *
+ * Checked after the field gate so a structural impossibility (multi-select,
+ * unbounded answer) remains the reported cause when both apply.
+ */
+export function checkElicitationCardTextRenderability(
+  request: ElicitationCardText,
+): ElicitationRenderability {
+  // Each piece of agent text becomes its OWN markdown component, so each is
+  // measured against the per-component body budget on its own rather than
+  // summed — the sum belongs to the serialized-card budget `fitsCardBudget`.
+  const message = request.message;
+  if (message) {
+    const escaped = escapedLength(message);
+    if (escaped > FEISHU_CARD_BODY_MAX_CHARS) {
+      return {
+        renderable: false,
+        reason: "card-text-too-large",
+        detail: `message is ${message.length} chars raw but ${escaped} escaped, limit ${FEISHU_CARD_BODY_MAX_CHARS} escaped per markdown component`,
+      };
+    }
+  }
+  // The schema title renders as `**…**`, the description as a bare line: same
+  // component budget, same escape, so the same bound.
+  for (const [name, value] of [
+    ["schemaTitle", request.schemaTitle],
+    ["schemaDescription", request.schemaDescription],
+  ] as const) {
+    if (!value) continue;
+    const escaped = escapedLength(value);
+    if (escaped > FEISHU_CARD_BODY_MAX_CHARS) {
+      return {
+        renderable: false,
+        reason: "card-text-too-large",
+        detail: `${name} is ${value.length} chars raw but ${escaped} escaped, limit ${FEISHU_CARD_BODY_MAX_CHARS} escaped per markdown component`,
+      };
     }
   }
   return { renderable: true };

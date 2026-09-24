@@ -206,7 +206,13 @@ export class FeishuElicitationRenderer {
    * `cancel` for external aborts, so no responderId is ever invented here.
    */
   async requestElicitation(request: ChannelElicitationRequest, chatId: string): Promise<ChannelElicitationDecision> {
-    const verdict = checkElicitationRenderability(request.fields);
+    // The request is passed alongside the fields so the gate can also measure
+    // the opening card's agent-authored text (message, schema title and
+    // description) in ESCAPED space. Without it, a high-expansion question —
+    // 8000 `<` becomes ~40000 chars of entities — would pass the gate and then
+    // be cut by the markdown component's own bound, leaving the user with a
+    // question that contains none of its original characters.
+    const verdict = checkElicitationRenderability(request.fields, request);
     if (!verdict.renderable) {
       this.options.log?.("feishu.elicitation.unsupported", "cancelled unrenderable elicitation", {
         requestId: request.requestId,

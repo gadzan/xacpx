@@ -380,7 +380,7 @@ test("extractCardAction refuses payloads the renderer did not shape", async () =
   expect(extractCardAction({})).toBeNull();
 });
 
-test("config rejects a card endpoint with no encryptKey", () => {
+test("config rejects a card endpoint missing either secret", () => {
   // Token-only used to parse here, and it is exactly the broken state: the host
   // signs every new-protocol callback with the encrypt key, so a config
   // carrying only the verification token would start cleanly and then 401
@@ -388,12 +388,22 @@ test("config rejects a card endpoint with no encryptKey", () => {
   expect(() => parseFeishuChannelConfig({
     appId: "a", appSecret: "b",
     accounts: { default: { appId: "a", appSecret: "b", cardActions: { port: 9871, verificationToken: "t" } } },
-  })).toThrow(/encryptKey is required: without the new-protocol signing key every card action would be rejected with 401/);
+  })).toThrow(/encryptKey is required/);
 
   expect(() => parseFeishuChannelConfig({
     appId: "a", appSecret: "b",
     accounts: { default: { appId: "a", appSecret: "b", cardActions: { port: 9871 } } },
   })).toThrow(/encryptKey is required/);
+
+  // And the mirror image, which the encryptKey-only fix left open: the
+  // URL-verification challenge arrives with no `schema` and no `encrypt`, so it
+  // is verified on the legacy (token + SHA-1) branch. That check runs BEFORE the
+  // challenge is read, so a token-less config can never echo it and the endpoint
+  // can never finish being configured.
+  expect(() => parseFeishuChannelConfig({
+    appId: "a", appSecret: "b",
+    accounts: { default: { appId: "a", appSecret: "b", cardActions: { port: 9871, encryptKey: "k" } } },
+  })).toThrow(/verificationToken is required: the URL-verification challenge/);
 });
 
 test("config rejects a non-integer or out-of-range port", () => {
@@ -420,21 +430,21 @@ test("config defaults the bind host to loopback and the path to /webhook/card", 
   });
 });
 
-test("config accepts a token-free card endpoint: the token is a second factor", () => {
-  // The encrypt key alone is a complete contract: it signs the new-protocol push
-  // and IS the authenticity proof for an encrypted one. An operator running
-  // modern cards only may leave the token unset, which parses to "".
-  const parsed = parseFeishuChannelConfig({
+test("config requires both secrets: each handshake needs its own key", () => {
+  // Both directions are dead configurations, and both must be refused at parse
+  // time. The encrypt key signs the new-protocol card action; the verification
+  // token signs the URL-verification challenge, which Feishu delivers with
+  // neither `schema` nor `encrypt` and which is read only AFTER the signature
+  // check — so an endpoint holding just one of them either 401s every click or
+  // can never complete the handshake that puts it into service.
+  expect(() => parseFeishuChannelConfig({
     appId: "a", appSecret: "b",
     accounts: { default: { appId: "a", appSecret: "b", cardActions: { port: 9871, encryptKey: "k" } } },
-  });
-  expect(parsed.accounts[0]!.cardActions).toEqual({
-    encryptKey: "k",
-    verificationToken: "",
-    host: "127.0.0.1",
-    port: 9871,
-    path: "/webhook/card",
-  });
+  })).toThrow(/verificationToken is required/);
+  expect(() => parseFeishuChannelConfig({
+    appId: "a", appSecret: "b",
+    accounts: { default: { appId: "a", appSecret: "b", cardActions: { port: 9871, verificationToken: "t" } } },
+  })).toThrow(/encryptKey is required/);
 });
 
 test("config keeps cardActions per account instead of sharing one listener", () => {

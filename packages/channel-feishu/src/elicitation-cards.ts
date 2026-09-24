@@ -40,12 +40,23 @@ import type {
 
 import { t as getMessages } from "./i18n/index.js";
 import {
+  escapeFeishuCardText,
+  escapedLength,
   FEISHU_CARD_BODY_MAX_CHARS,
   FEISHU_INPUT_MAX_LENGTH,
   FEISHU_INPUT_PLACEHOLDER_MAX,
   FEISHU_TEXT_CONTENT_MAX,
 } from "./elicitation-limits.js";
 import { createAnswerMap, formComponentName } from "./elicitation-state.js";
+
+/**
+ * Escape agent-controlled text for a Feishu card markdown component.
+ *
+ * The escaper itself now lives in `elicitation-limits.ts` — see the note there
+ * for why — and is re-exported here so the historical import path
+ * (`./elicitation-cards.js`) keeps working for callers and tests alike.
+ */
+export { escapeFeishuCardText };
 
 /** Routing identity for a control. Values, never answers. */
 export type ElicitationUiAction =
@@ -65,40 +76,6 @@ function truncate(value: string, max: number): string {
 }
 
 /**
- * Escape agent-controlled text for a Feishu card markdown component.
- *
- * `&#60;` (`<`) is the load-bearing escape: it prevents `<at id=...>`,
- * `<link ...>`, `<a href=...>` and every other Feishu markup tag from forming.
- *
- * Feishu card markdown additionally supports: `**bold**` / `__bold__`,
- * `*italic*`, `~~strikethrough~~`, `` `code` ``, `> quote`, `#` headings,
- * `---` dividers, `|` pipe tables and `[text](url)` links. Every one of those
- * characters is escaped so agent text cannot reshape the card — a heading that
- * hides the question, a table that buries it, or bold that makes a line look
- * like a header the platform wrote.
- *
- * Feishu's own escaping guidance is HTML-entity form (`&#number;`), which a
- * markdown component renders back as the literal character. Ordering matters:
- * `&` is escaped first so the entities written for other characters are not
- * themselves re-escaped.
- */
-export function escapeFeishuCardText(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&#60;")
-    .replace(/>/g, "&#62;")
-    .replace(/\[/g, "&#91;")
-    .replace(/\]/g, "&#93;")
-    .replace(/\*/g, "&#42;")
-    .replace(/_/g, "&#95;")
-    .replace(/`/g, "&#96;")
-    .replace(/~/g, "&#126;")
-    .replace(/\|/g, "&#124;")
-    .replace(/^#/gm, "&#35;")
-    .replace(/^>/gm, "&#62;");
-}
-
-/**
  * Bound an ALREADY-ESCAPED string without escaping it again.
  *
  * Every caller of `markdown`/`plainText` has already escaped its text, so the
@@ -107,6 +84,15 @@ export function escapeFeishuCardText(value: string): string {
  *
  * Bound in escaped space (the size the platform counts) and cut on entity
  * boundaries so the tail is never a partial `&#6`.
+ *
+ * THIS IS THE BACKSTOP, NOT THE DEFENCE. The renderability gate
+ * (`checkElicitationRenderability`, which measures escaped length) refuses a
+ * form whose agent-controlled text cannot be shown FAITHFULLY, so for the
+ * agent's question this cut should be unreachable. It stays for two cases the
+ * gate cannot see: the plugin's own localized copy (whose size is fixed by the
+ * locale catalog, not by an agent) and a card the gate has no field-level bound
+ * for. If it ever fires on agent text, that is a gate bug to fix — not a
+ * licence to keep silently reshaping the agent's question into a fragment.
  */
 function boundRendered(rendered: string, max: number): string {
   if (rendered.length <= max) return rendered;
@@ -484,6 +470,19 @@ function maxLengthFor(field: ChannelElicitationField): number {
  * The maximum is per-field and bounded by what the platform's own `input` can
  * hold (`maxLengthFor`), so the sample is the biggest the form can ever ask for
  * rather than an arbitrary number.
+ *
+ * WORST CASE MEANS WORST CASE IN ESCAPED SPACE. The sample used to be
+ * `"x".repeat(maxLength)` — a 1x character, so a real answer of 1000 `<`
+ * (which expands to 5x) made the estimate 5x optimistic and the review card
+ * could still overflow the 30 KB budget the gate had just blessed. The sample
+ * is now built from the character the ESCAPER expands most, measured through
+ * `escapeFeishuCardText` itself rather than a hardcoded multiplier, so the
+ * estimate can never drift optimistic as the escaper changes.
+ *
+ * A select's sample is likewise the option whose DISPLAYED VALUE renders widest,
+ * not the one with the longest label: the review card renders
+ * `displayValue(value)`, so a label-heavy option with a short value produced an
+ * estimate that had nothing to do with what the review page would show.
  */
 export function buildWorstCaseReviewCard(
   request: ChannelElicitationRequest,
@@ -499,18 +498,47 @@ export function buildWorstCaseReviewCard(
       values[field.key] = 0;
       continue;
     }
-    if (field.kind === "single-select") {
+    if (field.kind === "single-select" || field.kind === "multi-select") {
       // A legal option, not a sprawling string: a select's answer is one of the
-      // values core offered, so its longest rendering is the widest label.
+      // values core offered, so its longest rendering is the widest DISPLAYED
+      // value — what `displayValue` puts on the review card. A multi-select is
+      // refused before this ever runs, but it is sized the same way: values
+      // joined by ", ", matching `displayValue`.
       const widest = field.options.reduce(
-        (best, option) => (option.label.length > best.label.length ? option : best),
+        (best, option) => (escapedLength(option.value) > escapedLength(best.value) ? option : best),
         field.options[0]!,
       );
-      values[field.key] = widest.value;
+      values[field.key] = field.kind === "multi-select" ? [widest.value] : widest.value;
       continue;
     }
-    // text / multi-select: the widest answer the platform's input can capture.
-    values[field.key] = "x".repeat(maxLengthFor(field));
+    // text: the widest answer the platform's input can capture, built from the
+    // highest-expansion legal character so the estimate is an upper bound.
+    values[field.key] = highestExpansionFill(maxLengthFor(field));
   }
   return buildElicitationReviewCard(request, token, values as Record<string, ChannelElicitationValue>);
+}
+
+/**
+ * A `length`-character string that is as LARGE AS ANY legal answer once escaped.
+ *
+ * The escaper maps every escapable character to a 5- or 6-char entity, so the
+ * worst a `length`-char answer can do is `length * maxExpansion`. Rather than
+ * hardcode that 6, the candidates are run through `escapeFeishuCardText` and the
+ * widest is picked: if the escaper ever gains a longer entity, this stays honest
+ * automatically.
+ *
+ * Chosen from the escapable characters deliberately — a character that is NOT
+ * escaped expands 1x and would understate the worst case, which is the exact
+ * optimism the old `"x".repeat(...)` sample had.
+ */
+function highestExpansionFill(length: number): string {
+  if (length <= 0) return "";
+  // Every character `escapeFeishuCardText` rewrites, plus the two position-only
+  // ones (a leading `#` and a leading `>`), which only expand at a line start.
+  const candidates = ["&", "<", ">", "[", "]", "*", "_", "`", "~", "|", "#"];
+  let best = candidates[0]!;
+  for (const candidate of candidates) {
+    if (escapeFeishuCardText(candidate).length > escapeFeishuCardText(best).length) best = candidate;
+  }
+  return best.repeat(length);
 }

@@ -1,16 +1,21 @@
 import { beforeAll, expect, test } from "bun:test";
 
 import {
+  checkElicitationCardTextRenderability,
   checkElicitationRenderability,
+  escapedLength,
+  FEISHU_CARD_BODY_MAX_CHARS,
   FEISHU_CARD_ELEMENTS_MAX,
   FEISHU_INPUT_MAX_LENGTH,
   FEISHU_SELECT_OPTION_MAX,
   FEISHU_TEXT_CONTENT_MAX,
   FEISHU_UNDOCUMENTED_LIMITS,
   fitsCardBudget,
+  measureElicitationCardBytes,
 } from "../../../../packages/channel-feishu/src/elicitation-limits";
 import {
   buildElicitationOpeningCard,
+  buildElicitationReviewCard,
   buildWorstCaseReviewCard,
 } from "../../../../packages/channel-feishu/src/elicitation-cards";
 import type { ChannelElicitationField } from "xacpx/plugin-api";
@@ -98,12 +103,144 @@ test("the option limit boundary itself still renders", () => {
 });
 
 test("an over-long option label is refused rather than clipped", () => {
+  // Refused on the RAW side too: a label past the bound is refused whatever it
+  // is made of, so a plain-ASCII over-long label still fails here.
   const verdict = checkElicitationRenderability([{
     ...SINGLE,
     options: [{ value: "v", label: "L".repeat(FEISHU_TEXT_CONTENT_MAX + 1) }],
   }]);
   expect(verdict.renderable).toBe(false);
   expect(verdict.reason).toBe("select-option-label-too-long");
+  // The detail names both measurements, so a reader can see that the bound is
+  // applied to the escaped form the component actually receives.
+  expect(verdict.detail).toContain("101 chars raw");
+  expect(verdict.detail).toContain("101 escaped");
+});
+
+test("an option label that is legal raw but too long ESCAPED is refused, not clipped", () => {
+  // The BUG this closes: the gate used to judge the option label by RAW length.
+  // 100 `<` is exactly at the 100-char bound, so it passed, then `plainText`
+  // escaped it to 500 chars and `boundRendered` cut it back to 100 — the user
+  // read a mangled fragment of entity codes instead of the agent's label.
+  // The label is the question, so a label that cannot be shown in full refuses
+  // the form.
+  const verdict = checkElicitationRenderability([{
+    ...SINGLE,
+    options: [{ value: "v", label: "<".repeat(FEISHU_TEXT_CONTENT_MAX) }],
+  }]);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("select-option-label-too-long");
+  // The detail states BOTH lengths, so an operator can see why a label that
+  // measured exactly at the raw bound was still refused.
+  expect(verdict.detail).toContain(`${FEISHU_TEXT_CONTENT_MAX} chars raw`);
+  expect(verdict.detail).toContain("500 escaped");
+  expect(verdict.detail).toContain("limit 100 escaped");
+});
+
+test("an option label at the escaped boundary still renders", () => {
+  // The other half of the same bound: a label whose ESCAPED length is exactly
+  // the budget must render, so the refusal is about the escaped size rather
+  // than about containing an escapable character at all.
+  expect(checkElicitationRenderability([{
+    ...SINGLE,
+    options: [{ value: "v", label: "<".repeat(FEISHU_TEXT_CONTENT_MAX / 5) }],
+  }]).renderable).toBe(true);
+  // A short ASCII label — the ordinary case — is untouched.
+  expect(checkElicitationRenderability([SINGLE]).renderable).toBe(true);
+});
+
+test("a field title is judged by its ESCAPED length, because it becomes input.label", () => {
+  // The field title is the question twice over: the field card's bold heading
+  // AND the `input`'s `label`. Both render the ESCAPED form, so the bound is
+  // applied there — 21 `<` is 21 raw chars but 105 escaped, past the 100 bound.
+  const overEscaped = checkElicitationRenderability([
+    { kind: "text", key: "note", title: "<".repeat(21), required: true, maxLength: 10 },
+  ]);
+  expect(overEscaped.renderable).toBe(false);
+  expect(overEscaped.reason).toBe("field-label-too-long");
+  expect(overEscaped.detail).toContain("21 chars raw");
+  expect(overEscaped.detail).toContain("105 escaped");
+  // The boundary itself renders: 20 `<` is exactly 100 escaped.
+  expect(checkElicitationRenderability([
+    { kind: "text", key: "note", title: "<".repeat(20), required: true, maxLength: 10 },
+  ]).renderable).toBe(true);
+  // And the raw side is still refused, exactly as before.
+  expect(checkElicitationRenderability([
+    { kind: "text", key: "note", title: "N".repeat(FEISHU_TEXT_CONTENT_MAX + 1), required: true, maxLength: 10 },
+  ]).reason).toBe("field-label-too-long");
+});
+
+test("escapedLength measures what the component budget applies to", () => {
+  // Pinned so the gate cannot silently revert to raw lengths: the measurement
+  // itself is the contract.
+  expect(escapedLength("Production")).toBe(10);
+  expect(escapedLength("<")).toBe(5);
+  // `~` and `|` are the widest expansions, at 6x.
+  expect(escapedLength("~")).toBe(6);
+  expect(escapedLength("|")).toBe(6);
+  expect(escapedLength("<".repeat(100))).toBe(500);
+  expect(escapedLength("~".repeat(1000))).toBe(6000);
+});
+
+test("an opening-card message too large to show faithfully is refused before anything is sent", () => {
+  // The opening card renders `message` as a markdown component whose content is
+  // the ESCAPED text, bounded by FEISHU_CARD_BODY_MAX_CHARS. That bound used to
+  // be enforced only by `boundRendered` — the cut. 8000 `<` expand to 40,000
+  // escaped chars and were cut back to 28,000, so the user saw a fragment of
+  // entity codes and none of the characters the agent sent.
+  const verdict = checkElicitationRenderability([], { message: "<".repeat(8000) });
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("card-text-too-large");
+  expect(verdict.detail).toContain("8000 chars raw");
+  expect(verdict.detail).toContain("40000 escaped");
+  expect(verdict.detail).toContain(`limit ${FEISHU_CARD_BODY_MAX_CHARS} escaped`);
+
+  // The same request text is refused whichever entry point is used, so the
+  // renderer can call either.
+  expect(checkElicitationCardTextRenderability({ message: "<".repeat(8000) }).renderable).toBe(false);
+
+  // A message that FITS is accepted, so the refusal is about size, not about
+  // the message existing.
+  expect(checkElicitationCardTextRenderability({ message: "Which environment?" }).renderable).toBe(true);
+  expect(checkElicitationCardTextRenderability({}).renderable).toBe(true);
+});
+
+test("a message that fits after escaping renders even when it is most of the raw budget", () => {
+  // `"~"` expands 6x, so the largest raw message that still fits is the budget
+  // divided by 6 — this pins that the bound is applied to the escaped form and
+  // not to the raw one.
+  const rawLimit = Math.floor(FEISHU_CARD_BODY_MAX_CHARS / 6);
+  expect(checkElicitationCardTextRenderability({ message: "~".repeat(rawLimit) }).renderable).toBe(true);
+  const overByOne = checkElicitationCardTextRenderability({ message: "~".repeat(rawLimit + 1) });
+  expect(overByOne.renderable).toBe(false);
+  expect(overByOne.reason).toBe("card-text-too-large");
+  // A raw-length message of the same size in ASCII is fine: the difference IS
+  // the escaping, which is what the bug was.
+  expect(checkElicitationCardTextRenderability({ message: "a".repeat(rawLimit + 1) }).renderable).toBe(true);
+});
+
+test("schema title and description are gated too, not just the message", () => {
+  // The opening card renders both as their own markdown components, so a title
+  // the card cannot show faithfully refuses the form exactly as a message does.
+  const title = checkElicitationCardTextRenderability({ schemaTitle: "<".repeat(8000) });
+  expect(title.renderable).toBe(false);
+  expect(title.reason).toBe("card-text-too-large");
+  expect(title.detail).toContain("schemaTitle");
+  const description = checkElicitationCardTextRenderability({ schemaDescription: "<".repeat(8000) });
+  expect(description.renderable).toBe(false);
+  expect(description.detail).toContain("schemaDescription");
+});
+
+test("the request-text gate runs after the field gate, so a structural refusal stays the reported cause", () => {
+  // Ordering is deliberate: a multi-select is impossible on this platform
+  // regardless of the message, and reporting the long message first would hide
+  // the decisive cause from the log.
+  const verdict = checkElicitationRenderability(
+    [{ kind: "multi-select", key: "t", title: "T", required: true, options: [{ value: "a", label: "A" }] }],
+    { message: "<".repeat(8000) },
+  );
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("multi-select-unsupported");
 });
 
 test("an empty select is refused before it becomes an empty Feishu select", () => {
@@ -124,6 +261,15 @@ test("a description that cannot fit the card body is refused", () => {
   const verdict = checkElicitationRenderability([{ ...TEXT, description: "d".repeat(28_001) }]);
   expect(verdict.renderable).toBe(false);
   expect(verdict.reason).toBe("field-description-too-long");
+  // The description is rendered escaped too, so the bound applies to the escaped
+  // form; the detail reports both so the refusal is legible.
+  expect(verdict.detail).toContain("28001 chars raw");
+  expect(verdict.detail).toContain("28001 escaped");
+  // A description that fits raw but not escaped is refused as well.
+  const escapedOver = checkElicitationRenderability([{ ...TEXT, description: "~".repeat(4_667) }]);
+  expect(escapedOver.renderable).toBe(false);
+  expect(escapedOver.reason).toBe("field-description-too-long");
+  expect(escapedOver.detail).toContain("28002 escaped");
 });
 
 test("the element ceiling is a real documented Feishu number, not a policy guess", () => {
@@ -276,6 +422,95 @@ test("the card JSON budget is measured in serialized BYTES, not source chars", (
     ),
   );
   expect(small.renderable).toBe(true);
+});
+
+test("the worst-case review card is sized for the WORST escape, not the friendliest one", () => {
+  // The estimate used to be `"x".repeat(maxLength)` — a 1x character. A real
+  // answer of 1000 `~` expands 6x, so the sample was 6x optimistic: the gate
+  // blessed a card the review page would then overflow, and `card.update`
+  // failed after the user had filled the whole form in. The sample is now built
+  // from the highest-expansion character the escaper writes, measured through
+  // the escaper itself.
+  const fields: ChannelElicitationField[] = [
+    { kind: "text", key: "a", title: "A", required: false, maxLength: 1000 },
+  ];
+  const request = {
+    requestId: "r",
+    chatKey: "cx",
+    agent: { name: "codex" },
+    fields,
+    requester: { senderId: "ou" },
+  } as never;
+  const worst = buildWorstCaseReviewCard(request, "a".repeat(32));
+  const worstBytes = measureElicitationCardBytes(worst);
+
+  // The concrete number, so a regression back to the optimistic sample is
+  // visible as a byte count rather than as a card that only fails in production.
+  expect(worstBytes).toBe(7159);
+
+  // THE invariant: the estimate must DOMINATE the real card a user can produce.
+  // A maximal-expansion answer (`~` expands 6x) is the largest answer the field
+  // can legally hold, so the worst-case card must be at least that big — the old
+  // `"x"` sample was not, which is exactly the optimism being closed.
+  const maximalAnswer = buildElicitationReviewCard(request, "a".repeat(32), { a: "~".repeat(1000) } as never);
+  expect(measureElicitationCardBytes(worst)).toBeGreaterThanOrEqual(measureElicitationCardBytes(maximalAnswer));
+
+  // And the payload itself, not just the card envelope: the sample's answer
+  // must be the widest escape of a full-length answer, not a 1x character. Each
+  // of the 1000 characters is present and escaped as a 6-char entity, so the
+  // rendered answer is 6,000 chars — the largest a legal answer can be.
+  const body = worst.body;
+  const elements: unknown[] = typeof body === "object" && body !== null && "elements" in body
+    ? (body.elements as unknown[])
+    : [];
+  const answerElement = elements.find(
+    (element) =>
+      typeof element === "object" && element !== null && "content" in element &&
+      typeof (element as { content: unknown }).content === "string" &&
+      (element as { content: string }).content.includes("&#126;"),
+  ) as { content: string } | undefined;
+  expect(answerElement?.content?.match(/&#126;/g)?.length).toBe(1000);
+  expect(answerElement?.content?.length).toBeGreaterThanOrEqual(6_000);
+
+  // The friendly sample the old code produced, for contrast: same card, 1x
+  // escape. The gap IS the bug.
+  const friendly = measureElicitationCardBytes(
+    buildElicitationReviewCard(request, "a".repeat(32), { a: "x".repeat(1000) } as never),
+  );
+  expect(friendly).toBe(2159);
+  expect(worstBytes).toBeGreaterThan(friendly * 3);
+});
+
+test("the worst-case select sample is the widest DISPLAYED VALUE, not the widest label", () => {
+  // The review card renders `displayValue(value)`, so sizing by the longest
+  // LABEL picks the wrong option: a label-heavy option with a short value
+  // produced an estimate that had nothing to do with the review page. The label
+  // is display text; the VALUE is what the review card shows.
+  const fields: ChannelElicitationField[] = [{
+    kind: "single-select",
+    key: "s",
+    title: "S",
+    required: false,
+    options: [
+      { value: "prod", label: "A".repeat(90) },
+      { value: "~".repeat(90), label: "b" },
+    ],
+  }];
+  const request = {
+    requestId: "r",
+    chatKey: "cx",
+    agent: { name: "codex" },
+    fields,
+    requester: { senderId: "ou" },
+  } as never;
+  const worst = measureElicitationCardBytes(buildWorstCaseReviewCard(request, "a".repeat(32)));
+  const labelPicked = measureElicitationCardBytes(
+    buildElicitationReviewCard(request, "a".repeat(32), { s: "prod" } as never),
+  );
+  // The value-driven sample is strictly larger than the label-driven one, which
+  // is the whole point: the old choice under-reported the real card.
+  expect(worst).toBe(1699);
+  expect(worst).toBeGreaterThan(labelPicked);
 });
 
 test("escaping a high-expansion question is bounded in escaped space", () => {

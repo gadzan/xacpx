@@ -300,7 +300,7 @@ test("parseFeishuChannelConfig rejects non-boolean trustGroupOwner", () => {
   expect(() => parseFeishuChannelConfig({ appId: "x", appSecret: "y", trustGroupOwner: "yes" })).toThrow("trustGroupOwner must be a boolean");
 });
 
-test("parseFeishuChannelConfig rejects a card endpoint with no encryptKey", () => {
+test("parseFeishuChannelConfig rejects a card endpoint missing either secret", () => {
   // Token-only used to parse here, and it is exactly the broken state: the host
   // signs every new-protocol callback with the encrypt key, so a config
   // carrying only the verification token would start cleanly and then 401
@@ -309,7 +309,7 @@ test("parseFeishuChannelConfig rejects a card endpoint with no encryptKey", () =
     appId: "x",
     appSecret: "y",
     accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871, verificationToken: "t" } } },
-  })).toThrow(/encryptKey is required: without the new-protocol signing key every card action would be rejected with 401/);
+  })).toThrow(/encryptKey is required/);
 
   // Blank/whitespace-only keys are the same failure with extra steps.
   expect(() => parseFeishuChannelConfig({
@@ -317,31 +317,39 @@ test("parseFeishuChannelConfig rejects a card endpoint with no encryptKey", () =
     appSecret: "y",
     accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871, encryptKey: "  " } } },
   })).toThrow(/encryptKey is required/);
+
+  // The mirror image, and the one the previous fix left open: encryptKey-only
+  // serves every click but cannot complete the URL-verification challenge,
+  // which Feishu delivers with no `schema` and no `encrypt` — the legacy branch,
+  // verified against the token. The challenge is read AFTER the signature
+  // check, so a missing token rejects that handshake before the challenge is
+  // ever echoed, and the endpoint can never finish being configured.
+  expect(() => parseFeishuChannelConfig({
+    appId: "x",
+    appSecret: "y",
+    accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871, encryptKey: "k" } } },
+  })).toThrow(/verificationToken is required: the URL-verification challenge/);
+
+  // Neither secret is the original refusal.
+  expect(() => parseFeishuChannelConfig({
+    appId: "x",
+    appSecret: "y",
+    accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871 } } },
+  })).toThrow(/encryptKey is required/);
 });
 
-test("parseFeishuChannelConfig accepts encryptKey with and without a verificationToken", () => {
-  const withToken = parseFeishuChannelConfig({
+test("parseFeishuChannelConfig accepts a card endpoint carrying both secrets", () => {
+  // Both handshakes the endpoint has to complete are covered: new-protocol card
+  // actions (encryptKey + SHA-256) and the URL-verification challenge
+  // (verificationToken + SHA-1).
+  const parsed = parseFeishuChannelConfig({
     appId: "x",
     appSecret: "y",
     accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871, encryptKey: "k", verificationToken: "t" } } },
   });
-  expect(withToken.accounts[0]!.cardActions).toEqual({
+  expect(parsed.accounts[0]!.cardActions).toEqual({
     encryptKey: "k",
     verificationToken: "t",
-    host: "127.0.0.1",
-    port: 9871,
-    path: "/webhook/card",
-  });
-
-  // The token is a second factor, not the primary: omitting it is legal.
-  const withoutToken = parseFeishuChannelConfig({
-    appId: "x",
-    appSecret: "y",
-    accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871, encryptKey: "k" } } },
-  });
-  expect(withoutToken.accounts[0]!.cardActions).toEqual({
-    encryptKey: "k",
-    verificationToken: "",
     host: "127.0.0.1",
     port: 9871,
     path: "/webhook/card",

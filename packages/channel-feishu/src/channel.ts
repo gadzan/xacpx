@@ -499,8 +499,51 @@ export class FeishuChannel implements MessageChannelRuntime {
     const priorAccounts = new Map(this.accounts);
     const installedByThisStart = new Set<string>();
 
+    // ATTEMPT-SCOPED LIFECYCLE.
+    //
+    // The daemon signal is forwarded into a controller this start() owns, so a
+    // failure here can cancel the siblings WITHOUT touching the daemon's signal:
+    // aborting the caller's signal would tear down every other channel too.
+    //
+    // A healthy account's `startWS()` does NOT settle — `createFeishuLarkClient`
+    // awaits until its signal aborts, so the promise spans the whole process
+    // lifetime. That is why neither `Promise.all` nor `Promise.allSettled` over
+    // the raw startups can work:
+    //
+    //   Promise.all      -> rejects the instant beta fails, while alpha is
+    //                       still mid-install; rolling back then races alpha's
+    //                       suspended startWS/startCardActions, which resume
+    //                       AFTER the rollback and install a receiver on a
+    //                       runtime object we already dropped.
+    //   Promise.allSettled-> waits for alpha, which never settles, so beta's
+    //                       error never surfaces and start() never rejects.
+    //
+    // The correct sequence is fail-fast -> cancel siblings -> drain -> rollback,
+    // which is what follows.
+    const attempt = new AbortController();
+    const forwardDaemonAbort = (): void => attempt.abort(input.abortSignal.reason);
+    if (input.abortSignal.aborted) {
+      attempt.abort(input.abortSignal.reason);
+    } else {
+      input.abortSignal.addEventListener("abort", forwardDaemonAbort, { once: true });
+    }
+    // Monotonic per attempt, captured by every startup task. A task that resumes
+    // after the attempt moved on (a `probeBot` or a bind that ignored the abort
+    // and resolved late) must install NOTHING. This is the fence: it turns "a
+    // late response might re-install a runtime" into a check instead of a race.
+    //
+    // Bumped ONCE, when the attempt is cancelled — never per task. Bumping per
+    // task would make every concurrent sibling stale the moment a later sibling
+    // resumed, which fences out healthy accounts for no reason.
+    let attemptGeneration = 0;
+
     try {
       const startups = eligible.map(async (account) => {
+        // The attempt's generation, captured ONCE when this task is created and
+        // re-checked after every await. A task superseded while its probe or
+        // bind was in flight finds a newer generation and installs nothing, so a
+        // late response cannot resurrect a runtime the rollback is dropping.
+        const generation = attemptGeneration;
         const client = this.deps.createClient?.(account) ?? createFeishuLarkClient({
           appId: account.appId,
           appSecret: account.appSecret,
@@ -513,6 +556,7 @@ export class FeishuChannel implements MessageChannelRuntime {
           });
           return {} as { botOpenId?: string; botName?: string };
         });
+        if (attemptGeneration !== generation || attempt.signal.aborted) return;
         const runtime: AccountRuntime = { account, client, ...(probe.botOpenId ? { botOpenId: probe.botOpenId } : {}) };
         this.accounts.set(account.accountId, runtime);
         installedByThisStart.add(account.accountId);
@@ -532,32 +576,69 @@ export class FeishuChannel implements MessageChannelRuntime {
             path: account.cardActions.path,
           });
         }
+        // Re-fence after the listener bind: a bind that ignored the abort and
+        // resolved late would otherwise proceed to open a receiver for a runtime
+        // the rollback is already tearing down.
+        if (attemptGeneration !== generation || attempt.signal.aborted) return;
         await client.startWS({
           handlers: {
             "im.message.receive_v1": (data) => this.handleMessageEvent(account.accountId, data),
           },
-          abortSignal: input.abortSignal,
+          // The ATTEMPT signal, not the daemon's: cancelling a failed start must
+          // not close a sibling's receiver that a successful start still owns.
+          abortSignal: attempt.signal,
         });
       });
 
-      // All account startups are attempted to completion, THEN the outcome is
-      // judged: waiting for the last startup is what makes the rollback below
-      // sound.
-      const outcomes = await Promise.allSettled(startups);
-      const failure = outcomes.find(
-        (outcome): outcome is PromiseRejectedResult => outcome.status === "rejected",
-      );
-      // Fail-fast on the FIRST rejection in `eligible` order, but only after
-      // every startup has settled. `Promise.all` would have rethrown the moment
-      // beta failed while alpha was still mid-install, and rolling back then is
-      // a race: alpha's suspended `startWS`/`startCardActions` would resume
-      // AFTER the rollback and install a receiver on the runtime object we had
-      // already dropped, leaking a live listener the failed channel never owns.
-      // Settling first means there is nothing left in flight to leak.
-      if (failure) throw failure.reason;
+      // Fail-fast on the first rejection, then stop the siblings and drain.
+      let firstError: unknown;
+      let firstFailure = false;
+      // Each startup reports its own outcome. `Promise.race` yields the first
+      // SETTLED one, which is not necessarily the first FAILED one, so a
+      // successful outcome is dropped from the race rather than re-raced (it
+      // would resolve again immediately and spin the loop). Only a failure
+      // breaks out, because that is the point at which the remaining siblings
+      // must be CANCELLED instead of waited for — a healthy one never settles
+      // on its own, so waiting is not an option.
+      const unsettled = new Set(startups.map((promise, index) => ({ promise, index })));
+      while (unsettled.size > 0) {
+        const settled = await Promise.race(
+          [...unsettled].map(({ promise, index }) =>
+            promise.then(
+              (): { index: number; failed: false } => ({ index, failed: false }),
+              (error: unknown): { index: number; failed: true; error: unknown } => ({ index, failed: true, error }),
+            ),
+          ),
+        );
+        // Drop this entry whichever way it went: the race re-resolves an
+        // already-settled promise immediately, so leaving it in would spin.
+        for (const entry of [...unsettled]) {
+          if (entry.index === settled.index) unsettled.delete(entry);
+        }
+        if (!settled.failed) continue;
+        firstFailure = true;
+        firstError = settled.error;
+        break;
+      }
+      if (firstFailure) {
+        // Cancel everything this attempt started. A healthy sibling parked in
+        // `startWS()` resolves on this, so the drain below terminates. The
+        // generation bump also invalidates any task that is still between its
+        // awaits, so it cannot install a runtime after the rollback.
+        attemptGeneration += 1;
+        attempt.abort(firstError);
+      }
+      // DRAIN: nothing may still be in flight when the rollback runs, or a late
+      // install can land on a runtime we are about to drop. Every startup is
+      // settled here — cancelled ones resolve, failures are already recorded —
+      // so the rollback sees a quiescent channel.
+      await Promise.allSettled([...unsettled].map((entry) => entry.promise));
+      if (firstFailure) throw firstError;
     } catch (error) {
       await this.rollbackFailedStart(installedByThisStart, priorAccounts);
       throw error;
+    } finally {
+      input.abortSignal.removeEventListener("abort", forwardDaemonAbort);
     }
   }
 
