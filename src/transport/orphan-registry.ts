@@ -159,7 +159,9 @@ export function decodeResidualRecord(value: unknown): ResidualRecord | null {
     || !nonempty(item.executablePath) || !nonempty(item.agentCommand)
     || !UUID.test(String(item.generationId)) || !nonNegativeInteger(item.killAttempts)) return null;
   // Records written before provenance existed are CIM-derived (nothing else
-  // could produce a residual then), so the legacy default is the strict one.
+  // could produce a residual then). The legacy default is deliberately the
+  // WIDER replay contract (±9 ticks creation tolerance, no path equality):
+  // demanding an exact match would condemn every legitimate legacy record.
   const source = item.fingerprintSource;
   if (source !== undefined && source !== "handle" && source !== "cim") return null;
   return { ...(item as unknown as ResidualRecord), fingerprintSource: source ?? "cim" };

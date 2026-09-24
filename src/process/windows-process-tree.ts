@@ -214,12 +214,14 @@ const DESCENDANT_FINGERPRINT_SOURCES: Partial<Record<WindowsDescendantFingerprin
 
 /**
  * Decodes the provenance field of a worker record.
- *   `undefined` — absent, legal: the caller supplied the values itself;
+ *   `undefined` / `null` — absent, legal: `decodeTarget` treats an explicit
+ *     JSON null the same way (PowerShell emits null for absent fields), and
+ *     absent means the caller supplied the values itself;
  *   a valid source — legal;
- *   `null` — malformed (present but not a known source), and the caller must
- *   reject the whole response. Treating it as absent would silently downgrade
- *   the record to the wider CIM replay contract (±9 ticks, no path equality),
- *   so a corrupt provenance must fail closed like a malformed creationDate.
+ *   any OTHER non-null value — malformed, and the caller must reject the
+ *   whole response. Treating it as absent would silently downgrade the record
+ *   to the wider CIM replay contract (±9 ticks, no path equality), so a
+ *   corrupt provenance must fail closed like a malformed creationDate.
  */
 function decodeFingerprintSource(value: unknown): WindowsDescendantFingerprintSource | null | undefined {
   if (value === undefined || value === null) return undefined;
@@ -721,10 +723,9 @@ function OpenVerified($node, $cim) {
   if(!$same){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}}
   $image=[XacpxNativeProcess]::Image($h)
   if(!$image){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='query-failed';handle=[IntPtr]::Zero}}
-  # A caller-supplied path is handle-derived (root, $cim=$false). A CIM-derived
-  # child's Win32_Process.ExecutablePath is the CREATE-TIME path in the process
-  # parameters, while Image() resolves the image file object; under a symlinked
-  # launcher shim those are different strings for the SAME process.
+  # A caller-supplied path is handle-derived (root, $cim=$false). A CIM child's
+  # Win32_Process.ExecutablePath is the CREATE-TIME path; Image() resolves the
+  # file object. Under a symlinked shim these differ for the SAME process.
   if(!$cim -and $node.executablePath -and ![string]::Equals([string]$node.executablePath,$image,[StringComparison]::OrdinalIgnoreCase)){
     [XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}
   }
@@ -747,8 +748,8 @@ if($request.action -eq 'identity'){
       if($cim -and $cim.CreationDate){
         $cimCreation=$cim.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString()
         $delta=[Numerics.BigInteger]::Abs([Numerics.BigInteger]::Parse($creation)-[Numerics.BigInteger]::Parse($cimCreation))
-        # The delta binds the CIM row to the retained handle; image equality would
-        # be a weaker proof that also drops commandLine under a shim.
+        # The delta binds the CIM row to the retained handle; image equality is a
+        # weaker proof that also drops commandLine under a shim.
         if($delta -le 9){
           $commandLine=$cim.CommandLine
         }
@@ -783,11 +784,8 @@ $root=[pscustomobject]@{pid=[int]$request.root.pid;creationDate=[string]$request
 $handles=@{}
 $nodes=New-Object Collections.ArrayList
 # A caller that could only observe this pid through CIM (the reaper replaying a
-# residual whose fingerprint was NEVER handle-derived) gets the CIM tolerance for
-# the creationDate (±9 ticks for a quantized 6-digit microsecond value) and NO path
-# comparison, exactly like a CIM-derived descendant. That is deliberately the
-# WIDER match; everything else keeps the exact, handle-derived contract, so a
-# genuinely replaced pid is still refused.
+# residual whose fingerprint was NEVER handle-derived) gets the CIM tolerance
+# (±9 ticks, NO path compare) — the WIDER match; everything else stays exact.
 $rootCim=([string]$request.root.fingerprintSource -eq 'cim')
 $rootCheck=OpenVerified $root $rootCim
 $root|Add-Member -NotePropertyName fingerprintSource -NotePropertyValue $(if($rootCim){'cim'}else{'handle'}) -Force
@@ -809,13 +807,15 @@ try {
     foreach($p in @($remaining)){
       if($verified.Contains($p.parentPid)){
         $parent=$nodes | Where-Object {$_.pid -eq $p.parentPid} | Select-Object -First 1
+        if(!$parent){throw 'verified parent missing from traversal'}
         if(!$p.creationDate -or !$p.commandLine -or !$p.executablePath){throw 'incomplete descendant fingerprint'}
-        if([Numerics.BigInteger]::Parse($p.creationDate) -lt [Numerics.BigInteger]::Parse($parent.creationDate)){throw 'child predates parent'}
+        # Ordering compares two snapshot values: the parent side stays the CIM
+        # value from $byPid because $nodes already holds the kernel
+        # FILETIME; CIM-vs-kernel reads as "child predates parent".
+        if([Numerics.BigInteger]::Parse($p.creationDate) -lt [Numerics.BigInteger]::Parse($byPid[$p.parentPid].creationDate)){throw 'child predates parent'}
         $check=OpenVerified $p $true
         if(!$check.ok){throw ('descendant verification failed: '+$check.status)}
-        # Both fingerprint fields become kernel-derived, so one observation never
-        # mixes sources. The ordering check above already ran against the CIM
-        # value, which is why it stays above this write-back.
+        # Both fields become kernel-derived: one observation, one source.
         $p.creationDate=$check.creation
         $p.executablePath=$check.image
         $p|Add-Member -NotePropertyName fingerprintSource -NotePropertyValue 'handle' -Force
@@ -831,8 +831,10 @@ try {
   foreach($p in $new){if(![XacpxNativeProcess]::Alive($handles[$p.parentPid])){throw 'append parent exited or liveness unknown'}}
   foreach($p in $new){
     $parent=$nodes | Where-Object {$_.pid -eq $p.parentPid} | Select-Object -First 1
+    if(!$parent){throw 'append parent missing from traversal'}
     if(!$p.creationDate -or !$p.commandLine -or !$p.executablePath){throw 'incomplete appended fingerprint'}
-    if([Numerics.BigInteger]::Parse($p.creationDate) -lt [Numerics.BigInteger]::Parse($parent.creationDate)){throw 'appended child predates parent'}
+    # Same CIM-vs-CIM ordering as the initial traversal.
+    if([Numerics.BigInteger]::Parse($p.creationDate) -lt [Numerics.BigInteger]::Parse($byPid[$p.parentPid].creationDate)){throw 'appended child predates parent'}
     $check=OpenVerified $p $true
     if(!$check.ok){throw ('appended verification failed: '+$check.status)}
     $p.creationDate=$check.creation;$p.executablePath=$check.image;$p|Add-Member -NotePropertyName fingerprintSource -NotePropertyValue 'handle' -Force;$handles[$p.pid]=$check.handle;[void]$nodes.Add($p);[void]$verified.Add($p.pid)

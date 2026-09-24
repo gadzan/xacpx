@@ -161,9 +161,10 @@ export interface ProcessIdentity {
 export const CREATION_IDENTITY_TOLERANCE_TICKS = 9n;
 
 /**
- * True when both records name the same process. A null creation time matches only
- * another null, so such records always collapse into one entry — they still carry
- * their other evidence, but they can never be matched against a non-null one.
+ * True when both records name the same process. A null creation time is only
+ * compatible with ANOTHER null: two null-creation records DO collapse into one
+ * entry (neither can be matched against a non-null one, so there is nothing to
+ * separate them), while a null never merges with a timestamped record.
  */
 export function sameProcessIdentity(a: ProcessIdentity, b: ProcessIdentity): boolean {
   if (a.pid !== b.pid) return false;
@@ -276,23 +277,33 @@ function mergeByIdentity<T extends MergeableEvidence>(a: readonly T[], b: readon
  * process identity, in order:
  *   1. resolution  — an explicitly SAFE outcome resolves the process; a leftover
  *                    (no outcome) is unresolved and must stay required evidence;
- *   2. provenance   — handle > cim > unknown (kernel values are authoritative);
- *   3. completeness — a full fingerprint can become durable evidence, an
- *                     incomplete one cannot, and must not block discharge;
+ *   2. completeness — a full fingerprint can become durable evidence, an
+ *                     incomplete one cannot, and must NOT sit in the way of one
+ *                     that can, regardless of provenance. An incomplete
+ *                     handle-derived record blocking a complete CIM one is a
+ *                     livelock: the survivor could never be spooled while the
+ *                     discarded one publishes cleanly;
+ *   3. provenance   — handle > cim > unknown (kernel values are authoritative);
  *   4. incumbent    — otherwise keep the first observation (deterministic).
+ *
+ * Completeness outranks provenance precisely where provenance alone is not a
+ * discharge criterion but publishability is: `residualFor` records every
+ * non-handle provenance as "cim" anyway, so a complete CIM fingerprint becomes
+ * fully durable evidence while an incomplete handle one publishes nothing.
  */
 function winsOver(next: MergeableEvidence, current: MergeableEvidence): boolean {
   const nextResolved = next.outcome !== undefined && next.outcome in SAFE_OUTCOMES;
   const currentResolved = current.outcome !== undefined && current.outcome in SAFE_OUTCOMES;
   if (nextResolved !== currentResolved) return nextResolved;
-  const nextRank = provenanceRank(next.fingerprintSource);
-  const currentRank = provenanceRank(current.fingerprintSource);
-  if (nextRank !== currentRank) return nextRank > currentRank;
   // A complete fingerprint can become durable evidence; an incomplete one
   // cannot, and must not sit in the way of one that can.
   const nextComplete = next.creationDate !== null && next.commandLine !== null && next.executablePath !== null;
   const currentComplete = current.creationDate !== null && current.commandLine !== null && current.executablePath !== null;
-  return nextComplete !== currentComplete && nextComplete;
+  if (nextComplete !== currentComplete) return nextComplete;
+  const nextRank = provenanceRank(next.fingerprintSource);
+  const currentRank = provenanceRank(current.fingerprintSource);
+  if (nextRank !== currentRank) return nextRank > currentRank;
+  return false;
 }
 
 function provenanceRank(source: WindowsDescendantFingerprintSource | undefined): number {

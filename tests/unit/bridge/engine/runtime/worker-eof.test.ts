@@ -1018,3 +1018,101 @@ test("merge: a safe outcome still resolves a leftover for the same process", () 
   expect(merged.outcomes).toHaveLength(1);
   expect(merged.outcomes[0]!.outcome).toBe("killed");
 });
+
+test("merge: a complete CIM evidence beats an incomplete handle one so discharge is not livelocked", () => {
+  // Round 1: S2 has just discovered P and verified it through a handle, so the
+  // creationDate and image are kernel values — but the CIM row has not
+  // published a commandLine yet, so the record is handle-derived and
+  // INCOMPLETE. Round 2: the CIM row is complete, but OpenProcess was
+  // transiently denied (a documented real flake), so the observation is a
+  // complete CIM fingerprint. Provenance alone must not keep the incomplete
+  // record: it can never be spooled, while the discarded CIM fingerprint
+  // publishes cleanly — with no maxRounds in production that is a livelock.
+  const merged = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [{
+      pid: 5002,
+      parentPid: 5001,
+      creationDate: "133801632000000017",
+      commandLine: null,
+      executablePath: "C:\\real\\node.exe",
+      fingerprintSource: "handle",
+    }] },
+    { verified: false, outcomes: [{
+      pid: 5002,
+      outcome: "access-denied",
+      creationDate: "133801632000000010",
+      commandLine: "node adapter.js",
+      executablePath: "C:\\shim\\node.exe",
+      fingerprintSource: "cim",
+    }], leftover: [] },
+  );
+  // Exactly one record survives, and it is the one that can become durable.
+  expect(merged.outcomes).toHaveLength(1);
+  expect(merged.leftover).toHaveLength(0);
+  const survivor = merged.outcomes[0]!;
+  expect(survivor.commandLine).toBe("node adapter.js");
+  expect(survivor.executablePath).toBe("C:\\shim\\node.exe");
+  expect(survivor.fingerprintSource).toBe("cim");
+  expect(survivor.creationDate).toBe("133801632000000010");
+});
+
+test("windows: a complete CIM round after an incomplete handle round converges instead of livelocking", async () => {
+  // The end-to-end form of the completeness-over-provenance fix. Round 1
+  // observed P through a handle (kernel creation + resolved image) while the CIM
+  // row had not published a commandLine yet. Round 2 — the documented transient
+  // access-denied case — has the complete CIM fingerprint. Production runs
+  // publication with NO round limit, so a merge policy that keeps the
+  // incomplete record leaves the worker alive forever with no path to
+  // "spooled".
+  const dir = await mkdtemp(join(tmpdir(), "eof-complete-cim-"));
+  try {
+    const rounds: TerminateDescendantsResult[] = [
+      {
+        verified: false,
+        outcomes: [],
+        leftover: [{
+          pid: 5002,
+          parentPid: 5001,
+          creationDate: "133801632000000017",
+          commandLine: null,
+          executablePath: "C:\\real\\node.exe",
+          fingerprintSource: "handle",
+        }],
+      },
+      {
+        verified: false,
+        outcomes: [{
+          pid: 5002,
+          outcome: "access-denied",
+          creationDate: "133801632000000010",
+          commandLine: "node adapter.js",
+          executablePath: "C:\\shim\\node.exe",
+          fingerprintSource: "cim",
+        }],
+        leftover: [],
+      },
+    ];
+    let call = 0;
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => rounds[Math.min(call++, rounds.length - 1)]!,
+      maxRounds: 2,
+      roundDelayMs: 1,
+      runtimeDir: dir,
+      agentCommand: () => "codex",
+      generationId: "00000000-0000-4000-8000-000000000001",
+      ownerToken: "00000000-0000-4000-8000-000000000002",
+    });
+    expect(outcome).toBe("spooled");
+    const registry = new OrphanRegistry(dir);
+    const residuals = await registry.readCategory("residuals");
+    expect(residuals).toHaveLength(1);
+    expect(residuals[0]!.record.pid).toBe(5002);
+    // The durable record carries the complete CIM fingerprint, so the reaper
+    // replays it with the tolerance its provenance demands.
+    expect(residuals[0]!.record.fingerprintSource).toBe("cim");
+    expect(residuals[0]!.record.commandLine).toBe("node adapter.js");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
