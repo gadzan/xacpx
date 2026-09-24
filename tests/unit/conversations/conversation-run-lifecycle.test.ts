@@ -4405,6 +4405,62 @@ test("ghost-topic runtime blocks group delete; verified teardown releases it", a
   first.store.close();
 });
 
+test("ghost-topic group teardown keeps durable history when physical release fails", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(reviewer.id);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-ghost-release-fail",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: TESTER_ID, profileSnapshot: snapshotBotProfile(first.bots.getBot(TESTER_ID), NOW) }],
+    now: NOW,
+  });
+  // Live member runtime, then the Topic row vanishes out of band while
+  // durable history remains: ghost durable rows + ghost runtime together.
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  delete first.state.conversation_topics[topic.id];
+  // Physical release fails: the teardown must fail closed with durable
+  // Run/message history still intact — not half-deleted before release.
+  first.physical.fail = true;
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "session_release_failed",
+  });
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias)?.alias).toBe(binding.sessionAlias);
+  expect(first.store.getRun(accepted.run.id)).toBeDefined();
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 }).length).toBeGreaterThan(0);
+  // Physical recovers: retry releases the residue. The first attempt
+  // already settled the ghost work to terminal (cancel/reconcile runs to
+  // completion inside the attempt), so the member session releases and the
+  // residue fences clear.
+  first.physical.fail = false;
+  await first.service.teardownGroupConversation(group.id).catch((error: unknown) => {
+    const code = (error as { code?: string }).code;
+    const message = error instanceof Error ? error.message : String(error);
+    const details = JSON.stringify((error as { details?: unknown }).details ?? null).slice(0, 500);
+    throw new Error(`RETRY code=${code} msg=${message} details=${details}`);
+  });
+  expect(first.state.conversations[group.id]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias) ?? undefined).toBeUndefined();
+  first.store.close();
+});
+
 test("ghost binding with an alias/id mismatch fails group delete closed, never orphans", async () => {
   const first = await createLifecycle();
   const bots = first.bots;

@@ -673,12 +673,13 @@ export class ConversationRunService {
         runIds: ghostIndeterminate.map((run) => run.id),
       });
     }
-    // Store rows BEFORE the Group record: if deleteConversationRows throws
-    // (or the process crashes between the two steps), the Group row and the
-    // deleting barrier are still present, so teardown is retryable and the
-    // fail-closed BotService.deleteGroup guard still sees the durable rows.
-    // Deleting the record first would strand rows no guard can see.
-    this.store.deleteConversationRows(conversationId);
+    // releaseGroupResidue runs production strict physical release, which
+    // can throw session_release_failed while the LogicalSession still
+    // exists. Deleting ConversationStore rows first would make that
+    // failure half-destructive (Group row + binding/session survive for
+    // retry, but Run/message history is already gone). Release first so a
+    // physical failure leaves durable history intact; a later row-cleanup
+    // failure still leaves Group + barrier + rows for a clean retry.
     // Final residue fence: no group-member binding or owned session may
     // survive the Group record. Ghost-topic bindings/sessions (Topic row
     // already gone) and binding-less crash-window owners are all covered —
@@ -687,6 +688,13 @@ export class ConversationRunService {
     // re-checked at finalize: a controller row landing mid-teardown still
     // blocks the Group record delete with the barrier intact.)
     await this.releaseGroupResidue(conversationId);
+    // Store rows AFTER verified release, BEFORE the Group record: if
+    // deleteConversationRows throws (or the process crashes between the two
+    // steps), the Group row and the deleting barrier are still present, so
+    // teardown is retryable and the fail-closed BotService.deleteGroup guard
+    // still sees the durable rows. Deleting the record first would strand
+    // rows no guard can see.
+    this.store.deleteConversationRows(conversationId);
     await this.stateMutex.run(async () => {
       await this.beforeTeardownFinalize?.();
       this.assertNoGroupResidue(conversationId);
