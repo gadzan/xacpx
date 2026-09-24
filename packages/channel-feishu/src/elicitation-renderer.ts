@@ -125,7 +125,9 @@ function cryptoRandomId(): string {
  * missing `action.value` means the callback belongs to some other feature, and
  * guessing at it would let unrelated clicks drive an elicitation.
  */
-export function parseElicitationAction(payloadValue: unknown): { token: string; action: string; fieldIndex?: number } | null {
+export function parseElicitationAction(
+  payloadValue: unknown,
+): { token: string; action: string; fieldIndex?: number; renderGeneration?: number } | null {
   if (typeof payloadValue !== "object" || payloadValue === null || Array.isArray(payloadValue)) return null;
   const record = payloadValue as Record<string, unknown>;
   const token = record.t;
@@ -135,6 +137,13 @@ export function parseElicitationAction(payloadValue: unknown): { token: string; 
   // Positional, like Discord: a schema key is not a valid routing id.
   const fieldIndex = record.f;
   const positional = typeof fieldIndex === "number" && Number.isInteger(fieldIndex) && fieldIndex >= 0 ? fieldIndex : undefined;
+  // The card generation the control was rendered on. Absent is treated as 0 by
+  // the caller, which is the OPENING render — the same convention the renderer
+  // uses when it stamps one.
+  const generation = record.g;
+  const renderGeneration = typeof generation === "number" && Number.isInteger(generation) && generation >= 0
+    ? generation
+    : undefined;
   // `skip` MUST carry a position. Resolving it from mutable renderer state is
   // what let a retried or double-tapped Skip act on a different field than the
   // button that produced the callback, so a positionless Skip is rejected
@@ -144,6 +153,7 @@ export function parseElicitationAction(payloadValue: unknown): { token: string; 
     token,
     action,
     ...(positional !== undefined ? { fieldIndex: positional } : {}),
+    ...(renderGeneration !== undefined ? { renderGeneration } : {}),
   };
 }
 
@@ -307,6 +317,11 @@ export class FeishuElicitationRenderer {
       request,
       values: createAnswerMap(),
       skipped: new Set<string>(),
+      currentField: undefined,
+      // 1, not 0: generation 0 is what a payload with NO generation decodes to,
+      // so starting at 1 keeps "the first field card" distinguishable from a
+      // control that never carried a generation at all.
+      renderGeneration: 1,
       settled: false,
       resolve: settle,
       reject: rejectPromise,
@@ -426,6 +441,32 @@ export class FeishuElicitationRenderer {
     if (action.openId !== entry.requesterId) {
       this.options.log?.("feishu.elicitation.unauthorized", "unauthorized elicitation control", {
         requestId: entry.requestId,
+      });
+      return { handled: false, settled: false };
+    }
+    // STALE-GENERATION REJECTION.
+    //
+    // Every re-render bumps the entry's generation and stamps it into the
+    // controls it draws. A callback carrying an OLDER generation comes from a
+    // card the user has already navigated away from, and honouring it would let a
+    // replayed value overwrite a newer answer: Feishu retries callbacks, users
+    // double-tap, and `submit()` writes to whichever field the cursor is on —
+    // which entering Review does NOT clear, because the review page needs the
+    // cursor to know where an Edit lands.
+    //
+    // Drop it without touching state: the current card stays live and its own
+    // controls still work, so the user is not punished for a platform retry.
+    // Only `save` carries a generation, so only it can be stale by construction;
+    // a control without one (opening, terminal, review submit) is not versioned
+    // and is judged on its own action semantics, as before.
+    if (
+      parsed.renderGeneration !== undefined
+      && parsed.renderGeneration < entry.renderGeneration
+    ) {
+      this.options.log?.("feishu.elicitation.stale_callback", "dropped a callback from an earlier card render", {
+        requestId: entry.requestId,
+        callbackGeneration: parsed.renderGeneration,
+        currentGeneration: entry.renderGeneration,
       });
       return { handled: false, settled: false };
     }
@@ -650,12 +691,19 @@ export class FeishuElicitationRenderer {
     if (key === undefined) return;
     const field = entry.request.fields.find((f) => f.key === key);
     if (!field) return;
+    // Advance BEFORE drawing, so the generation stamped into the controls is the
+    // one the entry reports while that card is on screen. The alternative — stamp
+    // the current value and bump afterwards — makes a callback from the card the
+    // user is actually using arrive already stale, which refuses the legitimate
+    // save and keeps the older answer.
+    entry.renderGeneration += 1;
     const card = buildElicitationFieldCard(
       entry.request,
       entry.token,
       field,
       entry.request.fields.indexOf(field) + 1,
       entry.values[field.key],
+      entry.renderGeneration,
     );
     try {
       await this.options.transport.updateCard({

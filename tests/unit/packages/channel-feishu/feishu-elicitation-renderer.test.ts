@@ -1294,3 +1294,105 @@ test("a hung terminal update cannot swallow a Decline that raced the opening sen
   ]);
   expect(outcome).toEqual({ action: "decline", responderId: "ou_initiator" });
 });
+
+test("a replayed old save cannot overwrite a newer answer to the same field", async () => {
+  // Feishu retries card callbacks, and a user can double-tap. The save control's
+  // routing payload carried only the token, so a callback from an EARLIER render
+  // of the same field was indistinguishable from the current one — and `submit()`
+  // writes to whichever field the cursor is on, while entering Review does NOT
+  // clear that cursor (the review page needs it to land an Edit).
+  //
+  // So a delayed replay of the FIRST save overwrote the value the user had since
+  // typed, and the review page then submitted the stale answer.
+  const rec = makeRenderer();
+  // A single-field form. This matters: with two fields the wizard ADVANCES past
+  // `env` on the first save, so a replay lands on the second field and the first
+  // answer looks safe by accident. One field keeps the cursor on `env`, which is
+  // the window where a replay actually overwrites what the user just changed.
+  const fields: ChannelElicitationRequest["fields"] = [
+    {
+      kind: "single-select",
+      key: "env",
+      title: "Env",
+      required: true,
+      options: [
+        { value: "prod", label: "Prod" },
+        { value: "staging", label: "Staging" },
+      ],
+    },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  const step = async (value: Record<string, unknown>, formValues: Record<string, string> = {}): Promise<void> => {
+    await rec.renderer.handleAction({ openId: "ou_initiator", value, formValues });
+  };
+  // Generation of the card currently on screen, read LIVE rather than predicted:
+  // each render advances it, so a hardcoded number would break the moment the
+  // render count changes. What this test pins is which callbacks are ACCEPTED.
+  const onScreen = (): number => [...rec.pending.values()][0]!.renderGeneration;
+
+  // Start -> first field card, and save `prod` from the card the user is on.
+  await step({ t: token, a: "start" });
+  const prodSaveGeneration = onScreen();
+  await step({ t: token, a: "save", g: prodSaveGeneration }, { f0: "prod" });
+
+  // The wizard advanced to field 1. Save it (leaving it blank is fine — it is
+  // optional), which lands on the REVIEW page.
+  await step({ t: token, a: "save", g: onScreen() }, {});
+
+  // Edit back into the first field and change the answer. A different card, so a
+  // different generation — which is what makes the replay stale. Delivered while
+  // the cursor is STILL on `env`, which is exactly the window in which the replay
+  // would overwrite it.
+  await step({ t: token, a: "field", f: 0 });
+  expect(onScreen()).toBeGreaterThan(prodSaveGeneration);
+  const editedGeneration = onScreen();
+  await step({ t: token, a: "save", g: editedGeneration }, { f0: "staging" });
+
+  // The replayed FIRST save, delivered now from the earlier generation, from the
+  // card the user had already navigated away from.
+  await step({ t: token, a: "save", g: prodSaveGeneration }, { f0: "prod" });
+  await step({ t: token, a: "submit" });
+
+  const decision = await promise;
+  expect(decision).toEqual({ action: "accept", responderId: "ou_initiator", content: { env: "staging" } });
+});
+
+test("a save from the card currently on screen still works", async () => {
+  // The control case: refusing stale generations must not have broken the normal
+  // path, which is the same button on the current card.
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [
+    {
+      kind: "single-select",
+      key: "env",
+      title: "Env",
+      required: true,
+      options: [
+        { value: "prod", label: "Prod" },
+        { value: "staging", label: "Staging" },
+      ],
+    },
+    { kind: "text", key: "note", title: "Note", required: false, maxLength: 100 },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  const entry = [...rec.pending.values()][0]!;
+  // The generation the current card actually carries — not a guessed number.
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "save", g: entry.renderGeneration },
+    formValues: { f0: "prod" },
+  });
+  // That save landed, so the answer the user gave is the one submitted.
+  expect(entry.values.env).toBe("prod");
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { env: "prod" } });
+});

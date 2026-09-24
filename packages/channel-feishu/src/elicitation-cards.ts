@@ -139,16 +139,29 @@ function plainText(content: string, literal = false): Record<string, unknown> {
 /**
  * The routing payload for a control.
  *
- * Deliberately small: the card is capped at 30 KB and `value` has no field cap
- * of its own, so a short opaque handle is both sufficient and safe. It carries
- * the token and the action, plus the field's POSITION when the control names
- * one — never a value, a default, or any agent text. Position rather than the
- * schema key: core allows `env.prod` and a 128-char key, and the component
- * `name` derived from it must be card-unique and platform-safe.
+ * `t`/`a` are the correlation handle; `f` names the field by POSITION when the
+ * control is about one; `g` is the CARD GENERATION the control was rendered on.
+ *
+ * The generation is what makes a stale callback harmless. Feishu retries card
+ * callbacks and users double-tap, so a control from an EARLIER render can arrive
+ * after later ones — and without a generation, "save field 3" from render 4 is
+ * indistinguishable from the same control on render 7, so a replayed old value
+ * overwrites the newer answer the user had since typed.
+ *
+ * Position rather than the schema key: core allows `env.prod`, `a/b`, a
+ * 128-char key, and keys of only punctuation, so a key-derived id would either
+ * be invalid or collide after sanitizing. Never carries a value, a default, or
+ * any agent text.
  */
-function routingValue(token: string, action: ElicitationUiAction, fieldIndex?: number): Record<string, unknown> {
+function routingValue(
+  token: string,
+  action: ElicitationUiAction,
+  fieldIndex?: number,
+  renderGeneration?: number,
+): Record<string, unknown> {
   return {
     ...(fieldIndex !== undefined ? { f: fieldIndex } : {}),
+    ...(renderGeneration !== undefined ? { g: renderGeneration } : {}),
     t: token,
     a: action,
   };
@@ -254,6 +267,15 @@ export function buildElicitationFieldCard(
   field: ChannelElicitationField,
   index: number,
   current: ChannelElicitationValue | undefined,
+  /**
+   * The generation of the card render this control belongs on.
+   *
+   * Stamped into the save control's routing payload so a replayed callback from
+   * an earlier render can be recognised and refused. `undefined` produces a card
+   * without one, which is only correct for a card whose callbacks are never
+   * replayed — the renderer always passes the entry's current generation.
+   */
+  renderGeneration?: number,
 ): Record<string, unknown> {
   const messages = getMessages();
   const name = formComponentName(field.key, request.fields);
@@ -340,7 +362,16 @@ export function buildElicitationFieldCard(
             // semantics depend on mutable renderer state. A retried or double
             // delivered callback could then reach the review page's commit
             // without the user ever confirming it.
-            button(messages.elicitationSubmit, routingValue(token, "save"), "primary", true),
+            //
+            // It also carries this card's GENERATION. Without one, "save this
+            // field" was identified only by the token: a callback from an EARLIER
+            // render of the same field was indistinguishable from the current
+            // one, so a delayed replay wrote the old value over the newer answer
+            // the user had since typed. `submit()` writes to whichever field the
+            // cursor is on, and entering Review does not clear that cursor — so
+            // `prod -> Review -> Edit -> staging -> Review -> replay(prod)`
+            // submitted `prod`, the value the user had replaced.
+            button(messages.elicitationSubmit, routingValue(token, "save", undefined, renderGeneration), "primary", true),
             button(messages.elicitationDecline, routingValue(token, "decline"), "default", true),
             button(messages.elicitationCancel, routingValue(token, "cancel"), "default", true),
           ],

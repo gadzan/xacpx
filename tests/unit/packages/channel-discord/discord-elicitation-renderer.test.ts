@@ -14,7 +14,7 @@ import { setChannelLocale } from "../../../../packages/channel-discord/src/i18n"
 import { buildElicitationFieldCard } from "../../../../packages/channel-discord/src/elicitation-ui";
 import { buildElicitationFieldLines } from "../../../../packages/channel-discord/src/elicitation-limits";
 import { buildElicitationOpening } from "../../../../packages/channel-discord/src/elicitation-ui";
-import { checkElicitationRenderability } from "../../../../packages/channel-discord/src/elicitation-limits";
+import { checkElicitationRenderability, FIELD_CARD_ANSWER_ECHO_MAX } from "../../../../packages/channel-discord/src/elicitation-limits";
 import type { ChannelElicitationField, ChannelElicitationRequest } from "xacpx/plugin-api";
 import type { ChannelStartInput } from "xacpx/plugin-api";
 
@@ -2460,6 +2460,32 @@ test("chunking cannot reactivate escaped Markdown or split a surrogate pair", ()
   expect(withEmoji.filter((chunk) => chunk.includes("😀"))).toHaveLength(1);
 });
 
+/**
+ * A request the renderability gate can measure field cards against.
+ *
+ * The gate is REQUEST-REQUIRED: its field budget is measured over the text
+ * `buildElicitationFieldCard` actually builds, which depends on the real
+ * `agent.name`, and it also decides whether a private route may show a form at
+ * all. A DM route keeps every existing case renderable so they keep asserting
+ * what they were written to assert.
+ */
+function rendererRequestFor(
+  fields: readonly ChannelElicitationField[],
+): ChannelElicitationRequest {
+  return {
+    requestId: "r",
+    chatKey: "discord:default:dm:c1",
+    chatType: "direct",
+    requester: { senderId: "ou" },
+    agent: { name: "codex" },
+    message: "m",
+    mode: "form",
+    fields,
+    expiresAt: Date.now() + 60_000,
+    signal: new AbortController().signal,
+  };
+}
+
 test("a field description whose rendered text would overflow one message is refused", () => {
   // A field page must stay a SINGLE message. The gate used to judge a description
   // by RAW length (core allows 1000), but escaping doubles every Markdown
@@ -2468,7 +2494,9 @@ test("a field description whose rendered text would overflow one message is refu
   // question while its controls stayed enabled.
   const verdict = checkElicitationRenderability([
     { kind: "text", key: "note", title: "Note", required: true, maxLength: 100, description: "*".repeat(1000) },
-  ]);
+  ], rendererRequestFor([
+    { kind: "text", key: "note", title: "Note", required: true, maxLength: 100, description: "*".repeat(1000) },
+  ]));
   expect(verdict.renderable).toBe(false);
   expect(verdict.reason).toBe("field-text-too-long");
   expect(verdict.detail).toContain("escaped chars");
@@ -2477,7 +2505,9 @@ test("a field description whose rendered text would overflow one message is refu
   // escapes.
   expect(checkElicitationRenderability([
     { kind: "text", key: "note", title: "Note", required: true, maxLength: 100, description: "a".repeat(1000) },
-  ]).renderable).toBe(true);
+  ], rendererRequestFor([
+    { kind: "text", key: "note", title: "Note", required: true, maxLength: 100, description: "a".repeat(1000) },
+  ])).renderable).toBe(true);
 });
 
 test("the gate's field budget is the builder's, not a subset of it", async () => {
@@ -2508,6 +2538,7 @@ test("the gate's field budget is the builder's, not a subset of it", async () =>
     const request = {
       requestId: "r",
       chatKey: "c",
+      chatType: "direct",
       agent: { name: "codex" },
       message: "m",
       mode: "form",
@@ -2516,21 +2547,36 @@ test("the gate's field budget is the builder's, not a subset of it", async () =>
       expiresAt: Date.now() + 60_000,
       signal: new AbortController().signal,
     } as unknown as ChannelElicitationRequest;
-    const verdict = checkElicitationRenderability([field]);
+    const verdict = checkElicitationRenderability([field], request);
     // Every agent-controlled character here doubles, so the escaped field body
-    // crosses the 1800-char budget at about 865 stars.
-    const escapedBody = buildElicitationFieldLines(request, field, 1, undefined).join("\n\n");
+    // crosses the 1800-char budget.
+    //
+    // Measured EXACTLY the way the gate measures: the reserved answer echo is
+    // part of what the card can be asked to show, because a user returning to an
+    // answered field adds that line. Omitting it here would test a different
+    // question than the gate answers.
+    const escapedBody = buildElicitationFieldLines(
+      request,
+      field,
+      1,
+      "x".repeat(FIELD_CARD_ANSWER_ECHO_MAX),
+    ).join("\n\n");
     return { verdict, escapedBody, fitsOneMessage: escapedBody.length <= 1800 };
   };
 
-  // The two decisions must AGREE, in both directions, at the boundary and either
-  // side of it. The old subset gate said `renderable: true` here while the real
-  // card needed a second message, which is exactly the silent truncation.
-  for (const [stars, expectedFits] of [[800, true], [860, true], [865, false], [900, false]] as const) {
+  // The two decisions must AGREE, at the boundary and either side of it. Rather
+  // than hardcoding star counts — which shift whenever the wording or the echo
+  // reserve changes — the boundary is SEARCHED, and both sides must agree on it.
+  //
+  // What is being asserted is the INVARIANT, not a number: whenever the builder's
+  // text fits one message, the gate says renderable; whenever it does not, the
+  // gate refuses with the budget reason. The old subset gate said `renderable:
+  // true` while the real card needed a second message, which is the silent
+  // truncation this closes.
+  for (const stars of [200, 400, 600, 700, 760, 765, 770, 775, 780, 800, 900]) {
     const built = build("*".repeat(stars));
-    expect(built.fitsOneMessage).toBe(expectedFits);
-    expect(built.verdict.renderable).toBe(expectedFits);
-    if (expectedFits) continue;
+    expect(built.verdict.renderable).toBe(built.fitsOneMessage);
+    if (built.fitsOneMessage) continue;
     expect(built.verdict.reason).toBe("field-text-too-long");
   }
 
@@ -2583,8 +2629,7 @@ test("a form asked on a group route is refused before anything is sent", async (
       () => "resolved",
       (e: Error) => e.message,
     );
-    expect(outcome).toContain("only renderable on a private route");
-    expect(outcome).toContain("group");
+    expect(outcome).toContain("route-not-private");
     // Nothing was posted: no question and no controls reached the channel, so
     // there is nothing for a member to read and nothing for the user to answer.
     expect(client.sent).toHaveLength(0);
@@ -2613,8 +2658,7 @@ test("a form asked on an unreported route is refused, not treated as direct", as
       () => "resolved",
       (e: Error) => e.message,
     );
-    expect(outcome).toContain("only renderable on a private route");
-    expect(outcome).toContain("no chatType");
+    expect(outcome).toContain("route-not-private");
     expect(client.sent).toHaveLength(0);
   } finally {
     abort.abort();

@@ -411,23 +411,60 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
         `form elicitation is advertised but no form-capable channel started (failed: ${broken.join(", ")}); refusing startup`,
       );
     };
+    // A readiness failure has to be able to END the run by itself. Under
+    // `best-effort` a partial channel failure resolves `channelStartPromise` on
+    // the strength of its healthy siblings, so awaiting it alone would treat
+    // "form capability lost mid-startup" as a successful start and let
+    // `runConsole` return normally — while the daemon had already aborted itself
+    // and the agent was left asking form questions into a dead capability.
+    //
+    // This is a GATE the startup has to pass through, not a lateral race: both the
+    // channel start and this readiness check must be FINISHED before the run may
+    // continue, because a failure in either one is fatal on its own. Racing them
+    // would let the channel start's pending promise win while the readiness audit
+    // is still settling, which is exactly the window in which the failure was
+    // dropped before.
+    //
+    // Settles to `undefined` on success and REJECTS on failure; the reject path
+    // is reached from a detached listener callback, which is why the rejecter is
+    // captured up front rather than assigned inside the callback body.
+    let rejectReadiness: (error: unknown) => void = () => {};
+    let settleReadiness: () => void = () => {};
+    const readinessLost = new Promise<void>((resolve, reject) => {
+      settleReadiness = resolve;
+      rejectReadiness = reject;
+    });
+    // Unhandled-rejection guard: the gate below always has a consumer, but a
+    // listener firing during shutdown would otherwise leave a bare rejection.
+    readinessLost.catch(() => {});
+
     if (typeof deps.channels.setElicitationReadinessListener === "function") {
       deps.channels.setElicitationReadinessListener((readiness) => {
         if (readiness.formCapable) return;
         // Not swallowed: a dead form capability discovered mid-startup is the
         // same fatal condition as the audit below, and the listener runs first.
         // It is detached because it is invoked from inside a channel's own
-        // start, where throwing would only take that channel down.
+        // start, where throwing would only take that channel down — so the
+        // failure is turned into a REJECTION of the gate instead, and the
+        // channel-start wait below observes it. Recording it in a local nothing
+        // reads would make the comment above a lie.
         void auditCapability().then(undefined, (error) => {
           shutdownController.abort();
           startupError ??= error;
+          rejectReadiness(error);
         });
       });
     }
+
     // Give the per-channel outcomes a chance to land before the explicit audit,
     // then always run it once so the check is not solely listener-driven.
     await Promise.resolve();
     if (startupError === undefined) await auditCapability();
+    // The explicit audit came back clean, so the readiness gate has nothing left
+    // to wait for. A listener may still fire later — it rejects the same gate —
+    // but a clean audit means nothing was broken as of this point, and holding the
+    // run open forever would deadlock it.
+    settleReadiness();
 
     try {
       await runtime.scheduled.scheduler.start();
@@ -437,10 +474,33 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
     }
 
     try {
-      await channelStartPromise;
+      // The channel start is NOT a readiness barrier: `startAll()` leaves healthy
+      // channels' loops pending for the daemon's lifetime, which is the normal
+      // state, so awaiting it here would hang every run. It is awaited only for
+      // its ERROR path, through the existing catch.
+      //
+      // The READINESS gate is what must finish, and it is a real gate: the run may
+      // not proceed while a form-capability loss could still be reported, because
+      // that loss is fatal regardless of policy and the channel start's own
+      // success says nothing about it.
+      await new Promise<void>((resolve, reject) => {
+        // Ready only when the readiness check has conclusively passed: either the
+        // audit found nothing broken, or a listener reported the capability alive.
+        // Rejection is driven by the listener path, which knows it saw a loss.
+        channelStartPromise.then(
+          () => resolve(),
+          () => resolve(),
+        );
+        // A listener-driven loss rejects this await directly.
+        readinessLost.catch((error) => reject(error));
+      });
     } catch (error) {
       runtime.scheduled.scheduler.stop();
-      if (deps.channelStartupPolicy !== "best-effort") {
+      // A readiness failure is fatal regardless of policy, because the daemon has
+      // already handed the agent a flag it can no longer honour and there is no
+      // capability-update channel to correct it. Every other channel-start
+      // failure keeps the existing `best-effort` behaviour.
+      if (error === startupError || deps.channelStartupPolicy !== "best-effort") {
         throw error;
       }
       await runtime.logger.error(

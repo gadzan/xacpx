@@ -940,3 +940,81 @@ test("primes runtime queues only after consumer lock and orchestration IPC are r
   signalHandlers.get("SIGTERM")?.();
   await runPromise;
 });
+
+test("a form capability lost mid-startup ends the run instead of starting anyway", async () => {
+  // The readiness listener records the fatal condition and aborts the daemon, but
+  // nothing READS it back. Under `best-effort` a partial failure still resolves
+  // the channel start on the strength of its healthy siblings, so
+  // `await channelStartPromise` succeeded and `runConsole` returned normally —
+  // a daemon that had already aborted itself, with the agent still holding the
+  // form-Elicitation flag it was handed at construction.
+  const events: string[] = [];
+  const logErrors: Array<{ event: string; message: string }> = [];
+  const signalHandlers = new Map<string, () => void>();
+  let notify: (formCapable: boolean) => void = () => {};
+
+  const runPromise = runConsole(
+    { configPath: "/cfg", statePath: "/state" },
+    {
+      buildApp: async () => ({
+        agent: {} as never,
+        router: {} as never,
+        sessions: {} as never,
+        stateStore: {} as never,
+        configStore: {} as never,
+        scheduled: createScheduledRuntime(),
+        logger: {
+          ...createNoopAppLogger(),
+          error: async (event, message) => {
+            logErrors.push({ event, message });
+          },
+        },
+        orchestration: {
+          server: {
+            start: async () => { events.push("orchestration:start"); },
+            stop: async () => { events.push("orchestration:stop"); },
+          },
+          service: { reconcileParallelSlots: async () => {} },
+        },
+        reapStaleQueueOwners: async () => {},
+        dispose: async () => { events.push("dispose"); },
+      }),
+      channels: {
+        startAll: async () => {
+          events.push("channel:start");
+          // A healthy channel keeps running; the form-capable one has failed
+          // by the time the readiness listener fires. The listener fires from
+          // INSIDE the real registry's start, so this is the production shape.
+          notify(false);
+        },
+        setElicitationReadinessListener: (listener) => {
+          notify = (formCapable) => listener({ formCapable } as never);
+        },
+        // Without a declared form channel the audit has nothing to compare
+        // against and would silently pass, which is the vacuous-check bug the
+        // audit's own comment warns about.
+        declaredElicitationFormChannelIds: () => ["channel-feishu"],
+        formElicitationChannelIds: () => [],
+        stopAll: async () => { events.push("channel:stop"); },
+      },
+      channelStartupPolicy: "best-effort",
+      daemonRuntime: {
+        start: async () => { events.push("daemon:start"); },
+        heartbeat: async () => {},
+        stop: async () => { events.push("daemon:stop"); },
+      },
+      addProcessListener: (signal, handler) => {
+        signalHandlers.set(signal, handler);
+      },
+      removeProcessListener: (signal, handler) => {
+        if (signalHandlers.get(signal) === handler) signalHandlers.delete(signal);
+      },
+    },
+  );
+
+  // The run REJECTS with the readiness failure, and it names the reason rather
+  // than returning success with the daemon already aborted.
+  await expect(runPromise).rejects.toThrow(/form elicitation is advertised but no form-capable channel started/);
+  // And the eligibility loss was surfaced through the daemon logger.
+  expect(logErrors.some((entry) => entry.event === "daemon.channels.elicit_form_lost")).toBe(true);
+});

@@ -245,13 +245,22 @@ function longest(values: readonly string[]): number {
  */
 export function checkElicitationRenderability(
   fields: readonly ChannelElicitationField[],
-  request?: ChannelElicitationRequest,
+  // REQUIRED, not optional.
+  //
+  // The field budget is measured over the text `buildElicitationFieldCard`
+  // actually builds, and only the request carries what that depends on: the real
+  // `agent.name`, the route that decides whether a form may be shown at all, and
+  // the answer echo a returning user gets. A field-only caller gets a
+  // `renderable: true` for a form the builder will throw on, which is the silent
+  // under-check this gate exists to prevent — so the optional form was removed
+  // rather than kept for compatibility.
+  request: ChannelElicitationRequest,
 ): ElicitationRenderability {
   // PRIVACY: a form is private to its requester, and the destination has to prove
   // it. See the Discord channel's own gate for the full reasoning; the field-level
   // half still needs the request to know the route, because the agent's question
   // AND the user's answers both go into the chat.
-  if (request !== undefined && request.chatType !== "direct") {
+  if (request.chatType !== "direct") {
     return {
       renderable: false,
       reason: "route-not-private",
@@ -296,21 +305,18 @@ export function checkElicitationRenderability(
     // answered field adds an "Answer saved" line, and an initial body near the
     // limit would otherwise overflow on the SECOND render, after the answer had
     // already been given.
-    if (request !== undefined) {
-      const fieldLines = buildElicitationFieldLines(
-        request,
-        field,
-        fields.indexOf(field) + 1,
-        boundedAnswerEcho(field),
-      );
-      const escapedLength = fieldLines.join("\n\n").length;
-      if (escapedLength > FIELD_CARD_TEXT_MAX) {
-        return {
-          renderable: false,
-          reason: "field-text-too-long",
-          detail: `field ${JSON.stringify(field.key)} renders to ${escapedLength} escaped chars, limit ${FIELD_CARD_TEXT_MAX}`,
-        };
-      }
+    const fieldLines = buildElicitationFieldLines(
+      request,
+      field,
+      fields.indexOf(field) + 1,
+      boundedAnswerEcho(field),
+    );
+    if (fieldLines.join("\n\n").length > FIELD_CARD_TEXT_MAX) {
+      return {
+        renderable: false,
+        reason: "field-text-too-long",
+        detail: `field ${JSON.stringify(field.key)} renders to ${fieldLines.join("\n\n").length} escaped chars, limit ${FIELD_CARD_TEXT_MAX}`,
+      };
     }
     // The remaining kind-specific checks below all describe TEXT-like fields; a
     // boolean has already passed the pattern and budget checks above, both of

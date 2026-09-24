@@ -56,6 +56,22 @@ export interface PendingFeishuElicitation {
   skipped: Set<string>;
   currentField?: string;
   /**
+   * The generation of the card the user is CURRENTLY looking at.
+   *
+   * Every field render stamps this value into the controls it draws and then
+   * advances it, so the value is "the generation of the card on screen" rather
+   * than "how many renders have happened". A callback carrying an OLDER
+   * generation comes from a card the user has already navigated away from, and
+   * honouring it would let a replayed value overwrite a newer answer: Feishu
+   * retries callbacks, users double-tap, and `submit()` writes to whichever field
+   * the cursor is on — which entering Review does NOT clear, because the review
+   * page needs the cursor to know where an Edit lands.
+   *
+   * Starting at 1, not 0: generation 0 would make the FIRST field card's controls
+   * indistinguishable from a payload with no generation at all.
+   */
+  renderGeneration: number;
+  /**
    * Set when a callback advanced the wizard while the opening send was still in
    * flight.
    *
