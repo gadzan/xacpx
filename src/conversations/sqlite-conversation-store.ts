@@ -264,16 +264,89 @@ function parseStoredHumanIngress(json: string | null | undefined): HumanIngressC
     return undefined;
   }
 }
-
 function serializeHumanIngress(ingress: HumanIngressContext | undefined): string | null {
   const parsed = parseHumanIngress(ingress);
   return parsed ? JSON.stringify(parsed) : null;
 }
 
-function parseSnapshot(json: string): BotProfileSnapshot {
-  return JSON.parse(json) as BotProfileSnapshot;
+/** Strict durable BotProfileSnapshot decoder: syntactically valid JSON with
+ *  the wrong shape (e.g. `{}`) is corrupt durable state, not a usable
+ *  snapshot. Fail closed with member_turn_corrupt instead of letting dispatch
+ *  claim a poison row and TypeError in a release-to-pending loop forever.
+ *  Revision/capturedAt identify the accepted generation; execution must carry
+ *  non-empty agent/workspace (model/effort optional strings); presentation
+ *  and behavior stay structurally typed. */
+function isSnapshotExecution(value: unknown): value is BotProfileSnapshot["execution"] {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const execution = value as Record<string, unknown>;
+  if (typeof execution.agent !== "string" || execution.agent.length === 0) {
+    return false;
+  }
+  if (typeof execution.workspace !== "string" || execution.workspace.length === 0) {
+    return false;
+  }
+  if (execution.model !== undefined && typeof execution.model !== "string") {
+    return false;
+  }
+  if (execution.effort !== undefined && typeof execution.effort !== "string") {
+    return false;
+  }
+  return true;
 }
 
+function isSnapshotPresentation(value: unknown): value is BotProfileSnapshot["presentation"] {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const presentation = value as Record<string, unknown>;
+  if (typeof presentation.name !== "string") {
+    return false;
+  }
+  if (presentation.avatar !== undefined && typeof presentation.avatar !== "string") {
+    return false;
+  }
+  if (presentation.role !== undefined && typeof presentation.role !== "string") {
+    return false;
+  }
+  return true;
+}
+
+function isSnapshotBehavior(value: unknown): value is BotProfileSnapshot["behavior"] {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const behavior = value as Record<string, unknown>;
+  if (behavior.instructions !== undefined && typeof behavior.instructions !== "string") {
+    return false;
+  }
+  return true;
+}
+
+function decodeSnapshot(value: unknown): BotProfileSnapshot {
+  if (typeof value !== "object" || value === null) {
+    throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.revision !== "number" || typeof record.capturedAt !== "string") {
+    throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
+  }
+  if (!isSnapshotPresentation(record.presentation) || !isSnapshotBehavior(record.behavior) || !isSnapshotExecution(record.execution)) {
+    throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
+  }
+  return value as BotProfileSnapshot;
+}
+
+function parseSnapshot(json: string): BotProfileSnapshot {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
+  }
+  return decodeSnapshot(parsed);
+}
 function mapMessage(row: MessageRow): ConversationMessage {
   const sourceTurn = row.source_turn_json
     ? JSON.parse(row.source_turn_json) as ConversationMessage["sourceTurn"]
@@ -349,12 +422,30 @@ function parseDependsOn(json: string | null | undefined): string[] {
   }
   return parsed;
 }
+function parseTriggerMessageIds(json: string | null | undefined): string[] {
+  // Written NOT NULL at accept; a structurally wrong value is corrupt
+  // durable state like the snapshot, not an empty trigger list.
+  if (json === null || json === undefined) {
+    throw new ConversationError("member_turn_corrupt", "member turn has malformed trigger message ids");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new ConversationError("member_turn_corrupt", "member turn has malformed trigger message ids");
+  }
+  if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === "string")) {
+    throw new ConversationError("member_turn_corrupt", "member turn has malformed trigger message ids");
+  }
+  return parsed;
+}
 
 function parseMemberSnapshot(json: string | null | undefined): BotProfileSnapshot | undefined {
   // NULL/absent (pre-multi-member legacy rows) falls back to the Run's
-  // snapshot at claim time. Non-null malformed JSON is corrupt durable
-  // state: fail closed rather than silently executing under another
-  // member's snapshot.
+  // snapshot at claim time. Non-null malformed JSON — syntactically broken
+  // OR structurally wrong — is corrupt durable state: fail closed rather
+  // than silently executing under another member's snapshot or looping a
+  // poison claim through release-to-pending forever.
   if (json === null || json === undefined) {
     return undefined;
   }
@@ -364,10 +455,7 @@ function parseMemberSnapshot(json: string | null | undefined): BotProfileSnapsho
   } catch {
     throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
   }
-  if (typeof parsed !== "object" || parsed === null) {
-    throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
-  }
-  return parsed as BotProfileSnapshot;
+  return decodeSnapshot(parsed);
 }
 
 function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
@@ -388,7 +476,7 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
     attempt: Number(row.attempt),
     origin: row.origin === "human" ? "human-explicit" : (row.origin as MemberTurnRecord["origin"]),
     state: row.state as MemberTurnState,
-    triggerMessageIds: JSON.parse(row.trigger_message_ids_json) as string[],
+    triggerMessageIds: parseTriggerMessageIds(row.trigger_message_ids_json),
     ...(snapshot ? { profileSnapshot: snapshot } : {}),
     ...(optionalString(row.started_at) ? { startedAt: row.started_at as string } : {}),
     ...(optionalString(row.finished_at) ? { finishedAt: row.finished_at as string } : {}),

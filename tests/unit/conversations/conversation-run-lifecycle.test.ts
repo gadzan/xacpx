@@ -1783,6 +1783,50 @@ test("group topic lifecycle validates target, archives, and rejects direct paths
   expect(again.status).toBe("archived");
 });
 
+test("archive refuses a Topic with nonterminal runs and races safely with materialization", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(reviewer.id);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-archive-race",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  // Nonterminal queued work refuses the archive instead of stranding it on a
+  // non-executing Topic.
+  await expect(first.service.archiveGroupTopic(group.id, topic.id)).rejects.toMatchObject({
+    code: "conversation_not_settled",
+  });
+  expect(first.state.conversation_topics[topic.id]?.status).toBe("active");
+  // Settle the run, then archive under the member gates: a materializer
+  // racing the flip either wins first (then the Topic is still active) or
+  // fails closed on the archived barrier — never a binding-less session.
+  first.store.cancelRun(accepted.run.id, NOW);
+  const archived = await first.service.archiveGroupTopic(group.id, topic.id);
+  expect(archived.status).toBe("archived");
+  await expect(first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  })).rejects.toMatchObject({ code: "topic_deleting" });
+  // No hidden session was minted by the refused materialization.
+  const owned = Object.values(first.state.sessions).filter(
+    (session) => session.owner?.kind === "group-member" && session.owner.topicId === topic.id,
+  );
+  expect(owned).toHaveLength(0);
+  first.store.close();
+});
+
 test("group topic teardown releases member bindings and rows, retryable on release failure", async () => {
   const first = await createLifecycle();
   const bots = first.bots;
@@ -4044,6 +4088,44 @@ test("settlement cross-product fails closed: wrong run, wrong source, zero write
   first.store.close();
 });
 
+test("provisional controller residue blocks verified group delete, never orphans", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  // A provisional group-controller binding/session the schema still accepts:
+  // no controller runtime exists, so verified teardown must fail closed
+  // instead of deleting the Group under hidden state.
+  first.state.bot_runtime_bindings.controller_x = {
+    id: "controller_x",
+    scope: "group-controller",
+    conversationId: group.id,
+    topicId: "t",
+    logicalSessionId: "99999999-9999-4999-8999-999999999999",
+    sessionAlias: "group:controller",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  first.state.sessions.controller_sess = {
+    alias: "controller_sess",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:controller_sess",
+    logical_session_id: "99999999-9999-4999-8999-999999999999",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-controller", bindingId: "controller_x", conversationId: group.id, topicId: "t" },
+  };
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "group_has_controller",
+  });
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings.controller_x).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord("controller_sess")?.alias).toBe("controller_sess");
+  first.store.close();
+});
+
 test("ghost-topic runtime blocks group delete; verified teardown releases it", async () => {
   const first = await createLifecycle();
   const bots = first.bots;
@@ -4068,6 +4150,45 @@ test("ghost-topic runtime blocks group delete; verified teardown releases it", a
   expect(first.state.conversations[group.id]).toBeUndefined();
   expect(first.state.bot_runtime_bindings[binding.id]).toBeUndefined();
   expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias) ?? undefined).toBeUndefined();
+  first.store.close();
+});
+
+test("ghost binding with an alias/id mismatch fails group delete closed, never orphans", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Corrupt the session map so the binding's alias no longer resolves, while
+  // the logical id still finds a hidden session with a partial legacy owner
+  // (crash/corruption residue: alias lost, bindingId the only clue).
+  const live = first.sessions.getLogicalSessionRecord(binding.sessionAlias)!;
+  const hiddenAlias = "hidden_mismatch_session";
+  first.state.sessions[hiddenAlias] = {
+    ...structuredClone(live),
+    alias: hiddenAlias,
+    owner: { kind: "group-member", bindingId: binding.id },
+  };
+  delete first.state.sessions[binding.sessionAlias];
+  const { createScopedGroupMemberBindingId: scopedId } = await import("../../../src/domain/ids");
+  expect(binding.id).toBe(scopedId(group.id, topic.id, reviewer.id));
+  // Verified delete must fail closed on the mismatch: the by-id scan finds
+  // the hidden session but the alias axis does not resolve, and deleting the
+  // binding first would lose the only clue a partial owner needs. The Group
+  // record, the binding, and the hidden session all survive for retry.
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord(hiddenAlias)?.alias).toBe(hiddenAlias);
   first.store.close();
 });
 
@@ -4251,6 +4372,45 @@ test("terminal settleCancelBatch with a foreign member fails closed (no mismatch
   });
   expect(same.run.id).toBe(runA.run.id);
   expect(same.settled[0]?.member.runId).toBe(runA.run.id);
+  first.store.close();
+});
+
+test("activation fails closed on a Direct custom Topic whose row was quarantined", async () => {
+  const first = await createLifecycle();
+  const bot = first.bots.getBot(BOT_ID);
+  const { createDirectConversationId, createDirectTopicId } = await import("../../../src/domain/ids");
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const conversationId = createDirectConversationId(bot.id);
+  // A custom Direct Topic row: NOT the deterministic default.
+  const customTopicId = "topic_custom_quarantined";
+  first.state.conversation_topics[customTopicId] = {
+    id: customTopicId, conversationId, title: "Custom", status: "active",
+    createdAt: NOW, updatedAt: NOW,
+  };
+  const accepted = first.store.acceptRequest({
+    conversationId,
+    topicId: customTopicId,
+    requestId: "req-direct-custom",
+    botId: bot.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(bot, NOW),
+    now: NOW,
+  });
+  // State corruption quarantines the custom Topic row AND the persisted
+  // Conversation row together. The Bot is healthy, but the Topic root is
+  // gone: activation must fail with conversation_work_unrooted before the
+  // first kick can claim the run into a topic_not_found pending loop.
+  delete first.state.conversation_topics[customTopicId];
+  // The default synthetic root stays valid: proving the Bot alone is not
+  // enough, the custom Topic link must survive too.
+  expect(customTopicId).not.toBe(createDirectTopicId(bot.id));
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "conversation_work_unrooted" });
+  const detail = (error as { details?: { roots?: { conversationId: string; topicId: string }[] } }).details;
+  expect(detail?.roots).toContainEqual({ conversationId, topicId: customTopicId });
+  expect(first.service.isConsumerActivated()).toBe(false);
+  // Nothing claimed or settled: the queued run is untouched for the operator.
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
   first.store.close();
 });
 
@@ -4567,4 +4727,74 @@ test("corrupt per-member snapshot fails closed instead of falling back", async (
   expect(first.store.getRun(accepted.run.id)?.startedAt).toBeUndefined();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
   first.store.close();
+});
+
+test("structurally invalid snapshot and trigger ids fail closed as corrupt", async () => {
+  // Snapshot cases share one lifecycle: each corrupt run stays queued, so
+  // the next claim still hits the earliest corrupt row deterministically.
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const claim = {
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  };
+  const snapshotCases: Array<{ requestId: string; value: string }> = [
+    { requestId: "req-empty-object", value: "{}" },
+    { requestId: "req-null-execution", value: '{"revision":1,"capturedAt":"t","presentation":{"name":"x"},"behavior":{},"execution":null}' },
+  ];
+  for (const { requestId, value } of snapshotCases) {
+    const accepted = first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId,
+      botId: botA.id,
+      content: "go",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+      now: NOW,
+    });
+    for (const turn of accepted.memberTurns) {
+      first.store.directWriteForTest("member_turns", turn.id, { profile_snapshot_json: value });
+    }
+    expect(() => first.store.claimNextDispatch(claim)).toThrow(/malformed execution snapshot/);
+    expect(first.store.listDispatchesForRun(accepted.run.id).every((d) => d.state === "pending")).toBe(true);
+    expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
+  }
+  first.store.close();
+  // Trigger-ids case gets its own lifecycle so the claim under test cannot
+  // land on an earlier corrupt snapshot row from the cases above.
+  const second = await createLifecycle();
+  seedTesterBot(second.state);
+  const group2 = await second.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic2 = await second.service.createGroupTopic(group2.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA2 = second.bots.getBot(BOT_ID);
+  const botB2 = second.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile: snapshot2 } = await import("../../../src/bots/bot-types");
+  const accepted2 = second.store.acceptRequest({
+    conversationId: group2.id,
+    topicId: topic2.id,
+    requestId: "req-bad-triggers",
+    botId: botA2.id,
+    content: "go",
+    profileSnapshot: snapshot2(botA2, NOW),
+    members: [{ botId: botB2.id, profileSnapshot: snapshot2(botB2, NOW) }],
+    now: NOW,
+  });
+  for (const turn of accepted2.memberTurns) {
+    second.store.directWriteForTest("member_turns", turn.id, { trigger_message_ids_json: '{"oops":true}' });
+  }
+  expect(() => second.store.claimNextDispatch(claim)).toThrow(/malformed trigger message ids/);
+  expect(second.store.listDispatchesForRun(accepted2.run.id).every((d) => d.state === "pending")).toBe(true);
+  expect(second.store.getRun(accepted2.run.id)?.state).toBe("queued");
+  second.store.close();
 });

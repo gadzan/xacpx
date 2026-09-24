@@ -81,7 +81,7 @@ export class ConversationRunService {
     private readonly bots: BotService,
     private readonly runtime: BotRuntimeManager,
     private readonly dispatcher: ConversationDispatcher,
-    private readonly sessions: Pick<SessionService, "getLogicalSessionRecord">,
+    private readonly sessions: Pick<SessionService, "getLogicalSessionRecord" | "getLogicalSessionById">,
     private readonly state: AppState,
     private readonly stateStore: SessionWriter,
     options: ConversationRunServiceOptions,
@@ -450,25 +450,49 @@ export class ConversationRunService {
     return created;
   }
 
+  /**
+   * Archive flips active → archived. Linearized like teardown/membership
+   * update: the status flip runs inside every member Bot's lifecycle gate so
+   * no materializer can be between session creation and binding publish when
+   * the Topic stops being active — that window would publish-fail with
+   * topic_deleting AFTER the session already persisted, stranding a
+   * binding-less hidden runtime no orphan sweep owns (Group+Topic still
+   * exist) and no archived-topic materialization can ever repair (identity
+   * lock held until teardown). Nonterminal MemberTurn work refuses the
+   * archive instead of stranding accepted work on a non-executing Topic.
+   */
   async archiveGroupTopic(conversationId: string, topicId: string): Promise<ConversationTopic> {
     this.assertOpen();
-    const archived = await this.stateMutex.run(async () => {
-      const topic = this.requireGroupTopic(conversationId, topicId);
-      if (topic.status !== "active") {
-        return topic;
+    const botIds = this.groupTopicMemberBotIds(conversationId, topicId);
+    return await this.bots.runLifecycleAll(botIds, async () => {
+      const nonterminal = this.store.listRuns(conversationId, topicId).filter(
+        (run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human",
+      );
+      if (nonterminal.length > 0) {
+        throw new ConversationError(
+          "conversation_not_settled",
+          `topic "${topicId}" has unsettled runs; settle or teardown before archiving`,
+          { runIds: nonterminal.map((run) => run.id) },
+        );
       }
-      const next = structuredClone(this.state);
-      next.conversation_topics[topicId] = {
-        ...topic,
-        status: "archived",
-        updatedAt: this.now().toISOString(),
-      };
-      await this.persist(next);
-      return next.conversation_topics[topicId]!;
+      const archived = await this.stateMutex.run(async () => {
+        const topic = this.requireGroupTopic(conversationId, topicId);
+        if (topic.status !== "active") {
+          return topic;
+        }
+        const next = structuredClone(this.state);
+        next.conversation_topics[topicId] = {
+          ...topic,
+          status: "archived",
+          updatedAt: this.now().toISOString(),
+        };
+        await this.persist(next);
+        return next.conversation_topics[topicId]!;
+      });
+      emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+      emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: archived });
+      return archived;
     });
-    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
-    emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: archived });
-    return archived;
   }
 
   private requireGroupTopic(conversationId: string, topicId: string): ConversationTopic {
@@ -646,6 +670,12 @@ export class ConversationRunService {
     // fail-closed BotService.deleteGroup guard still sees the durable rows.
     // Deleting the record first would strand rows no guard can see.
     this.store.deleteConversationRows(conversationId);
+    // Provisional group-controller scope has no teardown authority: the
+    // schema still accepts it, but no controller runtime exists to release
+    // it — auto-releasing an unknown future owner would be fail-open, and
+    // deleting the Group under it would orphan a hidden session. Fail closed
+    // with the barrier intact until an operator migrates/handles it.
+    this.assertNoGroupControllerResidue(conversationId);
     // Final residue fence: no group-member binding or owned session may
     // survive the Group record. Ghost-topic bindings/sessions (Topic row
     // already gone) and binding-less crash-window owners are all covered —
@@ -654,12 +684,49 @@ export class ConversationRunService {
     await this.stateMutex.run(async () => {
       await this.beforeTeardownFinalize?.();
       this.assertNoGroupResidue(conversationId);
+      this.assertNoGroupControllerResidue(conversationId);
       const next = structuredClone(this.state);
       delete next.conversations[conversationId];
       await this.persist(next);
     });
   }
 
+  /**
+   * Provisional group-controller bindings/sessions have no verified release
+   * path (no controller runtime exists yet). Block the Group delete while
+   * any reference this Group — by live binding row or by session owner
+   * (exact or binding-resolved) — instead of orphaning hidden state the
+   * schema keeps accepting.
+   */
+  private assertNoGroupControllerResidue(conversationId: string): void {
+    const bindings = Object.values(this.state.bot_runtime_bindings).filter(
+      (binding) => binding.scope === "group-controller" && binding.conversationId === conversationId,
+    );
+    const sessions = Object.values(this.state.sessions).filter((session) => {
+      const owner = session.owner;
+      if (owner?.kind !== "group-controller") {
+        return false;
+      }
+      if (owner.conversationId !== undefined) {
+        return owner.conversationId === conversationId;
+      }
+      const bound = owner.bindingId !== undefined
+        ? this.state.bot_runtime_bindings[owner.bindingId]
+        : undefined;
+      return bound !== undefined && bound.conversationId === conversationId;
+    });
+    if (bindings.length === 0 && sessions.length === 0) {
+      return;
+    }
+    throw new ConversationError(
+      "group_has_controller",
+      `group "${conversationId}" has provisional controller runtime with no verified release path`,
+      {
+        bindingIds: bindings.map((binding) => binding.id),
+        sessionAliases: sessions.map((session) => session.alias),
+      },
+    );
+  }
   /**
    * Release every group-member runtime residue for a Group whose Topics are
    * all gone: live bindings (alias+id verified), exact binding-less owners,
@@ -688,43 +755,65 @@ export class ConversationRunService {
           { binding },
         );
       }
-      const session = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
-      if (session) {
-        if (
-          classifyGroupMemberBindingSessionLink(
-            binding,
-            session,
-            binding.id,
-            binding.botId,
-            binding.conversationId,
-            binding.topicId,
-          ) !== "owned"
-        ) {
-          throw new ConversationError(
-            "runtime_ownership_conflict",
-            "group member binding/session link is contradictory",
-            { binding, sessionAlias: session.alias },
-          );
-        }
-        await this.releaseAlias(session.alias);
+      // Same two-axis rule as groupMemberAliases: missing on BOTH the alias
+      // row and the logical-id scan is a harmless stale binding removed at
+      // finalize time. Present on exactly one axis — or on both but pointing
+      // at different sessions — is a mismatch that must fail closed: the
+      // session it resolves to is Group residue and deleting the binding
+      // first would lose the only clue needed to find it (a partial owner
+      // resolves through the live binding row). An exact link releases.
+      const byAlias = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
+      const byId = this.sessions.getLogicalSessionById(binding.logicalSessionId);
+      const byIdMatches = byId ? [byId] : [];
+      if (!byAlias && byIdMatches.length === 0) {
+        await this.deleteBindingRow(binding.id);
+        continue;
       }
-      // Drop the stale binding row itself once its session is gone (or was
-      // already gone): same rule as topic-level finalization, where a
-      // binding missing on both alias+id axes is harmless residue removed
-      // at finalize time rather than a blocker.
-      const remaining = this.state.bot_runtime_bindings[binding.id];
-      if (remaining) {
-        await this.stateMutex.run(async () => {
-          const current = this.state.bot_runtime_bindings[binding.id];
-          if (!current) {
-            return;
-          }
-          const next = structuredClone(this.state);
-          delete next.bot_runtime_bindings[binding.id];
-          await this.persist(next);
-        });
+      if (
+        !byAlias
+        || byIdMatches.length !== 1
+        || byIdMatches[0]?.alias !== byAlias.alias
+        || classifyGroupMemberBindingSessionLink(
+          binding,
+          byAlias,
+          binding.id,
+          binding.botId,
+          binding.conversationId,
+          binding.topicId,
+        ) !== "owned"
+      ) {
+        throw new ConversationError(
+          "runtime_ownership_conflict",
+          "group member binding/session link is contradictory",
+          { binding, sessionAlias: byAlias?.alias },
+        );
       }
+      await this.releaseAlias(byAlias.alias);
+      await this.deleteBindingRow(binding.id);
     }
+    await this.releaseGroupResidueSessions(conversationId);
+  }
+
+  /**
+   * Remove one binding row under the shared mutex. Callers hold no mutex
+   * here (releaseAlias re-enters session removal); the re-check inside the
+   * critical section keeps a concurrent deleter from resurrecting state.
+   */
+  private async deleteBindingRow(bindingId: string): Promise<void> {
+    if (!this.state.bot_runtime_bindings[bindingId]) {
+      return;
+    }
+    await this.stateMutex.run(async () => {
+      if (!this.state.bot_runtime_bindings[bindingId]) {
+        return;
+      }
+      const next = structuredClone(this.state);
+      delete next.bot_runtime_bindings[bindingId];
+      await this.persist(next);
+    });
+  }
+
+  private async releaseGroupResidueSessions(conversationId: string): Promise<void> {
     // Re-read: releaseAlias mutates live state.
     for (const session of Object.values(this.state.sessions)) {
       const owner = session.owner;
@@ -1380,8 +1469,21 @@ export class ConversationRunService {
         const botId = conversation.botIds[0];
         return botId === undefined || root.topicId !== createDirectTopicId(botId);
       }
-      // No persisted Conversation row: a Direct root is planned from its Bot.
-      return !this.bots.listBots().some((bot) => createDirectConversationId(bot.id) === root.conversationId);
+      // No persisted Conversation row: a Direct root is healthy only when the
+      // conversation id is a live Bot's deterministic Direct id AND the topic
+      // is that Bot's deterministic default (synthetic root) or a linked
+      // custom Topic row that survived. A quarantined custom Topic whose row
+      // is gone looks like a Bot match but has no authority: first kick would
+      // claim it and loop topic_not_found back to pending forever.
+      const owner = this.bots.listBots().find((bot) => createDirectConversationId(bot.id) === root.conversationId);
+      if (!owner) {
+        return true;
+      }
+      if (root.topicId === createDirectTopicId(owner.id)) {
+        return false;
+      }
+      const customTopic = this.state.conversation_topics[root.topicId];
+      return !customTopic || customTopic.conversationId !== root.conversationId;
     });
     if (unrooted.length > 0) {
       throw new ConversationError(
