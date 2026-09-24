@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -793,7 +793,6 @@ windowsTest("real worker kills a child whose CIM image path differs from the han
     const result = await terminateWindowsProcessTree({
       pid: rootProcess.pid!,
       creationDate: rootIdentity!.creationDate,
-      workerDeadlineMs: null,
     }, { workerDeadlineMs: null });
 
     expect(result.rootOutcome).toBe("killed");
