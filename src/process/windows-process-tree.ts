@@ -449,7 +449,14 @@ function OpenVerified($node, $cim) {
   if(!$same){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}}
   $image=[XacpxNativeProcess]::Image($h)
   if(!$image){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='query-failed';handle=[IntPtr]::Zero}}
-  if($node.executablePath -and ![string]::Equals([string]$node.executablePath,$image,[StringComparison]::OrdinalIgnoreCase)){
+  # $node.executablePath is only comparable as a STRING when the CALLER supplied it
+  # from a handle (root, $cim=$false). A CIM-derived child ($cim=$true) carries
+  # Win32_Process.ExecutablePath, the CREATE-TIME path recorded in the process
+  # parameters, while Image() resolves the image file object: under any
+  # symlinked/junctioned launcher shim (fnm multishell, volta, nvm-windows)
+  # these are different strings for the SAME process, so comparing them condemns
+  # every such child as 'skipped-replaced' and aborts the whole batch.
+  if(!$cim -and $node.executablePath -and ![string]::Equals([string]$node.executablePath,$image,[StringComparison]::OrdinalIgnoreCase)){
     [XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}
   }
   return @{ok=$true;status=$null;handle=$h;image=$image}
@@ -473,7 +480,12 @@ if($request.action -eq 'identity'){
       if($cim -and $cim.CreationDate){
         $cimCreation=$cim.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString()
         $delta=[Numerics.BigInteger]::Abs([Numerics.BigInteger]::Parse($creation)-[Numerics.BigInteger]::Parse($cimCreation))
-        if($delta -le 9 -and [string]::Equals([string]$image,[string]$cim.ExecutablePath,[StringComparison]::OrdinalIgnoreCase)){
+        # The creationDate delta already binds this CIM row to the retained
+        # handle. Image equality would be a second, WEAKER identity proof and it
+        # breaks under a symlinked launcher shim: Win32_Process.ExecutablePath is
+        # the create-time path while $image is the resolved image file, so the
+        # commandLine would be dropped for a perfectly verified process.
+        if($delta -le 9){
           $commandLine=$cim.CommandLine
         }
       }
@@ -608,7 +620,14 @@ function OpenVerified($node, $cim) {
   if(!$same){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}}
   $image=[XacpxNativeProcess]::Image($h)
   if(!$image){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='query-failed';handle=[IntPtr]::Zero}}
-  if($node.executablePath -and ![string]::Equals([string]$node.executablePath,$image,[StringComparison]::OrdinalIgnoreCase)){
+  # $node.executablePath is only comparable as a STRING when the CALLER supplied it
+  # from a handle (root, $cim=$false). A CIM-derived child ($cim=$true) carries
+  # Win32_Process.ExecutablePath, the CREATE-TIME path recorded in the process
+  # parameters, while Image() resolves the image file object: under any
+  # symlinked/junctioned launcher shim (fnm multishell, volta, nvm-windows)
+  # these are different strings for the SAME process, so comparing them condemns
+  # every such child as 'skipped-replaced' and aborts the whole batch.
+  if(!$cim -and $node.executablePath -and ![string]::Equals([string]$node.executablePath,$image,[StringComparison]::OrdinalIgnoreCase)){
     [XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}
   }
   return @{ok=$true;status=$null;handle=$h;image=$image}
@@ -632,7 +651,12 @@ if($request.action -eq 'identity'){
       if($cim -and $cim.CreationDate){
         $cimCreation=$cim.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString()
         $delta=[Numerics.BigInteger]::Abs([Numerics.BigInteger]::Parse($creation)-[Numerics.BigInteger]::Parse($cimCreation))
-        if($delta -le 9 -and [string]::Equals([string]$image,[string]$cim.ExecutablePath,[StringComparison]::OrdinalIgnoreCase)){
+        # The creationDate delta already binds this CIM row to the retained
+        # handle. Image equality would be a second, WEAKER identity proof and it
+        # breaks under a symlinked launcher shim: Win32_Process.ExecutablePath is
+        # the create-time path while $image is the resolved image file, so the
+        # commandLine would be dropped for a perfectly verified process.
+        if($delta -le 9){
           $commandLine=$cim.CommandLine
         }
       }
