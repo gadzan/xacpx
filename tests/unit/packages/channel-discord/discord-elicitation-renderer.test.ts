@@ -2063,13 +2063,23 @@ test("a failed opening send rolls back the chunks it already published", async (
   }
 });
 
-test("an abort mid-opening does not delete the message it just made terminal", async () => {
-  // The opening loop assigned `sent = chunk` for EVERY chunk, so an abort
-  // between two of them left the last SUCCESSFUL non-final chunk as the primary.
-  // That one message id then sat in BOTH `entry.messageId` and
-  // `continuationMessageIds`, and the terminal render edited it into a Cancelled
-  // card and immediately deleted it as a continuation — the only thing the user
-  // was left with was gone.
+test("an abort mid-opening accounts for every message it actually published", async () => {
+  // TWO ownership bugs lived in this loop, both from checking `settled` before
+  // recording a successful send.
+  //
+  // 1. A non-final chunk that landed during an abort was never pushed to
+  //    `continuationMessageIds`, so the rollback deleted the earlier ones and
+  //    left it orphaned in the channel forever.
+  // 2. The FINAL chunk landing during an explicit Decline/Cancel left `sent`
+  //    undefined, so the opening threw "aborted" and a legitimate user decision
+  //    was reported as a rejection instead of resolving the turn. That is the
+  //    failure CI caught.
+  //
+  // A successful `sendMessage` is an external fact — the message is in the
+  // channel and the daemon owns it — so ownership is taken BEFORE the settle
+  // check. This test holds the second send so the abort lands while it is in
+  // flight, then releases it, and asserts that every message that actually went
+  // out is accounted for afterwards.
   const client = makeFakeClient();
   const realSend = client.sendMessage.bind(client);
   let sends = 0;
@@ -2077,11 +2087,14 @@ test("an abort mid-opening does not delete the message it just made terminal", a
   const held = new Promise<void>((resolve) => {
     release = resolve;
   });
-  // Hold the SECOND send so the abort lands while the opening is mid-flight.
+  // Every message id the transport actually produced, in order.
+  const published: string[] = [];
   (client as unknown as { sendMessage: unknown }).sendMessage = async (target: never, body: never) => {
     sends += 1;
     if (sends === 2) await held;
-    return realSend(target, body);
+    const result = await realSend(target, body);
+    published.push(result.messageId);
+    return result;
   };
   const { channel, abort } = await startChannel(client);
   try {
@@ -2094,39 +2107,84 @@ test("an abort mid-opening does not delete the message it just made terminal", a
       () => "resolved",
       (e: Error) => e.message,
     );
-    // Let the first chunk publish and the second park inside sendMessage.
+    // Let chunk 1 publish and chunk 2 park inside sendMessage.
     await new Promise((r) => setTimeout(r, 15));
-    // Abort while the opening is mid-flight: the loop breaks on the next
-    // iteration with no primary ever claimed. The REQUEST signal is the one the
-    // elicitation subscribes to; the channel signal would only stop the channel.
+    // Abort while the second send is in flight, then let that send land.
     reqAbort.abort();
     release();
+    await new Promise((r) => setTimeout(r, 60));
+
     const outcome = await Promise.race([
       settled,
-      new Promise((r) => setTimeout(() => r("timeout"), 500)),
+      new Promise((r) => setTimeout(() => r("timeout"), 1000)),
     ]);
     expect(String(outcome)).toContain("aborted");
 
-    // Nothing the aborted opening published survives as an orphaned fragment.
+    // No primary was ever claimed (the controls never went out), so nothing the
+    // aborted opening published survives as an orphaned fragment. The second
+    // chunk DID go out — it was released after the abort — and the rollback must
+    // have seen it, which is precisely what the previous ordering lost.
     expect(sends).toBeGreaterThanOrEqual(2);
-    expect(client.deleted.length).toBeGreaterThanOrEqual(1);
-    // The invariant that was broken: a message id is either the primary or a
-    // continuation, never both. With the old assignment the last successful
-    // non-final chunk became the primary AND stayed in the continuation list,
-    // so the terminal render deleted the very card it had just made inert.
-    const store = (channel as unknown as {
-      pendingElicitations: Map<string, { messageId?: string; continuationMessageIds: string[] }>;
-    }).pendingElicitations;
-    for (const pending of [...store.values()]) {
-      if (!pending.messageId) continue;
-      expect(pending.continuationMessageIds).not.toContain(pending.messageId);
-    }
-    // Whatever was deleted is a continuation, and no pending primary is among
-    // them — the same invariant from the other side.
+    expect(published.length).toBeGreaterThanOrEqual(2);
+    expect(client.deleted.length).toBe(published.length);
+    // Every published id is gone; nothing is left behind.
     const deletedSet = new Set(client.deleted);
-    for (const pending of [...store.values()]) {
-      if (pending.messageId) expect(deletedSet.has(pending.messageId)).toBe(false);
+    for (const id of published) expect(deletedSet.has(id)).toBe(true);
+  } finally {
+    release?.();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("an explicit Decline whose opening send finishes in flight still resolves the turn", async () => {
+  // The FINAL chunk carrying the controls can land AFTER the user has already
+  // clicked Decline on it. That message is then real, so the request must resolve
+  // with the user's decision — not reject. Reporting a legitimate decline as a
+  // rejection is what the previous "record after the settle check" ordering did,
+  // and what CI caught on both Linux and macOS.
+  const client = makeFakeClient();
+  const realSend = client.sendMessage.bind(client);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let released = false;
+  (client as unknown as { sendMessage: unknown }).sendMessage = async (target: never, body: never) => {
+    const isFinal = Boolean((body as { components?: unknown[] }).components?.length);
+    // Hold the FINAL chunk — the one carrying the controls — so the interaction
+    // can arrive while that send is still in flight. The message is recorded
+    // BEFORE the hold so the card is on screen for the user to click, which is
+    // exactly the race being reproduced.
+    if (isFinal && !released) {
+      released = true;
+      const result = await realSend(target, body);
+      await held;
+      return result;
     }
+    return realSend(target, body);
+  };
+  const { channel } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "a", title: "A", required: true, maxLength: 4000 },
+    ]);
+    req.message = "X".repeat(6000);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    // Let the opening publish its text chunks and park on the final one.
+    await new Promise((r) => setTimeout(r, 15));
+    // The user declines on the card they can already see.
+    client.emitButton(click(client, idFor(client, "decline")));
+    // Now the final send lands: the controls exist, and the turn is already
+    // decided. The decision must win.
+    release();
+    const outcome = await Promise.race([
+      settled,
+      new Promise((r) => setTimeout(() => r("timeout"), 1000)),
+    ]);
+    expect(outcome).toEqual({ action: "decline", responderId: "user-A" });
   } finally {
     release?.();
     await channel.stop().catch(() => {});

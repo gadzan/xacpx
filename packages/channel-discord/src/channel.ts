@@ -808,11 +808,23 @@ export class DiscordChannel implements MessageChannelRuntime {
           allowedMentions: { parse: [] },
           ...(isLast ? { components: opening.components } : {}),
         });
-        // Re-check AFTER the await: a request can settle while a chunk is in
-        // flight, and continuing would publish the controls onto an aborted
-        // turn. The guard at the top of the loop alone only catches a settle that
-        // happened between iterations, not during one.
-        if (entry.settled) break;
+        // TAKE OWNERSHIP OF THE SEND FIRST, THEN CHECK SETTLEMENT.
+        //
+        // A successful `sendMessage` is an external fact: the message is in the
+        // channel and the daemon now owns it. Checking `settled` before recording
+        // it loses that message in both directions, which is exactly what the
+        // previous ordering did:
+        //
+        //   - a non-final chunk that lands during an abort was never pushed to
+        //     `continuationMessageIds`, so the rollback deleted the earlier ones
+        //     and left it orphaned forever;
+        //   - the FINAL chunk landing during an explicit Decline/Cancel left
+        //     `sent` undefined, so the opening threw "aborted" and a legitimate
+        //     user decision was reported as a rejection. That is the CI failure.
+        //
+        // With the record first, the rollback below can see and delete every
+        // message this opening published, and the send-race branch at the end can
+        // turn a freshly-published primary inert through the normal queue.
         // ONLY the last chunk is a candidate primary. Assigning `sent` for every
         // chunk meant an abort between two of them left the last SUCCESSFUL
         // non-final chunk as the primary — the same message id sitting in both
@@ -821,6 +833,10 @@ export class DiscordChannel implements MessageChannelRuntime {
         // as a continuation, so the only thing the user was left with was gone.
         if (isLast) sent = chunk;
         else entry.continuationMessageIds.push(chunk.messageId);
+        // Now that the message is accounted for, stop: continuing would publish
+        // controls onto a turn the user has already decided. The top-of-loop
+        // guard only catches a settle BETWEEN iterations, not during one.
+        if (entry.settled) break;
       }
       // An aborted opening keeps whatever continuations it published and never
       // claims a primary: the terminal render has no id to edit, and
