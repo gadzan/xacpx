@@ -220,6 +220,11 @@ function buildResiduals(source: ResidualSource, outcomes: ProcessTreeOutcome[]):
       creationDate: entry.target.creationDate,
       commandLine: entry.commandLine,
       executablePath: entry.executablePath,
+      // The tree terminator snapshots creationDate from CIM (6-digit microsecond
+      // quantization, 1-9 ticks below the kernel value) even when it resolves
+      // the image through a retained handle, so this record is NOT wholly
+      // handle-derived and its replay must not demand an exact creation match.
+      fingerprintSource: "cim",
       agentCommand: source.agentCommand,
       generationId: source.generationId,
       killAttempts: 0,
@@ -238,11 +243,16 @@ async function reconcileResidual(
   // A residual is an UNVERIFIED SUBTREE ROOT: kill it through the verified
   // tree terminator so anything it spawned after spooling converges too.
   const terminateTree = deps.terminateTree ?? terminateWindowsProcessTree;
+  // The residual's fingerprint provenance decides the replay tolerance. A
+  // CIM-derived creationDate is quantized to 6-digit microseconds, so demanding
+  // an exact match would condemn a legitimate record as 'skipped-replaced' and
+  // it could never discharge. A handle-derived one stays exact.
   const batch = await terminateTree({
     pid: residual.pid,
     creationDate: residual.creationDate,
     commandLine: residual.commandLine,
     executablePath: residual.executablePath,
+    ...(residual.fingerprintSource === "cim" ? { fingerprintSource: "cim" as const } : {}),
   }, terminateOptions(deps));
   // A root that is already-exited/skipped-replaced does NOT discharge the
   // subtree: the tree terminator returns BEFORE any descendant snapshot in

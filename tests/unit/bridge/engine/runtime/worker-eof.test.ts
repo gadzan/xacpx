@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import {
   convergeOrphansBeforeExit,
+  evidenceIdentity,
   mergeEvidence,
 } from "../../../../../src/bridge/engine/runtime/worker-eof";
 import { type TerminateDescendantsResult } from "../../../../../src/process/windows-process-tree";
@@ -446,6 +447,139 @@ test("posix: a throwing group kill REJECTS instead of reporting verified (round 
       runtimeDir: dir,
     })).rejects.toThrow(/EPERM/);
     expect(attempts).toBe(1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("evidence identity is stable when the worker canonicalizes a shim path across rounds", () => {
+  // The descendants worker replaces a shim-launched child's CIM executablePath
+  // with the resolved image once a handle is available, so the SAME process is
+  // observed with two different paths. Identity must not split on that, or the
+  // stale alias record stays required evidence forever.
+  const alias = { pid: 5002, creationDate: "133801632000000010", commandLine: "node adapter.js", executablePath: "C:\\shim\\node.exe" };
+  const resolved = { pid: 5002, creationDate: "133801632000000010", commandLine: "node adapter.js", executablePath: "C:\\real\\node.exe" };
+  expect(evidenceIdentity(alias)).toBe(evidenceIdentity(resolved));
+});
+
+test("merge: a later safe outcome resolves an earlier unsafe one for the SAME process, keeping the handle fingerprint", () => {
+  // Round 1: access-denied leaves an unsafe record carrying the CIM alias.
+  // Round 2: the same process is verified through a handle, killed, and reports
+  // the resolved image plus the handle creation time. It must RESOLVE round 1
+  // and the surviving record must keep the handle-derived fingerprint — the old
+  // behaviour produced two identities, spooled a residual for a dead process,
+  // and let both compete for one durable filename.
+  const round1 = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [] },
+    {
+      verified: false,
+      outcomes: [{
+        pid: 5002,
+        outcome: "access-denied",
+        creationDate: "133801632000000010",
+        commandLine: "node adapter.js",
+        executablePath: "C:\\shim\\node.exe",
+        fingerprintSource: "cim",
+      }],
+      leftover: [],
+    },
+  );
+  const merged = mergeEvidence(round1, {
+    verified: false,
+    outcomes: [{
+      pid: 5002,
+      outcome: "killed",
+      creationDate: "133801632000000010",
+      commandLine: "node adapter.js",
+      executablePath: "C:\\real\\node.exe",
+      fingerprintSource: "handle",
+    }],
+    // Another process is still unresolved, so this round is not verified.
+    leftover: [{ pid: 5003, parentPid: 5002, creationDate: "133801632000000020", commandLine: "child", executablePath: "C:\\child.exe", fingerprintSource: "cim" }],
+  });
+  expect(merged.verified).toBe(false);
+  expect(merged.outcomes.filter((item) => item.pid === 5002)).toHaveLength(1);
+  const survivor = merged.outcomes.find((item) => item.pid === 5002)!;
+  expect(survivor.outcome).toBe("killed");
+  expect(survivor.executablePath).toBe("C:\\real\\node.exe");
+  expect(survivor.fingerprintSource).toBe("handle");
+});
+
+test("merge: a handle fingerprint is never overwritten by a later CIM observation of the same process", () => {
+  // Both observations are unsafe (access-denied), so safety cannot decide. The
+  // handle-derived record must win, otherwise a stale alias would be spooled as
+  // durable evidence the reaper can never discharge.
+  const merged = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [] },
+    {
+      verified: false,
+      outcomes: [{
+        pid: 5002,
+        outcome: "access-denied",
+        creationDate: "133801632000000010",
+        commandLine: "node adapter.js",
+        executablePath: "C:\\real\\node.exe",
+        fingerprintSource: "handle",
+      }],
+      leftover: [],
+    },
+  );
+  const second = mergeEvidence(merged, {
+    verified: false,
+    outcomes: [{
+      pid: 5002,
+      outcome: "query-failed",
+      creationDate: "133801632000000010",
+      commandLine: "node adapter.js",
+      executablePath: "C:\\shim\\node.exe",
+      fingerprintSource: "cim",
+    }],
+    leftover: [],
+  });
+  expect(second.outcomes).toHaveLength(1);
+  expect(second.outcomes[0]!.executablePath).toBe("C:\\real\\node.exe");
+  expect(second.outcomes[0]!.fingerprintSource).toBe("handle");
+});
+
+test("windows: a residual whose fingerprint came from CIM replays with creation tolerance", async () => {
+  // CIM creationDate is quantized to 6-digit microseconds, so it differs from
+  // the kernel's FILETIME by 1-9 ticks. A reaper that demanded an exact match
+  // would condemn every such residual as 'skipped-replaced' and never
+  // discharge it. Assert the tolerance flag reaches the tree terminator.
+  const dir = await mkdtemp(join(tmpdir(), "eof-cim-residual-"));
+  try {
+    const registry = new OrphanRegistry(dir);
+    await registry.initialize();
+    const ownerToken = "00000000-0000-4000-8000-0000000000cc";
+    const generationId = "00000000-0000-4000-8000-0000000000dd";
+    await registry.writeResidual({
+      schemaVersion: 1,
+      kind: "residual",
+      ownerToken,
+      pid: 5002,
+      creationDate: "133801632000000010",
+      commandLine: "node adapter.js",
+      executablePath: "C:\\shim\\node.exe",
+      fingerprintSource: "cim",
+      agentCommand: "codex",
+      generationId,
+      killAttempts: 0,
+    });
+    const written = (await registry.readCategory("residuals"))[0]!.record as { fingerprintSource?: string };
+    expect(written.fingerprintSource).toBe("cim");
+
+    let captured: { fingerprintSource?: string } | null = null;
+    const result = await sweepWindowsOrphans(registry, generationId, {
+      probeIdentity: async () => ({ status: "found", identity: { pid: 5002, creationDate: "133801632000000010", executablePath: "C:\\shim\\node.exe" } }),
+      terminateTree: async (root) => {
+        captured = root;
+        return { rootOutcome: "killed", outcomes: [] };
+      },
+      runJobHardKill: async () => ({ outcome: "killed" }),
+      onWarning: () => {},
+    });
+    expect(captured?.fingerprintSource).toBe("cim");
+    expect(result.degraded).toBe(false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

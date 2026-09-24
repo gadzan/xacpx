@@ -7,6 +7,16 @@ export interface BatchTarget {
   creationDate: string | null;
   commandLine?: string;
   executablePath?: string;
+  /**
+   * Provenance of `creationDate` / `executablePath`. "cim" tells the worker the
+   * caller could only observe the process through a WMI/CIM snapshot, so the
+   * creationDate is quantized to 6-digit microseconds (1-9 ticks below the
+   * kernel's FILETIME) and the executablePath is the create-time launcher path.
+   * Both are then compared with tolerance instead of exactly, exactly as a
+   * CIM-derived descendant is. Default "handle" keeps the exact compare for
+   * callers that probed a retained handle.
+   */
+  fingerprintSource?: WindowsDescendantFingerprintSource;
 }
 
 export type KillOutcome =
@@ -35,12 +45,24 @@ export interface TerminateProcessTreeResult {
  * action's contract is to keep the parent alive and converge only its
  * transitive descendants.
  */
+
+/**
+ * Provenance of a descendant's `creationDate` / `executablePath`:
+ *   "handle" — both came from a RETAINED process handle (the kernel values);
+ *   "cim"    — both came from a WMI/CIM snapshot, so `creationDate` is
+ *              quantized to 6-digit microseconds (1-9 ticks below the kernel's
+ *              FILETIME) and `executablePath` is the create-time launcher path.
+ * `"unknown"` means the worker could not attribute either value for this pid.
+ */
+export type WindowsDescendantFingerprintSource = "handle" | "cim" | "unknown";
+
 export interface WindowsDescendantOutcome {
   pid: number;
   outcome: KillOutcome;
   creationDate: string | null;
   commandLine: string | null;
   executablePath: string | null;
+  fingerprintSource?: WindowsDescendantFingerprintSource;
 }
 
 /** A process still present after convergence, parented by the worker itself or by a killed descendant. */
@@ -50,6 +72,7 @@ export interface WindowsDescendantLeftover {
   creationDate: string | null;
   commandLine: string | null;
   executablePath: string | null;
+  fingerprintSource?: WindowsDescendantFingerprintSource;
 }
 
 export interface TerminateDescendantsResult {
@@ -169,6 +192,19 @@ const DESCENDANT_SAFE_OUTCOMES: Partial<Record<KillOutcome, true>> = { killed: t
  * inconsistency, unsafe outcome, leftover, duplicate pid, or parent-pid entry
  * fails closed.
  */
+const DESCENDANT_FINGERPRINT_SOURCES: Partial<Record<WindowsDescendantFingerprintSource, true>> = {
+  handle: true,
+  cim: true,
+  unknown: true,
+};
+
+function decodeFingerprintSource(value: unknown): WindowsDescendantFingerprintSource | undefined {
+  if (value === undefined || value === null) return undefined;
+  return DESCENDANT_FINGERPRINT_SOURCES[value as WindowsDescendantFingerprintSource]
+    ? value as WindowsDescendantFingerprintSource
+    : undefined;
+}
+
 export function decodeWindowsDescendantsResponse(value: unknown, parentPid: number): TerminateDescendantsResult | null {
   if (!value || typeof value !== "object") return null;
   const response = value as Record<string, unknown>;
@@ -190,6 +226,7 @@ export function decodeWindowsDescendantsResponse(value: unknown, parentPid: numb
       creationDate: item.creationDate === null || item.creationDate === undefined || item.creationDate === "" ? null : String(item.creationDate),
       commandLine: typeof item.commandLine === "string" && item.commandLine.length > 0 ? item.commandLine : null,
       executablePath: typeof item.executablePath === "string" && item.executablePath.length > 0 ? item.executablePath : null,
+      ...(decodeFingerprintSource(item.fingerprintSource) ? { fingerprintSource: decodeFingerprintSource(item.fingerprintSource)! } : {}),
     });
   }
   const leftover: WindowsDescendantLeftover[] = [];
@@ -207,6 +244,7 @@ export function decodeWindowsDescendantsResponse(value: unknown, parentPid: numb
       creationDate: item.creationDate === null || item.creationDate === undefined || item.creationDate === "" ? null : String(item.creationDate),
       commandLine: typeof item.commandLine === "string" && item.commandLine.length > 0 ? item.commandLine : null,
       executablePath: typeof item.executablePath === "string" && item.executablePath.length > 0 ? item.executablePath : null,
+      ...(decodeFingerprintSource(item.fingerprintSource) ? { fingerprintSource: decodeFingerprintSource(item.fingerprintSource)! } : {}),
     });
   }
   const recomputed =
@@ -459,17 +497,29 @@ function OpenVerified($node, $cim) {
   if(!$cim -and $node.executablePath -and ![string]::Equals([string]$node.executablePath,$image,[StringComparison]::OrdinalIgnoreCase)){
     [XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}
   }
-  return @{ok=$true;status=$null;handle=$h;image=$image}
+  return @{ok=$true;status=$null;handle=$h;image=$image;creation=$actual}
 }
 
 function CL($h){try{[XacpxNativeProcess]::Close($h)}catch{}}
-# On success the handle-derived image REPLACES the CIM create-time path on the
-# node itself. The CIM value is a launcher alias under any symlinked/junctioned
-# shim, and this node is later spooled as a durable residual whose
-# executablePath the reaper hands back to terminateWindowsProcessTree as a
-# strictly-compared ROOT fingerprint — an alias there would be condemned
-# 'skipped-replaced' forever and the record could never discharge.
-function VF($p){$c=OpenVerified $p $true;if($c.ok){$p.executablePath=$c.image;$open[$p.pid]=$c.handle}else{$ov[$p.pid]=$c.status;CL $c.handle}}
+# On success the handle-derived image AND creation time replace the CIM values.
+# This node may be spooled as a durable residual whose fingerprint the reaper
+# replays as a strictly-compared ROOT, so a launcher alias or a quantized
+# (6-digit microsecond) creationDate there would never discharge. $fs records
+# the provenance so the caller can pick the matching replay tolerance.
+$fs=@{}
+function VF($p){
+  $c=OpenVerified $p $true
+  if($c.ok){
+    $p.executablePath=$c.image
+    $p.creationDate=$c.creation
+    $fs[$p.pid]='handle'
+    $open[$p.pid]=$c.handle
+  }else{
+    $fs[$p.pid]='cim'
+    $ov[$p.pid]=$c.status
+    CL $c.handle
+  }
+}
 if($request.action -eq 'identity'){
   $h=[XacpxNativeProcess]::Open([uint32]$request.pid)
   if($h -eq [IntPtr]::Zero){
@@ -559,10 +609,13 @@ $fr=$nx
 }
 foreach($p in $cl){
 if($open.ContainsKey($p.pid)){$h=$open[$p.pid];$s=if(-not [XacpxNativeProcess]::Alive($h)){'already-exited'}elseif([XacpxNativeProcess]::Kill($h)){if([XacpxNativeProcess]::WaitDead($h)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}}else{$s=$ov[$p.pid]}
-$out+=@{pid=$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}
+$out+=@{pid=$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath;fingerprintSource=$fs[$p.pid]}
 }
 } finally {$open.Values|%{CL $_}}
 $vf=!@($out|?{$_.outcome -notin 'killed','already-exited'}).Count -and !$lf.Count -and $pok
+# A leftover that never reached VF has no attributed fingerprint at all: report
+# the explicit "unknown" source rather than silently claiming CIM provenance.
+foreach($l in $lf){if(!$fs.ContainsKey($l.pid)){$fs[$l.pid]='unknown'};$l|Add-Member -NotePropertyName fingerprintSource -NotePropertyValue $fs[$l.pid] -Force}
 Write-Output (@{verified=$vf;outcomes=$out;leftover=$lf}|ConvertTo-Json -Depth 8 -Compress);exit 0
 }
 `;
@@ -636,17 +689,9 @@ function OpenVerified($node, $cim) {
   if(!$cim -and $node.executablePath -and ![string]::Equals([string]$node.executablePath,$image,[StringComparison]::OrdinalIgnoreCase)){
     [XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}
   }
-  return @{ok=$true;status=$null;handle=$h;image=$image}
+  return @{ok=$true;status=$null;handle=$h;image=$image;creation=$actual}
 }
 
-function CL($h){try{[XacpxNativeProcess]::Close($h)}catch{}}
-# On success the handle-derived image REPLACES the CIM create-time path on the
-# node itself. The CIM value is a launcher alias under any symlinked/junctioned
-# shim, and this node is later spooled as a durable residual whose
-# executablePath the reaper hands back to terminateWindowsProcessTree as a
-# strictly-compared ROOT fingerprint — an alias there would be condemned
-# 'skipped-replaced' forever and the record could never discharge.
-function VF($p){$c=OpenVerified $p $true;if($c.ok){$p.executablePath=$c.image;$open[$p.pid]=$c.handle}else{$ov[$p.pid]=$c.status;CL $c.handle}}
 if($request.action -eq 'identity'){
   $h=[XacpxNativeProcess]::Open([uint32]$request.pid)
   if($h -eq [IntPtr]::Zero){
@@ -701,7 +746,14 @@ if($request.action -eq 'terminate-one-cim'){
 $root=[pscustomobject]@{pid=[int]$request.root.pid;creationDate=[string]$request.root.creationDate;commandLine=$request.root.commandLine;executablePath=$request.root.executablePath}
 $handles=@{}
 $nodes=New-Object Collections.ArrayList
-$rootCheck=OpenVerified $root $false
+# A caller that could only observe this pid through CIM (e.g. the reaper replaying
+# a residual whose fingerprint was NEVER handle-derived) gets the CIM tolerance
+# for BOTH fields, exactly like a CIM-derived descendant: the quantized
+# creationDate cannot satisfy an exact compare, and the executablePath may be a
+# create-time launcher alias. Everything else keeps the exact, handle-derived
+# contract, so a genuinely replaced pid is still refused.
+$rootCim=([string]$request.root.fingerprintSource -eq 'cim')
+$rootCheck=OpenVerified $root $rootCim
 if(!$rootCheck.ok){Write-Output (Result $rootCheck.status @((Outcome $root $rootCheck.status)));exit 0}
 $handles[$root.pid]=$rootCheck.handle
 [void]$nodes.Add($root)

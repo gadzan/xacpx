@@ -39,6 +39,7 @@ import {
   terminateWindowsDescendantsOf,
   type KillOutcome,
   type TerminateDescendantsResult,
+  type WindowsDescendantFingerprintSource,
   type WindowsDescendantLeftover,
   type WindowsDescendantOutcome,
 } from "../../../process/windows-process-tree";
@@ -133,32 +134,47 @@ export interface ConvergeOrphansOptions {
 const EMPTY_EVIDENCE: TerminateDescendantsResult = { verified: false, outcomes: [], leftover: [] };
 
 /**
+ * Stable evidence identity. On Windows a pid is NOT identity (reuse), so every
+ * merge/publication decision is keyed on the observed process fingerprint; two
+ * records sharing a pid but differing in creationDate are DIFFERENT processes
+ * and both stay required evidence.
+ *
+ * `executablePath` is deliberately NOT part of the key: the descendants worker
+ * canonicalizes a shim-launched child's path from its CIM alias to the resolved
+ * image once a handle is available, so the SAME process can be observed with a
+ * different path across rounds (e.g. access-denied first, killed later).
+ * Including it would split one process into two identities, leaving a stale
+ * record that can never discharge and, worse, two records for the same pid
+ * competing for one durable filename. `pid + creationDate` already identify the
+ * process, and `commandLine` is the CIM row's stable argv0+args.
+ */
+export function evidenceIdentity(item: { pid: number; creationDate: string | null; commandLine: string | null }): string {
+  return `${item.pid}|${item.creationDate ?? ""}|${item.commandLine ?? ""}`;
+}
+
+/**
  * Merge one convergence attempt into the accumulated evidence. Monotonic: a
  * later attempt can only ADD identities or RESOLVE previously unsafe ones —
  * it can never erase evidence, so a total failure on a retry cannot discard
  * what an earlier attempt already captured.
  */
-/**
- * Stable evidence identity: pid is NOT identity on Windows (reuse), so every
- * merge/publication/verification decision is keyed on the full observed
- * fingerprint. Two records sharing a pid but differing in creationDate are
- * DIFFERENT processes and both stay required evidence.
- */
-export function evidenceIdentity(item: { pid: number; creationDate: string | null; commandLine: string | null; executablePath: string | null }): string {
-  return `${item.pid}|${item.creationDate ?? ""}|${item.executablePath ?? ""}|${item.commandLine ?? ""}`;
-}
-
 export function mergeEvidence(a: TerminateDescendantsResult, b: TerminateDescendantsResult): TerminateDescendantsResult {
   const byIdentity = new Map<string, WindowsDescendantOutcome>();
   for (const item of [...a.outcomes, ...b.outcomes]) {
     const key = evidenceIdentity(item);
     const existing = byIdentity.get(key);
-    if (!existing || (SAFE_OUTCOMES[item.outcome] && !SAFE_OUTCOMES[existing.outcome])) byIdentity.set(key, item);
+    // A safe outcome resolves an unsafe one; when BOTH records describe the same
+    // process with the same safety, keep the better-fingerprinted record. A
+    // handle-derived fingerprint is authoritative (kernel creation time, resolved
+    // image), while a CIM one is quantized / aliased — so a later CIM observation
+    // must never overwrite a handle-derived one for the same process.
+    if (!existing || winsOver(item, existing)) byIdentity.set(key, item);
   }
   const leftover = new Map<string, WindowsDescendantLeftover>();
   for (const item of [...a.leftover, ...b.leftover]) {
     const key = evidenceIdentity(item);
-    if (!byIdentity.has(key)) leftover.set(key, item);
+    const existing = leftover.get(key);
+    if (!existing || winsOver(item, existing)) leftover.set(key, item);
   }
   for (const key of byIdentity.keys()) leftover.delete(key);
   const outcomes = [...byIdentity.values()];
@@ -173,13 +189,48 @@ export function mergeEvidence(a: TerminateDescendantsResult, b: TerminateDescend
     leftover: remaining,
   };
 }
-function residualFor(candidate: WindowsDescendantOutcome | WindowsDescendantLeftover, base: Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath">): ResidualRecord {
+
+/**
+ * True when `next` should replace `current` as the retained record for one
+ * process identity. Safety is the first discriminator (an unresolved process
+ * must stay required evidence); provenance is the second, so the record that
+ * survives carries the strongest available fingerprint.
+ */
+function winsOver(
+  next: { outcome?: KillOutcome; fingerprintSource?: WindowsDescendantFingerprintSource },
+  current: { outcome?: KillOutcome; fingerprintSource?: WindowsDescendantFingerprintSource },
+): boolean {
+  const nextSafe = next.outcome === undefined || next.outcome in SAFE_OUTCOMES;
+  const currentSafe = current.outcome === undefined || current.outcome in SAFE_OUTCOMES;
+  if (nextSafe !== currentSafe) return nextSafe;
+  return provenanceRank(next.fingerprintSource) > provenanceRank(current.fingerprintSource);
+}
+
+function provenanceRank(source: WindowsDescendantFingerprintSource | undefined): number {
+  if (source === "handle") return 2;
+  if (source === "cim") return 1;
+  return 0;
+}
+/**
+ * Spawn a durable residual from one evidence record. The provenance is carried
+ * through verbatim so the reaper's replay can pick the tolerance that matches
+ * how the fingerprint was obtained — an exact compare against a CIM-quantized
+ * creationDate would condemn every legitimate record.
+ */
+function residualFor(
+  candidate: WindowsDescendantOutcome | WindowsDescendantLeftover,
+  base: Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath" | "fingerprintSource">,
+): ResidualRecord {
   return {
     ...base,
     pid: candidate.pid,
     creationDate: candidate.creationDate ?? "",
     commandLine: candidate.commandLine ?? "",
     executablePath: candidate.executablePath ?? "",
+    // Only a handle-derived fingerprint is trustworthy under an exact compare;
+    // anything else (including an unattributed one) is treated as CIM-derived,
+    // which is the stricter, always-safe classification.
+    fingerprintSource: candidate.fingerprintSource === "handle" ? "handle" : "cim",
   };
 }
 
@@ -219,7 +270,7 @@ async function publishRequired(
     agentCommand: options.agentCommand?.() ?? "runtime-worker-orphan",
     generationId: discharge.generationId,
     killAttempts: 0,
-  } satisfies Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath">;
+  } satisfies Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath" | "fingerprintSource">;
   const passes = options.spoolRetryPasses ?? 3;
   for (let pass = 0; pass < passes; pass += 1) {
     const pending = complete.filter((item) => !published.has(evidenceIdentity(item)));
@@ -242,14 +293,14 @@ async function publishRequired(
     }
   }
   // Read-back verification: publication is proven by registry content whose
-  // FULL fingerprint (pid + creationDate + executablePath + commandLine)
-  // matches the required identity — a same-pid record from a different
-  // (reused) process proves nothing.
+  // full process identity (pid + creationDate + commandLine) matches the
+  // required one — a same-pid record from a different (reused) process proves
+  // nothing.
   const records = await registry.readCategory("residuals").catch(() => null);
   if (!records) return false;
   const present = new Set(
     records.flatMap(({ record }) => ("pid" in record && "creationDate" in record
-      ? [evidenceIdentity({ pid: record.pid, creationDate: record.creationDate, commandLine: record.commandLine ?? null, executablePath: record.executablePath ?? null })]
+      ? [evidenceIdentity({ pid: record.pid, creationDate: record.creationDate, commandLine: record.commandLine ?? null })]
       : [])),
   );
   return fullyPublishable && complete.every((item) => present.has(evidenceIdentity(item)));

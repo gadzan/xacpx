@@ -786,8 +786,12 @@ windowsTest("real worker kills a child whose CIM image path differs from the han
   // The junction must exist BEFORE the root spawns its child through it.
   await symlink(dirname(realNode), link, "junction");
   const rootProcess = spawn("node", ["-e", rootScript], { stdio: "ignore", windowsHide: true });
+  // Declared outside try so the finally can reap the junction-launched child
+  // even when a precondition/assertion fails first: the parent's death does not
+  // guarantee this child's exit, and it would otherwise leak an infinite
+  // setInterval onto the runner.
+  let childPid = 0;
   try {
-    let childPid = 0;
     for (let attempt = 0; attempt < 200 && !childPid; attempt += 1) {
       try {
         childPid = Number.parseInt(await readFile(childPidFile, "utf8"), 10) || 0;
@@ -818,8 +822,11 @@ windowsTest("real worker kills a child whose CIM image path differs from the han
     const childCimPath = await cimExecutablePath(childPid);
     expect(childCimPath.toLowerCase()).not.toBe((await handleImagePath(childPid)).toLowerCase());
     // And identity must still report the commandLine — the image-path gate that
-    // used to drop it under a symlinked launcher is gone.
-    expect(childIdentity!.commandLine!.toLowerCase().startsWith(shimExecutable.toLowerCase())).toBe(true);
+    // used to drop it under a symlinked launcher is gone. The first token is the
+    // executable we launched, possibly double-quoted when the path contains a
+    // space, so compare unquoted.
+    const argv0 = childIdentity!.commandLine!.trim().replace(/^"(.*)"$/, "$1");
+    expect(argv0.toLowerCase().startsWith(shimExecutable.toLowerCase())).toBe(true);
 
     const result = await terminateWindowsProcessTree({
       pid: rootProcess.pid!,
@@ -842,6 +849,7 @@ windowsTest("real worker kills a child whose CIM image path differs from the han
       expect(gone).toBe(true);
     }
   } finally {
+    if (childPid) { try { process.kill(childPid, "SIGKILL"); } catch {} }
     try { rootProcess.kill("SIGKILL"); } catch {}
     await rm(dir, { recursive: true, force: true });
   }
@@ -873,8 +881,10 @@ windowsTest("real descendants worker reports the resolved image, not the CIM ali
   ].join("\n");
   await symlink(dirname(realNode), link, "junction");
   const rootProcess = spawn("node", ["-e", rootScript], { stdio: "ignore", windowsHide: true });
+  // Outside try so the finally can reap the junction-launched child even when a
+  // precondition fails first (the parent's death does not guarantee its exit).
+  let childPid = 0;
   try {
-    let childPid = 0;
     for (let attempt = 0; attempt < 200 && !childPid; attempt += 1) {
       try {
         childPid = Number.parseInt(await readFile(childPidFile, "utf8"), 10) || 0;
@@ -916,6 +926,7 @@ windowsTest("real descendants worker reports the resolved image, not the CIM ali
     // The parent survives — this action never kills its root.
     expect(() => process.kill(rootProcess.pid!, 0)).not.toThrow();
   } finally {
+    if (childPid) { try { process.kill(childPid, "SIGKILL"); } catch {} }
     try { rootProcess.kill("SIGKILL"); } catch {}
     await rm(dir, { recursive: true, force: true });
   }
