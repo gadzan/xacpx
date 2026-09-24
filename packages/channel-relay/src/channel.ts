@@ -58,7 +58,7 @@ import {
   isTerminalEventType,
   isTerminalRequestType,
 } from "./terminal-bridge.js";
-import { retireRelayTerminals } from "./terminal/retire-terminals.js";
+import { DesktopTunnelRuntime } from "./desktop/desktop-tunnel-runtime.js";
 import { logTerminalEvent } from "./terminal/terminal-log.js";
 import {
   RMUX_BUNDLED_VERSION,
@@ -126,10 +126,7 @@ export class RelayChannel implements MessageChannelRuntime {
   private control: PublicControlService | null = null;
   private terminal: DefaultRelayTerminalRuntime | null = null;
   private terminalReady = false;
-  private terminalSupervisor: RmuxSidecarSupervisor | null = null;
-  private startLogger: ChannelStartInput["logger"] | undefined;
-  private readonly pendingRetirements = new Set<Promise<void>>();
-  private endpointSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  private desktop: DesktopTunnelRuntime | null = null;
 
   constructor(
     options: Record<string, unknown> | undefined,
@@ -168,6 +165,8 @@ export class RelayChannel implements MessageChannelRuntime {
       this.terminal = null;
       this.terminalReady = false;
     }
+    this.desktop?.closeAll("logout");
+    this.desktop = null;
     await this.stopTerminalSupervisor();
     this.credentials.clear();
   }
@@ -182,7 +181,7 @@ export class RelayChannel implements MessageChannelRuntime {
     this.control = control;
 
     const capabilities = await this.bootstrapTerminal(input);
-
+    if (this.bootstrapDesktop()) capabilities.push(RELAY_CAPABILITIES.desktopRfbV1);
     const bridge = createControlBridge(control, {
       ...(input.trustedConversationPrompt
         ? { trustedConversationPrompt: input.trustedConversationPrompt }
@@ -192,6 +191,10 @@ export class RelayChannel implements MessageChannelRuntime {
       envelope: RelayEnvelope,
       respond: (payload: unknown) => void,
     ) => {
+      if (this.desktop && envelope.type === MSG.desktopPrepare) {
+        void this.desktop.handlePrepare(envelope, respond);
+        return;
+      }
       if (
         this.terminal &&
         this.terminalReady &&
@@ -214,6 +217,7 @@ export class RelayChannel implements MessageChannelRuntime {
       capabilities,
       onRequest,
       onEvent: (envelope) => {
+        if (this.desktop?.handleCancel(envelope)) return;
         if (envelope.type === MSG.instanceRecoveryAck) {
           const ids = (
             envelope.payload as InstanceRecoveryAckPayload | undefined
@@ -257,6 +261,7 @@ export class RelayChannel implements MessageChannelRuntime {
       },
       onDisconnected: () => {
         this.terminal?.detachAllAttachments();
+        this.desktop?.closeAll("control-disconnected");
       },
       logger: input.logger,
       onReady: () => {
@@ -367,6 +372,8 @@ export class RelayChannel implements MessageChannelRuntime {
       this.viewerPublish = null;
     }
     await this.stopTerminalSupervisor();
+    this.desktop?.closeAll("stop");
+    this.desktop = null;
 
     this.client?.stop();
     this.client = null;
@@ -639,6 +646,16 @@ export class RelayChannel implements MessageChannelRuntime {
   /** Test seam */
   getTerminalRuntimeForTests(): RelayTerminalRuntime | null {
     return this.terminal;
+  }
+
+  /** Desktop is config-only: enabled → runtime + `desktop.rfb.v1` capability. */
+  private bootstrapDesktop(): boolean {
+    if (!this.config.desktop.enabled) {
+      this.desktop = null;
+      return false;
+    }
+    this.desktop = new DesktopTunnelRuntime({ config: this.config.desktop, hubUrl: this.config.url });
+    return true;
   }
 
   async sendAgentMessageRoute(payload: {
