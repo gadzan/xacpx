@@ -521,6 +521,28 @@ test("turn events carry exact Conversation/Run/MemberTurn join identity", async 
     .toBe(accepted.memberTurn.id);
 });
 
+test("deleteBot stays fail-closed on controller residue cross-kind to a Direct root", async () => {
+  const { control, state, sessions } = await wire({ autoKick: false });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  state.sessions.controller_direct = {
+    alias: "controller_direct",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:controller_direct",
+    logical_session_id: "11111111-1111-4111-8111-111111111111",
+    created_at: "2026-09-16T12:00:00.000Z",
+    last_used_at: "2026-09-16T12:00:00.000Z",
+    owner: { kind: "group-controller", bindingId: "missing_binding", conversationId, topicId },
+  };
+  await expect(control.deleteBot(bot.id)).rejects.toMatchObject({ code: "bot_in_use" });
+  // Bot root, hidden session, and zero physical release: the cleanup root
+  // survives for the operator instead of orphaning.
+  expect(state.bots[bot.id]).toBeDefined();
+  expect(sessions.getLogicalSessionRecord("controller_direct")?.alias).toBe("controller_direct");
+});
+
 test("deleteBot stays fail-closed while durable ownership exists", async () => {
   const { control } = await wire({ autoKick: false });
   const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });

@@ -211,14 +211,12 @@ export class BotRuntimeManager {
     ) {
       throw this.groupMemberBindingConflict(live.botId, live);
     }
-    const byAlias = this.sessions.getLogicalSessionRecord(live.sessionAlias);
-    const byId = this.sessions.getLogicalSessionById(live.logicalSessionId);
-    if (byAlias || byId) {
+    const { byAlias, byIdMatches } = this.resolveGroupMemberBindingSession(live);
+    if (byAlias || byIdMatches.length > 0) {
       if (
         !byAlias
-        || !byId
-        || byAlias.logical_session_id !== byId.logical_session_id
-        || byAlias.alias !== byId.alias
+        || byIdMatches.length !== 1
+        || byIdMatches[0]?.alias !== byAlias.alias
       ) {
         throw this.groupMemberBindingConflict(live.botId, live);
       }
@@ -311,7 +309,11 @@ export class BotRuntimeManager {
     this.assertGroupMemberStickyIdentity(bot, scope.topic, input.execution);
     const scopedId = createScopedGroupMemberBindingId(scope.conversationId, scope.topicId, bot.id);
     const existing = this.findScopedGroupMemberBinding(scope.conversationId, scope.topicId, bot.id);
-    if (existing && this.groupMemberBindingSessionIsLive(existing)) {
+    if (existing && !this.groupMemberBindingHasAnySession(existing)) {
+      // Fully-missing stale binding (crash between session release and
+      // binding-row delete): skip reuse AND the liveness conflict — publish
+      // repairs the row below after ensure mints the new owned session.
+    } else if (existing && this.groupMemberBindingSessionIsLive(existing)) {
       // Reuse crosses the same commit-time fence as fresh publish: the
       // barrier may have landed after scope resolution (topic deleting, group
       // deleting, bot removed/disabled). Returning a stale binding past the
@@ -708,8 +710,45 @@ export class BotRuntimeManager {
         current,
       );
       const live = this.findScopedGroupMemberBinding(scope.conversationId, scope.topicId, bot.id);
-      if (live && this.groupMemberBindingSessionIsLive(live)) {
-        return live;
+      if (live) {
+        // Re-check the OLD axes inside this critical section (not the
+        // helper, which reads current state): the repair candidate (current)
+        // is the newly-created session, so a helper call here would see the
+        // NEW row on the alias axis and misread a fully-missing old binding
+        // as a mismatch. Missing-both on the old axes + exact new-candidate
+        // ownership below = safe repair; anything else defers to the
+        // unified liveness rule.
+        const oldByAlias = this.sessions.getLogicalSessionRecord(live.sessionAlias);
+        const oldByIdMatches = Object.values(this.state.sessions).filter(
+          (session) => session.logical_session_id === live.logicalSessionId,
+        );
+        const repairingFullyMissingOldSession = (
+          (!oldByAlias || oldByAlias.alias === current.alias)
+          && (oldByIdMatches.length === 0
+            || (oldByIdMatches.length === 1 && oldByIdMatches[0]?.alias === current.alias))
+          && current.alias === session.alias
+          && current.logical_session_id === session.logical_session_id
+        );
+        if (repairingFullyMissingOldSession) {
+          const owner = current.owner;
+          if (
+            owner?.kind !== "group-member"
+            || owner.bindingId !== bindingId
+            || owner.botId !== bot.id
+            || owner.conversationId !== scope.conversationId
+            || owner.topicId !== scope.topicId
+          ) {
+            throw this.groupMemberOwnershipConflict(bot.id, current.alias, bindingId, scope.conversationId, current);
+          }
+          // Safe stale-binding repair (mirrors direct): the old logical id
+          // resolves nowhere, while this exact alias is the newly-created
+          // owned candidate for the same deterministic binding. Fall
+          // through and overwrite the stale row below, preserving createdAt.
+        } else if (this.groupMemberBindingSessionIsLive(live, { allowFullyMissing: true })) {
+          return live;
+        } else {
+          throw this.groupMemberBindingConflict(bot.id, live);
+        }
       }
       const timestamp = this.now().toISOString();
       const binding: BotRuntimeBinding = {
@@ -809,6 +848,7 @@ export class BotRuntimeManager {
     conversationId: string,
     topicId: string,
   ): LogicalSession | undefined {
+    let owned: LogicalSession | undefined;
     for (const session of Object.values(this.state.sessions)) {
       if (session.owner?.kind !== "group-member" || session.owner.bindingId !== bindingId) {
         continue;
@@ -824,31 +864,76 @@ export class BotRuntimeManager {
         throw this.groupMemberOwnershipConflict(botId, session.alias, bindingId, conversationId, session);
       }
       if (ownership === "owned") {
-        return session;
+        if (owned) {
+          throw this.groupMemberOwnershipConflict(botId, session.alias, bindingId, conversationId, session);
+        }
+        owned = session;
       }
     }
-    return undefined;
+    if (!owned) {
+      return undefined;
+    }
+    // The owned hit must also be the unique logical-id holder: a shadow
+    // session sharing the id is ambiguity, not a first-match win.
+    const idHolders = Object.values(this.state.sessions).filter(
+      (session) => session.logical_session_id === owned.logical_session_id,
+    );
+    if (idHolders.length !== 1 || idHolders[0]?.alias !== owned.alias) {
+      throw this.groupMemberOwnershipConflict(botId, owned.alias, bindingId, conversationId, owned);
+    }
+    return owned;
   }
 
-  private groupMemberBindingSessionIsLive(binding: GroupMemberRuntimeBinding): boolean {
-    this.assertGroupMemberBindingIdentity(binding);
-    const byId = this.sessions.getLogicalSessionById(binding.logicalSessionId);
+  /**
+   * Unified binding/session resolver: the single cardinality rule for
+   * reuse, publish, effort-clear release, and teardown. The logical-id axis
+   * is fully scanned (never first-match): missing on both axes is
+   * stale/absent, exactly one same-alias match with an owned link is live,
+   * and anything else (single-axis presence, alias/id disagreement, or a
+   * duplicated logical id) is a conflict with zero release and zero
+   * binding mutation.
+   */
+  private resolveGroupMemberBindingSession(
+    binding: GroupMemberRuntimeBinding,
+  ): { byAlias?: LogicalSession; byIdMatches: LogicalSession[] } {
     const byAlias = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
-    if (!byId && !byAlias) {
-      return false;
+    const byIdMatches = Object.values(this.state.sessions).filter(
+      (session) => session.logical_session_id === binding.logicalSessionId,
+    );
+    return { ...(byAlias ? { byAlias } : {}), byIdMatches };
+  }
+
+  private groupMemberBindingHasAnySession(binding: GroupMemberRuntimeBinding): boolean {
+    return this.sessions.getLogicalSessionRecord(binding.sessionAlias) !== null
+      || this.sessions.getLogicalSessionById(binding.logicalSessionId) !== null;
+  }
+
+  private groupMemberBindingSessionIsLive(
+    binding: GroupMemberRuntimeBinding,
+    options?: { allowFullyMissing?: boolean },
+  ): boolean {
+    this.assertGroupMemberBindingIdentity(binding);
+    const { byAlias, byIdMatches } = this.resolveGroupMemberBindingSession(binding);
+    if (!byAlias && byIdMatches.length === 0) {
+      // Missing on both axes: stale in the reuse path (conflict — the
+      // caller cannot know whether a repair candidate exists yet), but a
+      // legal repair shape in publishGroupMemberRuntime, which has already
+      // verified the newly-created owned candidate for the same binding.
+      if (options?.allowFullyMissing === true) {
+        return false;
+      }
+      throw this.groupMemberBindingConflict(binding.botId, binding);
     }
     if (
-      !byId
-      || !byAlias
-      || byId.logical_session_id !== byAlias.logical_session_id
-      || byId.alias !== byAlias.alias
+      !byAlias
+      || byIdMatches.length !== 1
+      || byIdMatches[0]?.alias !== byAlias.alias
     ) {
       throw this.groupMemberBindingConflict(binding.botId, binding);
     }
     this.assertGroupMemberBindingOwnsSession(binding, byAlias);
     return true;
   }
-
   private async alignGroupMemberSessionRuntime(
     binding: GroupMemberRuntimeBinding,
     bot: { model?: string; effort?: string },

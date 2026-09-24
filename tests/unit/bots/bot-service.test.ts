@@ -488,6 +488,93 @@ test("deleteGroup fails closed while topics, bindings, or durable rows exist", a
   await service.deleteGroup(group.id);
   expect(state.conversations[group.id]).toBeUndefined();
 });
+test("deleteBot stays fail-closed on controller residue cross-kind to a Direct root", async () => {
+  const { service, state } = createService();
+  const bot = await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const { createDirectConversationId, createDirectTopicId } = await import("../../../src/domain/ids");
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  state.sessions.controller_direct = {
+    alias: "controller_direct",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:controller_direct",
+    logical_session_id: "22222222-2222-4222-8222-222222222222",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-controller", bindingId: "missing_binding", conversationId, topicId },
+  };
+  await expect(service.deleteBot(bot.id)).rejects.toMatchObject({ code: "bot_in_use" });
+  // The Bot root and the hidden session both survive: verified Direct
+  // teardown stays available as the recovery path.
+  expect(state.bots[bot.id]).toBeDefined();
+  expect(state.sessions.controller_direct?.alias).toBe("controller_direct");
+});
+
+test("deleteBot stays fail-closed on a controller binding alone", async () => {
+  const { service, state } = createService();
+  const bot = await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const { createDirectConversationId, createDirectTopicId } = await import("../../../src/domain/ids");
+  const conversationId = createDirectConversationId(bot.id);
+  state.bot_runtime_bindings.controller_only = {
+    id: "controller_only",
+    scope: "group-controller",
+    conversationId,
+    topicId: createDirectTopicId(bot.id),
+    logicalSessionId: "33333333-3333-4333-8333-333333333333",
+    sessionAlias: "group:controller-only",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  await expect(service.deleteBot(bot.id)).rejects.toMatchObject({ code: "bot_in_use" });
+  expect(state.bots[bot.id]).toBeDefined();
+  expect(state.bot_runtime_bindings.controller_only).toBeDefined();
+});
+
+test("deleteGroup stays fail-closed on binding-less controller sessions", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  let n = 0;
+  const service = new BotService(
+    {
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    },
+    state,
+    store,
+    { now: () => new Date(NOW), createId: () => `bot_${(n += 1)}` },
+  );
+  const a = await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const b = await service.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const group = await service.createGroup({ title: "Release Team", botIds: [a.id, b.id] });
+  state.conversation_topics.topic_1 = {
+    id: "topic_1",
+    conversationId: group.id,
+    title: "Sprint 1",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  // No binding row: the live topicId alone attributes the partial owner.
+  state.sessions.controller_partial = {
+    alias: "controller_partial",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:controller_partial",
+    logical_session_id: "44444444-4444-4444-8444-444444444444",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-controller", bindingId: "missing_binding", topicId: "topic_1" },
+  };
+  await expect(service.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_topics" });
+  delete state.conversation_topics.topic_1;
+  // Topic row gone: the owner is now unattributable, which still blocks via
+  // the ambiguous gate instead of orphaning silently.
+  await expect(service.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_runtime" });
+  expect(state.conversations[group.id]).toBeDefined();
+  expect(state.sessions.controller_partial?.alias).toBe("controller_partial");
+});
+
 test("group member classifiers prove exact triple ownership and fail closed on mismatch", async () => {
   const { classifyGroupMemberBindingOwnership, classifyGroupMemberSessionOwnership } =
     await import("../../../src/bots/bot-service");

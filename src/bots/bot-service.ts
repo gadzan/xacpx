@@ -449,10 +449,17 @@ export class BotService {
         if (runtime.conversationIds.length > 0 || runtime.bindingIds.length > 0 || runtime.sessionAliases.length > 0) {
           throw new BotError("bot_in_use", `bot "${id}" still has a direct runtime`, runtime);
         }
+        // Provisional controller rows resolving to this Bot's deterministic
+        // Direct root have no release path: deleting the Bot would orphan a
+        // hidden session whose cleanup root (the Bot) is gone — and even
+        // verified Direct teardown could no longer run (getBot fails).
+        const controller = this.controllerResidueForDirectRoot(id);
+        if (controller.bindingIds.length > 0 || controller.sessionAliases.length > 0) {
+          throw new BotError("bot_in_use", `bot "${id}" still has a provisional controller runtime`, controller);
+        }
         // Binding-less group-member crash-window sessions carry no binding
         // row and the session classifier above only recognizes bot-direct
         // owners: a removed member's durable session would otherwise pass
-        // every guard and orphan an owner pointing at a deleted Bot.
         if (this.hasGroupMemberRuntime(id)) {
           throw new BotError("bot_in_use", `bot "${id}" still has a group-member runtime`, {
             conversationIds: [],
@@ -696,6 +703,19 @@ export class BotService {
           sessionAliases: residue.map((session) => session.alias),
         });
       }
+      // Provisional controller rows have no verified release path: any
+      // controller binding (already blocked above when a row exists, kept
+      // here for the code) or controller session resolving to this Group —
+      // exact, binding-resolved, live-topic-linked, or unattributable —
+      // blocks the metadata-only delete like the verified teardown does.
+      const controller = this.controllerResidueForGroup(id);
+      if (controller.bindingIds.length > 0 || controller.sessionAliases.length > 0) {
+        throw new BotError("group_has_runtime", `group "${id}" still has provisional controller runtime`, {
+          conversationId: id,
+          bindingIds: controller.bindingIds,
+          sessionAliases: controller.sessionAliases,
+        });
+      }
       if (this.conversationWork?.hasDurableGroupWork?.(id)) {
         throw new BotError("group_has_work", `group "${id}" still has durable conversation work`, {
           conversationIds: [id],
@@ -904,6 +924,107 @@ export class BotService {
     return Object.values(this.state.bot_runtime_bindings).some(
       (binding) => binding.scope === "group-member" && binding.botId === botId,
     );
+  }
+  /**
+   * Provisional group-controller rows have no release path, so they pin
+   * every root they resolve to. Mirrors the run-service controller fences
+   * without importing the upper layer: BotService is the lower layer, and
+   * these are pure state scans. A controller row is only valid against a
+   * Group root; one resolving to a Bot's deterministic Direct root blocks
+   * deleteBot, and one resolving to a Group blocks metadata-only
+   * deleteGroup. Conversation-exact always fences; conversation-less owners
+   * resolve through a live binding or a live topic row. Unattributable
+   * owners (no conversation, no live binding, no live topic link) fail
+   * every delete closed — deleting any root could strand them.
+   */
+  private controllerResidueForDirectRoot(botId: string): { bindingIds: string[]; sessionAliases: string[] } {
+    const conversationId = createDirectConversationId(botId);
+    const directTopicIds = new Set(
+      Object.values(this.state.conversation_topics)
+        .filter((topic) => topic.conversationId === conversationId)
+        .map((topic) => topic.id),
+    );
+    const bindings = Object.values(this.state.bot_runtime_bindings).filter(
+      (binding) => binding.scope === "group-controller"
+        && (binding.conversationId === conversationId
+          || (binding.topicId !== undefined && directTopicIds.has(binding.topicId))),
+    );
+    const sessions = Object.values(this.state.sessions).filter((session) => {
+      const owner = session.owner;
+      if (owner?.kind !== "group-controller") {
+        return false;
+      }
+      if (owner.conversationId !== undefined) {
+        return owner.conversationId === conversationId;
+      }
+      const bound = owner.bindingId !== undefined
+        ? this.state.bot_runtime_bindings[owner.bindingId]
+        : undefined;
+      if (bound !== undefined) {
+        return bound.conversationId === conversationId
+          || (bound.topicId !== undefined && directTopicIds.has(bound.topicId));
+      }
+      return owner.topicId !== undefined && directTopicIds.has(owner.topicId);
+    });
+    const ambiguous = this.ambiguousControllerSessions();
+    return {
+      bindingIds: bindings.map((binding) => binding.id),
+      sessionAliases: [...sessions.map((session) => session.alias), ...ambiguous.map((session) => session.alias)],
+    };
+  }
+
+  private controllerResidueForGroup(groupId: string): { bindingIds: string[]; sessionAliases: string[] } {
+    const bindings = Object.values(this.state.bot_runtime_bindings).filter(
+      (binding) => binding.scope === "group-controller" && binding.conversationId === groupId,
+    );
+    const groupTopicIds = new Set(
+      Object.values(this.state.conversation_topics)
+        .filter((topic) => topic.conversationId === groupId)
+        .map((topic) => topic.id),
+    );
+    const sessions = Object.values(this.state.sessions).filter((session) => {
+      const owner = session.owner;
+      if (owner?.kind !== "group-controller") {
+        return false;
+      }
+      if (owner.conversationId !== undefined) {
+        return owner.conversationId === groupId;
+      }
+      const bound = owner.bindingId !== undefined
+        ? this.state.bot_runtime_bindings[owner.bindingId]
+        : undefined;
+      if (bound !== undefined) {
+        return bound.conversationId === groupId;
+      }
+      return owner.topicId !== undefined && groupTopicIds.has(owner.topicId);
+    });
+    const ambiguous = this.ambiguousControllerSessions();
+    return {
+      bindingIds: bindings.map((binding) => binding.id),
+      sessionAliases: [...sessions.map((session) => session.alias), ...ambiguous.map((session) => session.alias)],
+    };
+  }
+
+  private ambiguousControllerSessions(): Array<{ alias: string }> {
+    return Object.values(this.state.sessions).filter((session) => {
+      const owner = session.owner;
+      if (owner?.kind !== "group-controller") {
+        return false;
+      }
+      if (owner.conversationId !== undefined) {
+        return false;
+      }
+      const bound = owner.bindingId !== undefined
+        ? this.state.bot_runtime_bindings[owner.bindingId]
+        : undefined;
+      if (bound !== undefined) {
+        return false;
+      }
+      if (owner.topicId === undefined) {
+        return true;
+      }
+      return this.state.conversation_topics[owner.topicId] === undefined;
+    });
   }
 
   /**

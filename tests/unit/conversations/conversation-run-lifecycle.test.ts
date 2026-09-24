@@ -1093,14 +1093,17 @@ test("teardown fails closed on conversation-exact controller owner with stale to
     id: conversationId, kind: "bot", title: bot.name, botIds: [bot.id],
     createdAt: NOW, updatedAt: NOW,
   };
-  for (const topicIdValue of [topicId, "topic_stale_missing"] as const) {
-    const alias = `controller_stale_${topicIdValue.slice(-8)}`;
+  const staleCases = [
+    { topicIdValue: topicId, alias: "controller_stale_synth", logicalId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaa01" },
+    { topicIdValue: "topic_stale_missing", alias: "controller_stale_missing", logicalId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaa02" },
+  ] as const;
+  for (const { topicIdValue, alias, logicalId } of staleCases) {
     first.state.sessions[alias] = {
       alias,
       agent: "codex",
       workspace: "backend",
       transport_session: `backend:${alias}`,
-      logical_session_id: `aaaaaaaa-aaaa-4aaa-aaaa-${topicIdValue.slice(-8).padStart(8, "0")}aaaaaaaa`.slice(0, 36),
+      logical_session_id: logicalId,
       created_at: NOW,
       last_used_at: NOW,
       owner: { kind: "group-controller", bindingId: "missing_binding", conversationId, topicId: topicIdValue },
