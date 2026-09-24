@@ -444,3 +444,48 @@ test("stop() drains a pending form before the callback channel goes away", async
     channel.logout();
   }
 });
+
+test("a mixed-account config does not advertise form support channel-wide", () => {
+  // `elicitationModes` is CHANNEL-scoped — one answer for the whole plugin —
+  // while `requestElicitation` is ACCOUNT-scoped: it resolves the account from
+  // the chatKey and throws when that account has no card listener.
+  //
+  // An account without `cardActions` still starts its WebSocket and still
+  // receives human turns, so `some()` used to advertise form support for a
+  // channel where every request routed to that account cancels. The bridge and
+  // the agent saw a capability the channel could not deliver on at least one of
+  // its live accounts.
+  const withCardActions = new FeishuChannel(
+    {
+      appId: "a", appSecret: "s",
+      accounts: { alpha: { appId: "a", appSecret: "s", cardActions: CARD_ACTIONS } },
+    } as never,
+  );
+  // Every live account can render a form: the capability is truthful.
+  expect(withCardActions.elicitationModes).toEqual(["form"]);
+
+  const mixed = new FeishuChannel(
+    {
+      appId: "a", appSecret: "s",
+      accounts: {
+        alpha: { appId: "a", appSecret: "s", cardActions: CARD_ACTIONS },
+        beta: { appId: "b", appSecret: "s" },
+      },
+    } as never,
+  );
+  // beta receives inbound turns and can never answer a form, so the channel
+  // claims nothing rather than promising what it cannot deliver.
+  expect(mixed.elicitationModes).toEqual([]);
+
+  // Both accounts configured for forms: truthful again.
+  const both = new FeishuChannel(
+    {
+      appId: "a", appSecret: "s",
+      accounts: {
+        alpha: { appId: "a", appSecret: "s", cardActions: CARD_ACTIONS },
+        beta: { appId: "b", appSecret: "s", cardActions: { ...CARD_ACTIONS, port: 9878 } },
+      },
+    } as never,
+  );
+  expect(both.elicitationModes).toEqual(["form"]);
+});

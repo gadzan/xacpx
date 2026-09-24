@@ -120,6 +120,27 @@ interface ActiveTask {
   cardController: StreamingCardController | null;
 }
 
+/**
+ * Live accounts that can receive an inbound human turn but CANNOT render a form.
+ *
+ * `elicitationModes` is CHANNEL-scoped (one answer for the whole plugin) while
+ * `requestElicitation` is ACCOUNT-scoped: it resolves the account from the
+ * chatKey and throws when that account has no card-callback listener. An account
+ * without `cardActions` still starts its WebSocket and still receives messages,
+ * so a mixed configuration would advertise a capability that fails on every
+ * request routed to the account that lacks a listener.
+ *
+ * Returns the accounts that create exactly that gap, so the caller can decide
+ * capability truthfully rather than advertising `some()`.
+ */
+function inboundOnlyAccounts(
+  accounts: readonly FeishuResolvedAccountConfig[],
+): readonly FeishuResolvedAccountConfig[] {
+  return accounts.filter(
+    (account) => account.enabled && account.configured && account.cardActions === undefined,
+  );
+}
+
 export class FeishuChannel implements MessageChannelRuntime {
   readonly id = "feishu";
   /**
@@ -176,9 +197,21 @@ export class FeishuChannel implements MessageChannelRuntime {
     // Declared from CONFIG, not unconditionally: without an account's
     // `cardActions` the card-callback listener never starts and no answer can
     // arrive, so this build cannot render a form.
-    this.elicitationModes = this.config.accounts.some(
-      (account) => account.enabled && account.configured && account.cardActions !== undefined,
-    )
+    //
+    // ALL inbound-capable accounts, not ANY. The plugin contract has no
+    // route-scoped capability — `elicitationModes` is one answer for the whole
+    // channel — so a mixed configuration cannot be described truthfully: an
+    // account without `cardActions` still starts its WebSocket and still
+    // receives human turns, and `requestElicitation` resolves the account from
+    // the chatKey and throws for it. Declaring form support for such a channel
+    // therefore means the bridge and the agent see a capability that fails on
+    // every request routed to the account that lacks a listener.
+    //
+    // So the channel only claims the capability when NO live account is
+    // inbound-only. A mixed configuration declares nothing, which is honest and
+    // still fully usable for messaging.
+    const inboundOnly = inboundOnlyAccounts(this.config.accounts);
+    this.elicitationModes = inboundOnly.length === 0 && this.config.accounts.length > 0
       ? ["form"]
       : [];
     this.dedup = new MessageDedup({ ttlMs: this.config.dedupTtlMs, maxEntries: this.config.dedupMaxEntries });

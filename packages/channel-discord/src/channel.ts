@@ -808,10 +808,27 @@ export class DiscordChannel implements MessageChannelRuntime {
           allowedMentions: { parse: [] },
           ...(isLast ? { components: opening.components } : {}),
         });
-        sent = chunk;
-        if (!isLast) entry.continuationMessageIds.push(chunk.messageId);
+        // Re-check AFTER the await: a request can settle while a chunk is in
+        // flight, and continuing would publish the controls onto an aborted
+        // turn. The guard at the top of the loop alone only catches a settle that
+        // happened between iterations, not during one.
+        if (entry.settled) break;
+        // ONLY the last chunk is a candidate primary. Assigning `sent` for every
+        // chunk meant an abort between two of them left the last SUCCESSFUL
+        // non-final chunk as the primary — the same message id sitting in both
+        // `entry.messageId` and `continuationMessageIds`. The terminal render
+        // then edited that id into a Cancelled card and immediately deleted it
+        // as a continuation, so the only thing the user was left with was gone.
+        if (isLast) sent = chunk;
+        else entry.continuationMessageIds.push(chunk.messageId);
       }
-      if (!sent) throw new Error("elicitation opening card produced no message");
+      // An aborted opening keeps whatever continuations it published and never
+      // claims a primary: the terminal render has no id to edit, and
+      // `discardElicitationContinuations` below removes the fragments instead.
+      if (!sent) {
+        await this.discardElicitationContinuations(entry, runtime).catch(() => {});
+        throw new Error("elicitation opening was aborted before its controls were sent");
+      }
       entry.messageId = sent.messageId;
       // Send race: the request may have settled while the send was in flight,
       // in which case the terminal edit happened before a message id existed.

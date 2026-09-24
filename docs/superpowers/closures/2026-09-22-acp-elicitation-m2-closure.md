@@ -94,7 +94,7 @@ permission and WeChat login paths). Verified identical rather than assumed.
 | Gap | Status |
 |---|---|
 | Field renderers | **closed** (commit `ae49c5a8`): single/multi-select as String Select, boolean as Yes/No Select, number as modal Text Input |
-| Multi-page pagination | each field is its own card; not paginated within a field. Bounded by the 5-button row on the review page (per-field Edit controls are truncated to 2 of 5). |
+| Multi-page pagination | **closed** (this branch): the review page is paginated rather than truncated. An action row holds 5 buttons and Submit/Decline/Cancel take three, so a wide form once showed only the first two per-field Edit controls — field 3+ had no route in at all, and a required field there made Submit unsatisfiable. The row now carries a Prev/Next pair and the page advances by index, so every field is reachable and answerable. |
 | WeChat / other channels | Feishu (M4) not started |
 | Relay Web Conversation integration (M3) | blocked on #350 |
 | **Root typecheck does not cover `packages/`** | found while verifying this work; `tsconfig.json` includes `src/**/*.ts` only. Every package change MUST also run `npx tsc -p packages/<pkg>/tsconfig.json --noEmit`. Not fixed here (repo-wide tsconfig decision, not a Discord-local one). |

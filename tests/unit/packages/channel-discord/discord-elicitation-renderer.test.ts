@@ -2062,3 +2062,73 @@ test("a failed opening send rolls back the chunks it already published", async (
     await channel.stop().catch(() => {});
   }
 });
+
+test("an abort mid-opening does not delete the message it just made terminal", async () => {
+  // The opening loop assigned `sent = chunk` for EVERY chunk, so an abort
+  // between two of them left the last SUCCESSFUL non-final chunk as the primary.
+  // That one message id then sat in BOTH `entry.messageId` and
+  // `continuationMessageIds`, and the terminal render edited it into a Cancelled
+  // card and immediately deleted it as a continuation — the only thing the user
+  // was left with was gone.
+  const client = makeFakeClient();
+  const realSend = client.sendMessage.bind(client);
+  let sends = 0;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  // Hold the SECOND send so the abort lands while the opening is mid-flight.
+  (client as unknown as { sendMessage: unknown }).sendMessage = async (target: never, body: never) => {
+    sends += 1;
+    if (sends === 2) await held;
+    return realSend(target, body);
+  };
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req, abort: reqAbort } = request([
+      { kind: "text", key: "a", title: "A", required: true, maxLength: 4000 },
+    ]);
+    // A long message forces several opening chunks.
+    req.message = "X".repeat(6000);
+    const settled = channel.requestElicitation(req).then(
+      () => "resolved",
+      (e: Error) => e.message,
+    );
+    // Let the first chunk publish and the second park inside sendMessage.
+    await new Promise((r) => setTimeout(r, 15));
+    // Abort while the opening is mid-flight: the loop breaks on the next
+    // iteration with no primary ever claimed. The REQUEST signal is the one the
+    // elicitation subscribes to; the channel signal would only stop the channel.
+    reqAbort.abort();
+    release();
+    const outcome = await Promise.race([
+      settled,
+      new Promise((r) => setTimeout(() => r("timeout"), 500)),
+    ]);
+    expect(String(outcome)).toContain("aborted");
+
+    // Nothing the aborted opening published survives as an orphaned fragment.
+    expect(sends).toBeGreaterThanOrEqual(2);
+    expect(client.deleted.length).toBeGreaterThanOrEqual(1);
+    // The invariant that was broken: a message id is either the primary or a
+    // continuation, never both. With the old assignment the last successful
+    // non-final chunk became the primary AND stayed in the continuation list,
+    // so the terminal render deleted the very card it had just made inert.
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { messageId?: string; continuationMessageIds: string[] }>;
+    }).pendingElicitations;
+    for (const pending of [...store.values()]) {
+      if (!pending.messageId) continue;
+      expect(pending.continuationMessageIds).not.toContain(pending.messageId);
+    }
+    // Whatever was deleted is a continuation, and no pending primary is among
+    // them — the same invariant from the other side.
+    const deletedSet = new Set(client.deleted);
+    for (const pending of [...store.values()]) {
+      if (pending.messageId) expect(deletedSet.has(pending.messageId)).toBe(false);
+    }
+  } finally {
+    release?.();
+    await channel.stop().catch(() => {});
+  }
+});

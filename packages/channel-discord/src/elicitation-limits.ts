@@ -86,6 +86,7 @@ export type ElicitationUnsupportedReason =
   | "text-min-beyond-capture"
   | "text-max-beyond-capture"
   | "text-unbounded"
+  | "pattern-unsupported"
   | "select-option-constraint-unsatisfiable"
   | "empty-select";
 
@@ -112,6 +113,26 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
   for (const field of fields) {
     if (field.kind === "boolean") continue;
 
+    // An agent-supplied `pattern` is preserved by core as DISPLAY metadata and
+    // deliberately never executed — unbounded agent regex is a resource
+    // exhaustion vector. That decision leaves the renderer holding a real schema
+    // constraint it can neither show nor enforce, so a field carrying one is
+    // refused rather than rendered as an unconstrained input: the user would
+    // otherwise type "abc" against `^[A-Z]{3}$`, see the form accepted, and the
+    // agent would receive an answer its own schema rejects.
+    //
+    // Checked FIRST in the loop, before any kind-specific branch, because every
+    // kind below `continue`s past it otherwise — a `single-select` carrying a
+    // pattern would sail through this gate and be offered as a plain dropdown.
+    // The honest reading of a constraint this renderer cannot express is to
+    // decline the form, which is what every other unexpressible condition does.
+    if ("pattern" in field && field.pattern !== undefined) {
+      return {
+        renderable: false,
+        reason: "pattern-unsupported",
+        detail: `field ${JSON.stringify(field.key)} carries a pattern constraint, which this renderer can neither display nor enforce`,
+      };
+    }
     if (field.kind === "single-select" || field.kind === "multi-select") {
       if (field.options.length === 0) {
         return {
@@ -199,7 +220,7 @@ export function checkElicitationRenderability(fields: readonly ChannelElicitatio
       return {
         renderable: false,
         reason: "field-label-too-long",
-         detail: `field ${JSON.stringify(field.key)} label is ${field.title.length} chars, limit ${DISCORD_TEXT_INPUT_LABEL_MAX}`,
+        detail: `field ${JSON.stringify(field.key)} label is ${field.title.length} chars, limit ${DISCORD_TEXT_INPUT_LABEL_MAX}`,
       };
     }
     if ((field.description ?? "").length > 1000) {

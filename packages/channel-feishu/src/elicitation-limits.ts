@@ -104,6 +104,8 @@ export type ElicitationUnsupportedReason =
   | "answer-too-long"
   | "answer-unbounded"
   | "card-too-large"
+  | "pattern-unsupported"
+  | "select-option-description-unsupported"
   | "card-text-too-large"
   | "empty-select"
   | "option-constraint-unsatisfiable"
@@ -276,6 +278,25 @@ export function checkElicitationFieldsRenderability(
     };
   }
   for (const field of fields) {
+    // An agent-supplied `pattern` is preserved by core as DISPLAY metadata and
+    // never executed — unbounded agent regex is a resource-exhaustion vector.
+    // That leaves the renderer holding a real schema constraint it can neither
+    // show nor enforce, so the field is refused rather than rendered
+    // unconstrained: the user would type "abc" against `^[A-Z]{3}$`, see the
+    // form accepted, and the agent would get an answer its own schema rejects.
+    //
+    // Checked FIRST in the loop, before any kind-specific branch, because the
+    // single-select branch below does not fall through — a select carrying a
+    // pattern would otherwise be offered as a plain dropdown. Same contract as
+    // Discord's gate, and the same reasoning as every other unexpressible
+    // condition here: the platform cannot show what was asked, so it says so.
+    if ("pattern" in field && field.pattern !== undefined) {
+      return {
+        renderable: false,
+        reason: "pattern-unsupported",
+        detail: `field ${JSON.stringify(field.key)} carries a pattern constraint, which this renderer can neither display nor enforce`,
+      };
+    }
     // The decisive structural gap: no array-answer control exists.
     if (field.kind === "multi-select" && !FEISHU_MULTI_SELECT_SUPPORTED) {
       return {
@@ -311,6 +332,25 @@ export function checkElicitationFieldsRenderability(
           renderable: false,
           reason: "select-option-label-too-long",
           detail: `field ${JSON.stringify(field.key)} option label is ${widestRaw} chars raw but ${widestLabel} escaped, limit ${FEISHU_TEXT_CONTENT_MAX} escaped`,
+        };
+      }
+      // A `select_static` option carries ONLY `text` and `value`. The contract
+      // preserves `description` on every option, and Discord puts it in the
+      // select where the user can read it before choosing — Feishu's component
+      // has no equivalent surface, so mapping only `{text, value}` silently
+      // dropped it. Two options both labelled "Deploy" with different values
+      // and different descriptions became two indistinguishable rows that
+      // submit different answers, which is the user choosing something other
+      // than what they read.
+      //
+      // Refused rather than dropped: a select whose options cannot be told apart
+      // is not the question the agent asked.
+      const described = field.options.find((option) => option.description !== undefined);
+      if (described) {
+        return {
+          renderable: false,
+          reason: "select-option-description-unsupported",
+          detail: `field ${JSON.stringify(field.key)} option ${JSON.stringify(described.value)} carries a description, and a Feishu select_static option has no surface to show it`,
         };
       }
     }

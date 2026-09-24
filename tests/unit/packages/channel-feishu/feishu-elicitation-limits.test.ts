@@ -542,3 +542,56 @@ test("escaping a high-expansion question is bounded in escaped space", () => {
   // "amp;#60;" to the user.
   expect(rendered).not.toContain("amp;#60;");
 });
+
+test("a field carrying an agent pattern is refused, not rendered unconstrained", () => {
+  // Core preserves `pattern` as DISPLAY metadata and deliberately never executes
+  // it. That leaves the renderer holding a real schema constraint it can neither
+  // show nor enforce: rendered as a plain input, the user types "abc" against
+  // `^[A-Z]{3}$`, the form is accepted, and the agent receives an answer its own
+  // schema rejects. Same for a select, whose options are what they are.
+  for (const fields of [
+    [{ kind: "text" as const, key: "code", title: "Code", required: true, maxLength: 100, pattern: "^[A-Z]{3}$" }],
+    [{
+      kind: "single-select" as const,
+      key: "env",
+      title: "Env",
+      required: true,
+      pattern: "^[a-z]+$",
+      options: [{ value: "prod", label: "Prod" }],
+    }],
+  ]) {
+    const verdict = checkElicitationRenderability(fields);
+    expect(verdict.renderable).toBe(false);
+    expect(verdict.reason).toBe("pattern-unsupported");
+    expect(verdict.detail).toContain("pattern");
+  }
+  // A field without one is unaffected.
+  expect(checkElicitationRenderability([TEXT]).renderable).toBe(true);
+  expect(checkElicitationRenderability([SINGLE]).renderable).toBe(true);
+});
+
+test("a select whose options carry descriptions is refused, not stripped of them", () => {
+  // `select_static` options carry only `text` and `value`, so `description` was
+  // silently dropped. Two options both labelled "Deploy" with values
+  // prod/staging and descriptions "Production"/"Staging" then render as two
+  // indistinguishable rows that submit DIFFERENT answers — the user chooses
+  // something other than what they read.
+  const described = checkElicitationRenderability([
+    {
+      kind: "single-select",
+      key: "target",
+      title: "Target",
+      required: true,
+      options: [
+        { value: "prod", label: "Deploy", description: "Production" },
+        { value: "staging", label: "Deploy", description: "Staging" },
+      ],
+    },
+  ]);
+  expect(described.renderable).toBe(false);
+  expect(described.reason).toBe("select-option-description-unsupported");
+  expect(described.detail).toContain("no surface");
+
+  // A select whose options carry no description is unaffected.
+  expect(checkElicitationRenderability([SINGLE]).renderable).toBe(true);
+});

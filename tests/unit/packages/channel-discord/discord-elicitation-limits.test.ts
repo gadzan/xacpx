@@ -241,3 +241,26 @@ test("a text field with no maxLength is refused, not narrowed to the widget's de
     { kind: "text", key: "note", title: "Note", required: false, maxLength: 4001 },
   ]).reason).toBe("text-max-beyond-capture");
 });
+
+test("a field carrying an agent pattern is refused, not rendered unconstrained", () => {
+  // Core preserves `pattern` as DISPLAY metadata and never executes it. Rendered
+  // as a plain input, the user types "abc" against `^[A-Z]{3}$`, the form is
+  // accepted, and the agent receives an answer its own schema rejects.
+  for (const fields of [
+    [{ kind: "text" as const, key: "code", title: "Code", required: true, maxLength: 4000, pattern: "^[A-Z]{3}$" }],
+    [{
+      kind: "single-select" as const,
+      key: "env",
+      title: "Env",
+      required: true,
+      pattern: "^[a-z]+$",
+      options: [{ value: "prod", label: "Prod" }],
+    }],
+  ]) {
+    const verdict = checkElicitationRenderability(fields);
+    expect(verdict.renderable).toBe(false);
+    expect(verdict.reason).toBe("pattern-unsupported");
+  }
+  expect(checkElicitationRenderability([text("target")]).renderable).toBe(true);
+  expect(checkElicitationRenderability([single("env", 3)]).renderable).toBe(true);
+});

@@ -37,12 +37,19 @@ built the missing channel; Stage 2 built the renderer on top of it.
 `channel.options.accounts.<id>.cardActions`:
 
 - **encryptKey path**: AES-256-CBC, key = `SHA-256(encryptKey)`, IV prepended,
-  NUL padding. A successful decrypt IS the authenticity proof, so no token is
-  needed. Implemented rather than stubbed — the first draft declared the
-  parameter but never checked it.
-- **verificationToken path**: constant-time compare of the echoed token.
-- **Neither configured**: every callback rejected. Fails closed instead of
-  handing out an identity it cannot attribute to Feishu.
+  NUL padding. A successful decrypt IS the authenticity proof. Implemented
+  rather than stubbed — the first draft declared the parameter but never checked
+  it. The same key also signs a new-protocol push (SHA-256), which is the branch
+  every renderer button lands in, because each one carries `schema: "2.0"`.
+- **verificationToken path**: SHA-1 signature over the token, plus a
+  constant-time compare of the echoed token. This is the branch a push with no
+  `schema` and no `encrypt` takes — which includes the URL-verification
+  challenge.
+- **Both are REQUIRED.** Each handshake the endpoint has to complete needs its
+  own secret: without `encryptKey` every click 401s, and without
+  `verificationToken` the endpoint can never finish being configured, because the
+  challenge is read only AFTER the signature verifies. `parseCardActions` refuses
+  a config missing either one.
 - Default bind `127.0.0.1`; a public interface is an explicit operator decision.
 
 Also: the URL-verification challenge is echoed only when it carries a valid
@@ -140,7 +147,7 @@ Same layering as Stage 1, with the same limitation:
 |---|---|
 | Real Feishu platform handshake | **not exercised.** The renderer is proven against an injected transport; a live round trip needs a public HTTPS URL for Feishu's POST, which this deployment does not have (dev machine behind NAT, no public domain, hub has no HTTP-forwarding path to instances). The channel is opt-in and configured for exactly that moment. |
 | Multi-select fields | Refused by design. Feishu cards have no multi-select component; the request cancels rather than being reshaped. |
-| Review-before-submit | Expressed as "your current answer is shown on the field card" rather than a mandatory final page: Feishu's form model submits as a unit and cannot re-open a card for editing after a form submit. This is a platform constraint, disclosed rather than hidden behind a button that does nothing. |
+| Review-before-submit | **closed** (this branch). Feishu's form model cannot re-open a card for editing AFTER a form submit, which is why the field page and the review page use two DIFFERENT actions: the field card's `save` records that field and advances, and only the review page's `submit` settles. Sharing one action made the review depend on mutable `visitedReview` state, so a redelivered or double-tapped `save` reached the commit branch on its second delivery and accepted the form with no click on the review page at all. |
 | WeChat / Yuanbao | Out of scope; form mode remains unsupported there. |
 
 ## Next-milestone readiness
