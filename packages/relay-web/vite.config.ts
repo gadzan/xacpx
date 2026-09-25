@@ -12,6 +12,15 @@ export default defineConfig({
   // probe). es2022 is the first target that permits it; Chrome 89+ (2021)
   // covers every browser the dashboard already requires.
   build: { target: "es2022" },
+  // `build.target` only governs the production bundle. The dev server deps
+  // pre-bundler (esbuild, run as `vite`/`vite dev`, which is what Playwright's
+  // webServer uses) keeps its own default target — chrome87/es2020 — and dies
+  // on the same top-level await with "Top-level await is not available in the
+  // configured target environment (...chrome87, edge88, es2020...)", taking the
+  // whole dev server down. Mirror the build target here so both paths agree.
+  optimizeDeps: {
+    esbuildOptions: { target: "es2022" },
+  },
   server: {
     proxy: {
       "/api": "http://127.0.0.1:8787",
