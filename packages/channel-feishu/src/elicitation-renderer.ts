@@ -53,6 +53,7 @@ import {
   formComponentName,
   isAnswered,
   markSkipped,
+  nextGeneration,
   nextSequence,
   nextUnresolvedFieldKey,
   recordAnswer,
@@ -330,9 +331,12 @@ export class FeishuElicitationRenderer {
       skipped: new Set<string>(),
       currentField: undefined,
       // 1, not 0: generation 0 is what a payload with NO generation decodes to,
-      // so starting at 1 keeps "the first field card" distinguishable from a
-      // control that never carried a generation at all.
+      // so the first revision is distinguishable from a control that never
+      // carried a generation at all.
       renderGeneration: 1,
+      // The allocator starts at the same value, so the first render is handed 2
+      // and 1 remains reserved by the opening card's own generation.
+      renderGenerationCounter: 1,
       settled: false,
       resolve: settle,
       reject: rejectPromise,
@@ -722,41 +726,25 @@ export class FeishuElicitationRenderer {
     if (key === undefined) return;
     const field = entry.request.fields.find((f) => f.key === key);
     if (!field) return;
-    // The generation this drawn card will carry, staged locally and committed to
-    // the entry only once the update has actually LANDED.
+    // ALLOCATED, not derived, and never reclaimed.
     //
-    // Committing before the send is the old behaviour and it is wrong in both
-    // directions. The entry reports generation N+1 while the card on screen is
-    // still generation N, so the user's next interaction with the very card they
-    // are looking at arrives "stale" and is dropped — which turns a transient
-    // CardKit failure into a form the user cannot submit. Conversely, if the
-    // platform APPLIED the card but its acknowledgement was lost, the entry stays
-    // on N and a signed callback from the applied card carries N+1; that is not
-    // an old card but a newer one, and rejecting it on `<` would be wrong too.
-    //
-    // Staging handles both: a failed update leaves the entry and the screen in
-    // agreement (both N), and a genuinely newer signed callback promotes the
-    // entry's generation instead of being refused.
-    // The generation this drawn card will carry, reserved BEFORE the update is
-    // issued so two concurrent renders can never be handed the same number.
-    //
-    // Reserving is also what makes the commit order-independent. With a reserved
-    // generation, the commit is a plain monotonic max: whatever order the
-    // acknowledgements arrive in, the highest drawn generation wins. Without one,
-    // two in-flight renders both compute `current + 1` and the second stamped card
-    // is indistinguishable from the first.
-    //
-    // Nothing is LOST by reserving before the send: if the update fails, the
-    // reservation is rolled back, so the entry and the screen stay in agreement.
-    const nextGeneration = entry.renderGeneration + 1;
-    entry.renderGeneration = nextGeneration;
+    // A generation is a revision ID: two cards sharing one makes the replay fence
+    // unable to tell them apart, which is the only guarantee it has. So the number
+    // comes from a monotonic allocator (`nextGeneration`) rather than from
+    // `entry.renderGeneration + 1`, and it is not returned to the pool when the
+    // update fails — `updateCard()` throwing is not evidence the platform did not
+    // apply the card, exactly the "applied but the acknowledgement was lost" case
+    // this whole scheme has to survive. A failed render therefore leaves a gap,
+    // which costs nothing, instead of reissuing a revision that a live card may
+    // already own.
+    const generation = nextGeneration(entry);
     const card = buildElicitationFieldCard(
       entry.request,
       entry.token,
       field,
       entry.request.fields.indexOf(field) + 1,
       entry.values[field.key],
-      nextGeneration,
+      generation,
     );
     try {
       await this.options.transport.updateCard({
@@ -764,12 +752,13 @@ export class FeishuElicitationRenderer {
         sequence: nextSequence(entry),
         card,
       });
-      // Only now is the drawn generation the one on screen.
+      // The update is confirmed, so this revision is now the newest one known to
+      // be on the platform.
       //
       // MONOTONIC, not a plain assignment. Several `card.update` requests can be
       // in flight at once and their acknowledgements can come back out of order, so
       // a LATE acknowledgement from an earlier render would otherwise assign a
-      // smaller number and walk the entry's generation BACKWARDS. That reopens the
+      // smaller number and walk the known generation BACKWARDS. That reopens the
       // stale-callback fence: a replay the fence had correctly refused stops
       // satisfying `< entry.renderGeneration`, and the old value is written over
       // the newer answer. `platform applied` + `ack was slow` is exactly that —
@@ -779,28 +768,19 @@ export class FeishuElicitationRenderer {
       // This is the local counterpart, and it deliberately does not condition on
       // sequence equality: when a newer update was sent and failed while an older
       // one actually landed, sequence equality would drop a legal commit. The only
-      // requirement is that the generation never moves backwards.
-      entry.renderGeneration = Math.max(entry.renderGeneration, nextGeneration);
+      // requirement is that the known generation never moves backwards.
+      entry.renderGeneration = Math.max(entry.renderGeneration, generation);
       // The render landed, so nothing is owed for this step.
       entry.pendingRender = false;
     } catch (error) {
       // A failed re-render is not a decision: the card stays live and the user
       // can retry, so the request is unsettled and Feishu's own retry applies.
       //
-      // ROLL BACK the reservation. Reserving before the send is what stops two
-      // concurrent renders from being handed the same generation, but an update
-      // that provably did NOT land must give the number back — otherwise every
-      // transient failure strands a generation and widens the gap between what the
-      // entry reports and what the user is looking at.
-      //
-      // Guarded on this render still being the DRAWN one, which is `nextGeneration`
-      // rather than "the entry is exactly one past it": a concurrent render may
-      // have reserved a higher number in the meantime, and taking the number back
-      // in that case would move the entry backwards. Losing a number is cheaper
-      // than un-fencing the card the user is on.
-      if (entry.renderGeneration === nextGeneration) {
-        entry.renderGeneration = nextGeneration - 1;
-      }
+      // NOTHING is rewound here, and that is the point. Not the known generation —
+      // lowering it would re-fence a card the user may still be looking at, since
+      // a thrown update is not proof the card did not land — and not the
+      // allocator, because returning the number to the pool is what would let the
+      // next render be handed a revision a live card already owns.
       this.options.log?.("feishu.elicitation.update_failed", "failed to update elicitation card", {
         requestId: entry.requestId,
         message: error instanceof Error ? error.message : String(error),
@@ -859,29 +839,25 @@ export class FeishuElicitationRenderer {
   private async renderReview(entry: PendingFeishuElicitation): Promise<void> {
     if (!entry.cardId || entry.settled) return;
     const card = buildElicitationReviewCard(entry.request, entry.token, entry.values);
-    // Reserved for the same reason `renderCurrentField` reserves: two concurrent
-    // renders must never be handed the same generation. The review page's controls
-    // (Edit, Submit, Decline, Cancel) are all unversioned, so the reservation only
-    // has to be DISTINCT here — it exists to keep the numbering monotonic for the
-    // field cards that surround it, not to fence the review page itself.
-    const nextGeneration = entry.renderGeneration + 1;
-    entry.renderGeneration = nextGeneration;
+    // Allocated from the same monotonic allocator, for the same reason: a revision
+    // is never reissued. The review page's own controls (Edit, Submit, Decline,
+    // Cancel) are all unversioned, so the number here only has to be DISTINCT —
+    // it exists to keep the numbering unique for the field cards that surround it,
+    // not to fence the review page itself.
+    const generation = nextGeneration(entry);
     try {
       await this.options.transport.updateCard({
         cardId: entry.cardId,
         sequence: nextSequence(entry),
         card,
       });
-      entry.renderGeneration = Math.max(entry.renderGeneration, nextGeneration);
+      entry.renderGeneration = Math.max(entry.renderGeneration, generation);
       // The render landed, so nothing is owed for this step.
       entry.pendingRender = false;
     } catch (error) {
-      // Same rollback as the field card: give the number back only when this
-      // render is still the highest, so a provably-failed update cannot strand a
-      // generation while a later one cannot move the entry backwards.
-      if (entry.renderGeneration === nextGeneration) {
-        entry.renderGeneration = nextGeneration - 1;
-      }
+      // Nothing is rewound, exactly as in the field card: a thrown update is not
+      // proof the card did not land, and returning the revision to the pool would
+      // let a later render own a number a live card may already carry.
       this.options.log?.("feishu.elicitation.update_failed", "failed to render review card", {
         requestId: entry.requestId,
         message: error instanceof Error ? error.message : String(error),

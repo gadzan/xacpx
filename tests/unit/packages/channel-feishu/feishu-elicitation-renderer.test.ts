@@ -1473,11 +1473,38 @@ test("a replayed Skip cannot delete an answer the user gave after it", async () 
   });
 });
 
+test("a save or skip with no generation is refused by the parser", () => {
+  // The revision fence has to be an invariant of the protocol, not a property of
+  // the situation. The builder always stamps a generation onto the two
+  // state-mutating controls, so a payload without one cannot have come from a
+  // card this renderer drew — accepting it would be a way round the fence.
+  expect(parseElicitationAction({ t: "tok", a: "save" })).toBeNull();
+  expect(parseElicitationAction({ t: "tok", a: "skip", f: 0 })).toBeNull();
+  // A malformed generation is the same as a missing one.
+  expect(parseElicitationAction({ t: "tok", a: "save", g: -1 })).toBeNull();
+  expect(parseElicitationAction({ t: "tok", a: "save", g: "1" })).toBeNull();
+  expect(parseElicitationAction({ t: "tok", a: "save", g: 1.5 })).toBeNull();
+  // The non-mutating actions stay unversioned, exactly as the builder draws them.
+  expect(parseElicitationAction({ t: "tok", a: "decline" })).not.toBeNull();
+  expect(parseElicitationAction({ t: "tok", a: "cancel" })).not.toBeNull();
+  expect(parseElicitationAction({ t: "tok", a: "start" })).not.toBeNull();
+  expect(parseElicitationAction({ t: "tok", a: "field", f: 2 })).not.toBeNull();
+  expect(parseElicitationAction({ t: "tok", a: "submit" })).not.toBeNull();
+  // And a well-formed save/skip is still accepted.
+  expect(parseElicitationAction({ t: "tok", a: "save", g: 3 })).toEqual({ token: "tok", action: "save", renderGeneration: 3 });
+  expect(parseElicitationAction({ t: "tok", a: "skip", f: 1, g: 3 })).toEqual({
+    token: "tok",
+    action: "skip",
+    fieldIndex: 1,
+    renderGeneration: 3,
+  });
+});
+
 test("a failed card update leaves the visible card usable, and a lost acknowledgement still works", async () => {
   // The generation must be committed only once the update has LANDED. Committing
   // before the send made the entry report N+1 while the screen still showed N:
   // when `card.update` then failed, the user's next interaction with the card
-  // they were looking at arrived "stale" and was refused \u2014 a transient
+  // they were looking at arrived "stale" and was refused — a transient
   // network error turned into a form nobody could submit.
   const rec = makeRenderer();
   const promise = rec.renderer.requestElicitation(request(ENV_FIELD), "oc_chat").then(
@@ -1489,7 +1516,7 @@ test("a failed card update leaves the visible card usable, and a lost acknowledg
   // Answer the single field, so the form reaches review fully answered.
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: entry.renderGeneration }, formValues: { f0: "staging" } });
   // The review render that save produced is what the user is now looking at, so
-  // the generation is read AFTER it rather than before.
+  // the known generation is read AFTER it rather than before.
   const generationOnScreen = entry.renderGeneration;
   // From here on every render FAILS.
   let failureCount = 0;
@@ -1501,8 +1528,9 @@ test("a failed card update leaves the visible card usable, and a lost acknowledg
   // fails, so the user is still looking at the PREVIOUS card.
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "field", f: 0 }, formValues: {} });
   expect(failureCount).toBe(1);
-  // The failed render's reservation was ROLLED BACK, so the generation still
-  // points at the card on screen and that card's controls are not refused.
+  // A failed update does not lower the known generation — a thrown update is not
+  // proof the card did not reach the platform — so the generation still points at
+  // the card on screen and that card's controls are not refused.
   expect(entry.renderGeneration).toBe(generationOnScreen);
   // Retrying on the very card the user can still see works.
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: generationOnScreen }, formValues: { f0: "prod" } });
@@ -1563,43 +1591,17 @@ test("every state-mutating control the field card draws carries the card's gener
     expect(value.g).toBeUndefined();
   }
 });
-test("a save or skip with no generation is refused by the parser", () => {
-  // The revision fence has to be an invariant of the protocol, not a property of
-  // the situation. The builder always stamps a generation onto the two
-  // state-mutating controls, so a payload without one cannot have come from a
-  // card this renderer drew — accepting it would be a way round the fence.
-  expect(parseElicitationAction({ t: "tok", a: "save" })).toBeNull();
-  expect(parseElicitationAction({ t: "tok", a: "skip", f: 0 })).toBeNull();
-  // A malformed generation is the same as a missing one.
-  expect(parseElicitationAction({ t: "tok", a: "save", g: -1 })).toBeNull();
-  expect(parseElicitationAction({ t: "tok", a: "save", g: "1" })).toBeNull();
-  expect(parseElicitationAction({ t: "tok", a: "save", g: 1.5 })).toBeNull();
-  // The non-mutating actions stay unversioned, exactly as the builder draws them.
-  expect(parseElicitationAction({ t: "tok", a: "decline" })).not.toBeNull();
-  expect(parseElicitationAction({ t: "tok", a: "cancel" })).not.toBeNull();
-  expect(parseElicitationAction({ t: "tok", a: "start" })).not.toBeNull();
-  expect(parseElicitationAction({ t: "tok", a: "field", f: 2 })).not.toBeNull();
-  expect(parseElicitationAction({ t: "tok", a: "submit" })).not.toBeNull();
-  // And a well-formed save/skip is still accepted.
-  expect(parseElicitationAction({ t: "tok", a: "save", g: 3 })).toEqual({ token: "tok", action: "save", renderGeneration: 3 });
-  expect(parseElicitationAction({ t: "tok", a: "skip", f: 1, g: 3 })).toEqual({
-    token: "tok",
-    action: "skip",
-    fieldIndex: 1,
-    renderGeneration: 3,
-  });
-});
+
 test("a delayed acknowledgement for an earlier render cannot regress the generation", async () => {
   // A card update's acknowledgement can be far slower than the ones that follow
-  // it, so a commit on acknowledgement must be monotonic: assigning the number an
-  // EARLIER render was drawn with after the entry has moved on would walk the
-  // generation BACKWARDS, which reopens the stale-callback fence — a replay the
-  // fence had refused stops satisfying `< entry.renderGeneration`, and the old
-  // value overwrites the newer answer.
+  // it, so the known generation must be committed monotonically: acknowledging an
+  // EARLIER render after the entry has moved on must not assign a smaller number
+  // and walk the known generation BACKWARDS, which reopens the stale-callback
+  // fence — a replay the fence had refused stops satisfying
+  // `< entry.renderGeneration`, and the old value overwrites the newer answer.
   //
-  // This holds the first render's acknowledgement open while later renders
-  // complete, then asserts the entry never reports a generation below the highest
-  // one it has drawn.
+  // `nextSequence()` guards the PLATFORM's update ordering; nothing guards the
+  // local one, which is what this pins.
   const rec = makeRenderer();
   const promise = rec.renderer.requestElicitation(request(ENV_FIELD), "oc_chat").then(
     (d) => d,
@@ -1620,16 +1622,18 @@ test("a delayed acknowledgement for an earlier render cannot regress the generat
     return realUpdate(input);
   };
 
-  // Start -> field card. Its acknowledgement is the held one, and the generation
-  // it was drawn with is reserved before the update is even issued.
+  // Start -> field card. Its acknowledgement is the held one.
   const startClick = rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
   await new Promise((resolve) => setTimeout(resolve, 5));
   expect(firstUpdateSeen).toBe(true);
-  const heldCardGeneration = entry.renderGeneration;
+  // The generation the held render was ALLOCATED. Read from the allocator's
+  // high-water mark, not from the known generation, which a held update has not
+  // raised.
+  const heldCardGeneration = entry.renderGenerationCounter;
   expect(heldCardGeneration).toBeGreaterThan(1);
 
-  // Save from that card: the generation the user is actually on, and legitimate
-  // right now. This render's acknowledgement settles normally.
+  // Save from that card: the card it was drawn on, legitimate right now even
+  // though its acknowledgement has not returned.
   const firstSave = { t: token, a: "save", g: heldCardGeneration };
   const saveClick = rec.renderer.handleAction({
     openId: "ou_initiator",
@@ -1637,20 +1641,19 @@ test("a delayed acknowledgement for an earlier render cannot regress the generat
     formValues: { f0: "prod" },
   });
   await new Promise((resolve) => setTimeout(resolve, 5));
-  // The entry has drawn and committed a strictly higher generation while the first
+  // A later render has committed a strictly higher generation while the held
   // acknowledgement is still outstanding.
   expect(entry.renderGeneration).toBeGreaterThan(heldCardGeneration);
   const climbedGeneration = entry.renderGeneration;
 
-  // NOW the held acknowledgement for the FIRST render is released. Its commit runs
-  // with `nextGeneration` equal to the generation that card was drawn with, which
-  // is LOWER than what the entry already holds.
+  // NOW the held acknowledgement for the FIRST render is released. Committing it
+  // would assign the smaller generation that card was drawn with.
   held.shift()!();
   await Promise.all([startClick, saveClick]);
   await new Promise((resolve) => setTimeout(resolve, 5));
 
-  // The generation did not regress below the highest generation drawn. This is the
-  // assertion the non-monotonic commit fails.
+  // The known generation did not regress below the highest one drawn. This is the
+  // assertion a non-monotonic commit fails.
   expect(entry.renderGeneration).toBeGreaterThanOrEqual(climbedGeneration);
   // And the save from the earlier card is therefore still correctly recognised as
   // stale, so `prod` cannot overwrite the answer the user has since given.
@@ -1669,3 +1672,96 @@ test("a delayed acknowledgement for an earlier render cannot regress the generat
     content: { env: "prod" },
   });
 });
+
+test("a card revision is never reissued, even when its update provably failed", async () => {
+  // A generation is a revision ID, and two cards sharing one makes the replay
+  // fence unable to tell them apart — which is the only guarantee it has. So the
+  // allocator is monotonic and never reclaims a number, however the update turned
+  // out: `updateCard()` throwing is not evidence the platform did not apply the
+  // card, which is exactly the "applied but the acknowledgement was lost" case
+  // this scheme has to survive.
+  //
+  // The chain is the reviewer's: reach Review, Edit A (whose update is applied by
+  // the platform but whose acknowledgement is lost), then Edit B from the same
+  // Review. B must be handed a revision no previous render used.
+  const rec = makeRenderer();
+  const promise = rec.renderer.requestElicitation(request(ENV_FIELD), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { entry, token } = await pendingEntry(rec);
+  // Every revision ever allocated, recorded as the allocator hands them out.
+  const allocated: number[] = [];
+  const realUpdate = rec.transport.updateCard.bind(rec.transport);
+  // Armed only around Edit A; every other update completes immediately, so the
+  // wizard is never left waiting on a gate the test has not opened.
+  let ackLost = false;
+  let aRelease!: () => void;
+  const aApplied = new Promise<void>((resolve) => { aRelease = resolve; });
+  (rec.transport as { updateCard: unknown }).updateCard = async (input: never) => {
+    // The revision this render is committing is the allocator's current mark,
+    // because the render allocates before it calls the transport.
+    const revision = entry.renderGenerationCounter;
+    allocated.push(revision);
+    if (!ackLost) return realUpdate(input);
+    // APPLIED by the platform — the remote call happens — and only then is the
+    // local acknowledgement lost. That ordering is the whole point: a naive
+    // "apply then throw" would prove nothing about whether the card exists.
+    const applied = await realUpdate(input);
+    await aApplied;
+    throw new Error("ack lost");
+  };
+
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: entry.renderGeneration }, formValues: { f0: "prod" } });
+  // Now on Review.
+  expect(allocated.length).toBeGreaterThan(0);
+  // Edit A. Its update is applied by the platform, and its acknowledgement is
+  // then lost — so the renderer must learn of the failure by the throw, not by
+  // the card being absent.
+  // Edit A. Its update is applied by the platform, and its acknowledgement is
+  // then lost — so the renderer must learn of the failure by the throw, not by
+  // the card being absent. Armed here, and only here.
+  ackLost = true;
+  const editAClick = rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "field", f: 0 }, formValues: {} });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const revisionA = allocated[allocated.length - 1]!;
+  // Disarmed again, so Edit B and everything after it are not held up.
+  ackLost = false;
+  // Edit B, from the same Review, must NOT be handed revision A again. It has to
+  // get a number no previous render used, however A's update turned out. Fired
+  // without awaiting so A's still-parked acknowledgement cannot serialise it.
+  const editBClick = rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "field", f: 0 }, formValues: {} });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const revisionB = allocated[allocated.length - 1]!;
+  expect(revisionB).toBeGreaterThan(revisionA);
+  // Uniqueness across everything drawn so far.
+  expect(new Set(allocated).size).toBe(allocated.length);
+
+  // Release A's lost acknowledgement, so its render learns the update did not
+  // confirm. Both clicks are then allowed to finish.
+  aRelease();
+  await Promise.allSettled([editAClick, editBClick]);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+
+  // Still no revision reissued after the failure is understood.
+  expect(new Set(allocated).size).toBe(allocated.length);
+  expect(allocated[allocated.length - 1]!).toBeGreaterThan(revisionA);
+  // A's save callback was on a card whose revision B has since superseded, so it
+  // is stale and cannot overwrite what B produced.
+  const staleFromA = await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "save", g: revisionA },
+    formValues: { f0: "old" },
+  });
+  expect(staleFromA.handled).toBe(false);
+  expect(entry.values.env).toBe("prod");
+
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(await promise).toEqual({
+    action: "accept",
+    responderId: "ou_initiator",
+    content: { env: "prod" },
+  });
+});
+

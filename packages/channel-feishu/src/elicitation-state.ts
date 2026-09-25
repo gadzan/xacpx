@@ -54,23 +54,54 @@ export interface PendingFeishuElicitation {
    * "skipped", and made a skipped field un-reanswerable once an answer existed.
    */
   skipped: Set<string>;
-  currentField?: string;
   /**
-   * The generation of the card the user is CURRENTLY looking at.
+   * The generation of the highest card KNOWN to have reached the platform.
    *
-   * Every field render stamps this value into the controls it draws and then
-   * advances it, so the value is "the generation of the card on screen" rather
-   * than "how many renders have happened". A callback carrying an OLDER
-   * generation comes from a card the user has already navigated away from, and
-   * honouring it would let a replayed value overwrite a newer answer: Feishu
-   * retries callbacks, users double-tap, and `submit()` writes to whichever field
-   * the cursor is on — which entering Review does NOT clear, because the review
-   * page needs the cursor to know where an Edit lands.
+   * Every field render stamps the generation it was allocated into the controls
+   * it draws, and this is the value the fence compares against. A callback
+   * carrying an OLDER generation comes from a card the user has already navigated
+   * away from, and honouring it would let a replayed value overwrite a newer
+   * answer: Feishu retries callbacks, users double-tap, and `submit()` writes to
+   * whichever field the cursor is on — which entering Review does NOT clear,
+   * because the review page needs the cursor to know where an Edit lands.
+   *
+   * Raised by an update that succeeded, and by a signed callback carrying a
+   * HIGHER generation (see `renderGenerationCounter`). NEVER lowered, not even by
+   * a failed update: a failure is not evidence the card did not reach the
+   * platform, so lowering it would re-fence a card the user may still be looking
+   * at.
    *
    * Starting at 1, not 0: generation 0 would make the FIRST field card's controls
    * indistinguishable from a payload with no generation at all.
    */
   renderGeneration: number;
+  /**
+   * The allocation high-water mark for card generations.
+   *
+   * Separated from `renderGeneration` because the two answer different questions
+   * and cannot be synthesised into one number. `renderGenerationCounter` answers
+   * "what is the next unused revision", and `renderGeneration` answers "what is
+   * the newest revision known to be on the platform". One render can hold a
+   * number the platform has not confirmed, and a confirmed card can be newer than
+   * the last one this process sent — an acknowledgement can also be lost while
+   * the update landed.
+   *
+   * Monotonic and NEVER reused, on either path. An update that provably failed
+   * leaves a gap in the numbering, which costs nothing; reissuing the same
+   * revision for a different render would make two cards share a revision ID and
+   * destroy the fence's only guarantee. `updateCard()` throwing is not evidence
+   * the platform did not apply the card, so the number cannot be reclaimed.
+   */
+  renderGenerationCounter: number;
+  /**
+   * The field the wizard is currently asking about, or `undefined` before Start.
+   *
+   * Deliberately NOT cleared by entering the review page: an Edit has to know
+   * where to land, and a replayed save arriving in that window has to write to the
+   * field it came from rather than wherever the cursor happens to be. The
+   * generation fence, not cursor hygiene, is what keeps such a replay harmless.
+   */
+  currentField: string | undefined;
   /**
    * Set when a callback advanced the wizard while the opening send was still in
    * flight.
@@ -129,6 +160,24 @@ export function trySettle(entry: PendingFeishuElicitation): boolean {
 export function nextSequence(entry: PendingFeishuElicitation): number {
   entry.sequence += 1;
   return entry.sequence;
+}
+
+/**
+ * Allocate the next card generation.
+ *
+ * A dedicated allocator rather than `entry.renderGeneration + 1` at the call
+ * site, because the ONLY property that matters is uniqueness: a generation is a
+ * revision ID, and two cards sharing one makes the replay fence unable to tell
+ * them apart. The counter therefore never goes back and a number is never
+ * reissued, on any path — including a render whose update provably failed,
+ * because a failure is not evidence the card did not reach the platform.
+ *
+ * Gaps are the accepted cost. A failed render consumes a number that no card
+ * uses, which costs nothing observable; reusing a number would cost correctness.
+ */
+export function nextGeneration(entry: PendingFeishuElicitation): number {
+  entry.renderGenerationCounter += 1;
+  return entry.renderGenerationCounter;
 }
 
 export function firstFieldKey(entry: PendingFeishuElicitation): string | undefined {
