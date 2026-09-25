@@ -4,6 +4,8 @@ import { mount, flushPromises } from "@vue/test-utils";
 
 import DesktopTab from "../components/DesktopTab.vue";
 import { useDesktopStore } from "../stores/desktop";
+import type { DesktopRfbConnectInput, DesktopRfbConnection, NoVncRfb } from "../lib/desktop-client";
+import type { MockedFunction } from "vitest";
 vi.mock("../lib/desktop-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/desktop-client")>();
   return {
@@ -51,19 +53,29 @@ describe("DesktopTab", () => {
 
   it("narrows the tunneled session to outer VncAuth so Tight sub-auth cannot select no-auth", async () => {
     const instances: Array<{ check: (type: number) => boolean }> = [];
-    function FakeRfb(this: unknown) {
+    // Typed as the constructor DesktopRfbConnectInput.loadNoVnc's module expects,
+    // so the object literal below satisfies the input without `as never`, which
+    // would forfeit type-checking at exactly the place it matters (the RFB ctor).
+    const FakeRfb = function FakeRfb(this: unknown) {
       const self = this as { _isSupportedSecurityType: (type: number) => boolean };
       self._isSupportedSecurityType = () => true;
       instances.push({ check: (type: number) => self._isSupportedSecurityType(type) });
-    }
+    } as unknown as new (
+      target: HTMLElement,
+      url: string,
+      options: Record<string, unknown>,
+    ) => NoVncRfb;
     const { connectDesktopRfb: mocked } = await import("../lib/desktop-client");
-    const real = (mocked as unknown as { getMockImplementation?: () => ((input: never) => unknown) }).getMockImplementation?.();
+    // The mock is a passthrough (`input => actual.connectDesktopRfb(input)`), so
+    // read its implementation back to drive the real connect path with a fake
+    // noVNC module. Cast the mock itself, never the call argument.
+    const real = (mocked as unknown as MockedFunction<(input: DesktopRfbConnectInput) => DesktopRfbConnection>).getMockImplementation?.();
     if (!real) throw new Error("connectDesktopRfb mock missing passthrough");
     const conn = real({
       url: "wss://hub/desktop/observe?ticket=t",
       security: "vnc-auth",
-      loadNoVnc: async () => ({ default: FakeRfb as never }),
-    }) as { dispose: () => void };
+      loadNoVnc: async () => ({ default: FakeRfb }),
+    });
     await vi.waitFor(() => expect(instances.length).toBe(1));
     // must accept 2 and reject Tight (16), or the verdict cannot constrain
     // the real connection (sub-auth can select STDVNOAUTH__).

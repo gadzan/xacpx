@@ -16,7 +16,7 @@ export interface DesktopRfbConnection {
   dispose(): void;
 }
 
-interface NoVncRfb {
+export interface NoVncRfb {
   addEventListener(type: string, listener: (event: Record<string, unknown>) => void): void;
   removeEventListener(type: string, listener: (event: Record<string, unknown>) => void): void;
   sendCredentials(password: string): void;
@@ -24,7 +24,7 @@ interface NoVncRfb {
   scaleViewport: boolean;
 }
 
-type NoVncModule = {
+export type NoVncModule = {
   default?: new (target: HTMLElement, url: string, options: Record<string, unknown>) => NoVncRfb;
   RFB?: new (target: HTMLElement, url: string, options: Record<string, unknown>) => NoVncRfb;
 };
