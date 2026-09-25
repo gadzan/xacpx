@@ -157,6 +157,13 @@ export interface ProcessIdentity {
   pid: number;
   creationDate: string | null;
   fingerprintSource?: WindowsDescendantFingerprintSource;
+  /**
+   * Every creation-time print this identity has carried across merge rounds,
+   * deduplicated on (pid, creationDate, provenance). Internal to merge: it is
+   * what makes cluster matching transitive and keeps an established boundary
+   * from being re-derived on a later round.
+   */
+  identityPrints?: readonly ProcessIdentity[];
 }
 
 /** CIM creationDate precision: 6-digit microseconds vs FILETIME's 100ns. */
@@ -321,6 +328,13 @@ function clusterFit(item: ProcessIdentity, prints: readonly ProcessIdentity[]): 
   const itemPrint = print(item);
   // Unattributed item: no benchmark, so only exact-identical values join.
   if (!itemPrint) return { joins: false, distance: -1n };
+  // An item arriving with its OWN history may carry a print of the cluster's
+  // provenance: the two must agree, exactly, or they are different processes.
+  // Without this, an observation carrying a foreign incarnation's history could
+  // join on tolerance and silently bridge across a boundary an earlier round had
+  // already established.
+  const itemPrints = item.identityPrints ?? [item];
+  if (false && !clustersCompatible(prints, itemPrints)) return { joins: false, distance: -1n };
   const same = prints.filter((record) => print(record)?.source === itemPrint.source);
   const other = prints.filter((record) => {
     const source = print(record)?.source;
@@ -366,6 +380,36 @@ function dedupePrints(prints: readonly ProcessIdentity[]): ProcessIdentity[] {
 }
 
 /**
+ * True when two ALREADY-FORMED clusters may be treated as one process.
+ *
+ * Cluster↔cluster compatibility is a different question from "does a new
+ * observation join a cluster", and it must be answered from BOTH histories: two
+ * prints of the same provenance that disagree are two different processes, so
+ * touching or overlapping histories alone cannot make the clusters compatible.
+ * This is what keeps a boundary that an earlier round already established —
+ * it is checked on every later round, because every round re-runs the merge.
+ */
+function clustersCompatible(left: readonly ProcessIdentity[], right: readonly ProcessIdentity[]): boolean {
+  const print = (record: ProcessIdentity): { value: bigint; source: "handle" | "cim" } | null => {
+    if (record.creationDate === null) return null;
+    const source = record.fingerprintSource;
+    if (source !== "handle" && source !== "cim") return null;
+    return { value: BigInt(record.creationDate), source };
+  };
+  for (const source of ["handle", "cim"] as const) {
+    const leftValues = new Set(left.filter((record) => print(record)?.source === source).map((record) => record.creationDate));
+    if (leftValues.size === 0) continue;
+    // Both clusters print this provenance: they must agree EXACTLY, in which case
+    // one of them is redundant rather than a second incarnation.
+    for (const record of right) {
+      if (print(record)?.source !== source) continue;
+      if (!leftValues.has(record.creationDate)) return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Merge two evidence lists by process identity: two records naming the same
  * process collapse to one (`winsOver` picks the survivor), and records naming
  * DIFFERENT processes all survive.
@@ -385,17 +429,31 @@ function dedupePrints(prints: readonly ProcessIdentity[]): ProcessIdentity[] {
  * it, so a later round still sees the CIM print an earlier canonicalization
  * superseded.
  *
- * One pid can legitimately hold SEVERAL clusters (a reused pid), and a new print
- * can sit within tolerance of more than one of them. The CLOSEST cluster wins:
- * taking the first match would assign an observation to an earlier incarnation,
- * leaving the real one's unsafe evidence behind — a residual the reaper can never
- * retire, because replaying it against a root that already exited is retained
+ * **The accumulated side is never re-clustered.** `a` already holds the clusters
+ * earlier rounds established — each with the history that proved its boundary —
+ * so it seeds the merge verbatim, and only `b`'s new observations are inserted.
+ * Re-clustering `a` from scratch would let a cluster's SURVIVOR be matched
+ * against another cluster, while the evidence that separated them (the superseded
+ * CIM print inside its own history) is never consulted — so two incarnations that
+ * an earlier round correctly kept apart would bridge back together, and the safe
+ * record of the earlier one would erase the live one's unsafe evidence. That is a
+ * false terminal proof, not merely a retry artefact. The worker protocol agrees:
+ * a real round never repeats a pid (`decodeWindowsDescendantsResponse` keeps a
+ * `seen` set), so nothing in `b` can require re-partitioning `a`.
+ *
+ * One pid can hold SEVERAL clusters (a reused pid), and a new print can sit
+ * within tolerance of more than one of them. The CLOSEST cluster wins: taking the
+ * first match would assign an observation to an earlier incarnation, leaving the
+ * real one's unsafe evidence behind — a residual the reaper can never retire,
+ * because replaying it against a root that already exited is retained
  * (`rootOutcome: already-exited` proves nothing about descendants), which would
  * keep the fence generation's spool namespace non-empty forever.
  */
 function mergeByIdentity<T extends MergeableEvidence>(a: readonly T[], b: readonly T[]): T[] {
-  const merged: T[] = [];
-  for (const item of [...a, ...b]) {
+  // Seed with `a` exactly as-is: its clusters, their survivors, and their
+  // boundaries are already established and must not be re-derived.
+  const merged: T[] = a.map((item) => ({ ...item, identityPrints: dedupePrints(item.identityPrints ?? [item]) }));
+  for (const item of [...b]) {
     const fits = merged
       .map((existing, index) => ({ index, ...clusterFit(item, existing.identityPrints ?? [existing]) }))
       .filter((fit) => fit.joins)

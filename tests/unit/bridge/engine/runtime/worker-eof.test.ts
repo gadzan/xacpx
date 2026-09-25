@@ -854,6 +854,67 @@ test("merge: an identity's print history does not grow across unbounded converge
   expect(canonicalized.outcomes[0]!.identityPrints).toHaveLength(2);
 });
 
+test("merge: an established cluster boundary survives every later round", () => {
+  // Re-clustering the ACCUMULATED side from scratch would re-derive boundaries
+  // from survivor timestamps alone, ignoring the proof each cluster's own history
+  // carries. Concretely:
+  //   A = P1 [cim 010], safe        B = P2 [cim 020, handle 019], unsafe
+  // B's survivor is handle 019, which is 9 ticks from A's CIM 010 and 1 from its
+  // own CIM 020 — so a survivor-only match would pull B into A, and safe A would
+  // then erase P2's unsafe evidence. That is a false terminal proof: P2 may still
+  // be alive, and a later round that would have spooled its ownership now finds
+  // nothing required for the pid at all.
+  const blocker = (creationDate: string) => ({
+    pid: 6001, parentPid: 5002, creationDate,
+    commandLine: "adapter", executablePath: "C:\\adapter.exe",
+    fingerprintSource: "cim" as const,
+  });
+  let acc = { verified: false, outcomes: [], leftover: [] };
+  // Round 0: P1 safe, CIM 010 + blocker X complete.
+  acc = mergeEvidence(acc, {
+    verified: false,
+    outcomes: [{ pid: 5002, outcome: "already-exited", creationDate: "133801632000000010", commandLine: "old", executablePath: "C:\\old.exe", fingerprintSource: "cim" }],
+    leftover: [blocker("133830000000000000")],
+  });
+  // Round 1: the pid is reused by P2, unsafe, CIM 020.
+  acc = mergeEvidence(acc, {
+    verified: false,
+    outcomes: [{ pid: 5002, outcome: "access-denied", creationDate: "133801632000000020", commandLine: "new", executablePath: "C:\\new.exe", fingerprintSource: "cim" }],
+    leftover: [],
+  });
+  // Round 2: P2 verified through a handle that rounded UP (kernel 019), kill
+  // unconfirmed — so P2 is STILL required evidence.
+  acc = mergeEvidence(acc, {
+    verified: false,
+    outcomes: [{ pid: 5002, outcome: "kill-requested-unconfirmed", creationDate: "133801632000000019", commandLine: "new", executablePath: "C:\\real.exe", fingerprintSource: "handle" }],
+    leftover: [],
+  });
+  // Both incarnations exist, correctly separated.
+  expect(acc.outcomes.filter((item) => item.pid === 5002)).toHaveLength(2);
+  // Round 3: a TOTAL failure contributes nothing new. The accumulated side must
+  // be carried through untouched — this is the round the old code re-clustered.
+  const after = mergeEvidence(acc, { verified: false, outcomes: [], leftover: [] });
+  const records = after.outcomes.filter((item) => item.pid === 5002);
+  expect(records).toHaveLength(2);
+  expect(records.map((item) => item.outcome).sort()).toEqual(["already-exited", "kill-requested-unconfirmed"]);
+  // P2 keeps BOTH its prints: the CIM print that pinned its instant, and the
+  // canonicalized handle value.
+  const p2 = records.find((item) => item.outcome === "kill-requested-unconfirmed")!;
+  expect(p2.creationDate).toBe("133801632000000019");
+  expect(p2.identityPrints!.map((print) => print.creationDate).sort()).toEqual([
+    "133801632000000019",
+    "133801632000000020",
+  ]);
+  const p1 = records.find((item) => item.outcome === "already-exited")!;
+  expect(p1.identityPrints!.map((print) => print.creationDate)).toEqual(["133801632000000010"]);
+  // And an indefinite number of further empty rounds change nothing.
+  for (let round = 0; round < 50; round += 1) {
+    const again = mergeEvidence(after, { verified: false, outcomes: [], leftover: [] });
+    expect(again.outcomes.filter((item) => item.pid === 5002)).toHaveLength(2);
+    expect(again.outcomes.filter((item) => item.outcome === "kill-requested-unconfirmed")).toHaveLength(1);
+  }
+});
+
 test("evidence identity keeps a reused pid separate", () => {
   // Same pid, creation times far apart: a different process that reused the pid.
   // Both must stay required evidence.
@@ -1496,4 +1557,86 @@ test("windows: the same pid reused 18 ticks later must not inherit the earlier i
   const p2 = afterP2.outcomes.filter((item) => item.pid === 5002).find((item) => item.outcome === "access-denied");
   expect(p2).toBeDefined();
   expect(p2!.creationDate).toBe("133801632000000020");
+});
+
+test("windows: a reused pid keeps its ownership through a later total-failure round", async () => {
+  // The convergence-level form of the boundary regression. Round 2 leaves two
+  // same-pid incarnations correctly separated:
+  //   A = P1 [cim 010], already-exited (safe)
+  //   B = P2 [cim 020, handle 019], kill-requested-unconfirmed (REQUIRED)
+  // Round 3 is a TOTAL failure contributing nothing, after which the blocker X
+  // finally becomes publishable. Publication must NOT return "spooled" on X
+  // alone: P2 is alive-unknown and still required, and dropping its evidence
+  // while the earlier incarnation's safe record absorbs it is a false terminal
+  // proof that hands the pid's ownership to a successor.
+  const dir = await mkdtemp(join(tmpdir(), "eof-boundary-rebridge-"));
+  try {
+    const blocker = (creationDate: string) => ({
+      pid: 6001, parentPid: 5002, creationDate,
+      commandLine: "adapter", executablePath: "C:\\adapter.exe",
+      fingerprintSource: "cim" as const,
+    });
+    const rounds: TerminateDescendantsResult[] = [
+      {
+        verified: false,
+        outcomes: [{ pid: 5002, outcome: "already-exited", creationDate: "133801632000000010", commandLine: "old", executablePath: "C:\\old.exe", fingerprintSource: "cim" as const }],
+        // X's CIM row has not published yet: required but UNPUBLISHABLE, so no
+        // round so far can discharge and the loop must keep advancing.
+        leftover: [{ pid: 6001, parentPid: 5002, creationDate: null, commandLine: "adapter", executablePath: "C:\\adapter.exe", fingerprintSource: "cim" as const }],
+      },
+      {
+        verified: false,
+        outcomes: [{ pid: 5002, outcome: "access-denied", creationDate: "133801632000000020", commandLine: "new", executablePath: "C:\\new.exe", fingerprintSource: "cim" as const }],
+        // Still incomplete, and a TOTAL failure contributes nothing — this is the
+        // round the old implementation re-clustered `a` and destroyed the boundary
+        // it had just established, merging P2 into the safe P1 record.
+        leftover: [],
+      },
+      // Only now does X's fingerprint complete: the first round that COULD
+      // publish. Everything the loop has accumulated — including the boundary
+      // between the two incarnations — has to be correct here.
+      {
+        verified: false,
+        outcomes: [],
+        leftover: [blocker("133830000000000000")],
+      },
+      // And the failure repeats, so publication is retried on the same evidence.
+      { verified: false, outcomes: [], leftover: [] },
+    ];
+    let call = 0;
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => {
+        const round = rounds[Math.min(call, rounds.length - 1)]!;
+        call += 1;
+        return round;
+      },
+      maxRounds: 5,
+      roundDelayMs: 1,
+      runtimeDir: dir,
+      agentCommand: () => "codex",
+      generationId: "00000000-0000-4000-8000-000000000001",
+      ownerToken: "00000000-0000-4000-8000-000000000002",
+    });
+
+    const registry = new OrphanRegistry(dir);
+    const residuals = await registry.readCategory("residuals");
+    // P2 stayed required evidence across the failure round, so ownership is NOT
+    // discharged: the worker keeps it and stays alive rather than exiting on half
+    // the truth. A residual file is keyed by pid alone, so P1's and P2's records
+    // for pid 5002 compete for one filename and the read-back can never prove
+    // both — publication is all-or-nothing and fails closed.
+    expect(outcome).toBe("unresolved");
+    // The blocker pid's evidence IS durably written (additive evidence is always
+    // kept); only the pid carrying two identities is withheld.
+    expect(residuals.some((entry) => entry.record.pid === 6001)).toBe(true);
+    // The pid's file names P2's unsafe identity — never the earlier incarnation's
+    // resolved one, which would prove nothing about the process still alive.
+    const forPid = residuals.filter((entry) => entry.record.pid === 5002);
+    expect(forPid).toHaveLength(1);
+    expect(forPid[0]!.record.creationDate).toBe("133801632000000020");
+    expect(forPid[0]!.record.commandLine).toBe("new");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
