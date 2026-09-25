@@ -64,6 +64,10 @@ export interface ConversationRunServiceOptions {
   createTopicId?: () => string;
   stateMutex?: AsyncMutex;
   beforeAcceptPersist?: () => Promise<void>;
+  /** Test-only seam: runs between the archive gate-set probe and gate
+   * acquisition, so tests can deterministically interleave a racing
+   * membership commit. Never wired in production. */
+  beforeArchiveGatesAcquired?: () => Promise<void>;
   beforeTeardownFinalize?: () => Promise<void>;
   afterTeardownMarkedDeleting?: () => Promise<void>;
   autoKick?: boolean;
@@ -87,6 +91,7 @@ export class ConversationRunService {
   private readonly createTopicIdFn: () => string;
   private readonly stateMutex: AsyncMutex;
   private readonly beforeAcceptPersist?: () => Promise<void>;
+  private readonly beforeArchiveGatesAcquired?: () => Promise<void>;
   private readonly beforeTeardownFinalize?: () => Promise<void>;
   private readonly afterTeardownMarkedDeleting?: () => Promise<void>;
   private readonly autoKick: boolean;
@@ -111,6 +116,7 @@ export class ConversationRunService {
     this.createTopicIdFn = options.createTopicId ?? (() => createTopicId());
     this.stateMutex = options.stateMutex ?? new AsyncMutex();
     this.beforeAcceptPersist = options.beforeAcceptPersist;
+    this.beforeArchiveGatesAcquired = options.beforeArchiveGatesAcquired;
     this.beforeTeardownFinalize = options.beforeTeardownFinalize;
     this.afterTeardownMarkedDeleting = options.afterTeardownMarkedDeleting;
     this.autoKick = options.autoKick ?? true;
@@ -488,36 +494,55 @@ export class ConversationRunService {
    */
   async archiveGroupTopic(conversationId: string, topicId: string): Promise<ConversationTopic> {
     this.assertOpen();
-    const botIds = this.groupTopicMemberBotIds(conversationId, topicId);
-    return await this.bots.runLifecycleAll(botIds, async () => {
-      const nonterminal = this.store.listRuns(conversationId, topicId).filter(
-        (run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human",
-      );
-      if (nonterminal.length > 0) {
-        throw new ConversationError(
-          "conversation_not_settled",
-          `topic "${topicId}" has unsettled runs; settle or teardown before archiving`,
-          { runIds: nonterminal.map((run) => run.id) },
-        );
-      }
-      const archived = await this.stateMutex.run(async () => {
-        const topic = this.requireGroupTopic(conversationId, topicId);
-        if (topic.status !== "active") {
-          return topic;
+    // Retry-with-widen (same pattern as updateGroup): the gate set is a
+    // stale probe — a concurrent membership edit can commit after this read,
+    // so re-verify inside the acquired gates. A materializer for a newly
+    // added member must be gated before archive flips the barrier, otherwise
+    // it can persist a binding-less hidden session past the flip. The widen
+    // check ALSO covers a racing updateGroup still holding its own gates:
+    // its target membership (old ∪ new) is part of the live root while it
+    // runs, so archive retries until the edit commits or aborts.
+    for (;;) {
+      const botIds = this.groupTopicMemberBotIds(conversationId, topicId);
+      const gateSet = new Set(botIds);
+      await this.beforeArchiveGatesAcquired?.();
+      const archived = await this.bots.runLifecycleAll(botIds, async () => {
+        const liveIds = this.groupTopicMemberBotIds(conversationId, topicId);
+        if (liveIds.some((id) => !gateSet.has(id))) {
+          return null;
         }
-        const next = structuredClone(this.state);
-        next.conversation_topics[topicId] = {
-          ...topic,
-          status: "archived",
-          updatedAt: this.now().toISOString(),
-        };
-        await this.persist(next);
-        return next.conversation_topics[topicId]!;
+        const nonterminal = this.store.listRuns(conversationId, topicId).filter(
+          (run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human",
+        );
+        if (nonterminal.length > 0) {
+          throw new ConversationError(
+            "conversation_not_settled",
+            `topic "${topicId}" has unsettled runs; settle or teardown before archiving`,
+            { runIds: nonterminal.map((run) => run.id) },
+          );
+        }
+        const flipped = await this.stateMutex.run(async () => {
+          const topic = this.requireGroupTopic(conversationId, topicId);
+          if (topic.status !== "active") {
+            return topic;
+          }
+          const next = structuredClone(this.state);
+          next.conversation_topics[topicId] = {
+            ...topic,
+            status: "archived",
+            updatedAt: this.now().toISOString(),
+          };
+          await this.persist(next);
+          return next.conversation_topics[topicId]!;
+        });
+        return flipped;
       });
-      emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
-      emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: archived });
-      return archived;
-    });
+      if (archived !== null) {
+        emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+        emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: archived });
+        return archived;
+      }
+    }
   }
 
   private requireGroupTopic(conversationId: string, topicId: string): ConversationTopic {

@@ -178,6 +178,7 @@ async function createLifecycle(options: {
   runner?: ConversationTurnRunner;
   hooks?: ConversationDispatcherHooks;
   beforeAcceptPersist?: () => Promise<void>;
+  beforeArchiveGatesAcquired?: () => Promise<void>;
   beforeTeardownFinalize?: () => Promise<void>;
   afterTeardownMarkedDeleting?: () => Promise<void>;
   afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
@@ -265,6 +266,7 @@ async function createLifecycle(options: {
     now: nowFn,
     stateMutex,
     beforeAcceptPersist: options.beforeAcceptPersist,
+    beforeArchiveGatesAcquired: options.beforeArchiveGatesAcquired,
     beforeTeardownFinalize: options.beforeTeardownFinalize,
     afterTeardownMarkedDeleting: options.afterTeardownMarkedDeleting,
     autoKick: options.autoKick ?? false,
@@ -1926,6 +1928,66 @@ test("archive refuses a Topic with nonterminal runs and races safely with materi
     (session) => session.owner?.kind === "group-member" && session.owner.topicId === topic.id,
   );
   expect(owned).toHaveLength(0);
+  first.store.close();
+});
+
+test("archive retries when membership widens mid-gate instead of stranding a late member", async () => {
+  const archiveGate = deferred();
+  const releaseArchive = deferred();
+  let parkArchive = true;
+  const first = await createLifecycle({
+    beforeArchiveGatesAcquired: async () => {
+      if (parkArchive) {
+        parkArchive = false;
+        archiveGate.resolve();
+        await releaseArchive.promise;
+      }
+    },
+  });
+  seedTesterBot(first.state);
+  const botC = "bot_carol";
+  first.state.bots[botC] = {
+    id: botC,
+    name: "Carol",
+    agent: "codex",
+    workspace: "backend",
+    enabled: true,
+    profileRevision: 1,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Archive probes stale [A,B] and parks pre-acquisition. Membership then
+  // commits [A,B,C]. The retry must cover C before flipping the barrier.
+  const archiving = first.service.archiveGroupTopic(group.id, topic.id);
+  await archiveGate.promise;
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID, botC] });
+  // Hold C externally (paused C-materializer stand-in): archive's retry must
+  // block on C's gate before it can flip, so it cannot slip past C.
+  // Real-delay exception: AsyncMutex progress is real event-loop progress,
+  // not a timer under test — a short yield lets the blocked retry attempt
+  // reach C's gate before asserting it has not flipped yet.
+  const cGate = deferred();
+  const extHold = first.bots.runLifecycle(botC, () => cGate.promise);
+  releaseArchive.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(first.state.conversation_topics[topic.id]?.status).toBe("active");
+  cGate.resolve();
+  await extHold;
+  const archived = await archiving;
+  expect(archived.status).toBe("archived");
+  // C materializes only after the barrier: fails closed with no survivor.
+  await expect(first.runtime.getOrCreateGroupMemberSession({
+    botId: botC, conversationId: group.id, topicId: topic.id,
+  })).rejects.toMatchObject({ code: "topic_deleting" });
+  const survivors = Object.values(first.state.sessions).filter(
+    (session) => session.owner?.kind === "group-member" && session.owner.topicId === topic.id,
+  );
+  expect(survivors).toEqual([]);
   first.store.close();
 });
 
