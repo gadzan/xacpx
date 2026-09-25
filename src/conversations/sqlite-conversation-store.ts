@@ -1170,7 +1170,14 @@ export class SqliteConversationStore implements ConversationStore {
       // and future event projection could emit the wrong Run/member join.
       // Zero writes happen on this path either way; the fence keeps the
       // returned join referentially sound.
-      const members = input.outcomes.map((entry) => this.requireMemberTurn(entry.memberTurnId));
+      const seen = new Set<string>();
+      const members = input.outcomes.map((entry) => {
+        if (seen.has(entry.memberTurnId)) {
+          throw new ConversationError("duplicate_member", `cancel batch lists member turn "${entry.memberTurnId}" twice`);
+        }
+        seen.add(entry.memberTurnId);
+        return this.requireMemberTurn(entry.memberTurnId);
+      });
       for (const member of members) {
         if (member.runId !== input.runId) {
           throw new ConversationError("stale_claim", `member turn "${member.id}" does not belong to run "${input.runId}"`);

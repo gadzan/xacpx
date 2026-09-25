@@ -4895,6 +4895,47 @@ test("terminal settleCancelBatch with a foreign member fails closed (no mismatch
   first.store.close();
 });
 
+test("settleCancelBatch rejects a duplicate memberTurnId with zero writes", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const run = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-dupe-member",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: (await import("../../../src/bots/bot-types")).snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  const memberId = run.memberTurns[0]!.id;
+  const before = {
+    messages: first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 50 }).length,
+    consumed: first.store.getRun(run.run.id)!.consumedMemberTurns,
+    state: first.store.getMemberTurn(memberId)?.state,
+    dispatch: first.store.getDispatchForMemberTurn(memberId)?.state,
+  };
+  expect(() => first.store.settleCancelBatch({
+    runId: run.run.id,
+    now: NOW,
+    outcomes: [
+      { memberTurnId: memberId, outcome: "cancelled" },
+      { memberTurnId: memberId, outcome: "cancelled" },
+    ],
+  })).toThrow(/twice/);
+  // Zero member mutation, zero messages, untouched aggregate and dispatch.
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 50 }).length).toBe(before.messages);
+  expect(first.store.getRun(run.run.id)!.consumedMemberTurns).toBe(before.consumed);
+  expect(first.store.getMemberTurn(memberId)?.state).toBe(before.state);
+  expect(first.store.getDispatchForMemberTurn(memberId)?.state).toBe(before.dispatch);
+  first.store.close();
+});
+
 test("activation fails closed on a Direct custom Topic whose row was quarantined", async () => {
   const first = await createLifecycle();
   const bot = first.bots.getBot(BOT_ID);
@@ -5243,6 +5284,88 @@ test("activation fails closed when a persisted Direct root lost its owning Bot a
   expect(detail?.roots).toContainEqual({ conversationId, topicId: customTopicId });
   expect(first.service.isConsumerActivated()).toBe(false);
   expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
+  first.store.close();
+});
+
+test("botless persisted Direct root still fails closed on its cross-kind member, never releases it", async () => {
+  const first = await createLifecycle();
+  const bot = first.bots.getBot(BOT_ID);
+  const { createScopedGroupMemberBindingId, createDirectConversationId } =
+    await import("../../../src/domain/ids");
+  const { parseState } = await import("../../../src/state/state-store");
+  const conversationId = createDirectConversationId(bot.id);
+  const customTopicId = "topic_direct_botless_cross";
+  // Malformed Bot + persisted Direct C/T + canonical cross-kind member:
+  // the kind contradiction survives the Bot quarantine. The sweep must
+  // not read Bot-missing as root-missing and physical-release the evidence.
+  const raw = JSON.parse(JSON.stringify({
+    ...first.state,
+    bots: { ...first.state.bots, [bot.id]: { ...first.state.bots[bot.id], agent: 123 } },
+    conversations: {
+      ...first.state.conversations,
+      [conversationId]: {
+        id: conversationId, kind: "bot", title: bot.name, botIds: [bot.id],
+        createdAt: NOW, updatedAt: NOW,
+      },
+    },
+    conversation_topics: {
+      ...first.state.conversation_topics,
+      [customTopicId]: {
+        id: customTopicId, conversationId, title: "Custom", status: "active",
+        createdAt: NOW, updatedAt: NOW,
+      },
+    },
+    bot_runtime_bindings: first.state.bot_runtime_bindings,
+    sessions: {
+      ...first.state.sessions,
+      cross_botless: {
+        alias: "cross_botless",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:cross_botless",
+        logical_session_id: "dddddddd-dddd-4ddd-addd-dddddddddddd",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: {
+          kind: "group-member",
+          bindingId: createScopedGroupMemberBindingId(conversationId, customTopicId, bot.id),
+          botId: bot.id,
+          conversationId,
+          topicId: customTopicId,
+        },
+      },
+    },
+  }));
+  const dropped: { section: string; key: string; reason: string }[] = [];
+  const reloaded = parseState(raw, "state.json", dropped);
+  expect(reloaded.bots[bot.id]).toBeUndefined();
+  expect(reloaded.conversations[conversationId]?.kind).toBe("bot");
+  expect(reloaded.conversation_topics[customTopicId]?.conversationId).toBe(conversationId);
+  expect(reloaded.sessions.cross_botless?.owner?.kind).toBe("group-member");
+  for (const key of Object.keys(first.state.bots)) {
+    if (!(key in reloaded.bots)) delete first.state.bots[key];
+  }
+  Object.assign(first.state.bots, reloaded.bots);
+  for (const key of Object.keys(first.state.sessions)) {
+    if (!(key in reloaded.sessions)) delete first.state.sessions[key];
+  }
+  Object.assign(first.state.sessions, reloaded.sessions);
+  for (const key of Object.keys(first.state.conversation_topics)) {
+    if (!(key in reloaded.conversation_topics)) delete first.state.conversation_topics[key];
+  }
+  Object.assign(first.state.conversation_topics, reloaded.conversation_topics);
+  for (const key of Object.keys(first.state.conversations)) {
+    if (!(key in reloaded.conversations)) delete first.state.conversations[key];
+  }
+  Object.assign(first.state.conversations, reloaded.conversations);
+  const releasesBefore = first.physical.releaseCalls + first.physical.deleteCalls;
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "ambiguous_group_ownership" });
+  const detail = (error as { details?: { sessions?: { alias: string }[] } }).details;
+  expect(detail?.sessions?.map((entry) => entry.alias)).toContain("cross_botless");
+  expect(first.service.isConsumerActivated()).toBe(false);
+  expect(first.physical.releaseCalls + first.physical.deleteCalls).toBe(releasesBefore);
+  expect(first.sessions.getLogicalSessionRecord("cross_botless")?.owner?.kind).toBe("group-member");
   first.store.close();
 });
 

@@ -1816,8 +1816,11 @@ export class ConversationRunService {
    * roots instead; the operator restores the root or reconciles the work.
    */
   private assertNonterminalWorkHasAuthority(): void {
-    // Same shared classifier as the sweep/ambiguity gates: Group roots need
-    // persisted rows; Direct roots may be persisted or synthetic.
+    // Same shared classifier as the sweep/ambiguity gates. Kind and
+    // authority are separate: persisted-direct-no-authority is still a
+    // Direct-kind root (never sweepable, always a cross-kind contradiction
+    // for group-member owners) but has no executor, so durable work on it
+    // fails activation here before the first claim/requeue loop.
     const unrooted = this.store.listNonterminalRunRoots().filter((root) => {
       const kind = classifyConversationRoot(this.state.conversations, this.state.conversation_topics, this.state.bots, root.conversationId, root.topicId);
       return kind !== "group" && kind !== "persisted-direct" && kind !== "synthetic-direct";
