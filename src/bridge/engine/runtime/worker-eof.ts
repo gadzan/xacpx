@@ -296,12 +296,22 @@ interface MergeableEvidence extends ProcessIdentity {
  *     provider rounds a FILETIME down to microseconds is not a documented
  *     guarantee, so no direction is assumed;
  *   - unattributed prints (explicit "unknown", or an absent field) claim nothing
- *     about quantization and join only on exact equality.
+ *     about quantization and join only on exact equality — including against an
+ *     attributed print of the same value.
+ *
+ * `distance` reports HOW WELL the item fits the cluster, so that a print matching
+ * several incarnations of one pid can be assigned to the closest one instead of
+ * the first.
  */
-function joinsCluster(item: ProcessIdentity, prints: readonly ProcessIdentity[]): boolean {
+function clusterFit(item: ProcessIdentity, prints: readonly ProcessIdentity[]): { joins: boolean; distance: bigint } {
   // Identity is per process: a pid never joins another pid's cluster, whatever
   // the timestamps look like.
-  if (!prints.some((record) => record.pid === item.pid)) return false;
+  if (!prints.some((record) => record.pid === item.pid)) return { joins: false, distance: -1n };
+  // An exactly equal timestamp always joins. One instant prints one value through
+  // any single source, so equality is identity in every attribution pairing —
+  // including an unattributed print meeting an attributed one.
+  const exact = prints.find((record) => record.creationDate === item.creationDate);
+  if (exact) return { joins: true, distance: 0n };
   const print = (record: ProcessIdentity): { value: bigint; source: "handle" | "cim" } | null => {
     if (record.creationDate === null) return null;
     const source = record.fingerprintSource;
@@ -310,18 +320,49 @@ function joinsCluster(item: ProcessIdentity, prints: readonly ProcessIdentity[])
   };
   const itemPrint = print(item);
   // Unattributed item: no benchmark, so only exact-identical values join.
-  if (!itemPrint) return prints.some((record) => record.creationDate === item.creationDate);
+  if (!itemPrint) return { joins: false, distance: -1n };
   const same = prints.filter((record) => print(record)?.source === itemPrint.source);
   const other = prints.filter((record) => {
     const source = print(record)?.source;
     return source !== undefined && source !== itemPrint.source;
   });
-  if (same.length > 0) return same.some((record) => record.creationDate === item.creationDate);
-  const within = (a: bigint, b: bigint): boolean => {
-    const magnitude = (a > b ? a - b : b - a);
-    return magnitude <= CREATION_IDENTITY_TOLERANCE_TICKS;
-  };
-  return other.some((record) => within(BigInt(record.creationDate!), itemPrint.value));
+  if (same.length > 0) {
+    // The cluster already carries this provenance: exact equality only, which the
+    // `exact` scan above already ruled out.
+    return { joins: false, distance: -1n };
+  }
+  const magnitude = (a: bigint, b: bigint): bigint => (a > b ? a - b : b - a);
+  const nearest = other
+    .map((record) => magnitude(BigInt(record.creationDate!), itemPrint.value))
+    .reduce<bigint | null>((best, distance) => (best === null || distance < best ? distance : best), null);
+  if (nearest === null || nearest > CREATION_IDENTITY_TOLERANCE_TICKS) return { joins: false, distance: -1n };
+  // Otherwise this is the cluster's FIRST print of the item's provenance, matched
+  // against the other provenance's benchmark inside the window.
+  return { joins: true, distance: nearest };
+}
+
+/**
+ * A record's deduplicated print history: the same (pid, creationDate,
+ * provenance) observation seen again adds nothing, because a cluster's decision
+ * can only ever use one instance of a value.
+ *
+ * Deduplication is not cosmetic. `convergeOrphansBeforeExit` runs an UNBOUNDED
+ * loop in production (no `maxRounds`, one round every `roundDelayMs`), and a
+ * process that keeps failing convergence re-reports the same observation every
+ * round. Appending without deduplication grows the history linearly with uptime
+ * — and every cluster test scans it — so the comparison cost per round would grow
+ * linearly too, quadratically in total. A legal identity needs at most one print
+ * per provenance plus any unattributed exact ones, so the history is tiny by
+ * construction.
+ */
+function dedupePrints(prints: readonly ProcessIdentity[]): ProcessIdentity[] {
+  const seen = new Set<string>();
+  return prints.filter((record) => {
+    const key = `${record.pid}|${record.creationDate ?? ""}|${record.fingerprintSource ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /**
@@ -343,23 +384,35 @@ function joinsCluster(item: ProcessIdentity, prints: readonly ProcessIdentity[])
  * that merges in inherits the union of both print histories and keeps carrying
  * it, so a later round still sees the CIM print an earlier canonicalization
  * superseded.
+ *
+ * One pid can legitimately hold SEVERAL clusters (a reused pid), and a new print
+ * can sit within tolerance of more than one of them. The CLOSEST cluster wins:
+ * taking the first match would assign an observation to an earlier incarnation,
+ * leaving the real one's unsafe evidence behind — a residual the reaper can never
+ * retire, because replaying it against a root that already exited is retained
+ * (`rootOutcome: already-exited` proves nothing about descendants), which would
+ * keep the fence generation's spool namespace non-empty forever.
  */
 function mergeByIdentity<T extends MergeableEvidence>(a: readonly T[], b: readonly T[]): T[] {
   const merged: T[] = [];
   for (const item of [...a, ...b]) {
-    // Cluster membership is authoritative, and never falls through to the
-    // pairwise relation: the pairwise band is symmetric, so re-opening it would
-    // let a later pid incarnation bridge into the identity through the window.
-    const index = merged.findIndex((existing) => joinsCluster(item, existing.identityPrints ?? [existing]));
-    if (index === -1) {
-      merged.push(item);
+    const fits = merged
+      .map((existing, index) => ({ index, ...clusterFit(item, existing.identityPrints ?? [existing]) }))
+      .filter((fit) => fit.joins)
+      .sort((left, right) => (left.distance < right.distance ? -1 : left.distance > right.distance ? 1 : left.index - right.index))[0];
+    if (fits === undefined) {
+      merged.push({ ...item, identityPrints: dedupePrints([...(item.identityPrints ?? []), item]) } as T);
       continue;
     }
-    const current = merged[index]!;
-    const prints = [...current.identityPrints ?? [current], ...item.identityPrints ?? [item]];
-    // The survivor keeps its own observation, plus both histories deduplicated.
+    const current = merged[fits.index]!;
+    const prints = dedupePrints([
+      ...current.identityPrints ?? [current],
+      ...item.identityPrints ?? [item],
+    ]);
+    // The survivor keeps its own observation, plus the deduplicated union of both
+    // histories so a later round still sees what this one superseded.
     const survivor = (winsOver(item, current) ? item : current) as T;
-    merged[index] = { ...survivor, identityPrints: prints } as T;
+    merged[fits.index] = { ...survivor, identityPrints: prints } as T;
   }
   return merged;
 }

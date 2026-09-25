@@ -758,7 +758,100 @@ test("merge: an unattributed print is never absorbed into a tolerant identity", 
       leftover: [],
     });
     expect(exact.outcomes.filter((item) => item.pid === 5002)).toHaveLength(1);
+
+    // Cross-source EXACT equality still merges too: one instant prints the same
+    // value through either source, so a later attributed observation of the very
+    // same timestamp is the same process. The cluster matcher must honour the
+    // exact-only contract in BOTH directions, not just within one provenance.
+    for (const attributed of ["handle", "cim"] as const) {
+      const cross = mergeEvidence(first, {
+        verified: false,
+        outcomes: [{ pid: 5002, outcome: "access-denied", creationDate: "133801632000000010", commandLine: "a", executablePath: "C:\\a.exe", fingerprintSource: attributed }],
+        leftover: [],
+      });
+      expect(cross.outcomes.filter((item) => item.pid === 5002)).toHaveLength(1);
+      expect(cross.outcomes[0]!.fingerprintSource).toBe(attributed);
+    }
   }
+});
+
+test("merge: a print matching several incarnations of one pid joins the CLOSEST cluster", () => {
+  // Two incarnations of pid 5002 coexist because their CIM prints differ:
+  //   A = P1 [cim ...010], already-exited (safe)
+  //   B = P2 [cim ...020], access-denied (unsafe)
+  // The next observation verifies P2 through a handle, and the provider rounded
+  // UP: kernel ...019, which is 9 ticks from A's print and 1 tick from B's. The
+  // kill must resolve B, NOT A — assigning it to the first matching cluster would
+  // leave P2's unsafe evidence behind, and the reaper retains a residual whose
+  // root is already-exited (that outcome proves nothing about descendants), so
+  // the fence generation's spool namespace would never empty and the fence could
+  // never discharge.
+  let acc = { verified: false, outcomes: [], leftover: [] };
+  const incomplete = [{ pid: 6001, parentPid: 5002, creationDate: null, commandLine: null, executablePath: null }];
+  acc = mergeEvidence(acc, {
+    verified: false,
+    outcomes: [{ pid: 5002, outcome: "already-exited", creationDate: "133801632000000010", commandLine: "old", executablePath: "C:\\old.exe", fingerprintSource: "cim" }],
+    leftover: incomplete,
+  });
+  acc = mergeEvidence(acc, {
+    verified: false,
+    outcomes: [{ pid: 5002, outcome: "access-denied", creationDate: "133801632000000020", commandLine: "new", executablePath: "C:\\new.exe", fingerprintSource: "cim" }],
+    leftover: incomplete,
+  });
+  // Both incarnations exist as separate identities.
+  expect(acc.outcomes.filter((item) => item.pid === 5002)).toHaveLength(2);
+  // P2 verified through a handle whose kernel value rounds UP: ...019.
+  acc = mergeEvidence(acc, {
+    verified: false,
+    outcomes: [{ pid: 5002, outcome: "killed", creationDate: "133801632000000019", commandLine: "new", executablePath: "C:\\real.exe", fingerprintSource: "handle" }],
+    leftover: [],
+  });
+  // P1's already-exited record is untouched; P2's cluster is the one resolved.
+  const records = acc.outcomes.filter((item) => item.pid === 5002);
+  expect(records.map((item) => item.outcome).sort()).toEqual(["already-exited", "killed"]);
+  const p1 = records.find((item) => item.creationDate === "133801632000000010")!;
+  const p2 = records.find((item) => item.outcome === "killed")!;
+  expect(p1.creationDate).toBe("133801632000000010");
+  expect(p2.creationDate).toBe("133801632000000019");
+  expect(p2.fingerprintSource).toBe("handle");
+  // Nothing unsafe is left for this pid, so nothing can be spooled for it.
+  expect(acc.outcomes.filter((item) => item.pid === 5002 && item.outcome !== "killed" && item.outcome !== "already-exited")).toHaveLength(0);
+});
+
+test("merge: an identity's print history does not grow across unbounded convergence rounds", () => {
+  // `convergeOrphansBeforeExit` runs an UNBOUNDED loop in production (no
+  // maxRounds, one round every roundDelayMs), and a process that keeps failing
+  // convergence re-reports the same observation every round. Appending each one
+  // would grow the history linearly with uptime while every cluster test scans it
+  // — quadratic total work, for a loop that is deliberately designed to run
+  // forever while it cannot discharge.
+  let acc = { verified: false, outcomes: [], leftover: [] };
+  const round = (): TerminateDescendantsResult => ({
+    verified: false,
+    outcomes: [{ pid: 5002, outcome: "access-denied", creationDate: "133801632000000010", commandLine: "a", executablePath: "C:\\a.exe", fingerprintSource: "cim" }],
+    leftover: [{ pid: 6001, parentPid: 5002, creationDate: "133830000000000000", commandLine: "b", executablePath: "C:\\b.exe", fingerprintSource: "cim" }],
+  });
+  for (let i = 1; i <= 2_000; i += 1) acc = mergeEvidence(acc, round());
+  // One print per provenance is all a legal identity can ever need.
+  const outcome = acc.outcomes[0]!;
+  const leftover = acc.leftover[0]!;
+  expect(outcome.identityPrints).toHaveLength(1);
+  expect(leftover.identityPrints).toHaveLength(1);
+  // And the evidence itself is unchanged by all that repetition.
+  expect(acc.outcomes).toHaveLength(1);
+  expect(acc.leftover).toHaveLength(1);
+  expect(outcome.executablePath).toBe("C:\\a.exe");
+
+  // Distinct observations still accumulate: a later handle print of the SAME
+  // process joins the cluster and is retained, so the history stays usable.
+  const canonicalized = mergeEvidence(acc, {
+    verified: false,
+    outcomes: [{ pid: 5002, outcome: "killed", creationDate: "133801632000000011", commandLine: "a", executablePath: "C:\\real.exe", fingerprintSource: "handle" }],
+    leftover: [],
+  });
+  expect(canonicalized.outcomes).toHaveLength(1);
+  expect(canonicalized.outcomes[0]!.outcome).toBe("killed");
+  expect(canonicalized.outcomes[0]!.identityPrints).toHaveLength(2);
 });
 
 test("evidence identity keeps a reused pid separate", () => {
