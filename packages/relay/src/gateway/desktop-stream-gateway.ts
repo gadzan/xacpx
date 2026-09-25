@@ -29,6 +29,12 @@ interface PairedSockets {
   security?: DesktopSecurityKind;
 }
 
+/** Pre-consumed connector ticket: identity already validated at upgrade time. */
+export interface DesktopTicketClaim {
+  streamId: string;
+  accountId: string;
+  instanceId: string;
+}
 export interface DesktopStreamGatewayOptions {
   tickets?: DesktopTicketStore;
   streams?: DesktopStreamRegistry;
@@ -64,16 +70,35 @@ export class DesktopStreamGateway {
     return this.streams;
   }
 
-  attachBrowser(ticket: string, socket: DesktopBinarySocket): { ok: true; streamId: string } | { ok: false; reason: string } {
-    const record = this.tickets.consume(ticket, "browser");
+  attachBrowser(ticket: string, socket: DesktopBinarySocket, authenticatedAccountId?: string): { ok: true; streamId: string } | { ok: false; reason: string } {
+    const record = this.tickets.consume(ticket, "browser", authenticatedAccountId);
     if (!record) return this.reject(socket, "unknown-or-reused-ticket");
-    return this.pair(record.streamId, "browser", socket);
+    return this.pair(record, "browser", socket);
   }
 
-  attachConnector(ticket: string, socket: DesktopBinarySocket): { ok: true; streamId: string } | { ok: false; reason: string } {
+  /**
+   * Consume a connector ticket BEFORE the WS handshake completes, returning an
+   * opaque single-use claim. The HTTP-upgrade layer calls this synchronously
+   * on the request line (both merged and dedicated listeners) so a raw TCP
+   * prober that never finishes the handshake still burns the ticket — and a
+   * later connector `open` event then implies hub acceptance of this ticket.
+   */
+  precheckConnectorTicket(ticket: string): { ok: true; claim: DesktopTicketClaim } | { ok: false; reason: string } {
     const record = this.tickets.consume(ticket, "connector");
+    if (!record) return { ok: false, reason: "unknown-or-reused-ticket" };
+    const registryRecord = this.streams.get(record.streamId);
+    if (!registryRecord || registryRecord.state === "closed") return { ok: false, reason: "stream-closed" };
+    if (registryRecord.accountId !== record.accountId || registryRecord.instanceId !== record.instanceId) {
+      return { ok: false, reason: "ticket-identity-mismatch" };
+    }
+    return { ok: true, claim: { streamId: record.streamId, accountId: record.accountId, instanceId: record.instanceId } };
+  }
+
+  attachConnector(ticketOrClaim: string | DesktopTicketClaim, socket: DesktopBinarySocket): { ok: true; streamId: string } | { ok: false; reason: string } {
+    if (typeof ticketOrClaim !== "string") return this.pair(ticketOrClaim, "connector", socket);
+    const record = this.tickets.consume(ticketOrClaim, "connector");
     if (!record) return this.reject(socket, "unknown-or-reused-ticket");
-    return this.pair(record.streamId, "connector", socket);
+    return this.pair(record, "connector", socket);
   }
 
   /** Connector reported its RFB probe outcome; only `vnc-auth` streams go live. */
@@ -109,12 +134,19 @@ export class DesktopStreamGateway {
   }
 
   private pair(
-    streamId: string,
+    record: { streamId: string; accountId: string; instanceId: string },
     side: "browser" | "connector",
     socket: DesktopBinarySocket,
   ): { ok: true; streamId: string } | { ok: false; reason: string } {
-    const record = this.streams.get(streamId);
-    if (!record || record.state === "closed") return this.reject(socket, "stream-closed");
+    const streamId = record.streamId;
+    const registryRecord = this.streams.get(streamId);
+    // Defense in depth: the ticket's account/instance binding must match the
+    // registry's authoritative stream identity. A ticket minted for stream X
+    // must never attach to stream Y, even if both ids are somehow valid.
+    if (!registryRecord || registryRecord.state === "closed") return this.reject(socket, "stream-closed");
+    if (registryRecord.accountId !== record.accountId || registryRecord.instanceId !== record.instanceId) {
+      return this.reject(socket, "ticket-identity-mismatch");
+    }
     const pair = this.paired.get(streamId) ?? {};
     if (pair[side]) return this.reject(socket, "side-already-attached");
     pair[side] = socket;

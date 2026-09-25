@@ -1221,9 +1221,16 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
       if (path === "/desktop/instance") {
         const ticket = desktopTicketFromUrl(req?.url ?? "");
         if (!ticket) { try { socket.close(4403, "missing-ticket"); } catch { /* gone */ } return; }
-        const attached = runtime.desktop.attachConnector(ticket, adaptDesktopSocket(socket));
+        // Consume the connector ticket BEFORE the WS handshake completes: a raw
+        // TCP prober that never finishes the upgrade must still burn the
+        // single-use ticket, and `open` below then implies hub acceptance.
+        const precheck = runtime.desktop.precheckConnectorTicket(ticket);
+        if (!precheck.ok) {
+          try { socket.close(4403, precheck.reason); } catch { /* gone */ } return;
+        }
+        const attached = runtime.desktop.attachConnector(precheck.claim, adaptDesktopSocket(socket));
         if (!attached.ok) {
-          try { socket.close(4403, attached.reason); } catch { /* already gone */ }
+          try { socket.close(4403, attached.reason); } catch { /* gone */ }
         }
         return;
       }
@@ -1292,7 +1299,10 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
       const ticket = desktopTicketFromUrl(req.url ?? "");
       if (!ticket) { socket.destroy(); return; }
       desktopBrowserWss.handleUpgrade(req, socket, head, (ws) => {
-        const attached = runtime.desktop.attachBrowser(ticket, adaptDesktopSocket(ws));
+        // Enforce the ticket's account binding against the upgrade's cookie
+        // identity: account B presenting account A's unconsumed ticket burns
+        // the ticket (single-use consume) and gets 4403, never the stream.
+        const attached = runtime.desktop.attachBrowser(ticket, adaptDesktopSocket(ws), account.id);
         if (!attached.ok) {
           try { ws.close(4403, attached.reason); } catch { /* already gone */ }
         }
@@ -1311,8 +1321,13 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     if (path === "/desktop/instance") {
       const ticket = desktopTicketFromUrl(req.url ?? "");
       if (!ticket) { socket.destroy(); return; }
+      // Same pre-upgrade consume as the dedicated listener: the ticket burns
+      // even if the peer aborts mid-handshake, and connector `open` then
+      // implies the hub already accepted this exact ticket.
+      const precheck = runtime.desktop.precheckConnectorTicket(ticket);
+      if (!precheck.ok) { socket.destroy(); return; }
       desktopConnectorWss.handleUpgrade(req, socket, head, (ws) => {
-        const attached = runtime.desktop.attachConnector(ticket, adaptDesktopSocket(ws));
+        const attached = runtime.desktop.attachConnector(precheck.claim, adaptDesktopSocket(ws));
         if (!attached.ok) {
           try { ws.close(4403, attached.reason); } catch { /* already gone */ }
         }
@@ -1360,6 +1375,7 @@ function adaptDesktopSocket(ws: {
   readonly bufferedAmount: number;
   on(event: "message", listener: (data: unknown, isBinary: boolean) => void): unknown;
   on(event: "close", listener: () => void): unknown;
+  on(event: "error", listener: (err: unknown) => void): unknown;
 }): {
   send(data: Uint8Array): void;
   close(code?: number, reason?: string): void;
@@ -1367,6 +1383,11 @@ function adaptDesktopSocket(ws: {
   on(event: "message", listener: (data: unknown, isBinary: boolean) => void): unknown;
   on(event: "close", listener: () => void): unknown;
 } {
+  // The `ws` client AND server sockets emit 'error' (bare ErrorEvent) before
+  // 'close' on every abnormal shutdown. Without a persistent error listener
+  // Node throws, which under `bun test` fails the entire file even when the
+  // close path is fully handled.
+  ws.on("error", () => {});
   return ws;
 }
 

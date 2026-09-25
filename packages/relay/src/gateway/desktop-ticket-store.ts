@@ -79,13 +79,19 @@ export class DesktopTicketStore {
     return record;
   }
 
-  /** Consume a ticket: single-use, side/expiry-checked. Returns the record or null. */
-  consume(ticket: string, side: DesktopTicketSide): DesktopTicket | null {
+  /**
+   * Consume a ticket: single-use, side/expiry/account-checked. The ticket is
+   * ALWAYS consumed (deleted) on first presentation — even when the account
+   * or side mismatches — so a cross-account probe burns the ticket instead of
+   * leaving it usable by its rightful owner afterwards.
+   */
+  consume(ticket: string, side: DesktopTicketSide, accountId?: string): DesktopTicket | null {
     const record = this.tickets.get(ticket);
     if (!record) return null;
     this.tickets.delete(ticket);
     if (record.side !== side) return null;
     if (record.expiresAt <= this.now()) return null;
+    if (accountId !== undefined && record.accountId !== accountId) return null;
     return record;
   }
 

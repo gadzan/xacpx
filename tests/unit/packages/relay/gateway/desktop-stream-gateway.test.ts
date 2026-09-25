@@ -82,6 +82,43 @@ test("second stream for the same instance is busy; close frees the slot", () => 
   expect(streams.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 }).ok).toBe(true);
 });
 
+test("cross-account browser ticket is consumed and rejected", () => {
+  const { tickets, streams, gateway } = setup();
+  const reserved = streams.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
+  expect(reserved.ok).toBe(true);
+  if (!reserved.ok) return;
+  const bt = tickets.mintTicket({ streamId: reserved.record.streamId, accountId: "a1", instanceId: "i1", side: "browser" });
+  // Account B presents A's ticket with its own valid session: must fail, and
+  // the probe burns the ticket so A's later retry also fails (fail closed).
+  const attacker = new FakeBinarySocket();
+  expect(gateway.attachBrowser(bt.ticket, attacker as unknown as DesktopBinarySocket, "b2").ok).toBe(false);
+  expect(attacker.closed).toBe(true);
+  const owner = new FakeBinarySocket();
+  expect(gateway.attachBrowser(bt.ticket, owner as unknown as DesktopBinarySocket, "a1").ok).toBe(false);
+  expect(owner.closed).toBe(true);
+  // No socket paired: the stream is still reserved, never hijacked.
+  expect(streams.get(reserved.record.streamId)?.state).toBe("preparing");
+});
+
+test("precheck consumes the connector ticket before the handshake completes", () => {
+  const { tickets, streams, gateway } = setup();
+  const reserved = streams.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
+  expect(reserved.ok).toBe(true);
+  if (!reserved.ok) return;
+  const ct = tickets.mintTicket({ streamId: reserved.record.streamId, accountId: "a1", instanceId: "i1", side: "connector" });
+  // Upgrade layer consumes first: a raw TCP prober that aborts mid-handshake
+  // still burns the single-use ticket.
+  const precheck = gateway.precheckConnectorTicket(ct.ticket);
+  expect(precheck.ok).toBe(true);
+  if (!precheck.ok) return;
+  expect(tickets.size()).toBe(0);
+  // A second presentation (replay or racing dial) fails even before pairing.
+  expect(gateway.precheckConnectorTicket(ct.ticket)).toEqual({ ok: false, reason: "unknown-or-reused-ticket" });
+  // The claim pairs without re-consuming.
+  const connector = new FakeBinarySocket();
+  expect(gateway.attachConnector(precheck.claim, connector as unknown as DesktopBinarySocket).ok).toBe(true);
+});
+
 test("ticket reuse and text/oversize frames fail closed", () => {
   const { tickets, streams, gateway } = setup();
   const reserved = streams.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });

@@ -10,10 +10,23 @@ import {
 import { startRelayServer } from "../../packages/relay/src/server";
 import { DesktopTunnelRuntime } from "../../packages/channel-relay/src/desktop/desktop-tunnel-runtime";
 
-function fakeRfbServer(bytes: Uint8Array): Promise<{ server: Server; port: number }> {
+/**
+ * Spec-compliant fake RFB server: writes the banner, WAITS for the 12-byte
+ * client ProtocolVersion, then sends the SecurityTypes. The old helper wrote
+ * banner+security eagerly, which masked the probe's missing client-version
+ * write (both sides would deadlock against a real TigerVNC/TightVNC).
+ */
+function fakeRfbServer(banner: Uint8Array, security: Uint8Array): Promise<{ server: Server; port: number }> {
   const { promise, resolve } = Promise.withResolvers<{ server: Server; port: number }>();
   const server = createServer((socket) => {
-    socket.write(Buffer.from(bytes));
+    socket.write(Buffer.from(banner));
+    let buffered = Buffer.alloc(0);
+    socket.on("data", (chunk: Buffer) => {
+      buffered = Buffer.concat([buffered, chunk]);
+      if (buffered.length >= 12) {
+        socket.write(Buffer.from(security));
+      }
+    });
   });
   server.listen(0, "127.0.0.1", () => {
     resolve({ server, port: (server.address() as { port: number }).port });
@@ -25,7 +38,15 @@ function openSocket(url: string, headers?: Record<string, string>): Promise<WebS
   const { promise, resolve, reject } = Promise.withResolvers<WebSocket>();
   const ws = new WebSocket(url, headers ? { headers } : undefined);
   const timer = setTimeout(() => reject(new Error(`open timeout for ${url}`)), 5000);
+  // A hub-side 4403 (unknown/reused/cross-account ticket) arrives as an
+  // upgrade failure: surface it as a rejection, never an unhandled error.
+  // `close` alone is not wired here: the caller's `sockets` cleanup closes
+  // every opened socket, and a failed upgrade never opens.
   ws.on("open", () => { clearTimeout(timer); resolve(ws); });
+  ws.on("unexpected-response", (_req, res) => {
+    clearTimeout(timer);
+    reject(new Error(`unexpected upgrade response ${res.statusCode} for ${url}`));
+  });
   ws.on("error", (err) => { clearTimeout(timer); reject(err); });
   return promise;
 }
@@ -33,8 +54,20 @@ function openSocket(url: string, headers?: Record<string, string>): Promise<WebS
 function nextBinary(ws: WebSocket): Promise<Buffer> {
   const { promise, resolve, reject } = Promise.withResolvers<Buffer>();
   const timer = setTimeout(() => reject(new Error("binary frame timeout")), 5000);
+  // A persistent 'error' swallow: without ANY error listener a socket-level
+  // error becomes an unhandled 'error' event that fails the whole bun file.
+  // (Bun attributes it to the file, not to the awaiting promise.)
+  ws.on("error", () => {});
   ws.on("message", (data) => { clearTimeout(timer); resolve(Buffer.from(data as Uint8Array)); });
   return promise;
+}
+// Every constructed socket gets a persistent error swallow at construction
+// time, so late hub-side closes (4403 rejects, stream shutdowns) can never
+// surface as unhandled 'error' events, no matter which await has settled.
+function trackSocket(sockets: WebSocket[], ws: WebSocket): WebSocket {
+  ws.on("error", () => {});
+  sockets.push(ws);
+  return ws;
 }
 
 test("desktop hard-gate: probe verdict plus hub binary pipe on an independent connection", async () => {
@@ -54,13 +87,17 @@ test("desktop hard-gate: probe verdict plus hub binary pipe on an independent co
     expect(cookie.length).toBeGreaterThan(0);
 
     // Fake loopback RFB server speaking VncAuth; the real connector probe runs here.
-    const handshake = Uint8Array.from([82, 70, 66, 32, 48, 48, 51, 46, 48, 48, 56, 10, 1, 2]);
-    ({ server: rfb } = await fakeRfbServer(handshake));
+    const banner = Uint8Array.from([82, 70, 66, 32, 48, 48, 51, 46, 48, 48, 56, 10]);
+    const security = Uint8Array.from([1, 2]);
+    ({ server: rfb } = await fakeRfbServer(banner, security));
     const port = (rfb.address() as { port: number }).port;
     const tunnel = new DesktopTunnelRuntime({
       config: { enabled: true, backend: "rfb", port, connectTimeoutMs: 2000, maxStreams: 1 },
       hubUrl: `ws://127.0.0.1:${relay.httpPort}`,
     });
+    // Unknown hub ticket: prepare must FAIL (no false-success) because the
+    // connector data plane can never attach — the hub socket open is awaited
+    // inside openTunnel before respond().
     let prepared: unknown;
     await tunnel.handlePrepare({
       protocolVersion: 1,
@@ -69,10 +106,10 @@ test("desktop hard-gate: probe verdict plus hub binary pipe on an independent co
       type: MSG.desktopPrepare,
       payload: { streamId: "hardgate-1", ticket: "unused-here", expiresAt: Date.now() + 60_000 },
     }, (p) => { prepared = p; });
-    // The probe verdict gates the tunnel before any socket opens; the unknown
-    // hub ticket then closes the outbound binary socket without a response.
-    expect(prepared).toMatchObject({ streamId: "hardgate-1", security: "vnc-auth" });
+    expect(prepared).toMatchObject({ error: { code: "desktop-stream-timeout" } });
+    expect(tunnel.activeStreamId).toBeNull();
     tunnel.closeAll();
+
 
     // End-to-end through the real hub broker: reserve + tickets + binary pipe.
     // Account cap path shares the same atomic reservation: fill 8 sibling
@@ -84,7 +121,10 @@ test("desktop hard-gate: probe verdict plus hub binary pipe on an independent co
     }
     const capped = relay.runtime.desktop.streamRegistry.reserve({ accountId: account.id, instanceId: "i-hardgate", ttlMs: 60_000 });
     expect(capped).toEqual({ ok: false, code: "desktop-busy", scope: "account" });
+    // Free TWO sibling slots: one for the main stream, one for the
+    // cross-account victim stream below (account cap is 8 total).
     relay.runtime.desktop.streamRegistry.closeForInstance("i-sibling-0");
+    relay.runtime.desktop.streamRegistry.closeForInstance("i-sibling-1");
     const reserved = relay.runtime.desktop.streamRegistry.reserve({ accountId: account.id, instanceId: "i-hardgate", ttlMs: 60_000 });
     expect(reserved.ok).toBe(true);
     if (!reserved.ok) return;
@@ -97,17 +137,19 @@ test("desktop hard-gate: probe verdict plus hub binary pipe on an independent co
     });
     expect(relay.runtime.desktop.reportConnectorReady(streamId, "vnc-auth")).toBe(true);
 
+
     const connectorWs = await openSocket(`ws://127.0.0.1:${relay.httpPort}/desktop/instance?ticket=${connectorTicket.ticket}`);
-    sockets.push(connectorWs);
+
+    trackSocket(sockets, connectorWs);
     const browserWs = await openSocket(
       `ws://127.0.0.1:${relay.httpPort}/desktop/observe?ticket=${browserTicket.ticket}`,
       { cookie },
     );
-    sockets.push(browserWs);
+    trackSocket(sockets, browserWs);
 
     // Control plane stays usable while the binary pair is up (separate connection).
     const controlWs = await openSocket(`ws://127.0.0.1:${relay.httpPort}/ws`, { cookie });
-    sockets.push(controlWs);
+    trackSocket(sockets, controlWs);
     controlWs.send(encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: [] })));
 
     const serverBytes = Uint8Array.from([82, 70, 66, 32, 48, 48, 51, 46, 48, 48, 56, 10, 0, 0, 0, 2]);
@@ -122,15 +164,60 @@ test("desktop hard-gate: probe verdict plus hub binary pipe on an independent co
 
     // Single-use tickets: reuse closes with 4403 instead of pairing.
     const reuse = new WebSocket(`ws://127.0.0.1:${relay.httpPort}/desktop/observe?ticket=${browserTicket.ticket}`, { headers: { cookie } });
+    trackSocket(sockets, reuse);
     const reuseCode = await new Promise<number>((resolve) => {
       reuse.on("close", (code: number) => resolve(code));
       reuse.on("error", () => {});
     });
     expect(reuseCode).toBe(4403);
+
+    // Pre-upgrade consume is covered at unit level
+    // (desktop-stream-gateway.test.ts): precheck consumes at upgrade-request
+    // time, before any handshake bytes flow. Inline here it would exceed the
+    // account cap filled above (8 siblings), so it lives there, not here.
+
+    // Cross-account ticket theft: B's valid session cookie + A's unconsumed
+    // ticket must NOT attach — the probe burns the ticket and B gets 4403,
+    // then A's legitimate retry with the same ticket also fails.
+    const victim = relay.runtime.desktop.streamRegistry.reserve({ accountId: account.id, instanceId: "i-victim", ttlMs: 60_000 });
+    expect(victim.ok).toBe(true);
+    if (!victim.ok) return;
+    const victimTicket = relay.runtime.desktop.ticketStore.mintTicket({
+      streamId: victim.record.streamId, accountId: account.id, instanceId: "i-victim", side: "browser",
+    });
+    const attackerAccount = relay.runtime.accounts.createAccount("attacker");
+    const { token: attackerLogin } = relay.runtime.accounts.createLoginToken(attackerAccount.id);
+    const attackerLoginRes = await fetch(`${base}/api/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: attackerLogin }),
+    });
+    const attackerCookie = attackerLoginRes.headers.get("set-cookie")?.split(";")[0] ?? "";
+    expect(attackerCookie.length).toBeGreaterThan(0);
+    const theft = new WebSocket(`ws://127.0.0.1:${relay.httpPort}/desktop/observe?ticket=${victimTicket.ticket}`, { headers: { cookie: attackerCookie } });
+    trackSocket(sockets, theft);
+    const theftCode = await new Promise<number>((resolve) => {
+      theft.on("close", (code: number) => resolve(code));
+      theft.on("error", () => {});
+    });
+    expect(theftCode).toBe(4403);
+    const ownerRetry = new WebSocket(`ws://127.0.0.1:${relay.httpPort}/desktop/observe?ticket=${victimTicket.ticket}`, { headers: { cookie } });
+    trackSocket(sockets, ownerRetry);
+    const ownerRetryCode = await new Promise<number>((resolve) => {
+      ownerRetry.on("close", (code: number) => resolve(code));
+      ownerRetry.on("error", () => {});
+    });
+    expect(ownerRetryCode).toBe(4403);
   } finally {
     for (const ws of sockets) {
       try { ws.close(); } catch { /* gone */ }
     }
+    // Let hub-side close frames land (and their error+close pairs fire while
+    // listeners still exist) before tearing down the relay: otherwise a late
+    // 4403 error can surface after the file's last await. Real-timer wait is
+    // intentional here — this is an integration test asserting actual socket
+    // teardown ordering, not a debounce/throttle duration.
+    await new Promise((r) => setTimeout(r, 250));
     rfb?.close();
     await relay.close();
   }
