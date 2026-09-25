@@ -6,7 +6,7 @@ import { WebSocketServer } from "ws";
 import {
   DESKTOP_TICKET_TTL_MS,
   DESKTOP_WS_MAX_PAYLOAD_BYTES,
-  MAX_TOOL_STEPS, MSG, REASONING_CAP, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP,
+  MAX_DESKTOP_TICKET_LENGTH,
   type AgentCommandDto, type ControlEventDto, type ConversationTurnCorrelationDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceRecoveryAckPayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
   type InstanceStateSnapshotDto, type ScheduledOriginDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
   validControlEvent, validInstanceStateSync,
@@ -1384,8 +1384,18 @@ export function desktopTicketFromUrl(url: string): string | null {
     const idx = part.indexOf("=");
     if (idx === -1) continue;
     if (part.slice(0, idx) !== "ticket") continue;
-    const ticket = decodeURIComponent(part.slice(idx + 1));
-    return ticket.length > 0 ? ticket : null;
+    // Fail closed on malformed percent-encoding: /desktop/instance is
+    // reachable without authentication, so a request like `?ticket=%` must
+    // reject as missing-ticket, never throw synchronously out of the
+    // upgrade/connection handler (remote-triggerable process DoS).
+    let ticket: string;
+    try {
+      ticket = decodeURIComponent(part.slice(idx + 1));
+    } catch {
+      return null;
+    }
+    if (ticket.length === 0 || ticket.length > MAX_DESKTOP_TICKET_LENGTH) return null;
+    return ticket;
   }
   return null;
 }

@@ -57,8 +57,14 @@ describe("DesktopTab", () => {
     // so the object literal below satisfies the input without `as never`, which
     // would forfeit type-checking at exactly the place it matters (the RFB ctor).
     const FakeRfb = function FakeRfb(this: unknown) {
-      const self = this as { _isSupportedSecurityType: (type: number) => boolean };
+      const self = this as unknown as {
+        _isSupportedSecurityType: (type: number) => boolean;
+        _negotiateAuthentication: () => boolean;
+        _fail: (details: string) => boolean;
+      };
       self._isSupportedSecurityType = () => true;
+      self._negotiateAuthentication = () => true;
+      self._fail = () => false;
       instances.push({ check: (type: number) => self._isSupportedSecurityType(type) });
     } as unknown as new (
       target: HTMLElement,
@@ -131,6 +137,96 @@ describe("DesktopTab", () => {
       expect(rfb._negotiateAuthentication()).toBe(false);
       expect(rfb._failReason).toMatch(/only outer VncAuth is allowed/);
     }
+    conn.dispose();
+  });
+
+  it("wires the full credentials lifecycle: required event, password send, and dispose", async () => {
+    // Regression: the narrowing patch once dropped `rfb = rfbInstance`, so
+    // no listener ever registered, credentialsrequired never reached the
+    // store, sendCredentials was a no-op, and dispose never disconnected.
+    interface FakeRfbShape {
+      listeners: Map<string, Array<(event: Record<string, unknown>) => void>>;
+      credentialsSent: string[];
+      disconnected: boolean;
+      scaleViewport: boolean;
+    }
+    const instances: FakeRfbShape[] = [];
+    const FakeRfb = function FakeRfb(this: unknown) {
+      const self = this as unknown as FakeRfbShape & NoVncRfb & {
+        _isSupportedSecurityType: (type: number) => boolean;
+        _negotiateAuthentication: () => boolean;
+        _fail: (details: string) => boolean;
+      };
+      const shape: FakeRfbShape = { listeners: new Map(), credentialsSent: [], disconnected: false, scaleViewport: false };
+      instances.push(shape);
+      self._isSupportedSecurityType = () => true;
+      self._negotiateAuthentication = () => true;
+      self._fail = () => false;
+      self.addEventListener = (type: string, listener: (event: Record<string, unknown>) => void) => {
+        const list = shape.listeners.get(type) ?? [];
+        list.push(listener);
+        shape.listeners.set(type, list);
+      };
+      self.removeEventListener = () => {};
+      self.sendCredentials = (password: string) => { shape.credentialsSent.push(password); };
+      self.disconnect = () => { shape.disconnected = true; };
+      self.scaleViewport = false;
+    } as unknown as new (
+      target: HTMLElement,
+      url: string,
+      options: Record<string, unknown>,
+    ) => NoVncRfb;
+    const { connectDesktopRfb: mocked } = await import("../lib/desktop-client");
+    const real = (mocked as unknown as MockedFunction<(input: DesktopRfbConnectInput) => DesktopRfbConnection>).getMockImplementation?.();
+    if (!real) throw new Error("connectDesktopRfb mock missing passthrough");
+    let credentialPrompts = 0;
+    const conn = real({
+      url: "wss://hub/desktop/observe?ticket=t",
+      security: "vnc-auth",
+      hooks: { onCredentialsRequired: () => { credentialPrompts += 1; } },
+      loadNoVnc: async () => ({ default: FakeRfb }),
+    });
+    await vi.waitFor(() => expect(instances.length).toBe(1));
+    const shape = instances[0];
+    if (!shape) throw new Error("no tunneled session captured");
+    // All four lifecycle listeners must reach the live instance.
+    for (const type of ["connect", "disconnect", "credentialsrequired", "securityfailure"]) {
+      expect(shape.listeners.get(type)?.length ?? 0).toBe(1);
+    }
+    // credentialsrequired flows to the hook; the password flows back in.
+    for (const listener of shape.listeners.get("credentialsrequired") ?? []) listener({});
+    expect(credentialPrompts).toBe(1);
+    conn.sendCredentials("s3cret");
+    expect(shape.credentialsSent).toEqual(["s3cret"]);
+    conn.setScaleViewport(false);
+    conn.dispose();
+    expect(shape.disconnected).toBe(true);
+  });
+
+  it("fails closed when noVNC internals drift instead of connecting unconstrained", async () => {
+    // P2 hardening: the auth narrowing depends on noVNC 1.7.0 private hooks
+    // (_isSupportedSecurityType/_negotiateAuthentication/_fail). If a future
+    // upgrade removes them, the session must surface securityfailure, never
+    // connect with an unconstrained handshake.
+    function FakeRfb(this: unknown) {
+      // No private hooks at all: simulates a noVNC version that renamed them.
+    }
+    const { connectDesktopRfb: mocked } = await import("../lib/desktop-client");
+    const real = (mocked as unknown as MockedFunction<(input: DesktopRfbConnectInput) => DesktopRfbConnection>).getMockImplementation?.();
+    if (!real) throw new Error("connectDesktopRfb mock missing passthrough");
+    let failure: string | undefined;
+    const conn = real({
+      url: "wss://hub/desktop/observe?ticket=t",
+      security: "vnc-auth",
+      hooks: { onSecurityFailure: (reason: string) => { failure = reason; } },
+      loadNoVnc: async () => ({ default: FakeRfb as unknown as new (
+        target: HTMLElement,
+        url: string,
+        options: Record<string, unknown>,
+      ) => NoVncRfb }),
+    });
+    await vi.waitFor(() => expect(failure).toBeDefined());
+    expect(failure).toMatch(/auth guard unavailable/);
     conn.dispose();
   });
 });

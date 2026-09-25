@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createServer, type Server } from "node:net";
+import { createServer, connect as netConnect, type Server } from "node:net";
 import { WebSocket } from "ws";
 
 import {
@@ -252,15 +252,44 @@ test("desktop hard-gate: probe verdict plus hub binary pipe on an independent co
       ownerRetry.on("error", () => {});
     });
     expect(ownerRetryCode).toBe(4403);
+
+    // Malformed percent-encoding must fail closed without throwing: the
+    // connector plane is reachable without authentication, so `?ticket=%`
+    // must reject as missing-ticket and leave the hub serving later requests.
+    const { desktopTicketFromUrl } = await import("../../packages/relay/src/server");
+    expect(() => desktopTicketFromUrl("/desktop/instance?ticket=%")).not.toThrow();
+    expect(desktopTicketFromUrl("/desktop/instance?ticket=%")).toBeNull();
+    expect(desktopTicketFromUrl(`/desktop/instance?ticket=${"x".repeat(129)}`)).toBeNull();
+    const malformedRaw = await new Promise<{ status: number; alive: boolean }>((resolve) => {
+      const sock = netConnect(relay.httpPort, "127.0.0.1", () => {
+        // Raw HTTP upgrade with an undecodable ticket: no ws client would send
+        // this (it would encode first), so hand-roll the bytes.
+        sock.write(
+          "GET /desktop/instance?ticket=% HTTP/1.1\r\n" +
+          `Host: 127.0.0.1:${relay.httpPort}\r\n` +
+          "Upgrade: websocket\r\n" +
+          "Connection: Upgrade\r\n" +
+          "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+          "Sec-WebSocket-Version: 13\r\n\r\n",
+        );
+      });
+      let buf = "";
+      sock.on("close", async () => {
+        // Hub must still serve afterwards: failed upgrade leaves no residue.
+        // /api/version is auth-gated; any HTTP response (here 401) proves the
+        // event loop survived the malformed upgrade (a throw would kill it).
+        const res = await fetch(`${base}/api/version`).catch(() => null);
+        resolve({ status: buf.includes("101") ? 101 : 0, alive: res !== null && res.status === 401 });
+        sock.destroy();
+      });
+      setTimeout(() => { sock.destroy(); }, 5000).unref?.();
+    });
+    expect(malformedRaw.status).toBe(0);
+    expect(malformedRaw.alive).toBe(true);
   } finally {
     for (const ws of sockets) {
       try { ws.close(); } catch { /* gone */ }
     }
-    // Let hub-side close frames land (and their error+close pairs fire while
-    // listeners still exist) before tearing down the relay: otherwise a late
-    // 4403 error can surface after the file's last await. Real-timer wait is
-    // intentional here — this is an integration test asserting actual socket
-    // teardown ordering, not a debounce/throttle duration.
     await new Promise((r) => setTimeout(r, 250));
     rfb?.close();
     await relay.close();

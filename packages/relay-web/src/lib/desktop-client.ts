@@ -92,27 +92,39 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
         _fail?: (details: string) => boolean;
         _rfbAuthScheme?: number;
       };
-      const base = narrow._isSupportedSecurityType?.bind(rfbInstance);
+      // Hard dependency on noVNC 1.7.0 internals: if a future upgrade renames
+      // or removes these hooks, continuing would silently drop the auth
+      // allowlist. Fail closed instead — surface securityfailure now rather
+      // than connecting with an unconstrained handshake later.
+      if (
+        typeof narrow._isSupportedSecurityType !== "function" ||
+        typeof narrow._negotiateAuthentication !== "function" ||
+        typeof narrow._fail !== "function"
+      ) {
+        try { rfbInstance.disconnect(); } catch { /* never connected */ }
+        hooks.onSecurityFailure?.("desktop auth guard unavailable (noVNC internals changed)");
+        return;
+      }
+      const base = narrow._isSupportedSecurityType.bind(rfbInstance);
       narrow._isSupportedSecurityType = (type: number) =>
-        type === 2 && (base ? base(type) : true);
+        type === 2 && base(type);
       // RFB 3.3 never calls _isSupportedSecurityType: the server dictates
       // the u32 scheme and noVNC jumps straight to Authentication. A second
       // connection that swaps type 2 for None/Tight after a passing probe
       // (TOCTOU) would otherwise complete with no password. Fail closed on
       // the ACTUAL scheme at Authentication entry, so 3.3 and 3.7+ share
       // one final constraint instead of trusting the probe verdict.
-      const baseAuth = narrow._negotiateAuthentication?.bind(rfbInstance);
-      if (baseAuth) {
-        narrow._negotiateAuthentication = () => {
-          if (narrow._rfbAuthScheme !== 2) {
-            return narrow._fail?.(
-              `Refusing desktop auth scheme ${String(narrow._rfbAuthScheme)} (only outer VncAuth is allowed)`,
-            ) ?? false;
-          }
-          return baseAuth();
-        };
-      }
+      const baseAuth = narrow._negotiateAuthentication.bind(rfbInstance);
+      narrow._negotiateAuthentication = () => {
+        if (narrow._rfbAuthScheme !== 2) {
+          return narrow._fail?.(
+            `Refusing desktop auth scheme ${String(narrow._rfbAuthScheme)} (only outer VncAuth is allowed)`,
+          ) ?? false;
+        }
+        return baseAuth();
+      };
     }
+    rfb = rfbInstance;
     on("connect", () => {
       connected = true;
       hooks.onConnect?.();
