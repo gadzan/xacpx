@@ -41,6 +41,7 @@ export default {
     resizePanel: "拖动调整面板宽度",
     sessions: "会话",
     bots: "Bots",
+    groups: "群组",
   },
   settings: {
     title: "设置",
@@ -681,6 +682,45 @@ export default {
       runInProgress: "已有运行正在进行。请等待完成或取消后再试。",
       cancelUnknown: "取消结果未知。正在等待实例状态...",
       instanceOffline: "实例已离线",
+    },
+  },
+  group: {
+    nav: {
+      title: "群组",
+    },
+    list: {
+      empty: "该实例暂无群组。",
+    },
+    header: {
+      members: "{count} 名成员",
+    },
+    target: {
+      lead: "负责人",
+      everyone: "全体成员",
+      selectMembers: "选择成员",
+      memberCount: "已选 {count} 人",
+      noEligible: "该群组暂无可用成员。",
+      hint: "@名称 添加成员 · @everyone 全选",
+    },
+    run: {
+      title: "协作",
+      memberCompleted: "已完成",
+      memberWaiting: "等待执行",
+    },
+    topic: {
+      createTitle: "创建群组话题",
+      createHint: "新话题保留成员与设置，但开启全新的对话上下文。",
+      workspacePlaceholder: "选择工作区",
+      isolationLabel: "文件系统隔离",
+      isolationSingleWriter: "共享单写者（推荐）",
+      isolationShared: "共享",
+      isolationWorktree: "每成员工作树（暂不支持）",
+    },
+    prompt: {
+      placeholder: "给所选成员发消息...（@名称、@everyone）",
+    },
+    chat: {
+      emptyHint: "在上方选择成员，然后发送消息开始一次协作。",
     },
   },
 };
