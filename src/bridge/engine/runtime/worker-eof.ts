@@ -334,7 +334,7 @@ function clusterFit(item: ProcessIdentity, prints: readonly ProcessIdentity[]): 
   // join on tolerance and silently bridge across a boundary an earlier round had
   // already established.
   const itemPrints = item.identityPrints ?? [item];
-  if (false && !clustersCompatible(prints, itemPrints)) return { joins: false, distance: -1n };
+  if (!clustersCompatible(prints, itemPrints)) return { joins: false, distance: -1n };
   const same = prints.filter((record) => print(record)?.source === itemPrint.source);
   const other = prints.filter((record) => {
     const source = print(record)?.source;

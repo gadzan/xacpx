@@ -915,6 +915,76 @@ test("merge: an established cluster boundary survives every later round", () => 
   }
 });
 
+test("merge: a pre-formed cluster never joins a cluster its own history contradicts", () => {
+  // The cluster-compatibility layer, directly. A new side can legitimately arrive
+  // carrying prints it accumulated in earlier rounds (an accumulated result
+  // merged into a different accumulator, or a caller composing evidence), and its
+  // HISTORIES — not just its survivor timestamps — decide whether it may join.
+  //
+  //   existing A: survivor undefined, prints [cim 010]
+  //   incoming B: survivor handle 019, prints [cim 020, handle 019]
+  //
+  // B's SURVIVOR (handle 019) is 9 ticks from A's cim 010, so a survivor-only
+  // match would happily join them. But both clusters carry a CIM print and those
+  // prints disagree (010 vs 020) — which is precisely the evidence that an earlier
+  // round used to prove these are two different incarnations of the pid. Joining
+  // them here would resurrect exactly the boundary loss the a-seeding fix closed
+  // by another route, and `winsOver` would then let A's safe record erase B's
+  // unsafe evidence.
+  const existing = {
+    verified: false,
+    outcomes: [{
+      pid: 5002, outcome: "access-denied",
+      creationDate: "133801632000000010", commandLine: "old", executablePath: "C:\\old.exe",
+      fingerprintSource: "cim",
+      identityPrints: [{ pid: 5002, creationDate: "133801632000000010", fingerprintSource: "cim" as const }],
+    }],
+    leftover: [],
+  };
+  const incoming = {
+    verified: false,
+    outcomes: [{
+      pid: 5002, outcome: "access-denied",
+      creationDate: "133801632000000019", commandLine: "new", executablePath: "C:\\real.exe",
+      fingerprintSource: "handle",
+      identityPrints: [
+        { pid: 5002, creationDate: "133801632000000020", fingerprintSource: "cim" as const },
+        { pid: 5002, creationDate: "133801632000000019", fingerprintSource: "handle" as const },
+      ],
+    }],
+    leftover: [],
+  };
+  const merged = mergeEvidence(existing, incoming);
+  // Two separate identities: the incompatible CIM prints keep them apart.
+  expect(merged.outcomes.filter((item) => item.pid === 5002)).toHaveLength(2);
+  const byPrint = merged.outcomes.map((item) => item.creationDate);
+  expect(byPrint).toContain("133801632000000010");
+  expect(byPrint).toContain("133801632000000019");
+
+  // Reverse the sides to prove the check is symmetric and not an artefact of
+  // which argument happened to be the accumulator.
+  const reversed = mergeEvidence(incoming, existing);
+  expect(reversed.outcomes.filter((item) => item.pid === 5002)).toHaveLength(2);
+
+  // And a compatible pre-formed cluster DOES merge: agreeing CIM prints are the
+  // same process, so this is not a blanket "never join" rule.
+  const compatible = mergeEvidence(existing, {
+    verified: false,
+    outcomes: [{
+      pid: 5002, outcome: "killed",
+      creationDate: "133801632000000011", commandLine: "old", executablePath: "C:\\real.exe",
+      fingerprintSource: "handle",
+      identityPrints: [
+        { pid: 5002, creationDate: "133801632000000010", fingerprintSource: "cim" as const },
+        { pid: 5002, creationDate: "133801632000000011", fingerprintSource: "handle" as const },
+      ],
+    }],
+    leftover: [],
+  });
+  expect(compatible.outcomes.filter((item) => item.pid === 5002)).toHaveLength(1);
+  expect(compatible.outcomes[0]!.outcome).toBe("killed");
+});
+
 test("evidence identity keeps a reused pid separate", () => {
   // Same pid, creation times far apart: a different process that reused the pid.
   // Both must stay required evidence.
