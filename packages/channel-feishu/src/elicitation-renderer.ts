@@ -161,6 +161,16 @@ export function parseElicitationAction(
   // `save` and `skip` both write to recorded field state, so both MUST be
   // versioned. See above.
   if ((action === "save" || action === "skip") && renderGeneration === undefined) return null;
+  // `field` and `submit` are the review page's state machine, and both must be
+  // versioned for the same reason — one more reason, in fact.
+  //
+  // A Submit from an EARLIER review card reaches `confirmReviewed()` with the
+  // answers that were current when THAT review was drawn. It only checks that
+  // those answers satisfy their field constraints, so `Save prod -> Review ->
+  // Edit -> field card -> delayed old Review Submit` used to accept `prod` while
+  // the user was still typing `staging`. The generation is what makes that old
+  // Submit recognisable, so a versionless one is refused rather than honoured.
+  if ((action === "field" || action === "submit") && renderGeneration === undefined) return null;
   return {
     token,
     action,
@@ -838,13 +848,14 @@ export class FeishuElicitationRenderer {
    */
   private async renderReview(entry: PendingFeishuElicitation): Promise<void> {
     if (!entry.cardId || entry.settled) return;
-    const card = buildElicitationReviewCard(entry.request, entry.token, entry.values);
     // Allocated from the same monotonic allocator, for the same reason: a revision
-    // is never reissued. The review page's own controls (Edit, Submit, Decline,
-    // Cancel) are all unversioned, so the number here only has to be DISTINCT —
-    // it exists to keep the numbering unique for the field cards that surround it,
-    // not to fence the review page itself.
+    // is never reissued, so two reviews can never share one.
     const generation = nextGeneration(entry);
+    // Built WITH the generation it was allocated, so every control on this review
+    // names the revision of the review the user is looking at. That is what lets
+    // the fence recognise a Submit from an EARLIER review and drop it, instead of
+    // accepting answers the user has since edited away from.
+    const card = buildElicitationReviewCard(entry.request, entry.token, entry.values, generation);
     try {
       await this.options.transport.updateCard({
         cardId: entry.cardId,

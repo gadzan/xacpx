@@ -390,11 +390,27 @@ export function buildElicitationFieldCard(
   };
 }
 
-/** Review card: every label with its current value, editable per field. */
+/**
+ * Review card: every label with its current value, editable per field.
+ *
+ * `revision` is the generation this card is drawn at, stamped into every control
+ * it carries — Edit, Submit, Decline and Cancel alike. It is REQUIRED for Edit
+ * and Submit, which is what closes the last gap in the revision fence: a Submit
+ * from an earlier Review card would otherwise reach `confirmReviewed()` and
+ * accept the pre-edit answers. `Save prod -> Review(gR) -> Edit(gF) -> field card
+ * -> delayed old Review Submit(gR)` used to accept `prod` while the user was
+ * still typing `staging`.
+ *
+ * Decline and Cancel carry it too, for one invariant rather than two: a control
+ * on a card is identified by that card, and an interaction from a superseded card
+ * is dropped by identity. They remain unversioned in the HANDLER, because a
+ * replayed Decline is still a Decline the user made on a card they were shown.
+ */
 export function buildElicitationReviewCard(
   request: ChannelElicitationRequest,
   token: string,
   values: Record<string, ChannelElicitationValue>,
+  revision?: number,
 ): Record<string, unknown> {
   const messages = getMessages();
   const lines: string[] = [messages.elicitationFromAgent(escapeFeishuCardText(request.agent.name))];
@@ -406,7 +422,7 @@ export function buildElicitationReviewCard(
   // requirement is that answers can be MODIFIED, which needs a route back to
   // each of them.
   const editButtons = request.fields.slice(0, 40).map((field) =>
-    button(`${messages.elicitationEdit}: ${field.title}`, routingValue(token, "field", request.fields.indexOf(field))),
+    button(`${messages.elicitationEdit}: ${field.title}`, routingValue(token, "field", request.fields.indexOf(field), revision)),
   );
   return {
     schema: "2.0",
@@ -423,9 +439,9 @@ export function buildElicitationReviewCard(
             tag: "column",
             elements: [
               ...editButtons,
-              button(messages.elicitationSubmit, routingValue(token, "submit"), "primary", true),
-              button(messages.elicitationDecline, routingValue(token, "decline"), "default", true),
-              button(messages.elicitationCancel, routingValue(token, "cancel"), "default", true),
+              button(messages.elicitationSubmit, routingValue(token, "submit", undefined, revision), "primary", true),
+              button(messages.elicitationDecline, routingValue(token, "decline", undefined, revision), "default", true),
+              button(messages.elicitationCancel, routingValue(token, "cancel", undefined, revision), "default", true),
             ],
           }],
         },
@@ -527,35 +543,97 @@ function maxLengthFor(field: ChannelElicitationField): number {
 export function buildWorstCaseReviewCard(
   request: ChannelElicitationRequest,
   token: string,
+  revision?: number,
 ): Record<string, unknown> {
   const values = createAnswerMap();
+  // An unanswered field renders the "No answer" text, which can be WIDER than a
+  // short answer — `"No answer yet."` is wider than `"0"` or a one-character
+  // select value. The sample must therefore include that state wherever it is
+  // the widest one, or the gate blesses a card narrower than the real review.
+  //
+  // It is expressed by OMITTING the key, which is exactly how the review card
+  // renders the unanswered state, so the comparison measures the real thing.
+  const omittedWidth = escapedLength(getMessages().elicitationNoAnswer);
   for (const field of request.fields) {
-    if (field.kind === "boolean") {
-      values[field.key] = true;
-      continue;
-    }
-    if (field.kind === "number") {
-      values[field.key] = 0;
-      continue;
-    }
-    if (field.kind === "single-select" || field.kind === "multi-select") {
-      // A legal option, not a sprawling string: a select's answer is one of the
-      // values core offered, so its longest rendering is the widest DISPLAYED
-      // value — what `displayValue` puts on the review card. A multi-select is
-      // refused before this ever runs, but it is sized the same way: values
-      // joined by ", ", matching `displayValue`.
-      const widest = field.options.reduce(
-        (best, option) => (escapedLength(option.value) > escapedLength(best.value) ? option : best),
-        field.options[0]!,
-      );
-      values[field.key] = field.kind === "multi-select" ? [widest.value] : widest.value;
-      continue;
-    }
-    // text: the widest answer the platform's input can capture, built from the
-    // highest-expansion legal character so the estimate is an upper bound.
-    values[field.key] = highestExpansionFill(maxLengthFor(field));
+    const widest = widestLegalReviewValue(field);
+    if (!field.required && escapedLength(displayValue(widest)) <= omittedWidth) continue;
+    values[field.key] = widest;
   }
-  return buildElicitationReviewCard(request, token, values as Record<string, ChannelElicitationValue>);
+  return buildElicitationReviewCard(request, token, values as Record<string, ChannelElicitationValue>, revision);
+}
+
+/**
+ * The widest VALUE a field can contribute to a review card, across every legal
+ * state the wizard can be in when it renders one.
+ *
+ * UPPER BOUND, not a representative sample. The gate blesses a review card up
+ * front, and the real card is only rendered after the user has answered — so if
+ * this sample understates what a legal answer renders to, the 30 KB budget is a
+ * lie and `card.update` fails permanently at review time, after the work.
+ *
+ * Three sources of understatement the previous sample had, all closed here by
+ * MEASURING rather than assuming:
+ *
+ *   - number. `0` is not the widest legal finite number — a legal value can
+ *     render far longer, and the review prints `String(value)`. The widest
+ *     rendering is found by trying the longest available decimal forms.
+ *   - boolean. `true` is not the longer value; `false` is.
+ *   - optional/omitted. An unanswered field renders the "No answer" text, which
+ *     can be WIDER than a short select value or a short number. So the omitted
+ *     state is compared against the answered one, not skipped.
+ *
+ * A select's answer is one of the option VALUES, so its widest rendering is the
+ * widest DISPLAYED value — measurement again, since a label-heavy option with a
+ * short value renders narrow while a short label can carry a long value.
+ */
+function widestLegalReviewValue(field: ChannelElicitationField): ChannelElicitationValue {
+  if (field.kind === "boolean") {
+    // Both spellings are legal answers; take whichever renders wider.
+    return escapedLength(String(true)) >= escapedLength(String(false)) ? true : false;
+  }
+  if (field.kind === "number") {
+    // Any finite number the schema permits is a legal answer. The review prints
+    // `String(value)`, so the widest is the one with the most characters once
+    // escaped — and a large magnitude with many decimals dominates. Built from
+    // the schema's own bounds, never from an invented constant.
+    return widestNumberFor(field);
+  }
+  if (field.kind === "single-select" || field.kind === "multi-select") {
+    const widest = field.options.reduce(
+      (best, option) => (escapedLength(option.value) > escapedLength(best.value) ? option : best),
+      field.options[0]!,
+    );
+    return field.kind === "multi-select" ? [widest.value] : widest.value;
+  }
+  // text: the widest answer the platform's input can capture, built from the
+  // highest-expansion legal character so the estimate is an upper bound.
+  return highestExpansionFill(maxLengthFor(field));
+}
+/**
+ * The number whose rendered form is the widest a legal answer can produce.
+ *
+ * JS renders a number through `String(value)`, so the widest form is a large
+ * magnitude with the most digits the schema allows — bounded by `maximum` when
+ * declared, and by the platform's own 1000-char input for a number field. The
+ * magnitude is measured through the same escaper the review card uses, so the
+ * estimate cannot drift optimistic as the escaper changes.
+ */
+function widestNumberFor(field: Extract<ChannelElicitationField, { kind: "number" }>): number {
+  // Digits are not expanded by the escaper, so the widest legal rendering is
+  // simply the one with the most characters: the largest magnitude expressible
+  // within the schema's declared ceiling (or the platform's, whichever binds).
+  const ceiling = field.maximum ?? Number.MAX_SAFE_INTEGER;
+  // Walk up in magnitude, bounded so the loop cannot run away on a pathological
+  // schema: the widest finite double needs under 25 characters.
+  let widest = 0;
+  let magnitude = 1;
+  for (let i = 0; i < 25; i += 1) {
+    const candidate = Math.min(magnitude * 9, ceiling);
+    if (escapedLength(String(candidate)) > escapedLength(String(widest))) widest = candidate;
+    if (candidate >= ceiling) break;
+    magnitude *= 10;
+  }
+  return widest;
 }
 
 /**
