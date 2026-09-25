@@ -114,7 +114,7 @@ test("desktop hard-gate: probe verdict plus hub binary pipe on an independent co
     // ticket, run handlePrepare, and assert the browser's FIRST binary frame
     // is the RFB banner the tunnel replayed — without the replay both sides
     // deadlock (server waits for client version, noVNC waits for banner).
-    const live = relay.runtime.desktop.streamRegistry.reserve({ accountId: account.id, instanceId: "i-live", ttlMs: 60_000 });
+    const live = relay.runtime.desktop.reserve({ accountId: account.id, instanceId: "i-live", ttlMs: 60_000 });
     expect(live.ok).toBe(true);
     if (!live.ok) return;
     const liveBrowserTicket = relay.runtime.desktop.ticketStore.mintTicket({
@@ -160,16 +160,16 @@ test("desktop hard-gate: probe verdict plus hub binary pipe on an independent co
     // streams first, then the 9th reserve (this instance's slot is free, the
     // account is not) must fail with scope "account".
     for (let i = 0; i < 8; i++) {
-      const sibling = relay.runtime.desktop.streamRegistry.reserve({ accountId: account.id, instanceId: `i-sibling-${i}`, ttlMs: 60_000 });
+      const sibling = relay.runtime.desktop.reserve({ accountId: account.id, instanceId: `i-sibling-${i}`, ttlMs: 60_000 });
       expect(sibling.ok).toBe(true);
     }
-    const capped = relay.runtime.desktop.streamRegistry.reserve({ accountId: account.id, instanceId: "i-hardgate", ttlMs: 60_000 });
+    const capped = relay.runtime.desktop.reserve({ accountId: account.id, instanceId: "i-hardgate", ttlMs: 60_000 });
     expect(capped).toEqual({ ok: false, code: "desktop-busy", scope: "account" });
     // Free TWO sibling slots: one for the main stream, one for the
     // cross-account victim stream below (account cap is 8 total).
-    relay.runtime.desktop.streamRegistry.closeForInstance("i-sibling-0");
-    relay.runtime.desktop.streamRegistry.closeForInstance("i-sibling-1");
-    const reserved = relay.runtime.desktop.streamRegistry.reserve({ accountId: account.id, instanceId: "i-hardgate", ttlMs: 60_000 });
+    relay.runtime.desktop.closeForInstance("i-sibling-0");
+    relay.runtime.desktop.closeForInstance("i-sibling-1");
+    const reserved = relay.runtime.desktop.reserve({ accountId: account.id, instanceId: "i-hardgate", ttlMs: 60_000 });
     expect(reserved.ok).toBe(true);
     if (!reserved.ok) return;
     const streamId = reserved.record.streamId;
@@ -223,7 +223,7 @@ test("desktop hard-gate: probe verdict plus hub binary pipe on an independent co
     // Cross-account ticket theft: B's valid session cookie + A's unconsumed
     // ticket must NOT attach — the probe burns the ticket and B gets 4403,
     // then A's legitimate retry with the same ticket also fails.
-    const victim = relay.runtime.desktop.streamRegistry.reserve({ accountId: account.id, instanceId: "i-victim", ttlMs: 60_000 });
+    const victim = relay.runtime.desktop.reserve({ accountId: account.id, instanceId: "i-victim", ttlMs: 60_000 });
     expect(victim.ok).toBe(true);
     if (!victim.ok) return;
     const victimTicket = relay.runtime.desktop.ticketStore.mintTicket({

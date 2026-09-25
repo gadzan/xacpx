@@ -1124,6 +1124,16 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     60 * 60_000,
   );
   completionRouteSweepTimer.unref?.();
+  // Quiescent TTL reaper for abandoned desktop streams (browser never
+  // attached): reserve()-driven sweep alone cannot fire when no new desktop
+  // opens arrive. Interval matches the desktop ticket/reservation TTL so an
+  // orphan connector tunnel + pre-attach buffer can never outlive one TTL
+  // window past expiry. Routes through the single closeStream path.
+  const desktopSweepTimer = setInterval(
+    () => desktop.sweepExpired(),
+    DESKTOP_TICKET_TTL_MS,
+  );
+  desktopSweepTimer.unref?.();
   return {
     db,
     accounts,
@@ -1141,6 +1151,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     app,
     close: () => {
       clearInterval(completionRouteSweepTimer);
+      clearInterval(desktopSweepTimer);
       db.close();
     },
   };
@@ -1264,7 +1275,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
           stateSnapshot: runtime.stateSnapshot,
           desktop: {
             reserve: (reserveAccountId, instanceId) => {
-              const reserved = runtime.desktop.streamRegistry.reserve({
+              const reserved = runtime.desktop.reserve({
                 accountId: reserveAccountId,
                 instanceId,
                 ttlMs: DESKTOP_TICKET_TTL_MS,

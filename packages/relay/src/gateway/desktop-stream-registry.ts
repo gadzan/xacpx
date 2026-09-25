@@ -45,12 +45,12 @@ export class DesktopStreamRegistry {
     | { ok: true; record: DesktopStreamRecord }
     | { ok: false; code: "desktop-busy"; scope: "instance" | "account" } {
     const now = this.now();
-    // Reap expired preparing/waiting reservations BEFORE counting: without this,
-    // a browser that never attaches its binary socket would pin the instance
-    // slot (and the account slot) forever. Synchronous, so the check + insert
-    // below stay atomic within one hub event-loop turn.
-    this.sweepExpired(now);
-    this.sweepClosed();
+    // Lifetime cleanup MUST go through DesktopStreamGateway.reserve/sweepExpired
+    // (closeStream per expired stream: paired sockets, pre-attach buffers,
+    // tickets, owner notification). This method only drops already-closed
+    // records, never expires live ones on its own: expiring here would orphan
+    // a live connector tunnel and its buffered banner outside closeStream.
+    this.pruneClosed();
     const liveForInstance = [...this.records.values()].filter(
       (r) => r.instanceId === input.instanceId && r.accountId === input.accountId && r.state !== "closed",
     );
@@ -94,41 +94,36 @@ export class DesktopStreamRegistry {
     return record;
   }
 
+  /**
+   * List live records for an instance WITHOUT marking them closed. The
+   * gateway's closeForInstance owns the state transition via closeStream so
+   * paired sockets, pre-attach buffers, tickets, and owner notification all
+   * run exactly once. (Marking here first would make the following
+   * closeStream look like a duplicate no-op and skip onStreamClosed.)
+   */
   closeForInstance(instanceId: string): DesktopStreamRecord[] {
-    const closed: DesktopStreamRecord[] = [];
-    for (const record of this.records.values()) {
-      if (record.instanceId === instanceId && record.state !== "closed") {
-        record.state = "closed";
-        closed.push(record);
-      }
-    }
-    return closed;
+    return [...this.records.values()].filter((r) => r.instanceId === instanceId && r.state !== "closed");
   }
 
-  liveForInstance(instanceId: string): DesktopStreamRecord | undefined {
-    return [...this.records.values()].find((r) => r.instanceId === instanceId && r.state !== "closed");
+  /**
+   * List TTL-expired preparing/waiting-browser records WITHOUT marking them
+   * closed. The gateway's sweepExpired owns the transition via closeStream
+   * (see closeForInstance above for why pre-marking breaks idempotency).
+   */
+  sweepExpired(now = this.now()): DesktopStreamRecord[] {
+    return [...this.records.values()].filter(
+      (r) =>
+        r.state !== "closed" &&
+        (r.state === "preparing" || r.state === "waiting-browser") &&
+        r.expiresAt <= now,
+    );
   }
 
-  sweepExpired(now = this.now()): number {
-    let closed = 0;
-    for (const record of this.records.values()) {
-      if (record.state !== "closed" && (record.state === "preparing" || record.state === "waiting-browser") && record.expiresAt <= now) {
-        record.state = "closed";
-        closed += 1;
-      }
-    }
-    return closed;
-  }
-
-  private sweepClosed(): void {
+  pruneClosed(): void {
     // Drop closed records once nothing can still reference them (single-use
     // tickets are already revoked at close time). Keeps the map bounded.
     for (const [id, record] of [...this.records]) {
       if (record.state === "closed") this.records.delete(id);
     }
-  }
-
-  size(): number {
-    return this.records.size;
   }
 }

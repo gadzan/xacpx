@@ -13,7 +13,7 @@ import {
 import type { RelayLogger } from "../logging.js";
 import { createNoopRelayLogger } from "../logging.js";
 import { DesktopTicketStore } from "./desktop-ticket-store.js";
-import { DesktopStreamRegistry } from "./desktop-stream-registry.js";
+import { DesktopStreamRegistry, type DesktopStreamRecord } from "./desktop-stream-registry.js";
 
 export interface DesktopBinarySocket {
   send(data: Uint8Array): void;
@@ -83,12 +83,41 @@ export class DesktopStreamGateway {
     return this.streams;
   }
 
+  /**
+   * Sole reservation entry point: expired preparing/waiting-browser streams
+   * terminate through closeStream (paired sockets, pre-attach buffers,
+   * tickets, owner notification) instead of the registry silently dropping
+   * the record and orphaning a live connector tunnel. Synchronous, so the
+   * sweep + check + insert stay atomic within one hub event-loop turn.
+   */
+  reserve(input: { accountId: string; instanceId: string; ttlMs: number }):
+    | { ok: true; record: DesktopStreamRecord }
+    | { ok: false; code: "desktop-busy"; scope: "instance" | "account" } {
+    this.sweepExpired();
+    return this.streams.reserve(input);
+  }
+
+  /**
+   * Terminate every TTL-expired preparing/waiting-browser stream through the
+   * single closeStream path. Called by reserve() and by the hub's periodic
+   * sweep timer (covers the quiescent case: no new reserve ever arrives).
+   */
+  sweepExpired(): number {
+    const expired = this.streams.sweepExpired();
+    for (const record of expired) {
+      this.closeStream(record.streamId, "stream-expired");
+    }
+    if (expired.length > 0) this.streams.pruneClosed();
+    // No caller ever swept stale single-use tickets: bound the map here.
+    this.tickets.sweepExpired();
+    return expired.length;
+  }
+
   attachBrowser(ticket: string, socket: DesktopBinarySocket, authenticatedAccountId?: string): { ok: true; streamId: string } | { ok: false; reason: string } {
     const record = this.tickets.consume(ticket, "browser", authenticatedAccountId);
     if (!record) return this.reject(socket, "unknown-or-reused-ticket");
     return this.pair(record, "browser", socket);
   }
-
   /**
    * Consume a connector ticket BEFORE the WS handshake completes, returning an
    * opaque single-use claim. The HTTP-upgrade layer calls this synchronously
@@ -132,7 +161,13 @@ export class DesktopStreamGateway {
   }
   closeStream(streamId: string, reason = "closed"): void {
     const pair = this.paired.get(streamId);
-    const known = pair !== undefined || this.streams.get(streamId) !== undefined;
+    const record = this.streams.get(streamId);
+    // Idempotent: close() leaves a terminal `closed` record so late binary
+    // upgrades fail closed. A second call (e.g. the socket `close` listener
+    // re-entering synchronously from the close() below) must NOT refire
+    // onStreamClosed or re-close peers — only a live pair or a non-closed
+    // record counts as a real termination.
+    const known = pair !== undefined || (record !== undefined && record.state !== "closed");
     this.paired.delete(streamId);
     this.preAttach.delete(streamId);
     this.streams.close(streamId);

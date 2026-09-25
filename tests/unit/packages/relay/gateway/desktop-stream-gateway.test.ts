@@ -215,36 +215,93 @@ test("account cap blocks the 9th concurrent stream and close frees the slot", ()
   const { streams, gateway } = setup();
   const ids: string[] = [];
   for (let i = 0; i < 8; i++) {
-    const reserved = streams.reserve({ accountId: "a1", instanceId: `i-${i}`, ttlMs: 60_000 });
+    const reserved = gateway.reserve({ accountId: "a1", instanceId: `i-${i}`, ttlMs: 60_000 });
     expect(reserved.ok).toBe(true);
     if (reserved.ok) ids.push(reserved.record.streamId);
   }
   expect(ids).toHaveLength(8);
-  expect(streams.reserve({ accountId: "a1", instanceId: "i-8", ttlMs: 60_000 })).toEqual({
+  expect(gateway.reserve({ accountId: "a1", instanceId: "i-8", ttlMs: 60_000 })).toEqual({
     ok: false,
     code: "desktop-busy",
     scope: "account",
   });
   // A different account is unaffected by a1's cap.
-  expect(streams.reserve({ accountId: "a2", instanceId: "i-8", ttlMs: 60_000 }).ok).toBe(true);
+  expect(gateway.reserve({ accountId: "a2", instanceId: "i-8", ttlMs: 60_000 }).ok).toBe(true);
   gateway.closeStream(ids[0]!, "test");
-  expect(streams.reserve({ accountId: "a1", instanceId: "i-8", ttlMs: 60_000 }).ok).toBe(true);
+  expect(gateway.reserve({ accountId: "a1", instanceId: "i-8", ttlMs: 60_000 }).ok).toBe(true);
 });
 
-test("expired preparing reservations are reaped before counting", () => {
+test("expired waiting-browser streams terminate through closeStream on reserve", () => {
   let now = 1_000_000;
-  const expiring = new DesktopStreamRegistry({
-    now: () => now,
-    createStreamId: (() => {
-      let n = 0;
-      return () => `s-${(n += 1)}`;
-    })(),
-  });
-  const first = expiring.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
+  let streamSeq = 0;
+  let ticketSeq = 0;
+  const tickets = new DesktopTicketStore({ mint: () => `ticket-${(ticketSeq += 1)}` });
+  const streams = new DesktopStreamRegistry({ now: () => now, createStreamId: () => `s-${(streamSeq += 1)}` });
+  const closed: string[] = [];
+  const gateway = new DesktopStreamGateway({ tickets, streams, onStreamClosed: (id) => closed.push(id) });
+
+  // Typical orphan path: connector attached and replayed the RFB banner, the
+  // browser never opened /desktop/observe, and the stream sits waiting-browser
+  // with an unconsumed browser ticket still outstanding.
+  const first = gateway.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
   expect(first.ok).toBe(true);
+  if (!first.ok) return;
+  const browserTicket = tickets.mintTicket({ streamId: first.record.streamId, accountId: "a1", instanceId: "i1", side: "browser" });
+  const connectorTicket = tickets.mintTicket({ streamId: first.record.streamId, accountId: "a1", instanceId: "i1", side: "connector" });
+  const connector = new FakeBinarySocket();
+  expect(gateway.attachConnector(connectorTicket.ticket, connector as unknown as DesktopBinarySocket).ok).toBe(true);
+  expect(gateway.reportConnectorReady(first.record.streamId, "vnc-auth")).toBe(true);
+  expect(streams.get(first.record.streamId)?.state).toBe("waiting-browser");
+  connector.emit(Uint8Array.from([82, 70, 66, 32, 48, 48, 51, 46, 48, 48, 56, 10]), true);
+
   // Same-instance slot still pinned before expiry.
-  expect(expiring.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 }).ok).toBe(false);
+  expect(gateway.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 }).ok).toBe(false);
+  expect(connector.closed).toBe(false);
+
   now += 60_001;
-  const second = expiring.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
+  const second = gateway.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
   expect(second.ok).toBe(true);
+  if (!second.ok) return;
+  // Object-level cleanup, not just slot reuse: paired socket closed, buffered
+  // banner no longer occupies a global pre-attach slot, the unused browser
+  // ticket is revoked, and the owner hook fired through closeStream.
+  expect(connector.closed).toBe(true);
+  expect(connector.closeReason).toBe("stream-expired");
+  // The socket `close` listener re-enters closeStream synchronously; the
+  // owner hook must still fire exactly once.
+  expect(closed).toEqual([first.record.streamId]);
+  expect(streams.get(first.record.streamId)).toBeUndefined();
+  expect(gateway.attachBrowser(browserTicket.ticket, new FakeBinarySocket() as unknown as DesktopBinarySocket).ok).toBe(false);
+  expect(tickets.size()).toBe(0);
+});
+test("repeated abandoned streams never exhaust the pre-attach cap", () => {
+  let now = 1_000_000;
+  let streamSeq = 0;
+  let ticketSeq = 0;
+  const tickets = new DesktopTicketStore({ mint: () => `ticket-${(ticketSeq += 1)}` });
+  const streams = new DesktopStreamRegistry({ now: () => now, createStreamId: () => `s-${(streamSeq += 1)}` });
+  const gateway = new DesktopStreamGateway({ tickets, streams });
+  const banner = Uint8Array.from([82, 70, 66, 32, 48, 48, 51, 46, 48, 48, 56, 10]);
+  for (let i = 0; i < 65; i++) {
+    const reserved = gateway.reserve({ accountId: "a1", instanceId: `i-${i}`, ttlMs: 60_000 });
+    expect(reserved.ok).toBe(true);
+    if (!reserved.ok) return;
+    const ct = tickets.mintTicket({ streamId: reserved.record.streamId, accountId: "a1", instanceId: `i-${i}`, side: "connector" });
+    const connector = new FakeBinarySocket();
+    expect(gateway.attachConnector(ct.ticket, connector as unknown as DesktopBinarySocket).ok).toBe(true);
+    expect(gateway.reportConnectorReady(reserved.record.streamId, "vnc-auth")).toBe(true);
+    connector.emit(banner, true);
+    // Browser never attaches; push past the reservation TTL.
+    now += 60_001;
+  }
+  // 65 expired orphans must not pin 65/64 pre-attach slots: the next reserve
+  // triggers the gateway sweep and a fresh stream still accepts its banner.
+  const fresh = gateway.reserve({ accountId: "a1", instanceId: "i-fresh", ttlMs: 60_000 });
+  expect(fresh.ok).toBe(true);
+  if (!fresh.ok) return;
+  const freshTicket = tickets.mintTicket({ streamId: fresh.record.streamId, accountId: "a1", instanceId: "i-fresh", side: "connector" });
+  const freshConnector = new FakeBinarySocket();
+  expect(gateway.attachConnector(freshTicket.ticket, freshConnector as unknown as DesktopBinarySocket).ok).toBe(true);
+  freshConnector.emit(banner, true);
+  expect(streams.get(fresh.record.streamId)?.state).not.toBe("closed");
 });
