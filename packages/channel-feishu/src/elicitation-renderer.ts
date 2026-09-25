@@ -137,9 +137,17 @@ export function parseElicitationAction(
   // Positional, like Discord: a schema key is not a valid routing id.
   const fieldIndex = record.f;
   const positional = typeof fieldIndex === "number" && Number.isInteger(fieldIndex) && fieldIndex >= 0 ? fieldIndex : undefined;
-  // The card generation the control was rendered on. Absent is treated as 0 by
-  // the caller, which is the OPENING render — the same convention the renderer
-  // uses when it stamps one.
+  // The card generation the control was rendered on.
+  //
+  // REQUIRED on the actions that mutate field state. The builder always stamps a
+  // generation onto Save and Skip, so a callback without one cannot have come from
+  // a card this renderer drew — and honouring it would let a payload bypass the
+  // revision fence entirely. Rejecting at the parser keeps the fence an invariant
+  // of the protocol instead of a property of the situation.
+  //
+  // Terminal decisions (decline/cancel) and navigation (start/field/submit)
+  // carry no generation by design: a replayed Decline is still a Decline, and the
+  // review page is not versioned.
   const generation = record.g;
   const renderGeneration = typeof generation === "number" && Number.isInteger(generation) && generation >= 0
     ? generation
@@ -149,6 +157,9 @@ export function parseElicitationAction(
   // button that produced the callback, so a positionless Skip is rejected
   // outright rather than silently reinterpreted.
   if (action === "skip" && positional === undefined) return null;
+  // `save` and `skip` both write to recorded field state, so both MUST be
+  // versioned. See above.
+  if ((action === "save" || action === "skip") && renderGeneration === undefined) return null;
   return {
     token,
     action,

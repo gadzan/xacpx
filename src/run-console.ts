@@ -473,8 +473,6 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       // A readiness loss is fatal on its own, regardless of policy: the daemon has
       // already handed the agent a flag it can no longer honour, and the bridge
       // protocol has no capability-update channel to correct it.
-      // Any other channel-start failure keeps the existing `best-effort`
-      // behaviour.
       if (error === startupError || deps.channelStartupPolicy !== "best-effort") {
         throw error;
       }
@@ -483,10 +481,21 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
         "all channels failed to start; daemon remains alive for orchestration IPC",
         { error: error instanceof Error ? error.message : String(error) },
       );
-      // Keep the daemon up for orchestration IPC until shutdown: this is the
-      // documented `best-effort` lease, unchanged by the capability re-read below.
+      // KEEP the documented `best-effort` lease — the daemon stays up for
+      // orchestration IPC — but do NOT return here.
+      //
+      // Returning was the bug: it skipped the capability verdict below. The
+      // channel start rejecting does not pre-empt the readiness audit, and the
+      // two arrived as DIFFERENT objects, so the `error === startupError`
+      // identity check above cannot see the capability failure. Reached whenever
+      // the channel start wins the race while the audit is still settling — the
+      // easy version of which is the audit parked on its own `logger.error`, so
+      // the channel rejection lands first by a wide margin.
+      //
+      // Falling through is safe in the ordinary case: `startupError` is empty
+      // when there was no capability loss, so this is still a normal shutdown
+      // followed by a normal return.
       await waitForShutdown(shutdownController.signal);
-      return;
     }
     // The capability verdict, re-read rather than inferred from the race above.
     //

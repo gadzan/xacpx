@@ -106,6 +106,21 @@ async function pendingEntry(
   return { entry, token };
 }
 
+/**
+ * The generation of the card currently on screen for this token.
+ *
+ * Every `save` / `skip` a test drives must carry the generation of the card the
+ * click would have come from, exactly as the builder stamps it. Reading it live
+ * rather than hardcoding a number keeps the fixtures honest when the render count
+ * changes, and it means a test cannot accidentally drive a versionless callback
+ * past the revision fence.
+ */
+function onScreenGeneration(token: string, rec: Recording): number {
+  const entry = rec.pending.get(token);
+  if (!entry) throw new Error(`no pending elicitation for token ${token}`);
+  return entry.renderGeneration;
+}
+
 /** Drive the full accept flow and return the decision the renderer produced. */
 async function runFlow(
   rec: Recording,
@@ -122,7 +137,7 @@ async function runFlow(
   // Field card submit: saves this field and advances.
   await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "save" },
+    value: { t: token, a: "save", g: onScreenGeneration(token, rec) },
     formValues: { [formName]: answer },
   });
   // Review page submit: commits what the user reviewed. Only this one settles.
@@ -149,13 +164,13 @@ test("a redelivered field save cannot accept the form", async () => {
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
   await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "save" },
+    value: { t: token, a: "save", g: onScreenGeneration(token, rec) },
     formValues: { f0: "prod" },
   });
   // Same callback twice: the field page's save action, delivered again.
   await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "save" },
+    value: { t: token, a: "save", g: onScreenGeneration(token, rec) },
     formValues: { f0: "prod" },
   });
   const entry = rec.pending.get(token)!;
@@ -178,7 +193,7 @@ test("a text answer keeps its exact whitespace and can be empty", async () => {
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
   // Leading/trailing whitespace is part of the answer: core compares the raw
   // string, so trimming here would submit something the user did not type.
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "  padded  " } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreenGeneration(token, rec) }, formValues: { f0: "  padded  " } });
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { raw: "  padded  " } });
 });
@@ -195,13 +210,13 @@ test("an answered optional field can be skipped back to omitted", async () => {
   );
   const { token } = await pendingEntry(rec);
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "alpha" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreenGeneration(token, rec) }, formValues: { f0: "alpha" } });
   // Answer b, then go back and skip it: review-and-modify includes
   // value -> omitted, and a Skip that could not clear the old answer made
   // that transition impossible.
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f1: "beta" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreenGeneration(token, rec) }, formValues: { f1: "beta" } });
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "field", f: 1 }, formValues: {} });
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "skip", f: 1 }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "skip", f: 1, g: onScreenGeneration(token, rec) }, formValues: {} });
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { a: "alpha" } });
 });
@@ -217,7 +232,7 @@ test("an answered empty string is sent, not dropped as a skip", async () => {
   );
   const { token } = await pendingEntry(rec);
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreenGeneration(token, rec) }, formValues: { f0: "" } });
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   // A real answer, distinct from `null` (nothing answered) and from an omitted key.
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { note: "" } });
@@ -270,7 +285,7 @@ test("a single-select field renders a select_static whose option values are the 
 });
 
 test("the field card's submit button carries a routing token and never an answer", () => {
-  const card = buildElicitationFieldCard(request(ENV_FIELD), "tok-abc", ENV_FIELD[0]!, 1, undefined);
+  const card = buildElicitationFieldCard(request(ENV_FIELD), "tok-abc", ENV_FIELD[0]!, 1, undefined, 1);
   const form = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements.find((e) => e.tag === "form");
   const submit = (form as { elements: Array<Record<string, unknown>> }).elements.find(
     (e) => e.tag === "button" && JSON.stringify(e).includes("Submit"),
@@ -279,7 +294,7 @@ test("the field card's submit button carries a routing token and never an answer
   const behaviors = (submit as { behaviors: Array<{ type: string; value: Record<string, unknown> }> }).behaviors;
   expect(behaviors[0]!.type).toBe("callback");
   // The routing payload is the token + action only.
-  expect(behaviors[0]!.value).toEqual({ t: "tok-abc", a: "save" });
+  expect(behaviors[0]!.value).toEqual({ t: "tok-abc", a: "save", g: 1 });
   // The ROUTING payload carries no option value. (The option label necessarily
   // appears as display text — that is the question the user answers — so the
   // absence asserted here is about the correlation handle, not the card body.)
@@ -529,7 +544,7 @@ test("a non-initiator cannot submit, and the initiator still can", async () => {
   await rec.renderer.handleAction({ openId: "ou_intruder", value: { t: token, a: "start" }, formValues: {} });
   await rec.renderer.handleAction({
     openId: "ou_intruder",
-    value: { t: token, a: "save" },
+    value: { t: token, a: "save", g: onScreenGeneration(token, rec) },
     formValues: { f0: "prod" },
   });
   const entry = rec.pending.get(token)!;
@@ -540,7 +555,7 @@ test("a non-initiator cannot submit, and the initiator still can", async () => {
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
   await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "save" },
+    value: { t: token, a: "save", g: onScreenGeneration(token, rec) },
     formValues: { f0: "prod" },
   });
   // Review page submit commits it.
@@ -557,7 +572,7 @@ test("an intruder's click does not move the wizard or write an answer", async ()
   const { token } = await pendingEntry(rec);
   await rec.renderer.handleAction({
     openId: "ou_intruder",
-    value: { t: token, a: "save" },
+    value: { t: token, a: "save", g: onScreenGeneration(token, rec) },
     formValues: { f0: "prod" },
   });
   const entry = rec.pending.get(token)!;
@@ -567,7 +582,7 @@ test("an intruder's click does not move the wizard or write an answer", async ()
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
   await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "save" },
+    value: { t: token, a: "save", g: onScreenGeneration(token, rec) },
     formValues: { f0: "staging" },
   });
   // Review page submit commits it.
@@ -585,7 +600,7 @@ test("a submit with no answer for a required field keeps the card live", async (
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
   await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "save" },
+    value: { t: token, a: "save", g: onScreenGeneration(token, rec) },
     formValues: { f0: "" },
   });
   const entry = rec.pending.get(token)!;
@@ -597,7 +612,7 @@ test("a submit with no answer for a required field keeps the card live", async (
   // And it can still be completed.
   await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "save" },
+    value: { t: token, a: "save", g: onScreenGeneration(token, rec) },
     formValues: { f0: "prod" },
   });
   // Review page submit commits it.
@@ -642,7 +657,7 @@ test("an all-optional form submitted with no answers yields a null content", asy
   // not `undefined`, both of which are different statements.
   await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "skip", f: 0 },
+    value: { t: token, a: "skip", f: 0, g: onScreenGeneration(token, rec) },
     formValues: {},
   });
   // The skip advanced to review; this submit commits the empty form.
@@ -660,10 +675,13 @@ test("a token the renderer never issued is ignored", async () => {
     (d) => d,
     (e: Error) => e,
   );
-  const { entry } = await pendingEntry(rec);
+  const { entry, token } = await pendingEntry(rec);
   const outcome = await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: "not-a-real-token", a: "save" },
+    // A complete, well-formed payload whose TOKEN matches no live request. The
+    // generation is present and current, so the only reason this can fail is the
+    // token itself, not a malformed control.
+    value: { t: "not-a-real-token", a: "save", g: onScreenGeneration(token, rec) },
     formValues: { f0: "prod" },
   });
   expect(outcome).toEqual({ handled: false, settled: false });
@@ -851,7 +869,7 @@ test("a boolean field renders a two-option select, not a free-text box", async (
   expect(card).toContain("No");
   // The option VALUES are the literal spellings the parser maps back, so a real
   // boolean reaches core rather than a guessed string.
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "true" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreenGeneration(token, rec) }, formValues: { f0: "true" } });
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { confirm: true } });
 });
@@ -867,7 +885,7 @@ test("a text answer with an empty string survives an all-optional form", async (
   );
   const { token } = await pendingEntry(rec);
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreenGeneration(token, rec) }, formValues: { f0: "" } });
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   // `""` is a real answer, deliberately distinct from `null` (nothing answered).
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { note: "" } });
@@ -888,7 +906,7 @@ test("a field key named __proto__ becomes an own answer property", async () => {
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
   const entry = rec.pending.get(token)!;
   expect(Object.getPrototypeOf(entry.values)).toBe(null);
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "typed" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreenGeneration(token, rec) }, formValues: { f0: "typed" } });
   expect(Object.hasOwn(entry.values, "__proto__")).toBe(true);
   expect(entry.values.__proto__).toBe("typed");
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
@@ -922,13 +940,13 @@ test("a redelivered Skip callback re-skips the same field, not the next one", as
   const { entry, token } = await pendingEntry(rec);
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
   // A's own card. Give B an answer so a stray skip of B is observable as a loss.
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreenGeneration(token, rec) }, formValues: { f0: "" } });
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "field", f: 1 }, formValues: {} });
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f1: "beta" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreenGeneration(token, rec) }, formValues: { f1: "beta" } });
   // Back to A, then deliver A's Skip TWICE.
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "field", f: 0 }, formValues: {} });
   expect(entry.currentField).toBe("a");
-  const skipA = { openId: "ou_initiator", value: { t: token, a: "skip", f: 0 }, formValues: {} };
+  const skipA = { openId: "ou_initiator", value: { t: token, a: "skip", f: 0, g: onScreenGeneration(token, rec) }, formValues: {} };
   await rec.renderer.handleAction(skipA);
   // Redelivery of the very same callback: same token, same action, same field.
   await rec.renderer.handleAction(skipA);
@@ -960,8 +978,8 @@ test("a Skip callback with no field position is rejected", async () => {
   expect(result.handled).toBe(false);
   expect(entry.skipped.size).toBe(0);
   expect(entry.currentField).toBe("a");
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "skip", f: 1 }, formValues: {} });
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "skip", f: 0 }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "skip", f: 1, g: onScreenGeneration(token, rec) }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "skip", f: 0, g: onScreenGeneration(token, rec) }, formValues: {} });
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: null });
 });
@@ -989,7 +1007,7 @@ test("an answer core would reject never reaches the Accepted card", async () => 
   );
   const { token } = await pendingEntry(rec);
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "not-an-email" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreenGeneration(token, rec) }, formValues: { f0: "not-an-email" } });
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   // Not settled: the renderer bounced back to the field so the answer can be
   // corrected, and the card never became a terminal "accepted".
@@ -997,7 +1015,7 @@ test("an answer core would reject never reaches the Accepted card", async () => 
   const terminalText = rec.transport.updates.map((update) => JSON.stringify(update)).join("\n");
   expect(terminalText).not.toContain("accepted");
   // Correcting it now succeeds.
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "dev@example.com" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreenGeneration(token, rec) }, formValues: { f0: "dev@example.com" } });
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { mail: "dev@example.com" } });
 });
@@ -1013,10 +1031,10 @@ test("a minLength violation is caught before the card is withdrawn", async () =>
   );
   const { token } = await pendingEntry(rec);
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "x" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreenGeneration(token, rec) }, formValues: { f0: "x" } });
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   expect(rec.pending.size).toBe(1);
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "long enough" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreenGeneration(token, rec) }, formValues: { f0: "long enough" } });
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { note: "long enough" } });
 });
@@ -1190,7 +1208,7 @@ test("a hung terminal card update cannot swallow an Accept decision", async () =
   await new Promise((r) => setTimeout(r, 5));
   const token = [...rec.pending.keys()][0]!;
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save" }, formValues: { f0: "prod" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreenGeneration(token, rec) }, formValues: { f0: "prod" } });
   // Fired, not awaited: the hung update also blocks the CLICK's own promise, and
   // what is being asserted is the REQUEST promise.
   void rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
@@ -1339,9 +1357,9 @@ test("a replayed old save cannot overwrite a newer answer to the same field", as
   const prodSaveGeneration = onScreen();
   await step({ t: token, a: "save", g: prodSaveGeneration }, { f0: "prod" });
 
-  // The wizard advanced to field 1. Save it (leaving it blank is fine — it is
-  // optional), which lands on the REVIEW page.
-  await step({ t: token, a: "save", g: onScreen() }, {});
+  // The single field is answered, so the wizard went to the REVIEW page. Nothing
+  // is driven from there: a real review card has no Save control, only Edit and
+  // Submit, so injecting one would be exercising a control that does not exist.
 
   // Edit back into the first field and change the answer. A different card, so a
   // different generation — which is what makes the replay stale. Delivered while
@@ -1352,8 +1370,9 @@ test("a replayed old save cannot overwrite a newer answer to the same field", as
   const editedGeneration = onScreen();
   await step({ t: token, a: "save", g: editedGeneration }, { f0: "staging" });
 
-  // The replayed FIRST save, delivered now from the earlier generation, from the
-  // card the user had already navigated away from.
+  // The replayed FIRST save, delivered from the earlier generation — the card the
+  // user had already navigated away from. The wizard is back on review; a real
+  // review card has no Save control, so this can only ever be a platform replay.
   await step({ t: token, a: "save", g: prodSaveGeneration }, { f0: "prod" });
   await step({ t: token, a: "submit" });
 
@@ -1406,6 +1425,11 @@ test("a replayed Skip cannot delete an answer the user gave after it", async () 
   // Optional field, so Skip is rendered. One field, so the cursor stays on it for
   // the whole chain — with two fields the wizard advances past the first on its
   // first save and a replay would land on the second, hiding the loss.
+  //
+  // The steps are the real UI path, in the order a user performs them: click Skip
+  // on the field card, then Edit on the review page, then Save on the field card
+  // the Edit put back on screen. The callback captured at the Skip is redelivered
+  // VERBATIM afterwards, which is what Feishu's own retry does.
   const rec = makeRenderer();
   const fields: ChannelElicitationRequest["fields"] = [
     { kind: "text", key: "note", title: "Note", required: false, maxLength: 1000 },
@@ -1416,14 +1440,25 @@ test("a replayed Skip cannot delete an answer the user gave after it", async () 
   );
   const { entry, token } = await pendingEntry(rec);
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
-  // Skip, enter review, Edit back to the field, save a real answer.
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "skip", f: 0 }, formValues: {} });
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: entry.renderGeneration }, formValues: { f0: "staging" } });
+  // 1. Skip, on the field card. The whole callback is kept so the replay is the
+  //    exact payload Feishu would redeliver, generation included.
+  const skipCallback = { t: token, a: "skip", f: 0, g: entry.renderGeneration };
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: skipCallback, formValues: {} });
+  expect(entry.skipped.has("note")).toBe(true);
+  // 2. Edit back into the field, from the review page the Skip left us on.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "field", f: 0 }, formValues: {} });
+  // 3. Save a real answer on the card now on screen.
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "save", g: onScreenGeneration(token, rec) },
+    formValues: { f0: "staging" },
+  });
   expect(entry.values.note).toBe("staging");
-  // Feishu redelivers the Skip from the card the user has already left.
+  expect(entry.skipped.size).toBe(0);
+  // 4. Feishu redelivers the ORIGINAL Skip, from an earlier card.
   const replay = await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "skip", f: 0, g: 1 },
+    value: skipCallback,
     formValues: {},
   });
   // Dropped without touching state, so the answer the user typed survives.
@@ -1521,3 +1556,31 @@ test("every state-mutating control the field card draws carries the card's gener
     expect(value.g).toBeUndefined();
   }
 });
+test("a save or skip with no generation is refused by the parser", () => {
+  // The revision fence has to be an invariant of the protocol, not a property of
+  // the situation. The builder always stamps a generation onto the two
+  // state-mutating controls, so a payload without one cannot have come from a
+  // card this renderer drew — accepting it would be a way round the fence.
+  expect(parseElicitationAction({ t: "tok", a: "save" })).toBeNull();
+  expect(parseElicitationAction({ t: "tok", a: "skip", f: 0 })).toBeNull();
+  // A malformed generation is the same as a missing one.
+  expect(parseElicitationAction({ t: "tok", a: "save", g: -1 })).toBeNull();
+  expect(parseElicitationAction({ t: "tok", a: "save", g: "1" })).toBeNull();
+  expect(parseElicitationAction({ t: "tok", a: "save", g: 1.5 })).toBeNull();
+  // The non-mutating actions stay unversioned, exactly as the builder draws them.
+  expect(parseElicitationAction({ t: "tok", a: "decline" })).not.toBeNull();
+  expect(parseElicitationAction({ t: "tok", a: "cancel" })).not.toBeNull();
+  expect(parseElicitationAction({ t: "tok", a: "start" })).not.toBeNull();
+  expect(parseElicitationAction({ t: "tok", a: "field", f: 2 })).not.toBeNull();
+  expect(parseElicitationAction({ t: "tok", a: "submit" })).not.toBeNull();
+  // And a well-formed save/skip is still accepted.
+  expect(parseElicitationAction({ t: "tok", a: "save", g: 3 })).toEqual({ token: "tok", action: "save", renderGeneration: 3 });
+  expect(parseElicitationAction({ t: "tok", a: "skip", f: 1, g: 3 })).toEqual({
+    token: "tok",
+    action: "skip",
+    fieldIndex: 1,
+    renderGeneration: 3,
+  });
+});
+
+
