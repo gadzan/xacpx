@@ -5022,6 +5022,88 @@ test("activation fails closed on cross-kind group-member session over a syntheti
   first.store.close();
 });
 
+test("load keeps a synthetic Direct custom Topic so activation fails closed on its cross-kind owner", async () => {
+  const first = await createLifecycle();
+  const { createScopedGroupMemberBindingId, createDirectConversationId } =
+    await import("../../../src/domain/ids");
+  const { parseState } = await import("../../../src/state/state-store");
+  const botId = BOT_ID;
+  const conversationId = createDirectConversationId(botId);
+  const customTopicId = "topic_custom_direct_note";
+  // Live Bot + no persisted Conversation + a surviving custom Direct Topic
+  // row linked to the deterministic conversation: a synthetic-direct root.
+  // The canonical group-member owner over it is a kind contradiction that
+  // must survive load reconcile and fail activation closed.
+  const raw = JSON.parse(JSON.stringify({
+    ...first.state,
+    bots: first.state.bots,
+    conversations: first.state.conversations,
+    conversation_topics: {
+      ...first.state.conversation_topics,
+      [customTopicId]: {
+        id: customTopicId,
+        conversationId,
+        title: "Custom direct note",
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    bot_runtime_bindings: first.state.bot_runtime_bindings,
+    sessions: {
+      cross_custom: {
+        alias: "cross_custom",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:cross_custom",
+        logical_session_id: "cccccccc-cccc-4ccc-accc-cccccccccccc",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: {
+          kind: "group-member",
+          bindingId: createScopedGroupMemberBindingId(conversationId, customTopicId, botId),
+          botId,
+          conversationId,
+          topicId: customTopicId,
+        },
+      },
+    },
+  }));
+  const dropped: { section: string; key: string; reason: string }[] = [];
+  const reloaded = parseState(raw, "state.json", dropped);
+  // Load reconcile must keep the custom Topic row: it is the cross-kind
+  // evidence the activation gate needs. Dropping it would downgrade the
+  // live contradiction to a missing root the sweep may physical-release.
+  expect(reloaded.conversation_topics[customTopicId]?.conversationId).toBe(conversationId);
+  expect(dropped.some((entry) => entry.section === "conversation_topics" && entry.key === customTopicId)).toBe(false);
+  expect(reloaded.sessions.cross_custom?.owner?.kind).toBe("group-member");
+  for (const key of Object.keys(first.state.sessions)) {
+    if (!(key in reloaded.sessions)) delete first.state.sessions[key];
+  }
+  Object.assign(first.state.sessions, reloaded.sessions);
+  for (const key of Object.keys(first.state.conversation_topics)) {
+    if (!(key in reloaded.conversation_topics)) delete first.state.conversation_topics[key];
+  }
+  Object.assign(first.state.conversation_topics, reloaded.conversation_topics);
+  for (const key of Object.keys(first.state.bot_runtime_bindings)) {
+    if (!(key in reloaded.bot_runtime_bindings)) delete first.state.bot_runtime_bindings[key];
+  }
+  Object.assign(first.state.bot_runtime_bindings, reloaded.bot_runtime_bindings);
+  for (const key of Object.keys(first.state.conversations)) {
+    if (!(key in reloaded.conversations)) delete first.state.conversations[key];
+  }
+  Object.assign(first.state.conversations, reloaded.conversations);
+  const releasesBefore = first.physical.releaseCalls + first.physical.deleteCalls;
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "ambiguous_group_ownership" });
+  const detail = (error as { details?: { sessions?: { alias: string }[] } }).details;
+  expect(detail?.sessions?.map((entry) => entry.alias)).toContain("cross_custom");
+  expect(first.service.isConsumerActivated()).toBe(false);
+  expect(first.physical.releaseCalls + first.physical.deleteCalls).toBe(releasesBefore);
+  expect(first.sessions.getLogicalSessionRecord("cross_custom")?.owner?.kind).toBe("group-member");
+  first.store.close();
+});
+
 test("missing-topic durable run is cancelled and reconciled, never row-deleted live", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);

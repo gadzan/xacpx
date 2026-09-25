@@ -11,8 +11,9 @@ import {
   type DirectBotRuntimeBinding,
   type GroupMemberRuntimeBinding,
 } from "../bots/bot-service";
+import { classifyConversationRoot } from "./conversation-roots";
 import { planDirectConversation, presentDefaultDirectTopic, presentDirectConversation } from "./direct-conversation";
-import { createDirectBindingId, createDirectConversationId, createDirectTopicId, createScopedGroupMemberBindingId, createTopicId } from "../domain/ids";
+import { createDirectBindingId, createDirectTopicId, createScopedGroupMemberBindingId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
@@ -1756,7 +1757,7 @@ export class ConversationRunService {
       // owners belong to the ordinary teardown paths, and Direct-kind
       // roots (persisted or synthetic) are kind contradictions for the
       // ambiguous gate below (never auto-release under a contradiction).
-      return this.classifyConversationRoot(conversationId, topicId) === "missing";
+      return classifyConversationRoot(this.state.conversations, this.state.conversation_topics, this.state.bots, conversationId, topicId) === "missing";
     });
     for (const [key, session] of candidates) {
       assertSessionKeyMatchesAlias(key, session);
@@ -1784,7 +1785,7 @@ export class ConversationRunService {
         // Group/Topic (or repaired binding) restores the cleanup root, and
         // the ordinary teardown paths own it from there — never release
         // under a live root (Group, persisted-Direct, or synthetic-Direct).
-        if (this.classifyConversationRoot(conversationId, topicId) !== "missing") {
+        if (classifyConversationRoot(this.state.conversations, this.state.conversation_topics, this.state.bots, conversationId, topicId) !== "missing") {
           return;
         }
         if (
@@ -1797,42 +1798,6 @@ export class ConversationRunService {
         await this.releaseAlias(key);
       });
     }
-  }
-
-  /**
-   * Shared Conversation/Topic root classifier. Direct roots may be
-   * synthetic: a live Bot's deterministic Direct conversation + default
-   * Topic ids are a live root even with no persisted rows. Anything else
-   * needs persisted rows of the right kind. Used by activation (authority,
-   * orphan sweep, ambiguity) so a synthetic Direct root can never read as
-   * "missing" in one check and "live" in another.
-   */
-  private classifyConversationRoot(
-    conversationId: string,
-    topicId: string,
-  ): "group" | "persisted-direct" | "synthetic-direct" | "missing" {
-    const conversation = this.state.conversations[conversationId];
-    const topic = this.state.conversation_topics[topicId];
-    if (conversation?.kind === "group") {
-      return topic && topic.conversationId === conversationId ? "group" : "missing";
-    }
-    if (conversation?.kind === "bot") {
-      if (topic) {
-        return topic.conversationId === conversationId ? "persisted-direct" : "missing";
-      }
-      const botId = conversation.botIds[0];
-      return botId !== undefined && topicId === createDirectTopicId(botId)
-        ? "persisted-direct"
-        : "missing";
-    }
-    const owner = this.bots.listBots().find((bot) => createDirectConversationId(bot.id) === conversationId);
-    if (owner && topicId === createDirectTopicId(owner.id)) {
-      return "synthetic-direct";
-    }
-    if (owner && topic) {
-      return topic.conversationId === conversationId ? "synthetic-direct" : "missing";
-    }
-    return "missing";
   }
 
   /**
@@ -1850,7 +1815,7 @@ export class ConversationRunService {
     // Same shared classifier as the sweep/ambiguity gates: Group roots need
     // persisted rows; Direct roots may be persisted or synthetic.
     const unrooted = this.store.listNonterminalRunRoots().filter((root) => {
-      const kind = this.classifyConversationRoot(root.conversationId, root.topicId);
+      const kind = classifyConversationRoot(this.state.conversations, this.state.conversation_topics, this.state.bots, root.conversationId, root.topicId);
       return kind !== "group" && kind !== "persisted-direct" && kind !== "synthetic-direct";
     });
     if (unrooted.length > 0) {
@@ -1896,7 +1861,7 @@ export class ConversationRunService {
       // Live-GROUP-rooted owners return false — the ordinary teardown paths
       // own them. A Direct-kind root (persisted OR synthetic) is a kind
       // contradiction: block.
-      const kind = this.classifyConversationRoot(conversationId, topicId);
+      const kind = classifyConversationRoot(this.state.conversations, this.state.conversation_topics, this.state.bots, conversationId, topicId);
       if (kind !== "group") {
         return true;
       }

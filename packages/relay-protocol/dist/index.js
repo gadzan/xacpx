@@ -514,11 +514,19 @@ function validConversationCorrelation(value) {
   const c = value;
   return typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.runId === "string" && typeof c.memberTurnId === "string";
 }
+function validExecutionTarget(value) {
+  if (value === undefined)
+    return true;
+  if (typeof value !== "object" || value === null)
+    return false;
+  const t = value;
+  return typeof t.workspace === "string" && (t.cwd === undefined || typeof t.cwd === "string") && (t.isolation === "shared" || t.isolation === "shared-single-writer" || t.isolation === "worktree-per-member");
+}
 function validTopicSummary(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string";
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string" && validExecutionTarget(c.executionTarget);
 }
 function validConversationMessage(value) {
   if (typeof value !== "object" || value === null)

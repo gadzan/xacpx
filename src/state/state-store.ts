@@ -3,6 +3,7 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 
 import type { BotProfile, BotRuntimeBinding } from "../bots/bot-types";
 import type { ConversationRecord, ConversationTopic } from "../conversations/conversation-types";
+import { classifyConversationRoot } from "../conversations/conversation-roots";
 import { writePrivateFileAtomic } from "../util/private-file.js";
 import { createEmptyState, type AppState, type LogicalSession, type LogicalSessionOwner } from "./types";
 import { createScopedGroupMemberBindingId } from "../domain/ids";
@@ -1185,10 +1186,16 @@ function reconcileProductOwnershipGraph(
   for (const [id, topic] of Object.entries(topics)) {
     // Group topics carry executionTarget (direct topics never do) or are
     // referenced by group-member runtime. Either marker with a missing
-    // conversation means the cleanup root is gone → drop with report.
-    // Synthetic direct convoy rows stay untouched.
+    // conversation means the cleanup root is gone → drop with report,
+    // unless the shared classifier still sees a live synthetic Direct root
+    // (live Bot + deterministic conversation + linked custom Topic row):
+    // that row is the cross-kind evidence the activation gate must see,
+    // so load must keep it instead of mutating it away.
     const isGroupTopic = topic.executionTarget !== undefined || groupReferencedTopics.has(id);
     if (!conversations[topic.conversationId] && isGroupTopic) {
+      if (classifyConversationRoot(conversations, topics, bots, topic.conversationId, id) !== "missing") {
+        continue;
+      }
       delete topics[id];
       dropped.push({
         section: "conversation_topics",
