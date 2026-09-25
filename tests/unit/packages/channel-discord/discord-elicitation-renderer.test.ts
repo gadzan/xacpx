@@ -11,9 +11,12 @@ import type {
   ShowModalInput,
 } from "../../../../packages/channel-discord/src/types";
 import { setChannelLocale } from "../../../../packages/channel-discord/src/i18n";
-import { buildElicitationFieldCard } from "../../../../packages/channel-discord/src/elicitation-ui";
+import {
+  buildElicitationFieldCard,
+  buildElicitationOpening,
+  ELICITATION_CUSTOM_ID_PREFIX,
+} from "../../../../packages/channel-discord/src/elicitation-ui";
 import { buildElicitationFieldLines } from "../../../../packages/channel-discord/src/elicitation-limits";
-import { buildElicitationOpening } from "../../../../packages/channel-discord/src/elicitation-ui";
 import { checkElicitationRenderability, FIELD_CARD_ANSWER_ECHO_MAX } from "../../../../packages/channel-discord/src/elicitation-limits";
 import type { ChannelElicitationField, ChannelElicitationRequest } from "xacpx/plugin-api";
 import type { ChannelStartInput } from "xacpx/plugin-api";
@@ -144,15 +147,28 @@ function modal(
  *
  * `fieldIndex` is a number, matching the codec: routing is positional, never by
  * schema key.
+ *
+ * The id now ends with an optional `:<revision>` segment, so the match is on the
+ * SEGMENTS rather than a plain suffix — `:review` also appears as the prefix of
+ * `:review:2`, and `endsWith` would then hand back the wrong control.
  */
 function idFor(client: FakeDiscordClient, action: string, fieldIndex?: number): string {
-  const suffix = fieldIndex !== undefined ? `${action}:${fieldIndex}` : action;
+  const wanted = fieldIndex !== undefined ? [action, String(fieldIndex)] : [action];
   const rows = client.edited.length > 0
     ? (client.edited[client.edited.length - 1]!.body.components ?? [])
     : (client.sent[client.sent.length - 1]?.body.components ?? []);
   const ids = rows.flatMap((r) => r.components.map((c) => c.customId));
-  const found = ids.find((id) => id.endsWith(`:${suffix}`));
-  if (!found) throw new Error(`no control "${suffix}" in ${ids.join(",")}`);
+  const found = ids.find((id) => {
+    const segments = id.slice(ELICITATION_CUSTOM_ID_PREFIX.length).split(":");
+    // `<token>:<action>[:<fieldIndex>][:<revision>]` — the token is the 32-char
+    // slug, so the segments that follow it are the ones matched.
+    const rest = segments.slice(1);
+    return rest[0] === wanted[0]
+      && (wanted.length === 1 || rest[1] === wanted[1])
+      // Either no revision at all, or exactly one numeric one.
+      && rest.slice(wanted.length).every((s) => /^\d+$/.test(s));
+  });
+  if (!found) throw new Error(`no control "${wanted.join(":")}" in ${ids.join(",")}`);
   return found;
 }
 
@@ -840,8 +856,8 @@ test("every field card fits Discord's per-row button limit", async () => {
       // Answer control survives the split: the user can still open a modal.
       const ids = card.components.flatMap((row) => row.components.map((c) => c.customId));
       expect(ids.some((id) => id.endsWith(":field:" + index))).toBe(true);
-      expect(ids.some((id) => id.endsWith(":decline"))).toBe(true);
-      expect(ids.some((id) => id.endsWith(":cancel"))).toBe(true);
+      expect(ids.some((id) => /decline(:|$)/.test(id.split(":").slice(2).join(":")))).toBe(true);
+      expect(ids.some((id) => /cancel(:|$)/.test(id.split(":").slice(2).join(":")))).toBe(true);
     }
   }
 });
@@ -979,17 +995,17 @@ test("a 6-field review paginates and every field stays reachable", async () => {
       return rows.flatMap((r) => r.components.map((c) => c.customId));
     };
     // Page 0 shows fewer than all fields, and the rest are reachable by paging.
-    expect(rowIds().filter((id) => /:edit:[0-9]+$/.test(id)).length).toBeLessThan(6);
+    expect(rowIds().filter((id) => /:edit:[0-9]+(:|$)/.test(id)).length).toBeLessThan(6);
     expect(rowIds().some((id) => /:page:/.test(id))).toBe(true);
 
     let sawLast = false;
     for (let step = 0; step < 6 && !sawLast; step += 1) {
       const ids = rowIds();
-      if (ids.some((id) => id.endsWith(":edit:5"))) {
+      if (ids.some((id) => /:edit:5(:|$)/.test(id))) {
         sawLast = true;
         break;
       }
-      const next = ids.find((id) => /:page:[0-9]+$/.test(id) && !id.endsWith(":page:0"));
+      const next = ids.find((id) => /:page:[0-9]+(:|$)/.test(id) && !/:page:0(:|$)/.test(id));
       if (!next) break;
       client.emitButton(click(client, next));
       await wait();
@@ -1399,7 +1415,7 @@ test("a failed continuation send leaves the primary's Submit alone", async () =>
     expect(primaryEdits.length).toBe(editsBefore + 1);
     const submitControl = (primaryEdits[primaryEdits.length - 1]!.body.components ?? [])
       .flatMap((row) => row.components)
-      .find((component) => component.customId.endsWith(":submit"));
+      .find((component) => /submit(:|$)/.test(component.customId.split(":").slice(2).join(":")));
     expect(submitControl?.disabled).toBe(true);
     const store = (channel as unknown as {
       pendingElicitations: Map<string, { submitGateClosed: boolean }>;
@@ -1481,7 +1497,7 @@ test("a failed stale-tail delete keeps the primary off the shorter review", asyn
       const rows = client.edited[client.edited.length - 1]!.body.components ?? [];
       return rows.flatMap((r) => r.components.map((c) => c.customId));
     };
-    const page1 = rowIds().find((id) => id.endsWith(":page:1"));
+    const page1 = rowIds().find((id) => /:page:1(:|$)/.test(id));
     expect(page1).toBeDefined();
     const primaryEditsBefore = client.edited.filter((entry) => entry.messageId === "m1").length;
 
@@ -1503,7 +1519,7 @@ test("a failed stale-tail delete keeps the primary off the shorter review", asyn
     const lastPrimary = primaryEdits[primaryEdits.length - 1]!;
     const submitControl = (lastPrimary.body.components ?? [])
       .flatMap((row) => row.components)
-      .find((component) => component.customId.endsWith(":submit"));
+      .find((component) => /submit(:|$)/.test(component.customId.split(":").slice(2).join(":")));
     expect(submitControl?.disabled).toBe(true);
     // The final (enabled) review was never published, so no primary edit carries
     // a live Submit over the inconsistent set.
@@ -1635,7 +1651,7 @@ test("review -> Edit -> field card cannot be submitted when the continuation del
     const lastPrimary = primaryEdits[primaryEdits.length - 1]!;
     const submitControl = (lastPrimary.body.components ?? [])
       .flatMap((row) => row.components)
-      .find((component) => component.customId.endsWith(":submit"));
+      .find((component) => /submit(:|$)/.test(component.customId.split(":").slice(2).join(":")));
     expect(submitControl?.disabled).toBe(true);
     // A gate edit was published (the review with Submit disabled) in addition to
     // whatever else happened.
@@ -1715,9 +1731,9 @@ test("review -> single-chunk page cannot be submitted when the delete fails", as
       .map((component) => component.customId);
     const goTo = async (suffix: string): Promise<string> => {
       for (let step = 0; step < 8; step += 1) {
-        const found = rowIds().find((id) => id.endsWith(`:page:${suffix}`));
+        const found = rowIds().find((id) => new RegExp(`:page:${suffix}(:|$)`).test(id));
         if (found) return found;
-        const next = rowIds().find((id) => /:page:[0-9]+$/.test(id));
+        const next = rowIds().find((id) => /:page:[0-9]+(:|$)/.test(id));
         if (!next) break;
         client.emitButton(click(client, next));
         await wait();
@@ -1735,7 +1751,7 @@ test("review -> single-chunk page cannot be submitted when the delete fails", as
     const primaryEdits = client.edited.filter((e) => e.messageId === "m1");
     const submitControl = (primaryEdits[primaryEdits.length - 1]!.body.components ?? [])
       .flatMap((row) => row.components)
-      .find((component) => component.customId.endsWith(":submit"));
+      .find((component) => /submit(:|$)/.test(component.customId.split(":").slice(2).join(":")));
     expect(submitControl?.disabled).toBe(true);
     expect(gateEntry.continuationMessageIds).toEqual(openingIds);
   } finally {
@@ -1816,7 +1832,7 @@ test("a second transition is queued behind a running one, and cannot open the ga
     const rowIds = (): string[] => (client.edited[client.edited.length - 1]!.body.components ?? [])
       .flatMap((row) => row.components)
       .map((component) => component.customId);
-    const page1 = rowIds().find((id) => id.endsWith(":page:1"))!;
+    const page1 = rowIds().find((id) => /:page:1(:|$)/.test(id))!;
 
     // Transition A: page 0 -> page 1. It reaches the held m2 edit inside its
     // continuation sync.
@@ -1830,7 +1846,7 @@ test("a second transition is queued behind a running one, and cannot open the ga
     expect(gateWhileA).toBe(true);
     const submitWhileA = (client.edited[client.edited.length - 1]!.body.components ?? [])
       .flatMap((row) => row.components)
-      .find((component) => component.customId.endsWith(":submit"));
+      .find((component) => /submit(:|$)/.test(component.customId.split(":").slice(2).join(":")));
     expect(submitWhileA?.disabled).toBe(true);
 
     // Transition B, fired while A is still held. Nothing new is published: B is
@@ -2690,4 +2706,114 @@ test("a form asked on a direct private route still works", async () => {
     abort.abort();
     await channel.stop().catch(() => {});
   }
+});
+
+/** Text of the most recent edit, for asserting what the user is looking at. */
+function lastEditedContent(client: FakeDiscordClient): string {
+  return client.edited[client.edited.length - 1]!.body.content ?? "";
+}
+
+test("a select from an earlier card revision cannot overwrite a newer answer", async () => {
+  // The render queue serialises UI TRANSITIONS, not the answer state they write.
+  // A select interaction is applied straight to the entry, so one delivered after
+  // the wizard moved on would record a value the user is no longer looking at:
+  // `prod -> Review -> Edit -> staging -> Review -> delayed old select(prod)`
+  // left memory at prod while the Review card on screen still showed staging, and
+  // the next Submit sent what the user had replaced.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const req = request([
+    { kind: "single-select", key: "env", title: "Env", required: true, options: [
+      { value: "prod", label: "Prod" },
+      { value: "staging", label: "Staging" },
+    ] },
+  ]);
+  const { settled } = await startWizard(client, channel, req.request, "env");
+
+  // First field card: answer `prod`. The select id names that card's revision.
+  const prodSelect = selectCustomIdOf(client, "env");
+  client.emitSelect(select(client, prodSelect, ["prod"]));
+  await new Promise((r) => setTimeout(r, 5));
+  // The pending state is private; reach it the way the other tests in this file
+  // do, through a narrow structural cast of the entry rather than of the map.
+  const entry = (channel as unknown as {
+    pendingElicitations: Map<string, { values: Record<string, unknown>; renderRevision: number }>;
+  }).pendingElicitations.values().next().value!;
+  const prodRevision = entry.renderRevision;
+
+  // Review -> Edit, so the wizard moves to a later card.
+  client.emitButton(click(client, idFor(client, "review")));
+  await new Promise((r) => setTimeout(r, 5));
+  client.emitButton(click(client, idFor(client, "edit", 0)));
+  await new Promise((r) => setTimeout(r, 5));
+  expect(entry.renderRevision).toBeGreaterThan(prodRevision);
+
+  // Answer `staging` from the CURRENT card's select.
+  const stagingSelect = selectCustomIdOf(client, "env");
+  client.emitSelect(select(client, stagingSelect, ["staging"]));
+  await new Promise((r) => setTimeout(r, 5));
+  expect(entry.values.env).toBe("staging");
+
+  // The DELAYED select from the earlier card. Memory must not move back.
+  client.emitSelect(select(client, prodSelect, ["prod"]));
+  await new Promise((r) => setTimeout(r, 5));
+  expect(entry.values.env).toBe("staging");
+
+  // And the answer the user is looking at is what is sent.
+  client.emitButton(click(client, idFor(client, "review")));
+  await new Promise((r) => setTimeout(r, 5));
+  client.emitButton(click(client, idFor(client, "submit")));
+  expect(await settled).toEqual({
+    action: "accept",
+    responderId: "user-A",
+    content: { env: "staging" },
+  });
+  abort.abort();
+});
+
+test("a submit from an earlier review revision is refused after an edit", async () => {
+  // Review Submit is the accept path, and a Review the user has navigated away
+  // from must not commit pre-edit answers. This is the "user sees staging, system
+  // submits prod" case, and it is distinct from duplicate-click handling: the
+  // click is legitimate, the card it came from is not the current one.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const req = request([
+    { kind: "single-select", key: "env", title: "Env", required: true, options: [
+      { value: "prod", label: "Prod" },
+      { value: "staging", label: "Staging" },
+    ] },
+  ]);
+  const { settled } = await startWizard(client, channel, req.request, "env");
+
+  client.emitSelect(select(client, selectCustomIdOf(client, "env"), ["prod"]));
+  await new Promise((r) => setTimeout(r, 5));
+  client.emitButton(click(client, idFor(client, "review")));
+  await new Promise((r) => setTimeout(r, 5));
+  // The Submit on the FIRST review.
+  const earlyReviewSubmit = idFor(client, "submit");
+
+  // Go back, change the answer, come forward.
+  client.emitButton(click(client, idFor(client, "edit", 0)));
+  await new Promise((r) => setTimeout(r, 5));
+  client.emitSelect(select(client, selectCustomIdOf(client, "env"), ["staging"]));
+  await new Promise((r) => setTimeout(r, 5));
+  client.emitButton(click(client, idFor(client, "review")));
+  await new Promise((r) => setTimeout(r, 5));
+
+  // The stale Submit from the first review.
+  client.emitButton(click(client, earlyReviewSubmit));
+  await new Promise((r) => setTimeout(r, 5));
+  // Still live: the initiator must be able to answer it properly rather than
+  // having the turn end on a card they already navigated away from.
+  expect(await Promise.race([settled, new Promise((r) => setTimeout(() => r("pending"), 20))])).toBe("pending");
+
+  // The current Submit is the one that decides.
+  client.emitButton(click(client, idFor(client, "submit")));
+  expect(await settled).toEqual({
+    action: "accept",
+    responderId: "user-A",
+    content: { env: "staging" },
+  });
+  abort.abort();
 });

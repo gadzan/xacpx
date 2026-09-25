@@ -777,6 +777,9 @@ export class DiscordChannel implements MessageChannelRuntime {
       submitGateClosed: false,
       visitedReview: false,
       reviewPage: 0,
+      // The opening card is revision 1, so the first field/review card is 2 and a
+      // control that never carried a revision is distinguishable from one that did.
+      renderRevision: 1,
       settled: false,
       resolve: settle,
       reject: rejectPromise,
@@ -950,10 +953,6 @@ export class DiscordChannel implements MessageChannelRuntime {
     if (!parsed) return;
     const entry = this.pendingElicitations.get(parsed.token);
     if (!entry) return;
-    const runtime = (entry.accountId ? this.accounts.get(entry.accountId) : undefined)
-      ?? [...this.accounts.values()][0];
-    if (!runtime) return;
-
     const outcome: ElicitationClickOutcome = await handleElicitationClick({
       interaction,
       pending: this.pendingElicitations,
@@ -985,8 +984,7 @@ export class DiscordChannel implements MessageChannelRuntime {
     // Serialized per elicitation: see `elicitationRenderQueues`. The token (not
     // the requestId) is the key because it is the correlation handle for one
     // pending card, and a request never has two.
-    await this.enqueueElicitationRender(entry.token, () =>
-      this.rerenderElicitationCard(entry, runtime, parsed.action, parsed.fieldIndex));
+    await this.enqueueElicitationTransition(entry, parsed.action, parsed.fieldIndex);
   }
 
   /**
@@ -1008,6 +1006,36 @@ export class DiscordChannel implements MessageChannelRuntime {
     return next;
   }
 
+  /** Resolve the account runtime that owns this entry's card. */
+  private elicitationRuntime(entry: PendingDiscordElicitation): AccountRuntime {
+    return (entry.accountId ? this.accounts.get(entry.accountId) : undefined)
+      ?? [...this.accounts.values()][0]!;
+  }
+
+  /**
+   * Allocate a card revision at ENQUEUE time, and return the render to queue.
+   *
+   * Allocating when the transition RUNS cannot work: a transition that was queued
+   * first has already been overtaken by later interactions by the time it is
+   * allowed to run, so it would allocate the newest number and publish stale card
+   * text over the newer card. Allocating here — while the interaction that caused
+   * it is still the newest thing that happened — is what makes the queue order and
+   * the revision order agree.
+   *
+   * The card the transition draws therefore names the revision of the interaction
+   * it came from, and the supersede guard inside `rerenderElicitationCard` lets
+   * only the newest revision publish.
+   */
+  private enqueueElicitationTransition(
+    entry: PendingDiscordElicitation,
+    action: ElicitationUiAction,
+    fieldIndex?: number,
+  ): Promise<void> {
+    entry.renderRevision += 1;
+    return this.enqueueElicitationRender(entry.token, () =>
+      this.rerenderElicitationCard(entry, this.elicitationRuntime(entry), action, fieldIndex, entry.renderRevision));
+  }
+
   /**
    * Re-render the current wizard step in place, without settling.
    *
@@ -1023,15 +1051,23 @@ export class DiscordChannel implements MessageChannelRuntime {
     runtime: AccountRuntime,
     action: ElicitationUiAction,
     fieldIndex?: number,
+    /** Allocated at ENQUEUE time by the caller; see `enqueueElicitationTransition`. */
+    revision?: number,
   ): Promise<void> {
     const messageId = entry.messageId;
     if (!messageId || entry.settled) return;
+    // A transition whose revision was superseded before it could run publishes
+    // nothing. This is the guard that keeps a queued transition from painting a
+    // stale answer over the newer card the user is looking at.
+    if (revision !== undefined && entry.renderRevision !== revision) return;
     // A settled entry ends inert. Every step below re-checks, because a terminal
     // render may land WHILE this transition is parked on a transport `await`:
     // by the time it resumes, the card on screen is already Cancelled, and
     // repainting it would restore interactive content that was just withdrawn —
     // including any answers the review was showing.
     const live = (): boolean => !entry.settled;
+    // The revision this card is drawn at, already allocated by the enqueue path.
+    const cardRevision = revision ?? entry.renderRevision;
     let card: {
       content: string;
       /** Extra chunks past the first; empty when the card fits in one message. */
@@ -1047,7 +1083,7 @@ export class DiscordChannel implements MessageChannelRuntime {
     } => {
       const field = entry.request.fields.find((f) => f.key === key);
       if (!field) throw new Error(`wizard field ${JSON.stringify(key)} is not in the request`);
-      return buildElicitationFieldCard(entry.request, entry.token, field, entry.request.fields.indexOf(field) + 1, entry.values[field.key]);
+      return buildElicitationFieldCard(entry.request, entry.token, field, entry.request.fields.indexOf(field) + 1, entry.values[field.key], cardRevision);
     };
     switch (action) {
       case "start": {
@@ -1059,7 +1095,7 @@ export class DiscordChannel implements MessageChannelRuntime {
           // Returning here left the user with Decline/Cancel and no way to
           // confirm, which turned a legal form into a timeout.
           entry.visitedReview = true;
-          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, 0);
+          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, 0, { revision: cardRevision });
           break;
         }
         card = fieldCard(entry.currentField);
@@ -1085,9 +1121,9 @@ export class DiscordChannel implements MessageChannelRuntime {
         // rather than a truncated one.
         if (fieldIndex !== undefined) {
           entry.reviewPage = fieldIndex;
-          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, fieldIndex);
+          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, fieldIndex, { revision: cardRevision });
         } else {
-          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, entry.reviewPage);
+          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, entry.reviewPage, { revision: cardRevision });
         }
         break;
       }
@@ -1097,7 +1133,7 @@ export class DiscordChannel implements MessageChannelRuntime {
         const next = entry.currentField ?? nextUnresolvedKey(entry);
         if (next === undefined) {
           entry.visitedReview = true;
-          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, entry.reviewPage);
+          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, entry.reviewPage, { revision: cardRevision });
           break;
         }
         entry.currentField = next;
@@ -1108,7 +1144,7 @@ export class DiscordChannel implements MessageChannelRuntime {
         // The field card's Next. Navigation back to a field is the review card's
         // own `edit`/`page` controls, so this is a one-way forward step.
         entry.visitedReview = true;
-        card = buildElicitationReviewCard(entry.request, entry.token, entry.values, entry.reviewPage);
+        card = buildElicitationReviewCard(entry.request, entry.token, entry.values, entry.reviewPage, { revision: cardRevision });
         break;
       }
       default:
@@ -1152,7 +1188,7 @@ export class DiscordChannel implements MessageChannelRuntime {
           entry.token,
           entry.values,
           entry.reviewPage,
-          { submitDisabled: true },
+          { submitDisabled: true, revision: cardRevision },
         );
         await runtime.client.editMessage(entry.target, messageId, {
           content: gated.content,
@@ -1299,7 +1335,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       // Select kinds are answered in place; there is nothing to open a modal for.
       return;
     }
-    const modal = buildElicitationModal(entry.token, field, entry.values[field.key], fieldIndex);
+    const modal = buildElicitationModal(entry.token, field, entry.values[field.key], fieldIndex, entry.renderRevision);
     try {
       await interaction.showModal(modal);
     } catch (error) {
@@ -1330,6 +1366,23 @@ export class DiscordChannel implements MessageChannelRuntime {
     if (!entry) return;
     if (authorizeElicitationClick(entry, interaction.userId) !== null) {
       await interaction.replyEphemeral(getMessages().elicitationUnauthorized);
+      return;
+    }
+    // CARD REVISION FENCE. A select is a STATE WRITE, not a rerender trigger: it
+    // records an answer directly and the render queue does not serialise it. A
+    // select delivered after the wizard moved on would therefore record a value
+    // the user is no longer looking at — `prod -> Review -> Edit -> staging ->
+    // Review -> delayed old select(prod)` left memory at prod while the Review on
+    // screen showed staging, and the next Submit sent the value the user had
+    // already replaced. Dropping it is the honest outcome: the card the user is
+    // on still has its own live select.
+    if (parsed.revision !== undefined && parsed.revision < entry.renderRevision) {
+      await this.logger?.warn("discord.elicitation.stale_select", "dropped a select from an earlier card revision", {
+        requestId: entry.requestId,
+        interactionRevision: parsed.revision,
+        currentRevision: entry.renderRevision,
+      });
+      await interaction.acknowledge();
       return;
     }
     const field = entry.request.fields[parsed.fieldIndex];
@@ -1382,6 +1435,19 @@ export class DiscordChannel implements MessageChannelRuntime {
     if (!entry) return;
     if (authorizeElicitationClick(entry, interaction.userId) !== null) {
       await interaction.replyEphemeral(getMessages().elicitationUnauthorized);
+      return;
+    }
+    // CARD REVISION FENCE, for the same reason as the select: a modal submit is a
+    // STATE WRITE. A modal left open across an Edit can be submitted after the
+    // wizard has moved on, and honouring it would overwrite the newer answer with
+    // whatever the old modal was showing.
+    if (parsed.revision !== undefined && parsed.revision < entry.renderRevision) {
+      await this.logger?.warn("discord.elicitation.stale_modal", "dropped a modal submit from an earlier card revision", {
+        requestId: entry.requestId,
+        modalRevision: parsed.revision,
+        currentRevision: entry.renderRevision,
+      });
+      await interaction.replyEphemeral(getMessages().elicitationReviewUpdating);
       return;
     }
     // A modal custom id is `<prefix><token>:modal`, so the field identity comes

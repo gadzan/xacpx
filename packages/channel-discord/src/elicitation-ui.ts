@@ -94,9 +94,9 @@ export function createElicitationToken(): string {
 }
 
 /**
- * Build a custom id from token + routing identity only. Deliberately has no
- * slot for a field value: a `custom_id` is echoed in every interaction payload,
- * so encoding an answer there would leak it into Discord's own logs.
+ * Build a custom id from token + revision + routing identity only. Deliberately
+ * has no slot for a field value: a `custom_id` is echoed in every interaction
+ * payload, so encoding an answer there would leak it into Discord's own logs.
  *
  * `fieldIndex` is a POSITION, never the schema key. Core guarantees a key is a
  * bounded JSON property name and nothing more — `env.prod`, `a/b` and keys past
@@ -104,17 +104,32 @@ export function createElicitationToken(): string {
  * stripping it, then matching the stripped form back against the original, which
  * silently lost the field. An index is always expressible, and the pending state
  * maps it back to the exact field.
+ *
+ * `revision` is the card REVISION this control was drawn on. Discord serialises
+ * UI renders but not the answer state they write, so a select or modal answer
+ * that arrives after the wizard has moved on would otherwise record a value the
+ * user is no longer looking at — `prod -> Review -> Edit -> staging -> Review ->
+ * delayed old select(prod)` left memory holding prod while the review card on
+ * screen showed staging, and the next Submit sent what the user never saw.
+ * Encoding the revision makes every control a statement about the card it came
+ * from, which is the only way the write can be validated.
  */
-export function elicitationCustomId(token: string, action: ElicitationUiAction, fieldIndex?: number): string {
+export function elicitationCustomId(
+  token: string,
+  action: ElicitationUiAction,
+  fieldIndex?: number,
+  revision?: number,
+): string {
+  const revisionSegment = revision === undefined ? "" : `:${revision}`;
   if (action === "page" || action === "next" || action === "skip") {
     if (fieldIndex === undefined || !Number.isInteger(fieldIndex) || fieldIndex < 0) {
       throw new Error(`elicitation custom id action "${action}" requires a page index`);
     }
-    return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ACTION_SEGMENTS[action]}:${fieldIndex}`;
+    return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ACTION_SEGMENTS[action]}:${fieldIndex}${revisionSegment}`;
   }
   if (action !== "field" && action !== "edit") {
     if (fieldIndex !== undefined) throw new Error(`elicitation custom id must not carry a field for action "${action}"`);
-    return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ACTION_SEGMENTS[action]}`;
+    return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ACTION_SEGMENTS[action]}${revisionSegment}`;
   }
   if (fieldIndex === undefined || !Number.isInteger(fieldIndex) || fieldIndex < 0) {
     throw new Error(`elicitation custom id action "${action}" requires a field index`);
@@ -122,12 +137,12 @@ export function elicitationCustomId(token: string, action: ElicitationUiAction, 
   // Bounded so a pathological field count cannot overflow the id; Discord caps
   // custom ids at 100 chars and this stays far inside it.
   const boundedIndex = Math.min(fieldIndex, 999).toString();
-  return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ACTION_SEGMENTS[action]}:${boundedIndex}`;
+  return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ACTION_SEGMENTS[action]}:${boundedIndex}${revisionSegment}`;
 }
 
 /** Custom id for the modal wrapper itself; the field identity rides inside. */
-export function elicitationModalCustomId(token: string): string {
-  return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ELICITATION_MODAL_ACTION}`;
+export function elicitationModalCustomId(token: string, revision?: number): string {
+  return `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${ELICITATION_MODAL_ACTION}${revision === undefined ? "" : `:${revision}`}`;
 }
 
 /**
@@ -145,14 +160,14 @@ export function elicitationFieldCustomId(fieldIndex: number): string {
 
 export function parseElicitationCustomId(
   customId: string,
-): { token: string; action: ElicitationUiAction; fieldIndex?: number } | null {
+): { token: string; action: ElicitationUiAction; fieldIndex?: number; revision?: number } | null {
   if (!customId.startsWith(ELICITATION_CUSTOM_ID_PREFIX)) return null;
   const rest = customId.slice(ELICITATION_CUSTOM_ID_PREFIX.length);
-  // Layout is `<token>:<action>[:<fieldIndex>]`. The token is a fixed 32-char hex
-  // slug, so it is read FIRST rather than by "split on the last colon" (the
-  // permission shape): token length is known, and the action/field segments are
-  // then unambiguous. Splitting on the last colon would leak a field identity
-  // into the token slot and silently mis-route the callback.
+  // Layout is `<token>:<action>[:<fieldIndex>][:revision]`. The token is a fixed
+  // 32-char hex slug, so it is read FIRST rather than by "split on the last
+  // colon" (the permission shape): token length is known, and the action/field
+  // segments are then unambiguous. Splitting on the last colon would leak a field
+  // identity into the token slot and silently mis-route the callback.
   const tokenPattern = /^[0-9a-f]{32}/;
   const match = tokenPattern.exec(rest);
   if (!match) return null;
@@ -162,13 +177,25 @@ export function parseElicitationCustomId(
   const segments = tail.slice(1).split(":");
   const action = segments[0];
   let fieldIndex: number | undefined;
+  let revision: number | undefined;
+  // HELPERS
+  const readRevision = (slot: number): boolean => {
+    const raw = segments[slot];
+    if (raw === undefined) return true;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 0) return false;
+    revision = value;
+    return true;
+  };
   switch (action) {
     case "start":
     case "review":
     case "submit":
     case "decline":
     case "cancel":
-      if (segments.length !== 1) return null;
+      // One or two segments: the action alone, plus an optional revision.
+      if (segments.length !== 1 && segments.length !== 2) return null;
+      if (!readRevision(1)) return null;
       break;
     // POSITIONAL, like `field`/`edit`/`next`. `skip` used to carry no field
     // identity and resolved the field from the shared `entry.currentField`
@@ -182,14 +209,48 @@ export function parseElicitationCustomId(
     case "edit":
     case "page":
     case "next":
-      if (segments.length !== 2) return null;
+      // Two or three: field/page index, plus an optional revision.
+      if (segments.length !== 2 && segments.length !== 3) return null;
       fieldIndex = Number(segments[1]);
       if (!Number.isInteger(fieldIndex) || fieldIndex < 0) return null;
+      if (!readRevision(2)) return null;
       break;
     default:
       return null;
   }
-  return { token, action: action as ElicitationUiAction, ...(fieldIndex !== undefined ? { fieldIndex } : {}) };
+  return {
+    token,
+    action: action as ElicitationUiAction,
+    ...(fieldIndex !== undefined ? { fieldIndex } : {}),
+    ...(revision !== undefined ? { revision } : {}),
+  };
+}
+
+/**
+ * Parse the modal wrapper custom id back to its token and revision.
+ *
+ * The layout is `<prefix><token>:modal[:revision]`. The field identity does NOT
+ * ride here — it comes from the Text Input ids in the submit payload — so this
+ * only recovers the correlation handle and the revision the modal was opened
+ * from, which the handler uses to reject a modal submitted after the card moved
+ * on.
+ */
+export function parseElicitationModalCustomId(
+  customId: string,
+): { token: string; revision?: number } | null {
+  if (!customId.startsWith(ELICITATION_CUSTOM_ID_PREFIX)) return null;
+  const rest = customId.slice(ELICITATION_CUSTOM_ID_PREFIX.length);
+  const tokenPattern = /^[0-9a-f]{32}:modal/;
+  const match = tokenPattern.exec(rest);
+  if (!match) return null;
+  const token = match[0].slice(0, 32);
+  const rest_ = rest.slice(match[0].length);
+  if (rest_ === "") return { token };
+  if (!rest_.startsWith(":")) return null;
+  const raw = rest_.slice(1);
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) return null;
+  return { token, revision: value };
 }
 
 /**
@@ -343,7 +404,11 @@ export function chunkCardText(text: string, limit = MAX_CARD_CHARS): string[] {
  * agent's message is the question the user is answering; cutting it would change
  * what they were asked.
  */
-export function buildElicitationOpening(request: ChannelElicitationRequest, token: string): {
+export function buildElicitationOpening(
+  request: ChannelElicitationRequest,
+  token: string,
+  revision?: number,
+): {
   content: string;
   /** All chunks; the first is `content`, and each further one is sent after it. */
   contents: string[];
@@ -362,9 +427,9 @@ export function buildElicitationOpening(request: ChannelElicitationRequest, toke
     .join("\n");
   if (summary) lines.push(summary);
   const components = actionRow([
-    { label: messages.elicitationStart, customId: elicitationCustomId(token, "start"), style: 3 },
-    { label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 },
-    { label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 },
+    { label: messages.elicitationStart, customId: elicitationCustomId(token, "start", undefined, revision), style: 3 },
+    { label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline", undefined, revision), style: 2 },
+    { label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel", undefined, revision), style: 1 },
   ]);
   const chunks = chunkCardText(lines.join("\n\n"));
   return { content: chunks[0]!, contents: chunks, components };
@@ -385,6 +450,7 @@ export function buildElicitationFieldCard(
   field: ChannelElicitationField,
   index: number,
   current: ChannelElicitationValue | undefined,
+  revision?: number,
 ): {
   content: string;
   /**
@@ -445,12 +511,12 @@ export function buildElicitationFieldCard(
     fieldControls.push({ label: truncate(messages.elicitationPrevField, 80), customId: elicitationCustomId(token, "edit", position - 1), style: 2 });
   }
   if (position < totalFields - 1) {
-    fieldControls.push({ label: truncate(messages.elicitationNextField, 80), customId: elicitationCustomId(token, "next", position + 1), style: 3 });
+    fieldControls.push({ label: truncate(messages.elicitationNextField, 80), customId: elicitationCustomId(token, "next", position + 1, revision), style: 3 });
   }
-  fieldControls.push({ label: messages.elicitationNext, customId: elicitationCustomId(token, "review"), style: 2 });
+  fieldControls.push({ label: messages.elicitationNext, customId: elicitationCustomId(token, "review", undefined, revision), style: 2 });
   const terminalControls: Array<{ label: string; customId: string; style: 1 | 2 | 3 | 4 }> = [
-    { label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 },
-    { label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 },
+    { label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline", undefined, revision), style: 2 },
+    { label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel", undefined, revision), style: 1 },
   ];
   const chunked = chunkCardText(lines.join("\n\n"));
   // A field card is ONE message, and it must stay that way.
@@ -479,9 +545,9 @@ export function buildElicitationFieldCard(
     contents: chunked,
     components: [...actionRow(fieldControls), ...actionRow(terminalControls)],
     selectRows: isSelect
-      ? buildElicitationSelectRows(token, field, current, position)
+      ? buildElicitationSelectRows(token, field, current, position, revision)
       : isBoolean
-        ? buildElicitationBooleanRows(token, field, current, position)
+        ? buildElicitationBooleanRows(token, field, current, position, revision)
         : [],
     modalAction: !isSelect && !isBoolean,
   };
@@ -498,6 +564,7 @@ export function buildElicitationBooleanRows(
   current: ChannelElicitationValue | undefined,
   /** 0-based position, used as the control's routing identity (never the key). */
   fieldIndex: number,
+  revision?: number,
 ): DiscordSelectActionRow[] {
   const messages = getMessages();
   const selected = typeof current === "boolean" ? String(current) : undefined;
@@ -507,7 +574,7 @@ export function buildElicitationBooleanRows(
       components: [
         {
           type: 3 as const,
-          customId: elicitationCustomId(token, "field", fieldIndex),
+          customId: elicitationCustomId(token, "field", fieldIndex, revision),
           placeholder: truncate(field.title, DISCORD_SELECT_PLACEHOLDER_MAX),
           options: [
             { label: messages.elicitationYes, value: "true", ...(selected === "true" ? { default: true } : {}) },
@@ -533,7 +600,7 @@ export function buildElicitationReviewCard(
   token: string,
   values: Record<string, ChannelElicitationValue>,
   page = 0,
-  options: { submitDisabled?: boolean } = {},
+  options: { submitDisabled?: boolean; revision?: number } = {},
 ): {
   content: string;
   /**
@@ -578,12 +645,12 @@ export function buildElicitationReviewCard(
   const controls: Array<{ label: string; customId: string; style: 1 | 2 | 3 | 4; disabled?: boolean }> = pageFields
     .map((field) => ({
       label: truncate(escapeDiscordLiteralText(`${messages.elicitationEdit}: ${field.title}`), 80),
-      customId: elicitationCustomId(token, "edit", request.fields.indexOf(field)),
+      customId: elicitationCustomId(token, "edit", request.fields.indexOf(field), options.revision),
       style: 2 as const,
     }));
   controls.push({
     label: messages.elicitationSubmit,
-    customId: elicitationCustomId(token, "submit"),
+    customId: elicitationCustomId(token, "submit", undefined, options.revision),
     style: 3,
     // A disabled Submit is the transactional gate for multi-message reviews.
     // Continuation edits happen in place, so a failure part-way through leaves
@@ -592,8 +659,8 @@ export function buildElicitationReviewCard(
     // which would let the user approve content they were never shown intact.
     ...(options.submitDisabled ? { disabled: true } : {}),
   });
-  controls.push({ label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline"), style: 2 });
-  controls.push({ label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel"), style: 1 });
+  controls.push({ label: messages.elicitationDecline, customId: elicitationCustomId(token, "decline", undefined, options.revision), style: 2 });
+  controls.push({ label: messages.elicitationCancel, customId: elicitationCustomId(token, "cancel", undefined, options.revision), style: 1 });
   const rows = [actionRow(controls)];
   // Paging lives on its own row so it never costs a field slot.
   if (hasPaging) {
@@ -669,6 +736,7 @@ export function buildElicitationSelectRows(
   current: ChannelElicitationValue | undefined,
   /** 0-based position, used as the control's routing identity (never the key). */
   fieldIndex: number,
+  revision?: number,
 ): DiscordSelectActionRow[] {
   const selected = current === undefined
     ? []
@@ -691,7 +759,7 @@ export function buildElicitationSelectRows(
       components: [
         {
           type: 3 as const,
-          customId: elicitationCustomId(token, "field", fieldIndex),
+          customId: elicitationCustomId(token, "field", fieldIndex, revision),
           placeholder: truncate(field.title, DISCORD_SELECT_PLACEHOLDER_MAX),
           ...(field.kind === "multi-select"
             ? {
@@ -763,12 +831,13 @@ export function buildElicitationModal(
   field: ChannelElicitationField,
   current: ChannelElicitationValue | undefined,
   fieldIndex: number,
+  revision?: number,
 ): ShowModalInput {
   const messages = getMessages();
   const prefill = typeof current === "string" ? current : typeof field.defaultValue === "string" ? field.defaultValue : "";
   return {
     title: truncate(messages.elicitationTitle, 45),
-    customId: elicitationModalCustomId(token),
+    customId: elicitationModalCustomId(token, revision),
     components: [
       {
         // 45 characters is the platform's label cap, already enforced by the
@@ -850,21 +919,6 @@ export function parseModalAnswer(field: ChannelElicitationField, raw: string): C
 }
 
 /**
- * Parse a modal submit's custom id.
- *
- * Separate from `parseElicitationCustomId` because a modal id legitimately
- * resolves to no button action: it must not be coerced into one. A modal whose
- * id does not match exactly is dropped rather than guessed at.
- */
-export function parseElicitationModalCustomId(customId: string): { token: string } | null {
-  if (!customId.startsWith(ELICITATION_CUSTOM_ID_PREFIX)) return null;
-  const rest = customId.slice(ELICITATION_CUSTOM_ID_PREFIX.length);
-  const match = /^([0-9a-f]{32}):modal$/.exec(rest);
-  if (!match) return null;
-  return { token: match[1]! };
-}
-
-/**
  * Authorization for a single interaction, independent of the action taken.
  *
  * Returns null when the caller may act. Otherwise returns the bounded reason,
@@ -933,6 +987,27 @@ export async function handleElicitationClick(input: ElicitationClickInput): Prom
     });
     await input.interaction.replyEphemeral(messages.elicitationUnauthorized);
     // Drop WITHOUT settling: the initiator must still be able to answer.
+    return { decided: false };
+  }
+  // CARD REVISION FENCE.
+  //
+  // An interaction that names an OLDER revision came from a card the wizard has
+  // already replaced. Honouring it would let a stale navigation land the user
+  // somewhere other than where they clicked — and for `submit`, accept a form
+  // whose answers have since been edited.
+  //
+  // The render queue serialises the TRANSITIONS, not the interactions that
+  // trigger them: two clicks can be handled concurrently and the second one's
+  // rerender only starts after the first's has finished. So the interaction that
+  // raced ahead is still holding a control from the previous card.
+  if (parsed.revision !== undefined && parsed.revision < entry.renderRevision) {
+    input.log?.("discord.elicitation.stale_interaction", "dropped an interaction from an earlier card revision", {
+      requestId: entry.requestId,
+      interactionRevision: parsed.revision,
+      currentRevision: entry.renderRevision,
+      action: parsed.action,
+    });
+    await input.interaction.acknowledge();
     return { decided: false };
   }
 

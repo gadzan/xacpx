@@ -83,6 +83,22 @@ export interface PendingDiscordElicitation {
    */
   reviewPage: number;
   /**
+   * The revision of the card most recently drawn for this request.
+   *
+   * Discord's render queue serialises UI transitions, but it does NOT serialise
+   * the answer state those transitions write. So a select or modal answer that
+   * arrives after the wizard has moved on would record a value the user is no
+   * longer looking at: `prod -> Review -> Edit -> staging -> Review -> delayed
+   * old select(prod)` left memory holding prod while the Review card on screen
+   * still showed staging, and the next Submit sent what the user never saw.
+   *
+   * Every interactive control carries the revision of the card it was drawn on,
+   * and a state-mutating interaction that names an OLDER revision is dropped
+   * rather than applied. Bumped by each rerender, so the number is a revision of
+   * the card rather than a count of interactions.
+   */
+  renderRevision: number;
+  /**
    * Whether the wizard has shown the review page. Distinguishes the review
    * control's two intents (Next forward vs. Edit back) without adding a second
    * control whose action could be confused with a field action.
