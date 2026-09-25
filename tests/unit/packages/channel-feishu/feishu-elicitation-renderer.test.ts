@@ -1486,9 +1486,11 @@ test("a failed card update leaves the visible card usable, and a lost acknowledg
   );
   const { entry, token } = await pendingEntry(rec);
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
-  const generationOnScreen = entry.renderGeneration;
   // Answer the single field, so the form reaches review fully answered.
-  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: generationOnScreen }, formValues: { f0: "staging" } });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: entry.renderGeneration }, formValues: { f0: "staging" } });
+  // The review render that save produced is what the user is now looking at, so
+  // the generation is read AFTER it rather than before.
+  const generationOnScreen = entry.renderGeneration;
   // From here on every render FAILS.
   let failureCount = 0;
   (rec.transport as { updateCard: unknown }).updateCard = async (input: never) => {
@@ -1499,8 +1501,8 @@ test("a failed card update leaves the visible card usable, and a lost acknowledg
   // fails, so the user is still looking at the PREVIOUS card.
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "field", f: 0 }, formValues: {} });
   expect(failureCount).toBe(1);
-  // The failed render did NOT advance the generation, so the card still on
-  // screen is the current one and its controls are not refused.
+  // The failed render's reservation was ROLLED BACK, so the generation still
+  // points at the card on screen and that card's controls are not refused.
   expect(entry.renderGeneration).toBe(generationOnScreen);
   // Retrying on the very card the user can still see works.
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: generationOnScreen }, formValues: { f0: "prod" } });
@@ -1513,13 +1515,18 @@ test("a failed card update leaves the visible card usable, and a lost acknowledg
   // No-op: the promotion assertion is about the callback being ACCEPTED, not
   // about a render landing.
   (rec.transport as { updateCard: unknown }).updateCard = async () => {};
+  // Strictly above everything drawn so far, so the assertion is about the
+  // promotion rather than an exact render count.
+  const promotedGeneration = entry.renderGeneration + 5;
   const promoted = await rec.renderer.handleAction({
     openId: "ou_initiator",
-    value: { t: token, a: "save", g: generationOnScreen + 5 },
+    value: { t: token, a: "save", g: promotedGeneration },
     formValues: { f0: "staging" },
   });
   expect(promoted.handled).toBe(true);
-  expect(entry.renderGeneration).toBe(generationOnScreen + 5);
+  // At LEAST the promoted generation: the save's own review render reserves a
+  // further number, so the entry can legitimately sit above it.
+  expect(entry.renderGeneration).toBeGreaterThanOrEqual(promotedGeneration);
   expect(entry.values.env).toBe("staging");
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   expect(await promise).toEqual({
@@ -1582,5 +1589,83 @@ test("a save or skip with no generation is refused by the parser", () => {
     renderGeneration: 3,
   });
 });
+test("a delayed acknowledgement for an earlier render cannot regress the generation", async () => {
+  // A card update's acknowledgement can be far slower than the ones that follow
+  // it, so a commit on acknowledgement must be monotonic: assigning the number an
+  // EARLIER render was drawn with after the entry has moved on would walk the
+  // generation BACKWARDS, which reopens the stale-callback fence — a replay the
+  // fence had refused stops satisfying `< entry.renderGeneration`, and the old
+  // value overwrites the newer answer.
+  //
+  // This holds the first render's acknowledgement open while later renders
+  // complete, then asserts the entry never reports a generation below the highest
+  // one it has drawn.
+  const rec = makeRenderer();
+  const promise = rec.renderer.requestElicitation(request(ENV_FIELD), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { entry, token } = await pendingEntry(rec);
 
+  // The first update's acknowledgement is held open: the platform has applied the
+  // card, but its completion is not signalled until the test releases it.
+  const held: Array<() => void> = [];
+  const realUpdate = rec.transport.updateCard.bind(rec.transport);
+  let firstUpdateSeen = false;
+  (rec.transport as { updateCard: unknown }).updateCard = async (input: never) => {
+    if (!firstUpdateSeen) {
+      firstUpdateSeen = true;
+      await new Promise<void>((resolve) => { held.push(resolve); });
+    }
+    return realUpdate(input);
+  };
 
+  // Start -> field card. Its acknowledgement is the held one, and the generation
+  // it was drawn with is reserved before the update is even issued.
+  const startClick = rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  expect(firstUpdateSeen).toBe(true);
+  const heldCardGeneration = entry.renderGeneration;
+  expect(heldCardGeneration).toBeGreaterThan(1);
+
+  // Save from that card: the generation the user is actually on, and legitimate
+  // right now. This render's acknowledgement settles normally.
+  const firstSave = { t: token, a: "save", g: heldCardGeneration };
+  const saveClick = rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: firstSave,
+    formValues: { f0: "prod" },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  // The entry has drawn and committed a strictly higher generation while the first
+  // acknowledgement is still outstanding.
+  expect(entry.renderGeneration).toBeGreaterThan(heldCardGeneration);
+  const climbedGeneration = entry.renderGeneration;
+
+  // NOW the held acknowledgement for the FIRST render is released. Its commit runs
+  // with `nextGeneration` equal to the generation that card was drawn with, which
+  // is LOWER than what the entry already holds.
+  held.shift()!();
+  await Promise.all([startClick, saveClick]);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+
+  // The generation did not regress below the highest generation drawn. This is the
+  // assertion the non-monotonic commit fails.
+  expect(entry.renderGeneration).toBeGreaterThanOrEqual(climbedGeneration);
+  // And the save from the earlier card is therefore still correctly recognised as
+  // stale, so `prod` cannot overwrite the answer the user has since given.
+  const replay = await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: firstSave,
+    formValues: { f0: "prod" },
+  });
+  expect(replay.handled).toBe(false);
+  expect(entry.values.env).toBe("prod");
+
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(await promise).toEqual({
+    action: "accept",
+    responderId: "ou_initiator",
+    content: { env: "prod" },
+  });
+});
