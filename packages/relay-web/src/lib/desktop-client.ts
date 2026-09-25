@@ -86,12 +86,33 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
       wsProtocols: ["binary"],
     });
     if (input.security === "vnc-auth") {
-      const narrow = rfbInstance as unknown as { _isSupportedSecurityType?: (type: number) => boolean };
+      const narrow = rfbInstance as unknown as {
+        _isSupportedSecurityType?: (type: number) => boolean;
+        _negotiateAuthentication?: () => boolean;
+        _fail?: (details: string) => boolean;
+        _rfbAuthScheme?: number;
+      };
       const base = narrow._isSupportedSecurityType?.bind(rfbInstance);
       narrow._isSupportedSecurityType = (type: number) =>
         type === 2 && (base ? base(type) : true);
+      // RFB 3.3 never calls _isSupportedSecurityType: the server dictates
+      // the u32 scheme and noVNC jumps straight to Authentication. A second
+      // connection that swaps type 2 for None/Tight after a passing probe
+      // (TOCTOU) would otherwise complete with no password. Fail closed on
+      // the ACTUAL scheme at Authentication entry, so 3.3 and 3.7+ share
+      // one final constraint instead of trusting the probe verdict.
+      const baseAuth = narrow._negotiateAuthentication?.bind(rfbInstance);
+      if (baseAuth) {
+        narrow._negotiateAuthentication = () => {
+          if (narrow._rfbAuthScheme !== 2) {
+            return narrow._fail?.(
+              `Refusing desktop auth scheme ${String(narrow._rfbAuthScheme)} (only outer VncAuth is allowed)`,
+            ) ?? false;
+          }
+          return baseAuth();
+        };
+      }
     }
-    rfb = rfbInstance;
     on("connect", () => {
       connected = true;
       hooks.onConnect?.();

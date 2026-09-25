@@ -10,7 +10,7 @@ vi.mock("../lib/desktop-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/desktop-client")>();
   return {
     ...actual,
-    connectDesktopRfb: vi.fn((input: unknown) => actual.connectDesktopRfb(input as never)),
+    connectDesktopRfb: vi.fn((input: DesktopRfbConnectInput) => actual.connectDesktopRfb(input)),
   };
 });
 vi.mock("../api/events", async (importOriginal) => {
@@ -82,6 +82,55 @@ describe("DesktopTab", () => {
     expect(instances[0]?.check(2)).toBe(true);
     expect(instances[0]?.check(16)).toBe(false);
     expect(instances[0]?.check(1)).toBe(false);
+    conn.dispose();
+  });
+
+  it("fails closed when the real tunnel presents a non-VncAuth scheme at Authentication entry (RFB 3.3 TOCTOU)", async () => {
+    interface FakeInstance {
+      _rfbAuthScheme: number;
+      _failReason?: string;
+      _negotiateAuthentication: () => boolean;
+    }
+    const instances: FakeInstance[] = [];
+    const FakeRfb = function FakeRfb(this: unknown) {
+      const self = this as unknown as FakeInstance & {
+        _isSupportedSecurityType: (type: number) => boolean;
+        _fail: (details: string) => boolean;
+      };
+      self._isSupportedSecurityType = () => true;
+      self._rfbAuthScheme = -1;
+      self._negotiateAuthentication = () => true;
+      self._fail = (details: string) => { self._failReason = details; return false; };
+      instances.push(self);
+    } as unknown as new (
+      target: HTMLElement,
+      url: string,
+      options: Record<string, unknown>,
+    ) => NoVncRfb;
+    const { connectDesktopRfb: mocked } = await import("../lib/desktop-client");
+    const real = (mocked as unknown as MockedFunction<(input: DesktopRfbConnectInput) => DesktopRfbConnection>).getMockImplementation?.();
+    if (!real) throw new Error("connectDesktopRfb mock missing passthrough");
+    const conn = real({
+      url: "wss://hub/desktop/observe?ticket=t",
+      security: "vnc-auth",
+      loadNoVnc: async () => ({ default: FakeRfb }),
+    });
+    await vi.waitFor(() => expect(instances.length).toBe(1));
+    const rfb = instances[0];
+    if (!rfb) throw new Error("no tunneled session captured");
+    // Scheme 2 (probe verdict) still enters Authentication normally.
+    rfb._rfbAuthScheme = 2;
+    expect(rfb._negotiateAuthentication()).toBe(true);
+    expect(rfb._failReason).toBeUndefined();
+    // TOCTOU: second connection swaps type 2 for None after a passing probe.
+    // RFB 3.3 never consults _isSupportedSecurityType; the Authentication
+    // entry guard must fail closed instead of completing with no password.
+    for (const scheme of [1, 16, 0, -1]) {
+      rfb._rfbAuthScheme = scheme;
+      rfb._failReason = undefined;
+      expect(rfb._negotiateAuthentication()).toBe(false);
+      expect(rfb._failReason).toMatch(/only outer VncAuth is allowed/);
+    }
     conn.dispose();
   });
 });
