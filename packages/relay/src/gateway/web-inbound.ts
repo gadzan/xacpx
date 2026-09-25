@@ -16,6 +16,8 @@ import {
   type WebAgentDirectoryEndpointDto,
   type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
+import { type WebGateway, type WebSocketLike } from "./web-gateway.js";
+import { TERMINAL_REQUEST_TIMEOUT_MS } from "./instance-gateway.js";
 
 export interface WebClientDeps {
   instances: {

@@ -309,7 +309,7 @@ async function openHubSocket(createSocket: (url: string) => WebSocket, url: stri
     const detach = () => {
       clearTimeout(timer);
       socket.removeListener("error", guard);
-      socket.removeListener("error", onError as (...args: never[]) => void);
+      socket.removeListener("error", onError as (...args: unknown[]) => void);
       socket.removeListener("close", onClose);
     };
     const onError = (err: unknown) => {

@@ -69,6 +69,20 @@ var TERMINAL_RPC_TIMEOUT_MS = 60000;
 var TERMINAL_KILL_CONFIRM_TIMEOUT_MS = 5000;
 var MAX_CAPABILITIES = 32;
 var MAX_CAPABILITY_LENGTH = 128;
+var MAX_DESKTOP_REQUEST_ID_LENGTH = 128;
+var MAX_DESKTOP_STREAM_ID_LENGTH = 128;
+var MAX_DESKTOP_TICKET_LENGTH = 128;
+var MAX_DESKTOP_WS_PATH_LENGTH = 512;
+var MAX_DESKTOP_ERROR_MESSAGE_LENGTH = 512;
+var DESKTOP_TICKET_TTL_MS = 60000;
+var DESKTOP_HUB_REQUEST_TIMEOUT_MS = 1e4;
+var DESKTOP_RPC_TIMEOUT_MS = 15000;
+var DESKTOP_MAX_STREAMS_PER_INSTANCE = 1;
+var DESKTOP_MAX_STREAMS_PER_ACCOUNT = 8;
+var DESKTOP_WS_MAX_PAYLOAD_BYTES = 1 * 1024 * 1024;
+var DESKTOP_TCP_CHUNK_BYTES = 64 * 1024;
+var DESKTOP_BUFFERED_SOFT_PAUSE_BYTES = 2 * 1024 * 1024;
+var DESKTOP_BUFFERED_HARD_CLOSE_BYTES = 4 * 1024 * 1024;
 function maxBase64EncodedLength(maxDecodedBytes) {
   return 4 * Math.ceil(Math.max(0, maxDecodedBytes) / 3);
 }
@@ -145,6 +159,8 @@ var MSG = {
   terminalDetach: "instance.terminal.detach",
   terminalViewerEvent: "instance.terminal.viewer-event",
   terminalResourceExit: "instance.terminal.resource-exit",
+  desktopPrepare: "instance.desktop.prepare",
+  desktopCancel: "instance.desktop.cancel",
   instanceAgentEndpointsSync: "instance.agent-endpoints.sync",
   agentMessageRoute: "instance.agent-message.route",
   agentMessageDeliver: "instance.agent-message.deliver",
@@ -204,7 +220,8 @@ function normalizeCapabilities(raw) {
 }
 var RELAY_CAPABILITIES = {
   terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1",
-  terminalMultiViewV1: "terminal.multi-view.v1"
+  terminalMultiViewV1: "terminal.multi-view.v1",
+  desktopRfbV1: "desktop.rfb.v1"
 };
 var TERMINAL_ERROR_CODES = [
   "terminal-disabled",
@@ -222,6 +239,16 @@ var TERMINAL_ERROR_CODES = [
   "terminal-timeout",
   "instance-offline"
 ];
+var DESKTOP_ERROR_CODES = [
+  "desktop-disabled",
+  "desktop-busy",
+  "desktop-rfb-unavailable",
+  "desktop-not-rfb",
+  "desktop-auth-unsupported",
+  "desktop-stream-timeout",
+  "desktop-instance-offline",
+  "desktop-protocol-error"
+];
 // packages/relay-protocol/src/validate-primitives.ts
 var isObj = (v) => typeof v === "object" && v !== null;
 var isStr = (v) => typeof v === "string";
@@ -238,11 +265,11 @@ function decodeCanonicalBase64(encoded) {
     const binary = globalThis.atob(encoded);
     if (globalThis.btoa(binary) !== encoded)
       return null;
-    const decoded2 = new Uint8Array(binary.length);
+    const decoded = new Uint8Array(binary.length);
     for (let i = 0;i < binary.length; i++) {
-      decoded2[i] = binary.charCodeAt(i) & 255;
+      decoded[i] = binary.charCodeAt(i) & 255;
     }
-    return decoded2;
+    return decoded;
   }
   const BufferCtor = globalThis.Buffer;
   if (!BufferCtor)
@@ -287,7 +314,9 @@ var WEB_EVENT_KINDS = new Set([
   "terminal-rebase-end",
   "terminal-bytes",
   "terminal-role-changed",
-  "terminal-exit"
+  "terminal-exit",
+  "desktop-opened",
+  "desktop-request-failed"
 ]);
 var CONTROL_EVENT_TYPE_MAP = {
   "turn-output": true,
@@ -647,6 +676,9 @@ function validNotice(n) {
 function expectedRebaseChunkCount(totalBytes) {
   return totalBytes === 0 ? 0 : Math.ceil(totalBytes / TERMINAL_REBASE_CHUNK_BYTES);
 }
+function validDesktopSecurity(value) {
+  return value === "vnc-auth" || value === "ard";
+}
 function validTerminalRole(value) {
   return value === "controller" || value === "spectator";
 }
@@ -670,6 +702,16 @@ function validTargetedTerminalEvent(candidate) {
       return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(candidate.terminalId, MAX_TERMINAL_ID_LENGTH) && validTerminalRole(candidate.role) && isNonNegInt(candidate.viewerCount);
     case "terminal-exit":
       return isBoundedStr(candidate.terminalId, MAX_TERMINAL_ID_LENGTH) && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH) && isBoundedStr(candidate.reason, 128) && optNum(candidate.code) && (candidate.code === undefined || Number.isInteger(candidate.code));
+    default:
+      return false;
+  }
+}
+function validDesktopServerEvent(candidate) {
+  switch (candidate.kind) {
+    case "desktop-opened":
+      return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(candidate.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && isBoundedStr(candidate.wsPath, MAX_DESKTOP_WS_PATH_LENGTH) && candidate.wsPath.startsWith("/desktop/observe?ticket=") && isNonNegInt(candidate.expiresAt) && validDesktopSecurity(candidate.security);
+    case "desktop-request-failed":
+      return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && isBoundedStr(candidate.code, 128) && typeof candidate.message === "string" && candidate.message.length <= MAX_DESKTOP_ERROR_MESSAGE_LENGTH;
     default:
       return false;
   }
@@ -700,6 +742,8 @@ function parseWebServerEvent(envelope) {
     return isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && typeof candidate.sessionAlias === "string" && typeof candidate.notificationId === "string" && typeof candidate.ok === "boolean" && typeof candidate.text === "string" && (candidate.errorMessage === undefined || typeof candidate.errorMessage === "string") ? payload : null;
   }
   if (candidate.kind.startsWith("terminal-") && !validTargetedTerminalEvent(candidate))
+    return null;
+  if (candidate.kind.startsWith("desktop-") && !validDesktopServerEvent(candidate))
     return null;
   return payload;
 }
@@ -733,7 +777,7 @@ function parseWebClientMessage(envelope) {
   if (c.kind === "subscribe") {
     return Array.isArray(c.instanceIds) && c.instanceIds.every((x) => typeof x === "string" && x.length > 0 && x.length <= MAX_WEB_INSTANCE_ID_LENGTH) ? p : null;
   }
-  if (typeof c.kind !== "string" || !c.kind.startsWith("terminal-"))
+  if (typeof c.kind !== "string" || !c.kind.startsWith("terminal-") && !c.kind.startsWith("desktop-"))
     return null;
   if (rejectsBrowserStampedIdentity(c))
     return null;
@@ -761,6 +805,10 @@ function parseWebClientMessage(envelope) {
       return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) ? p : null;
     case "terminal-close":
       return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.terminalId, MAX_TERMINAL_ID_LENGTH) ? p : null;
+    case "desktop-open":
+      return isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && c.streamId === undefined && c.wsPath === undefined ? p : null;
+    case "desktop-close":
+      return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) ? p : null;
     default:
       return null;
   }
@@ -969,6 +1017,14 @@ var validateTerminalTerminate = (p) => {
   const o = fields(p);
   return o && isBoundedStr(o.terminalId, MAX_TERMINAL_ID_LENGTH) && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH) ? o : null;
 };
+var validateDesktopPrepare = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && isBoundedStr(o.ticket, MAX_DESKTOP_TICKET_LENGTH) && isNonNegInt(o.expiresAt) && o.host === undefined && o.port === undefined && o.target === undefined ? o : null;
+};
+var validateDesktopCancelEvent = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) ? o : null;
+};
 var validateUpload = (p) => {
   const o = fields(p);
   return o && isStr(o.filename) && isStr(o.content) && isStr(o.mimeType) ? o : null;
@@ -1136,6 +1192,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.terminalTakeControl]: validateTerminalTakeControl,
   [MSG.terminalResync]: validateTerminalResync,
   [MSG.terminalTerminate]: validateTerminalTerminate,
+  [MSG.desktopPrepare]: validateDesktopPrepare,
   [MSG.upload]: validateUpload,
   [MSG.botsGet]: validateBotsGet,
   [MSG.botsCreate]: validateBotsCreate,
@@ -1228,10 +1285,33 @@ function parseTerminalEventPayload(type, payload) {
   const validate = TERMINAL_EVENT_PAYLOAD_VALIDATORS[type];
   return validate(payload);
 }
+var DESKTOP_EVENT_PAYLOAD_VALIDATORS = {
+  [MSG.desktopCancel]: validateDesktopCancelEvent
+};
+function parseDesktopEventPayload(type, payload) {
+  const validate = DESKTOP_EVENT_PAYLOAD_VALIDATORS[type];
+  return validate(payload);
+}
 export {
   CONTROL_PAYLOAD_VALIDATORS,
+  DESKTOP_BUFFERED_HARD_CLOSE_BYTES,
+  DESKTOP_BUFFERED_SOFT_PAUSE_BYTES,
+  DESKTOP_ERROR_CODES,
+  DESKTOP_EVENT_PAYLOAD_VALIDATORS,
+  DESKTOP_HUB_REQUEST_TIMEOUT_MS,
+  DESKTOP_MAX_STREAMS_PER_ACCOUNT,
+  DESKTOP_MAX_STREAMS_PER_INSTANCE,
+  DESKTOP_RPC_TIMEOUT_MS,
+  DESKTOP_TCP_CHUNK_BYTES,
+  DESKTOP_TICKET_TTL_MS,
+  DESKTOP_WS_MAX_PAYLOAD_BYTES,
   MAX_CAPABILITIES,
   MAX_CAPABILITY_LENGTH,
+  MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
+  MAX_DESKTOP_REQUEST_ID_LENGTH,
+  MAX_DESKTOP_STREAM_ID_LENGTH,
+  MAX_DESKTOP_TICKET_LENGTH,
+  MAX_DESKTOP_WS_PATH_LENGTH,
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
   MAX_TERMINAL_COLS,
@@ -1281,6 +1361,7 @@ export {
   optStrArr,
   parseCanonicalBase64,
   parseControlPayload,
+  parseDesktopEventPayload,
   parseTerminalEventPayload,
   parseWebClientMessage,
   parseWebServerEvent,

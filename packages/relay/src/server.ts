@@ -120,6 +120,16 @@ export interface RelayRuntime {
   gateway: InstanceGateway;
   webGateway: WebGateway;
   desktop: DesktopStreamGateway;
+  /**
+   * StreamId → viewer/account/instance owner. Binds a desktop stream to the
+   * control socket that requested it for its whole lifetime (pending prepare and
+   * the paired binary session), so a control-socket close cancels its streams
+   * and a desktop-close from any other viewer is rejected. Ownership is
+   * hub-stamped, never browser-supplied. Exposed so `startRelayServer`'s `/ws`
+   * handler tracks through the SAME map as the runtime's own wiring — two maps
+   * would let one side's `cancel`/`ownsStream` miss the other side's bookkeeping.
+   */
+  desktopStreamOwners: Map<string, { viewerId: string; accountId: string; instanceId: string }>;
   stateSnapshot(instanceId: string): InstanceStateSnapshotDto;
   app: ReturnType<typeof createApp>;
   pendingWebPromptsCount?(): number;
@@ -1146,6 +1156,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     gateway,
     webGateway,
     desktop,
+    desktopStreamOwners,
     stateSnapshot,
     pendingWebPromptsCount: () => pendingWebPrompts.size,
     app,
@@ -1289,12 +1300,12 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
               runtime.desktop.ticketStore.mintTicket({ streamId, accountId: ticketAccountId, instanceId, side: "browser" }),
             markReady: (streamId, security) => runtime.desktop.reportConnectorReady(streamId, security),
             cancel: (streamId, reason) => {
-              desktopStreamOwners.delete(streamId);
+              runtime.desktopStreamOwners.delete(streamId);
               runtime.desktop.closeStream(streamId, reason);
             },
-            ownsStream: (streamId, ownerViewerId) => desktopStreamOwners.get(streamId)?.viewerId === ownerViewerId,
+            ownsStream: (streamId, ownerViewerId) => runtime.desktopStreamOwners.get(streamId)?.viewerId === ownerViewerId,
             trackOwner: (streamId, owner) => {
-              desktopStreamOwners.set(streamId, owner);
+              runtime.desktopStreamOwners.set(streamId, owner);
             },
           },
         }, account.id, ws, String(data)));
