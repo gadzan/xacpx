@@ -271,7 +271,7 @@ async function createLifecycle(options: {
     releaseOwnedSession,
   });
   await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend", instructions: "Focus on races." });
-  return { path, store, state, sessions, bots, runtime, runner, dispatcher, service, nowFn, jump, physical };
+  return { path, store, state, stateStore, sessions, bots, runtime, runner, dispatcher, service, nowFn, jump, physical };
 }
 
 function fakeRunner(runner: ConversationTurnRunner): FakeRunner {
@@ -5132,6 +5132,159 @@ test("missing-topic durable run is cancelled and reconciled, never row-deleted l
   const remaining = first.store.listRuns(group.id);
   expect(remaining).toEqual([]);
   expect(first.state.conversations[group.id]).toBeUndefined();
+  first.store.close();
+});
+
+test("createGroupTopic racing metadata deleteGroup fails instead of orphaning a Topic", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  // Freeze the metadata delete inside its mutex at persist time: the live
+  // state still shows G while delete holds the shared stateMutex.
+  const gate = deferred();
+  const release = deferred();
+  const innerSaveNow = first.stateStore.saveNow.bind(first.stateStore);
+  let deleteHolding = false;
+  first.stateStore.saveNow = (async (next: AppState) => {
+    if (!deleteHolding && next.conversations[group.id] === undefined && first.state.conversations[group.id] !== undefined) {
+      deleteHolding = true;
+      gate.resolve();
+      await release.promise;
+    }
+    return innerSaveNow(next);
+  }) as typeof first.stateStore.saveNow;
+  const deleting = first.bots.deleteGroup(group.id);
+  await gate.promise;
+  // The outer requireConversation still sees G (delete has not published),
+  // so create queues behind the same mutex; after delete publishes, the
+  // in-mutex liveness recheck must fail instead of orphaning a Topic.
+  const creating = first.service.createGroupTopic(group.id, "Racing", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  release.resolve();
+  await deleting;
+  await expect(creating).rejects.toMatchObject({ code: "conversation_not_found" });
+  expect(first.state.conversations[group.id]).toBeUndefined();
+  expect(Object.values(first.state.conversation_topics).filter((topic) => topic.conversationId === group.id)).toEqual([]);
+  first.store.close();
+});
+
+test("createGroupTopic after create still lets deleteGroup fail closed on the new Topic", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  expect(first.state.conversation_topics[topic.id]?.conversationId).toBe(group.id);
+  await expect(first.bots.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_topics" });
+  expect(first.state.conversations[group.id]?.kind).toBe("group");
+  first.store.close();
+});
+
+test("activation fails closed when a persisted Direct root lost its owning Bot at load", async () => {
+  const first = await createLifecycle();
+  const bot = first.bots.getBot(BOT_ID);
+  const { createDirectConversationId } = await import("../../../src/domain/ids");
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const { parseState } = await import("../../../src/state/state-store");
+  const conversationId = createDirectConversationId(bot.id);
+  const customTopicId = "topic_direct_botless";
+  // Persisted Direct Conversation + custom Topic rows (valid shapes), then a
+  // queued run on them. The raw Bot record is malformed so load quarantines
+  // the Bot while the Direct rows survive — the classic lenient-parser split.
+  first.state.conversations[conversationId] = {
+    id: conversationId, kind: "bot", title: bot.name, botIds: [bot.id],
+    createdAt: NOW, updatedAt: NOW,
+  };
+  first.state.conversation_topics[customTopicId] = {
+    id: customTopicId, conversationId, title: "Custom", status: "active",
+    createdAt: NOW, updatedAt: NOW,
+  };
+  const accepted = first.store.acceptRequest({
+    conversationId,
+    topicId: customTopicId,
+    requestId: "req-direct-botless",
+    botId: bot.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(bot, NOW),
+    now: NOW,
+  });
+  const raw = JSON.parse(JSON.stringify({
+    ...first.state,
+    bots: { ...first.state.bots, [bot.id]: { ...first.state.bots[bot.id], agent: 123 } },
+    conversations: first.state.conversations,
+    conversation_topics: first.state.conversation_topics,
+    bot_runtime_bindings: first.state.bot_runtime_bindings,
+    sessions: first.state.sessions,
+  }));
+  const dropped: { section: string; key: string; reason: string }[] = [];
+  const reloaded = parseState(raw, "state.json", dropped);
+  expect(reloaded.bots[bot.id]).toBeUndefined();
+  expect(dropped.some((entry) => entry.section === "bots" && entry.key === bot.id)).toBe(true);
+  expect(reloaded.conversations[conversationId]?.kind).toBe("bot");
+  for (const key of Object.keys(first.state.bots)) {
+    if (!(key in reloaded.bots)) delete first.state.bots[key];
+  }
+  Object.assign(first.state.bots, reloaded.bots);
+  for (const key of Object.keys(first.state.conversations)) {
+    if (!(key in reloaded.conversations)) delete first.state.conversations[key];
+  }
+  Object.assign(first.state.conversations, reloaded.conversations);
+  for (const key of Object.keys(first.state.conversation_topics)) {
+    if (!(key in reloaded.conversation_topics)) delete first.state.conversation_topics[key];
+  }
+  Object.assign(first.state.conversation_topics, reloaded.conversation_topics);
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "conversation_work_unrooted" });
+  const detail = (error as { details?: { roots?: { conversationId: string; topicId: string }[] } }).details;
+  expect(detail?.roots).toContainEqual({ conversationId, topicId: customTopicId });
+  expect(first.service.isConsumerActivated()).toBe(false);
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
+  first.store.close();
+});
+
+test("load strips a Direct executionTarget but keeps the row for operator review", async () => {
+  const { parseState } = await import("../../../src/state/state-store");
+  const { createDirectConversationId } = await import("../../../src/domain/ids");
+  const first = await createLifecycle();
+  const bot = first.bots.getBot(BOT_ID);
+  const conversationId = createDirectConversationId(bot.id);
+  const directTopicId = "topic_direct_targeted";
+  const raw = JSON.parse(JSON.stringify({
+    ...first.state,
+    bots: first.state.bots,
+    conversations: {
+      ...first.state.conversations,
+      [conversationId]: {
+        id: conversationId, kind: "bot", title: bot.name, botIds: [bot.id],
+        createdAt: NOW, updatedAt: NOW,
+      },
+    },
+    conversation_topics: {
+      ...first.state.conversation_topics,
+      [directTopicId]: {
+        id: directTopicId,
+        conversationId,
+        title: "Direct with target",
+        status: "active",
+        executionTarget: { workspace: "frontend", isolation: "shared-single-writer" },
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    bot_runtime_bindings: first.state.bot_runtime_bindings,
+    sessions: first.state.sessions,
+  }));
+  const dropped: { section: string; key: string; reason: string }[] = [];
+  const reloaded = parseState(raw, "state.json", dropped);
+  // Row survives (no silent cross-kind downgrade into a missing root), the
+  // unenforced Group-only field is stripped and reported instead.
+  expect(reloaded.conversation_topics[directTopicId]?.conversationId).toBe(conversationId);
+  expect(reloaded.conversation_topics[directTopicId]?.executionTarget).toBeUndefined();
+  expect(dropped.some((entry) => entry.section === "conversation_topics" && entry.key === directTopicId)).toBe(true);
   first.store.close();
 });
 

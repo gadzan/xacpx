@@ -452,6 +452,10 @@ export class ConversationRunService {
     const timestamp = this.now().toISOString();
     const created = await this.stateMutex.run(async () => {
       this.assertConversationNotDeleting(conversationId);
+      const live = this.state.conversations[conversationId];
+      if (!live || live.kind !== "group") {
+        throw new ConversationError("conversation_not_found", `conversation "${conversationId}" does not exist`);
+      }
       const topic: ConversationTopic = {
         id: this.nextTopicId(),
         conversationId,

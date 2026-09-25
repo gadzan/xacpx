@@ -6,7 +6,7 @@ import type { ConversationRecord, ConversationTopic } from "../conversations/con
 import { classifyConversationRoot } from "../conversations/conversation-roots";
 import { writePrivateFileAtomic } from "../util/private-file.js";
 import { createEmptyState, type AppState, type LogicalSession, type LogicalSessionOwner } from "./types";
-import { createScopedGroupMemberBindingId } from "../domain/ids";
+import { createDirectConversationId, createScopedGroupMemberBindingId } from "../domain/ids";
 import type { ScheduledTaskRecord, ScheduledTaskStatus } from "../scheduled/scheduled-types";
 import {
   createEmptyOrchestrationState,
@@ -1184,6 +1184,25 @@ function reconcileProductOwnershipGraph(
     }
   }
   for (const [id, topic] of Object.entries(topics)) {
+    // executionTarget is Group-only: Direct execution resolves from the
+    // owning Bot profile and never reads it, so a Direct-kind root carrying
+    // one is a cross-kind Topic shape. Strip the unenforced field at load
+    // and report it — but keep the row: deleting it would downgrade a live
+    // cross-kind contradiction into a missing root the activation sweep may
+    // physical-release. Bot-existence is intentionally not required here —
+    // that is the shared classifier's job — only the kind contradiction.
+    const directConversation = conversations[topic.conversationId];
+    const isDirectConversation = directConversation?.kind === "bot"
+      || (!directConversation && Object.values(bots).some((bot) => createDirectConversationId(bot.id) === topic.conversationId));
+    if (topic.executionTarget !== undefined && isDirectConversation) {
+      delete topic.executionTarget;
+      dropped.push({
+        section: "conversation_topics",
+        key: id,
+        reason: `direct topic carries group-only executionTarget; executionTarget stripped and quarantined — row kept, requires operator review`,
+      });
+      continue;
+    }
     // Group topics carry executionTarget (direct topics never do) or are
     // referenced by group-member runtime. Either marker with a missing
     // conversation means the cleanup root is gone → drop with report,

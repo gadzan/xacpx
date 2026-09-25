@@ -9,15 +9,17 @@ export type ConversationRootKind = "group" | "persisted-direct" | "synthetic-dir
  * a live Bot's deterministic Direct conversation + default Topic ids are a
  * live root even with no persisted rows, and a surviving custom Direct Topic
  * row linked to that deterministic conversation is also a live
- * synthetic-direct root. Anything else needs persisted rows of the right
- * kind. Used by load reconcile and activation (authority, orphan sweep,
- * ambiguity) so a synthetic Direct root can never read as "missing" in one
- * check and "live" in another.
+ * synthetic-direct root. A persisted Direct root additionally requires its
+ * owning Bot to still exist (existence, not enabled): a quarantined/missing
+ * Bot leaves durable work without executable authority. Used by load
+ * reconcile and activation (authority, orphan sweep, ambiguity) so a
+ * synthetic Direct root can never read as "missing" in one check and "live"
+ * in another.
  */
 export function classifyConversationRoot(
   conversations: Record<string, ConversationRecord | undefined>,
   topics: Record<string, ConversationTopic | undefined>,
-  bots: Record<string, BotProfile | undefined> | readonly BotProfile[],
+  bots: Record<string, BotProfile | undefined> | readonly (BotProfile | undefined)[],
   conversationId: string,
   topicId: string,
 ): ConversationRootKind {
@@ -27,11 +29,18 @@ export function classifyConversationRoot(
     return topic && topic.conversationId === conversationId ? "group" : "missing";
   }
   if (conversation?.kind === "bot") {
+    const botId = conversation.botIds[0];
+    if (botId === undefined) {
+      return "missing";
+    }
+    const bot = Array.isArray(bots) ? bots.find((entry) => entry?.id === botId) : (bots as Record<string, BotProfile | undefined>)[botId];
+    if (!bot) {
+      return "missing";
+    }
     if (topic) {
       return topic.conversationId === conversationId ? "persisted-direct" : "missing";
     }
-    const botId = conversation.botIds[0];
-    return botId !== undefined && topicId === createDirectTopicId(botId) ? "persisted-direct" : "missing";
+    return topicId === createDirectTopicId(botId) ? "persisted-direct" : "missing";
   }
   const botList = Array.isArray(bots) ? bots : Object.values(bots);
   const owner = botList.find((bot) => bot !== undefined && createDirectConversationId(bot.id) === conversationId);
