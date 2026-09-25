@@ -146,11 +146,11 @@ const EMPTY_EVIDENCE: TerminateDescendantsResult = { verified: false, outcomes: 
  *
  * `pid` alone is not identity either on Windows (reuse), so the creation time is
  * part of it. `fingerprintSource` records HOW that creation time was obtained,
- * which decides what equality means: CIM quantizes 6-digit microseconds down to
- * a FILETIME tick grid, so a CIM value can be 0–9 ticks BELOW the kernel value
- * for the SAME process. Comparing without that attribution is not an
- * equivalence relation — it is a plain `abs(delta) <= 9` band, which can bridge
- * two distinct pid incarnations (CIM_A ~ handle_A and handle_A ~ CIM_B "proves"
+ * which decides what equality means: a CIM `datetime` is quantized to
+ * microseconds, so a CIM value differs from the kernel FILETIME by up to 9
+ * ticks for the SAME process. Comparing timestamps without that attribution is
+ * not an equivalence relation — a plain `abs(delta) <= 9` band can bridge two
+ * distinct pid incarnations (CIM_A ~ handle_A and handle_A ~ CIM_B "proves"
  * CIM_A ~ CIM_B even when the kernel values are 18 ticks apart).
  */
 export interface ProcessIdentity {
@@ -168,39 +168,37 @@ export const CREATION_IDENTITY_TOLERANCE_TICKS = 9n;
  * entry (neither can be matched against a non-null one, so there is nothing to
  * separate them), while a null never merges with a timestamped record.
  *
- * Attribution decides what timestamp equality means, because the relation must
- * stay transitive — merge compares each new observation against the SURVIVOR,
- * which a previous round may have canonicalized:
- *   handle ↔ handle — exact. The kernel value has no quantization.
- *   cim ↔ cim       — exact. Both CIM rows for one process quantize the same
- *                      way, so one timestamped value represents the process.
- *   handle ↔ cim     — the CIM value may be 0–9 ticks BELOW the kernel value, so
- *                      only `0 <= handle - cim <= 9` is the same process. A NEGATIVE
- *                      delta is impossible for one process and proves a different one.
- *   unknown/absent  — exact: no attribution means no tolerance may be granted.
+ * Attribution decides what timestamp equality means:
+ *   handle ↔ handle — exact. Both are the kernel value.
+ *   cim ↔ cim       — exact. Both rows quantize the same instant identically.
+ *   handle ↔ cim     — within the quantization window, SYMMETRICALLY. Which way
+ *                      a provider rounds a FILETIME down to microseconds is not
+ *                      a documented guarantee (`ManagementDateTimeConverter`
+ *                      rounds to nearest), so the direction is never assumed.
+ *   unattributed    — exact, on either side. `"unknown"` and an absent field
+ *                      make no claim about quantization, so they grant no
+ *                      tolerance.
  *
- * With that, CIM_A ~ handle_A and handle_A ~ CIM_B imply handle_A ~ handle_B,
- * which requires `handle_B - handle_A == 0`; a pid reused 18 ticks later is
- * correctly a DIFFERENT process and both records stay required evidence.
+ * CAUTION: this pairwise relation is NOT transitive on its own, and merge does
+ * not rely on it alone. A survivor may have been canonicalized from CIM to the
+ * kernel value, so a later observation must be matched against the identity's
+ * WHOLE print history, per provenance — see `joinsCluster`, which is what keeps
+ * a reused pid from being bridged into an earlier incarnation.
  */
 export function sameProcessIdentity(a: ProcessIdentity, b: ProcessIdentity): boolean {
   if (a.pid !== b.pid) return false;
   if (a.creationDate === null || b.creationDate === null) return a.creationDate === b.creationDate;
-  const aHandle = a.fingerprintSource === "handle";
-  const bHandle = b.fingerprintSource === "handle";
-  if (aHandle === bHandle) {
-    // Same attribution: both values come from one source, so they must match
-    // bit for bit. Two CIM rows of one process quantize to the same number.
-    return a.creationDate === b.creationDate;
-  }
-  // One kernel value, one quantized value: the quantized one can only sit
-  // below, within the quantization window. Anything else is a different
-  // process (see the three-observation bridge regression).
-  const [handle, cim] = aHandle
-    ? [a.creationDate, b.creationDate] as const
-    : [b.creationDate, a.creationDate] as const;
-  const offset = BigInt(handle) - BigInt(cim);
-  return offset >= 0n && offset <= CREATION_IDENTITY_TOLERANCE_TICKS;
+  if (a.fingerprintSource === b.fingerprintSource) return a.creationDate === b.creationDate;
+  // An unattributed print (explicit "unknown" or an absent field) makes no claim
+  // about quantization, so it grants no tolerance.
+  const attributed = (source: ProcessIdentity["fingerprintSource"]): boolean =>
+    source === "handle" || source === "cim";
+  if (!attributed(a.fingerprintSource) || !attributed(b.fingerprintSource)) return a.creationDate === b.creationDate;
+  // handle vs cim: the same instant through two quantizations. The window is
+  // symmetric because the rounding direction is not guaranteed.
+  const delta = BigInt(a.creationDate) - BigInt(b.creationDate);
+  const magnitude = delta < 0n ? -delta : delta;
+  return magnitude <= CREATION_IDENTITY_TOLERANCE_TICKS;
 }
 
 /**
@@ -273,6 +271,57 @@ interface MergeableEvidence extends ProcessIdentity {
   executablePath: string | null;
   /** Present only on leftovers; carried through so the kind survives arbitration. */
   parentPid?: number;
+  /** Every creation-time print this identity has carried across merge rounds. */
+  identityPrints?: readonly ProcessIdentity[];
+}
+
+/**
+ * True when `item` names the same process as the identity that accumulated
+ * `prints`.
+ *
+ * The print history is what makes matching transitive, because
+ * `sameProcessIdentity` is pairwise and is NOT. A survivor may have been
+ * canonicalized (the worker writes both kernel values back once it holds a
+ * handle), and the superseded CIM print it replaced is exactly the benchmark a
+ * later pid incarnation must be refused against: without it, tolerance would
+ * bridge CIM_A ~ handle_A and handle_A ~ CIM_B into "CIM_A ~ CIM_B" for
+ * processes whose kernel values are 18 ticks apart.
+ *
+ * The rule is decisive per provenance:
+ *   - a print whose provenance the cluster ALREADY has joins only on exact
+ *     equality — one instant quantizes one way, so two different values from the
+ *     same source are two different processes, with no tolerance;
+ *   - the cluster's FIRST print of a provenance joins the other provenance's
+ *     benchmark inside the quantization window, in EITHER direction: which way a
+ *     provider rounds a FILETIME down to microseconds is not a documented
+ *     guarantee, so no direction is assumed;
+ *   - unattributed prints (explicit "unknown", or an absent field) claim nothing
+ *     about quantization and join only on exact equality.
+ */
+function joinsCluster(item: ProcessIdentity, prints: readonly ProcessIdentity[]): boolean {
+  // Identity is per process: a pid never joins another pid's cluster, whatever
+  // the timestamps look like.
+  if (!prints.some((record) => record.pid === item.pid)) return false;
+  const print = (record: ProcessIdentity): { value: bigint; source: "handle" | "cim" } | null => {
+    if (record.creationDate === null) return null;
+    const source = record.fingerprintSource;
+    if (source !== "handle" && source !== "cim") return null;
+    return { value: BigInt(record.creationDate), source };
+  };
+  const itemPrint = print(item);
+  // Unattributed item: no benchmark, so only exact-identical values join.
+  if (!itemPrint) return prints.some((record) => record.creationDate === item.creationDate);
+  const same = prints.filter((record) => print(record)?.source === itemPrint.source);
+  const other = prints.filter((record) => {
+    const source = print(record)?.source;
+    return source !== undefined && source !== itemPrint.source;
+  });
+  if (same.length > 0) return same.some((record) => record.creationDate === item.creationDate);
+  const within = (a: bigint, b: bigint): boolean => {
+    const magnitude = (a > b ? a - b : b - a);
+    return magnitude <= CREATION_IDENTITY_TOLERANCE_TICKS;
+  };
+  return other.some((record) => within(BigInt(record.creationDate!), itemPrint.value));
 }
 
 /**
@@ -280,23 +329,37 @@ interface MergeableEvidence extends ProcessIdentity {
  * process collapse to one (`winsOver` picks the survivor), and records naming
  * DIFFERENT processes all survive.
  *
- * This is a linear scan over `sameProcessIdentity` rather than a bucketed map.
- * A bucket cannot serve as a map key: its width is `2 * tolerance + 1` ticks, so
- * two creation times 10–18 ticks apart — provably DIFFERENT processes by the
+ * This is a linear scan over a cluster test rather than a bucketed map. A bucket
+ * cannot serve as a map key: its width is `2 * tolerance + 1` ticks, so two
+ * creation times 10–18 ticks apart — provably DIFFERENT processes by the
  * comparator — land in the same bucket and one would silently overwrite the
  * other's evidence, discarding an unresolved ownership record. Evidence sets
  * here are tiny (an adapter tree), so the scan costs nothing and correctness is
  * directly readable from the comparator it calls.
+ *
+ * Cluster membership is decided by the print history carried on the record
+ * (`identityPrints`), not by a per-call map, because merge runs once per
+ * convergence round and the history must survive across all of them. A record
+ * that merges in inherits the union of both print histories and keeps carrying
+ * it, so a later round still sees the CIM print an earlier canonicalization
+ * superseded.
  */
 function mergeByIdentity<T extends MergeableEvidence>(a: readonly T[], b: readonly T[]): T[] {
   const merged: T[] = [];
   for (const item of [...a, ...b]) {
-    const index = merged.findIndex((existing) => sameProcessIdentity(existing, item));
+    // Cluster membership is authoritative, and never falls through to the
+    // pairwise relation: the pairwise band is symmetric, so re-opening it would
+    // let a later pid incarnation bridge into the identity through the window.
+    const index = merged.findIndex((existing) => joinsCluster(item, existing.identityPrints ?? [existing]));
     if (index === -1) {
       merged.push(item);
       continue;
     }
-    if (winsOver(item, merged[index]!)) merged[index] = item;
+    const current = merged[index]!;
+    const prints = [...current.identityPrints ?? [current], ...item.identityPrints ?? [item]];
+    // The survivor keeps its own observation, plus both histories deduplicated.
+    const survivor = (winsOver(item, current) ? item : current) as T;
+    merged[index] = { ...survivor, identityPrints: prints } as T;
   }
   return merged;
 }

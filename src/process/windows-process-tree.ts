@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 
 import { parseCanonicalFileTime } from "./windows-process-identity";
+import type { ProcessIdentity } from "../bridge/engine/runtime/worker-eof";
 
 export interface BatchTarget {
   pid: number;
@@ -72,6 +73,15 @@ export interface WindowsDescendantOutcome {
   commandLine: string | null;
   executablePath: string | null;
   fingerprintSource?: WindowsDescendantFingerprintSource;
+  /**
+   * INTERNAL bookkeeping — never produced by a worker decoder and never read by
+   * the reaper. Every (creationDate, fingerprintSource) print `mergeEvidence`
+   * has seen for this identity, including the ones a later observation
+   * superseded. Without it a canonicalized survivor would forget the CIM print
+   * it replaced, and the next round could bridge a different pid incarnation
+   * into the identity through the tolerance window.
+   */
+  identityPrints?: readonly ProcessIdentity[];
 }
 
 /** A process still present after convergence, parented by the worker itself or by a killed descendant. */
@@ -82,6 +92,8 @@ export interface WindowsDescendantLeftover {
   commandLine: string | null;
   executablePath: string | null;
   fingerprintSource?: WindowsDescendantFingerprintSource;
+  /** INTERNAL bookkeeping — see `WindowsDescendantOutcome.identityPrints`. */
+  identityPrints?: readonly ProcessIdentity[];
 }
 
 export interface TerminateDescendantsResult {
