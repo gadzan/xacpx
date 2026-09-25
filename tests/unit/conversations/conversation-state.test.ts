@@ -181,3 +181,28 @@ test("parseState accepts a group topic with an execution target and drops a junk
   expect(state.conversation_topics.bad).toBeUndefined();
   expect(dropped.some((d) => d.section === "conversation_topics" && d.key === "bad")).toBe(true);
 });
+
+test("parseState quarantines a session whose map key disagrees with its alias", () => {
+  const dropped: StateLoadDroppedRecord[] = [];
+  const state = parseState({
+    sessions: {
+      "shadow-key": {
+        alias: "primary",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:shadow",
+        logical_session_id: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: { kind: "group-member", bindingId: "bind_x" },
+      },
+    },
+  }, "state.json", dropped);
+  // Row survives as the physical handle, but load reports the disagreement.
+  expect(state.sessions["shadow-key"]?.alias).toBe("primary");
+  expect(dropped.some((d) =>
+    d.section === "sessions"
+    && d.key === "shadow-key"
+    && d.reason.includes("does not match record alias"),
+  )).toBe(true);
+});

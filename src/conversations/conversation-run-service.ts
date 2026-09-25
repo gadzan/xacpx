@@ -19,6 +19,26 @@ import type { SessionService } from "../sessions/session-service";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
 import type { StateStore } from "../state/state-store";
 import type { AppState } from "../state/types";
+import type { LogicalSession } from "../state/types";
+
+/**
+ * Storage identity for LogicalSessions is the sessions-map key:
+ * SessionService removes/releases by key, so every destructive ownership
+ * scan must release by key. A row whose inner alias disagrees with its key
+ * lets a second row masquerade as the primary (same record.alias,
+ * different key) and defeat exactly-one checks — or sends physical release
+ * at the wrong key on retry. Load quarantines such rows from ownership
+ * (see parseSessions); any that still reach teardown fail closed here.
+ */
+function assertSessionKeyMatchesAlias(key: string, session: LogicalSession): void {
+  if (session.alias !== key) {
+    throw new ConversationError(
+      "runtime_ownership_conflict",
+      `session map key "${key}" does not match record alias "${session.alias}"; ownership cannot be attributed`,
+      { key, alias: session.alias, owner: session.owner },
+    );
+  }
+}
 import { ConversationError } from "./conversation-error";
 import type { ConversationDispatcher } from "./conversation-dispatcher";
 import { parseHumanIngress } from "./conversation-execution";
@@ -626,11 +646,14 @@ export class ConversationRunService {
     if (conversation.kind !== "group") {
       throw new ConversationError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
     }
-    // Pre-check before anything destructive: the provisional controller
+    // Pre-checks before anything destructive: the provisional controller
     // scope has no verified release path, so its residue must block the
-    // delete while every Topic row and durable row still exists. The
-    // finalize section re-checks (a controller row could land mid-teardown).
+    // delete while every Topic row and durable row still exists; likewise an
+    // unattributable group-member owner proves nothing about which root
+    // owns it, so deleting Topics/rows first could strand it. Both
+    // re-check at finalize (a row could land mid-teardown).
     this.assertNoGroupControllerResidue(conversationId);
+    this.assertNoUnattributableGroupMemberSessions();
     // Barrier first: once the Group is marked deleting, createGroupTopic and
     // any new Group work fail closed, so no Topic created concurrently can
     // outlive this teardown and become an orphan. Mirrors
@@ -699,6 +722,7 @@ export class ConversationRunService {
       await this.beforeTeardownFinalize?.();
       this.assertNoGroupResidue(conversationId);
       this.assertNoGroupControllerResidue(conversationId);
+      this.assertNoUnattributableGroupMemberSessions();
       const next = structuredClone(this.state);
       delete next.conversations[conversationId];
       await this.persist(next);
@@ -952,7 +976,8 @@ export class ConversationRunService {
     // primary), so a hidden secondary owner can never be orphaned by
     // deleting the clue out from under it.
     const ownerRefsByBinding = new Map<string, string[]>();
-    for (const session of Object.values(this.state.sessions)) {
+    for (const [key, session] of Object.entries(this.state.sessions)) {
+      assertSessionKeyMatchesAlias(key, session);
       const owner = session.owner;
       if (owner?.kind !== "group-member" || owner.bindingId === undefined) {
         continue;
@@ -960,7 +985,7 @@ export class ConversationRunService {
       const bound = this.state.bot_runtime_bindings[owner.bindingId];
       if (bound?.scope === "group-member" && bound.conversationId === conversationId) {
         const list = ownerRefsByBinding.get(owner.bindingId) ?? [];
-        list.push(session.alias);
+        list.push(key);
         ownerRefsByBinding.set(owner.bindingId, list);
       }
     }
@@ -976,9 +1001,9 @@ export class ConversationRunService {
     const plan: ReleasePlan[] = [];
     for (const binding of bindings) {
       const byAlias = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
-      const byIdMatches = Object.values(this.state.sessions).filter(
-        (session) => session.logical_session_id === binding.logicalSessionId,
-      );
+      const byIdMatches = Object.entries(this.state.sessions)
+        .filter(([, session]) => session.logical_session_id === binding.logicalSessionId)
+        .map(([key]) => key);
       if (!byAlias && byIdMatches.length === 0) {
         // Both axes missing is harmless ONLY when no session references
         // this binding: otherwise the binding row is the sole attribution
@@ -997,7 +1022,7 @@ export class ConversationRunService {
       if (
         !byAlias
         || byIdMatches.length !== 1
-        || byIdMatches[0]?.alias !== byAlias.alias
+        || byIdMatches[0] !== binding.sessionAlias
         || classifyGroupMemberBindingSessionLink(
           binding,
           byAlias,
@@ -1020,7 +1045,7 @@ export class ConversationRunService {
       // own bindingId, so healthy bindings show exactly one extra
       // self-referrer beyond the primary itself — filter it out.)
       const referrers = (ownerRefsByBinding.get(binding.id) ?? []).filter(
-        (alias) => alias !== byAlias.alias,
+        (key) => key !== binding.sessionAlias,
       );
       if (referrers.length > 0) {
         throw new ConversationError(
@@ -1029,7 +1054,7 @@ export class ConversationRunService {
           { binding, referrers },
         );
       }
-      plan.push({ kind: "release-session", alias: byAlias.alias, bindingId: binding.id });
+      plan.push({ kind: "release-session", alias: binding.sessionAlias, bindingId: binding.id });
     }
     for (const step of plan) {
       if (step.kind === "stale-binding") {
@@ -1054,7 +1079,8 @@ export class ConversationRunService {
    * counterpart.)
    */
   private assertNoUnattributableGroupMemberSessions(): void {
-    const blocked = Object.values(this.state.sessions).filter((session) => {
+    const blocked = Object.entries(this.state.sessions).filter(([key, session]) => {
+      assertSessionKeyMatchesAlias(key, session);
       const owner = session.owner;
       if (owner?.kind !== "group-member") {
         return false;
@@ -1083,8 +1109,8 @@ export class ConversationRunService {
       "ambiguous_group_ownership",
       `teardown blocked: ${blocked.length} group-member session(s) with unattributable ownership require operator recovery`,
       {
-        sessions: blocked.map((session) => ({
-          alias: session.alias,
+        sessions: blocked.map(([key, session]) => ({
+          alias: key,
           bindingId: session.owner?.bindingId,
           botId: session.owner?.botId,
           conversationId: session.owner?.conversationId,
@@ -1115,7 +1141,8 @@ export class ConversationRunService {
 
   private async releaseGroupResidueSessions(conversationId: string): Promise<void> {
     // Re-read: releaseAlias mutates live state.
-    for (const session of Object.values(this.state.sessions)) {
+    for (const [key, session] of Object.entries(this.state.sessions)) {
+      assertSessionKeyMatchesAlias(key, session);
       const owner = session.owner;
       if (owner?.kind !== "group-member") {
         continue;
@@ -1145,7 +1172,7 @@ export class ConversationRunService {
           { alias: session.alias, owner: session.owner },
         );
       }
-      await this.releaseAlias(session.alias);
+      await this.releaseAlias(key);
     }
   }
 
@@ -1193,12 +1220,15 @@ export class ConversationRunService {
   async teardownGroupTopic(conversationId: string, topicId: string): Promise<void> {
     this.assertOpen();
     this.requireGroupTopic(conversationId, topicId);
-    // Pre-check before the deleting barrier: a provisional controller row
-    // attributing to this Topic is that Topic's only cleanup root. The Group
-    // fence cannot help here — this is a public Control/RPC path that never
-    // passes through it. Fail closed while the Topic row still exists; the
-    // finalize gate re-checks for a controller row landing mid-teardown.
+    // Pre-checks before the deleting barrier: a provisional controller row
+    // attributing to this Topic is that Topic's only cleanup root, and an
+    // unattributable group-member owner could be stranded by deleting this
+    // Topic's rows. The Group fence cannot help here — this is a public
+    // Control/RPC path that never passes through it. Fail closed while the
+    // Topic row still exists; the finalize gate re-checks rows landing
+    // mid-teardown.
     this.assertNoTopicControllerResidue(conversationId, topicId);
+    this.assertNoUnattributableGroupMemberSessions();
     const timestamp = this.now().toISOString();
     // Linearize against member materialization: hold every involved Bot
     // lifecycle gate WHILE setting the deleting barrier, so no materializer
@@ -1285,8 +1315,11 @@ export class ConversationRunService {
           // controller row written through the same mutex after the gate
           // check must still block the Topic row delete in the same critical
           // section. Fail closed before deleting the Topic row — the only
-          // cleanup root a topicId-linked partial owner can prove.
+          // cleanup root a topicId-linked partial owner can prove. The
+          // unattributable member gate joins it: deleting this Topic's rows
+          // could strand an owner that proves nothing about any root.
           this.assertNoTopicControllerResidue(conversationId, topicId);
+          this.assertNoUnattributableGroupMemberSessions();
           const next = structuredClone(this.state);
           for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
             if (
@@ -1351,7 +1384,8 @@ export class ConversationRunService {
    */
   private groupMemberAliases(conversationId: string, topicId: string): string[] {
     const aliases = new Set<string>();
-    const allSessions = Object.values(this.state.sessions);
+    const allEntries = Object.entries(this.state.sessions);
+    const allSessions = allEntries.map(([, session]) => session);
     for (const binding of Object.values(this.state.bot_runtime_bindings)) {
       if (
         binding.scope !== "group-member"
@@ -1377,16 +1411,22 @@ export class ConversationRunService {
         continue;
       }
       const byAlias = this.state.sessions[binding.sessionAlias];
-      const byIdMatches = allSessions.filter(
-        (session) => session.logical_session_id === binding.logicalSessionId,
-      );
+      const byIdMatches = allEntries
+        .filter(([, session]) => session.logical_session_id === binding.logicalSessionId)
+        .map(([key]) => key);
       if (!byAlias && byIdMatches.length === 0) {
         continue;
+      }
+      if (byAlias) {
+        assertSessionKeyMatchesAlias(binding.sessionAlias, byAlias);
+      }
+      for (const key of byIdMatches) {
+        assertSessionKeyMatchesAlias(key, this.state.sessions[key]!);
       }
       if (
         !byAlias
         || byIdMatches.length !== 1
-        || byIdMatches[0]?.alias !== byAlias.alias
+        || byIdMatches[0] !== binding.sessionAlias
         || classifyGroupMemberBindingSessionLink(
           binding,
           byAlias,
@@ -1402,9 +1442,10 @@ export class ConversationRunService {
           { binding, sessionAlias: byAlias?.alias },
         );
       }
-      aliases.add(byAlias.alias);
+      aliases.add(binding.sessionAlias);
     }
-    for (const session of allSessions) {
+    for (const [key, session] of allEntries) {
+      assertSessionKeyMatchesAlias(key, session);
       const owner = session.owner;
       if (owner?.kind !== "group-member") {
         continue;
@@ -1450,7 +1491,7 @@ export class ConversationRunService {
             { alias: session.alias, owner: session.owner },
           );
         }
-        aliases.add(session.alias);
+        aliases.add(key);
         continue;
       }
       // A partial legacy owner ({ kind, bindingId } only) can never prove
@@ -1471,7 +1512,7 @@ export class ConversationRunService {
           { alias: session.alias, owner: session.owner },
         );
       }
-      aliases.add(session.alias);
+      aliases.add(key);
     }
     return [...aliases];
   }
@@ -1599,19 +1640,27 @@ export class ConversationRunService {
     // A binding is only destructive authority when alias and logical id resolve to
     // one exact owned session. Missing on both axes is a harmless stale binding that
     // final cleanup may remove; any partial/mismatched link fails closed.
-    const allSessions = Object.values(this.state.sessions);
+    // Storage identity is the map key: compare and collect keys, and fail
+    // closed on key/alias disagreement before any release.
+    const allEntries = Object.entries(this.state.sessions);
+    for (const [key, session] of allEntries) {
+      assertSessionKeyMatchesAlias(key, session);
+    }
     for (const binding of ownedBindings) {
       const byAlias = this.state.sessions[binding.sessionAlias];
-      const byIdMatches = allSessions.filter(
-        (session) => session.logical_session_id === binding.logicalSessionId,
-      );
+      const byIdMatches = allEntries
+        .filter(([, session]) => session.logical_session_id === binding.logicalSessionId)
+        .map(([key]) => key);
       if (!byAlias && byIdMatches.length === 0) {
         continue;
+      }
+      if (byAlias) {
+        assertSessionKeyMatchesAlias(binding.sessionAlias, byAlias);
       }
       if (
         !byAlias
         || byIdMatches.length !== 1
-        || byIdMatches[0]?.alias !== byAlias.alias
+        || byIdMatches[0] !== binding.sessionAlias
         || classifyDirectBotBindingSessionLink(binding, byAlias, ownedBindingIds) !== "owned"
       ) {
         throw new ConversationError(
@@ -1620,12 +1669,12 @@ export class ConversationRunService {
           { botId, binding, sessionAlias: byAlias?.alias },
         );
       }
-      aliases.add(byAlias.alias);
+      aliases.add(binding.sessionAlias);
     }
 
     // Binding-less PR2 owners are still recoverable, but every ownership signal
     // must agree with the same target Bot/conversation.
-    for (const session of allSessions) {
+    for (const [, session] of allEntries) {
       const ownership = classifyDirectBotSessionOwnership(
         session,
         botId,
@@ -1688,7 +1737,8 @@ export class ConversationRunService {
    * unavailable) — never a silent skip.
    */
   private async recoverRootlessGroupMemberSessions(): Promise<void> {
-    const candidates = Object.values(this.state.sessions).filter((session) => {
+    const candidates = Object.entries(this.state.sessions).filter(([key, session]) => {
+      assertSessionKeyMatchesAlias(key, session);
       const owner = session.owner;
       if (owner?.kind !== "group-member" || owner.botId === undefined) {
         return false;
@@ -1712,7 +1762,8 @@ export class ConversationRunService {
       }
       return true;
     });
-    for (const session of candidates) {
+    for (const [key, session] of candidates) {
+      assertSessionKeyMatchesAlias(key, session);
       const owner = session.owner;
       if (owner?.kind !== "group-member") {
         continue;
@@ -1725,8 +1776,12 @@ export class ConversationRunService {
       }
       const canonicalBindingId = createScopedGroupMemberBindingId(conversationId, topicId, botId);
       await this.bots.runLifecycle(botId, async () => {
-        const live = this.sessions.getLogicalSessionRecord(session.alias);
-        if (!live || live.owner?.kind !== "group-member" || live.owner.botId !== botId) {
+        const live = this.sessions.getLogicalSessionRecord(key);
+        if (!live) {
+          return;
+        }
+        assertSessionKeyMatchesAlias(key, live);
+        if (live.owner?.kind !== "group-member" || live.owner.botId !== botId) {
           return;
         }
         // Re-check rootlessness inside the gate: a concurrently recreated
@@ -1747,7 +1802,7 @@ export class ConversationRunService {
         ) {
           return;
         }
-        await this.releaseAlias(session.alias);
+        await this.releaseAlias(key);
       });
     }
   }
@@ -1821,7 +1876,8 @@ export class ConversationRunService {
    * owned by the ordinary teardown paths, not by activation.
    */
   private assertNoAmbiguousGroupMemberSessions(): void {
-    const blocked = Object.values(this.state.sessions).filter((session) => {
+    const blocked = Object.entries(this.state.sessions).filter(([key, session]) => {
+      assertSessionKeyMatchesAlias(key, session);
       const owner = session.owner;
       if (owner?.kind !== "group-member") {
         return false;
@@ -1853,8 +1909,8 @@ export class ConversationRunService {
       "ambiguous_group_ownership",
       `activation blocked: ${blocked.length} group-member session(s) with ambiguous ownership require operator recovery`,
       {
-        sessions: blocked.map((session) => ({
-          alias: session.alias,
+        sessions: blocked.map(([key, session]) => ({
+          alias: key,
           bindingId: session.owner?.bindingId,
           botId: session.owner?.botId,
           conversationId: session.owner?.conversationId,

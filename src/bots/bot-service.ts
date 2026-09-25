@@ -708,6 +708,9 @@ export class BotService {
       // here for the code) or controller session resolving to this Group —
       // exact, binding-resolved, live-topic-linked, or unattributable —
       // blocks the metadata-only delete like the verified teardown does.
+      // Unattributable group-member owners block too: they prove nothing
+      // about any root, so deleting this Group could strand them.
+      this.assertNoUnattributableGroupMemberSessions(id);
       const controller = this.controllerResidueForGroup(id);
       if (controller.bindingIds.length > 0 || controller.sessionAliases.length > 0) {
         throw new BotError("group_has_runtime", `group "${id}" still has provisional controller runtime`, {
@@ -1003,6 +1006,35 @@ export class BotService {
       bindingIds: bindings.map((binding) => binding.id),
       sessionAliases: [...sessions.map((session) => session.alias), ...ambiguous.map((session) => session.alias)],
     };
+  }
+
+  /**
+   * Unattributable group-member owners prove nothing about any root (no
+   * conversationId, no live binding, no live anything): deleting any Group
+   * could strand them. Mirrors the run-service destructive-path gate; the
+   * metadata-only delete must enforce the same rule as verified teardown.
+   */
+  private assertNoUnattributableGroupMemberSessions(groupId: string): void {
+    const blocked = Object.entries(this.state.sessions).filter(([key, session]) => {
+      const owner = session.owner;
+      if (owner?.kind !== "group-member" || key !== session.alias) {
+        return false;
+      }
+      if (owner.conversationId !== undefined) {
+        return false;
+      }
+      const bound = owner.bindingId !== undefined
+        ? this.state.bot_runtime_bindings[owner.bindingId]
+        : undefined;
+      return bound === undefined;
+    });
+    if (blocked.length === 0) {
+      return;
+    }
+    throw new BotError("group_has_runtime", `group "${groupId}" still has unattributable member sessions`, {
+      conversationId: groupId,
+      sessionAliases: blocked.map(([key]) => key),
+    });
   }
 
   private ambiguousControllerSessions(): Array<{ alias: string }> {

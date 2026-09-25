@@ -531,6 +531,37 @@ test("deleteBot stays fail-closed on a controller binding alone", async () => {
   expect(state.bot_runtime_bindings.controller_only).toBeDefined();
 });
 
+test("deleteGroup stays fail-closed on unattributable member sessions", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  let n = 0;
+  const service = new BotService(
+    {
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    },
+    state,
+    store,
+    { now: () => new Date(NOW), createId: () => `bot_${(n += 1)}` },
+  );
+  const a = await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const b = await service.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const group = await service.createGroup({ title: "Release Team", botIds: [a.id, b.id] });
+  state.sessions.unattr_shadow = {
+    alias: "unattr_shadow",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:unattr_shadow",
+    logical_session_id: "ffffffff-ffff-4fff-ffff-ffffffffffff",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-member", bindingId: "missing_binding" },
+  };
+  await expect(service.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_runtime" });
+  expect(state.conversations[group.id]).toBeDefined();
+  expect(state.sessions.unattr_shadow?.alias).toBe("unattr_shadow");
+});
+
 test("deleteGroup stays fail-closed on binding-less controller sessions", async () => {
   const state = createEmptyState();
   const store = new MemoryStateStore();

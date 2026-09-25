@@ -734,6 +734,21 @@ function parseSessions(
       dropped.push({ section: "sessions", key: alias, reason: "malformed session record" });
       continue;
     }
+    if (value.alias !== alias) {
+      // Storage identity is the map key: SessionService removes by key and
+      // every destructive ownership scan releases by key. A record whose
+      // inner alias disagrees would let a second row masquerade as the
+      // primary (same record.alias, different key) and defeat exactly-one
+      // checks, or send physical release at the wrong key on retry. Keep
+      // the row as the physical cleanup handle but quarantine it from
+      // ownership attribution: activation and destructive teardowns treat
+      // key-mismatched product owners as corruption and fail closed.
+      dropped.push({
+        section: "sessions",
+        key: alias,
+        reason: `session map key "${alias}" does not match record alias "${value.alias}"; kept for operator recovery, excluded from ownership`,
+      });
+    }
     if (value.logical_session_id === undefined) {
       // Legacy record from before logical_session_id existed: assign a fresh
       // UUIDv4 exactly once. StateStore.load() persists this synchronously

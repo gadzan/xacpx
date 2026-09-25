@@ -4546,6 +4546,133 @@ test("live primary plus hidden secondary owner fails group delete with zero rele
   first.store.close();
 });
 
+test("key-alias mismatch fails group delete with zero release, retryable after repair", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Persisted corruption: a second row masquerades as the primary
+  // (same record.alias, different map key). Storage identity is the key,
+  // so the residue plan must fail before releasing the wrong row — and the
+  // retry after operator repair (drop the shadow row) converges.
+  const primary = first.sessions.getLogicalSessionRecord(binding.sessionAlias)!;
+  first.state.sessions["shadow-key"] = {
+    ...structuredClone(primary),
+    logical_session_id: "dddddddd-dddd-4ddd-dddd-dddddddddddd",
+  };
+  delete first.state.conversation_topics[topic.id];
+  const releasesBefore = first.physical.releaseCalls + first.physical.deleteCalls;
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias)?.alias).toBe(binding.sessionAlias);
+  expect(first.state.sessions["shadow-key"]).toBeDefined();
+  expect(first.physical.releaseCalls + first.physical.deleteCalls).toBe(releasesBefore);
+  // Operator removes the corrupt shadow row; retry completes the delete.
+  delete first.state.sessions["shadow-key"];
+  await first.service.teardownGroupConversation(group.id);
+  expect(first.state.conversations[group.id]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias) ?? undefined).toBeUndefined();
+  first.store.close();
+});
+
+test("binding-less exact owner under a mismatched key fails closed, never releases the wrong row", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // No binding row at all: an exact-owner session stored under the wrong
+  // key must fail closed, not release whatever lives at record.alias.
+  first.state.sessions["wrong-key"] = {
+    alias: "some-alias",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:wrong",
+    logical_session_id: "eeeeeeee-eeee-4eee-eeee-eeeeeeeeeeee",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: {
+      kind: "group-member",
+      bindingId: "bind_missing",
+      botId: reviewer.id,
+      conversationId: group.id,
+      topicId: topic.id,
+    },
+  };
+  const releasesBefore = first.physical.releaseCalls + first.physical.deleteCalls;
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(first.state.sessions["wrong-key"]).toBeDefined();
+  expect(first.physical.releaseCalls + first.physical.deleteCalls).toBe(releasesBefore);
+  first.store.close();
+});
+
+test("unattributable member blocks group delete before any topic is destroyed", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(reviewer.id);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-unattr-gate",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  // Triple-less, binding-less, conversation-less: proves nothing about any
+  // root. The entry gate must fire before the first Topic teardown deletes
+  // rows or metadata.
+  first.state.sessions.unattr_shadow = {
+    alias: "unattr_shadow",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:unattr_shadow",
+    logical_session_id: "ffffffff-ffff-4fff-ffff-ffffffffffff",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-member", bindingId: "missing_binding" },
+  };
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "ambiguous_group_ownership",
+  });
+  // Nothing destructive happened: Topic row, durable rows, Group lifecycle,
+  // sessions, and bindings all intact.
+  expect(first.state.conversation_topics[topic.id]).toBeDefined();
+  expect(first.state.conversation_topics[topic.id]?.status).toBe("active");
+  expect(first.store.listRuns(group.id)).not.toHaveLength(0);
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 })).not.toHaveLength(0);
+  expect(first.state.conversations[group.id]?.lifecycle).not.toBe("deleting");
+  expect(first.sessions.getLogicalSessionRecord("unattr_shadow")?.alias).toBe("unattr_shadow");
+  expect(first.store.isConversationDeleting(group.id)).toBe(false);
+  first.store.close();
+});
+
 test("ghost binding with an alias/id mismatch fails group delete closed, never orphans", async () => {
   const first = await createLifecycle();
   const bots = first.bots;
