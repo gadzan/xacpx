@@ -562,6 +562,40 @@ test("deleteGroup stays fail-closed on unattributable member sessions", async ()
   expect(state.sessions.unattr_shadow?.alias).toBe("unattr_shadow");
 });
 
+test("deleteGroup stays fail-closed on key-mismatched hidden owners", async () => {
+  const state = createEmptyState();
+  const store = new MemoryStateStore();
+  let n = 0;
+  const service = new BotService(
+    {
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    },
+    state,
+    store,
+    { now: () => new Date(NOW), createId: () => `bot_${(n += 1)}` },
+  );
+  const a = await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const b = await service.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const group = await service.createGroup({ title: "Release Team", botIds: [a.id, b.id] });
+  // Key/alias disagreement is itself corruption: the row cannot be
+  // attributed to any root, so it blocks every Group delete rather than
+  // being skipped as a non-match.
+  state.sessions["wrong-key"] = {
+    alias: "different",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:wrong",
+    logical_session_id: "99999999-9999-4999-8999-999999999999",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-member", bindingId: "missing_binding" },
+  };
+  await expect(service.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_runtime" });
+  expect(state.conversations[group.id]).toBeDefined();
+  expect(state.sessions["wrong-key"]).toBeDefined();
+});
+
 test("deleteGroup stays fail-closed on binding-less controller sessions", async () => {
   const state = createEmptyState();
   const store = new MemoryStateStore();

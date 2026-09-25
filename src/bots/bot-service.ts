@@ -1017,8 +1017,16 @@ export class BotService {
   private assertNoUnattributableGroupMemberSessions(groupId: string): void {
     const blocked = Object.entries(this.state.sessions).filter(([key, session]) => {
       const owner = session.owner;
-      if (owner?.kind !== "group-member" || key !== session.alias) {
+      if (owner?.kind !== "group-member") {
         return false;
+      }
+      // Storage identity is the map key: a hidden owner whose record alias
+      // disagrees with its key cannot be attributed to any root — the
+      // disagreement itself is corruption. Block every Group delete on it
+      // (mirrors the run-service key-identity fence); it proves nothing
+      // about which Group owns it, so deleting any Group could strand it.
+      if (key !== session.alias) {
+        return true;
       }
       if (owner.conversationId !== undefined) {
         return false;
