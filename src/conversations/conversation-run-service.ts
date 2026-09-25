@@ -945,10 +945,13 @@ export class ConversationRunService {
         );
       }
     }
-    // Any group-member session naming a binding of THIS group — even
-    // triple-less — pins that binding as an ownership clue. It must survive
-    // until the session itself is proven releasable or contradictory.
-    const ownerRefs = new Set<string>();
+    // Every group-member session naming a binding of THIS group — even
+    // triple-less — is collected per binding. A binding row is an ownership
+    // clue for ALL of its referrers, not just its primary session: the plan
+    // below requires each binding to have exactly one referrer (its live
+    // primary), so a hidden secondary owner can never be orphaned by
+    // deleting the clue out from under it.
+    const ownerRefsByBinding = new Map<string, string[]>();
     for (const session of Object.values(this.state.sessions)) {
       const owner = session.owner;
       if (owner?.kind !== "group-member" || owner.bindingId === undefined) {
@@ -956,10 +959,12 @@ export class ConversationRunService {
       }
       const bound = this.state.bot_runtime_bindings[owner.bindingId];
       if (bound?.scope === "group-member" && bound.conversationId === conversationId) {
-        ownerRefs.add(owner.bindingId);
+        const list = ownerRefsByBinding.get(owner.bindingId) ?? [];
+        list.push(session.alias);
+        ownerRefsByBinding.set(owner.bindingId, list);
       }
     }
-    // Unattributable group-member owners fail every destructive Group
+    const ownerRefs = new Set(ownerRefsByBinding.keys());
     // delete closed (mirrors the controller ambiguous gate): no
     // conversationId, no live binding to resolve through, and no canonical
     // triple means no teardown path can prove which root owns them —
@@ -1006,6 +1011,22 @@ export class ConversationRunService {
           "runtime_ownership_conflict",
           "group member binding/session link is contradictory",
           { binding, sessionAlias: byAlias?.alias },
+        );
+      }
+      // Every OTHER session naming this bindingId must not exist: a second
+      // referrer (partial, shadow, or duplicate) would lose its only
+      // attribution clue when the binding row is deleted after the release.
+      // Fail closed with zero mutation. (The live primary always names its
+      // own bindingId, so healthy bindings show exactly one extra
+      // self-referrer beyond the primary itself — filter it out.)
+      const referrers = (ownerRefsByBinding.get(binding.id) ?? []).filter(
+        (alias) => alias !== byAlias.alias,
+      );
+      if (referrers.length > 0) {
+        throw new ConversationError(
+          "runtime_ownership_conflict",
+          "group member binding has more than one session owner and cannot be released",
+          { binding, referrers },
         );
       }
       plan.push({ kind: "release-session", alias: byAlias.alias, bindingId: binding.id });
