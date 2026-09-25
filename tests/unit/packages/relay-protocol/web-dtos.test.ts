@@ -96,6 +96,34 @@ function roundtrip(event: any) {
   return parseWebServerEvent(webEventEnvelope(event));
 }
 
+test("conversation-topic-changed validates executionTarget shape", () => {
+  const topic = {
+    id: "topic_1",
+    conversationId: "conversation_1",
+    title: "Sprint",
+    status: "active",
+    createdAt: "2026-09-15T10:00:00.000Z",
+    updatedAt: "2026-09-15T10:00:00.000Z",
+  };
+  const event = (t: unknown) => ({
+    kind: "control-event", instanceId: "i1", event: { type: "conversation-topic-changed", topic: t },
+  });
+  expect(roundtrip(event(topic))).not.toBeNull();
+  expect(roundtrip(event({
+    ...topic, executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+  }))).not.toBeNull();
+  expect(roundtrip(event({
+    ...topic, executionTarget: { workspace: "backend", cwd: "/repo/sub", isolation: "shared" },
+  }))).not.toBeNull();
+  expect(roundtrip(event({ ...topic, executionTarget: 123 }))).toBeNull();
+  expect(roundtrip(event({
+    ...topic, executionTarget: { workspace: [], isolation: "anything" },
+  }))).toBeNull();
+  expect(roundtrip(event({
+    ...topic, executionTarget: { workspace: "backend", isolation: "mesh" },
+  }))).toBeNull();
+});
+
 test("accepts the new turn-status control events", () => {
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s" } })).not.toBeNull();
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s", prompt: "queued", queueItemId: "q1" } })).not.toBeNull();

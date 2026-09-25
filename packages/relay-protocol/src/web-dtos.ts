@@ -526,6 +526,15 @@ function validConversationCorrelation(value: unknown): boolean {
     && typeof c.memberTurnId === "string";
 }
 
+function validExecutionTarget(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const t = value as Record<string, unknown>;
+  return typeof t.workspace === "string"
+    && (t.cwd === undefined || typeof t.cwd === "string")
+    && (t.isolation === "shared" || t.isolation === "shared-single-writer" || t.isolation === "worktree-per-member");
+}
+
 function validTopicSummary(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const c = value as Record<string, unknown>;
@@ -534,7 +543,8 @@ function validTopicSummary(value: unknown): boolean {
     && typeof c.title === "string"
     && (c.status === "active" || c.status === "archived" || c.status === "deleting")
     && typeof c.createdAt === "string"
-    && typeof c.updatedAt === "string";
+    && typeof c.updatedAt === "string"
+    && validExecutionTarget(c.executionTarget);
 }
 
 function validConversationMessage(value: unknown): boolean {

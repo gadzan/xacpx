@@ -1751,16 +1751,12 @@ export class ConversationRunService {
       if (owner.bindingId !== createScopedGroupMemberBindingId(conversationId, topicId, owner.botId)) {
         return false;
       }
-      const conversation = this.state.conversations[conversationId];
-      const topic = this.state.conversation_topics[topicId];
-      // Only a MISSING root is sweepable. Any live root — Group or Direct
-      // kind — exempts: Group-rooted owners belong to the ordinary teardown
-      // paths, and Direct-kind roots are kind contradictions for the
+      // Only a MISSING root is sweepable. Any live root — Group,
+      // persisted-Direct, or synthetic-Direct — exempts: Group-rooted
+      // owners belong to the ordinary teardown paths, and Direct-kind
+      // roots (persisted or synthetic) are kind contradictions for the
       // ambiguous gate below (never auto-release under a contradiction).
-      if (conversation && topic && topic.conversationId === conversationId) {
-        return false;
-      }
-      return true;
+      return this.classifyConversationRoot(conversationId, topicId) === "missing";
     });
     for (const [key, session] of candidates) {
       assertSessionKeyMatchesAlias(key, session);
@@ -1787,12 +1783,8 @@ export class ConversationRunService {
         // Re-check rootlessness inside the gate: a concurrently recreated
         // Group/Topic (or repaired binding) restores the cleanup root, and
         // the ordinary teardown paths own it from there — never release
-        // under a live root.
-        const liveConversation = this.state.conversations[conversationId];
-        const liveTopic = this.state.conversation_topics[topicId];
-        // Any live root exempts (see candidate filter): Group roots belong
-        // to ordinary teardown; Direct roots are gate territory.
-        if (liveConversation && liveTopic && liveTopic.conversationId === conversationId) {
+        // under a live root (Group, persisted-Direct, or synthetic-Direct).
+        if (this.classifyConversationRoot(conversationId, topicId) !== "missing") {
           return;
         }
         if (
@@ -1808,6 +1800,42 @@ export class ConversationRunService {
   }
 
   /**
+   * Shared Conversation/Topic root classifier. Direct roots may be
+   * synthetic: a live Bot's deterministic Direct conversation + default
+   * Topic ids are a live root even with no persisted rows. Anything else
+   * needs persisted rows of the right kind. Used by activation (authority,
+   * orphan sweep, ambiguity) so a synthetic Direct root can never read as
+   * "missing" in one check and "live" in another.
+   */
+  private classifyConversationRoot(
+    conversationId: string,
+    topicId: string,
+  ): "group" | "persisted-direct" | "synthetic-direct" | "missing" {
+    const conversation = this.state.conversations[conversationId];
+    const topic = this.state.conversation_topics[topicId];
+    if (conversation?.kind === "group") {
+      return topic && topic.conversationId === conversationId ? "group" : "missing";
+    }
+    if (conversation?.kind === "bot") {
+      if (topic) {
+        return topic.conversationId === conversationId ? "persisted-direct" : "missing";
+      }
+      const botId = conversation.botIds[0];
+      return botId !== undefined && topicId === createDirectTopicId(botId)
+        ? "persisted-direct"
+        : "missing";
+    }
+    const owner = this.bots.listBots().find((bot) => createDirectConversationId(bot.id) === conversationId);
+    if (owner && topicId === createDirectTopicId(owner.id)) {
+      return "synthetic-direct";
+    }
+    if (owner && topic) {
+      return topic.conversationId === conversationId ? "synthetic-direct" : "missing";
+    }
+    return "missing";
+  }
+
+  /**
    * Pre-kick authority check for durable nonterminal work (§21: the store
    * is canonical, but AppState owns the mutable authority roots). Every
    * nonterminal Run root must still have an owner that can execute it: a
@@ -1819,39 +1847,11 @@ export class ConversationRunService {
    * roots instead; the operator restores the root or reconciles the work.
    */
   private assertNonterminalWorkHasAuthority(): void {
-    const roots = this.store.listNonterminalRunRoots();
-    const unrooted = roots.filter((root) => {
-      const conversation = this.state.conversations[root.conversationId];
-      if (conversation?.kind === "group") {
-        const topic = this.state.conversation_topics[root.topicId];
-        return !topic || topic.conversationId !== root.conversationId;
-      }
-      if (conversation?.kind === "bot") {
-        const topic = this.state.conversation_topics[root.topicId];
-        if (topic) {
-          return topic.conversationId !== root.conversationId;
-        }
-        // Absent Topic row is the synthetic default only when it matches the
-        // Bot's deterministic default Topic id; any other id whose row is
-        // gone was a persisted Topic that lost its root.
-        const botId = conversation.botIds[0];
-        return botId === undefined || root.topicId !== createDirectTopicId(botId);
-      }
-      // No persisted Conversation row: a Direct root is healthy only when the
-      // conversation id is a live Bot's deterministic Direct id AND the topic
-      // is that Bot's deterministic default (synthetic root) or a linked
-      // custom Topic row that survived. A quarantined custom Topic whose row
-      // is gone looks like a Bot match but has no authority: first kick would
-      // claim it and loop topic_not_found back to pending forever.
-      const owner = this.bots.listBots().find((bot) => createDirectConversationId(bot.id) === root.conversationId);
-      if (!owner) {
-        return true;
-      }
-      if (root.topicId === createDirectTopicId(owner.id)) {
-        return false;
-      }
-      const customTopic = this.state.conversation_topics[root.topicId];
-      return !customTopic || customTopic.conversationId !== root.conversationId;
+    // Same shared classifier as the sweep/ambiguity gates: Group roots need
+    // persisted rows; Direct roots may be persisted or synthetic.
+    const unrooted = this.store.listNonterminalRunRoots().filter((root) => {
+      const kind = this.classifyConversationRoot(root.conversationId, root.topicId);
+      return kind !== "group" && kind !== "persisted-direct" && kind !== "synthetic-direct";
     });
     if (unrooted.length > 0) {
       throw new ConversationError(
@@ -1890,14 +1890,14 @@ export class ConversationRunService {
       if (owner.bindingId !== createScopedGroupMemberBindingId(conversationId, topicId, owner.botId)) {
         return true;
       }
-      const conversation = this.state.conversations[conversationId];
-      const topic = this.state.conversation_topics[topicId];
       // Canonical-but-still-rootless here means the sweep above skipped it
       // (repaired-then-reripped triple, or the alias vanished and reappeared
       // under the gate): that is ambiguous NOW, so block rather than assume.
       // Live-GROUP-rooted owners return false — the ordinary teardown paths
-      // own them. A Direct-kind root is a kind contradiction: block.
-      if (conversation?.kind !== "group" || !topic || topic.conversationId !== conversationId) {
+      // own them. A Direct-kind root (persisted OR synthetic) is a kind
+      // contradiction: block.
+      const kind = this.classifyConversationRoot(conversationId, topicId);
+      if (kind !== "group") {
         return true;
       }
       return false;
