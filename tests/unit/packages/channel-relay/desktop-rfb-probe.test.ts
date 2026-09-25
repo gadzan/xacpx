@@ -25,10 +25,23 @@ function handshake33(type: number): Uint8Array {
   ]);
 }
 
-test("VncAuth and Tight offers are accepted", () => {
+test("outer VncAuth is accepted; servers also offering Tight use the VncAuth leg", () => {
   expect(evaluateRfbHandshake(handshake37(2))).toEqual({ ok: true, version: "RFB 003.008", security: "vnc-auth" });
   expect(evaluateRfbHandshake(handshake37(16, 2))).toEqual({ ok: true, version: "RFB 003.008", security: "vnc-auth" });
   expect(evaluateRfbHandshake(handshake33(2))).toEqual({ ok: true, version: "RFB 003.003", security: "vnc-auth" });
+});
+
+test("Tight-only endpoints fail closed: outer 16 cannot prove password auth", () => {
+  // Tight (16) is a sub-auth container: the server may select STDVNOAUTH__
+  // (or an empty sub-auth list, also no auth), and noVNC completes either.
+  // A "vnc-auth" verdict here could not constrain the real tunnel.
+  for (const verdict of [evaluateRfbHandshake(handshake37(16)), evaluateRfbHandshake(handshake33(16))]) {
+    expect(verdict?.ok).toBe(false);
+    if (verdict && !verdict.ok) {
+      expect(verdict.code).toBe("desktop-auth-unsupported");
+      expect(verdict.detail).toMatch(/Tight-only/);
+    }
+  }
 });
 
 test("None-only servers are rejected (unauthenticated VNC never served)", () => {

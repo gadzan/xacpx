@@ -1,6 +1,6 @@
 // packages/channel-relay/src/desktop/rfb-probe.ts
-// Loopback RFB preflight: confirm the local VNC server speaks RFB and reports
-// an auth scheme the hub/browser path can serve (v1: VncAuth only). The probe
+// Loopback RFB preflight: confirm the local VNC server speaks RFB and offers
+// outer VncAuth (2) at the top level (v1: outer VncAuth only). The probe
 // performs the version exchange (read server banner, write client banner)
 // but never sends credentials; noVNC completes VncAuth end-to-end over the tunnel.
 import net from "node:net";
@@ -140,10 +140,20 @@ function classifySecurityTypes(types: readonly number[], version: string): RfbPr
   if (types.includes(RFB_SECURITY_INVALID)) {
     return { ok: false, code: "desktop-rfb-unavailable", detail: "RFB server reported an invalid security type" };
   }
-  if (types.includes(RFB_SECURITY_VNC_AUTH) || types.includes(RFB_SECURITY_TIGHT)) {
-    // Tight (16) negotiates sub-auth inside the tunnel; noVNC handles the
-    // standard VncAuth challenge once the stream is up.
+  // Tight (16) is a container, not a proof of password auth: after outer type
+  // 16 the server runs a tunnel negotiation followed by a Tight sub-auth
+  // capability list, which may select STDVNOAUTH__ (no auth) or an empty
+  // sub-auth list (also no auth). noVNC happily completes either, so an
+  // outer-16 verdict of "vnc-auth" cannot constrain what the real tunneled
+  // connection will use. v1 fail-closes Tight-only here: only an explicit
+  // outer VncAuth (2) proves the server offers password auth at the top
+  // level. (A server offering BOTH 2 and 16 is accepted via the VncAuth leg;
+  // noVNC then selects type 2 directly and never enters Tight sub-auth.)
+  if (types.includes(RFB_SECURITY_VNC_AUTH)) {
     return { ok: true, version, security: "vnc-auth" };
+  }
+  if (types.includes(RFB_SECURITY_TIGHT)) {
+    return { ok: false, code: "desktop-auth-unsupported", detail: "Tight-only endpoints are rejected in v1: sub-auth cannot prove VNC authentication before the tunnel opens" };
   }
   if (types.includes(RFB_SECURITY_ARD)) {
     return { ok: false, code: "desktop-auth-unsupported", detail: "Apple Remote Desktop auth needs Phase B (connector pre-auth)" };

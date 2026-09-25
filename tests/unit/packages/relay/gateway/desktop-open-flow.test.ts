@@ -148,6 +148,23 @@ test("desktop-open fails closed without capability, offline, busy, or bad prepar
   }
 });
 
+test("terminal-take-control still routes alongside desktop-open/desktop-close", async () => {
+  // Insertion-guard: desktop branches were added between stream-start and
+  // take-control; a dropped take-control branch silently breaks multi-view
+  // terminal (spectator can never become controller).
+  const { deps, socket, sent, requests } = desktopDeps();
+  deps.webGateway.bindAttachment({ socket: socket as never, attachmentId: "a1", terminalId: "t1", generation: "g1" });
+  const msg = { kind: "terminal-take-control", requestId: "r-tc", instanceId: "i1", attachmentId: "a1", generation: "g1" };
+  expect(parseWebClientMessage(webClientEnvelope(msg as never))).not.toBeNull();
+  handleWebClientMessage(deps, "a1", socket as never, JSON.stringify(webClientEnvelope(msg as never)));
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(requests.length).toBe(1);
+  expect(requests[0]?.type).toBe(MSG.terminalTakeControl);
+  expect(requests[0]?.payload).toMatchObject({ attachmentId: "a1", generation: "g1", viewerId: "viewer-1" });
+  expect(sent.length).toBe(1);
+  expect((sent[0]?.event as Record<string, unknown>).kind).toBe("terminal-opened");
+});
+
 test("desktop-close cancels the stream and notifies the connector", () => {
   const { deps, socket, events, owners } = desktopDeps();
   owners.set("s-1", { viewerId: "viewer-1", accountId: "a1", instanceId: "i1" });

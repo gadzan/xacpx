@@ -217,6 +217,10 @@ async function handleWebClientMessageAsync(
     handleDesktopClose(deps, accountId, socket, msg);
     return;
   }
+  if (msg.kind === "terminal-take-control") {
+    await handleTakeControl(deps, socket, msg);
+    return;
+  }
   if (msg.kind === "terminal-resync") {
     await handleResync(deps, socket, msg);
     return;

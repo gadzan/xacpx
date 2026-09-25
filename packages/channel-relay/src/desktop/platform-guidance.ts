@@ -23,10 +23,10 @@ export function desktopSetupGuidance(
     return "The desktop port answered but is not an RFB/VNC server; point options.desktop.port at the loopback VNC server.";
   }
   if (platform === "win32") {
-    return "TightVNC must offer VNC authentication; unauthenticated, VeNCrypt-only, or proprietary-auth servers are rejected.";
+    return "TightVNC must offer outer VNC authentication (type 2); Tight-only endpoints (outer 16 without a type-2 offer) are rejected in v1 because sub-auth can select no-auth. Unauthenticated, VeNCrypt-only, or proprietary-auth servers are rejected.";
   }
   if (platform === "darwin") {
     return "macOS Screen Sharing in ARD-auth mode needs Phase B; configure a standard VncAuth endpoint for Phase A.";
   }
-  return "Configure the VNC server for standard VncAuth; None, VeNCrypt, and proprietary auth are rejected in v1.";
+  return "Configure the VNC server for outer VncAuth (type 2); Tight-only (outer 16 without type 2), None, VeNCrypt, and proprietary auth are rejected in v1.";
 }

@@ -27,6 +27,12 @@ async function boot(opts?: Parameters<typeof createRmuxTerminalE2EHarness>[0]) {
 function isOpened<T extends { failed?: unknown }>(
   result: T,
 ): result is Exclude<T, { failed: unknown }> {
+  if ("failed" in result && result.failed) {
+    // CI triage: terminal-request-failed carries the only code/message that
+    // distinguishes offline/capability/timeout/generation faults. The bare
+    // `Expected true / Received false` below is otherwise undebuggable.
+    console.error("openTerminal failed:", JSON.stringify(result.failed));
+  }
   return !("failed" in result && result.failed);
 }
 
@@ -35,7 +41,6 @@ test("open → stream → bytes reach only the attached browser; frames skip mes
   const a = await h.connectBrowser();
   const opened = await h.openTerminal(a);
   expect(isOpened(opened)).toBe(true);
-  if (!isOpened(opened)) return;
 
   expect(opened.role).toBe("controller");
   expect((await h.driver.list()).length).toBe(1);
