@@ -918,6 +918,14 @@ export class ConversationRunService {
    * unresolvable residue fails closed for retry.
    */
   private async releaseGroupResidue(conversationId: string): Promise<void> {
+    // Validate-then-mutate: classify EVERY binding/session clue BEFORE
+    // deleting any binding row. A stale-looking binding (both alias and
+    // logical-id axes missing) may still be the only ownership clue for a
+    // bindingId-only partial session — deleting it first would make the
+    // later session scan (and the finalize assert) unable to attribute the
+    // session, orphaning a hidden session under a deleted Group. So: plan
+    // the full release set first, fail closed on any ambiguity, and only
+    // then release/delete.
     const bindings = Object.values(this.state.bot_runtime_bindings).filter(
       (binding): binding is GroupMemberRuntimeBinding => binding.scope === "group-member"
         && binding.conversationId === conversationId,
@@ -936,21 +944,49 @@ export class ConversationRunService {
           { binding },
         );
       }
-      // Same two-axis rule as groupMemberAliases: scan every session for the
-      // logical id and require exactly one match on the same alias. Missing
-      // on BOTH axes is a harmless stale binding removed at finalize time.
-      // Present on exactly one axis — or duplicated/ambiguous on the id axis
-      // — must fail closed: the session it resolves to is Group residue and
-      // deleting the binding first would lose the only clue a partial owner
-      // needs to find it. An exact link releases. (A single find() is NOT
-      // enough here: logical ids carry no global uniqueness quarantine, so a
-      // duplicated id must conflict rather than release the first hit.)
+    }
+    // Any group-member session naming a binding of THIS group — even
+    // triple-less — pins that binding as an ownership clue. It must survive
+    // until the session itself is proven releasable or contradictory.
+    const ownerRefs = new Set<string>();
+    for (const session of Object.values(this.state.sessions)) {
+      const owner = session.owner;
+      if (owner?.kind !== "group-member" || owner.bindingId === undefined) {
+        continue;
+      }
+      const bound = this.state.bot_runtime_bindings[owner.bindingId];
+      if (bound?.scope === "group-member" && bound.conversationId === conversationId) {
+        ownerRefs.add(owner.bindingId);
+      }
+    }
+    // Unattributable group-member owners fail every destructive Group
+    // delete closed (mirrors the controller ambiguous gate): no
+    // conversationId, no live binding to resolve through, and no canonical
+    // triple means no teardown path can prove which root owns them —
+    // deleting any Group could strand them as permanent hidden sessions.
+    this.assertNoUnattributableGroupMemberSessions();
+    type ReleasePlan =
+      | { kind: "stale-binding"; bindingId: string }
+      | { kind: "release-session"; alias: string; bindingId: string };
+    const plan: ReleasePlan[] = [];
+    for (const binding of bindings) {
       const byAlias = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
       const byIdMatches = Object.values(this.state.sessions).filter(
         (session) => session.logical_session_id === binding.logicalSessionId,
       );
       if (!byAlias && byIdMatches.length === 0) {
-        await this.deleteBindingRow(binding.id);
+        // Both axes missing is harmless ONLY when no session references
+        // this binding: otherwise the binding row is the sole attribution
+        // clue for a bindingId-only partial owner (validated above as
+        // either exact/canonical or already failed closed).
+        if (ownerRefs.has(binding.id)) {
+          throw new ConversationError(
+            "runtime_ownership_conflict",
+            "group member binding is the sole ownership clue for a partial session and cannot be dropped",
+            { binding },
+          );
+        }
+        plan.push({ kind: "stale-binding", bindingId: binding.id });
         continue;
       }
       if (
@@ -972,10 +1008,69 @@ export class ConversationRunService {
           { binding, sessionAlias: byAlias?.alias },
         );
       }
-      await this.releaseAlias(byAlias.alias);
-      await this.deleteBindingRow(binding.id);
+      plan.push({ kind: "release-session", alias: byAlias.alias, bindingId: binding.id });
+    }
+    for (const step of plan) {
+      if (step.kind === "stale-binding") {
+        await this.deleteBindingRow(step.bindingId);
+      } else {
+        await this.releaseAlias(step.alias);
+        await this.deleteBindingRow(step.bindingId);
+      }
     }
     await this.releaseGroupResidueSessions(conversationId);
+  }
+
+  /**
+   * Global fail-closed for unattributable group-member owners: no
+   * conversationId, no live binding to resolve through, and no canonical
+   * triple. Mirrors assertNoAmbiguousGroupControllerSessions — such an
+   * owner proves nothing about which Group it belongs to, so deleting any
+   * Group could strand it as a permanent hidden session. Block every
+   * destructive Group delete until an operator repairs or explicitly
+   * releases it. (Activation already blocks these via
+   * assertNoAmbiguousGroupMemberSessions; this is the destructive-path
+   * counterpart.)
+   */
+  private assertNoUnattributableGroupMemberSessions(): void {
+    const blocked = Object.values(this.state.sessions).filter((session) => {
+      const owner = session.owner;
+      if (owner?.kind !== "group-member") {
+        return false;
+      }
+      if (owner.conversationId !== undefined) {
+        return false;
+      }
+      const bound = owner.bindingId !== undefined
+        ? this.state.bot_runtime_bindings[owner.bindingId]
+        : undefined;
+      if (bound !== undefined) {
+        return false;
+      }
+      // Binding-less without a conversation proves nothing about which
+      // Group owns the session — even a canonical-looking triple needs a
+      // live Group/Topic row or binding to attribute it, and neither
+      // exists here. (A session WITH a conversationId is that Group's
+      // problem, handled by its own teardown; a session WITH a live
+      // binding resolved above.)
+      return true;
+    });
+    if (blocked.length === 0) {
+      return;
+    }
+    throw new ConversationError(
+      "ambiguous_group_ownership",
+      `teardown blocked: ${blocked.length} group-member session(s) with unattributable ownership require operator recovery`,
+      {
+        sessions: blocked.map((session) => ({
+          alias: session.alias,
+          bindingId: session.owner?.bindingId,
+          botId: session.owner?.botId,
+          conversationId: session.owner?.conversationId,
+          topicId: session.owner?.topicId,
+        })),
+      },
+    );
   }
 
   /**

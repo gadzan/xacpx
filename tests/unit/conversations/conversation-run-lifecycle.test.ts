@@ -4461,6 +4461,49 @@ test("ghost-topic group teardown keeps durable history when physical release fai
   first.store.close();
 });
 
+test("bindingId-only partial with missing axes fails group delete before any mutation", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Crash residue: the original session is gone on BOTH binding axes, but a
+  // different-alias, different-id hidden session still names the binding as
+  // its sole ownership clue. Deleting the binding first would orphan it.
+  delete first.state.sessions[binding.sessionAlias];
+  first.state.sessions.partial_shadow = {
+    alias: "partial_shadow",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:partial_shadow",
+    logical_session_id: "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-member", bindingId: binding.id },
+  };
+  // Ghost the Topic so the whole-Group residue path owns the cleanup.
+  delete first.state.conversation_topics[topic.id];
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias) ?? undefined).toBeUndefined();
+  expect(
+    Object.values(first.state.sessions).some((s) => s.logical_session_id === binding.logicalSessionId),
+  ).toBe(false);
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  // Nothing mutated: Group, binding clue, and hidden session all survive.
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord("partial_shadow")?.alias).toBe("partial_shadow");
+  first.store.close();
+});
+
 test("ghost binding with an alias/id mismatch fails group delete closed, never orphans", async () => {
   const first = await createLifecycle();
   const bots = first.bots;
