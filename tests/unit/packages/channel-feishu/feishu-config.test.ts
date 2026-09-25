@@ -355,3 +355,51 @@ test("parseFeishuChannelConfig accepts a card endpoint carrying both secrets", (
     path: "/webhook/card",
   });
 });
+
+const cardActionSecrets = {
+  encryptKey: "a".repeat(32),
+  verificationToken: "token",
+  port: 18081,
+};
+
+/** The minimal Feishu options block, with `cardActions` on the account. */
+function feishuOptions(cardActions: unknown): unknown {
+  return {
+    appId: "cli_test",
+    appSecret: "secret_test",
+    accounts: { default: { cardActions: cardActions as object } },
+  };
+}
+
+test("parseCardActions rejects a relative path the host can never match", () => {
+  // The HTTP host compares the request target against this path with STRICT
+  // EQUALITY, so a relative path can never match: a request line carries
+  // `/webhook/card`, which is a different string. Left unvalidated the listener
+  // starts, the channel advertises form capability, and every callback 404s — the
+  // shape this parser's own design note says must be a hard startup error.
+  expect(() => parseFeishuChannelConfig(
+    feishuOptions({ ...cardActionSecrets, path: "webhook/card" }),
+  )).toThrow(/absolute path/);
+});
+
+test("parseCardActions accepts an absolute custom path", () => {
+  // Control case: the same configuration with a leading slash is a route the host
+  // can actually match, so it must not be refused.
+  const config = parseFeishuChannelConfig(
+    feishuOptions({ ...cardActionSecrets, path: "/custom/card" }),
+  );
+  expect(JSON.stringify(config)).toContain("/custom/card");
+});
+
+test("cardActions is parsed per account, so the path check runs on each", () => {
+  // A misconfigured path in any account must fail the whole parse rather than
+  // binding a listener that cannot ever serve its own callbacks.
+  expect(() => parseFeishuChannelConfig({
+    appId: "cli_test",
+    appSecret: "secret_test",
+    accounts: {
+      good: { cardActions: { ...cardActionSecrets, path: "/ok" } },
+      broken: { cardActions: { ...cardActionSecrets, path: "relative" } },
+    },
+  })).toThrow(/absolute path/);
+});

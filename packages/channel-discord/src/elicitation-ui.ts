@@ -817,6 +817,34 @@ export function buildElicitationSelectRows(
 }
 
 /**
+ * Whether the platform input must be non-empty to be submittable.
+ *
+ * Derived from `minLength`, not from the schema's property-`required`: a required
+ * property may legally hold `""` (core's validator accepts it for
+ * `maxLength: 0`), while a platform `required` input forbids an empty submit
+ * outright. Setting it from `field.required` alone would make those forms
+ * unsendable, so the widget's requirement follows what the schema actually
+ * demands of the VALUE.
+ *
+ * A field with no declared `minLength` is required when it is a required
+ * property, matching the intuitive case; a declared `minLength >= 1` makes it
+ * required regardless, because no empty answer can satisfy it either.
+ */
+function fieldRequiresNonEmptyInput(field: ChannelElicitationField): boolean {
+  if (field.kind === "text") {
+    // A declared minimum decides it outright: `minLength >= 1` admits no empty
+    // answer, and `minLength: 0` explicitly permits one.
+    if (field.minLength !== undefined) return field.minLength >= 1;
+    // No minimum declared. The empty string is then legal exactly when nothing
+    // forbids it — which is the case unless the field also bounds itself to
+    // nothing else. `maxLength: 0` is the sharp case: the ONLY answer the schema
+    // accepts is `""`, so the widget must not demand one.
+    if (field.maxLength !== undefined) return field.maxLength > 0;
+  }
+  return field.required;
+}
+
+/**
  * Build the modal for a text-like field.
  *
  * The modal's custom_id is the TOKEN only. Text Input custom_ids are
@@ -848,7 +876,22 @@ export function buildElicitationModal(
           customId: elicitationFieldCustomId(fieldIndex),
           style: field.kind === "text" ? 2 : 1,
           label: field.title,
-          required: field.required,
+          // The PLATFORM's required, which is not the schema's.
+          //
+          // A JSON Schema `required` property means the key must be PRESENT, and
+          // `""` is a present value — core's own validator accepts it for
+          // `maxLength: 0`. Discord's `required` is stronger: it forbids
+          // submitting the modal with the input empty at all. Copying the schema
+          // bit straight across therefore makes a legal form impossible, because
+          // the only answer the schema allows is one the widget refuses to send.
+          //
+          // So the input is required when the schema genuinely demands a
+          // non-empty value (`minLength >= 1`), and NOT required when the schema
+          // accepts the empty string. Presence of the key is enforced by the
+          // submit gate's missing-field check, which is the same rule core
+          // applies; emptiness is the widget's business, and here the two
+          // disagree in the direction that would block a legal answer.
+          required: fieldRequiresNonEmptyInput(field),
           ...(prefill ? { value: prefill } : {}),
           // The schema's own bounds, pushed into the control wherever the
           // platform can express them, so the widget enforces the same contract

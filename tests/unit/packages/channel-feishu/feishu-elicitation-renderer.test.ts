@@ -1876,3 +1876,66 @@ function collectButtons(card: Record<string, unknown>): Array<{ label: string; v
   walk(card);
   return out;
 }
+
+test("a legal maxLength of 0 is refused rather than built into an invalid input", () => {
+  // Core's `readOptionalPositiveInteger` accepts 0 and its validator accepts
+  // `""` as satisfying `maxLength: 0`, so the question is legal. Feishu's own
+  // `input.max_length` is bounded to 1–1000, so passing the 0 through builds a
+  // component the platform rejects — the gate says renderable and the card
+  // then fails to send.
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "note", title: "Note", required: true, maxLength: 0 },
+  ];
+  const verdict = checkElicitationRenderability(fields, request(fields));
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("answer-length-unsatisfiable");
+  // Named for the impossibility, not for a capacity the field is nowhere near:
+  // a field allowing 0 chars is not "too long".
+  expect(verdict.detail).not.toContain("1000");
+});
+
+test("the worst-case review sample is at least as wide as every legal review", async () => {
+  // The preflight blesses a review card up front, and the real one is only drawn
+  // after the user has answered. So the sample has to be an UPPER BOUND, not a
+  // representative value: an optimistic estimate is a `card.update` failure at
+  // review time, after the work, with no recovery path.
+  //
+  // Measured rather than asserted, by serializing the sample and the legal
+  // reviews and comparing bytes: whatever the fields are, the sample must never
+  // be narrower.
+  const fields: ChannelElicitationRequest["fields"] = [
+    // A number: `0` is not the widest legal rendering.
+    { kind: "number", key: "count", title: "Count", required: false },
+    // A boolean: `false` renders wider than `true`.
+    { kind: "boolean", key: "confirm", title: "Confirm", required: false },
+    // A short single-select, whose value can be narrower than the omitted text.
+    { kind: "single-select", key: "env", title: "Env", required: false, options: [
+      { value: "a", label: "A" },
+      { value: "b", label: "B" },
+    ] },
+  ];
+  const req = request(fields);
+  const sample = buildWorstCaseReviewCard(req, "tok");
+  const sampleBytes = measureElicitationCardBytes(sample);
+  expect(sampleBytes).toBeGreaterThan(0);
+
+  // Every legal combination of answers, including the all-omitted one, plus the
+  // widest legal value for each field.
+  const legal: Array<Record<string, ChannelElicitationValue | undefined>> = [
+    {},
+    { count: 0 },
+    { count: 9007199254740991 },
+    { confirm: true },
+    { confirm: false },
+    { env: "a" },
+    { env: "b" },
+    { count: 123456789, confirm: false, env: "b" },
+  ];
+  for (const values of legal) {
+    const review = buildElicitationReviewCard(req, "tok", values as Record<string, ChannelElicitationValue>);
+    // The sample must be at least as wide as this legal review, so a gate that
+    // blessed the sample blessed this one too.
+    expect(measureElicitationCardBytes(sample))
+      .toBeGreaterThanOrEqual(measureElicitationCardBytes(review));
+  }
+});

@@ -266,13 +266,25 @@ function parseCardActions(raw: unknown, path: string): FeishuCardActionConfig | 
     throw new Error(`${path}.port must be an integer between 1 and 65535`);
   }
   const host = stringOptional(raw.host, `${path}.host`) ?? DEFAULT_CARD_ACTION_HOST;
+  // The request target is compared with STRICT EQUALITY against this path (see
+  // `CardActionHost.handleRequest`), so a relative path can never match: an HTTP
+  // request line carries `/webhook/card`, and `"webhook/card"` is a different
+  // string. The listener starts, the channel advertises form capability, and every
+  // callback 404s — the exact "starts successfully but the feature does not work"
+  // shape this parser's own design note says must be a hard startup error instead.
+  const configuredPath = stringOptional(raw.path, `${path}.path`) ?? DEFAULT_CARD_ACTION_PATH;
+  if (!configuredPath.startsWith("/")) {
+    throw new Error(
+      `${path}.path must be an absolute path starting with "/" (got ${JSON.stringify(configuredPath)}); the request target is matched against it exactly, so a relative path would 404 every callback`,
+    );
+  }
   return {
     // No `?? ""` fallbacks: the required checks above already narrowed both.
     encryptKey,
     verificationToken,
     host,
     port,
-    path: stringOptional(raw.path, `${path}.path`) ?? DEFAULT_CARD_ACTION_PATH,
+    path: configuredPath,
   };
 }
 

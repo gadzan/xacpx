@@ -13,6 +13,7 @@ import type {
 import { setChannelLocale } from "../../../../packages/channel-discord/src/i18n";
 import {
   buildElicitationFieldCard,
+  buildElicitationModal,
   buildElicitationOpening,
   ELICITATION_CUSTOM_ID_PREFIX,
 } from "../../../../packages/channel-discord/src/elicitation-ui";
@@ -2816,4 +2817,56 @@ test("a submit from an earlier review revision is refused after an edit", async 
     content: { env: "staging" },
   });
   abort.abort();
+});
+
+test("a legal maxLength of 0 is refused rather than built into an invalid input", () => {
+  // Core's `readOptionalPositiveInteger` accepts 0 and its validator accepts
+  // `""` as satisfying `maxLength: 0`, so `{type:"string", maxLength:0}` is a
+  // legal question. Discord's Text Input `max_length` has a minimum of 1, so
+  // passing it through builds a component the platform rejects — the form
+  // renders its gate and then dies at send.
+  const field: ChannelElicitationField = {
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    maxLength: 0,
+  };
+  const verdict = checkElicitationRenderability([field], request([field]).request);
+  expect(verdict.renderable).toBe(false);
+  // Named for the impossibility, not for a capacity the field is nowhere near.
+  expect(verdict.reason).toBe("text-max-unsatisfiable");
+});
+
+test("a required text field that accepts the empty string is not made platform-required", () => {
+  // A JSON Schema `required` property means the key must be PRESENT, and `""` is
+  // present — core accepts it for `maxLength: 0`. Discord's `required` is
+  // stronger: an empty submit is refused outright. Copying the schema bit across
+  // therefore makes the ONLY legal answer unsendable.
+  const field: ChannelElicitationField = {
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    maxLength: 0,
+  };
+  const modal = buildElicitationModal("tok", field, undefined, 0);
+  const input = modal.components[0]!.component as { required?: boolean };
+  expect(input.required).toBe(false);
+});
+
+test("a text field that demands a non-empty value keeps the platform requirement", () => {
+  // The other side of the same mapping: `minLength >= 1` admits no empty answer,
+  // so the widget's requirement is not a restriction the schema would contradict.
+  const field: ChannelElicitationField = {
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    minLength: 1,
+    maxLength: 10,
+  };
+  const modal = buildElicitationModal("tok", field, undefined, 0);
+  const input = modal.components[0]!.component as { required?: boolean };
+  expect(input.required).toBe(true);
 });

@@ -219,6 +219,7 @@ export type ElicitationUnsupportedReason =
   | "route-not-private"
   | "text-min-beyond-capture"
   | "text-max-beyond-capture"
+  | "text-max-unsatisfiable"
   | "text-unbounded"
   | "pattern-unsupported"
   | "select-option-constraint-unsatisfiable"
@@ -450,6 +451,18 @@ export function checkElicitationRenderability(
           renderable: false,
           reason: "text-min-beyond-capture",
           detail: `field ${JSON.stringify(field.key)} requires at least ${minLength} chars but the platform input captures ${DISCORD_TEXT_CAPTURE_MAX}`,
+        };
+      }
+      // A `maxLength` of 0 is legal for CORE and impossible for the PLATFORM.
+      // Core's `readOptionalPositiveInteger` accepts 0 and its validator accepts
+      // `""` as satisfying `maxLength: 0`, but Discord's Text Input `max_length`
+      // is bounded to a minimum of 1 and `""` is a real answer ACP allows. So a
+      // legal `{type: "string", maxLength: 0}` would build an invalid component.
+      if (field.maxLength !== undefined && field.maxLength <= 0) {
+        return {
+          renderable: false,
+          reason: "text-max-unsatisfiable",
+          detail: `field ${JSON.stringify(field.key)} declares maxLength ${field.maxLength}, but the platform input requires at least 1`,
         };
       }
       if (field.maxLength !== undefined && field.maxLength > DISCORD_TEXT_CAPTURE_MAX) {

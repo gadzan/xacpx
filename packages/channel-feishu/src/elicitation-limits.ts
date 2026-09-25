@@ -103,6 +103,7 @@ export type ElicitationUnsupportedReason =
   | "field-description-too-long"
   | "answer-too-long"
   | "answer-unbounded"
+  | "answer-length-unsatisfiable"
   | "card-too-large"
   | "pattern-unsupported"
   | "select-option-description-unsupported"
@@ -381,6 +382,20 @@ export function checkElicitationFieldsRenderability(
     }
     // An answer the platform cannot capture would be silently truncated into a
     // different answer, so it is refused rather than clipped.
+    //
+    // A `maxLength` of 0 is legal for CORE and impossible for the PLATFORM:
+    // core's `readOptionalPositiveInteger` accepts 0 and its validator accepts
+    // `""` as satisfying `maxLength: 0`, while Feishu's own `input.max_length`
+    // is bounded to 1–1000. So the widget would be built with `max_length: 0`
+    // and CardKit rejects the card — a form that passes this gate and then
+    // fails at send. Refused here rather than at the platform boundary.
+    if (field.kind === "text" && field.maxLength !== undefined && field.maxLength <= 0) {
+      return {
+        renderable: false,
+        reason: "answer-length-unsatisfiable",
+        detail: `field ${JSON.stringify(field.key)} declares maxLength ${field.maxLength}, but one input requires at least 1 character`,
+      };
+    }
     if (field.kind === "text" && field.maxLength !== undefined && field.maxLength > FEISHU_INPUT_MAX_LENGTH) {
       return {
         renderable: false,
