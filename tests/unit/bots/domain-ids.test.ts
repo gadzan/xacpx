@@ -9,11 +9,11 @@ import {
   createDirectConversationId,
   createDirectTopicId,
   createDomainId,
-  createGroupTurnId,
   createMemberTurnId,
   createPendingDispatchId,
   createRuntimeBindingId,
   createScopedDirectBindingId,
+  createScopedGroupMemberBindingId,
   createTopicId,
   DOMAIN_ID_PREFIX,
 } from "../../../src/domain/ids";
@@ -27,7 +27,6 @@ test("createDomainId prefixes a UUID and never uses a display name", () => {
     createConversationRunId(),
     createMemberTurnId(),
     createPendingDispatchId(),
-    createGroupTurnId(),
     createRuntimeBindingId(),
   ];
 
@@ -38,8 +37,7 @@ test("createDomainId prefixes a UUID and never uses a display name", () => {
   expect(ids[4]!.startsWith(`${DOMAIN_ID_PREFIX.conversationRun}_`)).toBe(true);
   expect(ids[5]!.startsWith(`${DOMAIN_ID_PREFIX.memberTurn}_`)).toBe(true);
   expect(ids[6]!.startsWith(`${DOMAIN_ID_PREFIX.pendingDispatch}_`)).toBe(true);
-  expect(ids[7]!.startsWith(`${DOMAIN_ID_PREFIX.groupTurn}_`)).toBe(true);
-  expect(ids[8]!.startsWith(`${DOMAIN_ID_PREFIX.runtimeBinding}_`)).toBe(true);
+  expect(ids[7]!.startsWith(`${DOMAIN_ID_PREFIX.runtimeBinding}_`)).toBe(true);
   expect(ids.join(" ").includes("Reviewer")).toBe(false);
 });
 
@@ -64,10 +62,9 @@ test("1000 generated ids do not collide", () => {
     seen.add(createConversationRunId());
     seen.add(createMemberTurnId());
     seen.add(createPendingDispatchId());
-    seen.add(createGroupTurnId());
     seen.add(createRuntimeBindingId());
   }
-  expect(seen.size).toBe(9000);
+  expect(seen.size).toBe(8000);
 });
 
 test("direct runtime ids are deterministic opaque prefixes of the Bot id", () => {
@@ -87,4 +84,13 @@ test("direct runtime ids are deterministic opaque prefixes of the Bot id", () =>
   expect(scoped).toBe(createScopedDirectBindingId(conversationId, topicId, botId));
   expect(scoped).not.toBe(bindingId);
   expect(scoped.startsWith(`${DOMAIN_ID_PREFIX.runtimeBinding}_`)).toBe(true);
+});
+test("scoped group-member binding ids never collide with direct bindings", async () => {
+  const direct = createScopedDirectBindingId("conv_1", "topic_1", "bot_1");
+  const member = createScopedGroupMemberBindingId("conv_1", "topic_1", "bot_1");
+  expect(direct).not.toBe(member);
+  expect(direct.startsWith(`${DOMAIN_ID_PREFIX.runtimeBinding}_`)).toBe(true);
+  expect(member.startsWith(`${DOMAIN_ID_PREFIX.runtimeBinding}_`)).toBe(true);
+  // Deterministic per triple.
+  expect(createScopedGroupMemberBindingId("conv_1", "topic_1", "bot_1")).toBe(member);
 });

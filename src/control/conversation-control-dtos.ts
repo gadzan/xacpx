@@ -35,9 +35,11 @@ export interface BotSummaryDto {
    *  it; the Web treats a missing revision as unknown (field comparison
    *  still applies). */
   profileRevision?: number;
-  /** True once the Bot materialized an actual direct runtime binding/session.
-   *  Identity lock follows this only; a persisted Direct Conversation alone
-   *  keeps delete fail-closed via bot_in_use but does not lock identity. */
+  /** True once the Bot materialized any runtime (direct or group-member).
+   *  Agent changes lock on this; workspace-default changes lock only on
+   *  direct runtime (Group Topics always carry an explicit workspace). A
+   *  persisted Direct Conversation alone keeps delete fail-closed via
+   *  bot_in_use but does not lock identity. */
   hasRuntime?: boolean;
 }
 
@@ -71,6 +73,12 @@ export interface BotUpdateRequestDto {
   enabled?: boolean | null;
 }
 
+export interface ExecutionTargetDto {
+  workspace: string;
+  cwd?: string;
+  isolation: "shared" | "shared-single-writer" | "worktree-per-member";
+}
+
 export interface TopicSummaryDto {
   id: string;
   conversationId: string;
@@ -78,6 +86,24 @@ export interface TopicSummaryDto {
   status: ConversationTopic["status"];
   createdAt: string;
   updatedAt: string;
+  executionTarget?: ConversationTopic["executionTarget"];
+}
+
+export interface GroupSummaryDto {
+  id: string;
+  kind: "group";
+  title: string;
+  description?: string;
+  botIds: string[];
+  leadBotId?: string;
+  defaultTopicId?: string;
+  lifecycle?: ConversationRecord["lifecycle"];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GroupDetailDto extends GroupSummaryDto {
+  topics: TopicSummaryDto[];
 }
 
 export interface ConversationSummaryDto {
@@ -121,6 +147,11 @@ export interface ConversationRunDto {
   state: ConversationRun["state"];
   completionReason?: string;
   profileRevision: number;
+  activeBatch?: number;
+  maxMemberTurns: number;
+  consumedMemberTurns: number;
+  failedBotIds: string[];
+  unavailableBotIds: string[];
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
@@ -138,6 +169,7 @@ export interface MemberTurnSummaryDto {
   topicId: string;
   botId: string;
   batch: number;
+  memberIndex: number;
   attempt: number;
   origin: MemberTurnRecord["origin"];
   state: MemberTurnRecord["state"];
@@ -146,6 +178,16 @@ export interface MemberTurnSummaryDto {
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
+  /** Group assignment identity. Absent on direct (single-member) turns. */
+  assignmentId?: string;
+  /** Concrete work instruction for this assignment. */
+  task?: string;
+  /** Expected output description for this assignment. */
+  expectedOutput?: string;
+  /** Assignment ids this turn depends on. */
+  dependsOn?: string[];
+  /** Machine-readable terminal failure reason (failed only). */
+  failureReason?: string;
 }
 
 export interface ConversationPromptRequestDto {
@@ -228,6 +270,28 @@ export function toTopicSummary(topic: ConversationTopic): TopicSummaryDto {
     status: topic.status,
     createdAt: topic.createdAt,
     updatedAt: topic.updatedAt,
+    ...(topic.executionTarget ? { executionTarget: { ...topic.executionTarget } } : {}),
+  };
+}
+
+export function toGroupSummary(
+  conversation: ConversationRecord,
+  defaultTopicId?: string,
+): GroupSummaryDto {
+  if (conversation.kind !== "group") {
+    throw new Error("conversation is not a Group conversation");
+  }
+  return {
+    id: conversation.id,
+    kind: "group",
+    title: conversation.title,
+    ...(conversation.description ? { description: conversation.description } : {}),
+    botIds: [...conversation.botIds],
+    ...(conversation.leadBotId ? { leadBotId: conversation.leadBotId } : {}),
+    createdAt: conversation.createdAt,
+    updatedAt: conversation.updatedAt,
+    ...(defaultTopicId ? { defaultTopicId } : {}),
+    ...(conversation.lifecycle ? { lifecycle: conversation.lifecycle } : {}),
   };
 }
 
@@ -237,7 +301,14 @@ export function toConversationSummary(
 ): ConversationSummaryDto {
   const botId = conversation.botIds[0];
   if (conversation.kind !== "bot" || !botId) {
-    throw new Error("conversation is not a Direct Bot conversation");
+    // Stable domain code (never bare Error): the Relay bridge maps .code to
+    // the wire error instead of "internal". Matches the run-service
+    // conversation_not_direct boundary (same value, same trigger: a Group
+    // id on the Direct-only read path).
+    throw Object.assign(
+      new Error("conversation is not a Direct Bot conversation"),
+      { code: "conversation_not_direct" },
+    );
   }
   return {
     id: conversation.id,
@@ -277,6 +348,11 @@ export function toConversationRun(run: ConversationRun): ConversationRunDto {
     mode: run.mode,
     state: run.state,
     profileRevision: run.profileRevision,
+    ...(run.activeBatch !== undefined ? { activeBatch: run.activeBatch } : {}),
+    maxMemberTurns: run.maxMemberTurns,
+    consumedMemberTurns: run.consumedMemberTurns,
+    failedBotIds: [...run.failedBotIds],
+    unavailableBotIds: [...run.unavailableBotIds],
     createdAt: run.createdAt,
     ...(run.completionReason ? { completionReason: run.completionReason } : {}),
     ...(run.startedAt ? { startedAt: run.startedAt } : {}),
@@ -292,6 +368,7 @@ export function toMemberTurnSummary(turn: MemberTurnRecord): MemberTurnSummaryDt
     topicId: turn.topicId,
     botId: turn.botId,
     batch: turn.batch,
+    memberIndex: turn.memberIndex,
     attempt: turn.attempt,
     origin: turn.origin,
     state: turn.state,
@@ -299,6 +376,11 @@ export function toMemberTurnSummary(turn: MemberTurnRecord): MemberTurnSummaryDt
     ...(turn.sourceTurnId ? { promptRequestId: turn.sourceTurnId } : {}),
     ...(turn.startedAt ? { startedAt: turn.startedAt } : {}),
     ...(turn.finishedAt ? { finishedAt: turn.finishedAt } : {}),
+    ...(turn.assignmentId ? { assignmentId: turn.assignmentId } : {}),
+    ...(turn.task ? { task: turn.task } : {}),
+    ...(turn.expectedOutput ? { expectedOutput: turn.expectedOutput } : {}),
+    ...(turn.dependsOn && turn.dependsOn.length > 0 ? { dependsOn: [...turn.dependsOn] } : {}),
+    ...(turn.failureReason ? { failureReason: turn.failureReason } : {}),
   };
 }
 

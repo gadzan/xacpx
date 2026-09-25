@@ -8,9 +8,12 @@ import {
 import type { BotProfileSnapshot } from "../bots/bot-types";
 import { ConversationError } from "./conversation-error";
 import type {
+  AcceptMemberInput,
   AcceptRequestInput,
   AcceptRequestResult,
   AssertLiveDispatchForMaterializeInput,
+  ReconcileLateResult,
+  CancelMemberOutcome,
   CancelRunResult,
   ClaimedWork,
   ClaimNextDispatchInput,
@@ -23,10 +26,13 @@ import type {
   MarkExecutionStartedInput,
   RecoveredClaim,
   ReleaseClaimToPendingInput,
+  SettleCancelBatchInput,
+  SettleCancelBatchResult,
+  SettledCancelMember,
 } from "./conversation-store";
+import { MAX_AUTOMATIC_MEMBER_TURNS, MAX_QUEUED_RUNS_PER_TOPIC } from "./conversation-store";
 import {
   conversationExecutionOrigin,
-  memberTurnOriginFromExecution,
   parseHumanIngress,
 } from "./conversation-execution";
 import type {
@@ -34,6 +40,7 @@ import type {
   ConversationRun,
   ConversationRunState,
   HumanIngressContext,
+  MemberTurnOrigin,
   MemberTurnRecord,
   MemberTurnState,
   PendingDispatch,
@@ -52,6 +59,9 @@ export interface ConversationIdFactory {
 export interface SqliteConversationStoreOptions {
   ids?: ConversationIdFactory;
   beforeAcceptCommit?: () => void;
+  /** Fault-injection seam for migration crash tests. Throwing inside aborts
+   *  the dispatch table rebuild before it commits. */
+  beforeDispatchMigrationCommit?: () => void;
 }
 
 interface MessageRow {
@@ -77,8 +87,11 @@ interface RunRow {
   state: string;
   completion_reason: string | null;
   generation: number;
+  active_batch: number | null;
   max_member_turns: number;
   consumed_member_turns: number;
+  failed_bot_ids_json: string | null;
+  unavailable_bot_ids_json: string | null;
   profile_revision: number;
   profile_snapshot_json: string;
   created_at: string;
@@ -97,13 +110,23 @@ interface MemberTurnRow {
   source_turn_id: string | null;
   queue_item_id: string | null;
   batch: number;
+  member_index: number | null;
   attempt: number;
+  // Legacy DBs (pre-vocabulary-split) persist origin "human". Normalize at
+  // the durable read boundary so every in-memory MemberTurnRecord speaks the
+  // new vocabulary; writers only emit "human-explicit".
   origin: string;
   state: string;
   trigger_message_ids_json: string;
+  profile_snapshot_json: string | null;
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  failure_reason: string | null;
+  assignment_id: string | null;
+  task: string | null;
+  expected_output: string | null;
+  depends_on_json: string | null;
 }
 
 interface DispatchRow {
@@ -165,8 +188,11 @@ CREATE TABLE IF NOT EXISTS runs (
   state TEXT NOT NULL,
   completion_reason TEXT,
   generation INTEGER NOT NULL,
+  active_batch INTEGER,
   max_member_turns INTEGER NOT NULL,
   consumed_member_turns INTEGER NOT NULL,
+  failed_bot_ids_json TEXT NOT NULL DEFAULT '[]',
+  unavailable_bot_ids_json TEXT NOT NULL DEFAULT '[]',
   profile_revision INTEGER NOT NULL,
   profile_snapshot_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
@@ -186,18 +212,24 @@ CREATE TABLE IF NOT EXISTS member_turns (
   source_turn_id TEXT,
   queue_item_id TEXT,
   batch INTEGER NOT NULL DEFAULT 1,
+  member_index INTEGER NOT NULL DEFAULT 0,
   attempt INTEGER NOT NULL DEFAULT 1,
   origin TEXT NOT NULL,
   state TEXT NOT NULL,
   trigger_message_ids_json TEXT NOT NULL,
+  profile_snapshot_json TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
-  finished_at TEXT
+  finished_at TEXT,
+  failure_reason TEXT,
+  assignment_id TEXT,
+  task TEXT,
+  expected_output TEXT,
+  depends_on_json TEXT NOT NULL DEFAULT '[]'
 );
-
 CREATE TABLE IF NOT EXISTS pending_dispatches (
   id TEXT PRIMARY KEY,
-  run_id TEXT NOT NULL UNIQUE,
+  run_id TEXT NOT NULL,
   member_turn_id TEXT NOT NULL,
   generation INTEGER NOT NULL,
   state TEXT NOT NULL,
@@ -207,12 +239,14 @@ CREATE TABLE IF NOT EXISTS pending_dispatches (
   human_ingress TEXT,
   created_at TEXT NOT NULL,
   claimed_at TEXT,
-  completed_at TEXT
+  completed_at TEXT,
+  UNIQUE (run_id, member_turn_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_topic_seq ON messages (topic_id, seq);
 CREATE INDEX IF NOT EXISTS idx_runs_topic_state ON runs (topic_id, state, created_at);
 CREATE INDEX IF NOT EXISTS idx_dispatches_state ON pending_dispatches (state, created_at);
+CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state);
 CREATE INDEX IF NOT EXISTS idx_member_turns_run ON member_turns (run_id);
 `;
 
@@ -230,16 +264,89 @@ function parseStoredHumanIngress(json: string | null | undefined): HumanIngressC
     return undefined;
   }
 }
-
 function serializeHumanIngress(ingress: HumanIngressContext | undefined): string | null {
   const parsed = parseHumanIngress(ingress);
   return parsed ? JSON.stringify(parsed) : null;
 }
 
-function parseSnapshot(json: string): BotProfileSnapshot {
-  return JSON.parse(json) as BotProfileSnapshot;
+/** Strict durable BotProfileSnapshot decoder: syntactically valid JSON with
+ *  the wrong shape (e.g. `{}`) is corrupt durable state, not a usable
+ *  snapshot. Fail closed with member_turn_corrupt instead of letting dispatch
+ *  claim a poison row and TypeError in a release-to-pending loop forever.
+ *  Revision/capturedAt identify the accepted generation; execution must carry
+ *  non-empty agent/workspace (model/effort optional strings); presentation
+ *  and behavior stay structurally typed. */
+function isSnapshotExecution(value: unknown): value is BotProfileSnapshot["execution"] {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const execution = value as Record<string, unknown>;
+  if (typeof execution.agent !== "string" || execution.agent.length === 0) {
+    return false;
+  }
+  if (typeof execution.workspace !== "string" || execution.workspace.length === 0) {
+    return false;
+  }
+  if (execution.model !== undefined && typeof execution.model !== "string") {
+    return false;
+  }
+  if (execution.effort !== undefined && typeof execution.effort !== "string") {
+    return false;
+  }
+  return true;
 }
 
+function isSnapshotPresentation(value: unknown): value is BotProfileSnapshot["presentation"] {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const presentation = value as Record<string, unknown>;
+  if (typeof presentation.name !== "string") {
+    return false;
+  }
+  if (presentation.avatar !== undefined && typeof presentation.avatar !== "string") {
+    return false;
+  }
+  if (presentation.role !== undefined && typeof presentation.role !== "string") {
+    return false;
+  }
+  return true;
+}
+
+function isSnapshotBehavior(value: unknown): value is BotProfileSnapshot["behavior"] {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+  const behavior = value as Record<string, unknown>;
+  if (behavior.instructions !== undefined && typeof behavior.instructions !== "string") {
+    return false;
+  }
+  return true;
+}
+
+function decodeSnapshot(value: unknown): BotProfileSnapshot {
+  if (typeof value !== "object" || value === null) {
+    throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.revision !== "number" || typeof record.capturedAt !== "string") {
+    throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
+  }
+  if (!isSnapshotPresentation(record.presentation) || !isSnapshotBehavior(record.behavior) || !isSnapshotExecution(record.execution)) {
+    throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
+  }
+  return value as BotProfileSnapshot;
+}
+
+function parseSnapshot(json: string): BotProfileSnapshot {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
+  }
+  return decodeSnapshot(parsed);
+}
 function mapMessage(row: MessageRow): ConversationMessage {
   const sourceTurn = row.source_turn_json
     ? JSON.parse(row.source_turn_json) as ConversationMessage["sourceTurn"]
@@ -259,18 +366,24 @@ function mapMessage(row: MessageRow): ConversationMessage {
 }
 
 function mapRun(row: RunRow): ConversationRun {
+  const mode = row.mode === "automatic" ? "automatic" : "explicit";
   return {
     id: row.id,
     conversationId: row.conversation_id,
     topicId: row.topic_id,
     requestMessageId: row.request_message_id,
     requestId: row.request_id,
-    mode: "explicit",
+    mode,
     state: row.state as ConversationRunState,
     ...(optionalString(row.completion_reason) ? { completionReason: row.completion_reason as string } : {}),
     generation: Number(row.generation),
+    ...(row.active_batch !== null && row.active_batch !== undefined
+      ? { activeBatch: Number(row.active_batch) }
+      : {}),
     maxMemberTurns: Number(row.max_member_turns),
     consumedMemberTurns: Number(row.consumed_member_turns),
+    failedBotIds: parseBotIds(row.failed_bot_ids_json),
+    unavailableBotIds: parseBotIds(row.unavailable_bot_ids_json),
     profileRevision: Number(row.profile_revision),
     profileSnapshot: parseSnapshot(row.profile_snapshot_json),
     createdAt: row.created_at,
@@ -279,7 +392,75 @@ function mapRun(row: RunRow): ConversationRun {
   };
 }
 
+function parseBotIds(json: string | null | undefined): string[] {
+  if (!json) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(json) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseDependsOn(json: string | null | undefined): string[] {
+  // NULL/absent (legacy rows) means no dependencies. Non-null malformed JSON
+  // is corrupt durable state: fail closed rather than silently scheduling
+  // the turn as dependency-free.
+  if (json === null || json === undefined) {
+    return [];
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new ConversationError("member_turn_corrupt", "member turn has malformed dependencies");
+  }
+  if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === "string")) {
+    throw new ConversationError("member_turn_corrupt", "member turn has malformed dependencies");
+  }
+  return parsed;
+}
+function parseTriggerMessageIds(json: string | null | undefined): string[] {
+  // Written NOT NULL at accept; a structurally wrong value is corrupt
+  // durable state like the snapshot, not an empty trigger list.
+  if (json === null || json === undefined) {
+    throw new ConversationError("member_turn_corrupt", "member turn has malformed trigger message ids");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new ConversationError("member_turn_corrupt", "member turn has malformed trigger message ids");
+  }
+  if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === "string")) {
+    throw new ConversationError("member_turn_corrupt", "member turn has malformed trigger message ids");
+  }
+  return parsed;
+}
+
+function parseMemberSnapshot(json: string | null | undefined): BotProfileSnapshot | undefined {
+  // NULL/absent (pre-multi-member legacy rows) falls back to the Run's
+  // snapshot at claim time. Non-null malformed JSON — syntactically broken
+  // OR structurally wrong — is corrupt durable state: fail closed rather
+  // than silently executing under another member's snapshot or looping a
+  // poison claim through release-to-pending forever.
+  if (json === null || json === undefined) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new ConversationError("member_turn_corrupt", "member turn has a malformed execution snapshot");
+  }
+  return decodeSnapshot(parsed);
+}
+
 function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
+  const dependsOn = parseDependsOn(row.depends_on_json);
+  const snapshot = parseMemberSnapshot(row.profile_snapshot_json);
   return {
     id: row.id,
     runId: row.run_id,
@@ -291,13 +472,20 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
     ...(optionalString(row.source_turn_id) ? { sourceTurnId: row.source_turn_id as string } : {}),
     ...(optionalString(row.queue_item_id) ? { queueItemId: row.queue_item_id as string } : {}),
     batch: Number(row.batch),
+    memberIndex: Number(row.member_index ?? 0),
     attempt: Number(row.attempt),
-    origin: row.origin as MemberTurnRecord["origin"],
+    origin: row.origin === "human" ? "human-explicit" : (row.origin as MemberTurnRecord["origin"]),
     state: row.state as MemberTurnState,
-    triggerMessageIds: JSON.parse(row.trigger_message_ids_json) as string[],
-    createdAt: row.created_at,
+    triggerMessageIds: parseTriggerMessageIds(row.trigger_message_ids_json),
+    ...(snapshot ? { profileSnapshot: snapshot } : {}),
     ...(optionalString(row.started_at) ? { startedAt: row.started_at as string } : {}),
     ...(optionalString(row.finished_at) ? { finishedAt: row.finished_at as string } : {}),
+    ...(optionalString(row.failure_reason) ? { failureReason: row.failure_reason as string } : {}),
+    ...(optionalString(row.assignment_id) ? { assignmentId: row.assignment_id as string } : {}),
+    ...(optionalString(row.task) ? { task: row.task as string } : {}),
+    ...(optionalString(row.expected_output) ? { expectedOutput: row.expected_output as string } : {}),
+    ...(dependsOn.length > 0 ? { dependsOn } : {}),
+    createdAt: row.created_at,
   };
 }
 
@@ -331,6 +519,7 @@ function defaultIds(): ConversationIdFactory {
 export class SqliteConversationStore implements ConversationStore {
   private readonly ids: ConversationIdFactory;
   private readonly beforeAcceptCommit?: () => void;
+  private readonly beforeDispatchMigrationCommit?: () => void;
 
   private closed = false;
 
@@ -340,9 +529,14 @@ export class SqliteConversationStore implements ConversationStore {
   ) {
     this.ids = options?.ids ?? defaultIds();
     this.beforeAcceptCommit = options?.beforeAcceptCommit;
+    this.beforeDispatchMigrationCommit = options?.beforeDispatchMigrationCommit;
     this.sqlite.exec(SCHEMA);
     this.ensureDispatchAuthorityEpochColumn();
     this.ensureDispatchHumanIngressColumn();
+    this.ensureMemberTurnAssignmentColumns();
+    this.ensureMemberTurnSnapshotColumn();
+    this.ensureRunAggregateColumns();
+    this.ensureDispatchMultiMemberShape();
   }
 
   private assertOpen(): void {
@@ -361,10 +555,31 @@ export class SqliteConversationStore implements ConversationStore {
     return new SqliteConversationStore(db, options);
   }
 
+
+  /** Test-only seam: overwrite one row's columns (durability corruption simulation). */
+  directWriteForTest(table: string, id: string, patch: Record<string, string | null>): void {
+    const keys = Object.keys(patch);
+    if (!/^[a-z_]+$/.test(table) || keys.some((key) => !/^[a-z_]+$/.test(key))) {
+      throw new ConversationError("invalid-test-write", "test write targets must be snake_case identifiers");
+    }
+    this.sqlite.run(
+      `UPDATE ${table} SET ${keys.map((key) => `${key} = ?`).join(", ")} WHERE id = ?`,
+      [...keys.map((key) => patch[key] ?? null), id],
+    );
+  }
+
   acceptRequest(input: AcceptRequestInput): AcceptRequestResult {
-    const existing = this.loadAccepted(input.conversationId, input.topicId, input.requestId);
+    // Idempotent replay short-circuits BEFORE the bounded-queue check: a
+    // retry of an already-accepted request at a full queue must return the
+    // existing Run, never fail `topic_queue_full`. loadAccepted throws
+    // `accepted_request_incomplete` for a crash-window row set — same
+    // contract as the unique-violation fallback below.
+    const existing = this.getRunByRequestId(input.conversationId, input.topicId, input.requestId);
     if (existing) {
-      return { reused: true, ...existing };
+      const reused = this.loadAccepted(input.conversationId, input.topicId, input.requestId);
+      if (reused) {
+        return { reused: true, ...reused };
+      }
     }
     try {
       return this.sqlite.transaction(() => {
@@ -454,14 +669,33 @@ export class SqliteConversationStore implements ConversationStore {
 
   listMemberTurns(runId: string): MemberTurnRecord[] {
     return this.sqlite.all<MemberTurnRow>(
-      "SELECT * FROM member_turns WHERE run_id = ? ORDER BY created_at ASC, id ASC",
+      "SELECT * FROM member_turns WHERE run_id = ? ORDER BY batch ASC, member_index ASC, id ASC",
       [runId],
     ).map(mapMemberTurn);
   }
 
   getDispatchForRun(runId: string): PendingDispatch | undefined {
-    const row = this.sqlite.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE run_id = ?", [runId]);
+    const row = this.sqlite.get<DispatchRow>(
+      `SELECT d.* FROM pending_dispatches d
+       LEFT JOIN member_turns m ON m.id = d.member_turn_id
+       WHERE d.run_id = ? ORDER BY m.batch ASC, m.member_index ASC, d.id ASC`,
+      [runId],
+    );
     return row ? mapDispatch(row) : undefined;
+  }
+
+  getDispatchForMemberTurn(memberTurnId: string): PendingDispatch | undefined {
+    const row = this.sqlite.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE member_turn_id = ?", [memberTurnId]);
+    return row ? mapDispatch(row) : undefined;
+  }
+
+  listDispatchesForRun(runId: string): PendingDispatch[] {
+    return this.sqlite.all<DispatchRow>(
+      `SELECT d.* FROM pending_dispatches d
+       LEFT JOIN member_turns m ON m.id = d.member_turn_id
+       WHERE d.run_id = ? ORDER BY m.batch ASC, m.member_index ASC, d.id ASC`,
+      [runId],
+    ).map(mapDispatch);
   }
 
   recoverExpiredClaims(now: string): RecoveredClaim[] {
@@ -484,10 +718,22 @@ export class SqliteConversationStore implements ConversationStore {
           continue;
         }
         if (member.startedAt) {
-          this.writeIndeterminate(run.id, member.id, now, "started_result_unknown");
+          const alreadyCounted = Boolean(member.finishedAt);
+          this.sqlite.run(
+            `UPDATE member_turns SET state = 'indeterminate', finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+            [now, member.id],
+          );
+          if (!alreadyCounted) {
+            this.sqlite.run(
+              `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+              [run.id],
+            );
+          }
+          this.finishDispatchForMemberTurn(member.id, now);
+          const settled = this.aggregateRunAfterMemberTerminal(run.id, member.id, now, "started_result_unknown");
           recovered.push({
             dispatch: this.requireDispatch(row.id),
-            run: this.requireRun(run.id),
+            run: settled,
             memberTurn: this.requireMemberTurn(member.id),
             outcome: "indeterminate",
           });
@@ -503,7 +749,7 @@ export class SqliteConversationStore implements ConversationStore {
           `UPDATE member_turns SET state = 'queued', attempt = attempt + 1, origin = 'recovery' WHERE id = ?`,
           [member.id],
         );
-        this.sqlite.run(`UPDATE runs SET state = 'queued', started_at = NULL WHERE id = ?`, [run.id]);
+        this.recomputeRunSchedulingState(run.id, now);
         recovered.push({
           dispatch: this.requireDispatch(row.id),
           run: this.requireRun(run.id),
@@ -513,6 +759,29 @@ export class SqliteConversationStore implements ConversationStore {
       }
       return recovered;
     });
+  }
+
+  /**
+   * Recompute Run scheduling state after one member re-queues (pre-start
+   * recovery or claim release). Never blindly resets to queued: when any
+   * sibling already started, the Run stays running with started_at intact so
+   * one-active-Run-per-Topic keeps holding. Only a Run with zero started
+   * members returns to queued (and clears started_at).
+   */
+  private recomputeRunSchedulingState(runId: string, now: string): void {
+    const run = this.requireRun(runId);
+    if (TERMINAL_RUN_STATES.includes(run.state)) {
+      return;
+    }
+    const members = this.listMemberTurns(runId);
+    const anyStarted = members.some((turn) => Boolean(turn.startedAt));
+    if (anyStarted) {
+      if (run.state === "queued") {
+        this.sqlite.run(`UPDATE runs SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?`, [now, runId]);
+      }
+      return;
+    }
+    this.sqlite.run(`UPDATE runs SET state = 'queued', started_at = NULL WHERE id = ?`, [runId]);
   }
 
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined {
@@ -527,8 +796,9 @@ export class SqliteConversationStore implements ConversationStore {
          JOIN member_turns m ON m.id = d.member_turn_id
          JOIN messages msg ON msg.id = r.request_message_id
          WHERE d.state = 'pending'
-           AND r.state = 'queued'
+           AND r.state IN ('queued', 'running')
            AND m.started_at IS NULL
+           AND m.state IN ('queued', 'dispatched')
            AND NOT EXISTS (
              SELECT 1 FROM conversation_lifecycle c
              WHERE c.conversation_id = r.conversation_id AND c.state = 'deleting'
@@ -541,15 +811,17 @@ export class SqliteConversationStore implements ConversationStore {
              SELECT 1 FROM pending_dispatches claimed
              JOIN runs claimed_run ON claimed_run.id = claimed.run_id
              WHERE claimed_run.topic_id = r.topic_id
+               AND claimed_run.id <> r.id
                AND claimed.state = 'claimed'
            )
            AND NOT EXISTS (
              SELECT 1 FROM runs active
              WHERE active.topic_id = r.topic_id
+               AND active.id <> r.id
                AND active.state IN ('running', 'waiting-human')
            )
            ${skipClause}
-         ORDER BY msg.seq ASC, r.created_at ASC, r.topic_id ASC
+         ORDER BY msg.seq ASC, r.created_at ASC, r.topic_id ASC, m.batch ASC, m.member_index ASC, d.id ASC
          LIMIT 1`,
         skipTopicIds,
       );
@@ -567,9 +839,13 @@ export class SqliteConversationStore implements ConversationStore {
         input.authorityEpoch,
         parseStoredHumanIngress(row.human_ingress),
       );
+      // Provenance is durable at accept and never rewritten by claim:
+      // claiming only moves queued -> dispatched. Permission authority still
+      // derives per-dispatch from authorityEpoch + ingress (human vs
+      // orchestration), independent of this field.
       this.sqlite.run(
-        `UPDATE member_turns SET state = 'dispatched', origin = ? WHERE id = ?`,
-        [memberTurnOriginFromExecution(executionOrigin), row.member_turn_id],
+        `UPDATE member_turns SET state = 'dispatched' WHERE id = ? AND state = 'queued'`,
+        [row.member_turn_id],
       );
       if (executionOrigin !== "human") {
         this.sqlite.run(
@@ -581,6 +857,8 @@ export class SqliteConversationStore implements ConversationStore {
         dispatch: this.requireDispatch(row.id),
         run: this.requireRun(row.run_id),
         memberTurn: this.requireMemberTurn(row.member_turn_id),
+        memberSnapshot: this.requireMemberTurn(row.member_turn_id).profileSnapshot
+          ?? this.requireRun(row.run_id).profileSnapshot,
       };
     });
   }
@@ -620,6 +898,59 @@ export class SqliteConversationStore implements ConversationStore {
     ));
   }
 
+  hasDurableGroupWork(conversationId: string): boolean {
+    if (this.sqlite.get("SELECT 1 AS ok FROM runs WHERE conversation_id = ? LIMIT 1", [conversationId])) {
+      return true;
+    }
+    if (this.sqlite.get("SELECT 1 AS ok FROM messages WHERE conversation_id = ? LIMIT 1", [conversationId])) {
+      return true;
+    }
+    if (this.sqlite.get(
+      `SELECT 1 AS ok FROM pending_dispatches d
+       JOIN member_turns m ON m.id = d.member_turn_id
+       WHERE m.conversation_id = ?
+       LIMIT 1`,
+      [conversationId],
+    )) {
+      return true;
+    }
+    if (this.sqlite.get(
+      "SELECT 1 AS ok FROM conversation_lifecycle WHERE conversation_id = ? LIMIT 1",
+      [conversationId],
+    )) {
+      return true;
+    }
+    if (this.sqlite.get(
+      "SELECT 1 AS ok FROM topic_lifecycle WHERE conversation_id = ? LIMIT 1",
+      [conversationId],
+    )) {
+      return true;
+    }
+    return Boolean(this.sqlite.get(
+      "SELECT 1 AS ok FROM topic_seq WHERE conversation_id = ? LIMIT 1",
+      [conversationId],
+    ));
+  }
+
+  hasNonterminalGroupMemberWork(conversationId: string, botId: string): boolean {
+    const row = this.sqlite.get<{ ok: number }>(
+      `SELECT 1 AS ok FROM member_turns
+       WHERE conversation_id = ? AND bot_id = ?
+         AND state IN ('queued', 'dispatched', 'running')
+       LIMIT 1`,
+      [conversationId, botId],
+    );
+    return Boolean(row);
+  }
+
+  listNonterminalRunRoots(): Array<{ conversationId: string; topicId: string }> {
+    const rows = this.sqlite.all<{ conversation_id: string; topic_id: string }>(
+      `SELECT DISTINCT conversation_id, topic_id FROM runs
+       WHERE state IN ('queued', 'running', 'waiting-human')`,
+    );
+    return rows.map((row) => ({ conversationId: row.conversation_id, topicId: row.topic_id }));
+  }
+
   releaseClaimToPending(input: ReleaseClaimToPendingInput): PendingDispatch {
     return this.sqlite.transaction(() => {
       const dispatch = this.requireLiveUnstartedClaim(input);
@@ -633,7 +964,7 @@ export class SqliteConversationStore implements ConversationStore {
         `UPDATE member_turns SET state = 'queued', origin = 'recovery' WHERE id = ?`,
         [dispatch.member_turn_id],
       );
-      this.sqlite.run(`UPDATE runs SET state = 'queued' WHERE id = ? AND state = 'running'`, [dispatch.run_id]);
+      this.recomputeRunSchedulingState(dispatch.run_id, input.now);
       return this.requireDispatch(dispatch.id);
     });
   }
@@ -700,8 +1031,35 @@ export class SqliteConversationStore implements ConversationStore {
     return this.sqlite.transaction(() => {
       const run = this.requireRun(input.runId);
       const member = this.requireMemberTurn(input.memberTurnId);
+      // Referential fence: a settlement must never cross Run boundaries.
+      // A mismatched (runId, memberTurnId) pair fails closed with zero
+      // writes — no message, no progress, no dispatch change, no aggregate.
+      if (
+        member.runId !== run.id
+        || member.conversationId !== run.conversationId
+        || member.topicId !== run.topicId
+      ) {
+        throw new ConversationError(
+          "run_member_mismatch",
+          `member turn "${member.id}" does not belong to run "${run.id}"`,
+        );
+      }
+      // Source correlation fence: the persisted sourceTurn must join exactly
+      // to this member's execution-start identity. A caller-supplied alias or
+      // turn id pointing at another turn's session would otherwise write a
+      // transcript row that misattributes provenance. Unstarted members carry
+      // no identity yet, so there is nothing to join against — skip there.
+      if (
+        (member.sessionAlias !== undefined && input.sourceTurn.sessionAlias !== member.sessionAlias)
+        || (member.sourceTurnId !== undefined && input.sourceTurn.turnId !== member.sourceTurnId)
+      ) {
+        throw new ConversationError(
+          "source_turn_mismatch",
+          `source turn does not match member turn "${member.id}" execution identity`,
+        );
+      }
       if (run.state === "cancelled") {
-        this.finishDispatchForRun(run.id, input.now);
+        this.finishDispatchForMemberTurn(member.id, input.now);
         if (!member.finishedAt) {
           this.sqlite.run(
             `UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?`,
@@ -715,7 +1073,7 @@ export class SqliteConversationStore implements ConversationStore {
         };
       }
       if (run.state === "indeterminate") {
-        this.finishDispatchForRun(run.id, input.now);
+        this.finishDispatchForMemberTurn(member.id, input.now);
         return {
           run,
           memberTurn: member,
@@ -723,6 +1081,12 @@ export class SqliteConversationStore implements ConversationStore {
         };
       }
       if (run.state === "completed" || run.state === "failed") {
+        return { run, memberTurn: member, resurrected: false };
+      }
+      if (TERMINAL_MEMBER_STATES.includes(member.state)) {
+        // Idempotent replay: this member already reached a terminal state
+        // (late provider settlement, recovery redelivery). No new message,
+        // no double progress count; the Run aggregate already observed it.
         return { run, memberTurn: member, resurrected: false };
       }
       const seq = this.allocateSeq(run.conversationId, run.topicId);
@@ -736,7 +1100,10 @@ export class SqliteConversationStore implements ConversationStore {
           run.conversationId,
           run.topicId,
           seq,
-          input.botId,
+          // Sender derives from the member turn itself, never from a
+          // caller-supplied botId: a mismatched caller value cannot
+          // misattribute the transcript.
+          member.botId,
           input.content,
           run.id,
           JSON.stringify(input.sourceTurn),
@@ -748,17 +1115,19 @@ export class SqliteConversationStore implements ConversationStore {
         [input.now, member.id],
       );
       this.sqlite.run(
-        `UPDATE runs
-         SET state = 'completed',
-             completion_reason = ?,
-             consumed_member_turns = consumed_member_turns + 1,
-             finished_at = ?
-         WHERE id = ?`,
-        [input.completionReason ?? "completed", input.now, run.id],
+        `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+        [run.id],
       );
-      this.finishDispatchForRun(run.id, input.now);
+      this.finishDispatchForMemberTurn(member.id, input.now);
+      const aggregated = this.aggregateRunAfterMemberTerminal(
+        run.id,
+        member.id,
+        input.now,
+        input.completionReason,
+        input.forceRunTerminalOnSettle ?? false,
+      );
       return {
-        run: this.requireRun(run.id),
+        run: aggregated,
         memberTurn: this.requireMemberTurn(member.id),
         assistantMessage: this.getMessage(messageId),
         resurrected: false,
@@ -777,59 +1146,261 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
-  completeCancel(runId: string, memberTurnId: string, now: string, indeterminate = false): ConversationRun {
+  completeCancel(runId: string, memberTurnId: string, now: string, indeterminate = false, forceRunTerminal = false): ConversationRun {
     return this.failExecution({
       runId,
       memberTurnId,
       now,
       reason: indeterminate ? "started_result_unknown" : "cancelled",
       terminalState: indeterminate ? "indeterminate" : "cancelled",
+      // Unknown side effects always seal the Run: no sibling may start after
+      // unproven execution, in either mode. Plain cancelled defers to the
+      // caller (whole-run cancel passes force=true; see persistCancelOutcome).
+      forceRunTerminalOnSettle: forceRunTerminal || indeterminate,
     });
   }
 
+  settleCancelBatch(input: SettleCancelBatchInput): SettleCancelBatchResult {
+    return this.sqlite.transaction(() => {
+      const run = this.requireRun(input.runId);
+      // Referential fence FIRST (same invariant as the write path below):
+      // resolve every outcome member and prove it belongs to input.runId
+      // before the terminal idempotent early-return. Otherwise a terminal
+      // Run A + MemberTurn B would return a mismatched pair to the caller,
+      // and future event projection could emit the wrong Run/member join.
+      // Zero writes happen on this path either way; the fence keeps the
+      // returned join referentially sound.
+      const seen = new Set<string>();
+      const members = input.outcomes.map((entry) => {
+        if (seen.has(entry.memberTurnId)) {
+          throw new ConversationError("duplicate_member", `cancel batch lists member turn "${entry.memberTurnId}" twice`);
+        }
+        seen.add(entry.memberTurnId);
+        return this.requireMemberTurn(entry.memberTurnId);
+      });
+      for (const member of members) {
+        if (member.runId !== input.runId) {
+          throw new ConversationError("stale_claim", `member turn "${member.id}" does not belong to run "${input.runId}"`);
+        }
+      }
+      if (TERMINAL_RUN_STATES.includes(run.state)) {
+        return {
+          run,
+          settled: input.outcomes.map((entry, index) => ({
+            member: members[index]!,
+            outcome: entry.outcome,
+          })),
+        };
+      }
+      // Phase 1: persist every member's observed physical outcome as member
+      // evidence. Proven outcomes win per-member: a member that already
+      // reached a terminal state keeps it (idempotent fence); an unknown
+      // never overwrites a sibling's proven evidence, and proven evidence
+      // is never downgraded by a later unknown.
+      const settled: SettledCancelMember[] = [];
+      for (let index = 0; index < input.outcomes.length; index++) {
+        const entry = input.outcomes[index]!;
+        const member = members[index]!;
+        if (TERMINAL_MEMBER_STATES.includes(member.state)) {
+          settled.push({ member, outcome: entry.outcome });
+          continue;
+        }
+        if (entry.outcome === "completed") {
+          // Source correlation fence (same invariant as completeExecution):
+          // a completed entry's sourceTurn must join to this member's
+          // execution-start identity, never another turn's session.
+          if (
+            (member.sessionAlias !== undefined
+              && (entry.sourceTurn?.sessionAlias ?? member.sessionAlias ?? "") !== member.sessionAlias)
+            || (member.sourceTurnId !== undefined && entry.sourceTurn?.turnId !== member.sourceTurnId)
+          ) {
+            throw new ConversationError(
+              "source_turn_mismatch",
+              `source turn does not match member turn "${member.id}" execution identity`,
+            );
+          }
+          const seq = this.allocateSeq(run.conversationId, run.topicId);
+          const messageId = this.ids.messageId();
+          this.sqlite.run(
+            `INSERT INTO messages (
+               id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
+             ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+            [
+              messageId,
+              run.conversationId,
+              run.topicId,
+              seq,
+              member.botId,
+              entry.content ?? "",
+              run.id,
+              JSON.stringify(entry.sourceTurn ?? { sessionAlias: member.sessionAlias ?? "" }),
+              input.now,
+            ],
+          );
+          this.sqlite.run(
+            `UPDATE member_turns SET state = 'completed', finished_at = ? WHERE id = ?`,
+            [input.now, member.id],
+          );
+          this.sqlite.run(
+            `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+            [run.id],
+          );
+          this.finishDispatchForMemberTurn(member.id, input.now);
+          settled.push({
+            member: this.requireMemberTurn(member.id),
+            outcome: entry.outcome,
+            message: this.getMessage(messageId),
+          });
+          continue;
+        }
+        const state = entry.outcome === "failed"
+          ? "failed"
+          : entry.outcome === "unknown"
+            ? "indeterminate"
+            : "cancelled";
+        this.sqlite.run(
+          `UPDATE member_turns SET state = ?, finished_at = ?, failure_reason = ? WHERE id = ?`,
+          [state, input.now, entry.outcome === "failed" ? (entry.reason ?? "failed") : null, member.id],
+        );
+        this.sqlite.run(
+          `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+          [run.id],
+        );
+        this.finishDispatchForMemberTurn(member.id, input.now);
+        settled.push({ member: this.requireMemberTurn(member.id), outcome: entry.outcome });
+      }
+      // Phase 2: aggregate the Run once, from whole-batch evidence — unless
+      // deferred (a sibling physical cancel threw): then member evidence
+      // stays durable without aggregation, and retry re-derives the outcome
+      // from complete evidence. Whole-run cancel always force-terminals
+      // (human cancel ends the Run, including automatic Runs awaiting
+      // routing). Indeterminate outranks failed; proven member evidence above
+      // is never rewritten by this step (it only sets Run-level
+      // state/reason/finished_at). Accumulate failedBotIds for EVERY failed
+      // member here: the aggregate only attributes its anchor member, which
+      // may be the unknown one.
+      const failedIds = new Set(this.requireRun(input.runId).failedBotIds);
+      for (const entry of settled) {
+        const fresh = this.requireMemberTurn(entry.member.id);
+        if (fresh.state === "failed") {
+          failedIds.add(fresh.botId);
+        }
+      }
+      if (failedIds.size > 0) {
+        this.sqlite.run(`UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`, [JSON.stringify([...failedIds]), input.runId]);
+      }
+      if (input.deferRunAggregate === true) {
+        return {
+          run: this.requireRun(input.runId),
+          settled: settled.map((entry) => ({
+            member: this.requireMemberTurn(entry.member.id),
+            outcome: entry.outcome,
+            ...(entry.message ? { message: entry.message } : {}),
+          })),
+        };
+      }
+      const anchorEntry = settled.find((entry) => entry.outcome === "unknown")
+        ?? settled.find((entry) => TERMINAL_MEMBER_STATES.includes(entry.member.state))
+        ?? settled[0];
+      if (!anchorEntry) {
+        return { run: this.requireRun(input.runId), settled };
+      }
+      // Anchor reason mirrors the anchor member's actual outcome — never a
+      // hardcoded "cancelled". Single-member runs preserve the diagnostic
+      // (failed reason, started_result_unknown); multi-member batches derive
+      // theirs in the aggregate (unknown > failed/cancelled mixes).
+      const anchorReason = anchorEntry.outcome === "unknown"
+        ? "started_result_unknown"
+        : anchorEntry.outcome === "failed"
+          ? (input.outcomes.find((o) => o.memberTurnId === anchorEntry.member.id)?.reason ?? "failed")
+          : anchorEntry.outcome === "cancelled"
+            ? "cancelled"
+            : undefined;
+      const aggregated = this.aggregateRunAfterMemberTerminal(
+        input.runId,
+        anchorEntry.member.id,
+        input.now,
+        anchorReason,
+        true,
+      );
+      return {
+        run: aggregated,
+        settled: settled.map((entry) => ({
+          member: this.requireMemberTurn(entry.member.id),
+          outcome: entry.outcome,
+          ...(entry.message ? { message: entry.message } : {}),
+        })),
+      };
+    });
+  }
   cancelRun(runId: string, now: string, reason = "cancelled"): CancelRunResult {
     return this.sqlite.transaction(() => {
       const run = this.requireRun(runId);
-      const member = this.listMemberTurns(runId)[0];
+      const members = this.listMemberTurns(runId);
+      const member = members[0];
       if (!member) {
         throw new ConversationError("member_turn_missing", `run "${runId}" has no member turn`);
       }
-      const dispatch = this.requireDispatchForRun(runId);
-      const executionStarted = Boolean(member.startedAt);
       if (TERMINAL_RUN_STATES.includes(run.state)) {
-        return { run, memberTurn: member, dispatch, alreadyTerminal: true, executionStarted };
-      }
-      if (executionStarted) {
-        // Cancellation of a started turn is recorded by the dispatcher after
-        // it observes the underlying cancel outcome. Persist a cancelling
-        // intent by completing the dispatch only when never started.
-        this.sqlite.run(
-          `UPDATE runs SET completion_reason = ? WHERE id = ?`,
-          [reason, runId],
-        );
         return {
-          run: this.requireRun(runId),
+          run,
           memberTurn: member,
-          dispatch: this.requireDispatch(dispatch.id),
-          alreadyTerminal: false,
-          executionStarted: true,
+          dispatch: this.requireDispatchForMemberTurn(member.id),
+          alreadyTerminal: true,
+          executionStarted: false,
+          activeMembers: [],
         };
       }
-      this.sqlite.run(
-        `UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?`,
-        [now, member.id],
+      // Settle every never-started sibling in the same transaction so no new
+      // dispatch can escape the cancel: queued/dispatched members become
+      // cancelled and their dispatch intents complete. Started members stay
+      // for the dispatcher to cancel exactly (per-active turn below).
+      const activeMembers: MemberTurnRecord[] = [];
+      for (const turn of members) {
+        if (TERMINAL_MEMBER_STATES.includes(turn.state)) {
+          continue;
+        }
+        if (turn.startedAt) {
+          activeMembers.push(turn);
+          continue;
+        }
+        this.sqlite.run(
+          `UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ? AND finished_at IS NULL`,
+          [now, turn.id],
+        );
+        this.finishDispatchForMemberTurn(turn.id, now);
+      }
+      const settled = this.listMemberTurns(runId);
+      const stillActive = settled.filter(
+        (turn) => Boolean(turn.startedAt) && !TERMINAL_MEMBER_STATES.includes(turn.state),
       );
-      this.sqlite.run(
-        `UPDATE runs SET state = 'cancelled', completion_reason = ?, finished_at = ? WHERE id = ?`,
-        [reason, now, runId],
-      );
-      this.finishDispatch(dispatch.id, now);
+      if (stillActive.length === 0) {
+        // Nothing executing: the whole Run terminals now via the aggregate,
+        // forced even on automatic Runs (human cancel ends the Run; the
+        // Router never resumes a cancelled Run).
+        const aggregateAnchor = settled.find((turn) => TERMINAL_MEMBER_STATES.includes(turn.state)) ?? settled[0]!;
+        const terminal = this.aggregateRunAfterMemberTerminal(runId, aggregateAnchor.id, now, reason, true);
+        return {
+          run: terminal,
+          memberTurn: this.requireMemberTurn(aggregateAnchor.id),
+          dispatch: this.requireDispatchForMemberTurn(aggregateAnchor.id),
+          alreadyTerminal: false,
+          executionStarted: false,
+          activeMembers: [],
+        };
+      }
+      // Cancelling intent for active turns; the dispatcher records each
+      // outcome after observing the underlying cancel. Aggregate stays
+      // non-terminal until every active turn settles.
+      this.sqlite.run(`UPDATE runs SET completion_reason = ? WHERE id = ?`, [reason, runId]);
+      const firstActive = stillActive[0]!;
       return {
         run: this.requireRun(runId),
-        memberTurn: this.requireMemberTurn(member.id),
-        dispatch: this.requireDispatch(dispatch.id),
+        memberTurn: this.requireMemberTurn(firstActive.id),
+        dispatch: this.requireDispatchForMemberTurn(firstActive.id),
         alreadyTerminal: false,
-        executionStarted: false,
+        executionStarted: true,
+        activeMembers: stillActive.map((turn) => this.requireMemberTurn(turn.id)),
       };
     });
   }
@@ -955,6 +1526,177 @@ export class SqliteConversationStore implements ConversationStore {
     this.sqlite.exec("ALTER TABLE pending_dispatches ADD COLUMN human_ingress TEXT");
   }
 
+  /**
+   * PR6 multi-member durable shape (§9.3 + §9.4): assignment/task/expected
+   * output/dependencies land on member_turns, and one Run may own many
+   * pending dispatches — one per MemberTurn. Older databases created before
+   * this change migrate in place: new columns default empty, and the legacy
+   * UNIQUE(run_id) constraint is rebuilt as UNIQUE(run_id, member_turn_id).
+   */
+  private ensureMemberTurnAssignmentColumns(): void {
+    const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(member_turns)");
+    const names = new Set(cols.map((col) => col.name));
+    if (!names.has("assignment_id")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN assignment_id TEXT");
+    }
+    if (!names.has("task")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN task TEXT");
+    }
+    if (!names.has("expected_output")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN expected_output TEXT");
+    }
+    if (!names.has("depends_on_json")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN depends_on_json TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!names.has("failure_reason")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN failure_reason TEXT");
+    }
+    if (!names.has("member_index")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN member_index INTEGER NOT NULL DEFAULT 0");
+    }
+  }
+
+  private ensureMemberTurnSnapshotColumn(): void {
+    const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(member_turns)");
+    if (cols.some((col) => col.name === "profile_snapshot_json")) {
+      return;
+    }
+    this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN profile_snapshot_json TEXT");
+  }
+
+  private ensureRunAggregateColumns(): void {
+    const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(runs)");
+    const names = new Set(cols.map((col) => col.name));
+    if (!names.has("active_batch")) {
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN active_batch INTEGER");
+    }
+    if (!names.has("failed_bot_ids_json")) {
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN failed_bot_ids_json TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!names.has("unavailable_bot_ids_json")) {
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN unavailable_bot_ids_json TEXT NOT NULL DEFAULT '[]'");
+    }
+  }
+
+  private ensureDispatchMultiMemberShape(): void {
+    // NOTE: the legacy UNIQUE(run_id) surfaces as a sqlite_autoindex row with
+    // NULL sql in sqlite_master, so text-scanning sqlite_master cannot detect
+    // it. PRAGMA index_list/index_info is authoritative instead.
+    //
+    // Crash-atomicity: the whole rebuild runs inside one SQLite transaction,
+    // so a crash at any point leaves either the complete old table or the
+    // complete new table — never a dropped old table with rows stranded in
+    // `pending_dispatches_next`. A leftover `_next` table from a crashed
+    // migration is reconciled explicitly below instead of ignored.
+    const leftover = this.sqlite.get<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pending_dispatches_next'",
+    );
+    if (leftover) {
+      this.reconcileLeftoverDispatchMigration();
+      return;
+    }
+    const indexList = this.sqlite.all<{ name: string; unique: number }>(
+      "PRAGMA index_list(pending_dispatches)",
+    );
+    let uniqueRunOnly = false;
+    for (const index of indexList) {
+      if (!index.unique) {
+        continue;
+      }
+      const cols = this.sqlite.all<{ name: string }>(`PRAGMA index_info("${index.name}")`);
+      const names = cols.map((col) => col.name).sort();
+      if (names.length === 1 && names[0] === "run_id") {
+        uniqueRunOnly = true;
+        break;
+      }
+    }
+    if (!uniqueRunOnly) {
+      this.sqlite.exec(
+        "CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state)",
+      );
+      return;
+    }
+    this.sqlite.transaction(() => {
+      this.sqlite.exec(`
+        CREATE TABLE pending_dispatches_next (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          member_turn_id TEXT NOT NULL,
+          generation INTEGER NOT NULL,
+          state TEXT NOT NULL,
+          owner TEXT,
+          lease_expires_at TEXT,
+          authority_epoch TEXT,
+          human_ingress TEXT,
+          created_at TEXT NOT NULL,
+          claimed_at TEXT,
+          completed_at TEXT,
+          UNIQUE (run_id, member_turn_id)
+        )`);
+      this.sqlite.exec(`
+        INSERT INTO pending_dispatches_next (
+          id, run_id, member_turn_id, generation, state, owner, lease_expires_at,
+          authority_epoch, human_ingress, created_at, claimed_at, completed_at
+        )
+        SELECT id, run_id, member_turn_id, generation, state, owner, lease_expires_at,
+          authority_epoch, human_ingress, created_at, claimed_at, completed_at
+        FROM pending_dispatches`);
+      this.beforeDispatchMigrationCommit?.();
+      this.sqlite.exec(`DROP TABLE pending_dispatches`);
+      this.sqlite.exec(`ALTER TABLE pending_dispatches_next RENAME TO pending_dispatches`);
+    });
+    this.sqlite.exec(
+      "CREATE INDEX IF NOT EXISTS idx_dispatches_state ON pending_dispatches (state, created_at)",
+    );
+    this.sqlite.exec(
+      "CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state)",
+    );
+  }
+
+  /**
+   * Reconcile a `pending_dispatches_next` table left behind by a migration
+   * that crashed outside the transaction (or on a driver that could not roll
+   * back DDL). Exactly one of the two tables can hold rows; the empty one is
+   * dropped. Rows in both (should be impossible via the transactional path,
+   * but possible if DDL committed piecemeal) fail closed loudly instead of
+   * silently preferring one side.
+   */
+  private reconcileLeftoverDispatchMigration(): void {
+    const mainCount = this.sqlite.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM pending_dispatches",
+    )?.n ?? 0;
+    const nextCount = this.sqlite.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM pending_dispatches_next",
+    )?.n ?? 0;
+    if (mainCount > 0 && nextCount > 0) {
+      throw new ConversationError(
+        "dispatch_migration_conflict",
+        "both pending_dispatches and pending_dispatches_next hold rows after a crashed migration",
+      );
+    }
+    if (nextCount > 0) {
+      this.sqlite.transaction(() => {
+        this.sqlite.exec(`DROP TABLE pending_dispatches`);
+        this.sqlite.exec(`ALTER TABLE pending_dispatches_next RENAME TO pending_dispatches`);
+      });
+    } else {
+      this.sqlite.exec(`DROP TABLE pending_dispatches_next`);
+    }
+    this.sqlite.exec(
+      "CREATE INDEX IF NOT EXISTS idx_dispatches_state ON pending_dispatches (state, created_at)",
+    );
+    this.sqlite.exec(
+      "CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state)",
+    );
+    // Re-run the shape check so a still-legacy main table migrates normally.
+    const leftover = this.sqlite.get<{ name: string }>(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'pending_dispatches_next'",
+    );
+    if (!leftover) {
+      this.ensureDispatchMultiMemberShape();
+    }
+  }
+
   private assertAcceptable(conversationId: string, topicId: string): void {
     if (this.isConversationDeleting(conversationId)) {
       throw new ConversationError("conversation_deleting", `conversation "${conversationId}" is deleting`);
@@ -962,15 +1704,64 @@ export class SqliteConversationStore implements ConversationStore {
     if (this.isTopicDeleting(topicId)) {
       throw new ConversationError("topic_deleting", `topic "${topicId}" is deleting`);
     }
+    // §21 bounded queue: nonterminal Runs (active + queued) per Topic are
+    // capped so a public Conversation cannot grow SQLite unboundedly with
+    // fresh requestIds. One-active-Run-per-Topic dispatch serialization is
+    // enforced separately at claim time; this is the accept-time bound.
+    const counted = this.sqlite.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM runs
+       WHERE conversation_id = ? AND topic_id = ?
+         AND state IN ('queued', 'running', 'waiting-human')`,
+      [conversationId, topicId],
+    );
+    const nonterminal = Number(counted?.n ?? 0);
+    if (nonterminal >= MAX_QUEUED_RUNS_PER_TOPIC) {
+      throw new ConversationError(
+        "topic_queue_full",
+        `topic "${topicId}" already has ${nonterminal} nonterminal runs (max ${MAX_QUEUED_RUNS_PER_TOPIC})`,
+      );
+    }
   }
 
   private insertAccepted(input: AcceptRequestInput): AcceptRequestResult {
     const seq = this.allocateSeq(input.conversationId, input.topicId);
     const messageId = this.ids.messageId();
     const runId = this.ids.runId();
-    const memberTurnId = this.ids.memberTurnId();
-    const dispatchId = this.ids.dispatchId();
-    const maxMemberTurns = input.maxMemberTurns ?? 1;
+    // The singular botId/profileSnapshot is always members[0]; `members`
+    // holds extras (PR7/PR8), so merge as [legacy, ...extras] and write one
+    // MemberTurn plus one pending dispatch intent per member in durable
+    // member_index order. Direct accepts omit `members` (single member). A
+    // `primaryMember` overlay carries assignment/provenance for members[0];
+    // its type omits botId/profileSnapshot, so it cannot diverge the durable
+    // order — members[0] is always the legacy singular by construction.
+    const members = [
+      {
+        botId: input.botId,
+        profileSnapshot: input.profileSnapshot,
+        ...(input.primaryMember ?? {}),
+      },
+      ...(input.members ?? []),
+    ];
+    const mode = input.mode ?? "explicit";
+    // Automatic Runs default to the durable budget guardrail (§14.2): the
+    // first batch settling must leave routing headroom, so the default is
+    // the 24-turn cap rather than members.length. Explicit Runs stay bounded
+    // by their accepted member list.
+    const maxMemberTurns = input.maxMemberTurns
+      ?? (mode === "automatic" ? MAX_AUTOMATIC_MEMBER_TURNS : members.length);
+    if (!Number.isInteger(maxMemberTurns) || maxMemberTurns < members.length) {
+      throw new ConversationError(
+        "invalid-max-member-turns",
+        `maxMemberTurns (${String(input.maxMemberTurns)}) must be a positive integer >= accepted member count (${members.length})`,
+      );
+    }
+    if (mode === "automatic" && maxMemberTurns > MAX_AUTOMATIC_MEMBER_TURNS) {
+      throw new ConversationError(
+        "invalid-max-member-turns",
+        `maxMemberTurns (${maxMemberTurns}) exceeds the automatic Run budget cap (${MAX_AUTOMATIC_MEMBER_TURNS})`,
+      );
+    }
+    const runSnapshot = input.profileSnapshot;
     this.sqlite.run(
       `INSERT INTO messages (
          id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
@@ -980,43 +1771,80 @@ export class SqliteConversationStore implements ConversationStore {
     this.sqlite.run(
       `INSERT INTO runs (
          id, conversation_id, topic_id, request_message_id, request_id, mode, state, completion_reason,
-         generation, max_member_turns, consumed_member_turns, profile_revision, profile_snapshot_json,
+         generation, active_batch, max_member_turns, consumed_member_turns,
+         failed_bot_ids_json, unavailable_bot_ids_json,
+         profile_revision, profile_snapshot_json,
          created_at, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, 'explicit', 'queued', NULL, 1, ?, 0, ?, ?, ?, NULL, NULL)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, 'queued', NULL, 1, 1, ?, 0, '[]', '[]', ?, ?, ?, NULL, NULL)`,
       [
         runId,
         input.conversationId,
         input.topicId,
         messageId,
         input.requestId,
+        mode,
         maxMemberTurns,
-        input.profileSnapshot.revision,
-        JSON.stringify(input.profileSnapshot),
+        runSnapshot.revision,
+        JSON.stringify(runSnapshot),
         input.now,
       ],
     );
     const ingressJson = serializeHumanIngress(input.humanIngress);
     const authorityEpoch = ingressJson ? (input.authorityEpoch ?? null) : null;
-    const memberOrigin = ingressJson && authorityEpoch ? "human" : "recovery";
-    this.sqlite.run(
-      `INSERT INTO member_turns (
-         id, run_id, conversation_id, topic_id, bot_id, session_alias, logical_session_id, source_turn_id,
-         queue_item_id, batch, attempt, origin, state, trigger_message_ids_json, created_at, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, 1, ?, 'queued', ?, ?, NULL, NULL)`,
-      [memberTurnId, runId, input.conversationId, input.topicId, input.botId, memberOrigin, JSON.stringify([messageId]), input.now],
-    );
-    this.sqlite.run(
-      `INSERT INTO pending_dispatches (
-         id, run_id, member_turn_id, generation, state, owner, lease_expires_at, created_at, claimed_at, completed_at, authority_epoch, human_ingress
-       ) VALUES (?, ?, ?, 1, 'pending', NULL, NULL, ?, NULL, NULL, ?, ?)`,
-      [dispatchId, runId, memberTurnId, input.now, authorityEpoch, ingressJson],
-    );
+    const defaultOrigin: MemberTurnOrigin = ingressJson && authorityEpoch ? "human-explicit" : "followup";
+    const seenBotIds = new Set<string>();
+    const memberTurnIds: string[] = [];
+    const dispatchIds: string[] = [];
+    for (const [index, member] of members.entries()) {
+      if (seenBotIds.has(member.botId)) {
+        throw new ConversationError("duplicate_member", `run accepts bot "${member.botId}" twice`);
+      }
+      seenBotIds.add(member.botId);
+      const memberTurnId = this.ids.memberTurnId();
+      const dispatchId = this.ids.dispatchId();
+      this.sqlite.run(
+        `INSERT INTO member_turns (
+           id, run_id, conversation_id, topic_id, bot_id, session_alias, logical_session_id, source_turn_id,
+           queue_item_id, batch, member_index, attempt, origin, state, trigger_message_ids_json, profile_snapshot_json,
+           created_at, started_at, finished_at,
+           assignment_id, task, expected_output, depends_on_json
+         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, ?, 1, ?, 'queued', ?, ?, ?, NULL, NULL, ?, ?, ?, ?)`,
+        [
+          memberTurnId,
+          runId,
+          input.conversationId,
+          input.topicId,
+          member.botId,
+          index,
+          member.provenance ?? defaultOrigin,
+          JSON.stringify([messageId]),
+          JSON.stringify(member.profileSnapshot),
+          input.now,
+          member.assignmentId ?? null,
+          member.task ?? null,
+          member.expectedOutput ?? null,
+          JSON.stringify(member.dependsOn ?? []),
+        ],
+      );
+      this.sqlite.run(
+        `INSERT INTO pending_dispatches (
+           id, run_id, member_turn_id, generation, state, owner, lease_expires_at, created_at, claimed_at, completed_at, authority_epoch, human_ingress
+         ) VALUES (?, ?, ?, 1, 'pending', NULL, NULL, ?, NULL, NULL, ?, ?)`,
+        [dispatchId, runId, memberTurnId, input.now, authorityEpoch, ingressJson],
+      );
+      memberTurnIds.push(memberTurnId);
+      dispatchIds.push(dispatchId);
+    }
+    const memberTurns = memberTurnIds.map((id) => this.requireMemberTurn(id));
+    const dispatches = dispatchIds.map((id) => this.requireDispatch(id));
     return {
       reused: false,
       message: this.requireMessage(messageId),
       run: this.requireRun(runId),
-      memberTurn: this.requireMemberTurn(memberTurnId),
-      dispatch: this.requireDispatch(dispatchId),
+      memberTurn: memberTurns[0]!,
+      dispatch: dispatches[0]!,
+      memberTurns,
+      dispatches,
     };
   }
 
@@ -1044,12 +1872,14 @@ export class SqliteConversationStore implements ConversationStore {
       return undefined;
     }
     const message = this.getMessage(run.requestMessageId);
-    const memberTurn = this.listMemberTurns(run.id)[0];
-    const dispatch = this.getDispatchForRun(run.id);
-    if (!message || !memberTurn || !dispatch) {
+    const memberTurns = this.listMemberTurns(run.id);
+    const dispatches = this.listDispatchesForRun(run.id);
+    const memberTurn = memberTurns[0];
+    const dispatch = memberTurn ? this.getDispatchForMemberTurn(memberTurn.id) : undefined;
+    if (!message || !memberTurn || !dispatch || memberTurns.length !== dispatches.length) {
       throw new ConversationError("accepted_request_incomplete", `request "${requestId}" is missing durable rows`);
     }
-    return { message, run, memberTurn, dispatch };
+    return { message, run, memberTurn, dispatch, memberTurns, dispatches };
   }
 
   private writeIndeterminate(runId: string, memberTurnId: string, now: string, reason: string): void {
@@ -1061,11 +1891,18 @@ export class SqliteConversationStore implements ConversationStore {
       `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
       [reason, now, runId],
     );
-    this.finishDispatchForRun(runId, now);
+    this.finishDispatchForMemberTurn(memberTurnId, now);
   }
 
   private finishDispatchForRun(runId: string, now: string): void {
-    const dispatch = this.sqlite.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE run_id = ?", [runId]);
+    const rows = this.sqlite.all<DispatchRow>("SELECT * FROM pending_dispatches WHERE run_id = ?", [runId]);
+    for (const dispatch of rows) {
+      this.finishDispatch(dispatch.id, now);
+    }
+  }
+
+  private finishDispatchForMemberTurn(memberTurnId: string, now: string): void {
+    const dispatch = this.sqlite.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE member_turn_id = ?", [memberTurnId]);
     if (dispatch) {
       this.finishDispatch(dispatch.id, now);
     }
@@ -1112,17 +1949,400 @@ export class SqliteConversationStore implements ConversationStore {
     if (TERMINAL_RUN_STATES.includes(run.state)) {
       return run;
     }
+    const member = this.requireMemberTurn(input.memberTurnId);
+    if (
+      member.runId !== run.id
+      || member.conversationId !== run.conversationId
+      || member.topicId !== run.topicId
+    ) {
+      throw new ConversationError(
+        "run_member_mismatch",
+        `member turn "${member.id}" does not belong to run "${run.id}"`,
+      );
+    }
+    if (TERMINAL_MEMBER_STATES.includes(member.state)) {
+      // Idempotent replay: this member already terminal; the aggregate
+      // already observed it. No double progress count.
+      return run;
+    }
     const state = input.terminalState ?? "failed";
     this.sqlite.run(
-      `UPDATE member_turns SET state = ?, finished_at = ? WHERE id = ?`,
-      [state, input.now, input.memberTurnId],
+      `UPDATE member_turns SET state = ?, finished_at = ?, failure_reason = ? WHERE id = ?`,
+      [state, input.now, state === "failed" ? (input.reason ?? "failed") : null, input.memberTurnId],
     );
     this.sqlite.run(
-      `UPDATE runs SET state = ?, completion_reason = ?, finished_at = ? WHERE id = ?`,
-      [state, input.reason, input.now, input.runId],
+      `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+      [input.runId],
     );
-    this.finishDispatchForRun(input.runId, input.now);
-    return this.requireRun(input.runId);
+    this.finishDispatchForMemberTurn(input.memberTurnId, input.now);
+    return this.aggregateRunAfterMemberTerminal(
+      input.runId,
+      input.memberTurnId,
+      input.now,
+      input.reason,
+      input.forceRunTerminalOnSettle ?? false,
+    );
+  }
+
+  /**
+   * Aggregate Run lifecycle after one MemberTurn reaches a terminal state.
+   * Member completion terminals only the member; explicit Runs terminal when
+   * no member of the active batch is still runnable (no Router follows).
+   * Automatic batch settle stays running for the PR8 Router — UNLESS
+   * forceRunTerminal is set (whole-Run human cancel path), in which case the
+   * settled batch aggregates to its terminal outcome exactly like explicit.
+   * Indeterminate (unproven side effects) always terminals directly AND
+   * settles every still-runnable sibling as indeterminate in the same
+   * transaction, so no further member can be claimed afterwards. Only failed
+   * members accumulate in failedBotIds; cancelled/indeterminate are read
+   * from MemberTurns. unavailableBotIds is PR7+ reservation surface.
+   */
+  private aggregateRunAfterMemberTerminal(
+    runId: string,
+    memberTurnId: string,
+    now: string,
+    memberReason?: string,
+    forceRunTerminal = false,
+  ): ConversationRun {
+    const run = this.requireRun(runId);
+    if (TERMINAL_RUN_STATES.includes(run.state)) {
+      return run;
+    }
+    const members = this.listMemberTurns(runId);
+    const batch = run.activeBatch ?? 1;
+    const batchMembers = members.filter((turn) => turn.batch === batch);
+    const terminal = batchMembers.filter((turn) => TERMINAL_MEMBER_STATES.includes(turn.state));
+    // Exact member that just terminalled: never re-derive by state lookup
+    // (two members may share the same terminal state; the lookup would
+    // attribute the second event to the first member and drop a failedBotId).
+    const member = this.requireMemberTurn(memberTurnId);
+    if (member.state === "failed") {
+      const current = new Set(run.failedBotIds);
+      current.add(member.botId);
+      this.sqlite.run(`UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`, [JSON.stringify([...current]), runId]);
+    }
+    const batchIndeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
+    if (run.mode === "automatic" && batchIndeterminate.length > 0) {
+      // Unknown side effects seal an automatic Run immediately, even with
+      // runnable siblings: settle every still-runnable sibling as
+      // indeterminate in the same transaction so nothing further can be
+      // claimed, then terminal the Run. Covers both runner settlement
+      // (completeCancel unknown) and lease recovery paths identically.
+      const reason = batchMembers.length === 1 ? (memberReason ?? "started_result_unknown") : "started_result_unknown";
+      for (const turn of batchMembers) {
+        if (TERMINAL_MEMBER_STATES.includes(turn.state)) {
+          continue;
+        }
+        this.sqlite.run(
+          `UPDATE member_turns SET state = 'indeterminate', finished_at = ? WHERE id = ?`,
+          [now, turn.id],
+        );
+        this.sqlite.run(
+          `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+          [runId],
+        );
+        this.finishDispatchForMemberTurn(turn.id, now);
+      }
+      this.sqlite.run(
+        `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = ? WHERE id = ?`,
+        [reason, now, runId],
+      );
+      return this.requireRun(runId);
+    }
+    if (terminal.length < batchMembers.length) {
+      // Intermediate state: one member terminal, siblings still runnable.
+      // The Run stays non-terminal (running) so claimNextDispatch keeps
+      // serving the batch; PR8 Router continues from this durable state.
+      if (run.state === "queued") {
+        this.sqlite.run(`UPDATE runs SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?`, [now, runId]);
+      }
+      return this.requireRun(runId);
+    }
+    if (run.mode === "automatic" && !forceRunTerminal) {
+      // Batch settled but the Run is not done: PR8 Router decides the next
+      // step from durable MemberTurns. Indeterminate (unproven side effects)
+      // cannot auto-continue, so it settles every still-runnable sibling as
+      // indeterminate in the same transaction and terminals the Run — no
+      // further member can be claimed afterwards. Every other settled batch
+      // stays running awaiting routing.
+      const indeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
+      if (indeterminate.length > 0) {
+        const reason = batchMembers.length === 1 ? (memberReason ?? "started_result_unknown") : "started_result_unknown";
+        for (const turn of batchMembers) {
+          if (TERMINAL_MEMBER_STATES.includes(turn.state)) {
+            continue;
+          }
+          this.sqlite.run(
+            `UPDATE member_turns SET state = 'indeterminate', finished_at = ? WHERE id = ?`,
+            [now, turn.id],
+          );
+          this.sqlite.run(
+            `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+            [runId],
+          );
+          this.finishDispatchForMemberTurn(turn.id, now);
+        }
+        this.sqlite.run(
+          `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = ? WHERE id = ?`,
+          [reason, now, runId],
+        );
+        return this.requireRun(runId);
+      }
+      if (run.state === "queued") {
+        this.sqlite.run(`UPDATE runs SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?`, [now, runId]);
+      }
+      return this.requireRun(runId);
+    }
+    return this.classifySettledBatch(runId, batchMembers, now, memberReason);
+  }
+
+  /**
+   * Final Run classification once every batch member is terminal. Derive the
+   * outcome from the whole batch, never from the last event's reason —
+   * except single-member Runs, which preserve the member's diagnostic reason
+   * (e.g. runtime_revision_mismatch on direct drift).
+   *
+   * Precedence: indeterminate (unproven side effects) > failed > cancelled >
+   * completed. A completed+cancelled mix is a HUMAN STOP whose proven
+   * completions keep their evidence: no member actually failed, so the Run
+   * classifies as cancelled (human-cancelled), never execution-failed. The
+   * cancelled branch always writes the canonical human-cancelled reason —
+   * memberReason is a caller echo ("cancelled") that must not leak into the
+   * durable completionReason.
+   */
+  private classifySettledBatch(
+    runId: string,
+    batchMembers: MemberTurnRecord[],
+    now: string,
+    memberReason?: string,
+  ): ConversationRun {
+    const indeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
+    if (indeterminate.length > 0) {
+      const reason = batchMembers.length === 1 ? (memberReason ?? "started_result_unknown") : "started_result_unknown";
+      this.sqlite.run(
+        `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+        [reason, now, runId],
+      );
+      return this.requireRun(runId);
+    }
+    const failed = batchMembers.filter((turn) => turn.state === "failed");
+    if (failed.length > 0) {
+      const reason = batchMembers.length === 1 ? (memberReason ?? "execution-failed") : "execution-failed";
+      this.sqlite.run(
+        `UPDATE runs SET state = 'failed', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+        [reason, now, runId],
+      );
+      return this.requireRun(runId);
+    }
+    const cancelled = batchMembers.filter((turn) => turn.state === "cancelled");
+    if (cancelled.length > 0) {
+      this.sqlite.run(
+        `UPDATE runs SET state = 'cancelled', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+        ["human-cancelled", now, runId],
+      );
+      return this.requireRun(runId);
+    }
+    this.sqlite.run(
+      `UPDATE runs SET state = 'completed', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+      ["members-completed", now, runId],
+    );
+    return this.requireRun(runId);
+  }
+
+  /**
+   * Late provider proof reconciliation (§14.3) across two windows: the
+   * cancel-settlement timeout already sealed the scheduling outcome as
+   * indeterminate (reclassify that member + re-derive the Run), OR the Run
+   * is still live under durable cancel intent with the batch unsettled
+   * (persist member evidence only; settleCancelBatch reads it from fresh
+   * member states). The provider settling afterwards is DURABLE EVIDENCE,
+   * not a scheduling decision — so teardown's "reconcile indeterminate"
+   * step has a real result instead of a permanent seal. Never resurrects
+   * scheduling: a clean cancelled Run, a live Run without cancel intent, or
+   * an already-proven member is a no-op (no dispatch/progress/scheduling
+   * changes beyond the evidence write), and consumed_member_turns is counted
+   * exactly once via the batch fence.
+   */
+  reconcileLateResult(input: {
+    runId: string;
+    memberTurnId: string;
+    outcome: "completed" | "failed";
+    content?: string;
+    reason?: string;
+    sourceTurn: { sessionAlias: string; turnId?: string };
+    now: string;
+  }): ReconcileLateResult {
+    return this.sqlite.transaction(() => {
+      const run = this.requireRun(input.runId);
+      const member = this.requireMemberTurn(input.memberTurnId);
+      // Same referential + source-correlation fences as completeExecution:
+      // a late result may only ever reclassify its own started member.
+      if (
+        member.runId !== run.id
+        || member.conversationId !== run.conversationId
+        || member.topicId !== run.topicId
+      ) {
+        throw new ConversationError(
+          "run_member_mismatch",
+          `member turn "${member.id}" does not belong to run "${run.id}"`,
+        );
+      }
+      if (
+        (member.sessionAlias !== undefined && input.sourceTurn.sessionAlias !== member.sessionAlias)
+        || (member.sourceTurnId !== undefined && input.sourceTurn.turnId !== member.sourceTurnId)
+      ) {
+        throw new ConversationError(
+          "source_turn_mismatch",
+          `source turn does not match member turn "${member.id}" execution identity`,
+        );
+      }
+      // Two reconciliation windows (§14.3):
+      // (a) Sealed Run: cancel settlement already aggregated the Run to
+      //     indeterminate. A proven late result reclassifies exactly the
+      //     indeterminate member it belongs to and re-derives the Run.
+      // (b) Live Run under durable cancel intent: store.cancelRun() wrote the
+      //     cancel intent (completion_reason) but the fan-out has not settled
+      //     the batch yet. Persist MEMBER EVIDENCE ONLY — no Run aggregate;
+      //     settleCancelBatch derives the final outcome from fresh member
+      //     states (its terminal-member fence skips this member, so progress
+      //     is never double-counted). Without (b), a proof landing mid-fan-out
+      //     would be dropped and the batch would seal indeterminate despite
+      //     observed evidence.
+      // Clean cancelled Runs stay sealed (late completion never resurrects a
+      // cancel the user requested); live Runs WITHOUT cancel intent and
+      // already-proven members have nothing to reconcile. No dispatch,
+      // progress, or scheduling state changes beyond member evidence.
+      if (!TERMINAL_RUN_STATES.includes(run.state)) {
+        if (run.completionReason == null || TERMINAL_MEMBER_STATES.includes(member.state) || !member.startedAt) {
+          return { run, memberTurn: member, reconciled: false };
+        }
+        // Progress was already counted when this member settled indeterminate
+        // (deferred batch evidence); a still-running member counts now, and
+        // the later batch settlement skips it via its terminal-member fence.
+        const alreadyCounted = member.state === "indeterminate";
+        let pendingMessage: ConversationMessage | undefined;
+        if (input.outcome === "completed") {
+          const seq = this.allocateSeq(run.conversationId, run.topicId);
+          const messageId = this.ids.messageId();
+          this.sqlite.run(
+            `INSERT INTO messages (
+               id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
+             ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+            [
+              messageId,
+              run.conversationId,
+              run.topicId,
+              seq,
+              member.botId,
+              input.content ?? "",
+              run.id,
+              JSON.stringify(input.sourceTurn),
+              input.now,
+            ],
+          );
+          this.sqlite.run(
+            `UPDATE member_turns SET state = 'completed', failure_reason = NULL, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+            [input.now, member.id],
+          );
+          if (!alreadyCounted) {
+            this.sqlite.run(
+              `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+              [run.id],
+            );
+          }
+          this.finishDispatchForMemberTurn(member.id, input.now);
+          pendingMessage = this.getMessage(messageId);
+        } else {
+          this.sqlite.run(
+            `UPDATE member_turns SET state = 'failed', failure_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+            [input.reason ?? "failed", input.now, member.id],
+          );
+          if (!alreadyCounted) {
+            this.sqlite.run(
+              `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+              [run.id],
+            );
+          }
+          if (!run.failedBotIds.includes(member.botId)) {
+            const current = new Set(run.failedBotIds);
+            current.add(member.botId);
+            this.sqlite.run(
+              `UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`,
+              [JSON.stringify([...current]), input.runId],
+            );
+          }
+          this.finishDispatchForMemberTurn(member.id, input.now);
+        }
+        return {
+          run: this.requireRun(input.runId),
+          memberTurn: this.requireMemberTurn(member.id),
+          ...(pendingMessage ? { message: pendingMessage } : {}),
+          reconciled: true,
+        };
+      }
+      // Reconcile ONLY the indeterminate-sealed case. Clean cancelled Runs
+      // stay sealed (late completion never resurrects a cancel the user
+      // requested); live Runs and already-proven members have nothing to
+      // reconcile. No dispatch, progress, or scheduling state changes.
+      if (run.state !== "indeterminate" || member.state !== "indeterminate") {
+        return { run, memberTurn: member, reconciled: false };
+      }
+      let message: ConversationMessage | undefined;
+      if (input.outcome === "completed") {
+        const seq = this.allocateSeq(run.conversationId, run.topicId);
+        const messageId = this.ids.messageId();
+        this.sqlite.run(
+          `INSERT INTO messages (
+             id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
+           ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+          [
+            messageId,
+            run.conversationId,
+            run.topicId,
+            seq,
+            member.botId,
+            input.content ?? "",
+            run.id,
+            JSON.stringify(input.sourceTurn),
+            input.now,
+          ],
+        );
+        this.sqlite.run(
+          `UPDATE member_turns SET state = 'completed', failure_reason = NULL WHERE id = ?`,
+          [member.id],
+        );
+        message = this.getMessage(messageId);
+      } else {
+        this.sqlite.run(
+          `UPDATE member_turns SET state = 'failed', failure_reason = ? WHERE id = ?`,
+          [input.reason ?? "failed", member.id],
+        );
+        if (!run.failedBotIds.includes(member.botId)) {
+          const current = new Set(run.failedBotIds);
+          current.add(member.botId);
+          this.sqlite.run(
+            `UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`,
+            [JSON.stringify([...current]), input.runId],
+          );
+        }
+      }
+      this.finishDispatchForMemberTurn(member.id, input.now);
+      const members = this.listMemberTurns(run.id);
+      const batch = run.activeBatch ?? 1;
+      const batchMembers = members.filter((turn) => turn.batch === batch);
+      const reconciledRun = this.classifySettledBatch(
+        run.id,
+        batchMembers,
+        input.now,
+        input.outcome === "failed" ? (input.reason ?? "execution-failed") : undefined,
+      );
+      return {
+        run: reconciledRun,
+        memberTurn: this.requireMemberTurn(member.id),
+        ...(message ? { message } : {}),
+        reconciled: true,
+      };
+    });
   }
 
   private requireRun(runId: string): ConversationRun {
@@ -1161,6 +2381,14 @@ export class SqliteConversationStore implements ConversationStore {
     const dispatch = this.getDispatchForRun(runId);
     if (!dispatch) {
       throw new ConversationError("dispatch_not_found", `run "${runId}" has no dispatch`);
+    }
+    return dispatch;
+  }
+
+  private requireDispatchForMemberTurn(memberTurnId: string): PendingDispatch {
+    const dispatch = this.getDispatchForMemberTurn(memberTurnId);
+    if (!dispatch) {
+      throw new ConversationError("dispatch_not_found", `member turn "${memberTurnId}" has no dispatch`);
     }
     return dispatch;
   }

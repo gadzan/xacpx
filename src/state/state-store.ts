@@ -3,8 +3,10 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 
 import type { BotProfile, BotRuntimeBinding } from "../bots/bot-types";
 import type { ConversationRecord, ConversationTopic } from "../conversations/conversation-types";
+import { classifyConversationRoot } from "../conversations/conversation-roots";
 import { writePrivateFileAtomic } from "../util/private-file.js";
 import { createEmptyState, type AppState, type LogicalSession, type LogicalSessionOwner } from "./types";
+import { createDirectConversationId, createScopedGroupMemberBindingId } from "../domain/ids";
 import type { ScheduledTaskRecord, ScheduledTaskStatus } from "../scheduled/scheduled-types";
 import {
   createEmptyOrchestrationState,
@@ -733,6 +735,21 @@ function parseSessions(
       dropped.push({ section: "sessions", key: alias, reason: "malformed session record" });
       continue;
     }
+    if (value.alias !== alias) {
+      // Storage identity is the map key: SessionService removes by key and
+      // every destructive ownership scan releases by key. A record whose
+      // inner alias disagrees would let a second row masquerade as the
+      // primary (same record.alias, different key) and defeat exactly-one
+      // checks, or send physical release at the wrong key on retry. Keep
+      // the row as the physical cleanup handle but quarantine it from
+      // ownership attribution: activation and destructive teardowns treat
+      // key-mismatched product owners as corruption and fail closed.
+      dropped.push({
+        section: "sessions",
+        key: alias,
+        reason: `session map key "${alias}" does not match record alias "${value.alias}"; kept for operator recovery, excluded from ownership`,
+      });
+    }
     if (value.logical_session_id === undefined) {
       // Legacy record from before logical_session_id existed: assign a fresh
       // UUIDv4 exactly once. StateStore.load() persists this synchronously
@@ -978,6 +995,22 @@ function parseConversations(
   return conversations;
 }
 
+function isExecutionTarget(value: unknown): value is ConversationTopic["executionTarget"] {
+  if (value === undefined) {
+    return true;
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    isString(value.workspace) &&
+    (value.cwd === undefined || isString(value.cwd)) &&
+    (value.isolation === "shared" ||
+      value.isolation === "shared-single-writer" ||
+      value.isolation === "worktree-per-member")
+  );
+}
+
 function isConversationTopic(value: unknown): value is ConversationTopic {
   if (!isRecord(value)) {
     return false;
@@ -988,7 +1021,8 @@ function isConversationTopic(value: unknown): value is ConversationTopic {
     isString(value.title) &&
     (value.status === "active" || value.status === "archived" || value.status === "deleting") &&
     isString(value.createdAt) &&
-    isString(value.updatedAt)
+    isString(value.updatedAt) &&
+    isExecutionTarget(value.executionTarget)
   );
 }
 
@@ -1070,17 +1104,221 @@ export function parseState(
   const orchestration = parseOrchestrationState(raw.orchestration, dropped, migrated);
   repairExternalCoordinatorIdentityCollisions(parsedSessions, orchestration, dropped);
 
+  const bots = parseBotProfiles(raw.bots, dropped);
+  const conversations = parseConversations(raw.conversations, dropped);
+  const conversationTopics = parseConversationTopics(raw.conversation_topics, dropped);
+  const bindings = parseBotRuntimeBindings(raw.bot_runtime_bindings, dropped);
+  reconcileProductOwnershipGraph(parsedSessions, conversations, conversationTopics, bindings, bots, dropped);
+
   return {
     sessions: parsedSessions,
     chat_contexts: parseChatContexts(sectionRecord(raw.chat_contexts, "chat_contexts", dropped), dropped),
     native_session_lists: parseNativeSessionLists(raw.native_session_lists),
     orchestration,
     scheduled_tasks: parseScheduledTasks(raw.scheduled_tasks, dropped),
-    bots: parseBotProfiles(raw.bots, dropped),
-    conversations: parseConversations(raw.conversations, dropped),
-    conversation_topics: parseConversationTopics(raw.conversation_topics, dropped),
-    bot_runtime_bindings: parseBotRuntimeBindings(raw.bot_runtime_bindings, dropped),
+    bots,
+    conversations,
+    conversation_topics: conversationTopics,
+    bot_runtime_bindings: bindings,
   };
+}
+
+/**
+ * Cross-record recovery for the product-owned ownership graph
+ * (Conversation → Topic → binding → owned session). Per-record parsers
+ * above only check shape; without this step a quarantined Group record
+ * would leave its Topics/bindings/sessions loaded with no cleanup root,
+ * and a dropped Topic/Bot would strand runtime no teardown can address.
+ * Physical-release-preserving: descendants of a missing root are NEVER
+ * dropped as live state here, and ambiguous ownership is NEVER reinterpreted
+ * as unowned (that would resurface possibly-live product runtime as an
+ * ordinary session without a verified release). Rootless Topics/bindings
+ * drop into the load report (pure metadata, no physical handle). A rootless
+ * CANONICAL exact group-member session is KEPT with ownership intact as the
+ * physical cleanup handle for the activation orphan sweep
+ * (recoverRootlessGroupMemberSessions). A triple-less or non-canonical
+ * group-member owner is AMBIGUOUS: kept verbatim (stays hidden, ordinary
+ * ops reject it) and reported, and activation fails closed on it until an
+ * operator repairs the triple or explicitly releases the alias. Bots
+ * themselves are never dropped here — membership edits, not load, own
+ * that transition.
+ */
+function reconcileProductOwnershipGraph(
+  sessions: AppState["sessions"],
+  conversations: Record<string, ConversationRecord>,
+  topics: Record<string, ConversationTopic>,
+  bindings: Record<string, BotRuntimeBinding>,
+  bots: Record<string, BotProfile>,
+  dropped: StateLoadDroppedRecord[],
+): void {
+  // Dangling Group membership: a Bot quarantined at load leaves Groups
+  // referencing it. The Group record itself is KEPT (updateGroup can repair
+  // the membership — old members that no longer exist gate nothing); every
+  // dangling reference is reported so the operator sees which Groups need
+  // the repair edit. Never drops the Group: dropping it would quarantine a
+  // repairable record and strand its Topics/bindings rootlessly.
+  for (const conversation of Object.values(conversations)) {
+    if (conversation.kind !== "group") {
+      continue;
+    }
+    for (const botId of conversation.botIds) {
+      if (!bots[botId]) {
+        dropped.push({
+          section: "conversations",
+          key: conversation.id,
+          reason: `group references missing bot "${botId}"; membership kept — remove it via updateGroup`,
+        });
+      }
+    }
+  }
+  const groupReferencedTopics = new Set<string>();
+  for (const binding of Object.values(bindings)) {
+    if (binding.scope === "group-member") {
+      groupReferencedTopics.add(binding.topicId);
+    }
+  }
+  for (const session of Object.values(sessions)) {
+    const owner = session.owner;
+    if (owner?.kind === "group-member" && owner.topicId !== undefined) {
+      groupReferencedTopics.add(owner.topicId);
+    }
+  }
+  for (const [id, topic] of Object.entries(topics)) {
+    // executionTarget is Group-only: Direct execution resolves from the
+    // owning Bot profile and never reads it, so a Direct-kind root carrying
+    // one is a cross-kind Topic shape. Strip the unenforced field at load
+    // and report it — but keep the row: deleting it would downgrade a live
+    // cross-kind contradiction into a missing root the activation sweep may
+    // physical-release. Bot-existence is intentionally not required here —
+    // that is the shared classifier's job — only the kind contradiction.
+    const directConversation = conversations[topic.conversationId];
+    const isDirectConversation = directConversation?.kind === "bot"
+      || (!directConversation && Object.values(bots).some((bot) => createDirectConversationId(bot.id) === topic.conversationId));
+    if (topic.executionTarget !== undefined && isDirectConversation) {
+      delete topic.executionTarget;
+      dropped.push({
+        section: "conversation_topics",
+        key: id,
+        reason: `direct topic carries group-only executionTarget; executionTarget stripped and quarantined — row kept, requires operator review`,
+      });
+      continue;
+    }
+    // Group topics carry executionTarget (direct topics never do) or are
+    // referenced by group-member runtime. Either marker with a missing
+    // conversation means the cleanup root is gone → drop with report,
+    // unless the shared classifier still sees a live synthetic Direct root
+    // (live Bot + deterministic conversation + linked custom Topic row):
+    // that row is the cross-kind evidence the activation gate must see,
+    // so load must keep it instead of mutating it away.
+    const isGroupTopic = topic.executionTarget !== undefined || groupReferencedTopics.has(id);
+    if (!conversations[topic.conversationId] && isGroupTopic) {
+      if (classifyConversationRoot(conversations, topics, bots, topic.conversationId, id) !== "missing") {
+        continue;
+      }
+      delete topics[id];
+      dropped.push({
+        section: "conversation_topics",
+        key: id,
+        reason: `topic references missing conversation "${topic.conversationId}"; dropped (cleanup root gone)`,
+      });
+    }
+  }
+  for (const [id, binding] of Object.entries(bindings)) {
+    // Only group-member bindings resolve through persisted Conversation +
+    // Topic rows. Direct bindings resolve through the deterministic Bot plan
+    // (synthetic conversations); group-controller is provisional/unused.
+    if (binding.scope !== "group-member") {
+      continue;
+    }
+    const conversation = conversations[binding.conversationId];
+    const topic = topics[binding.topicId];
+    // The Conversation must be a live GROUP: a group-member binding pointing
+    // at a Direct Conversation is corrupted ownership — Direct teardown
+    // never sweeps it, so keeping it would strand it with no cleanup entry.
+    if (
+      !conversation
+      || conversation.kind !== "group"
+      || !topic
+      || topic.conversationId !== binding.conversationId
+    ) {
+      delete bindings[id];
+      dropped.push({
+        section: "bot_runtime_bindings",
+        key: id,
+        reason: `binding references missing/non-group conversation/topic (conversation "${binding.conversationId}", topic "${binding.topicId}"); dropped (cleanup root gone)`,
+      });
+    }
+  }
+  // Owned sessions are NEVER dropped here, even when their root is gone: the
+  // row IS the physical cleanup handle (strict release resolves the alias).
+  // A rootless CANONICAL group-member session stays owned for the activation
+  // orphan sweep (recoverRootlessGroupMemberSessions); an ambiguous owner
+  // (triple-less or non-canonical) stays verbatim-hidden and fails
+  // activation closed — never demoted to a plain session.
+  for (const [alias, session] of Object.entries(sessions)) {
+    const owner = session.owner;
+    if (owner?.kind !== "group-member") {
+      continue;
+    }
+    const bound = owner.bindingId !== undefined ? bindings[owner.bindingId] : undefined;
+    const conversationId = owner.conversationId ?? bound?.conversationId;
+    const topicId = owner.topicId ?? bound?.topicId;
+    if (conversationId === undefined || topicId === undefined) {
+      // Legacy partial owner that resolves no triple: destructive authority
+      // can never be established, so no sweep may release it — but deleting
+      // the ownership record without a verified physical release would be
+      // fail-open (the session would resurface as an ordinary session).
+      // Keep the owner verbatim (stays hidden, ordinary ops reject it) and
+      // report: activation fails closed on it (see
+      // assertNoAmbiguousGroupMemberSessions) until an operator repairs the
+      // triple from the quarantine backup or explicitly releases the alias.
+      dropped.push({
+        section: "sessions",
+        key: alias,
+        reason: `owned session cannot resolve conversation/topic (binding "${owner.bindingId}"); ambiguous ownership kept hidden — requires operator recovery`,
+      });
+      continue;
+    }
+    const conversation = conversations[conversationId];
+    const topic = topics[topicId];
+    // A group-member owner resolves ONLY through a live GROUP root: a
+    // group-member session pointing at a Direct Conversation is corrupted
+    // cross-kind ownership (same class as the binding fence above — Direct
+    // teardown only sweeps bot-direct owners, Group teardown requires a
+    // Group record, ordinary ops reject it as hidden). Missing root and
+    // cross-kind root are both "no valid Group cleanup root": keep the owner
+    // verbatim-hidden and report it as ambiguous — never auto-release under
+    // a kind contradiction, and never reinterpret as unowned.
+    const rootValid = conversation?.kind === "group"
+      && topic !== undefined
+      && topic.conversationId === conversationId;
+    if (!rootValid) {
+      // Missing root and cross-kind root are both "no valid Group cleanup
+      // root": keep the owner verbatim-hidden and report it as ambiguous —
+      // never auto-release under a kind contradiction, and never reinterpret
+      // as unowned. A CANONICAL exact owner whose root is merely MISSING
+      // stays as the physical cleanup handle for the activation orphan sweep;
+      // every other shape (non-canonical bindingId, or a Direct-kind root)
+      // fails activation closed until an operator repairs/releases it.
+      // Reversible via quarantine.
+      const missing = !conversation || !topic || topic.conversationId !== conversationId;
+      const canonical = owner.botId !== undefined
+        && owner.bindingId === createScopedGroupMemberBindingId(conversationId, topicId, owner.botId);
+      if (missing && canonical) {
+        dropped.push({
+          section: "sessions",
+          key: alias,
+          reason: `owned session references missing conversation/topic (conversation "${conversationId}", topic "${topicId}"); kept for verified release`,
+        });
+        continue;
+      }
+      dropped.push({
+        section: "sessions",
+        key: alias,
+        reason: `owned session references invalid group root (conversation "${conversationId}", topic "${topicId}"); ambiguous cross-kind ownership kept hidden — requires operator recovery`,
+      });
+    }
+  }
 }
 
 /**

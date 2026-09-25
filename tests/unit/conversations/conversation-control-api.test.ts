@@ -394,7 +394,7 @@ test("topic runs list prefers the executing Run and otherwise the oldest queued 
     memberTurnId: runtime.store.listMemberTurns(first.run.id)[0]!.id,
     botId: bot.id,
     content: "done",
-    sourceTurn: { sessionAlias: "alias" },
+    sourceTurn: { sessionAlias: "alias", turnId: "source" },
     now: NOW,
   });
   const afterComplete = control.listTopicRuns(conversationId, topicId);
@@ -521,6 +521,28 @@ test("turn events carry exact Conversation/Run/MemberTurn join identity", async 
     .toBe(accepted.memberTurn.id);
 });
 
+test("deleteBot stays fail-closed on controller residue cross-kind to a Direct root", async () => {
+  const { control, state, sessions } = await wire({ autoKick: false });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  state.sessions.controller_direct = {
+    alias: "controller_direct",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:controller_direct",
+    logical_session_id: "11111111-1111-4111-8111-111111111111",
+    created_at: "2026-09-16T12:00:00.000Z",
+    last_used_at: "2026-09-16T12:00:00.000Z",
+    owner: { kind: "group-controller", bindingId: "missing_binding", conversationId, topicId },
+  };
+  await expect(control.deleteBot(bot.id)).rejects.toMatchObject({ code: "bot_in_use" });
+  // Bot root, hidden session, and zero physical release: the cleanup root
+  // survives for the operator instead of orphaning.
+  expect(state.bots[bot.id]).toBeDefined();
+  expect(sessions.getLogicalSessionRecord("controller_direct")?.alias).toBe("controller_direct");
+});
+
 test("deleteBot stays fail-closed while durable ownership exists", async () => {
   const { control } = await wire({ autoKick: false });
   const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
@@ -635,6 +657,8 @@ test("public Run DTO keeps indeterminate instead of mapping it to failed", async
     generation: 1,
     maxMemberTurns: 8,
     consumedMemberTurns: 1,
+    failedBotIds: [],
+    unavailableBotIds: [],
     profileRevision: 1,
     profileSnapshot: {
       revision: 1,
@@ -1034,7 +1058,7 @@ test("public promptConversation cannot mint human ingress; kernel stamp can", as
     } as object),
   } as never);
   await runtime.dispatcher.kick();
-  expect(control.getRun(publicAccepted.run.id).memberTurns[0]?.origin).toBe("recovery");
+  expect(control.getRun(publicAccepted.run.id).memberTurns[0]?.origin).toBe("followup");
 
   const human = await conversationKernel(control).promptConversationFromHumanIngress({
     conversationId: createDirectConversationId(bot.id),
@@ -1043,7 +1067,7 @@ test("public promptConversation cannot mint human ingress; kernel stamp can", as
     text: "hello",
   }, { chatKey: "relay:acct", senderId: "acct", accountId: "acct", isOwner: true });
   await runtime.dispatcher.kick();
-  expect(control.getRun(human.run.id).memberTurns[0]?.origin).toBe("human");
+  expect(control.getRun(human.run.id).memberTurns[0]?.origin).toBe("human-explicit");
 
   await expect(conversationKernel(control).promptConversationFromHumanIngress({
     conversationId: createDirectConversationId(bot.id),
@@ -1054,4 +1078,71 @@ test("public promptConversation cannot mint human ingress; kernel stamp can", as
     code: "human_ingress_invalid",
   });
   await runtime.shutdown();
+});
+test("group CRUD, topic lifecycle, and teardown flow through public Control", async () => {
+  const { control, runtime } = await wire({ autoKick: false });
+  const botA = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const botB = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const group = await control.createGroup({ title: "Release Team", botIds: [botA.id, botB.id], leadBotId: botA.id });
+  expect(group.kind).toBe("group");
+  expect(group.botIds).toEqual([botA.id, botB.id]);
+  expect(group.leadBotId).toBe(botA.id);
+  const renamed = await control.updateGroup(group.id, { title: "Release Team 2" });
+  expect(renamed.title).toBe("Release Team 2");
+  const detail = control.getGroup(group.id);
+  expect(detail.topics).toEqual([]);
+  const topic = await control.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  expect(topic.conversationId).toBe(group.id);
+  expect(topic.executionTarget).toEqual({ workspace: "backend", isolation: "shared-single-writer" });
+  expect(control.getGroup(group.id).topics.map((t) => t.id)).toContain(topic.id);
+  // Member binding materializes on the group topic, isolated from direct bindings.
+  const member = await runtime.botRuntime.getOrCreateGroupMemberSession({
+    botId: botA.id, conversationId: group.id, topicId: topic.id,
+  });
+  expect(member.scope).toBe("group-member");
+  const archived = await control.archiveGroupTopic(group.id, topic.id);
+  expect(archived.status).toBe("archived");
+  // Archived topics refuse new member materialize (teardown-adjacent gate).
+  await expect(
+    runtime.botRuntime.getOrCreateGroupMemberSession({
+      botId: botA.id, conversationId: group.id, topicId: topic.id,
+    }),
+  ).rejects.toMatchObject({ code: "topic_deleting" });
+  await control.teardownGroupTopic(group.id, topic.id);
+  expect(control.getGroup(group.id).topics.map((t) => t.id)).not.toContain(topic.id);
+  // Public deleteGroup runs verified teardown (not the fail-closed metadata
+  // delete): a second topic is torn down inline and the group disappears.
+  const topic2 = await control.createGroupTopic(group.id, "Sprint 2", {
+    workspace: "backend",
+    isolation: "shared",
+  });
+  await control.deleteGroup(group.id);
+  expect(() => control.getGroup(group.id)).toThrow();
+  await runtime.shutdown();
+});
+
+test("toMemberTurnSummary projects timestamps alongside failureReason", async () => {
+  const { toMemberTurnSummary } = await import("../../../src/control/conversation-control-dtos");
+  const summary = toMemberTurnSummary({
+    id: "mturn_1",
+    runId: "run_1",
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    botId: "bot_1",
+    batch: 1,
+    attempt: 1,
+    origin: "human-explicit",
+    state: "failed",
+    triggerMessageIds: ["cmsg_1"],
+    createdAt: "2026-09-16T00:00:00.000Z",
+    startedAt: "2026-09-16T00:00:01.000Z",
+    finishedAt: "2026-09-16T00:00:02.000Z",
+    failureReason: "provider crashed",
+  });
+  expect(summary.startedAt).toBe("2026-09-16T00:00:01.000Z");
+  expect(summary.finishedAt).toBe("2026-09-16T00:00:02.000Z");
+  expect(summary.failureReason).toBe("provider crashed");
 });

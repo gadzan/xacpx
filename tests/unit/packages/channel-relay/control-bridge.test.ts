@@ -1639,7 +1639,7 @@ test("Bot and Conversation RPCs dispatch to Control product IDs", async () => {
         requestId: "req",
         run: { id: "run_1", conversationId: "conversation_1", topicId: "topic_1", requestMessageId: "cmsg", requestId: "req", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "t" },
         message: { id: "cmsg", conversationId: "conversation_1", topicId: "topic_1", seq: 1, role: "human", content: "hi", createdAt: "t" },
-        memberTurn: { id: "mturn_1", runId: "run_1", conversationId: "conversation_1", topicId: "topic_1", botId: "bot_1", batch: 0, attempt: 1, origin: "human", state: "queued", createdAt: "t" },
+        memberTurn: { id: "mturn_1", runId: "run_1", conversationId: "conversation_1", topicId: "topic_1", botId: "bot_1", batch: 0, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "t" },
       };
     },
     cancelRun: async (runId: string) => {
@@ -1749,7 +1749,7 @@ test("conversation.prompt with Hub-stamped ingress uses trusted accept, not publ
         requestId: input.requestId,
         run: { id: "run_trusted", conversationId: input.conversationId, topicId: input.topicId, requestMessageId: "cmsg", requestId: input.requestId, mode: "explicit", state: "queued", profileRevision: 1, createdAt: "t" },
         message: { id: "cmsg", conversationId: input.conversationId, topicId: input.topicId, seq: 1, role: "human", content: input.text, createdAt: "t" },
-        memberTurn: { id: "mturn_t", runId: "run_trusted", conversationId: input.conversationId, topicId: input.topicId, botId: "bot_1", batch: 0, attempt: 1, origin: "human", state: "queued", createdAt: "t" },
+        memberTurn: { id: "mturn_t", runId: "run_trusted", conversationId: input.conversationId, topicId: input.topicId, botId: "bot_1", batch: 0, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "t" },
       };
     },
   });
@@ -1807,4 +1807,69 @@ test("conversation.prompt without Hub ingress stays on public promptConversation
     requestId: "req",
     text: "hi",
   }]);
+});
+test("group CRUD and topic lifecycle dispatch with product IDs", async () => {
+  const calls: Record<string, unknown[]> = {};
+  const record = (name: string, arg: unknown) => {
+    (calls[name] ??= []).push(arg);
+  };
+  const { control } = makeFakeControl({
+    createGroup: async (input: unknown) => {
+      record("createGroup", input);
+      return { id: "conversation_g", kind: "group", title: "Release Team", botIds: ["bot_a", "bot_b"], createdAt: "t", updatedAt: "t" };
+    },
+    updateGroup: async (id: string, patch: unknown) => {
+      record("updateGroup", { id, patch });
+      return { id, kind: "group", title: "Release Team", botIds: ["bot_a", "bot_b"], createdAt: "t", updatedAt: "t" };
+    },
+    deleteGroup: async (id: string) => {
+      record("deleteGroup", id);
+      return { ok: true };
+    },
+    getGroup: (id: string) => ({
+      id, kind: "group", title: "Release Team", botIds: ["bot_a", "bot_b"], topics: [], createdAt: "t", updatedAt: "t",
+    }),
+    createGroupTopic: async (conversationId: string, title: string, target: unknown) => {
+      record("createGroupTopic", { conversationId, title, target });
+      return { id: "topic_1", conversationId, title, status: "active", createdAt: "t", updatedAt: "t" };
+    },
+    archiveGroupTopic: async (conversationId: string, topicId: string) => {
+      record("archiveGroupTopic", { conversationId, topicId });
+      return { id: topicId, conversationId, title: "T", status: "archived", createdAt: "t", updatedAt: "t" };
+    },
+    teardownGroupTopic: async (conversationId: string, topicId: string) => {
+      record("teardownGroupTopic", { conversationId, topicId });
+      return { ok: true };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.groupsCreate, {
+    title: "Release Team", botIds: ["bot_a", "bot_b"], leadBotId: "bot_a",
+  }))).toMatchObject({ group: { id: "conversation_g" } });
+  expect(await dispatch(bridge, req(MSG.groupsUpdate, { id: "conversation_g", title: "Renamed" }))).toMatchObject({
+    group: { id: "conversation_g" },
+  });
+  expect(await dispatch(bridge, req(MSG.groupsGet, { id: "conversation_g" }))).toMatchObject({
+    group: { id: "conversation_g" },
+  });
+  expect(await dispatch(bridge, req(MSG.groupTopicsCreate, {
+    conversationId: "conversation_g", title: "Sprint 1",
+    target: { workspace: "backend", isolation: "shared-single-writer" },
+  }))).toMatchObject({ topic: { id: "topic_1" } });
+  expect(await dispatch(bridge, req(MSG.groupTopicsArchive, {
+    conversationId: "conversation_g", topicId: "topic_1",
+  }))).toMatchObject({ topic: { status: "archived" } });
+  expect(await dispatch(bridge, req(MSG.groupTopicsTeardown, {
+    conversationId: "conversation_g", topicId: "topic_1",
+  }))).toEqual({ ok: true });
+  // Malformed payloads fail closed at the wire validator, never reach control.
+  // (min-two membership is a domain rule in BotService; the wire only checks shape.)
+  expect(await dispatch(bridge, req(MSG.groupsCreate, { title: "Solo", botIds: "only" }))).toMatchObject({
+    error: { code: "invalid-payload" },
+  });
+  expect(await dispatch(bridge, req(MSG.groupTopicsCreate, {
+    conversationId: "conversation_g", title: "Bad", target: { workspace: "backend", isolation: "mesh" },
+  }))).toMatchObject({ error: { code: "invalid-payload" } });
+  await dispatch(bridge, req(MSG.groupsDelete, { id: "conversation_g" }));
+  expect(calls.deleteGroup).toEqual(["conversation_g"]);
 });

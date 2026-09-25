@@ -34,6 +34,26 @@ test("parseState accepts a group conversation with a lead in membership", () => 
 
 test("parseState accepts a controller binding without botId", () => {
   const state = parseState({
+    conversations: {
+      team: {
+        id: "team",
+        kind: "group",
+        title: "Release Team",
+        botIds: ["reviewer", "tester"],
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    conversation_topics: {
+      "pr-400": {
+        id: "pr-400",
+        conversationId: "team",
+        title: "PR",
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
     bot_runtime_bindings: {
       bind_c: {
         id: "bind_c",
@@ -119,4 +139,70 @@ test("parseState defaults a missing Bot profileRevision to 1", () => {
     },
   }, "state.json");
   expect(state.bots.bot_a?.profileRevision).toBe(1);
+});
+test("parseState accepts a group topic with an execution target and drops a junk target", () => {
+  const dropped: StateLoadDroppedRecord[] = [];
+  const state = parseState({
+    conversations: {
+      team: {
+        id: "team",
+        kind: "group",
+        title: "Release Team",
+        botIds: ["reviewer", "tester"],
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    conversation_topics: {
+      good: {
+        id: "good",
+        conversationId: "team",
+        title: "Sprint 1",
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+        executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+      },
+      bad: {
+        id: "bad",
+        conversationId: "team",
+        title: "Bad",
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+        executionTarget: { workspace: "backend", isolation: "mesh" },
+      },
+    },
+  }, "state.json", dropped);
+  expect(state.conversation_topics.good?.executionTarget).toEqual({
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  expect(state.conversation_topics.bad).toBeUndefined();
+  expect(dropped.some((d) => d.section === "conversation_topics" && d.key === "bad")).toBe(true);
+});
+
+test("parseState quarantines a session whose map key disagrees with its alias", () => {
+  const dropped: StateLoadDroppedRecord[] = [];
+  const state = parseState({
+    sessions: {
+      "shadow-key": {
+        alias: "primary",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:shadow",
+        logical_session_id: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: { kind: "group-member", bindingId: "bind_x" },
+      },
+    },
+  }, "state.json", dropped);
+  // Row survives as the physical handle, but load reports the disagreement.
+  expect(state.sessions["shadow-key"]?.alias).toBe("primary");
+  expect(dropped.some((d) =>
+    d.section === "sessions"
+    && d.key === "shadow-key"
+    && d.reason.includes("does not match record alias"),
+  )).toBe(true);
 });

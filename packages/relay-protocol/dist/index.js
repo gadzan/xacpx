@@ -160,6 +160,13 @@ var MSG = {
   conversationsGet: "control.conversations.get",
   topicsList: "control.topics.list",
   topicsCreate: "control.topics.create",
+  groupsCreate: "control.groups.create",
+  groupsUpdate: "control.groups.update",
+  groupsDelete: "control.groups.delete",
+  groupsGet: "control.groups.get",
+  groupTopicsCreate: "control.group.topics.create",
+  groupTopicsArchive: "control.group.topics.archive",
+  groupTopicsTeardown: "control.group.topics.teardown",
   conversationPrompt: "control.conversation.prompt",
   conversationHistory: "control.conversation.history",
   runsGet: "control.runs.get",
@@ -225,6 +232,7 @@ var isBoundedStr = (v, maxLen) => typeof v === "string" && v.length > 0 && v.len
 var isIntInRange = (v, min, max) => typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
 var isNonNegInt = (v) => typeof v === "number" && Number.isInteger(v) && v >= 0;
 var optNonNegInt = (v) => v === undefined || isNonNegInt(v);
+var optStrArr = (v) => v === undefined || Array.isArray(v) && v.every((entry) => typeof entry === "string");
 function decodeCanonicalBase64(encoded) {
   if (typeof globalThis.atob === "function" && typeof globalThis.btoa === "function") {
     const binary = globalThis.atob(encoded);
@@ -506,11 +514,19 @@ function validConversationCorrelation(value) {
   const c = value;
   return typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.runId === "string" && typeof c.memberTurnId === "string";
 }
+function validExecutionTarget(value) {
+  if (value === undefined)
+    return true;
+  if (typeof value !== "object" || value === null)
+    return false;
+  const t = value;
+  return typeof t.workspace === "string" && (t.cwd === undefined || typeof t.cwd === "string") && (t.isolation === "shared" || t.isolation === "shared-single-writer" || t.isolation === "worktree-per-member");
+}
 function validTopicSummary(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string";
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string" && validExecutionTarget(c.executionTarget);
 }
 function validConversationMessage(value) {
   if (typeof value !== "object" || value === null)
@@ -522,13 +538,13 @@ function validConversationRun(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && c.mode === "explicit" && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt);
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && (c.mode === "explicit" || c.mode === "automatic") && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number") && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number") && (c.failedBotIds === undefined || Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")) && (c.unavailableBotIds === undefined || Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")) && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt) && (c.activeBatch === undefined || typeof c.activeBatch === "number");
 }
 function validMemberTurnSummary(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && typeof c.attempt === "number" && (c.origin === "human" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt);
+  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && optNonNegInt(c.memberIndex) && typeof c.attempt === "number" && (c.origin === "human-explicit" || c.origin === "human" || c.origin === "router" || c.origin === "handoff" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput) && optStrArr(c.dependsOn) && optStr(c.failureReason);
 }
 function validControlEvent(e) {
   if (typeof e !== "object" || e === null)
@@ -989,6 +1005,51 @@ var validateTopicsCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.title) ? o : null;
 };
+var isIsolation = (v) => v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
+var validateGroupsCreate = (p) => {
+  const o = fields(p);
+  return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description)) && (o.leadBotId === undefined || isStr(o.leadBotId)) ? o : null;
+};
+var validateGroupsUpdate = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.id))
+    return null;
+  if (o.title !== undefined && !isStr(o.title))
+    return null;
+  if (o.description !== undefined && o.description !== null && !isStr(o.description))
+    return null;
+  if (o.botIds !== undefined && !isStrArr(o.botIds))
+    return null;
+  if (o.leadBotId !== undefined && o.leadBotId !== null && !isStr(o.leadBotId))
+    return null;
+  return o;
+};
+var validateGroupsDelete = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? o : null;
+};
+var validateGroupsGet = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? o : null;
+};
+var validateGroupTopicsCreate = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.conversationId) || !isStr(o.title))
+    return null;
+  const t = o.target;
+  if (!isObj(t) || !isStr(t.workspace) || t.cwd !== undefined && !isStr(t.cwd) || !isIsolation(t.isolation)) {
+    return null;
+  }
+  return o;
+};
+var validateGroupTopicsArchive = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.topicId) ? o : null;
+};
+var validateGroupTopicsTeardown = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.topicId) ? o : null;
+};
 var validateConversationPrompt = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.conversationId) || !isStr(o.topicId) || !isStr(o.requestId) || !isStr(o.text)) {
@@ -1084,6 +1145,13 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationsGet]: validateConversationsGet,
   [MSG.topicsList]: validateTopicsList,
   [MSG.topicsCreate]: validateTopicsCreate,
+  [MSG.groupsCreate]: validateGroupsCreate,
+  [MSG.groupsUpdate]: validateGroupsUpdate,
+  [MSG.groupsDelete]: validateGroupsDelete,
+  [MSG.groupsGet]: validateGroupsGet,
+  [MSG.groupTopicsCreate]: validateGroupTopicsCreate,
+  [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
+  [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
   [MSG.conversationPrompt]: validateConversationPrompt,
   [MSG.conversationHistory]: validateConversationHistory,
   [MSG.runsGet]: validateRunsGet,
@@ -1210,6 +1278,7 @@ export {
   optNonNegInt,
   optNum,
   optStr,
+  optStrArr,
   parseCanonicalBase64,
   parseControlPayload,
   parseTerminalEventPayload,

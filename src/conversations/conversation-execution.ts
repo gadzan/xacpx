@@ -62,14 +62,21 @@ export function conversationExecutionOrigin(
 
 export function memberTurnOriginFromExecution(
   origin: PermissionInteractionOrigin,
+  provenance?: MemberTurnOrigin,
 ): MemberTurnOrigin {
-  return origin === "human" ? "human" : "recovery";
+  if (origin === "human") {
+    return "human-explicit";
+  }
+  // Fresh orchestration provenance (router/handoff/followup/retry) is
+  // preserved: only a genuinely redriven claim defaults to "recovery".
+  // Legacy "human" reads through the compat layer below.
+  return provenance ?? "recovery";
 }
 
 export function conversationExecutionOriginFromMemberTurn(
-  origin: MemberTurnOrigin,
+  origin: MemberTurnOrigin | "human",
 ): PermissionInteractionOrigin {
-  return origin === "human" ? "human" : "orchestration";
+  return origin === "human-explicit" || origin === "human" ? "human" : "orchestration";
 }
 
 /** Same predicate session-handler uses: only explicit human mints an interaction. */

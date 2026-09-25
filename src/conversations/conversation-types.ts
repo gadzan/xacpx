@@ -5,10 +5,15 @@ export type ConversationLifecycle = "active" | "deleting";
 export type ConversationTopicStatus = "active" | "archived" | "deleting";
 export type ConversationMessageRole = "human" | "bot" | "system";
 
-export type GroupTurnOrigin = "human-explicit" | "controller" | "handoff" | "recovery";
-export type GroupTurnState = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type ConversationRunMode = "explicit" | "automatic";
 
-export type ConversationRunMode = "explicit";
+export type WorkspaceIsolationPolicy = "shared" | "shared-single-writer" | "worktree-per-member";
+
+export interface ExecutionTarget {
+  workspace: string;
+  cwd?: string;
+  isolation: WorkspaceIsolationPolicy;
+}
 export type ConversationRunState =
   | "queued"
   | "running"
@@ -18,7 +23,13 @@ export type ConversationRunState =
   | "cancelled"
   | "indeterminate";
 
-export type MemberTurnOrigin = "human" | "followup" | "retry" | "recovery";
+/** Durable MemberTurn provenance: WHO caused this turn. Distinct from the
+ *  permission-interaction origin (human vs orchestration), which is derived
+ *  per-dispatch from authorityEpoch + human ingress. Fresh orchestration work
+ *  (Router-selected, handoff, followup) is NEVER "recovery": recovery means a
+ *  prior claim existed and is being redriven after failure/expiry. */
+export type MemberTurnOrigin = "human-explicit" | "router" | "handoff" | "followup" | "retry" | "recovery";
+
 export type MemberTurnState =
   | "queued"
   | "dispatched"
@@ -29,6 +40,13 @@ export type MemberTurnState =
   | "indeterminate";
 
 export type PendingDispatchState = "pending" | "claimed" | "completed";
+
+/** Declared side-effect capability of one MemberTurn. PR6 input only: no
+ *  dispatcher in this PR schedules on it yet. PR7 explicit routing attaches
+ *  this to each assignment; the scheduler (§9.6) serializes turns that are
+ *  not enforceably read-only under shared-single-writer. Never inferred from
+ *  Bot name/description — the caller must prove read-only capability. */
+export type MemberTurnEffect = "unknown" | "read-only" | "mutating";
 
 export interface ConversationRecord {
   id: string;
@@ -50,6 +68,11 @@ export interface ConversationTopic {
   status: ConversationTopicStatus;
   createdAt: string;
   updatedAt: string;
+  /** Effective work target for this Topic. Absent on pre-Group rows: readers
+   *  must treat absence as unknown, never as a default policy. Writers always
+   *  persist it on Group Topics; direct Topics resolve execution from the
+   *  owning Bot profile instead. */
+  executionTarget?: ExecutionTarget;
 }
 
 export interface ConversationMessage {
@@ -80,8 +103,14 @@ export interface ConversationRun {
   state: ConversationRunState;
   completionReason?: string;
   generation: number;
+  /** Currently executing batch. Absent (direct legacy) means batch 1. */
+  activeBatch?: number;
   maxMemberTurns: number;
   consumedMemberTurns: number;
+  /** Member Bot ids that failed in the current batch (aggregate progress). */
+  failedBotIds: string[];
+  /** Member Bot ids unavailable for the current batch (aggregate progress). */
+  unavailableBotIds: string[];
   profileRevision: number;
   profileSnapshot: BotProfileSnapshot;
   createdAt: string;
@@ -100,13 +129,32 @@ export interface MemberTurnRecord {
   sourceTurnId?: string;
   queueItemId?: string;
   batch: number;
+  /** Durable accept order within the batch (0-based). Replaces created_at/id
+   *  tiebreaks so reopen/replay ordering is stable and dispatches align. */
+  memberIndex: number;
   attempt: number;
   origin: MemberTurnOrigin;
   state: MemberTurnState;
   triggerMessageIds: string[];
+  /** Accepted execution snapshot for THIS member. Absent on pre-multi-member
+   *  rows: readers fall back to the Run's profileSnapshot for migration
+   *  compatibility (direct single-member accepts). */
+  profileSnapshot?: BotProfileSnapshot;
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
+  /** Group assignment identity. Absent on direct (single-member) turns. */
+  assignmentId?: string;
+  /** Concrete work instruction for this assignment. */
+  task?: string;
+  /** Expected output description for this assignment. */
+  expectedOutput?: string;
+  /** Assignment ids this turn depends on (Router dependsOn). */
+  dependsOn?: string[];
+  /** Machine-readable terminal failure reason (failed only). Durable audit
+   *  evidence: preserved per-member so a sibling's unknown/cancel can never
+   *  erase which member failed and why. */
+  failureReason?: string;
 }
 
 /** Server-derived authenticated human ingress. Clients cannot mint this. */
@@ -134,20 +182,6 @@ export interface PendingDispatch {
   createdAt: string;
   claimedAt?: string;
   completedAt?: string;
-}
-
-export interface GroupTurnRecord {
-  id: string;
-  conversationId: string;
-  topicId: string;
-  botId: string;
-  sessionAlias: string;
-  triggerMessageIds: string[];
-  origin: GroupTurnOrigin;
-  state: GroupTurnState;
-  createdAt: string;
-  startedAt?: string;
-  finishedAt?: string;
 }
 
 export const ACTIVE_RUN_STATES: readonly ConversationRunState[] = ["running", "waiting-human"];

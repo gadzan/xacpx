@@ -33,6 +33,21 @@ export function createBotDirectOwner(input: {
   };
 }
 
+export function createGroupMemberOwner(input: {
+  bindingId: string;
+  botId: string;
+  conversationId: string;
+  topicId: string;
+}): LogicalSessionOwner {
+  return {
+    kind: "group-member",
+    bindingId: input.bindingId,
+    botId: input.botId,
+    conversationId: input.conversationId,
+    topicId: input.topicId,
+  };
+}
+
 /** Owner kinds that must not appear on the ordinary product Sessions list. */
 export function isHiddenProductSessionOwner(owner?: LogicalSessionOwner): boolean {
   return owner?.kind === "bot-direct"

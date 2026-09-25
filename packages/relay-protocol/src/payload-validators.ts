@@ -20,6 +20,13 @@ import {
   type ConversationPromptPayload,
   type ConversationsGetPayload,
   type ConversationsListPayload,
+  type GroupsCreatePayload,
+  type GroupsDeletePayload,
+  type GroupsGetPayload,
+  type GroupsUpdatePayload,
+  type GroupTopicsArchivePayload,
+  type GroupTopicsCreatePayload,
+  type GroupTopicsTeardownPayload,
   type FsCopyPayload,
   type FsCreatePayload,
   type FsDeletePayload,
@@ -412,6 +419,48 @@ const validateTopicsCreate: Validator<TopicsCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.title) ? (o as unknown as TopicsCreatePayload) : null;
 };
+const isIsolation = (v: unknown): boolean =>
+  v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
+const validateGroupsCreate: Validator<GroupsCreatePayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description))
+    && (o.leadBotId === undefined || isStr(o.leadBotId))
+    ? (o as unknown as GroupsCreatePayload) : null;
+};
+const validateGroupsUpdate: Validator<GroupsUpdatePayload> = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.id)) return null;
+  if (o.title !== undefined && !isStr(o.title)) return null;
+  if (o.description !== undefined && o.description !== null && !isStr(o.description)) return null;
+  if (o.botIds !== undefined && !isStrArr(o.botIds)) return null;
+  if (o.leadBotId !== undefined && o.leadBotId !== null && !isStr(o.leadBotId)) return null;
+  return o as unknown as GroupsUpdatePayload;
+};
+const validateGroupsDelete: Validator<GroupsDeletePayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? (o as unknown as GroupsDeletePayload) : null;
+};
+const validateGroupsGet: Validator<GroupsGetPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? (o as unknown as GroupsGetPayload) : null;
+};
+const validateGroupTopicsCreate: Validator<GroupTopicsCreatePayload> = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.conversationId) || !isStr(o.title)) return null;
+  const t = o.target;
+  if (!isObj(t) || !isStr(t.workspace) || (t.cwd !== undefined && !isStr(t.cwd)) || !isIsolation(t.isolation)) {
+    return null;
+  }
+  return o as unknown as GroupTopicsCreatePayload;
+};
+const validateGroupTopicsArchive: Validator<GroupTopicsArchivePayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.topicId) ? (o as unknown as GroupTopicsArchivePayload) : null;
+};
+const validateGroupTopicsTeardown: Validator<GroupTopicsTeardownPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.topicId) ? (o as unknown as GroupTopicsTeardownPayload) : null;
+};
 const validateConversationPrompt: Validator<ConversationPromptPayload> = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.conversationId) || !isStr(o.topicId) || !isStr(o.requestId) || !isStr(o.text)) {
@@ -480,6 +529,8 @@ export type ControlRpcType =
   | typeof MSG.botsGet | typeof MSG.botsCreate | typeof MSG.botsUpdate | typeof MSG.botsDelete
   | typeof MSG.conversationsList | typeof MSG.conversationsGet
   | typeof MSG.topicsList | typeof MSG.topicsCreate
+  | typeof MSG.groupsCreate | typeof MSG.groupsUpdate | typeof MSG.groupsDelete | typeof MSG.groupsGet
+  | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown
   | typeof MSG.conversationPrompt | typeof MSG.conversationHistory
   | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel;
 
@@ -548,6 +599,13 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationsGet]: validateConversationsGet,
   [MSG.topicsList]: validateTopicsList,
   [MSG.topicsCreate]: validateTopicsCreate,
+  [MSG.groupsCreate]: validateGroupsCreate,
+  [MSG.groupsUpdate]: validateGroupsUpdate,
+  [MSG.groupsDelete]: validateGroupsDelete,
+  [MSG.groupsGet]: validateGroupsGet,
+  [MSG.groupTopicsCreate]: validateGroupTopicsCreate,
+  [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
+  [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
   [MSG.conversationPrompt]: validateConversationPrompt,
   [MSG.conversationHistory]: validateConversationHistory,
   [MSG.runsGet]: validateRunsGet,

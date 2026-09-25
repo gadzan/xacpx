@@ -7,7 +7,7 @@ import { sessionMatchesExecution } from "../bots/bot-types";
 import { createSourceTurnId } from "../domain/ids";
 import type { SessionService } from "../sessions/session-service";
 import { ConversationError } from "./conversation-error";
-import { conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
+import { conversationExecutionOrigin, conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
 import type { ClaimedWork, ConversationStore } from "./conversation-store";
 import {
   emitConversationProductEvent,
@@ -16,9 +16,11 @@ import {
 } from "./conversation-product-events";
 import type {
   ConversationTurnCancelResult,
+  ConversationTurnRunInput,
+  ConversationTurnRunResult,
   ConversationTurnRunner,
 } from "./conversation-turn-runner";
-import type { MemberTurnRecord } from "./conversation-types";
+import { TERMINAL_MEMBER_STATES, type MemberTurnRecord } from "./conversation-types";
 
 export interface ConversationDispatcherHooks {
   afterClaim?: (work: ClaimedWork) => Promise<void>;
@@ -146,19 +148,69 @@ export class ConversationDispatcher {
     if (outcome.alreadyTerminal) {
       return;
     }
-    if (!outcome.executionStarted) {
+    if (!outcome.executionStarted || outcome.activeMembers.length === 0) {
       this.emitRunAndMember(outcome.run, outcome.memberTurn.id);
       await this.kick();
       return;
     }
-    const result = await this.runner.cancel({
-      conversationId: outcome.run.conversationId,
-      topicId: outcome.run.topicId,
-      sessionAlias: outcome.memberTurn.sessionAlias ?? "",
-      queueItemId: outcome.memberTurn.queueItemId,
-      promptRequestId: outcome.memberTurn.sourceTurnId ?? "",
+    // Snapshot-first with all-settled semantics: issue physical cancel to
+    // EVERY active member. A transport throw must not abandon already
+    // observed outcomes: persist fulfilled evidence first (below), then
+    // rethrow so the barrier stays and retry covers only the unsettled rest.
+    const fulfilled: Array<{ member: MemberTurnRecord; result: ConversationTurnCancelResult }> = [];
+    let firstError: unknown;
+    for (const active of outcome.activeMembers) {
+      const current = this.store.getMemberTurn(active.id);
+      if (!current) {
+        continue;
+      }
+      try {
+        fulfilled.push({
+          member: current,
+          result: await this.runner.cancel({
+            conversationId: outcome.run.conversationId,
+            topicId: outcome.run.topicId,
+            sessionAlias: current.sessionAlias ?? "",
+            queueItemId: current.queueItemId,
+            promptRequestId: current.sourceTurnId ?? "",
+          }),
+        });
+      } catch (error) {
+        firstError ??= error;
+      }
+    }
+    // Two-phase settlement: persist ALL observed outcomes as member evidence
+    // in one transaction first, then aggregate the Run once — even when a
+    // sibling cancel threw. A sibling's unknown can never erase another
+    // member's proven completion/failure: A=indeterminate + B=completed
+    // yields B=completed with evidence and Run=indeterminate.
+    // Evidence-only when partial: with a throw pending, settle member rows
+    // but skip Run aggregation/release so retry re-derives the outcome from
+    // complete evidence instead of a half-persisted aggregate.
+    const settled = this.store.settleCancelBatch({
+      runId: outcome.run.id,
+      now: this.now().toISOString(),
+      outcomes: fulfilled.map((entry) => ({
+        memberTurnId: entry.member.id,
+        outcome: entry.result.outcome,
+        ...(entry.result.outcome === "completed" ? { content: entry.result.text ?? "" } : {}),
+        ...(entry.result.outcome === "completed"
+          ? { sourceTurn: { sessionAlias: entry.member.sessionAlias ?? "", turnId: entry.member.sourceTurnId } }
+          : {}),
+        ...(entry.result.outcome === "failed" ? { reason: entry.result.error ?? "failed" } : {}),
+      })),
+      ...(firstError !== undefined ? { deferRunAggregate: true } : {}),
     });
-    this.persistCancelOutcome(outcome.run.id, outcome.memberTurn, result);
+    for (const entry of settled.settled) {
+      if (entry.outcome === "completed" && entry.message) {
+        this.emitTerminalProjection(settled.run, entry.member, entry.message);
+      } else {
+        this.emitRunAndMember(settled.run, entry.member.id);
+      }
+    }
+    if (firstError !== undefined) {
+      throw firstError;
+    }
     await this.kick();
   }
 
@@ -191,7 +243,7 @@ export class ConversationDispatcher {
       if (materializeFail) {
         throw materializeFail;
       }
-      const snapshot = work.run.profileSnapshot;
+      const snapshot = work.memberSnapshot ?? work.memberTurn.profileSnapshot ?? work.run.profileSnapshot;
       const live = this.runtime.getBot(work.memberTurn.botId);
       if (live.agent !== snapshot.execution.agent || live.workspace !== snapshot.execution.workspace) {
         this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
@@ -270,10 +322,18 @@ export class ConversationDispatcher {
         sessionAlias: binding.sessionAlias,
         logicalSessionId: binding.logicalSessionId,
         text,
-        executionOrigin: conversationExecutionOriginFromMemberTurn(latestMember.origin),
-        ...(latestMember.origin === "human" && work.dispatch.humanIngress
-          ? { permissionRoute: work.dispatch.humanIngress }
-          : {}),
+        executionOrigin: conversationExecutionOrigin(
+          this.store.getDispatchForMemberTurn(started.id)?.authorityEpoch,
+          this.authorityEpoch,
+          this.store.getDispatchForMemberTurn(started.id)?.humanIngress,
+        ),
+        ...(() => {
+          const live = this.store.getDispatchForMemberTurn(started.id);
+          return conversationExecutionOrigin(live?.authorityEpoch, this.authorityEpoch, live?.humanIngress) === "human"
+            && live?.humanIngress
+            ? { permissionRoute: live.humanIngress }
+            : {};
+        })(),
         promptRequestId: sourceTurnId,
       });
       await this.hooks?.beforeResultPersist?.(work);
@@ -351,6 +411,10 @@ export class ConversationDispatcher {
       return;
     }
     const now = this.now().toISOString();
+    // Whole-Run human cancel settlement: every branch carries force-terminal
+    // so an automatic Run can never return to routing after cancel. The
+    // proven member outcome is still preserved (completed/failed message and
+    // state); only the Run-level routing eligibility is sealed.
     if (result.outcome === "completed") {
       const completed = this.store.completeExecution({
         runId,
@@ -359,6 +423,7 @@ export class ConversationDispatcher {
         content: result.text ?? "",
         sourceTurn: { sessionAlias: member.sessionAlias ?? "", turnId: member.sourceTurnId },
         now,
+        forceRunTerminalOnSettle: true,
       });
       this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage);
       return;
@@ -369,11 +434,12 @@ export class ConversationDispatcher {
         memberTurnId: member.id,
         now,
         reason: result.error ?? "failed",
+        forceRunTerminalOnSettle: true,
       });
       this.emitRunAndMember(run, member.id);
       return;
     }
-    const run = this.store.completeCancel(runId, member.id, now, result.outcome === "unknown");
+    const run = this.store.completeCancel(runId, member.id, now, result.outcome === "unknown", true);
     this.emitRunAndMember(run, member.id);
   }
 
@@ -396,7 +462,7 @@ export class ConversationDispatcher {
       return;
     }
     if (result.status === "cancelled") {
-      const run = this.store.completeCancel(work.run.id, started.id, now, result.unknown === true);
+      const run = this.store.completeCancel(work.run.id, started.id, now, result.unknown === true, true);
       this.emitRunAndMember(run, started.id);
       return;
     }
@@ -407,6 +473,59 @@ export class ConversationDispatcher {
       reason: result.error ?? "failed",
     });
     this.emitRunAndMember(run, started.id);
+  }
+
+  /**
+   * Late provider settlement reached the dispatcher through the runner's
+   * onLateResult seam (§14.3): the cancel-settle deadline already sealed the
+   * scheduling outcome (Run indeterminate, or fan-out still awaiting
+   * siblings), so this NEVER re-invokes the provider, claims work, or kicks
+   * the drain. It only persists the proven result as durable evidence via
+   * the store's reconciliation — a sealed indeterminate member reclassifies
+   * (and re-derives the Run); a live Run under durable cancel intent records
+   * member evidence only for the pending batch settlement. Every other Run
+   * state is an evidence no-op. A reconciliation/store failure is swallowed:
+   * the durable indeterminate seal keeps teardown fail-closed, and nothing
+   * in the provider settlement path is in a position to observe or retry
+   * the error.
+   */
+  reconcileLateProviderResult(input: ConversationTurnRunInput, result: ConversationTurnRunResult): void {
+    try {
+      if (result.status === "completed") {
+        const reconciled = this.store.reconcileLateResult({
+          runId: input.runId,
+          memberTurnId: input.memberTurnId,
+          outcome: "completed",
+          content: result.text ?? "",
+          sourceTurn: { sessionAlias: input.sessionAlias, turnId: input.promptRequestId },
+          now: this.now().toISOString(),
+        });
+        if (reconciled.reconciled) {
+          this.emitTerminalProjection(reconciled.run, reconciled.memberTurn, reconciled.message);
+        }
+        return;
+      }
+      if (result.status === "failed") {
+        const reconciled = this.store.reconcileLateResult({
+          runId: input.runId,
+          memberTurnId: input.memberTurnId,
+          outcome: "failed",
+          reason: result.error ?? "failed",
+          sourceTurn: { sessionAlias: input.sessionAlias, turnId: input.promptRequestId },
+          now: this.now().toISOString(),
+        });
+        if (reconciled.reconciled) {
+          this.emitRunAndMember(reconciled.run, reconciled.memberTurn.id);
+        }
+        return;
+      }
+      // A late "cancelled" carries no new evidence: the seal already recorded
+      // the stronger unknown/cancelled outcome. Drop it.
+    } catch {
+      // Evidence persistence must never crash the provider settlement chain.
+      // The durable indeterminate seal (and its fences) remain the source of
+      // truth for teardown; retry is the operator's reconcile path.
+    }
   }
 
   private emitTerminalProjection(

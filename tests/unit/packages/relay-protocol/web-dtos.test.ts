@@ -96,6 +96,34 @@ function roundtrip(event: any) {
   return parseWebServerEvent(webEventEnvelope(event));
 }
 
+test("conversation-topic-changed validates executionTarget shape", () => {
+  const topic = {
+    id: "topic_1",
+    conversationId: "conversation_1",
+    title: "Sprint",
+    status: "active",
+    createdAt: "2026-09-15T10:00:00.000Z",
+    updatedAt: "2026-09-15T10:00:00.000Z",
+  };
+  const event = (t: unknown) => ({
+    kind: "control-event", instanceId: "i1", event: { type: "conversation-topic-changed", topic: t },
+  });
+  expect(roundtrip(event(topic))).not.toBeNull();
+  expect(roundtrip(event({
+    ...topic, executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+  }))).not.toBeNull();
+  expect(roundtrip(event({
+    ...topic, executionTarget: { workspace: "backend", cwd: "/repo/sub", isolation: "shared" },
+  }))).not.toBeNull();
+  expect(roundtrip(event({ ...topic, executionTarget: 123 }))).toBeNull();
+  expect(roundtrip(event({
+    ...topic, executionTarget: { workspace: [], isolation: "anything" },
+  }))).toBeNull();
+  expect(roundtrip(event({
+    ...topic, executionTarget: { workspace: "backend", isolation: "mesh" },
+  }))).toBeNull();
+});
+
 test("accepts the new turn-status control events", () => {
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s" } })).not.toBeNull();
   expect(roundtrip({ kind: "control-event", instanceId: "i1", event: { type: "turn-started", chatKey: "c", sessionAlias: "s", prompt: "queued", queueItemId: "q1" } })).not.toBeNull();
@@ -105,6 +133,37 @@ test("accepts the new turn-status control events", () => {
     kind: "control-event", instanceId: "i1",
     event: { type: "tool-event", chatKey: "c", sessionAlias: "s", step: { toolCallId: "t1", toolName: "Read", kind: "read", status: "running", title: "x" } },
   })).not.toBeNull();
+});
+
+test("validControlEvent still accepts legacy human member origin from old connectors", () => {
+  const memberTurn = {
+    id: "mturn_1",
+    runId: "run_1",
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    botId: "bot_1",
+    batch: 1,
+    memberIndex: 0,
+    attempt: 1,
+    origin: "human",
+    state: "queued",
+    createdAt: "t",
+  };
+  expect(validControlEvent({
+    type: "member-turn-started",
+    run: {
+      id: "run_1",
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      requestMessageId: "cmsg_1",
+      requestId: "req_1",
+      mode: "explicit",
+      state: "queued",
+      profileRevision: 1,
+      createdAt: "t",
+    },
+    memberTurn,
+  })).toBe(true);
 });
 
 test("validControlEvent and parseWebServerEvent accept tool-event with delete, move, and fetch kinds", () => {
@@ -908,6 +967,10 @@ test("validControlEvent accepts Conversation product events and optional turn co
       mode: "explicit",
       state: "indeterminate",
       profileRevision: 1,
+      maxMemberTurns: 1,
+      consumedMemberTurns: 0,
+      failedBotIds: [],
+      unavailableBotIds: [],
       createdAt: "2026-09-16T00:00:00.000Z",
     },
   })).toBe(true);
@@ -922,9 +985,46 @@ test("validControlEvent accepts Conversation product events and optional turn co
       mode: "explicit",
       state: "failed",
       profileRevision: 1,
+      maxMemberTurns: 1,
+      consumedMemberTurns: 1,
+      failedBotIds: [],
+      unavailableBotIds: [],
       createdAt: "2026-09-16T00:00:00.000Z",
     },
   })).toBe(true);
+  expect(validControlEvent({
+    type: "conversation-run-changed",
+    run: {
+      id: "run_1",
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      requestMessageId: "cmsg_1",
+      requestId: "req",
+      mode: "automatic",
+      state: "queued",
+      profileRevision: 1,
+      maxMemberTurns: 2,
+      consumedMemberTurns: 0,
+      failedBotIds: [],
+      unavailableBotIds: [],
+      activeBatch: 1,
+      createdAt: "2026-09-16T00:00:00.000Z",
+    },
+  })).toBe(true);
+  expect(validControlEvent({
+    type: "conversation-run-changed",
+    run: {
+      id: "run_1",
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      requestMessageId: "cmsg_1",
+      requestId: "req",
+      mode: "router",
+      state: "queued",
+      profileRevision: 1,
+      createdAt: "2026-09-16T00:00:00.000Z",
+    },
+  })).toBe(false);
 });
 
 test("accepts the new optional tool-step and tool-detail fields", () => {

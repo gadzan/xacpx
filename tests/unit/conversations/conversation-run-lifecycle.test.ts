@@ -42,6 +42,21 @@ import type { ChatRequest, ChatResponse } from "../../../src/weixin/agent/interf
 
 const NOW = "2026-09-15T12:00:00.000Z";
 const BOT_ID = "bot_reviewer";
+const TESTER_ID = "bot_tester";
+
+function seedTesterBot(state: AppState): void {
+  state.bots[TESTER_ID] = {
+    id: TESTER_ID,
+    name: "Tester",
+    agent: "codex",
+    workspace: "backend",
+    enabled: true,
+    profileRevision: 1,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+}
+
 const HUMAN_INGRESS = {
   chatKey: "relay:acct",
   senderId: "acct",
@@ -163,6 +178,7 @@ async function createLifecycle(options: {
   runner?: ConversationTurnRunner;
   hooks?: ConversationDispatcherHooks;
   beforeAcceptPersist?: () => Promise<void>;
+  beforeArchiveGatesAcquired?: () => Promise<void>;
   beforeTeardownFinalize?: () => Promise<void>;
   afterTeardownMarkedDeleting?: () => Promise<void>;
   afterDirectSnapshot?: (bot: BotProfile) => Promise<void>;
@@ -240,18 +256,24 @@ async function createLifecycle(options: {
     hooks: options.hooks,
     ...(options.leaseMs !== undefined ? { leaseMs: options.leaseMs } : {}),
   });
+  if (runner instanceof ControlConversationTurnRunner) {
+    runner.setLateResultHandler((runInput, result) => {
+      dispatcher.reconcileLateProviderResult(runInput, result);
+    });
+  }
   dispatcherHolder.current = dispatcher;
   const service = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, stateStore, {
     now: nowFn,
     stateMutex,
     beforeAcceptPersist: options.beforeAcceptPersist,
+    beforeArchiveGatesAcquired: options.beforeArchiveGatesAcquired,
     beforeTeardownFinalize: options.beforeTeardownFinalize,
     afterTeardownMarkedDeleting: options.afterTeardownMarkedDeleting,
     autoKick: options.autoKick ?? false,
     releaseOwnedSession,
   });
   await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend", instructions: "Focus on races." });
-  return { path, store, state, sessions, bots, runtime, runner, dispatcher, service, nowFn, jump, physical };
+  return { path, store, state, stateStore, sessions, bots, runtime, runner, dispatcher, service, nowFn, jump, physical };
 }
 
 function fakeRunner(runner: ConversationTurnRunner): FakeRunner {
@@ -999,6 +1021,108 @@ test("teardown fails before deleting when explicit Bot ownership conflicts with 
   expect(first.physical.releaseCalls).toBe(0);
 });
 
+test("teardown fails closed on controller residue cross-kind to a Direct root", async () => {
+  const first = await createLifecycle();
+  const { createDirectConversationId, createDirectTopicId } = await import("../../../src/domain/ids");
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const bot = first.bots.getBot(BOT_ID);
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-direct-controller-fence",
+    content: "hello",
+  });
+  expect(accepted.run.conversationId).toBe(conversationId);
+  // Default Direct roots are synthetic: persist the Conversation + Topic
+  // rows so the partial owner below resolves through a live Topic root
+  // (not the ambiguous gate) and the fence failure is attributable to the
+  // cross-kind controller contradiction.
+  first.state.conversations[conversationId] = {
+    id: conversationId, kind: "bot", title: bot.name, botIds: [bot.id],
+    createdAt: NOW, updatedAt: NOW,
+  };
+  first.state.conversation_topics[topicId] = {
+    id: topicId, conversationId, title: "Default", status: "active",
+    createdAt: NOW, updatedAt: NOW,
+  };
+  // Poisoned-but-schema-valid: a provisional controller owner pointing at
+  // the Direct Topic (no live binding to resolve through). Direct teardown
+  // owns no controller release path, so it must fail closed with every row
+  // intact instead of orphaning the hidden session.
+  first.state.sessions.controller_direct = {
+    alias: "controller_direct",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:controller_direct",
+    logical_session_id: "55555555-5555-4555-8555-555555555555",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-controller", bindingId: "missing_binding", topicId },
+  };
+  await expect(first.service.teardownDirectConversation(BOT_ID)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(first.state.conversations[conversationId]).toBeDefined();
+  expect(Object.values(first.state.conversation_topics).some(
+    (topic) => topic.conversationId === conversationId,
+  )).toBe(true);
+  expect(first.store.listRuns(conversationId)).not.toHaveLength(0);
+  expect(first.store.listMessages({ conversationId, topicId, limit: 10 })).not.toHaveLength(0);
+  expect(first.sessions.getLogicalSessionRecord("controller_direct")?.alias).toBe("controller_direct");
+  expect(first.store.isConversationDeleting(conversationId)).toBe(false);
+  expect(first.physical.deleteCalls).toBe(0);
+  expect(first.physical.releaseCalls).toBe(0);
+  first.store.close();
+});
+
+test("teardown fails closed on conversation-exact controller owner with stale topicId", async () => {
+  const first = await createLifecycle();
+  const { createDirectConversationId, createDirectTopicId } = await import("../../../src/domain/ids");
+  const bot = first.bots.getBot(BOT_ID);
+  const conversationId = createDirectConversationId(bot.id);
+  const topicId = createDirectTopicId(bot.id);
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-direct-controller-stale-topic",
+    content: "hello",
+  });
+  expect(accepted.run.conversationId).toBe(conversationId);
+  // Persist only the Conversation row: the deterministic default Topic is
+  // synthetic (no AppState row), so directTopicIds cannot contain it — but
+  // the conversation-exact owner must still fence.
+  first.state.conversations[conversationId] = {
+    id: conversationId, kind: "bot", title: bot.name, botIds: [bot.id],
+    createdAt: NOW, updatedAt: NOW,
+  };
+  const staleCases = [
+    { topicIdValue: topicId, alias: "controller_stale_synth", logicalId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaa01" },
+    { topicIdValue: "topic_stale_missing", alias: "controller_stale_missing", logicalId: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaa02" },
+  ] as const;
+  for (const { topicIdValue, alias, logicalId } of staleCases) {
+    first.state.sessions[alias] = {
+      alias,
+      agent: "codex",
+      workspace: "backend",
+      transport_session: `backend:${alias}`,
+      logical_session_id: logicalId,
+      created_at: NOW,
+      last_used_at: NOW,
+      owner: { kind: "group-controller", bindingId: "missing_binding", conversationId, topicId: topicIdValue },
+    };
+    await expect(first.service.teardownDirectConversation(BOT_ID)).rejects.toMatchObject({
+      code: "runtime_ownership_conflict",
+    });
+    expect(first.state.conversations[conversationId]).toBeDefined();
+    expect(first.sessions.getLogicalSessionRecord(alias)?.alias).toBe(alias);
+    expect(first.store.isConversationDeleting(conversationId)).toBe(false);
+    delete first.state.sessions[alias];
+  }
+  expect(first.physical.deleteCalls).toBe(0);
+  expect(first.physical.releaseCalls).toBe(0);
+  first.store.close();
+});
+
 test("teardown fails closed when PR2 bindingId and conversationId disagree", async () => {
   const first = await createLifecycle();
   const conversationId = createDirectConversationId(BOT_ID);
@@ -1179,7 +1303,7 @@ test("public prompt without trusted ingress is orchestration even on the same da
   });
   await first.dispatcher.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
-  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("recovery");
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("followup");
   expect(captured[0]?.metadata?.origin).toBe("orchestration");
   expect(canMintHumanPermissionInteraction(captured[0]?.metadata?.origin)).toBe(false);
 });
@@ -1200,7 +1324,7 @@ test("fresh same-daemon Conversation dispatch stays human and can mint permissio
   });
   await first.dispatcher.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
-  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("human");
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("human-explicit");
   expect(captured[0]?.metadata?.origin).toBe("human");
   expect(captured[0]?.metadata?.permissionChatKey).toBe(HUMAN_INGRESS.chatKey);
   expect(captured[0]?.metadata?.senderId).toBe(HUMAN_INGRESS.senderId);
@@ -1240,7 +1364,7 @@ test("startup redispatch after accept-before-claim is orchestration and cannot m
   );
   await restart.kick();
   expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
-  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("recovery");
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("human-explicit");
   expect(first.store.getDispatchForRun(accepted.run.id)?.humanIngress).toBeUndefined();
   expect(captured[0]?.metadata?.origin).toBe("orchestration");
   expect(canMintHumanPermissionInteraction(captured[0]?.metadata?.origin)).toBe(false);
@@ -1319,7 +1443,7 @@ test("pre-start retry after internal failure is orchestration", async () => {
   expect(canMintHumanPermissionInteraction(fakeRunner(first.runner).runs[0]?.executionOrigin)).toBe(false);
 });
 
-test("wedged provider cancel returns, marks indeterminate, and cannot resurrect", async () => {
+test("wedged provider cancel seals indeterminate, then reconciles on late completion", async () => {
   const hang = deferred<ChatResponse>();
   let sourceTurnId = "";
   const started = deferred();
@@ -1346,20 +1470,31 @@ test("wedged provider cancel returns, marks indeterminate, and cannot resurrect"
   await first.service.cancelRun(accepted.run.id);
   expect(Date.now() - cancelStarted).toBeLessThan(1_000);
   await drain;
+  // The cancel-settle deadline sealed the scheduling outcome as unknown.
   expect(first.store.getRun(accepted.run.id)?.state).toBe("indeterminate");
   expect(first.store.getMemberTurn(accepted.memberTurn.id)?.state).toBe("indeterminate");
+  // The provider settling AFTER the deadline is durable evidence (§14.3):
+  // it must not be dropped, and it reconciles the seal to the proven
+  // outcome — without resurrecting scheduling.
   hang.resolve({ text: "late-completion" });
   await tick();
   await tick();
-  expect(first.store.getRun(accepted.run.id)?.state).toBe("indeterminate");
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.state).toBe("completed");
   expect(first.store.listMessages({
     conversationId: accepted.run.conversationId,
     topicId: accepted.run.topicId,
     limit: 10,
-  }).filter((message) => message.role === "bot")).toEqual([]);
-  await expect(first.service.teardownDirectConversation(BOT_ID)).rejects.toMatchObject({
-    code: "conversation_indeterminate",
-  });
+  }).filter((message) => message.role === "bot").map((message) => message.content)).toContain("late-completion");
+  // No dispatch may escape a terminal Run: late evidence never schedules.
+  expect(first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })).toBeUndefined();
+  // Teardown now has a definite reconcile result instead of a permanent
+  // conversation_indeterminate block.
+  await first.service.teardownDirectConversation(BOT_ID);
+  expect(first.store.listRuns(accepted.run.conversationId)).toEqual([]);
+  first.store.close();
 });
 
 test("createDirectTopic during teardown drain fails conversation_deleting", async () => {
@@ -1716,4 +1851,3932 @@ test("materialize high -> bot edit to default -> accept run A (snapshot effort=u
   // Run A completed successfully
   expect(fakeRunner(first.runner).runs).toHaveLength(1);
   expect(first.store.getRun(acceptedA.run.id)?.state).toBe("completed");
+});
+
+test("group topic lifecycle validates target, archives, and rejects direct paths", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID], leadBotId: reviewer.id });
+  // Unknown workspace and isolation fail closed.
+  await expect(
+    first.service.createGroupTopic(group.id, "Bad ws", { workspace: "nope", isolation: "shared" }),
+  ).rejects.toMatchObject({ code: "workspace_not_registered" });
+  await expect(
+    first.service.createGroupTopic(group.id, "Bad iso", { workspace: "backend", isolation: "mesh" as never }),
+  ).rejects.toMatchObject({ code: "invalid-isolation" });
+  // Direct conversation id is rejected on the group path.
+  const directConv = (await import("../../../src/domain/ids")).createDirectConversationId(reviewer.id);
+  await expect(
+    first.service.createGroupTopic(directConv, "Wrong kind", { workspace: "backend", isolation: "shared" }),
+  ).rejects.toMatchObject({ code: "conversation_not_group" });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  expect(topic.conversationId).toBe(group.id);
+  expect(topic.executionTarget).toEqual({ workspace: "backend", isolation: "shared-single-writer" });
+  expect(first.state.conversation_topics[topic.id]?.executionTarget?.isolation).toBe("shared-single-writer");
+  const listed = first.service.listTopics(group.id);
+  expect(listed.some((t) => t.id === topic.id)).toBe(true);
+  const archived = await first.service.archiveGroupTopic(group.id, topic.id);
+  expect(archived.status).toBe("archived");
+  // Archiving twice is idempotent.
+  const again = await first.service.archiveGroupTopic(group.id, topic.id);
+  expect(again.status).toBe("archived");
+});
+
+test("archive refuses a Topic with nonterminal runs and races safely with materialization", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(reviewer.id);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-archive-race",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  // Nonterminal queued work refuses the archive instead of stranding it on a
+  // non-executing Topic.
+  await expect(first.service.archiveGroupTopic(group.id, topic.id)).rejects.toMatchObject({
+    code: "conversation_not_settled",
+  });
+  expect(first.state.conversation_topics[topic.id]?.status).toBe("active");
+  // Settle the run, then archive under the member gates: a materializer
+  // racing the flip either wins first (then the Topic is still active) or
+  // fails closed on the archived barrier — never a binding-less session.
+  first.store.cancelRun(accepted.run.id, NOW);
+  const archived = await first.service.archiveGroupTopic(group.id, topic.id);
+  expect(archived.status).toBe("archived");
+  await expect(first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  })).rejects.toMatchObject({ code: "topic_deleting" });
+  // No hidden session was minted by the refused materialization.
+  const owned = Object.values(first.state.sessions).filter(
+    (session) => session.owner?.kind === "group-member" && session.owner.topicId === topic.id,
+  );
+  expect(owned).toHaveLength(0);
+  first.store.close();
+});
+
+test("archive retries when membership widens mid-gate instead of stranding a late member", async () => {
+  const archiveGate = deferred();
+  const releaseArchive = deferred();
+  let parkArchive = true;
+  const first = await createLifecycle({
+    beforeArchiveGatesAcquired: async () => {
+      if (parkArchive) {
+        parkArchive = false;
+        archiveGate.resolve();
+        await releaseArchive.promise;
+      }
+    },
+  });
+  seedTesterBot(first.state);
+  const botC = "bot_carol";
+  first.state.bots[botC] = {
+    id: botC,
+    name: "Carol",
+    agent: "codex",
+    workspace: "backend",
+    enabled: true,
+    profileRevision: 1,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Archive probes stale [A,B] and parks pre-acquisition. Membership then
+  // commits [A,B,C]. The retry must cover C before flipping the barrier.
+  const archiving = first.service.archiveGroupTopic(group.id, topic.id);
+  await archiveGate.promise;
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID, botC] });
+  // Hold C externally (paused C-materializer stand-in): archive's retry must
+  // block on C's gate before it can flip, so it cannot slip past C.
+  // Real-delay exception: AsyncMutex progress is real event-loop progress,
+  // not a timer under test — a short yield lets the blocked retry attempt
+  // reach C's gate before asserting it has not flipped yet.
+  const cGate = deferred();
+  const extHold = first.bots.runLifecycle(botC, () => cGate.promise);
+  releaseArchive.resolve();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(first.state.conversation_topics[topic.id]?.status).toBe("active");
+  cGate.resolve();
+  await extHold;
+  const archived = await archiving;
+  expect(archived.status).toBe("archived");
+  // C materializes only after the barrier: fails closed with no survivor.
+  await expect(first.runtime.getOrCreateGroupMemberSession({
+    botId: botC, conversationId: group.id, topicId: topic.id,
+  })).rejects.toMatchObject({ code: "topic_deleting" });
+  const survivors = Object.values(first.state.sessions).filter(
+    (session) => session.owner?.kind === "group-member" && session.owner.topicId === topic.id,
+  );
+  expect(survivors).toEqual([]);
+  first.store.close();
+});
+
+test("group topic teardown releases member bindings and rows, retryable on release failure", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const memberA = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  const memberB = await first.runtime.getOrCreateGroupMemberSession({
+    botId: TESTER_ID, conversationId: group.id, topicId: topic.id,
+  });
+  // Injected release failure leaves everything in place for retry.
+  first.physical.fail = true;
+  await expect(first.service.teardownGroupTopic(group.id, topic.id)).rejects.toMatchObject({
+    code: "session_release_failed",
+  });
+  expect(first.state.conversation_topics[topic.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[memberA.id]).toBeDefined();
+  first.physical.fail = false;
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[memberA.id]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[memberB.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(memberA.sessionAlias) ?? undefined).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(memberB.sessionAlias) ?? undefined).toBeUndefined();
+  // Group record itself survives topic teardown.
+  expect(first.state.conversations[group.id]?.kind).toBe("group");
+});
+
+test("deleteGroup fails closed while topics, bindings, or durable rows exist", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Bare metadata delete is refused while a Topic exists.
+  await expect(bots.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_topics" });
+  expect(first.state.conversations[group.id]).toBeDefined();
+  // A stale binding with no Topic still blocks: seed crash residue directly.
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  const { createScopedGroupMemberBindingId: scopedId } =
+    await import("../../../src/domain/ids");
+  const staleId = scopedId(group.id, topic.id, reviewer.id);
+  first.state.bot_runtime_bindings[staleId] = {
+    id: staleId,
+    scope: "group-member",
+    conversationId: group.id,
+    topicId: topic.id,
+    botId: reviewer.id,
+    logicalSessionId: "00000000-0000-4000-8000-000000000000",
+    sessionAlias: "brt_group_stale",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  await expect(bots.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_runtime" });
+  // Full verified teardown then deletes cleanly.
+  await first.service.teardownGroupConversation(group.id);
+  expect(first.state.conversations[group.id]).toBeUndefined();
+});
+
+test("group member session runs on the Topic workspace, not the Bot default", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Frontend work", {
+    workspace: "frontend",
+    isolation: "shared-single-writer",
+  });
+  // Reviewer default is backend; the Topic owns frontend.
+  expect(reviewer.workspace).toBe("backend");
+  const member = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  const session = first.sessions.getLogicalSessionRecord(member.sessionAlias);
+  expect(session?.workspace).toBe("frontend");
+  expect(member.scope).toBe("group-member");
+});
+
+test("group topic teardown releases a binding-less crash-window member session", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Crash between session persist and binding publish: a legal
+  // group-member owner session with no binding row.
+  const { createScopedGroupMemberBindingId, ownedGroupMemberSessionAlias } =
+    await import("../../../src/domain/ids");
+  const bindingId = createScopedGroupMemberBindingId(group.id, topic.id, reviewer.id);
+  const alias = ownedGroupMemberSessionAlias(bindingId);
+  await first.sessions.createSession(alias, "codex", "backend", {
+    owner: {
+      kind: "group-member",
+      bindingId,
+      botId: reviewer.id,
+      conversationId: group.id,
+      topicId: topic.id,
+    },
+  });
+  expect(first.state.bot_runtime_bindings[bindingId]).toBeUndefined();
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  expect(first.sessions.getLogicalSessionRecord(alias) ?? undefined).toBeUndefined();
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+});
+
+test("group topic teardown fails closed when alias and logical id disagree", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const member = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Corrupt the link: point the binding at a different logical id while the
+  // alias still resolves. Teardown must fail closed with everything intact.
+  const live = first.state.sessions[member.sessionAlias]!;
+  const otherAlias = `${member.sessionAlias}-other`;
+  await first.sessions.createSession(otherAlias, "codex", "backend");
+  const other = first.state.sessions[otherAlias]!;
+  first.state.bot_runtime_bindings[member.id] = {
+    ...member,
+    logicalSessionId: other.logical_session_id,
+  };
+  await expect(first.service.teardownGroupTopic(group.id, topic.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(first.state.conversation_topics[topic.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[member.id]).toBeDefined();
+  expect(first.state.sessions[member.sessionAlias]).toBeDefined();
+});
+
+test("group delete marks the barrier first: concurrent topic create fails closed", async () => {
+  let releaseBarrier!: () => void;
+  const barrierGate = new Promise<void>((resolve) => {
+    releaseBarrier = resolve;
+  });
+  const first = await createLifecycle({
+    afterTeardownMarkedDeleting: () => barrierGate,
+  });
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topicA = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Start the group delete; it pauses right after the barrier is set.
+  const deleteCall = first.service.teardownGroupConversation(group.id);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  // A Topic create racing the delete now fails closed on the barrier.
+  await expect(
+    first.service.createGroupTopic(group.id, "Sprint B", {
+      workspace: "backend",
+      isolation: "shared",
+    }),
+  ).rejects.toMatchObject({ code: "conversation_deleting" });
+  // Member materialize past the barrier fails closed too.
+  await expect(
+    first.runtime.getOrCreateGroupMemberSession({
+      botId: reviewer.id, conversationId: group.id, topicId: topicA.id,
+    }),
+  ).rejects.toMatchObject({ code: "conversation_deleting" });
+  releaseBarrier();
+  await deleteCall;
+  expect(first.state.conversations[group.id]).toBeUndefined();
+});
+
+test("group delete keeps the record when store row cleanup throws, retryable", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Poison deleteConversationRows once: the Group record + barrier must survive.
+  const realDelete = first.store.deleteConversationRows.bind(first.store);
+  let calls = 0;
+  first.store.deleteConversationRows = (conversationId: string) => {
+    calls += 1;
+    if (calls === 1) {
+      throw new Error("injected rows cleanup failure");
+    }
+    return realDelete(conversationId);
+  };
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toThrow(
+    "injected rows cleanup failure",
+  );
+  // Record intact, barrier intact, topic already torn down.
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.store.isConversationDeleting(group.id)).toBe(true);
+  expect(first.state.conversations[group.id]?.lifecycle).toBe("deleting");
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  // Retry succeeds end to end.
+  await first.service.teardownGroupConversation(group.id);
+  expect(first.state.conversations[group.id]).toBeUndefined();
+  expect(first.store.hasDurableGroupWork(group.id)).toBe(false);
+});
+
+test("group topic teardown linearizes with a late member materializer instead of deadlocking", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Materialize one member so the binding exists.
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID, conversationId: group.id, topicId: topic.id,
+  });
+  expect(binding.sessionAlias).toBeDefined();
+  // Start a second materializer for the other member, then tear down the
+  // topic concurrently: the gate-held barrier must linearize, not deadlock.
+  const late = first.runtime.getOrCreateGroupMemberSession({
+    botId: TESTER_ID, conversationId: group.id, topicId: topic.id,
+  });
+  const teardown = first.service.teardownGroupTopic(group.id, topic.id);
+  const settled = await Promise.race([
+    Promise.allSettled([late, teardown]).then(() => "settled"),
+    new Promise((resolve) => setTimeout(() => resolve("timeout"), 4000)),
+  ]);
+  expect(settled).toBe("settled");
+  const [lateOutcome] = await Promise.allSettled([late]);
+  // Either the late materializer won the gate first (then teardown swept its
+  // session) or it queued behind the barrier (then it failed closed). In both
+  // cases teardown completes and no member session survives.
+  await teardown;
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  const survivors = Object.values(first.state.sessions).filter(
+    (session) => session.owner?.kind === "group-member",
+  );
+  expect(survivors).toEqual([]);
+  if (lateOutcome.status === "rejected") {
+    expect(lateOutcome.reason).toBeInstanceOf(Error);
+  }
+  first.store.close();
+});
+
+test("topic teardown never releases another topic's session via a partial legacy owner", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topicA = await first.service.createGroupTopic(group.id, "A", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const topicB = await first.service.createGroupTopic(group.id, "B", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Topic B: live binding + session whose owner is a partial legacy shape
+  // ({ kind, bindingId } only, no scope fields).
+  const bindingB = await first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID, conversationId: group.id, topicId: topicB.id,
+  });
+  const sessionB = first.state.sessions[bindingB.sessionAlias]!;
+  sessionB.owner = { kind: "group-member", bindingId: bindingB.id };
+  // Teardown A must leave B's session and binding untouched.
+  await first.service.teardownGroupTopic(group.id, topicA.id);
+  expect(first.state.conversation_topics[topicA.id]).toBeUndefined();
+  expect(first.state.sessions[bindingB.sessionAlias]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[bindingB.id]).toBeDefined();
+  first.store.close();
+});
+
+test("multi-member accept persists one run with N turns and N dispatches across reopen", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-multi",
+    botId: botA.id,
+    content: "review it",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    mode: "automatic",
+    members: [{
+      botId: botB.id,
+      profileSnapshot: snapshotBotProfile(botB, NOW),
+      assignmentId: "assign_b",
+      task: "Write tests",
+      expectedOutput: "passing suite",
+      dependsOn: ["assign_a"],
+    }],
+    now: NOW,
+  });
+  expect(accepted.memberTurns).toHaveLength(2);
+  expect(accepted.dispatches).toHaveLength(2);
+  expect(accepted.run.mode).toBe("automatic");
+  // Reopen the same SQLite file: everything round-trips.
+  first.store.close();
+  const reopened = await SqliteConversationStore.open(first.path);
+  const run = reopened.getRun(accepted.run.id);
+  expect(run?.mode).toBe("automatic");
+  const turns = reopened.listMemberTurns(accepted.run.id);
+  expect(turns).toHaveLength(2);
+  const dispatches = reopened.listDispatchesForRun(accepted.run.id);
+  expect(dispatches).toHaveLength(2);
+  const turnB = turns.find((turn) => turn.botId === botB.id)!;
+  expect(turnB.assignmentId).toBe("assign_b");
+  expect(turnB.task).toBe("Write tests");
+  expect(turnB.expectedOutput).toBe("passing suite");
+  expect(turnB.dependsOn).toEqual(["assign_a"]);
+  expect(reopened.getDispatchForMemberTurn(turnB.id)?.runId).toBe(accepted.run.id);
+  reopened.close();
+});
+
+test("binding-less group session pins agent identity across updateBot and recovery", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Crash window: session persisted, binding never published. Simulate by
+  // materializing then dropping the binding row only.
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID, conversationId: group.id, topicId: topic.id,
+  });
+  const alias = binding.sessionAlias;
+  const saved = first.state.bot_runtime_bindings[binding.id];
+  delete first.state.bot_runtime_bindings[binding.id];
+  expect(first.state.sessions[alias]).toBeDefined();
+  // Agent change must now fail closed: the binding-less session still locks identity.
+  await expect(first.bots.updateBot(BOT_ID, { agent: "claude" })).rejects.toMatchObject({
+    code: "runtime_identity_locked",
+  });
+  // And recovery with a mismatched execution fails instead of adopting stale context.
+  await expect(first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID,
+    conversationId: group.id,
+    topicId: topic.id,
+    execution: { agent: "claude", workspace: "backend" },
+  })).rejects.toMatchObject({ code: "runtime_revision_mismatch" });
+  expect(saved).toBeDefined();
+  first.store.close();
+});
+
+test("group member materialize without an execution target fails closed", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topicId = "topic_no_target_1";
+  first.state.conversation_topics[topicId] = {
+    id: topicId,
+    conversationId: group.id,
+    title: "Legacy",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  await expect(first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID, conversationId: group.id, topicId,
+  })).rejects.toMatchObject({ code: "execution_target_missing" });
+  first.store.close();
+});
+
+test("second member dispatches against its own execution snapshot, not the first member's", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const target = topic.executionTarget!;
+  // Agents stay disjoint (codex vs claude) so a snapshot mix-up fails loudly,
+  // but the Bot default workspaces deliberately DIVERGE from the Topic
+  // target: the group seam must put the Topic's workspace into every member
+  // snapshot, never the Bot default (§9.2 Topic owns the work target).
+  await first.bots.updateBot(TESTER_ID, { agent: "claude", workspace: "frontend" });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotGroupMemberProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-snap",
+    botId: botA.id,
+    content: "review it",
+    profileSnapshot: snapshotGroupMemberProfile(botA, target, NOW),
+    members: [{
+      botId: botB.id,
+      profileSnapshot: snapshotGroupMemberProfile(botB, target, NOW),
+      assignmentId: "assign_b",
+      task: "Write tests",
+    }],
+    now: NOW,
+  });
+  const turnB = accepted.memberTurns.find((turn) => turn.botId === botB.id)!;
+  // Per-member isolation: Tester's own agent, but the Topic's workspace —
+  // not Tester's `frontend` default.
+  expect(turnB.profileSnapshot?.execution).toMatchObject({ agent: "claude", workspace: "backend" });
+  // Claim order is seq-stable: claim A first, then B must still be claimable
+  // (Run stays non-terminal with a runnable sibling) and carry B's snapshot.
+  const claimA = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  });
+  expect(claimA?.memberTurn.botId).toBe(botA.id);
+  expect(claimA?.memberSnapshot.execution).toMatchObject({ agent: "codex", workspace: "backend" });
+  expect(claimA?.memberSnapshot.execution.workspace).toBe(target.workspace);
+  const claimB = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  });
+  expect(claimB?.memberTurn.botId).toBe(botB.id);
+  expect(claimB?.memberSnapshot.execution).toMatchObject({ agent: "claude", workspace: "backend" });
+  expect(claimB?.memberSnapshot.execution.workspace).toBe(target.workspace);
+  expect(claimB?.run.state).not.toBe("completed");
+  first.store.close();
+});
+
+test("explicit run aggregates: first completion leaves the run non-terminal until all members finish", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-agg",
+    botId: botA.id,
+    content: "ship it",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  expect(accepted.run.maxMemberTurns).toBe(2);
+  // Complete A's turn (claim -> start -> complete through the store).
+  const claimA = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  const startedA = first.store.markExecutionStarted({
+    dispatchId: claimA.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: accepted.run.id, memberTurnId: claimA.memberTurn.id,
+    sessionAlias: "sess_a", logicalSessionId: "lsess_a", sourceTurnId: "sturn_a", now: NOW,
+  });
+  expect(startedA.state).toBe("running");
+  const afterA = first.store.completeExecution({
+    runId: accepted.run.id, memberTurnId: claimA.memberTurn.id, botId: botA.id,
+    content: "done a", sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" }, now: NOW,
+  });
+  // Run must NOT be terminal: B is still queued and claimable.
+  expect(afterA.run.state).not.toBe("completed");
+  expect(afterA.run.consumedMemberTurns).toBe(1);
+  const claimB = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  });
+  expect(claimB?.memberTurn.botId).toBe(botB.id);
+  const startedB = first.store.markExecutionStarted({
+    dispatchId: claimB.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: accepted.run.id, memberTurnId: claimB.memberTurn.id,
+    sessionAlias: "sess_b", logicalSessionId: "lsess_b", sourceTurnId: "sturn_b", now: NOW,
+  });
+  expect(startedB.state).toBe("running");
+  const afterB = first.store.completeExecution({
+    runId: accepted.run.id, memberTurnId: claimB.memberTurn.id, botId: botB.id,
+    content: "done b", sourceTurn: { sessionAlias: "sess_b", turnId: "sturn_b" }, now: NOW,
+  });
+  expect(afterB.run.state).toBe("completed");
+  expect(afterB.run.completionReason).toBe("members-completed");
+  expect(afterB.run.consumedMemberTurns).toBe(2);
+  first.store.close();
+});
+
+test("failed member accumulates failedBotIds; run fails only after the batch settles", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-fail",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const failed = first.store.failExecution({
+    runId: accepted.run.id, memberTurnId: accepted.memberTurns[0]!.id, now: NOW, reason: "boom",
+  });
+  expect(failed.state).not.toBe("failed");
+  expect(failed.failedBotIds).toContain(botA.id);
+  const afterB = first.store.completeExecution({
+    runId: accepted.run.id, memberTurnId: accepted.memberTurns[1]!.id, botId: botB.id,
+    content: "done b", sourceTurn: { sessionAlias: "sess_b", turnId: "sturn_b" }, now: NOW,
+  });
+  expect(afterB.run.state).toBe("failed");
+  expect(afterB.run.failedBotIds).toContain(botA.id);
+  first.store.close();
+});
+
+test("failed+failed accumulates both bots; failed+indeterminate yields indeterminate", async () => {
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const setup = async (requestId: string) => {
+    const first = await createLifecycle();
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    const botA = first.bots.getBot(BOT_ID);
+    const botB = first.bots.getBot(TESTER_ID);
+    const accepted = first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId,
+      botId: botA.id,
+      content: "go",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+      now: NOW,
+    });
+    return { first, botA, botB, accepted };
+  };
+  {
+    const { first, botA, botB, accepted } = await setup("req-fail-fail");
+    first.store.failExecution({
+      runId: accepted.run.id, memberTurnId: accepted.memberTurns[0]!.id, now: NOW, reason: "boom-a",
+    });
+    const done = first.store.failExecution({
+      runId: accepted.run.id, memberTurnId: accepted.memberTurns[1]!.id, now: NOW, reason: "boom-b",
+    });
+    expect(done.state).toBe("failed");
+    expect(done.completionReason).toBe("execution-failed");
+    expect(done.failedBotIds).toContain(botA.id);
+    expect(done.failedBotIds).toContain(botB.id);
+    first.store.close();
+  }
+  {
+    const { first, botA, accepted } = await setup("req-fail-ind");
+    first.store.failExecution({
+      runId: accepted.run.id, memberTurnId: accepted.memberTurns[0]!.id, now: NOW, reason: "boom",
+    });
+    const done = first.store.failExecution({
+      runId: accepted.run.id, memberTurnId: accepted.memberTurns[1]!.id, now: NOW,
+      reason: "started_result_unknown", terminalState: "indeterminate",
+    });
+    // Indeterminate (unproven side effects) outranks failed regardless of order.
+    expect(done.state).toBe("indeterminate");
+    expect(done.completionReason).toBe("started_result_unknown");
+    expect(done.failedBotIds).toContain(botA.id);
+    first.store.close();
+  }
+});
+
+test("failed+cancelled aggregates to failed with a derived reason, not the last event's", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-fail-cancel",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  first.store.failExecution({
+    runId: accepted.run.id, memberTurnId: accepted.memberTurns[0]!.id, now: NOW, reason: "boom",
+  });
+  const done = first.store.failExecution({
+    runId: accepted.run.id, memberTurnId: accepted.memberTurns[1]!.id, now: NOW,
+    reason: "cancelled", terminalState: "cancelled",
+  });
+  expect(done.state).toBe("failed");
+  expect(done.completionReason).toBe("execution-failed");
+  first.store.close();
+});
+
+test("replayed member completion is idempotent: no second message, no double progress", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-replay",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const once = first.store.completeExecution({
+    runId: accepted.run.id, memberTurnId: accepted.memberTurns[0]!.id, botId: botA.id,
+    content: "done a", sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" }, now: NOW,
+  });
+  expect(once.memberTurn.state).toBe("completed");
+  const botMessages = () => first.store.listMessages({
+    conversationId: group.id, topicId: topic.id, limit: 10,
+  }).filter((message) => message.role === "bot");
+  expect(botMessages()).toHaveLength(1);
+  expect(first.store.getRun(accepted.run.id)?.consumedMemberTurns).toBe(1);
+  // Late provider settlement redelivers A's completion: must be a no-op.
+  const replay = first.store.completeExecution({
+    runId: accepted.run.id, memberTurnId: accepted.memberTurns[0]!.id, botId: botA.id,
+    content: "done a again", sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" }, now: NOW,
+  });
+  expect(replay.memberTurn.state).toBe("completed");
+  expect(replay.assistantMessage).toBeUndefined();
+  expect(botMessages()).toHaveLength(1);
+  expect(first.store.getRun(accepted.run.id)?.consumedMemberTurns).toBe(1);
+  expect(first.store.getRun(accepted.run.id)?.state).not.toBe("completed");
+  // Replayed member failure is equally a no-op.
+  const refail = first.store.failExecution({
+    runId: accepted.run.id, memberTurnId: accepted.memberTurns[0]!.id, now: NOW, reason: "boom",
+  });
+  expect(first.store.getRun(accepted.run.id)?.consumedMemberTurns).toBe(1);
+  expect(refail.failedBotIds).not.toContain(botA.id);
+  first.store.close();
+});
+
+test("automatic run stays routing-eligible after the batch settles completed", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-auto-batch",
+    botId: botA.id,
+    content: "ship it",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    mode: "automatic",
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  for (const turn of accepted.memberTurns) {
+    first.store.completeExecution({
+      runId: accepted.run.id, memberTurnId: turn.id, botId: turn.botId,
+      content: `done ${turn.botId}`, sourceTurn: { sessionAlias: `sess_${turn.botId}` }, now: NOW,
+    });
+  }
+  const settled = first.store.getRun(accepted.run.id)!;
+  // Batch done, but the automatic Run must NOT terminal: PR8 Router reads
+  // durable MemberTurns and decides dispatch / need-human / complete.
+  expect(settled.state).toBe("running");
+  expect(settled.finishedAt).toBeUndefined();
+  expect(settled.consumedMemberTurns).toBe(2);
+  expect(first.store.listMemberTurns(accepted.run.id).every((turn) => turn.state === "completed")).toBe(true);
+  first.store.close();
+});
+
+test("dispatch migration crash before commit keeps the old table intact", async () => {
+  const { join } = await import("node:path");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { createSqlDriver } = await import("../../../src/conversations/sql-driver");
+  const path = join(mkdtempSync(join(tmpdir(), "xacpx-mig-")), "conversation.sqlite");
+  // Build a legacy-shaped database by hand: UNIQUE(run_id) + no new columns.
+  const raw = await createSqlDriver(path);
+  raw.exec("DROP TABLE IF EXISTS pending_dispatches");
+  raw.exec(`CREATE TABLE pending_dispatches (
+    id TEXT PRIMARY KEY, run_id TEXT NOT NULL UNIQUE, member_turn_id TEXT NOT NULL,
+    generation INTEGER NOT NULL, state TEXT NOT NULL, owner TEXT, lease_expires_at TEXT,
+    authority_epoch TEXT, human_ingress TEXT, created_at TEXT NOT NULL, claimed_at TEXT, completed_at TEXT)`);
+  raw.exec(`INSERT INTO pending_dispatches (id, run_id, member_turn_id, generation, state, created_at)
+    VALUES ('pdsp_1', 'run_1', 'mturn_1', 1, 'pending', '${NOW}')`);
+  raw.close();
+  // Open with a fault that throws inside the migration transaction: the open
+  // itself must throw, and the old table must be fully intact on reopen.
+  await expect(SqliteConversationStore.open(path, {
+    beforeDispatchMigrationCommit: () => {
+      throw new Error("injected migration crash");
+    },
+  })).rejects.toThrow("injected migration crash");
+  const reopened = await SqliteConversationStore.open(path);
+  expect(reopened.getDispatchForRun("run_1")?.id).toBe("pdsp_1");
+  reopened.close();
+});
+
+test("group topic with a non-empty cwd fails closed instead of persisting a silent no-op", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  await expect(first.service.createGroupTopic(group.id, "Subdir", {
+    workspace: "backend", cwd: "/tmp/backend/subdir", isolation: "shared-single-writer",
+  })).rejects.toMatchObject({ code: "cwd_unsupported" });
+  expect(Object.values(first.state.conversation_topics)).toHaveLength(0);
+  first.store.close();
+});
+
+test("persisted topic cwd fails closed at member materialize", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Legacy/damaged row: non-empty cwd persisted before (or around) the
+  // create-time gate. The launcher does not honor it, so materialize must
+  // fail closed rather than silently execute in the workspace root.
+  first.state.conversation_topics[topic.id] = {
+    ...first.state.conversation_topics[topic.id]!,
+    executionTarget: { workspace: "backend", cwd: "/tmp/backend/subdir", isolation: "shared-single-writer" },
+  };
+  await expect(first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID, conversationId: group.id, topicId: topic.id,
+  })).rejects.toMatchObject({ code: "cwd_unsupported" });
+  expect(first.state.bot_runtime_bindings).toEqual({});
+  first.store.close();
+});
+
+test("teardownGroupTopic emits conversations-changed once on success", async () => {
+  // Product-level: run-service teardown has no per-topic tombstone, so it
+  // broadcasts the coarse refetch AFTER the final gate (Control bridge maps
+  // it to Relay consumers). Use a local sink: the lifecycle harness builds
+  // ConversationRunService directly without onProductEvent.
+  const { SqliteConversationStore } = await import("../../../src/conversations/sqlite-conversation-store");
+  const { ConversationRunService } = await import("../../../src/conversations/conversation-run-service");
+  const { ConversationDispatcher } = await import("../../../src/conversations/conversation-dispatcher");
+  const { BotService } = await import("../../../src/bots/bot-service");
+  const { BotRuntimeManager } = await import("../../../src/bots/bot-runtime-manager");
+  const { SessionService } = await import("../../../src/sessions/session-service");
+  const { createEmptyState } = await import("../../../src/state/types");
+  const { AsyncMutex } = await import("../../../src/orchestration/async-mutex");
+  const { createStrictOwnedSessionRelease } = await import("../../../src/sessions/owned-session-release");
+  const { mkdtempSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const seen: string[] = [];
+  const path = join(mkdtempSync(join(tmpdir(), "xacpx-emit-")), "conversation.sqlite");
+  const store = await SqliteConversationStore.open(path);
+  const state = createEmptyState();
+  const stateStore = { save: async () => {} };
+  const stateMutex = new AsyncMutex();
+  const config = {
+    agents: { codex: { driver: "codex" }, claude: { driver: "claude" } },
+    workspaces: { backend: { root: "/tmp/backend" } },
+  } as never;
+  const sessions = new SessionService(config, stateStore as never, state, {
+    now: () => Date.parse(NOW), stateMutex,
+  } as never);
+  const bots = new BotService(config, state, stateStore as never, {
+    now: () => new Date(NOW), createId: (() => { let n = 0; return () => `bot_${++n}`; })(),
+    stateMutex,
+  });
+  const fakeRunner = {
+    run: async () => ({ outcome: "completed", text: "" }),
+    cancel: async () => ({ outcome: "cancelled" }),
+  } as never;
+  const runtime = new BotRuntimeManager(bots, sessions, state, stateStore as never, {
+    now: () => new Date(NOW), stateMutex,
+    releaseOwnedSession: createStrictOwnedSessionRelease({ sessions, transport: {
+      deleteSession: async () => {}, releaseLogicalSession: async () => {},
+    } }),
+  });
+  const dispatcher = new ConversationDispatcher(store, runtime, fakeRunner, sessions, {
+    now: () => new Date(Date.parse(NOW)), ownerId: "emit-test",
+  });
+  const service = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, stateStore as never, {
+    now: () => new Date(Date.parse(NOW)), stateMutex,
+    releaseOwnedSession: createStrictOwnedSessionRelease({ sessions, transport: {
+      deleteSession: async () => {}, releaseLogicalSession: async () => {},
+    } }),
+    onProductEvent: (event) => { seen.push(event.type); },
+  });
+  const created = [await bots.createBot({ name: "A", agent: "codex", workspace: "backend" }),
+    await bots.createBot({ name: "B", agent: "codex", workspace: "backend" })];
+  const group = await bots.createGroup({ title: "Team", botIds: created.map((b) => b.id) });
+  const topic = await service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend", isolation: "shared-single-writer",
+  });
+  seen.length = 0;
+  await service.teardownGroupTopic(group.id, topic.id);
+  expect(seen).toEqual(["conversations-changed"]);
+  store.close();
+});
+
+
+test("legacy human origin row normalizes to human-explicit on read", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-legacy-origin",
+    botId: botA.id,
+    content: "hi",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  // Simulate a pre-vocabulary-split row, then reopen: the mapper normalizes.
+  first.store.close();
+  const { Database } = await import("bun:sqlite");
+  const db = new Database(first.path);
+  db.run("UPDATE member_turns SET origin = 'human' WHERE id = ?", [accepted.memberTurn.id]);
+  db.close();
+  const { SqliteConversationStore } = await import("../../../src/conversations/sqlite-conversation-store");
+  const reopened = await SqliteConversationStore.open(first.path);
+  expect(reopened.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("human-explicit");
+  reopened.close();
+});
+
+test("primaryMember overlay carries assignment and provenance for members[0]", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-primary",
+    botId: botA.id,
+    content: "review it",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    primaryMember: {
+      provenance: "router",
+      assignmentId: "assign_a",
+      task: "Review auth",
+      expectedOutput: "approval",
+      dependsOn: [],
+    },
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  expect(accepted.memberTurns).toHaveLength(2);
+  const primary = accepted.memberTurns[0]!;
+  expect(primary.botId).toBe(botA.id);
+  expect(primary.origin).toBe("router");
+  expect(primary.assignmentId).toBe("assign_a");
+  expect(primary.task).toBe("Review auth");
+  // Without the overlay the first member keeps the orchestration default.
+  const plain = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-primary-plain",
+    botId: botA.id,
+    content: "y",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  expect(plain.memberTurns[0]?.origin).toBe("followup");
+  expect(plain.memberTurns[0]?.assignmentId).toBeUndefined();
+  first.store.close();
+});
+
+test("claim order follows durable member_index within a Run", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  // Accept order [B, A]: member_index 0 = B, 1 = A. Same seq/created_at keys —
+  // only member_index distinguishes the siblings.
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-order",
+    botId: botB.id,
+    content: "review it",
+    profileSnapshot: snapshotBotProfile(botB, NOW),
+    members: [{ botId: botA.id, profileSnapshot: snapshotBotProfile(botA, NOW) }],
+    now: NOW,
+  });
+  expect(accepted.memberTurns.map((turn) => turn.botId)).toEqual([botB.id, botA.id]);
+  expect(accepted.memberTurns.map((turn) => turn.memberIndex)).toEqual([0, 1]);
+  const first_claim = first.store.claimNextDispatch({
+    now: NOW, owner: "owner-1", leaseExpiresAt: NOW, authorityEpoch: "epoch-1",
+  });
+  expect(first_claim?.memberTurn.botId).toBe(botB.id);
+  first.store.close();
+});
+
+test("cancel targets the actually-started member, not members[0]", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-cancel-second",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  // Start exactly one member (whichever the claim serves); the other stays
+  // queued. Cancel must settle the queued sibling and report the started
+  // member as active — never members[0] by position.
+  const claim = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  const startedId = claim.memberTurn.id;
+  const queuedId = accepted.memberTurns.find((t) => t.id !== startedId)!.id;
+  const started = first.store.markExecutionStarted({
+    dispatchId: claim.dispatch.id, owner: "dispatcher-a", generation: claim.dispatch.generation,
+    runId: accepted.run.id, memberTurnId: startedId,
+    sessionAlias: "sess_x", logicalSessionId: "lsess_x", sourceTurnId: "sturn_x", now: NOW,
+  });
+  expect(started.state).toBe("running");
+  const outcome = first.store.cancelRun(accepted.run.id, NOW, "cancelled");
+  expect(outcome.executionStarted).toBe(true);
+  expect(outcome.activeMembers.map((m) => m.id)).toEqual([startedId]);
+  expect(outcome.memberTurn.id).toBe(startedId);
+  expect(first.store.getMemberTurn(queuedId)?.state).toBe("cancelled");
+  expect(first.store.getRun(accepted.run.id)?.state).not.toBe("cancelled");
+  first.store.close();
+});
+
+test("recovery of one sibling never resets a running run to queued", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-rec-guard",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  // A starts; B claims but never starts, then B's lease expires.
+  const claimA = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claimA.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: accepted.run.id, memberTurnId: claimA.memberTurn.id,
+    sessionAlias: "sess_a", logicalSessionId: "lsess_a", sourceTurnId: "sturn_a", now: NOW,
+  });
+  const claimB = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  expect(claimB.memberTurn.botId).toBe(botB.id);
+  const recovered = first.store.recoverExpiredClaims("2026-09-15T12:06:00.000Z");
+  expect(recovered.find((r) => r.memberTurn.botId === botB.id)?.outcome).toBe("requeued");
+  // The Run stays running with started_at intact: A still executes.
+  const run = first.store.getRun(accepted.run.id)!;
+  expect(run.state).toBe("running");
+  expect(run.startedAt).toBeDefined();
+  // A queued next Run on the same topic must NOT become claimable: the
+  // next claim serves B's requeued dispatch (same running Run), and the Run
+  // after stays blocked while A executes.
+  const botA2 = first.bots.getBot(BOT_ID);
+  first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-next",
+    botId: botA2.id,
+    content: "next",
+    profileSnapshot: snapshotBotProfile(botA2, NOW),
+    now: NOW,
+  });
+  const reclaimed = first.store.claimNextDispatch({
+    now: "2026-09-15T12:06:00.000Z", owner: "dispatcher-a",
+    leaseExpiresAt: "2026-09-15T12:07:00.000Z", authorityEpoch: "epoch-a",
+  });
+  expect(reclaimed?.run.id).toBe(accepted.run.id);
+  expect(reclaimed?.memberTurn.botId).toBe(botB.id);
+  expect(first.store.claimNextDispatch({
+    now: "2026-09-15T12:06:00.000Z", owner: "dispatcher-a",
+    leaseExpiresAt: "2026-09-15T12:07:00.000Z", authorityEpoch: "epoch-a",
+  })).toBeUndefined();
+  first.store.close();
+});
+
+test("unknown settlement and lease recovery converge on the same indeterminate state", async () => {
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const setup = async (requestId: string, mode: "explicit" | "automatic") => {
+    const first = await createLifecycle();
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    const botA = first.bots.getBot(BOT_ID);
+    const botB = first.bots.getBot(TESTER_ID);
+    const accepted = first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId,
+      botId: botA.id,
+      content: "go",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      mode,
+      members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+      now: NOW,
+    });
+    return { first, botA, botB, accepted };
+  };
+  // Path 1: runner-settled unknown via completeCancel(..., true).
+  {
+    const { first, accepted } = await setup("req-ind-1", "automatic");
+    const run = first.store.completeCancel(accepted.run.id, accepted.memberTurns[0]!.id, NOW, true);
+    expect(run.state).toBe("indeterminate");
+    expect(run.completionReason).toBe("started_result_unknown");
+    expect(first.store.getMemberTurn(accepted.memberTurns[1]!.id)?.state).toBe("indeterminate");
+    expect(first.store.claimNextDispatch({
+      now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+    })).toBeUndefined();
+    first.store.close();
+  }
+  // Path 2: lease recovery of a started claim.
+  {
+    const { first, accepted } = await setup("req-ind-2", "automatic");
+    const claim = first.store.claimNextDispatch({
+      now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+    })!;
+    first.store.markExecutionStarted({
+      dispatchId: claim.dispatch.id, owner: "dispatcher-a", generation: 1,
+      runId: accepted.run.id, memberTurnId: claim.memberTurn.id,
+      sessionAlias: "sess", logicalSessionId: "lsess", sourceTurnId: "sturn", now: NOW,
+    });
+    const recovered = first.store.recoverExpiredClaims("2026-09-15T12:06:00.000Z");
+    expect(recovered[0]?.outcome).toBe("indeterminate");
+    const run = first.store.getRun(accepted.run.id)!;
+    expect(run.state).toBe("indeterminate");
+    expect(run.completionReason).toBe("started_result_unknown");
+    expect(first.store.getMemberTurn(accepted.memberTurns[1]!.id)?.state).toBe("indeterminate");
+    expect(first.store.claimNextDispatch({
+      now: "2026-09-15T12:06:00.000Z", owner: "dispatcher-a",
+      leaseExpiresAt: "2026-09-15T12:07:00.000Z", authorityEpoch: "epoch-a",
+    })).toBeUndefined();
+    first.store.close();
+  }
+});
+
+test("teardown fails closed while a multi-member run still has live work", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  // Automatic run: cancel settles B but leaves the run running for the Router,
+  // so teardown must refuse to release runtime underneath it.
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-td-auto",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    mode: "automatic",
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const claim = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claim.dispatch.id, owner: "dispatcher-a", generation: claim.dispatch.generation,
+    runId: accepted.run.id, memberTurnId: claim.memberTurn.id,
+    sessionAlias: "sess_x", logicalSessionId: "lsess_x", sourceTurnId: "sturn_x", now: NOW,
+  });
+  const member = await first.runtime.getOrCreateGroupMemberSession({
+    botId: claim.memberTurn.botId, conversationId: group.id, topicId: topic.id,
+  });
+  // Whole-run cancel force-terminals even automatic Runs, so teardown settles
+  // the run first and then releases runtime: nothing stranded, nothing live.
+  // (Teardown deletes topic rows, so assert settlement via pre-delete state:
+  // capture the cancel outcome directly first.)
+  const cancelOutcome = first.store.cancelRun(accepted.run.id, NOW, "cancelled");
+  expect(cancelOutcome.executionStarted).toBe(true);
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  expect(first.store.listRuns(group.id, topic.id)).toHaveLength(0);
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[member.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(member.sessionAlias) ?? undefined).toBeUndefined();
+  first.store.close();
+});
+
+test("teardown still refuses while a run is genuinely routable", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  // Automatic run whose batch settled completed WITHOUT a cancel: the Run
+  // stays running for the Router, so teardown must refuse to release runtime.
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-td-routable",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    mode: "automatic",
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  for (const turn of accepted.memberTurns) {
+    first.store.completeExecution({
+      runId: accepted.run.id, memberTurnId: turn.id, botId: turn.botId,
+      content: `done ${turn.botId}`, sourceTurn: { sessionAlias: `sess_${turn.botId}` }, now: NOW,
+    });
+  }
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("running");
+  const member = await first.runtime.getOrCreateGroupMemberSession({
+    botId: botA.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Cancel wins over router-pending: teardown settles the routable run
+  // (forced terminal) and releases everything.
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  expect(first.store.listRuns(group.id, topic.id)).toHaveLength(0);
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[member.id]).toBeUndefined();
+  first.store.close();
+});
+
+test("teardown aborts when physical cancel throws, keeping barrier and runtime", async () => {
+  const first = await createLifecycle({
+    hooks: { failRuntimeMaterialize: true },
+  });
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-td-throw",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const claim = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claim.dispatch.id, owner: "dispatcher-a", generation: claim.dispatch.generation,
+    runId: accepted.run.id, memberTurnId: claim.memberTurn.id,
+    sessionAlias: "sess_x", logicalSessionId: "lsess_x", sourceTurnId: "sturn_x", now: NOW,
+  });
+  const member = await first.runtime.getOrCreateGroupMemberSession({
+    botId: claim.memberTurn.botId, conversationId: group.id, topicId: topic.id,
+  });
+  // Physical cancel throws mid-loop: teardown propagates, barrier stays,
+  // runtime stays live for retry.
+  const disp = first.dispatcher as unknown as {
+    runner: { cancel: (input: never) => Promise<never> };
+  };
+  disp.runner.cancel = ((_input: never) => {
+    throw new Error("injected cancel transport failure");
+  }) as never;
+  await expect(first.service.teardownGroupTopic(group.id, topic.id)).rejects.toThrow(
+    "injected cancel transport failure",
+  );
+  expect(first.state.conversation_topics[topic.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[member.id]).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord(member.sessionAlias)).toBeDefined();
+  first.store.close();
+});
+
+test("dispatcher cancelRun cancels every started member exactly", async () => {
+  const hangA = deferred();
+  const hangB = deferred();
+  const hangs = [hangA, hangB];
+  let hangIdx = 0;
+  const runner = new FakeRunner();
+  const first = await createLifecycle({
+    runner,
+    hooks: {
+      beforeExecutionStart: async () => {
+        // Park each member's execution so both stay started while we cancel.
+        const gate = hangs[hangIdx++] ?? deferred();
+        await gate.promise;
+      },
+    },
+  });
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-dcancel",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  // NOTE: dispatcher executes direct sessions; member bindings materialize on
+  // demand. Kick twice concurrently is serial; instead drive claims manually
+  // and cancel through the dispatcher with both started.
+  const claimA = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claimA.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: claimA.run.id, memberTurnId: claimA.memberTurn.id,
+    sessionAlias: "sess_a", logicalSessionId: "lsess_a", sourceTurnId: "sturn_a", now: NOW,
+  });
+  const claimB = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claimB.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: claimB.run.id, memberTurnId: claimB.memberTurn.id,
+    sessionAlias: "sess_b", logicalSessionId: "lsess_b", sourceTurnId: "sturn_b", now: NOW,
+  });
+  await first.dispatcher.cancelRun(claimA.run.id);
+  const aliases = runner.cancelCalls.map((c) => c.promptRequestId).sort();
+  expect(aliases).toEqual(["sturn_a", "sturn_b"]);
+  const states = first.store.listMemberTurns(claimA.run.id).map((t) => t.state).sort();
+  expect(states).toEqual(["cancelled", "cancelled"]);
+  expect(first.store.getRun(claimA.run.id)?.state).toBe("cancelled");
+  hangA.resolve();
+  hangB.resolve();
+  first.store.close();
+});
+
+test("late completion landing mid-cancel-fan-out survives batch settlement", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-late-mid-fanout",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const claimA = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claimA.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: claimA.run.id, memberTurnId: claimA.memberTurn.id,
+    sessionAlias: "sess_a", logicalSessionId: "lsess_a", sourceTurnId: "sturn_a", now: NOW,
+  });
+  const claimB = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claimB.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: claimB.run.id, memberTurnId: claimB.memberTurn.id,
+    sessionAlias: "sess_b", logicalSessionId: "lsess_b", sourceTurnId: "sturn_b", now: NOW,
+  });
+  // Park B's physical cancel so A's late proof lands mid-fan-out: A already
+  // timed out unknown, B still blocked, the Run not yet aggregated.
+  const bEntered = deferred();
+  const bRelease = deferred();
+  const disp = first.dispatcher as unknown as {
+    runner: { cancel: (input: { promptRequestId: string }) => Promise<{ outcome: "cancelled" | "unknown" }> };
+  };
+  const origCancel = disp.runner.cancel.bind(disp.runner);
+  disp.runner.cancel = (async (input: { promptRequestId: string }) => {
+    if (input.promptRequestId === "sturn_a") {
+      return { outcome: "unknown" };
+    }
+    if (input.promptRequestId === "sturn_b") {
+      bEntered.resolve();
+      await bRelease.promise;
+    }
+    return origCancel(input);
+  });
+  const cancelling = first.dispatcher.cancelRun(claimA.run.id);
+  await bEntered.promise;
+  // Durable cancel intent exists, but nothing aggregated yet.
+  expect(first.store.getRun(claimA.run.id)?.state).toBe("running");
+  expect(first.store.getMemberTurn(claimA.memberTurn.id)?.state).toBe("running");
+  const late = first.store.reconcileLateResult({
+    runId: claimA.run.id,
+    memberTurnId: claimA.memberTurn.id,
+    outcome: "completed",
+    content: "late A",
+    sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" },
+    now: NOW,
+  });
+  expect(late.reconciled).toBe(true);
+  expect(first.store.getMemberTurn(claimA.memberTurn.id)?.state).toBe("completed");
+  // Member evidence only: the Run must NOT aggregate early while B is pending.
+  expect(first.store.getRun(claimA.run.id)?.state).toBe("running");
+  bRelease.resolve();
+  await cancelling;
+  const memberA = first.store.getMemberTurn(claimA.memberTurn.id)!;
+  const memberB = first.store.getMemberTurn(claimB.memberTurn.id)!;
+  expect(memberA.state).toBe("completed");
+  expect(memberA.finishedAt).toBe(NOW);
+  expect(memberB.state).toBe("cancelled");
+  expect(memberB.finishedAt).toBeDefined();
+  expect(first.store.listMessages({
+    conversationId: group.id, topicId: topic.id, limit: 10,
+  }).filter((message) => message.role === "bot" && message.content === "late A")).toHaveLength(1);
+  const run = first.store.getRun(claimA.run.id)!;
+  expect(run.state).toBe("cancelled");
+  expect(run.completionReason).toBe("human-cancelled");
+  expect(run.consumedMemberTurns).toBe(2);
+  expect(first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })).toBeUndefined();
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  first.store.close();
+});
+
+test("late failure landing mid-cancel-fan-out records finished_at", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-late-mid-fanout-failed",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const claimA = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claimA.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: claimA.run.id, memberTurnId: claimA.memberTurn.id,
+    sessionAlias: "sess_a", logicalSessionId: "lsess_a", sourceTurnId: "sturn_a", now: NOW,
+  });
+  const claimB = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claimB.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: claimB.run.id, memberTurnId: claimB.memberTurn.id,
+    sessionAlias: "sess_b", logicalSessionId: "lsess_b", sourceTurnId: "sturn_b", now: NOW,
+  });
+  const bEntered = deferred();
+  const bRelease = deferred();
+  const disp = first.dispatcher as unknown as {
+    runner: { cancel: (input: { promptRequestId: string }) => Promise<{ outcome: "cancelled" | "unknown" }> };
+  };
+  const origCancel = disp.runner.cancel.bind(disp.runner);
+  disp.runner.cancel = (async (input: { promptRequestId: string }) => {
+    if (input.promptRequestId === "sturn_a") {
+      return { outcome: "unknown" };
+    }
+    if (input.promptRequestId === "sturn_b") {
+      bEntered.resolve();
+      await bRelease.promise;
+    }
+    return origCancel(input);
+  });
+  const cancelling = first.dispatcher.cancelRun(claimA.run.id);
+  await bEntered.promise;
+  const late = first.store.reconcileLateResult({
+    runId: claimA.run.id,
+    memberTurnId: claimA.memberTurn.id,
+    outcome: "failed",
+    reason: "late crash",
+    sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" },
+    now: NOW,
+  });
+  expect(late.reconciled).toBe(true);
+  expect(first.store.getMemberTurn(claimA.memberTurn.id)?.finishedAt).toBe(NOW);
+  bRelease.resolve();
+  await cancelling;
+  const memberA = first.store.getMemberTurn(claimA.memberTurn.id)!;
+  expect(memberA.state).toBe("failed");
+  expect(memberA.finishedAt).toBe(NOW);
+  expect(memberA.failureReason).toBe("late crash");
+  const run = first.store.getRun(claimA.run.id)!;
+  expect(run.state).toBe("failed");
+  expect(run.completionReason).toBe("execution-failed");
+  expect(run.failedBotIds).toContain(botA.id);
+  expect(run.consumedMemberTurns).toBe(2);
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  first.store.close();
+});
+
+test("unknown on first active member never skips the second physical cancel", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-cancel-unknown",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const claimA = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claimA.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: claimA.run.id, memberTurnId: claimA.memberTurn.id,
+    sessionAlias: "sess_a", logicalSessionId: "lsess_a", sourceTurnId: "sturn_a", now: NOW,
+  });
+  const claimB = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claimB.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: claimB.run.id, memberTurnId: claimB.memberTurn.id,
+    sessionAlias: "sess_b", logicalSessionId: "lsess_b", sourceTurnId: "sturn_b", now: NOW,
+  });
+  // A's physical cancel reports unknown; B's reports cancelled. Both exact
+  // promptRequestIds must reach the runner even though A's persistence seals
+  // the Run indeterminate before B's outcome is recorded.
+  const calls: string[] = [];
+  const disp = first.dispatcher as unknown as {
+    runner: { cancel: (input: { promptRequestId: string }) => Promise<{ outcome: "cancelled" | "unknown" }> };
+  };
+  const origCancel = disp.runner.cancel.bind(disp.runner);
+  disp.runner.cancel = (async (input: { promptRequestId: string }) => {
+    calls.push(input.promptRequestId);
+    if (input.promptRequestId === "sturn_a") {
+      return { outcome: "unknown" };
+    }
+    return origCancel(input);
+  });
+  await first.dispatcher.cancelRun(claimA.run.id);
+  expect(calls.sort()).toEqual(["sturn_a", "sturn_b"]);
+  expect(first.store.getRun(claimA.run.id)?.state).toBe("indeterminate");
+  // B's proven outcome survives A's unknown: order-independent evidence.
+  expect(first.store.getMemberTurn(claimB.memberTurn.id)?.state).toBe("cancelled");
+  expect(first.store.getMemberTurn(claimA.memberTurn.id)?.state).toBe("indeterminate");
+  first.store.close();
+});
+
+test("unknown + proven sibling preserves evidence in both orders", async () => {
+  for (const secondOutcome of ["cancelled", "completed", "failed"] as const) {
+    for (const unknownFirst of [true, false]) {
+      const first = await createLifecycle();
+      seedTesterBot(first.state);
+      const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+      const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+        workspace: "backend",
+        isolation: "shared-single-writer",
+      });
+      const botA = first.bots.getBot(BOT_ID);
+      const botB = first.bots.getBot(TESTER_ID);
+      const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+      const accepted = first.store.acceptRequest({
+        conversationId: group.id,
+        topicId: topic.id,
+        requestId: `req-ev-${secondOutcome}-${unknownFirst}`,
+        botId: botA.id,
+        content: "go",
+        profileSnapshot: snapshotBotProfile(botA, NOW),
+        mode: "automatic",
+        members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+        now: NOW,
+      });
+      const [turnA, turnB] = accepted.memberTurns;
+      const botOf = (id: string) => (id === turnA!.id ? botA.id : botB.id);
+      // Direct two-phase settlement: unknown on one member, proven on other.
+      const unknownId = unknownFirst ? turnA!.id : turnB!.id;
+      const provenId = unknownFirst ? turnB!.id : turnA!.id;
+      const outcomes = unknownFirst
+        ? [
+          { memberTurnId: unknownId, outcome: "unknown" as const },
+          secondOutcome === "completed"
+            ? {
+              memberTurnId: provenId,
+              outcome: "completed" as const,
+              content: "proven work",
+              sourceTurn: { sessionAlias: `sess_${provenId}` },
+            }
+            : secondOutcome === "failed"
+              ? { memberTurnId: provenId, outcome: "failed" as const, reason: "proven failure" }
+              : { memberTurnId: provenId, outcome: "cancelled" as const },
+        ]
+        : [
+          secondOutcome === "completed"
+            ? {
+              memberTurnId: provenId,
+              outcome: "completed" as const,
+              content: "proven work",
+              sourceTurn: { sessionAlias: `sess_${provenId}` },
+            }
+            : secondOutcome === "failed"
+              ? { memberTurnId: provenId, outcome: "failed" as const, reason: "proven failure" }
+              : { memberTurnId: provenId, outcome: "cancelled" as const },
+          { memberTurnId: unknownId, outcome: "unknown" as const },
+        ];
+      const settled = first.store.settleCancelBatch({ runId: accepted.run.id, outcomes, now: NOW });
+      expect(settled.run.state).toBe("indeterminate");
+      const proven = first.store.getMemberTurn(provenId)!;
+      const unknown = first.store.getMemberTurn(unknownId)!;
+      expect(unknown.state).toBe("indeterminate");
+      if (secondOutcome === "completed") {
+        expect(proven.state).toBe("completed");
+        const evidence = first.store.listMessages({
+          conversationId: group.id, topicId: topic.id, limit: 10,
+        }).filter((message) => message.role === "bot" && message.senderBotId === botOf(provenId));
+        expect(evidence.map((message) => message.content)).toContain("proven work");
+      } else if (secondOutcome === "failed") {
+        expect(proven.state).toBe("failed");
+        expect(settled.run.failedBotIds).toContain(botOf(provenId));
+      } else {
+        expect(proven.state).toBe("cancelled");
+      }
+      first.store.close();
+    }
+  }
+});
+
+test("automatic cancel that races a member completion still terminals the run", async () => {
+  for (const outcome of ["completed", "failed"] as const) {
+    const first = await createLifecycle();
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    const botA = first.bots.getBot(BOT_ID);
+    const botB = first.bots.getBot(TESTER_ID);
+    const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+    const accepted = first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: `req-cancel-race-${outcome}`,
+      botId: botA.id,
+      content: "go",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      mode: "automatic",
+      members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+      now: NOW,
+    });
+    const claim = first.store.claimNextDispatch({
+      now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+    })!;
+    first.store.markExecutionStarted({
+      dispatchId: claim.dispatch.id, owner: "dispatcher-a", generation: claim.dispatch.generation,
+      runId: accepted.run.id, memberTurnId: claim.memberTurn.id,
+      sessionAlias: "sess_x", logicalSessionId: "lsess_x", sourceTurnId: "sturn_x", now: NOW,
+    });
+    // Whole-run cancel settles the queued sibling, then the active member's
+    // physical cancel reports a proven outcome (race: work already done).
+    const cancelOutcome = first.store.cancelRun(accepted.run.id, NOW, "cancelled");
+    expect(cancelOutcome.executionStarted).toBe(true);
+    if (outcome === "completed") {
+      first.store.completeExecution({
+        runId: accepted.run.id, memberTurnId: claim.memberTurn.id, botId: claim.memberTurn.botId,
+        content: "late done", sourceTurn: { sessionAlias: "sess_x", turnId: "sturn_x" }, now: NOW,
+        forceRunTerminalOnSettle: true,
+      });
+    } else {
+      first.store.failExecution({
+        runId: accepted.run.id, memberTurnId: claim.memberTurn.id, now: NOW,
+        reason: "late failure", forceRunTerminalOnSettle: true,
+      });
+    }
+    const run = first.store.getRun(accepted.run.id)!;
+    // Completed+cancelled is a human stop, not an execution failure: the
+    // proven completion keeps its evidence and the Run cancels. A real
+    // failure still classifies failed.
+    if (outcome === "completed") {
+      expect(run.state).toBe("cancelled");
+      expect(run.completionReason).toBe("human-cancelled");
+      expect(first.store.listMessages({
+        conversationId: group.id, topicId: topic.id, limit: 10,
+      }).some((message) => message.role === "bot" && message.content === "late done")).toBe(true);
+    } else {
+      expect(run.state).toBe("failed");
+      expect(run.completionReason).toBe("execution-failed");
+    }
+    expect(run.finishedAt).toBeDefined();
+    // No new dispatch may escape after cancel.
+    expect(first.store.claimNextDispatch({
+      now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+    })).toBeUndefined();
+    first.store.close();
+  }
+});
+
+test("worktree-per-member topics fail closed at member materialization", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "WT", {
+    workspace: "backend",
+    isolation: "worktree-per-member",
+  });
+  expect(topic.executionTarget?.isolation).toBe("worktree-per-member");
+  await expect(first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID, conversationId: group.id, topicId: topic.id,
+  })).rejects.toMatchObject({ code: "worktree_unprovisioned" });
+  first.store.close();
+});
+
+test("maxMemberTurns below the accepted member count rejects before any row", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  expect(() => first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-budget",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    maxMemberTurns: 1,
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  })).toThrow(/maxMemberTurns/);
+  expect(first.store.getRunByRequestId(group.id, topic.id, "req-budget")).toBeUndefined();
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 })).toHaveLength(0);
+  first.store.close();
+});
+
+
+test("single-member cancel preserves the failed and unknown diagnostic reasons", async () => {
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  for (const [outcome, reason, state, memberState] of [
+    ["failed", "provider crashed", "failed", "failed"],
+    ["unknown", "started_result_unknown", "indeterminate", "indeterminate"],
+  ] as const) {
+    const first = await createLifecycle();
+    const bot = first.bots.getBot(BOT_ID);
+    const accepted = first.store.acceptRequest({
+      conversationId: `conv_${outcome}`,
+      topicId: `topic_${outcome}`,
+      requestId: `req-single-${outcome}`,
+      botId: bot.id,
+      content: "go",
+      profileSnapshot: snapshotBotProfile(bot, NOW),
+      now: NOW,
+    });
+    const result = first.store.settleCancelBatch({
+      runId: accepted.run.id,
+      now: NOW,
+      outcomes: outcome === "failed"
+        ? [{ memberTurnId: accepted.memberTurn.id, outcome, reason }]
+        : [{ memberTurnId: accepted.memberTurn.id, outcome }],
+    });
+    expect(result.run.state).toBe(state);
+    expect(result.run.completionReason).toBe(reason);
+    const member = first.store.getMemberTurn(accepted.memberTurn.id)!;
+    expect(member.state).toBe(memberState);
+    if (outcome === "failed") {
+      expect(member.failureReason).toBe("provider crashed");
+      expect(result.run.failedBotIds).toContain(bot.id);
+    }
+    first.store.close();
+  }
+});
+
+test("partial fan-out persists fulfilled evidence, then throws for retry", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-partial-fanout",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  for (const turn of accepted.memberTurns) {
+    const claim = first.store.claimNextDispatch({
+      now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+    })!;
+    first.store.markExecutionStarted({
+      dispatchId: claim.dispatch.id, owner: "dispatcher-a", generation: claim.dispatch.generation,
+      runId: accepted.run.id, memberTurnId: turn.id,
+      sessionAlias: `sess_${turn.botId}`, logicalSessionId: `lsess_${turn.botId}`,
+      sourceTurnId: `sturn_${turn.botId}`, now: NOW,
+    });
+  }
+  const [turnA, turnB] = accepted.memberTurns;
+  // A completes; B's physical cancel throws. Evidence for A must persist even
+  // though the batch throws; the Run stays non-terminal for safe retry.
+  // A observes a proven completion; B's physical cancel throws. A's
+  // evidence must persist even though the batch throws for retry.
+  const disp = first.dispatcher as unknown as {
+    runner: { cancel: (input: { promptRequestId: string }) => Promise<{ outcome: "completed" | "cancelled"; text?: string }> };
+  };
+  disp.runner.cancel = ((input: { promptRequestId: string }) => {
+    if (input.promptRequestId === `sturn_${botB.id}`) {
+      throw new Error("injected cancel transport failure");
+    }
+    return Promise.resolve({ outcome: "completed" as const, text: "proven late work" });
+  });
+  await expect(first.dispatcher.cancelRun(accepted.run.id)).rejects.toThrow(
+    "injected cancel transport failure",
+  );
+  const freshA = first.store.getMemberTurn(turnA!.id)!;
+  expect(freshA.state).toBe("completed");
+  const evidence = first.store.listMessages({
+    conversationId: group.id, topicId: topic.id, limit: 10,
+  }).filter((message) => message.role === "bot" && message.senderBotId === turnA!.botId);
+  expect(evidence.map((message) => message.content)).toContain("proven late work");
+  expect(first.store.getRun(accepted.run.id)?.consumedMemberTurns).toBe(1);
+  // The Run stays non-terminal (no aggregate ran) so retry can settle B.
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("running");
+  expect(first.store.getMemberTurn(turnB!.id)?.state).toBe("running");
+  // Restart-like recovery afterwards must not degrade A's proven evidence:
+  // A is completed (dispatch completed, skipped by recovery); only B, whose
+  // cancel threw with genuinely unknown outcome, goes indeterminate.
+  const recovered = first.store.recoverExpiredClaims("2026-09-15T13:00:00.000Z");
+  expect(recovered.some((r) => r.memberTurn.id === turnB!.id && r.outcome === "indeterminate")).toBe(true);
+  expect(first.store.getMemberTurn(turnA!.id)?.state).toBe("completed");
+  const evidenceAfter = first.store.listMessages({
+    conversationId: group.id, topicId: topic.id, limit: 10,
+  }).filter((message) => message.role === "bot" && message.senderBotId === turnA!.botId);
+  expect(evidenceAfter.map((message) => message.content)).toContain("proven late work");
+  first.store.close();
+});
+
+
+test("human Stop over completed+queued members classifies cancelled, never failed", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-stop-mix",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  // A completes first; B is still queued when the human Stops the whole Run.
+  const claim = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  first.store.markExecutionStarted({
+    dispatchId: claim.dispatch.id, owner: "dispatcher-a", generation: claim.dispatch.generation,
+    runId: accepted.run.id, memberTurnId: claim.memberTurn.id,
+    sessionAlias: "sess_a", logicalSessionId: "lsess_a", sourceTurnId: "sturn_a", now: NOW,
+  });
+  first.store.completeExecution({
+    runId: accepted.run.id, memberTurnId: claim.memberTurn.id, botId: claim.memberTurn.botId,
+    content: "done a", sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" }, now: NOW,
+  });
+  const stopped = first.store.cancelRun(accepted.run.id, NOW);
+  // No member actually failed: completed evidence stays, the queued member
+  // cancels, and the Run itself is cancelled/human-cancelled — not failed.
+  expect(stopped.run.state).toBe("cancelled");
+  expect(stopped.run.completionReason).toBe("human-cancelled");
+  expect(stopped.run.failedBotIds).toEqual([]);
+  expect(first.store.getMemberTurn(accepted.memberTurns[1]!.id)?.state).toBe("cancelled");
+  expect(first.store.listMessages({
+    conversationId: group.id, topicId: topic.id, limit: 10,
+  }).some((message) => message.role === "bot" && message.content === "done a")).toBe(true);
+  first.store.close();
+});
+
+test("single-member human Stop writes the canonical human-cancelled reason", async () => {
+  const first = await createLifecycle();
+  const bot = first.bots.getBot(BOT_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: `conv_reason`, topicId: `topic_reason`,
+    requestId: "req-stop-single", botId: bot.id, content: "go",
+    profileSnapshot: snapshotBotProfile(bot, NOW), now: NOW,
+  });
+  const stopped = first.store.cancelRun(accepted.run.id, NOW);
+  expect(stopped.run.state).toBe("cancelled");
+  // The caller-echo reason ("cancelled") must never leak into the durable
+  // completionReason: the design vocabulary is human-cancelled.
+  expect(stopped.run.completionReason).toBe("human-cancelled");
+  first.store.close();
+});
+
+test("membership removal waits for the removed member's nonterminal work", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const botC = "bot_carol";
+  first.state.bots[botC] = {
+    id: botC, name: "Carol", agent: "codex", workspace: "backend", enabled: true,
+    profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-remove-work",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botC, profileSnapshot: snapshotBotProfile(first.state.bots[botC]!, NOW) }],
+    now: NOW,
+  });
+  expect(first.store.hasNonterminalGroupMemberWork(group.id, botC)).toBe(true);
+  // Removing C while C's MemberTurn is still queued has no correct
+  // interpretation: refused with the actionable code.
+  await expect(first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID] })).rejects.toMatchObject({
+    code: "group_member_has_work",
+  });
+  expect(first.bots.getGroup(group.id).botIds).toContain(botC);
+  // Settle the Run, then the same removal succeeds.
+  first.store.cancelRun(accepted.run.id, NOW);
+  expect(first.store.hasNonterminalGroupMemberWork(group.id, botC)).toBe(false);
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID] });
+  expect(first.bots.getGroup(group.id).botIds).toEqual([BOT_ID, TESTER_ID]);
+  first.store.close();
+});
+
+test("activation fails closed when nonterminal work loses its authority root", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-unrooted",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  expect(accepted.run.state).toBe("queued");
+  // The Group authority vanishes out of band (same shape a load-time
+  // quarantine of the Group record leaves behind).
+  delete first.state.conversations[group.id];
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "conversation_work_unrooted" });
+  const detail = (error as { details?: { roots?: { conversationId: string }[] } }).details;
+  expect(detail?.roots?.map((root) => root.conversationId)).toContain(group.id);
+  expect(first.service.isConsumerActivated()).toBe(false);
+  first.store.close();
+});
+
+test("activation passes with a healthy direct queued run (authority intact)", async () => {
+  const first = await createLifecycle();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-activate-ok",
+    content: "hello",
+  });
+  await first.service.activateAfterConsumerLock();
+  expect(first.service.isConsumerActivated()).toBe(true);
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("completed");
+  first.store.close();
+});
+
+test("topic queue cap bounds nonterminal runs; idempotent replay bypasses the cap", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const { MAX_QUEUED_RUNS_PER_TOPIC } = await import("../../../src/conversations/conversation-store");
+  const accept = (requestId: string) => first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId,
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  for (let i = 0; i < MAX_QUEUED_RUNS_PER_TOPIC; i++) {
+    accept(`req-q-${i}`);
+  }
+  expect(() => accept("req-q-overflow")).toThrow(
+    expect.objectContaining({ code: "topic_queue_full" }),
+  );
+  // An idempotent replay of an already-accepted request at a FULL queue must
+  // return the existing Run, never fail the cap.
+  const replay = accept("req-q-0");
+  expect(replay.reused).toBe(true);
+  // Settling one run frees a slot again.
+  const firstRun = first.store.getRunByRequestId(group.id, topic.id, "req-q-0")!;
+  first.store.cancelRun(firstRun.id, NOW);
+  const next = accept("req-q-overflow");
+  expect(next.reused).toBe(false);
+  first.store.close();
+});
+
+test("automatic Run budget defaults to the 24 guardrail; explicit Runs are not capped", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const { MAX_AUTOMATIC_MEMBER_TURNS } = await import("../../../src/conversations/conversation-store");
+  const accept = (requestId: string, extra: { mode?: "automatic" | "explicit"; maxMemberTurns?: number } = {}) =>
+    first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId,
+      botId: botA.id,
+      content: "go",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+      now: NOW,
+      ...extra,
+    });
+  // Default automatic budget: the durable guardrail, not members.length —
+  // a settled first batch leaves routing headroom.
+  const auto = accept("req-auto-default", { mode: "automatic" });
+  expect(auto.run.maxMemberTurns).toBe(MAX_AUTOMATIC_MEMBER_TURNS);
+  expect(auto.run.maxMemberTurns).toBe(24);
+  expect(() => accept("req-auto-over", { mode: "automatic", maxMemberTurns: MAX_AUTOMATIC_MEMBER_TURNS + 1 }))
+    .toThrow(/automatic Run budget cap/);
+  const atCap = accept("req-auto-24", { mode: "automatic", maxMemberTurns: MAX_AUTOMATIC_MEMBER_TURNS });
+  expect(atCap.run.maxMemberTurns).toBe(MAX_AUTOMATIC_MEMBER_TURNS);
+  // Explicit Runs stay bounded by their accepted member list only.
+  const explicitBig = accept("req-exp-big", { mode: "explicit", maxMemberTurns: 30 });
+  expect(explicitBig.run.maxMemberTurns).toBe(30);
+  first.store.close();
+});
+
+test("cross-run settlement fails closed with zero writes on both sides", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const mkRun = (requestId: string) => first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId,
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const runA = mkRun("req-x-a");
+  const runB = mkRun("req-x-b");
+  const turnA = runA.memberTurns[0]!;
+  const turnB = runB.memberTurns[0]!;
+  const messagesBefore = first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 20 }).length;
+  const progressBeforeA = first.store.getRun(runA.run.id)!.consumedMemberTurns;
+  const progressBeforeB = first.store.getRun(runB.run.id)!.consumedMemberTurns;
+  // Complete into the wrong run: must throw and write nothing anywhere.
+  expect(() => first.store.completeExecution({
+    runId: runA.run.id, memberTurnId: turnB.id, botId: turnB.botId,
+    content: "cross-write", sourceTurn: { sessionAlias: "sess" }, now: NOW,
+  })).toThrow(/does not belong to run/);
+  expect(first.store.getMemberTurn(turnB.id)?.state).toBe("queued");
+  expect(first.store.getRun(runA.run.id)!.consumedMemberTurns).toBe(progressBeforeA);
+  expect(first.store.getRun(runB.run.id)!.consumedMemberTurns).toBe(progressBeforeB);
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 20 })).toHaveLength(messagesBefore);
+  expect(() => first.store.failExecution({
+    runId: runB.run.id, memberTurnId: turnA.id, now: NOW, reason: "boom",
+  })).toThrow(/does not belong to run/);
+  expect(first.store.getMemberTurn(turnA.id)?.state).toBe("queued");
+  // Mismatched sender echo cannot misattribute the transcript either.
+  const ownTurn = runA.memberTurns[1]!;
+  const done = first.store.completeExecution({
+    runId: runA.run.id, memberTurnId: ownTurn.id, botId: "bot_impostor",
+    content: "mine", sourceTurn: { sessionAlias: "sess" }, now: NOW,
+  });
+  expect(done.assistantMessage?.senderBotId).toBe(ownTurn.botId);
+  first.store.close();
+});
+
+test("unstarted member completion accepts any sourceTurn (no execution identity yet)", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-noidentity",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  const turn = accepted.memberTurns[0]!;
+  expect(turn.sessionAlias).toBeUndefined();
+  expect(turn.sourceTurnId).toBeUndefined();
+  const done = first.store.completeExecution({
+    runId: accepted.run.id, memberTurnId: turn.id,
+    content: "direct write", sourceTurn: { sessionAlias: "any" }, now: NOW,
+  });
+  expect(done.assistantMessage?.sourceTurn).toEqual({ sessionAlias: "any" });
+  first.store.close();
+});
+
+test("settlement cross-product fails closed: wrong run, wrong source, zero writes", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const mkRun = (requestId: string) => first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId,
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const runA = mkRun("req-fence-a");
+  const runB = mkRun("req-fence-b");
+  const turnA = runA.memberTurns[0]!;
+  const turnB = runB.memberTurns[0]!;
+  // Start A's member so it carries execution identity for the source fence.
+  const claimA = first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })!;
+  const startedA = first.store.markExecutionStarted({
+    dispatchId: claimA.dispatch.id, owner: "dispatcher-a", generation: 1,
+    runId: runA.run.id, memberTurnId: claimA.memberTurn.id,
+    sessionAlias: "sess_a", logicalSessionId: "lsess_a", sourceTurnId: "sturn_a", now: NOW,
+  });
+  const snapshot = () => ({
+    messages: first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 50 }).length,
+    progressA: first.store.getRun(runA.run.id)!.consumedMemberTurns,
+    progressB: first.store.getRun(runB.run.id)!.consumedMemberTurns,
+    stateA: first.store.getMemberTurn(turnA.id)?.state,
+    stateB: first.store.getMemberTurn(turnB.id)?.state,
+    startedState: first.store.getMemberTurn(startedA.id)?.state,
+    dispatchA: first.store.getDispatchForMemberTurn(turnA.id)?.state,
+    dispatchB: first.store.getDispatchForMemberTurn(turnB.id)?.state,
+  });
+  const before = snapshot();
+  // Direction 1: Run A + MemberTurn B (both complete and fail paths).
+  expect(() => first.store.completeExecution({
+    runId: runA.run.id, memberTurnId: turnB.id,
+    content: "cross", sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" }, now: NOW,
+  })).toThrow(/does not belong to run/);
+  expect(() => first.store.failExecution({
+    runId: runB.run.id, memberTurnId: turnA.id, now: NOW, reason: "boom",
+  })).toThrow(/does not belong to run/);
+  expect(() => first.store.settleCancelBatch({
+    runId: runA.run.id, now: NOW,
+    outcomes: [{ memberTurnId: turnB.id, outcome: "cancelled" }],
+  })).toThrow(/does not belong to run/);
+  // Correct pair, wrong source identity: must not misattribute provenance.
+  expect(() => first.store.completeExecution({
+    runId: runA.run.id, memberTurnId: startedA.id,
+    content: "cross-source", sourceTurn: { sessionAlias: "sess_other", turnId: "sturn_a" }, now: NOW,
+  })).toThrow(/source turn does not match/);
+  expect(() => first.store.completeExecution({
+    runId: runA.run.id, memberTurnId: startedA.id,
+    content: "cross-source", sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_other" }, now: NOW,
+  })).toThrow(/source turn does not match/);
+  expect(() => first.store.settleCancelBatch({
+    runId: runA.run.id, now: NOW,
+    outcomes: [{
+      memberTurnId: startedA.id, outcome: "completed", content: "x",
+      sourceTurn: { sessionAlias: "sess_other", turnId: "sturn_a" },
+    }],
+  })).toThrow(/source turn does not match/);
+  // Zero writes anywhere: both runs, all members, both dispatches, messages.
+  expect(snapshot()).toEqual(before);
+  // The correct pair with the correct source still settles.
+  const done = first.store.completeExecution({
+    runId: runA.run.id, memberTurnId: startedA.id,
+    content: "mine", sourceTurn: { sessionAlias: "sess_a", turnId: "sturn_a" }, now: NOW,
+  });
+  expect(done.assistantMessage?.senderBotId).toBe(turnA.botId);
+  expect(done.assistantMessage?.sourceTurn).toEqual({ sessionAlias: "sess_a", turnId: "sturn_a" });
+  first.store.close();
+});
+
+test("provisional controller residue blocks verified group delete, never orphans", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(reviewer.id);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-controller-fence",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  first.state.bot_runtime_bindings.controller_x = {
+    id: "controller_x",
+    scope: "group-controller",
+    conversationId: group.id,
+    topicId: topic.id,
+    logicalSessionId: "99999999-9999-4999-8999-999999999999",
+    sessionAlias: "group:controller",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  first.state.sessions.controller_sess = {
+    alias: "controller_sess",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:controller_sess",
+    logical_session_id: "99999999-9999-4999-8999-999999999999",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-controller", bindingId: "controller_x", conversationId: group.id, topicId: topic.id },
+  };
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "group_has_controller",
+  });
+  // Fence runs before anything destructive: the Group row, its Topics, the
+  // controller rows, and every durable Conversation row still exist.
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(Object.values(first.state.conversation_topics).filter(
+    (topic) => topic.conversationId === group.id,
+  )).not.toHaveLength(0);
+  expect(first.store.listRuns(group.id)).not.toHaveLength(0);
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 })).not.toHaveLength(0);
+  expect(first.state.bot_runtime_bindings.controller_x).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord("controller_sess")?.alias).toBe("controller_sess");
+  first.store.close();
+});
+
+test("controller binding row alone fences verified group delete", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  // No session at all: the binding row alone must still block the delete.
+  first.state.bot_runtime_bindings.controller_only = {
+    id: "controller_only",
+    scope: "group-controller",
+    conversationId: group.id,
+    topicId: "t",
+    logicalSessionId: "77777777-7777-4777-8777-777777777777",
+    sessionAlias: "group:controller-only",
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "group_has_controller",
+  });
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings.controller_only).toBeDefined();
+  first.store.close();
+});
+
+test("controller partial owner via live topicId blocks group delete pre-destruction", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Partial owner: no conversationId, no live binding — but the topicId
+  // names a live Topic of this Group, which proves attribution.
+  first.state.sessions.controller_partial = {
+    alias: "controller_partial",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:controller_partial",
+    logical_session_id: "88888888-8888-4888-8888-888888888888",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-controller", bindingId: "missing_binding", topicId: topic.id },
+  };
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "group_has_controller",
+  });
+  expect(first.state.conversation_topics[topic.id]).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord("controller_partial")?.alias).toBe("controller_partial");
+  first.store.close();
+});
+
+test("controller partial owner via live topicId blocks topic teardown pre-destruction", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(reviewer.id);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-topic-controller-fence",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  // Same legal partial owner as the Group-level test — but torn down at the
+  // Topic level, which never passes through the Group fence.
+  first.state.sessions.controller_partial_topic = {
+    alias: "controller_partial_topic",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:controller_partial_topic",
+    logical_session_id: "66666666-6666-4666-8666-666666666666",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-controller", bindingId: "missing_binding", topicId: topic.id },
+  };
+  await expect(first.service.teardownGroupTopic(group.id, topic.id)).rejects.toMatchObject({
+    code: "group_has_controller",
+  });
+  // Nothing destructive happened: Topic row, durable rows, and the partial
+  // session all survive — the owner never degrades to ambiguous.
+  expect(first.state.conversation_topics[topic.id]).toBeDefined();
+  expect(first.store.listRuns(group.id, topic.id)).not.toHaveLength(0);
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 })).not.toHaveLength(0);
+  expect(first.sessions.getLogicalSessionRecord("controller_partial_topic")?.alias).toBe("controller_partial_topic");
+  first.store.close();
+});
+
+test("duplicated logical id on a ghost binding fails closed, never releases", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Two sessions share the binding's logical id: the id axis is ambiguous,
+  // so even though the alias axis resolves, the residue must conflict
+  // rather than release the first hit.
+  const live = first.sessions.getLogicalSessionRecord(binding.sessionAlias)!;
+  first.state.sessions.duplicate_shadow = {
+    ...structuredClone(live),
+    alias: "duplicate_shadow",
+  };
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias)?.alias).toBe(binding.sessionAlias);
+  expect(first.sessions.getLogicalSessionRecord("duplicate_shadow")?.alias).toBe("duplicate_shadow");
+  first.store.close();
+});
+
+test("ghost-topic runtime blocks group delete; verified teardown releases it", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Live binding + session, then the Topic row vanishes out of band
+  // (ghost-topic residue): both delete paths must account for it.
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  const { createScopedGroupMemberBindingId: scopedId } = await import("../../../src/domain/ids");
+  const canonical = scopedId(group.id, topic.id, reviewer.id);
+  expect(binding.id).toBe(canonical);
+  delete first.state.conversation_topics[topic.id];
+  await expect(bots.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_runtime" });
+  await first.service.teardownGroupConversation(group.id);
+  expect(first.state.conversations[group.id]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias) ?? undefined).toBeUndefined();
+  first.store.close();
+});
+
+test("ghost-topic group teardown keeps durable history when physical release fails", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(reviewer.id);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-ghost-release-fail",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: TESTER_ID, profileSnapshot: snapshotBotProfile(first.bots.getBot(TESTER_ID), NOW) }],
+    now: NOW,
+  });
+  // Live member runtime, then the Topic row vanishes out of band while
+  // durable history remains: ghost durable rows + ghost runtime together.
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  delete first.state.conversation_topics[topic.id];
+  // Physical release fails: the teardown must fail closed with durable
+  // Run/message history still intact — not half-deleted before release.
+  first.physical.fail = true;
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "session_release_failed",
+  });
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias)?.alias).toBe(binding.sessionAlias);
+  expect(first.store.getRun(accepted.run.id)).toBeDefined();
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 }).length).toBeGreaterThan(0);
+  // Physical recovers: retry releases the residue. The first attempt
+  // already settled the ghost work to terminal (cancel/reconcile runs to
+  // completion inside the attempt), so the member session releases and the
+  // residue fences clear.
+  first.physical.fail = false;
+  await first.service.teardownGroupConversation(group.id).catch((error: unknown) => {
+    const code = (error as { code?: string }).code;
+    const message = error instanceof Error ? error.message : String(error);
+    const details = JSON.stringify((error as { details?: unknown }).details ?? null).slice(0, 500);
+    throw new Error(`RETRY code=${code} msg=${message} details=${details}`);
+  });
+  expect(first.state.conversations[group.id]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias) ?? undefined).toBeUndefined();
+  first.store.close();
+});
+
+test("bindingId-only partial with missing axes fails group delete before any mutation", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Crash residue: the original session is gone on BOTH binding axes, but a
+  // different-alias, different-id hidden session still names the binding as
+  // its sole ownership clue. Deleting the binding first would orphan it.
+  delete first.state.sessions[binding.sessionAlias];
+  first.state.sessions.partial_shadow = {
+    alias: "partial_shadow",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:partial_shadow",
+    logical_session_id: "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-member", bindingId: binding.id },
+  };
+  // Ghost the Topic so the whole-Group residue path owns the cleanup.
+  delete first.state.conversation_topics[topic.id];
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias) ?? undefined).toBeUndefined();
+  expect(
+    Object.values(first.state.sessions).some((s) => s.logical_session_id === binding.logicalSessionId),
+  ).toBe(false);
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  // Nothing mutated: Group, binding clue, and hidden session all survive.
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord("partial_shadow")?.alias).toBe("partial_shadow");
+  first.store.close();
+});
+
+test("live primary plus hidden secondary owner fails group delete with zero release", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Live primary stays intact; a second hidden session names the same
+  // bindingId as its sole clue. Releasing the primary and deleting the
+  // binding would orphan it, so the plan must fail before any mutation.
+  first.state.sessions.partial_secondary = {
+    alias: "partial_secondary",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:partial_secondary",
+    logical_session_id: "cccccccc-cccc-4ccc-cccc-cccccccccccc",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-member", bindingId: binding.id },
+  };
+  // Ghost the Topic so the whole-Group residue path owns the cleanup.
+  delete first.state.conversation_topics[topic.id];
+  const releasesBefore = first.physical.releaseCalls + first.physical.deleteCalls;
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  // Zero mutation: Group, binding, live primary, and hidden secondary all
+  // survive; no physical release ran.
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias)?.alias).toBe(binding.sessionAlias);
+  expect(first.sessions.getLogicalSessionRecord("partial_secondary")?.alias).toBe("partial_secondary");
+  expect(first.physical.releaseCalls + first.physical.deleteCalls).toBe(releasesBefore);
+  first.store.close();
+});
+
+test("key-alias mismatch fails group delete with zero release, retryable after repair", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Persisted corruption: a second row masquerades as the primary
+  // (same record.alias, different map key). Storage identity is the key,
+  // so the residue plan must fail before releasing the wrong row — and the
+  // retry after operator repair (drop the shadow row) converges.
+  const primary = first.sessions.getLogicalSessionRecord(binding.sessionAlias)!;
+  first.state.sessions["shadow-key"] = {
+    ...structuredClone(primary),
+    logical_session_id: "dddddddd-dddd-4ddd-dddd-dddddddddddd",
+  };
+  delete first.state.conversation_topics[topic.id];
+  const releasesBefore = first.physical.releaseCalls + first.physical.deleteCalls;
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias)?.alias).toBe(binding.sessionAlias);
+  expect(first.state.sessions["shadow-key"]).toBeDefined();
+  expect(first.physical.releaseCalls + first.physical.deleteCalls).toBe(releasesBefore);
+  // Operator removes the corrupt shadow row; retry completes the delete.
+  delete first.state.sessions["shadow-key"];
+  await first.service.teardownGroupConversation(group.id);
+  expect(first.state.conversations[group.id]).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias) ?? undefined).toBeUndefined();
+  first.store.close();
+});
+
+test("binding-less exact owner under a mismatched key fails closed, never releases the wrong row", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // No binding row at all: an exact-owner session stored under the wrong
+  // key must fail closed, not release whatever lives at record.alias.
+  first.state.sessions["wrong-key"] = {
+    alias: "some-alias",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:wrong",
+    logical_session_id: "eeeeeeee-eeee-4eee-eeee-eeeeeeeeeeee",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: {
+      kind: "group-member",
+      bindingId: "bind_missing",
+      botId: reviewer.id,
+      conversationId: group.id,
+      topicId: topic.id,
+    },
+  };
+  const releasesBefore = first.physical.releaseCalls + first.physical.deleteCalls;
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(first.state.sessions["wrong-key"]).toBeDefined();
+  expect(first.physical.releaseCalls + first.physical.deleteCalls).toBe(releasesBefore);
+  first.store.close();
+});
+
+test("unattributable member blocks group delete before any topic is destroyed", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(reviewer.id);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-unattr-gate",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  // Triple-less, binding-less, conversation-less: proves nothing about any
+  // root. The entry gate must fire before the first Topic teardown deletes
+  // rows or metadata.
+  first.state.sessions.unattr_shadow = {
+    alias: "unattr_shadow",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:unattr_shadow",
+    logical_session_id: "ffffffff-ffff-4fff-ffff-ffffffffffff",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: { kind: "group-member", bindingId: "missing_binding" },
+  };
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "ambiguous_group_ownership",
+  });
+  // Nothing destructive happened: Topic row, durable rows, Group lifecycle,
+  // sessions, and bindings all intact.
+  expect(first.state.conversation_topics[topic.id]).toBeDefined();
+  expect(first.state.conversation_topics[topic.id]?.status).toBe("active");
+  expect(first.store.listRuns(group.id)).not.toHaveLength(0);
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 })).not.toHaveLength(0);
+  expect(first.state.conversations[group.id]?.lifecycle).not.toBe("deleting");
+  expect(first.sessions.getLogicalSessionRecord("unattr_shadow")?.alias).toBe("unattr_shadow");
+  expect(first.store.isConversationDeleting(group.id)).toBe(false);
+  first.store.close();
+});
+
+test("ghost binding with an alias/id mismatch fails group delete closed, never orphans", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Corrupt the session map so the binding's alias no longer resolves, while
+  // the logical id still finds a hidden session with a partial legacy owner
+  // (crash/corruption residue: alias lost, bindingId the only clue).
+  const live = first.sessions.getLogicalSessionRecord(binding.sessionAlias)!;
+  const hiddenAlias = "hidden_mismatch_session";
+  first.state.sessions[hiddenAlias] = {
+    ...structuredClone(live),
+    alias: hiddenAlias,
+    owner: { kind: "group-member", bindingId: binding.id },
+  };
+  delete first.state.sessions[binding.sessionAlias];
+  const { createScopedGroupMemberBindingId: scopedId } = await import("../../../src/domain/ids");
+  expect(binding.id).toBe(scopedId(group.id, topic.id, reviewer.id));
+  // Verified delete must fail closed on the mismatch: the by-id scan finds
+  // the hidden session but the alias axis does not resolve, and deleting the
+  // binding first would lose the only clue a partial owner needs. The Group
+  // record, the binding, and the hidden session all survive for retry.
+  await expect(first.service.teardownGroupConversation(group.id)).rejects.toMatchObject({
+    code: "runtime_ownership_conflict",
+  });
+  expect(first.state.conversations[group.id]).toBeDefined();
+  expect(first.state.bot_runtime_bindings[binding.id]).toBeDefined();
+  expect(first.sessions.getLogicalSessionRecord(hiddenAlias)?.alias).toBe(hiddenAlias);
+  first.store.close();
+});
+
+test("activation releases a rootless canonical group-member session and unlocks the Bot", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: BOT_ID, conversationId: group.id, topicId: topic.id,
+  });
+  const alias = binding.sessionAlias;
+  expect(first.sessions.getLogicalSessionRecord(alias)).toBeDefined();
+  // Quarantine the Group root out of band (malformed record drop): Topic and
+  // binding reconcile away, the exact session row stays as the handle.
+  delete first.state.conversations[group.id];
+  const { parseState } = await import("../../../src/state/state-store");
+  const dropped: { section: string; key: string; reason: string }[] = [];
+  const reloaded = parseState(JSON.parse(JSON.stringify({
+    ...first.state,
+    bots: first.state.bots,
+    conversations: first.state.conversations,
+    conversation_topics: first.state.conversation_topics,
+    bot_runtime_bindings: first.state.bot_runtime_bindings,
+    sessions: first.state.sessions,
+  })), "state.json", dropped);
+  expect(reloaded.sessions[alias]?.owner?.kind).toBe("group-member");
+  // Rebuild the runtime on the reconciled state and activate: the orphan
+  // sweep must verified-release the session (physical handle executed).
+  for (const key of Object.keys(first.state.sessions)) {
+    if (!(key in reloaded.sessions)) delete first.state.sessions[key];
+  }
+  Object.assign(first.state.sessions, reloaded.sessions);
+  for (const key of Object.keys(first.state.conversation_topics)) {
+    if (!(key in reloaded.conversation_topics)) delete first.state.conversation_topics[key];
+  }
+  Object.assign(first.state.conversation_topics, reloaded.conversation_topics);
+  for (const key of Object.keys(first.state.bot_runtime_bindings)) {
+    if (!(key in reloaded.bot_runtime_bindings)) delete first.state.bot_runtime_bindings[key];
+  }
+  Object.assign(first.state.bot_runtime_bindings, reloaded.bot_runtime_bindings);
+  for (const key of Object.keys(first.state.conversations)) {
+    if (!(key in reloaded.conversations)) delete first.state.conversations[key];
+  }
+  Object.assign(first.state.conversations, reloaded.conversations);
+  const physicalBefore = first.physical.releaseCalls + first.physical.deleteCalls;
+  await first.service.activateAfterConsumerLock();
+  expect(first.service.isConsumerActivated()).toBe(true);
+  expect(first.sessions.getLogicalSessionRecord(alias)).toBeNull();
+  expect(first.physical.releaseCalls + first.physical.deleteCalls).toBeGreaterThan(physicalBefore);
+  // The Bot is no longer runtime-locked: agent edit succeeds.
+  await expect(first.bots.updateBot(BOT_ID, { agent: "claude" })).resolves.toMatchObject({ agent: "claude" });
+  first.store.close();
+});
+
+test("non-canonical rootless owner stays hidden and blocks activation until operator recovery", async () => {
+  const { parseState } = await import("../../../src/state/state-store");
+  const dropped: { section: string; key: string; reason: string }[] = [];
+  const state = parseState({
+    bots: {
+      bot_b: {
+        id: "bot_b", name: "B", agent: "codex", workspace: "backend", enabled: true,
+        profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+      },
+    },
+    sessions: {
+      weird: {
+        alias: "weird",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:weird",
+        logical_session_id: "55555555-5555-4555-8555-555555555555",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: {
+          kind: "group-member",
+          bindingId: "bind_not_canonical",
+          botId: "bot_b",
+          conversationId: "conv_gone",
+          topicId: "topic_gone",
+        },
+      },
+    },
+  }, "state.json", dropped);
+  // Ambiguous: kept verbatim-hidden (never reinterpreted as unowned), and
+  // activation must fail closed with an actionable recovery error.
+  const { isHiddenProductSessionOwner } = await import("../../../src/state/types");
+  const { assertOrdinarySessionAddressable } = await import("../../../src/sessions/ordinary-session-guard");
+  expect(state.sessions.weird?.owner).toEqual({
+    kind: "group-member",
+    bindingId: "bind_not_canonical",
+    botId: "bot_b",
+    conversationId: "conv_gone",
+    topicId: "topic_gone",
+  });
+  expect(isHiddenProductSessionOwner(state.sessions.weird?.owner)).toBe(true);
+  expect(() => assertOrdinarySessionAddressable(state.sessions.weird?.owner)).toThrow(
+    expect.objectContaining({ code: "hidden_session" }),
+  );
+  expect(dropped.some(
+    (entry) => entry.key === "weird" && entry.reason.includes("requires operator recovery"),
+  )).toBe(true);
+  // Ordinary Sessions list must not surface it.
+  const aliases = Object.values(state.sessions)
+    .filter((session) => !isHiddenProductSessionOwner(session.owner))
+    .map((session) => session.alias);
+  expect(aliases).not.toContain("weird");
+});
+
+test("activation fails closed on ambiguous group-member ownership (actionable recovery)", async () => {
+  const first = await createLifecycle();
+  first.state.sessions.ambiguous = {
+    alias: "ambiguous",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:ambiguous",
+    logical_session_id: "77777777-7777-4777-8777-777777777777",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: {
+      kind: "group-member",
+      bindingId: "bind_not_canonical",
+      botId: BOT_ID,
+      conversationId: "conv_gone",
+      topicId: "topic_gone",
+    },
+  };
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "ambiguous_group_ownership" });
+  const detail = (error as { details?: { sessions?: { alias: string }[] } }).details;
+  expect(detail?.sessions?.map((s) => s.alias)).toContain("ambiguous");
+  expect(first.service.isConsumerActivated()).toBe(false);
+  // Nothing was released or deleted: the handle and the row both survive for
+  // the operator (quarantine backup preserves the raw bytes too).
+  expect(first.sessions.getLogicalSessionRecord("ambiguous")?.alias).toBe("ambiguous");
+  first.store.close();
+});
+
+test("terminal settleCancelBatch with a foreign member fails closed (no mismatched pair)", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const mkRun = (requestId: string) => first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId,
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  const runA = mkRun("req-term-a");
+  const runB = mkRun("req-term-b");
+  // Terminalize run A through the cancel path (all members never started).
+  const terminal = first.store.cancelRun(runA.run.id, NOW);
+  expect(terminal.run.state).toBe("cancelled");
+  // A foreign member on a TERMINAL run must still fail closed — the fence
+  // runs before the idempotent early-return, so the caller can never observe
+  // a mismatched Run/member join.
+  expect(() => first.store.settleCancelBatch({
+    runId: runA.run.id,
+    now: NOW,
+    outcomes: [{ memberTurnId: runB.memberTurns[0]!.id, outcome: "cancelled" }],
+  })).toThrow(/does not belong to run/);
+  // The same-run member on the terminal run stays idempotent.
+  const same = first.store.settleCancelBatch({
+    runId: runA.run.id,
+    now: NOW,
+    outcomes: [{ memberTurnId: runA.memberTurns[0]!.id, outcome: "cancelled" }],
+  });
+  expect(same.run.id).toBe(runA.run.id);
+  expect(same.settled[0]?.member.runId).toBe(runA.run.id);
+  first.store.close();
+});
+
+test("settleCancelBatch rejects a duplicate memberTurnId with zero writes", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const run = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-dupe-member",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: (await import("../../../src/bots/bot-types")).snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  const memberId = run.memberTurns[0]!.id;
+  const before = {
+    messages: first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 50 }).length,
+    consumed: first.store.getRun(run.run.id)!.consumedMemberTurns,
+    state: first.store.getMemberTurn(memberId)?.state,
+    dispatch: first.store.getDispatchForMemberTurn(memberId)?.state,
+  };
+  expect(() => first.store.settleCancelBatch({
+    runId: run.run.id,
+    now: NOW,
+    outcomes: [
+      { memberTurnId: memberId, outcome: "cancelled" },
+      { memberTurnId: memberId, outcome: "cancelled" },
+    ],
+  })).toThrow(/twice/);
+  // Zero member mutation, zero messages, untouched aggregate and dispatch.
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 50 }).length).toBe(before.messages);
+  expect(first.store.getRun(run.run.id)!.consumedMemberTurns).toBe(before.consumed);
+  expect(first.store.getMemberTurn(memberId)?.state).toBe(before.state);
+  expect(first.store.getDispatchForMemberTurn(memberId)?.state).toBe(before.dispatch);
+  first.store.close();
+});
+
+test("activation fails closed on a Direct custom Topic whose row was quarantined", async () => {
+  const first = await createLifecycle();
+  const bot = first.bots.getBot(BOT_ID);
+  const { createDirectConversationId, createDirectTopicId } = await import("../../../src/domain/ids");
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const conversationId = createDirectConversationId(bot.id);
+  // A custom Direct Topic row: NOT the deterministic default.
+  const customTopicId = "topic_custom_quarantined";
+  first.state.conversation_topics[customTopicId] = {
+    id: customTopicId, conversationId, title: "Custom", status: "active",
+    createdAt: NOW, updatedAt: NOW,
+  };
+  const accepted = first.store.acceptRequest({
+    conversationId,
+    topicId: customTopicId,
+    requestId: "req-direct-custom",
+    botId: bot.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(bot, NOW),
+    now: NOW,
+  });
+  // State corruption quarantines the custom Topic row AND the persisted
+  // Conversation row together. The Bot is healthy, but the Topic root is
+  // gone: activation must fail with conversation_work_unrooted before the
+  // first kick can claim the run into a topic_not_found pending loop.
+  delete first.state.conversation_topics[customTopicId];
+  // The default synthetic root stays valid: proving the Bot alone is not
+  // enough, the custom Topic link must survive too.
+  expect(customTopicId).not.toBe(createDirectTopicId(bot.id));
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "conversation_work_unrooted" });
+  const detail = (error as { details?: { roots?: { conversationId: string; topicId: string }[] } }).details;
+  expect(detail?.roots).toContainEqual({ conversationId, topicId: customTopicId });
+  expect(first.service.isConsumerActivated()).toBe(false);
+  // Nothing claimed or settled: the queued run is untouched for the operator.
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
+  first.store.close();
+});
+
+test("activation fails closed on cross-kind group-member session (Direct root, untouched)", async () => {
+  const first = await createLifecycle();
+  const { createScopedGroupMemberBindingId, createDirectConversationId, createDirectTopicId } =
+    await import("../../../src/domain/ids");
+  const botId = BOT_ID;
+  const conversationId = createDirectConversationId(botId);
+  const topicId = createDirectTopicId(botId);
+  // A live Direct Conversation/Topic root plus a CANONICAL group-member owner
+  // over the same triple: the kind contradiction must block activation —
+  // never swept (no missing root), never surfaced as ordinary.
+  first.state.conversations[conversationId] = {
+    id: conversationId, kind: "bot", title: "Reviewer", botIds: [botId],
+    createdAt: NOW, updatedAt: NOW,
+  };
+  first.state.conversation_topics[topicId] = {
+    id: topicId, conversationId, title: "Default", status: "active",
+    createdAt: NOW, updatedAt: NOW,
+  };
+  first.state.sessions.cross_owned = {
+    alias: "cross_owned",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:cross_owned",
+    logical_session_id: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: {
+      kind: "group-member",
+      bindingId: createScopedGroupMemberBindingId(conversationId, topicId, botId),
+      botId,
+      conversationId,
+      topicId,
+    },
+  };
+  const releasesBefore = first.physical.releaseCalls + first.physical.deleteCalls;
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "ambiguous_group_ownership" });
+  const detail = (error as { details?: { sessions?: { alias: string }[] } }).details;
+  expect(detail?.sessions?.map((entry) => entry.alias)).toContain("cross_owned");
+  expect(first.service.isConsumerActivated()).toBe(false);
+  // Physical session untouched; row and ownership intact for the operator.
+  expect(first.physical.releaseCalls + first.physical.deleteCalls).toBe(releasesBefore);
+  expect(first.sessions.getLogicalSessionRecord("cross_owned")?.owner?.kind).toBe("group-member");
+  first.store.close();
+});
+
+test("activation fails closed on cross-kind group-member session over a synthetic Direct root", async () => {
+  const first = await createLifecycle();
+  const { createScopedGroupMemberBindingId, createDirectConversationId, createDirectTopicId } =
+    await import("../../../src/domain/ids");
+  const botId = BOT_ID;
+  const conversationId = createDirectConversationId(botId);
+  const topicId = createDirectTopicId(botId);
+  // Same canonical cross-kind owner as the persisted-root test — but with
+  // NO persisted Conversation/Topic rows. The live Bot makes this a
+  // synthetic Direct root, which is still a live root: the orphan sweep
+  // must not treat it as a missing Group root and physical-release it.
+  expect(first.state.conversations[conversationId]).toBeUndefined();
+  expect(first.state.conversation_topics[topicId]).toBeUndefined();
+  expect(first.bots.getBot(botId)).toBeDefined();
+  first.state.sessions.cross_synthetic = {
+    alias: "cross_synthetic",
+    agent: "codex",
+    workspace: "backend",
+    transport_session: "backend:cross_synthetic",
+    logical_session_id: "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb",
+    created_at: NOW,
+    last_used_at: NOW,
+    owner: {
+      kind: "group-member",
+      bindingId: createScopedGroupMemberBindingId(conversationId, topicId, botId),
+      botId,
+      conversationId,
+      topicId,
+    },
+  };
+  const releasesBefore = first.physical.releaseCalls + first.physical.deleteCalls;
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "ambiguous_group_ownership" });
+  const detail = (error as { details?: { sessions?: { alias: string }[] } }).details;
+  expect(detail?.sessions?.map((entry) => entry.alias)).toContain("cross_synthetic");
+  expect(first.service.isConsumerActivated()).toBe(false);
+  // Physical session untouched; row and ownership intact for the operator.
+  expect(first.physical.releaseCalls + first.physical.deleteCalls).toBe(releasesBefore);
+  expect(first.sessions.getLogicalSessionRecord("cross_synthetic")?.owner?.kind).toBe("group-member");
+  first.store.close();
+});
+
+test("load keeps a synthetic Direct custom Topic so activation fails closed on its cross-kind owner", async () => {
+  const first = await createLifecycle();
+  const { createScopedGroupMemberBindingId, createDirectConversationId } =
+    await import("../../../src/domain/ids");
+  const { parseState } = await import("../../../src/state/state-store");
+  const botId = BOT_ID;
+  const conversationId = createDirectConversationId(botId);
+  const customTopicId = "topic_custom_direct_note";
+  // Live Bot + no persisted Conversation + a surviving custom Direct Topic
+  // row linked to the deterministic conversation: a synthetic-direct root.
+  // The canonical group-member owner over it is a kind contradiction that
+  // must survive load reconcile and fail activation closed.
+  const raw = JSON.parse(JSON.stringify({
+    ...first.state,
+    bots: first.state.bots,
+    conversations: first.state.conversations,
+    conversation_topics: {
+      ...first.state.conversation_topics,
+      [customTopicId]: {
+        id: customTopicId,
+        conversationId,
+        title: "Custom direct note",
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    bot_runtime_bindings: first.state.bot_runtime_bindings,
+    sessions: {
+      cross_custom: {
+        alias: "cross_custom",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:cross_custom",
+        logical_session_id: "cccccccc-cccc-4ccc-accc-cccccccccccc",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: {
+          kind: "group-member",
+          bindingId: createScopedGroupMemberBindingId(conversationId, customTopicId, botId),
+          botId,
+          conversationId,
+          topicId: customTopicId,
+        },
+      },
+    },
+  }));
+  const dropped: { section: string; key: string; reason: string }[] = [];
+  const reloaded = parseState(raw, "state.json", dropped);
+  // Load reconcile must keep the custom Topic row: it is the cross-kind
+  // evidence the activation gate needs. Dropping it would downgrade the
+  // live contradiction to a missing root the sweep may physical-release.
+  expect(reloaded.conversation_topics[customTopicId]?.conversationId).toBe(conversationId);
+  expect(dropped.some((entry) => entry.section === "conversation_topics" && entry.key === customTopicId)).toBe(false);
+  expect(reloaded.sessions.cross_custom?.owner?.kind).toBe("group-member");
+  for (const key of Object.keys(first.state.sessions)) {
+    if (!(key in reloaded.sessions)) delete first.state.sessions[key];
+  }
+  Object.assign(first.state.sessions, reloaded.sessions);
+  for (const key of Object.keys(first.state.conversation_topics)) {
+    if (!(key in reloaded.conversation_topics)) delete first.state.conversation_topics[key];
+  }
+  Object.assign(first.state.conversation_topics, reloaded.conversation_topics);
+  for (const key of Object.keys(first.state.bot_runtime_bindings)) {
+    if (!(key in reloaded.bot_runtime_bindings)) delete first.state.bot_runtime_bindings[key];
+  }
+  Object.assign(first.state.bot_runtime_bindings, reloaded.bot_runtime_bindings);
+  for (const key of Object.keys(first.state.conversations)) {
+    if (!(key in reloaded.conversations)) delete first.state.conversations[key];
+  }
+  Object.assign(first.state.conversations, reloaded.conversations);
+  const releasesBefore = first.physical.releaseCalls + first.physical.deleteCalls;
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "ambiguous_group_ownership" });
+  const detail = (error as { details?: { sessions?: { alias: string }[] } }).details;
+  expect(detail?.sessions?.map((entry) => entry.alias)).toContain("cross_custom");
+  expect(first.service.isConsumerActivated()).toBe(false);
+  expect(first.physical.releaseCalls + first.physical.deleteCalls).toBe(releasesBefore);
+  expect(first.sessions.getLogicalSessionRecord("cross_custom")?.owner?.kind).toBe("group-member");
+  first.store.close();
+});
+
+test("missing-topic durable run is cancelled and reconciled, never row-deleted live", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-ghost-run",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    now: NOW,
+  });
+  // Topic metadata vanishes out of band; the durable run is now ghost-topic.
+  delete first.state.conversation_topics[topic.id];
+  await first.service.teardownGroupConversation(group.id);
+  // The run reconciled to terminal through the cancel path (not deleted live).
+  const settled = first.store.getRun(accepted.run.id);
+  expect(settled).toBeUndefined();
+  const remaining = first.store.listRuns(group.id);
+  expect(remaining).toEqual([]);
+  expect(first.state.conversations[group.id]).toBeUndefined();
+  first.store.close();
+});
+
+test("createGroupTopic racing metadata deleteGroup fails instead of orphaning a Topic", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  // Freeze the metadata delete inside its mutex at persist time: the live
+  // state still shows G while delete holds the shared stateMutex.
+  const gate = deferred();
+  const release = deferred();
+  const innerSaveNow = first.stateStore.saveNow.bind(first.stateStore);
+  let deleteHolding = false;
+  first.stateStore.saveNow = (async (next: AppState) => {
+    if (!deleteHolding && next.conversations[group.id] === undefined && first.state.conversations[group.id] !== undefined) {
+      deleteHolding = true;
+      gate.resolve();
+      await release.promise;
+    }
+    return innerSaveNow(next);
+  }) as typeof first.stateStore.saveNow;
+  const deleting = first.bots.deleteGroup(group.id);
+  await gate.promise;
+  // The outer requireConversation still sees G (delete has not published),
+  // so create queues behind the same mutex; after delete publishes, the
+  // in-mutex liveness recheck must fail instead of orphaning a Topic.
+  const creating = first.service.createGroupTopic(group.id, "Racing", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  release.resolve();
+  await deleting;
+  await expect(creating).rejects.toMatchObject({ code: "conversation_not_found" });
+  expect(first.state.conversations[group.id]).toBeUndefined();
+  expect(Object.values(first.state.conversation_topics).filter((topic) => topic.conversationId === group.id)).toEqual([]);
+  first.store.close();
+});
+
+test("createGroupTopic after create still lets deleteGroup fail closed on the new Topic", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  expect(first.state.conversation_topics[topic.id]?.conversationId).toBe(group.id);
+  await expect(first.bots.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_topics" });
+  expect(first.state.conversations[group.id]?.kind).toBe("group");
+  first.store.close();
+});
+
+test("activation fails closed when a persisted Direct root lost its owning Bot at load", async () => {
+  const first = await createLifecycle();
+  const bot = first.bots.getBot(BOT_ID);
+  const { createDirectConversationId } = await import("../../../src/domain/ids");
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const { parseState } = await import("../../../src/state/state-store");
+  const conversationId = createDirectConversationId(bot.id);
+  const customTopicId = "topic_direct_botless";
+  // Persisted Direct Conversation + custom Topic rows (valid shapes), then a
+  // queued run on them. The raw Bot record is malformed so load quarantines
+  // the Bot while the Direct rows survive — the classic lenient-parser split.
+  first.state.conversations[conversationId] = {
+    id: conversationId, kind: "bot", title: bot.name, botIds: [bot.id],
+    createdAt: NOW, updatedAt: NOW,
+  };
+  first.state.conversation_topics[customTopicId] = {
+    id: customTopicId, conversationId, title: "Custom", status: "active",
+    createdAt: NOW, updatedAt: NOW,
+  };
+  const accepted = first.store.acceptRequest({
+    conversationId,
+    topicId: customTopicId,
+    requestId: "req-direct-botless",
+    botId: bot.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(bot, NOW),
+    now: NOW,
+  });
+  const raw = JSON.parse(JSON.stringify({
+    ...first.state,
+    bots: { ...first.state.bots, [bot.id]: { ...first.state.bots[bot.id], agent: 123 } },
+    conversations: first.state.conversations,
+    conversation_topics: first.state.conversation_topics,
+    bot_runtime_bindings: first.state.bot_runtime_bindings,
+    sessions: first.state.sessions,
+  }));
+  const dropped: { section: string; key: string; reason: string }[] = [];
+  const reloaded = parseState(raw, "state.json", dropped);
+  expect(reloaded.bots[bot.id]).toBeUndefined();
+  expect(dropped.some((entry) => entry.section === "bots" && entry.key === bot.id)).toBe(true);
+  expect(reloaded.conversations[conversationId]?.kind).toBe("bot");
+  for (const key of Object.keys(first.state.bots)) {
+    if (!(key in reloaded.bots)) delete first.state.bots[key];
+  }
+  Object.assign(first.state.bots, reloaded.bots);
+  for (const key of Object.keys(first.state.conversations)) {
+    if (!(key in reloaded.conversations)) delete first.state.conversations[key];
+  }
+  Object.assign(first.state.conversations, reloaded.conversations);
+  for (const key of Object.keys(first.state.conversation_topics)) {
+    if (!(key in reloaded.conversation_topics)) delete first.state.conversation_topics[key];
+  }
+  Object.assign(first.state.conversation_topics, reloaded.conversation_topics);
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "conversation_work_unrooted" });
+  const detail = (error as { details?: { roots?: { conversationId: string; topicId: string }[] } }).details;
+  expect(detail?.roots).toContainEqual({ conversationId, topicId: customTopicId });
+  expect(first.service.isConsumerActivated()).toBe(false);
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
+  first.store.close();
+});
+
+test("botless persisted Direct root still fails closed on its cross-kind member, never releases it", async () => {
+  const first = await createLifecycle();
+  const bot = first.bots.getBot(BOT_ID);
+  const { createScopedGroupMemberBindingId, createDirectConversationId } =
+    await import("../../../src/domain/ids");
+  const { parseState } = await import("../../../src/state/state-store");
+  const conversationId = createDirectConversationId(bot.id);
+  const customTopicId = "topic_direct_botless_cross";
+  // Malformed Bot + persisted Direct C/T + canonical cross-kind member:
+  // the kind contradiction survives the Bot quarantine. The sweep must
+  // not read Bot-missing as root-missing and physical-release the evidence.
+  const raw = JSON.parse(JSON.stringify({
+    ...first.state,
+    bots: { ...first.state.bots, [bot.id]: { ...first.state.bots[bot.id], agent: 123 } },
+    conversations: {
+      ...first.state.conversations,
+      [conversationId]: {
+        id: conversationId, kind: "bot", title: bot.name, botIds: [bot.id],
+        createdAt: NOW, updatedAt: NOW,
+      },
+    },
+    conversation_topics: {
+      ...first.state.conversation_topics,
+      [customTopicId]: {
+        id: customTopicId, conversationId, title: "Custom", status: "active",
+        createdAt: NOW, updatedAt: NOW,
+      },
+    },
+    bot_runtime_bindings: first.state.bot_runtime_bindings,
+    sessions: {
+      ...first.state.sessions,
+      cross_botless: {
+        alias: "cross_botless",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:cross_botless",
+        logical_session_id: "dddddddd-dddd-4ddd-addd-dddddddddddd",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: {
+          kind: "group-member",
+          bindingId: createScopedGroupMemberBindingId(conversationId, customTopicId, bot.id),
+          botId: bot.id,
+          conversationId,
+          topicId: customTopicId,
+        },
+      },
+    },
+  }));
+  const dropped: { section: string; key: string; reason: string }[] = [];
+  const reloaded = parseState(raw, "state.json", dropped);
+  expect(reloaded.bots[bot.id]).toBeUndefined();
+  expect(reloaded.conversations[conversationId]?.kind).toBe("bot");
+  expect(reloaded.conversation_topics[customTopicId]?.conversationId).toBe(conversationId);
+  expect(reloaded.sessions.cross_botless?.owner?.kind).toBe("group-member");
+  for (const key of Object.keys(first.state.bots)) {
+    if (!(key in reloaded.bots)) delete first.state.bots[key];
+  }
+  Object.assign(first.state.bots, reloaded.bots);
+  for (const key of Object.keys(first.state.sessions)) {
+    if (!(key in reloaded.sessions)) delete first.state.sessions[key];
+  }
+  Object.assign(first.state.sessions, reloaded.sessions);
+  for (const key of Object.keys(first.state.conversation_topics)) {
+    if (!(key in reloaded.conversation_topics)) delete first.state.conversation_topics[key];
+  }
+  Object.assign(first.state.conversation_topics, reloaded.conversation_topics);
+  for (const key of Object.keys(first.state.conversations)) {
+    if (!(key in reloaded.conversations)) delete first.state.conversations[key];
+  }
+  Object.assign(first.state.conversations, reloaded.conversations);
+  const releasesBefore = first.physical.releaseCalls + first.physical.deleteCalls;
+  const error = await first.service.activateAfterConsumerLock().catch((e: unknown) => e);
+  expect(error).toMatchObject({ code: "ambiguous_group_ownership" });
+  const detail = (error as { details?: { sessions?: { alias: string }[] } }).details;
+  expect(detail?.sessions?.map((entry) => entry.alias)).toContain("cross_botless");
+  expect(first.service.isConsumerActivated()).toBe(false);
+  expect(first.physical.releaseCalls + first.physical.deleteCalls).toBe(releasesBefore);
+  expect(first.sessions.getLogicalSessionRecord("cross_botless")?.owner?.kind).toBe("group-member");
+  first.store.close();
+});
+
+test("load strips a Direct executionTarget but keeps the row for operator review", async () => {
+  const { parseState } = await import("../../../src/state/state-store");
+  const { createDirectConversationId } = await import("../../../src/domain/ids");
+  const first = await createLifecycle();
+  const bot = first.bots.getBot(BOT_ID);
+  const conversationId = createDirectConversationId(bot.id);
+  const directTopicId = "topic_direct_targeted";
+  const raw = JSON.parse(JSON.stringify({
+    ...first.state,
+    bots: first.state.bots,
+    conversations: {
+      ...first.state.conversations,
+      [conversationId]: {
+        id: conversationId, kind: "bot", title: bot.name, botIds: [bot.id],
+        createdAt: NOW, updatedAt: NOW,
+      },
+    },
+    conversation_topics: {
+      ...first.state.conversation_topics,
+      [directTopicId]: {
+        id: directTopicId,
+        conversationId,
+        title: "Direct with target",
+        status: "active",
+        executionTarget: { workspace: "frontend", isolation: "shared-single-writer" },
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    bot_runtime_bindings: first.state.bot_runtime_bindings,
+    sessions: first.state.sessions,
+  }));
+  const dropped: { section: string; key: string; reason: string }[] = [];
+  const reloaded = parseState(raw, "state.json", dropped);
+  // Row survives (no silent cross-kind downgrade into a missing root), the
+  // unenforced Group-only field is stripped and reported instead.
+  expect(reloaded.conversation_topics[directTopicId]?.conversationId).toBe(conversationId);
+  expect(reloaded.conversation_topics[directTopicId]?.executionTarget).toBeUndefined();
+  expect(dropped.some((entry) => entry.section === "conversation_topics" && entry.key === directTopicId)).toBe(true);
+  first.store.close();
+});
+
+test("binding-less exact owner with no topic blocks delete; teardown releases it", async () => {
+  const first = await createLifecycle();
+  const bots = first.bots;
+  const reviewer = Object.values(first.state.bots)[0]!;
+  seedTesterBot(first.state);
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint 1", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const binding = await first.runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic.id,
+  });
+  // Crash window: binding row dropped, session persists; then the Topic row
+  // vanishes too. The exact owner still pins the group.
+  const saved = first.state.bot_runtime_bindings[binding.id];
+  delete first.state.bot_runtime_bindings[binding.id];
+  delete first.state.conversation_topics[topic.id];
+  expect(first.state.sessions[binding.sessionAlias]).toBeDefined();
+  await expect(bots.deleteGroup(group.id)).rejects.toMatchObject({ code: "group_has_runtime" });
+  await first.service.teardownGroupConversation(group.id);
+  expect(first.state.conversations[group.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(binding.sessionAlias) ?? undefined).toBeUndefined();
+  expect(saved).toBeDefined();
+  first.store.close();
+});
+
+test("membership removal during teardown cannot orphan a late session", async () => {
+  // updateGroup on a deleting group fails closed (checked first, standalone).
+  {
+    const first = await createLifecycle();
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+    const timestamp = new Date().toISOString();
+    first.store.markConversationDeleting(group.id, timestamp);
+    first.state.conversations[group.id] = {
+      ...first.state.conversations[group.id]!,
+      lifecycle: "deleting",
+      updatedAt: timestamp,
+    };
+    await expect(first.bots.updateGroup(group.id, { title: "Nope" })).rejects.toMatchObject({
+      code: "conversation_deleting",
+    });
+    first.store.close();
+  }
+  // A member removed mid-teardown (after the barrier snapshot) still has its
+  // late session swept by the final gate's resweep: hold C's gate from the
+  // start via a paused materializer, remove C, then release — the session
+  // must not survive the topic.
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const botC = "bot_carol";
+  first.state.bots[botC] = {
+    id: botC,
+    name: "Carol",
+    agent: "codex",
+    workspace: "backend",
+    enabled: true,
+    profileRevision: 1,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Pause C's materializer inside session creation (holds C's lifecycle gate
+  // behind the scenes is complex to hook; instead: materialize C first so its
+  // session exists, then remove C from membership, then tear down — the final
+  // resweep must still release C's session even though C is no longer a member).
+  const bindingC = await first.runtime.getOrCreateGroupMemberSession({
+    botId: botC, conversationId: group.id, topicId: topic.id,
+  });
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID] });
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  expect(first.state.conversation_topics[topic.id]).toBeUndefined();
+  expect(first.sessions.getLogicalSessionRecord(bindingC.sessionAlias) ?? undefined).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[bindingC.id]).toBeUndefined();
+  first.store.close();
+});
+
+test("removed member runtime is still swept; removed member cannot rematerialize", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const botC = "bot_carol";
+  first.state.bots[botC] = {
+    id: botC,
+    name: "Carol",
+    agent: "codex",
+    workspace: "backend",
+    enabled: true,
+    profileRevision: 1,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const bindingC = await first.runtime.getOrCreateGroupMemberSession({
+    botId: botC, conversationId: group.id, topicId: topic.id,
+  });
+  // Remove C while its runtime exists: metadata edit succeeds (lifecycle
+  // gates held), runtime stays sweepable, rematerialize fails closed.
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID] });
+  expect(first.bots.getGroup(group.id).botIds).toEqual([BOT_ID, TESTER_ID]);
+  await expect(first.runtime.getOrCreateGroupMemberSession({
+    botId: botC, conversationId: group.id, topicId: topic.id,
+  })).rejects.toMatchObject({ code: "group_member_not_member" });
+  // Teardown still sweeps C's pre-removal runtime (final gate recomputes
+  // from bindings/sessions, not membership).
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  expect(first.sessions.getLogicalSessionRecord(bindingC.sessionAlias) ?? undefined).toBeUndefined();
+  expect(first.state.bot_runtime_bindings[bindingC.id]).toBeUndefined();
+  first.store.close();
+});
+
+test("concurrent membership updates cannot drop a just-added member without its gate", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  for (const [id, name] of [["bot_carol", "Carol"], ["bot_dan", "Dan"]] as const) {
+    first.state.bots[id] = {
+      id, name, agent: "codex", workspace: "backend", enabled: true,
+      profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+    };
+  }
+  const botC = "bot_carol";
+  const botD = "bot_dan";
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  // U2 starts first and probes the stale [A,B] membership; its gate
+  // acquisition pauses until U1 has committed [A,C].
+  let u1Committed = false;
+  // U1 commits [A,C] first. U2 then proves the remover holds the added
+  // Bot's gate via gate occupancy (see below).
+  const u1 = first.bots.updateGroup(group.id, { botIds: [BOT_ID, botC] });
+  await u1;
+  u1Committed = true;
+  expect(first.bots.getGroup(group.id).botIds).toEqual([BOT_ID, botC]);
+  // C's gate held externally (paused materializer stand-in): U2's removal of
+  // C must block on C's gate, proving the remover holds the added Bot's gate.
+  let releaseC!: () => void;
+  const cGatePromise = new Promise<void>((resolve) => { releaseC = resolve; });
+  const extHold = first.bots.runLifecycle(botC, () => cGatePromise);
+  let u2Committed = false;
+  const u2 = first.bots.updateGroup(group.id, { botIds: [BOT_ID, botD] }).then((record) => {
+    u2Committed = true;
+    return record;
+  });
+  await tick();
+  await tick();
+  expect(u2Committed).toBe(false);
+  expect(first.bots.getGroup(group.id).botIds).toEqual([BOT_ID, botC]);
+  releaseC();
+  await extHold;
+  const final = await u2;
+  expect(u1Committed).toBe(true);
+  expect(final.botIds).toEqual([BOT_ID, botD]);
+  first.store.close();
+});
+test("removed member binding-less session blocks deleteBot; teardown releases it", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const botC = "bot_carol";
+  first.state.bots[botC] = {
+    id: botC,
+    name: "Carol",
+    agent: "codex",
+    workspace: "backend",
+    enabled: true,
+    profileRevision: 1,
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Crash window: session durable, binding never published. Then C leaves.
+  await first.runtime.getOrCreateGroupMemberSession({
+    botId: botC, conversationId: group.id, topicId: topic.id,
+  });
+  const bindingId = (await import("../../../src/domain/ids"))
+    .createScopedGroupMemberBindingId(group.id, topic.id, botC);
+  delete first.state.bot_runtime_bindings[bindingId];
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID] });
+  // C is out of membership, has no binding, no durable Run — but the
+  // binding-less session still pins C. deleteBot must fail closed, never
+  // orphan an owner pointing at a deleted Bot.
+  await expect(first.bots.deleteBot(botC)).rejects.toMatchObject({ code: "bot_in_use" });
+  expect(first.bots.getBot(botC).id).toBe(botC);
+  // And the pre-removal runtime still sweeps through the topic teardown.
+  await first.service.teardownGroupTopic(group.id, topic.id);
+  const aliases = Object.values(first.state.sessions).map((session) => session.alias);
+  expect(aliases.some((alias) => alias.includes(botC) || alias.includes("group"))).toBe(false);
+  first.store.close();
+});
+
+test("corrupt per-member snapshot fails closed instead of falling back", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-corrupt",
+    botId: botA.id,
+    content: "go",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+    now: NOW,
+  });
+  // Corrupt snapshot bytes out of band (simulates disk corruption).
+  for (const turn of accepted.memberTurns) {
+    first.store.directWriteForTest("member_turns", turn.id, {
+      profile_snapshot_json: "{not-json",
+    });
+  }
+  expect(() => first.store.claimNextDispatch({
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  })).toThrow(/malformed execution snapshot/);
+  // The corrupt turn never dispatches under another member's snapshot:
+  // its dispatch stays pending and the run never starts.
+  expect(first.store.listDispatchesForRun(accepted.run.id).every((d) => d.state === "pending")).toBe(true);
+  expect(first.store.getRun(accepted.run.id)?.startedAt).toBeUndefined();
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
+  first.store.close();
+});
+
+test("structurally invalid snapshot and trigger ids fail closed as corrupt", async () => {
+  // Snapshot cases share one lifecycle: each corrupt run stays queued, so
+  // the next claim still hits the earliest corrupt row deterministically.
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const claim = {
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+  };
+  const snapshotCases: Array<{ requestId: string; value: string }> = [
+    { requestId: "req-empty-object", value: "{}" },
+    { requestId: "req-null-execution", value: '{"revision":1,"capturedAt":"t","presentation":{"name":"x"},"behavior":{},"execution":null}' },
+  ];
+  for (const { requestId, value } of snapshotCases) {
+    const accepted = first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId,
+      botId: botA.id,
+      content: "go",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
+      now: NOW,
+    });
+    for (const turn of accepted.memberTurns) {
+      first.store.directWriteForTest("member_turns", turn.id, { profile_snapshot_json: value });
+    }
+    expect(() => first.store.claimNextDispatch(claim)).toThrow(/malformed execution snapshot/);
+    expect(first.store.listDispatchesForRun(accepted.run.id).every((d) => d.state === "pending")).toBe(true);
+    expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
+  }
+  first.store.close();
+  // Trigger-ids case gets its own lifecycle so the claim under test cannot
+  // land on an earlier corrupt snapshot row from the cases above.
+  const second = await createLifecycle();
+  seedTesterBot(second.state);
+  const group2 = await second.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic2 = await second.service.createGroupTopic(group2.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const botA2 = second.bots.getBot(BOT_ID);
+  const botB2 = second.bots.getBot(TESTER_ID);
+  const { snapshotBotProfile: snapshot2 } = await import("../../../src/bots/bot-types");
+  const accepted2 = second.store.acceptRequest({
+    conversationId: group2.id,
+    topicId: topic2.id,
+    requestId: "req-bad-triggers",
+    botId: botA2.id,
+    content: "go",
+    profileSnapshot: snapshot2(botA2, NOW),
+    members: [{ botId: botB2.id, profileSnapshot: snapshot2(botB2, NOW) }],
+    now: NOW,
+  });
+  for (const turn of accepted2.memberTurns) {
+    second.store.directWriteForTest("member_turns", turn.id, { trigger_message_ids_json: '{"oops":true}' });
+  }
+  expect(() => second.store.claimNextDispatch(claim)).toThrow(/malformed trigger message ids/);
+  expect(second.store.listDispatchesForRun(accepted2.run.id).every((d) => d.state === "pending")).toBe(true);
+  expect(second.store.getRun(accepted2.run.id)?.state).toBe("queued");
+  second.store.close();
 });

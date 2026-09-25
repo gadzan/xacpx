@@ -216,7 +216,7 @@ test("losing process buildApp does not claim or execute durable Conversation wor
   expect(winner.runnerCalls()).toBe(1);
   const afterWin = await SqliteConversationStore.open(sqlitePath);
   expect(afterWin.getRun(accepted.run.id)?.state).toBe("completed");
-  expect(afterWin.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("recovery");
+  expect(afterWin.getMemberTurn(accepted.memberTurn.id)?.origin).toBe("followup");
   afterWin.close();
 });
 

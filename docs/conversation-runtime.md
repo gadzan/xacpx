@@ -151,7 +151,19 @@ A crash before step 5 leaves the SQLite `deleting` barrier in place: new accepts
 
 Injected release failure leaves `deleting` + ownership in place for retry.
 
-**Remaining Bot-delete boundary:** `BotService.deleteBot` stays fail-closed (`bot_in_use` / `bot_in_group`) and does **not** auto-teardown. It consults AppState runtime references **and** ConversationStore durable work (`hasDurableBotWork`) so an accepted Run/outbox cannot outlive a deleted Bot through a crash-before-materialize window. Call `ConversationRunService.teardownDirectConversation` first, then delete the Bot. Group teardown is out of scope.
+**Remaining Bot-delete boundary:** `BotService.deleteBot` stays fail-closed (`bot_in_use` / `bot_in_group`) and does **not** auto-teardown. It consults AppState runtime references **and** ConversationStore durable work (`hasDurableBotWork`) so an accepted Run/outbox cannot outlive a deleted Bot through a crash-before-materialize window. Call `ConversationRunService.teardownDirectConversation` first, then delete the Bot.
+
+## Group foundations (PR6)
+
+Group Conversations are durable membership records (`kind: "group"`, `botIds` ≥ 2 unique, optional lead in membership, opaque `conversation_` id). No execution, routing, or member sessions happen at Group CRUD time.
+
+Group Topics carry an explicit `ExecutionTarget` (`workspace` + optional `cwd` + `isolation`). `cwd` is forward-compatible persisted shape only: PR6 `createGroupTopic()` rejects any non-empty `cwd` with `cwd_unsupported`, and member materialization also fails closed on a persisted non-empty `cwd` — until launcher execution honors it. `shared-single-writer` is the engineering default; `worktree-per-member` persists as a value with no provisioning yet. Topic teardown mirrors the direct order at Topic scope: mark deleting → cancel active Runs → reconcile indeterminate → verified member-session release → remove member bindings → delete store rows → remove Topic metadata. Retryable on release failure.
+
+Group delete is barrier-first: mark the Group deleting in SQLite + AppState (new Topics and new Group work fail closed from there), teardown every remaining Topic, verified-release residual member runtime, delete residual Conversation-store rows, then remove the Group record last. Rows-after-release-before-record means a physical release failure leaves durable Run/message history intact, and a store-cleanup failure leaves the Group row and the barrier intact for retry; the fail-closed metadata delete reuses the same Topics/bindings/durable-rows guards.
+
+Member sessions run Bot agent/model/effort on the Topic workspace (Topic owns the work target; PR6 runs in the workspace root — per-Topic `cwd` is not honored yet). Member bindings scope `conversationId × topicId × botId` with a `group-member`-separated deterministic id, `brt_group_` aliases, and `group-member` session owners. Direct vs Group, Group A vs Group B, and Topic A vs Topic B all isolate. No Router/controller session exists.
+
+The filesystem seam (`conversation-filesystem-policy.ts`) classifies a declared `MemberTurnEffect`: only an explicit `read-only` declaration is concurrency-safe under `shared-single-writer`; everything else takes the single-writer slot. The effect is never inferred from Bot names. No dispatcher schedules on it yet — PR7 explicit routing attaches it per assignment.
 
 ## Production composition
 

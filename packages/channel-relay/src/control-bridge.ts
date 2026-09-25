@@ -1035,6 +1035,43 @@ async function dispatchControlRequest(
       if (!input) return errorPayload("invalid-payload", `${MSG.topicsCreate}: malformed payload`);
       return { topic: await control.createTopic(input.conversationId, input.title) };
     }
+    case MSG.groupsCreate: {
+      const input = parseControlPayload(MSG.groupsCreate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.groupsCreate}: malformed payload`);
+      return { group: await control.createGroup(input) };
+    }
+    case MSG.groupsUpdate: {
+      const input = parseControlPayload(MSG.groupsUpdate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.groupsUpdate}: malformed payload`);
+      return { group: await control.updateGroup(input.id, input) };
+    }
+    case MSG.groupsDelete: {
+      const input = parseControlPayload(MSG.groupsDelete, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.groupsDelete}: malformed payload`);
+      await control.deleteGroup(input.id);
+      return { ok: true };
+    }
+    case MSG.groupsGet: {
+      const input = parseControlPayload(MSG.groupsGet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.groupsGet}: malformed payload`);
+      return { group: control.getGroup(input.id) };
+    }
+    case MSG.groupTopicsCreate: {
+      const input = parseControlPayload(MSG.groupTopicsCreate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.groupTopicsCreate}: malformed payload`);
+      return { topic: await control.createGroupTopic(input.conversationId, input.title, input.target) };
+    }
+    case MSG.groupTopicsArchive: {
+      const input = parseControlPayload(MSG.groupTopicsArchive, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.groupTopicsArchive}: malformed payload`);
+      return { topic: await control.archiveGroupTopic(input.conversationId, input.topicId) };
+    }
+    case MSG.groupTopicsTeardown: {
+      const input = parseControlPayload(MSG.groupTopicsTeardown, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.groupTopicsTeardown}: malformed payload`);
+      await control.teardownGroupTopic(input.conversationId, input.topicId);
+      return { ok: true };
+    }
     case MSG.conversationPrompt: {
       const input = parseControlPayload(MSG.conversationPrompt, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.conversationPrompt}: malformed payload`);

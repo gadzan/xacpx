@@ -667,7 +667,7 @@ describe("useDirectBotsStore", () => {
             botId: "bot_1",
             batch: 1,
             attempt: 1,
-            origin: "human",
+            origin: "human-explicit",
             state: "running",
             createdAt: "2026-09-18T00:00:00.000Z",
           },
@@ -1112,7 +1112,7 @@ describe("useDirectBotsStore", () => {
           botId: "bot_1",
           batch: 1,
           attempt: 1,
-          origin: "human",
+          origin: "human-explicit",
           state: "running",
           createdAt: "2026-09-18T00:00:00.000Z",
         },
@@ -1242,7 +1242,7 @@ describe("useDirectBotsStore", () => {
         },
         memberTurn: {
           id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1",
-          botId: "bot_1", batch: 1, attempt: 1, origin: "human",
+          botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit",
           state: "queued", createdAt: "now",
         },
       });
@@ -1345,7 +1345,7 @@ describe("useDirectBotsStore", () => {
             },
             memberTurn: {
               id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1",
-              botId: "bot_1", batch: 1, attempt: 1, origin: "human",
+              botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit",
               state: "queued", createdAt: "now",
             },
           });
@@ -1375,7 +1375,7 @@ describe("useDirectBotsStore", () => {
           },
           memberTurn: {
             id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1",
-            botId: "bot_1", batch: 1, attempt: 1, origin: "human",
+            botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit",
             state: "running", createdAt: "now",
           },
         },
@@ -1407,7 +1407,7 @@ describe("useDirectBotsStore", () => {
             run: run1Queued,
             memberTurn: {
               id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1",
-              botId: "bot_1", batch: 1, attempt: 1, origin: "human",
+              botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit",
               state: "queued", createdAt: "now",
             },
             // New-connector owner proof: the accepted Run owns the Topic, so
@@ -1646,7 +1646,7 @@ describe("useDirectBotsStore", () => {
           },
           memberTurn: {
             id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1",
-            botId: "bot_1", batch: 1, attempt: 1, origin: "human",
+            botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit",
             state: "running", createdAt: "now",
           },
         },
@@ -1700,7 +1700,7 @@ describe("useDirectBotsStore", () => {
           },
           memberTurn: {
             id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1",
-            botId: "bot_1", batch: 1, attempt: 1, origin: "human",
+            botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit",
             state: "running", createdAt: "now",
           },
         },
@@ -1993,7 +1993,7 @@ describe("useDirectBotsStore", () => {
           },
           memberTurn: {
             id: "turn_B", runId: "run_B", conversationId: "conv_B", topicId: "top_B",
-            botId: "bot_B", batch: 1, attempt: 1, origin: "human",
+            botId: "bot_B", batch: 1, attempt: 1, origin: "human-explicit",
             state: "running", createdAt: "now",
           },
         },
@@ -2079,7 +2079,7 @@ describe("useDirectBotsStore", () => {
           },
           memberTurn: {
             id: "turn_A", runId: "run_A", conversationId: "conv_A", topicId: "top_A",
-            botId: "bot_A", batch: 1, attempt: 1, origin: "human",
+            botId: "bot_A", batch: 1, attempt: 1, origin: "human-explicit",
             state: "running", createdAt: "now",
           },
         },
@@ -2302,7 +2302,7 @@ describe("useDirectBotsStore", () => {
               botId: "bot_1",
               batch: 1,
               attempt: 1,
-              origin: "human",
+              origin: "human-explicit",
               state: "completed",
               createdAt: "now",
             },
@@ -2700,7 +2700,7 @@ describe("useDirectBotsStore", () => {
         botId: "bot_1",
         batch: 1,
         attempt: 1,
-        origin: "human",
+        origin: "human-explicit",
         state: "running",
         createdAt: "now",
       };
@@ -2968,7 +2968,7 @@ describe("useDirectBotsStore", () => {
         requestId: store.currentDraftRequestId!,
         message: { id: "msg_C", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "prompt C after foreign B", createdAt: "now" },
         run: { id: "run_C", conversationId: "conv_1", topicId: "top_1", requestMessageId: "msg_C", requestId: "req_C", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" },
-        memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "queued", createdAt: "now" },
+        memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "now" },
       });
       await sendCall;
       await flushPromises();
@@ -3034,7 +3034,7 @@ describe("useDirectBotsStore", () => {
         requestId: store.currentDraftRequestId!,
         message: { id: "msg_C", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "prompt C before foreign B", createdAt: "now" },
         run: { id: "run_C", conversationId: "conv_1", topicId: "top_1", requestMessageId: "msg_C", requestId: "req_C", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" },
-        memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "queued", createdAt: "now" },
+        memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "now" },
         // Old-connector path: no prompt-carried owner, but local slot was
         // contested by a tracked nonterminal owner is false here — instead the
         // test documents the B-event path: C adopts optimistically, then B's
@@ -3094,7 +3094,7 @@ describe("useDirectBotsStore", () => {
             requestId: store.currentDraftRequestId!,
             message: { id: "msg_C", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "prompt C after B", createdAt: "now" },
             run: { id: "run_C", conversationId: "conv_1", topicId: "top_1", requestMessageId: "msg_C", requestId: "req_C", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" },
-            memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "queued", createdAt: "now" },
+            memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "now" },
             activeRunId: "run_B",
             activeRun: runBQueued,
           });
@@ -3189,7 +3189,7 @@ describe("useDirectBotsStore", () => {
         requestId: store.currentDraftRequestId!,
         message: { id: "msg_C", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "prompt C after B", createdAt: "now" },
         run: { id: "run_C", conversationId: "conv_1", topicId: "top_1", requestMessageId: "msg_C", requestId: "req_C", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" },
-        memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "queued", createdAt: "now" },
+        memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "now" },
       });
       await sendCall;
       await Promise.resolve();
@@ -3272,7 +3272,7 @@ describe("useDirectBotsStore", () => {
         botId: "bot_1",
         batch: 1,
         attempt: 1,
-        origin: "human" as const,
+        origin: "human-explicit" as const,
         state: "running" as const,
         createdAt: "now",
       };
@@ -3406,7 +3406,7 @@ describe("useDirectBotsStore", () => {
         botId: "bot_1",
         batch: 1,
         attempt: 1,
-        origin: "human" as const,
+        origin: "human-explicit" as const,
         state: "running" as const,
         createdAt: "now",
       };
@@ -3598,7 +3598,7 @@ describe("useDirectBotsStore", () => {
           botId: "bot_1",
           batch: 1,
           attempt: 1,
-          origin: "human",
+          origin: "human-explicit",
           state: "queued",
           createdAt: "now",
         },
@@ -4055,7 +4055,7 @@ describe("useDirectBotsStore", () => {
         requestId: "req_A",
         message: { id: "msg_A", conversationId: "conv_A", topicId: "top_A", seq: 1, role: "human", content: "Prompt for Bot A", createdAt: "now" },
         run: { id: "run_A", conversationId: "conv_A", topicId: "top_A", requestMessageId: "msg_A", requestId: "req_A", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" },
-        memberTurn: { id: "turn_A", runId: "run_A", conversationId: "conv_A", topicId: "top_A", botId: "bot_A", batch: 1, attempt: 1, origin: "human", state: "running", createdAt: "now" },
+        memberTurn: { id: "turn_A", runId: "run_A", conversationId: "conv_A", topicId: "top_A", botId: "bot_A", batch: 1, attempt: 1, origin: "human-explicit", state: "running", createdAt: "now" },
       });
       await sendPromise;
       await flushPromises();
@@ -4158,7 +4158,7 @@ describe("useDirectBotsStore", () => {
         requestId: store.currentDraftRequestId!,
         message: { id: "msg_h", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "Explain code", createdAt: "now" },
         run: { id: "run_stream", conversationId: "conv_1", topicId: "top_1", requestMessageId: "msg_h", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" },
-        memberTurn: { id: "m1", runId: "run_stream", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "running", createdAt: "now" },
+        memberTurn: { id: "m1", runId: "run_stream", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit", state: "running", createdAt: "now" },
       });
       await sendCall;
       await flushPromises();
@@ -4223,7 +4223,7 @@ describe("useDirectBotsStore", () => {
         requestId: store.currentDraftRequestId!,
         message: { id: "m1", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "Test prompt", createdAt: "now" },
         run: { id: "run_1", conversationId: "conv_1", topicId: "top_1", requestMessageId: "m1", requestId: "r1", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" },
-        memberTurn: { id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "queued", createdAt: "now" },
+        memberTurn: { id: "turn_1", runId: "run_1", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "now" },
       });
       await sendCall;
       await flushPromises();
@@ -4319,7 +4319,7 @@ describe("useDirectBotsStore", () => {
             requestId: "req_C",
             run: terminalAccepted,
             message: msg(121),
-            memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "completed", createdAt: "now" },
+            memberTurn: { id: "turn_C", runId: "run_C", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit", state: "completed", createdAt: "now" },
             // New connector proves the accepted Run owns the Topic: no
             // re-election needed, but the interior hole must still fill.
             activeRunId: "run_C",
@@ -4390,7 +4390,7 @@ describe("useDirectBotsStore", () => {
             requestId: "req_A",
             run: terminalA,
             message: { id: "msg_A", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "retry A", createdAt: "now" },
-            memberTurn: { id: "turn_A", runId: "run_A", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "completed", createdAt: "now" },
+            memberTurn: { id: "turn_A", runId: "run_A", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit", state: "completed", createdAt: "now" },
             // No owner fields: old connector.
           });
         }
@@ -4471,7 +4471,7 @@ describe("useDirectBotsStore", () => {
             requestId: "req_A",
             run: terminalA,
             message: { id: "msg_A", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "retry A", createdAt: "now" },
-            memberTurn: { id: "turn_A", runId: "run_A", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "completed", createdAt: "now" },
+            memberTurn: { id: "turn_A", runId: "run_A", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit", state: "completed", createdAt: "now" },
           });
         }
         if (type === "control.conversation.history") {
@@ -4961,7 +4961,7 @@ describe("useDirectBotsStore", () => {
             requestId: "req_retry",
             message: { id: "m1", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "Retry prompt", createdAt: "now" },
             run: { id: "run_finished", conversationId: "conv_1", topicId: "top_1", requestMessageId: "m1", requestId: "req_retry", mode: "explicit", state: "completed", profileRevision: 1, createdAt: "now" },
-            memberTurn: { id: "turn_1", runId: "run_finished", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "completed", createdAt: "now" },
+            memberTurn: { id: "turn_1", runId: "run_finished", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit", state: "completed", createdAt: "now" },
           });
         }
         if (type === "control.conversation.history") {
@@ -5035,7 +5035,7 @@ describe("useDirectBotsStore", () => {
         requestId: store.currentDraftRequestId!,
         message: { id: "m1", conversationId: "conv_1", topicId: "top_1", seq: 1, role: "human", content: "Plan prompt", createdAt: "now" },
         run: { id: "run_plan", conversationId: "conv_1", topicId: "top_1", requestMessageId: "m1", requestId: "r", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" },
-        memberTurn: { id: "m1", runId: "run_plan", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "running", createdAt: "now" },
+        memberTurn: { id: "m1", runId: "run_plan", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit", state: "running", createdAt: "now" },
       });
       await sendCall;
       await flushPromises();
@@ -5126,7 +5126,7 @@ describe("useDirectBotsStore", () => {
             requestId: "rB",
             message: { id: "mB", conversationId: "conv_1", topicId: "top_1", seq: 3, role: "human", content: "Prompt B", createdAt: "now" },
             run: { id: "run_B", conversationId: "conv_1", topicId: "top_1", requestMessageId: "mB", requestId: "rB", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" },
-            memberTurn: { id: "mB1", runId: "run_B", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human", state: "running", createdAt: "now" },
+            memberTurn: { id: "mB1", runId: "run_B", conversationId: "conv_1", topicId: "top_1", botId: "bot_1", batch: 1, attempt: 1, origin: "human-explicit", state: "running", createdAt: "now" },
           });
         }
         return Promise.resolve({});
@@ -5166,7 +5166,7 @@ describe("useDirectBotsStore", () => {
         botId: "bot_1",
         batch: 1,
         attempt: 1,
-        origin: "human",
+        origin: "human-explicit",
         state: "running",
         createdAt: "now",
       };
@@ -5194,7 +5194,7 @@ describe("useDirectBotsStore", () => {
             botId: "bot_1",
             batch: 1,
             attempt: 1,
-            origin: "human",
+            origin: "human-explicit",
             state: "completed",
             createdAt: "now",
           },
@@ -5910,7 +5910,7 @@ describe("useDirectBotsStore", () => {
             botId: "bot_1",
             batch: 1,
             attempt: 1,
-            origin: "human",
+            origin: "human-explicit",
             state: "running",
             createdAt: "2026-09-18T00:00:00.000Z",
           },

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { isHiddenProductSessionOwner } from "../../../src/state/types";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -225,6 +226,26 @@ test("parseState drops a session with a malformed owner and keeps an ownerless s
 
 test("parseState keeps PR2 bot-direct owners and scoped owners with botId", () => {
   const state = parseState({
+    conversations: {
+      conv_a: {
+        id: "conv_a",
+        kind: "bot",
+        title: "Reviewer",
+        botIds: ["bot_reviewer"],
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    conversation_topics: {
+      topic_b: {
+        id: "topic_b",
+        conversationId: "conv_a",
+        title: "Default",
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
     sessions: {
       legacy: {
         alias: "legacy",
@@ -265,6 +286,232 @@ test("parseState keeps PR2 bot-direct owners and scoped owners with botId", () =
   });
 });
 
+test("parseState keeps rootless owned sessions for verified release (never drops the handle)", () => {
+  const dropped: StateLoadDroppedRecord[] = [];
+  const state = parseState({
+    sessions: {
+      orphan: {
+        alias: "orphan",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:orphan",
+        logical_session_id: "55555555-5555-4555-8555-555555555555",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: {
+          kind: "group-member",
+          bindingId: "bind_9b6ef659368116a1c0cf5ea554d286da",
+          botId: "bot_reviewer",
+          conversationId: "conv_gone",
+          topicId: "topic_gone",
+        },
+      },
+      plain: {
+        alias: "plain",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:plain",
+        logical_session_id: "66666666-6666-4666-8666-666666666666",
+        created_at: NOW,
+        last_used_at: NOW,
+      },
+    },
+  }, "state.json", dropped);
+  // The row IS the physical cleanup handle: dropping it would strand the
+  // live external session with no releaseLogicalSession/deleteSession path.
+  // Load keeps the ownership intact and reports it; the next verified
+  // teardown covering the triple performs the physical release.
+  expect(state.sessions.orphan?.owner).toEqual({
+    kind: "group-member",
+    bindingId: "bind_9b6ef659368116a1c0cf5ea554d286da",
+    botId: "bot_reviewer",
+    conversationId: "conv_gone",
+    topicId: "topic_gone",
+  });
+  expect(state.sessions.plain?.alias).toBe("plain");
+  expect(dropped).toEqual([
+    {
+      section: "sessions",
+      key: "orphan",
+      reason: 'owned session references missing conversation/topic (conversation "conv_gone", topic "topic_gone"); kept for verified release',
+    },
+  ]);
+});
+
+test("parseState keeps triple-less ambiguous owners hidden for operator recovery", () => {
+  const dropped: StateLoadDroppedRecord[] = [];
+  const state = parseState({
+    bot_runtime_bindings: {
+      bind_gone: {
+        id: "bind_gone",
+        scope: "group-member",
+        conversationId: "conv_gone",
+        topicId: "topic_gone",
+        botId: "bot_reviewer",
+        logicalSessionId: "55555555-5555-4555-8555-555555555555",
+        sessionAlias: "legacy_partial",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    sessions: {
+      legacy_partial: {
+        alias: "legacy_partial",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:legacy_partial",
+        logical_session_id: "55555555-5555-4555-8555-555555555555",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: { kind: "group-member", bindingId: "bind_gone" },
+      },
+    },
+  }, "state.json", dropped);
+  // Binding dropped (missing root); the triple-less session keeps its owner
+  // VERBATIM: deleting the ownership record without a verified physical
+  // release would resurface possibly-live product runtime as an ordinary
+  // session (fail-open). It stays hidden, ordinary ops reject it, and
+  // activation fails closed until an operator recovers it.
+  expect(state.bot_runtime_bindings.bind_gone).toBeUndefined();
+  expect(state.sessions.legacy_partial?.owner).toEqual({ kind: "group-member", bindingId: "bind_gone" });
+  expect(state.sessions.legacy_partial?.alias).toBe("legacy_partial");
+  expect(dropped.some((entry) => entry.key === "legacy_partial" && entry.reason.includes("requires operator recovery"))).toBe(true);
+});
+
+test("parseState keeps cross-kind group-member session owners hidden for operator recovery", () => {
+  const dropped: StateLoadDroppedRecord[] = [];
+  const state = parseState({
+    bots: {
+      bot_b: {
+        id: "bot_b", name: "B", agent: "codex", workspace: "backend", enabled: true,
+        profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+      },
+    },
+    conversations: {
+      conv_direct: {
+        id: "conv_direct", kind: "bot", title: "Reviewer", botIds: ["bot_b"],
+        createdAt: NOW, updatedAt: NOW,
+      },
+    },
+    conversation_topics: {
+      topic_direct: {
+        id: "topic_direct", conversationId: "conv_direct", title: "Default",
+        status: "active", createdAt: NOW, updatedAt: NOW,
+      },
+    },
+    sessions: {
+      cross: {
+        alias: "cross",
+        agent: "codex",
+        workspace: "backend",
+        transport_session: "backend:cross",
+        logical_session_id: "99999999-9999-4999-8999-999999999999",
+        created_at: NOW,
+        last_used_at: NOW,
+        owner: {
+          kind: "group-member",
+          // Canonical for the (conv_direct, topic_direct, bot_b) triple — so
+          // this exercises the kind fence, not the canonical fence.
+          bindingId: "bind_5ffa2af9be2a759132a4a27d320243fa",
+          botId: "bot_b",
+          conversationId: "conv_direct",
+          topicId: "topic_direct",
+        },
+      },
+    },
+  }, "state.json", dropped);
+  // Cross-kind contradiction: the root EXISTS but is a Direct Conversation,
+  // which no Group teardown can cover and no Direct teardown sweeps. Keep
+  // verbatim-hidden (never auto-release under a kind contradiction, never
+  // reinterpret as unowned) and report for operator recovery.
+  expect(state.sessions.cross?.owner).toEqual({
+    kind: "group-member",
+    bindingId: "bind_5ffa2af9be2a759132a4a27d320243fa",
+    botId: "bot_b",
+    conversationId: "conv_direct",
+    topicId: "topic_direct",
+  });
+  expect(isHiddenProductSessionOwner(state.sessions.cross?.owner)).toBe(true);
+  expect(dropped.some(
+    (entry) => entry.key === "cross" && entry.reason.includes("ambiguous cross-kind"),
+  )).toBe(true);
+});
+
+test("parseState drops group-member bindings pointing at a Direct conversation", () => {
+  const dropped: StateLoadDroppedRecord[] = [];
+  const state = parseState({
+    conversations: {
+      conv_direct: {
+        id: "conv_direct",
+        kind: "bot",
+        title: "Reviewer",
+        botIds: ["bot_reviewer"],
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    conversation_topics: {
+      topic_direct: {
+        id: "topic_direct",
+        conversationId: "conv_direct",
+        title: "Default",
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    bot_runtime_bindings: {
+      bind_cross: {
+        id: "bind_cross",
+        scope: "group-member",
+        conversationId: "conv_direct",
+        topicId: "topic_direct",
+        botId: "bot_reviewer",
+        logicalSessionId: "88888888-8888-4888-8888-888888888888",
+        sessionAlias: "brt_group_cross",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+  }, "state.json", dropped);
+  // Corrupted cross-kind ownership: Direct teardown never sweeps it, so
+  // keeping it would strand it with no cleanup entry — drop with report.
+  expect(state.bot_runtime_bindings.bind_cross).toBeUndefined();
+  expect(dropped.map((entry) => entry.key).sort()).toEqual(["bind_cross"]);
+});
+
+test("parseState drops topics and bindings under a missing conversation", () => {
+  const dropped: StateLoadDroppedRecord[] = [];
+  const state = parseState({
+    conversation_topics: {
+      topic_x: {
+        id: "topic_x",
+        conversationId: "conv_gone",
+        title: "Sprint",
+        status: "active",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+    bot_runtime_bindings: {
+      bind_x: {
+        id: "bind_x",
+        scope: "group-member",
+        conversationId: "conv_gone",
+        topicId: "topic_x",
+        botId: "bot_a",
+        logicalSessionId: "77777777-7777-4777-8777-777777777777",
+        sessionAlias: "brt_group_x",
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    },
+  }, "state.json", dropped);
+  expect(state.conversation_topics).toEqual({});
+  expect(state.bot_runtime_bindings).toEqual({});
+  expect(dropped.map((entry) => entry.key).sort()).toEqual(["bind_x", "topic_x"]);
+});
+
 test("owner metadata round-trips through save and load", async () => {
   const dir = await mkdtemp(join(tmpdir(), "xacpx-bot-state-"));
   const path = join(dir, "state.json");
@@ -292,15 +539,21 @@ test("owner metadata round-trips through save and load", async () => {
   };
 
   await store.save(state);
-  const loaded = await new StateStore(path).load();
-  expect(loaded.sessions.owned?.owner).toEqual({ kind: "group-member", bindingId: "bind_g" });
-  expect(loaded.bots.bot_a?.name).toBe("Reviewer");
-  expect(loaded.sessions.owned?.logical_session_id).toBe("44444444-4444-4444-8444-444444444444");
-
-  const onDisk = JSON.parse(await readFile(path, "utf8")) as {
+  const onDiskBefore = JSON.parse(await readFile(path, "utf8")) as {
     sessions: Record<string, { owner?: { kind: string } }>;
   };
-  expect(onDisk.sessions.owned?.owner?.kind).toBe("group-member");
+  // Save itself never demotes: the raw owner bytes reach disk.
+  expect(onDiskBefore.sessions.owned?.owner?.kind).toBe("group-member");
+  const loader = new StateStore(path);
+  const loaded = await loader.load();
+  // Unresolvable partial owner stays verbatim-hidden at load (fail-closed:
+  // never reinterpreted as unowned without a verified physical release).
+  expect(loaded.sessions.owned?.owner).toEqual({ kind: "group-member", bindingId: "bind_g" });
+  expect(loader.lastLoadReport?.dropped.some(
+    (entry) => entry.key === "owned" && entry.reason.includes("requires operator recovery"),
+  )).toBe(true);
+  expect(loaded.bots.bot_a?.name).toBe("Reviewer");
+  expect(loaded.sessions.owned?.logical_session_id).toBe("44444444-4444-4444-8444-444444444444");
 
   await rm(dir, { recursive: true, force: true });
 });

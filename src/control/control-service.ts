@@ -93,6 +93,7 @@ import {
   toConversationMessage,
   toConversationRun,
   toConversationSummary,
+  toGroupSummary,
   toMemberTurnSummary,
   toRunDetail,
   toTopicSummary,
@@ -102,6 +103,8 @@ import {
   type ConversationPromptRequestDto,
   type ConversationPromptResponseDto,
   type ConversationTurnCorrelation,
+  type GroupDetailDto,
+  type GroupSummaryDto,
 } from "./conversation-control-dtos";
 
 const MODEL_SET_SETTLE_BUDGET_MS =
@@ -1952,6 +1955,68 @@ export class ControlService {
       await runtime.bots.deleteBot(id);
       this.deps.events.emit({ type: "bots-changed" });
       this.deps.events.emit({ type: "conversations-changed" });
+      return { ok: true };
+    });
+  }
+
+  async createGroup(input: { title: string; description?: string; botIds: string[]; leadBotId?: string }) {
+    return this.runConversationMutation(async (runtime) => {
+      const group = await runtime.bots.createGroup(input);
+      this.deps.events.emit({ type: "bots-changed" });
+      this.deps.events.emit({ type: "conversations-changed" });
+      return toGroupSummary(group);
+    });
+  }
+
+  async updateGroup(
+    id: string,
+    patch: { title?: string; description?: string | null; botIds?: string[]; leadBotId?: string | null },
+  ): Promise<GroupSummaryDto> {
+    return this.runConversationMutation(async (runtime) => {
+      const group = await runtime.bots.updateGroup(id, patch);
+      this.deps.events.emit({ type: "bots-changed" });
+      this.deps.events.emit({ type: "conversations-changed" });
+      return toGroupSummary(group);
+    });
+  }
+
+  async deleteGroup(id: string): Promise<{ ok: true }> {
+    return this.runConversationMutation(async (runtime) => {
+      await runtime.runs.teardownGroupConversation(id);
+      this.deps.events.emit({ type: "bots-changed" });
+      this.deps.events.emit({ type: "conversations-changed" });
+      return { ok: true };
+    });
+  }
+
+  getGroup(id: string): GroupDetailDto {
+    const runtime = this.requireConversations();
+    const group = runtime.bots.getGroup(id);
+    const topics = runtime.runs.listTopics(id).map(toTopicSummary);
+    return { ...toGroupSummary(group), topics };
+  }
+
+  async createGroupTopic(
+    conversationId: string,
+    title: string,
+    target: { workspace: string; cwd?: string; isolation: "shared" | "shared-single-writer" | "worktree-per-member" },
+  ) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.createGroupTopic(conversationId, title, target);
+      return toTopicSummary(topic);
+    });
+  }
+
+  async archiveGroupTopic(conversationId: string, topicId: string) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.archiveGroupTopic(conversationId, topicId);
+      return toTopicSummary(topic);
+    });
+  }
+
+  async teardownGroupTopic(conversationId: string, topicId: string): Promise<{ ok: true }> {
+    return this.runConversationMutation(async (runtime) => {
+      await runtime.runs.teardownGroupTopic(conversationId, topicId);
       return { ok: true };
     });
   }

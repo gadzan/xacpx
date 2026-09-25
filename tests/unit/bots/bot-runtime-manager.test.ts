@@ -82,9 +82,10 @@ function createHarness(
   const config = createConfig();
   const stateMutex = options.stateMutex ?? new AsyncMutex();
   const sessions = new SessionService(config, store, state, { now: () => Date.parse(NOW), stateMutex });
+  let botSeq = 0;
   const bots = new BotService(config, state, store, {
     now: () => new Date(NOW),
-    createId: () => BOT_ID,
+    createId: () => (botSeq += 1) === 1 ? BOT_ID : `bot_${botSeq}`,
     stateMutex,
     beforeLifecycleMutation: options.beforeLifecycleMutation,
   });
@@ -986,4 +987,283 @@ test("recreates and rebinds direct runtime when bot effort is cleared from high 
   const nextSession = sessions.getLogicalSessionById(nextBinding.logicalSessionId);
   expect(nextSession?.effort).toBeUndefined();
   expect(ownedSessions(state)).toHaveLength(1);
+});
+
+test("group stale binding is repaired by creating a new owned session", async () => {
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  await bots.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const reviewer = Object.values(state.bots).find((b) => b.name === "Reviewer")!;
+  const tester = Object.values(state.bots).find((b) => b.name === "Tester")!;
+  const group = await bots.createGroup({ title: "Team", botIds: [reviewer.id, tester.id] });
+  const topic = "topic_group_repair";
+  state.conversation_topics[topic] = {
+    id: topic, conversationId: group.id, title: "T", status: "active", createdAt: NOW, updatedAt: NOW,
+    executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+  };
+  const first = await runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic,
+  });
+  // Crash between session release and binding-row delete: binding survives
+  // with both axes missing.
+  const staleId = first.logicalSessionId;
+  await sessions.removeSession(first.sessionAlias);
+  expect(sessions.getLogicalSessionRecord(first.sessionAlias) ?? undefined).toBeUndefined();
+  expect(sessions.getLogicalSessionById(staleId) ?? undefined).toBeUndefined();
+  const repaired = await runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic,
+  });
+  expect(repaired.id).toBe(first.id);
+  expect(repaired.logicalSessionId).not.toBe(staleId);
+  expect(state.sessions[repaired.sessionAlias]?.owner).toMatchObject({
+    kind: "group-member", botId: reviewer.id, conversationId: group.id, topicId: topic,
+  });
+  expect(Object.values(state.sessions).filter((s) => s.owner?.kind === "group-member")).toHaveLength(1);
+  // The repaired binding now resolves exactly: topic teardown succeeds.
+  const { ConversationRunService } = await import("../../../src/conversations/conversation-run-service");
+  const { SqliteConversationStore } = await import("../../../src/conversations/sqlite-conversation-store");
+  const { ConversationDispatcher } = await import("../../../src/conversations/conversation-dispatcher");
+  const store = await SqliteConversationStore.open(":memory:");
+  const fakeRunner = { run: async () => ({ status: "completed" as const, text: "done" }), cancel: async () => ({ outcome: "cancelled" as const }) };
+  const dispatcher = new ConversationDispatcher(store, runtime, fakeRunner as never, sessions, {});
+  const runs = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, new MemoryStateStore(), {
+    releaseOwnedSession: async (alias: string) => {
+      await sessions.removeSession(alias);
+    },
+  });
+  await runs.teardownGroupTopic(group.id, topic);
+  expect(state.conversation_topics[topic]).toBeUndefined();
+  expect(state.bot_runtime_bindings[first.id]).toBeUndefined();
+  store.close();
+});
+
+test("duplicated logical id fails group materialize closed with zero release", async () => {
+  let releases = 0;
+  const { bots, runtime, state } = createHarness(new MemoryStateStore(), createEmptyState(), {
+    releaseOwnedSession: async () => {
+      releases += 1;
+    },
+  });
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  await bots.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const reviewer = Object.values(state.bots).find((b) => b.name === "Reviewer")!;
+  const tester = Object.values(state.bots).find((b) => b.name === "Tester")!;
+  const group = await bots.createGroup({ title: "Team", botIds: [reviewer.id, tester.id] });
+  const topic = "topic_group_dup";
+  state.conversation_topics[topic] = {
+    id: topic, conversationId: group.id, title: "T", status: "active", createdAt: NOW, updatedAt: NOW,
+    executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+  };
+  const first = await runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic,
+  });
+  const live = state.sessions[first.sessionAlias]!;
+  state.sessions.duplicate_shadow = { ...structuredClone(live), alias: "duplicate_shadow" };
+  await expect(
+    runtime.getOrCreateGroupMemberSession({ botId: reviewer.id, conversationId: group.id, topicId: topic }),
+  ).rejects.toMatchObject({ code: "runtime_ownership_conflict" });
+  expect(releases).toBe(0);
+  expect(state.bot_runtime_bindings[first.id]).toMatchObject({ logicalSessionId: first.logicalSessionId });
+  expect(state.sessions[first.sessionAlias]).toBeDefined();
+  expect(state.sessions.duplicate_shadow).toBeDefined();
+});
+
+test("duplicated logical id fails group effort-clear recreate closed with zero release", async () => {
+  let releases = 0;
+  const { bots, runtime, state } = createHarness(new MemoryStateStore(), createEmptyState(), {
+    releaseOwnedSession: async () => {
+      releases += 1;
+    },
+  });
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend", effort: "high" });
+  await bots.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const reviewer = Object.values(state.bots).find((b) => b.name === "Reviewer")!;
+  const tester = Object.values(state.bots).find((b) => b.name === "Tester")!;
+  const group = await bots.createGroup({ title: "Team", botIds: [reviewer.id, tester.id] });
+  const topic = "topic_group_effort";
+  state.conversation_topics[topic] = {
+    id: topic, conversationId: group.id, title: "T", status: "active", createdAt: NOW, updatedAt: NOW,
+    executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+  };
+  const first = await runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId: topic,
+  });
+  expect(state.sessions[first.sessionAlias]?.effort).toBe("high");
+  const live = state.sessions[first.sessionAlias]!;
+  state.sessions.duplicate_shadow = { ...structuredClone(live), alias: "duplicate_shadow" };
+  // Effective effort unset (explicit execution without effort) triggers the
+  // effort-clear recreate branch — which must conflict before releasing.
+  await expect(
+    runtime.getOrCreateGroupMemberSession({
+      botId: reviewer.id, conversationId: group.id, topicId: topic,
+      execution: { agent: reviewer.agent, workspace: "backend" },
+    }),
+  ).rejects.toMatchObject({ code: "runtime_ownership_conflict" });
+  expect(releases).toBe(0);
+  expect(state.bot_runtime_bindings[first.id]).toMatchObject({ logicalSessionId: first.logicalSessionId });
+});
+
+test("getOrCreateGroupMemberSession isolates direct vs group, group A vs B, topic A vs B", async () => {
+  const { bots, runtime, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  await bots.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const reviewer = Object.values(state.bots).find((b) => b.name === "Reviewer")!;
+  const tester = Object.values(state.bots).find((b) => b.name === "Tester")!;
+  const groupA = await bots.createGroup({ title: "Team A", botIds: [reviewer.id, tester.id], leadBotId: reviewer.id });
+  const groupB = await bots.createGroup({ title: "Team B", botIds: [reviewer.id, tester.id] });
+  // Seed group topics directly (run-service createGroupTopic is covered separately).
+  const topicA = "topic_group_a_1";
+  const topicB = "topic_group_b_1";
+  const topicA2 = "topic_group_a_2";
+  state.conversation_topics[topicA] = {
+    id: topicA, conversationId: groupA.id, title: "A1", status: "active", createdAt: NOW, updatedAt: NOW,
+    executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+  };
+  state.conversation_topics[topicB] = {
+    id: topicB, conversationId: groupB.id, title: "B1", status: "active", createdAt: NOW, updatedAt: NOW,
+    executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+  };
+  state.conversation_topics[topicA2] = {
+    id: topicA2, conversationId: groupA.id, title: "A2", status: "active", createdAt: NOW, updatedAt: NOW,
+    executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+  };
+  const direct = await runtime.getOrCreateDirectSession({ botId: reviewer.id });
+  const memberA = await runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: groupA.id, topicId: topicA,
+  });
+  const memberA2 = await runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: groupA.id, topicId: topicA,
+  });
+  const memberB = await runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: groupB.id, topicId: topicB,
+  });
+  const memberAOtherTopic = await runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: groupA.id, topicId: topicA2,
+  });
+  const memberTester = await runtime.getOrCreateGroupMemberSession({
+    botId: tester.id, conversationId: groupA.id, topicId: topicA,
+  });
+  // Same triple reuses; every other axis isolates.
+  expect(memberA2.id).toBe(memberA.id);
+  expect(memberA.sessionAlias).not.toBe(direct.sessionAlias);
+  expect(memberB.sessionAlias).not.toBe(memberA.sessionAlias);
+  expect(memberAOtherTopic.sessionAlias).not.toBe(memberA.sessionAlias);
+  expect(memberTester.sessionAlias).not.toBe(memberA.sessionAlias);
+  expect(memberA.scope).toBe("group-member");
+  const owner = state.sessions[memberA.sessionAlias]?.owner;
+  expect(owner).toMatchObject({
+    kind: "group-member", botId: reviewer.id, conversationId: groupA.id, topicId: topicA,
+  });
+  // Non-member and wrong-conversation fail closed by id, never by name.
+  const outsider = await bots.createBot({ name: "Outsider", agent: "codex", workspace: "backend" });
+  await expect(
+    runtime.getOrCreateGroupMemberSession({ botId: outsider.id, conversationId: groupA.id, topicId: topicA }),
+  ).rejects.toMatchObject({ code: "group_member_not_member" });
+  await expect(
+    runtime.getOrCreateGroupMemberSession({ botId: reviewer.id, conversationId: groupA.id, topicId: topicB }),
+  ).rejects.toMatchObject({ code: "topic_not_found" });
+});
+
+test("getOrCreateGroupMemberSession refuses a disabled member Bot", async () => {
+  const { bots, runtime, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  await bots.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const reviewer = Object.values(state.bots).find((b) => b.name === "Reviewer")!;
+  const tester = Object.values(state.bots).find((b) => b.name === "Tester")!;
+  const group = await bots.createGroup({ title: "Team", botIds: [reviewer.id, tester.id] });
+  const topic = "topic_group_1";
+  state.conversation_topics[topic] = {
+    id: topic, conversationId: group.id, title: "T", status: "active", createdAt: NOW, updatedAt: NOW,
+    executionTarget: { workspace: "backend", isolation: "shared" },
+  };
+  await bots.updateBot(tester.id, { enabled: false });
+  await expect(
+    runtime.getOrCreateGroupMemberSession({ botId: tester.id, conversationId: group.id, topicId: topic }),
+  ).rejects.toMatchObject({ code: "bot_disabled" });
+});
+
+test("materialize past the deleting barrier fails closed on every path", async () => {
+  // Gate-held barrier contract: teardown linearizes against materialization
+  // on the Bot lifecycle gate, so a publish paused mid-flight cannot be
+  // overtaken by the barrier — the barrier either runs first (materialize
+  // then fails at scope check) or second (teardown sweeps the published
+  // session). Both directions fail closed; nothing is resurrected.
+  const { bots, runtime, sessions, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const tester = await bots.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const reviewer = Object.values(state.bots).find((b) => b.name === "Reviewer")!;
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, tester.id] });
+  const topicId = "topic_gate_1";
+  state.conversation_topics[topicId] = {
+    id: topicId,
+    conversationId: group.id,
+    title: "Gated",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+    executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+  };
+  // Fresh binding first, so the reuse path (not just scope check) is covered.
+  const first = await runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId,
+  });
+  expect(first.sessionAlias).toBeDefined();
+  // Full teardown, then every materialize path must reject.
+  const { ConversationRunService } = await import("../../../src/conversations/conversation-run-service");
+  const { SqliteConversationStore } = await import("../../../src/conversations/sqlite-conversation-store");
+  const { ConversationDispatcher } = await import("../../../src/conversations/conversation-dispatcher");
+  const store = await SqliteConversationStore.open(":memory:");
+  const fakeRunner = { run: async () => ({ status: "completed" as const, text: "done" }), cancel: async () => ({ outcome: "cancelled" as const }) };
+  const dispatcher = new ConversationDispatcher(store, runtime, fakeRunner as never, sessions, {});
+  const runs = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, new MemoryStateStore(), {
+    releaseOwnedSession: async (alias: string) => {
+      await sessions.removeSession(alias);
+    },
+  });
+  await runs.teardownGroupConversation(group.id);
+  expect(state.conversations[group.id]).toBeUndefined();
+  expect(state.conversation_topics[topicId]).toBeUndefined();
+  expect(Object.values(state.bot_runtime_bindings).filter((b) => b.conversationId === group.id)).toEqual([]);
+  expect(
+    Object.values(state.sessions).filter((session) => session.owner?.kind === "group-member"),
+  ).toEqual([]);
+  await expect(
+    runtime.getOrCreateGroupMemberSession({ botId: reviewer.id, conversationId: group.id, topicId }),
+  ).rejects.toBeInstanceOf(Error);
+  expect(state.conversations[group.id]).toBeUndefined();
+  expect(state.conversation_topics[topicId]).toBeUndefined();
+  expect(Object.values(state.bot_runtime_bindings).filter((b) => b.conversationId === group.id)).toEqual([]);
+  expect(
+    Object.values(state.sessions).filter((session) => session.owner?.kind === "group-member"),
+  ).toEqual([]);
+  store.close();
+});
+
+test("reuse past a topic deleting barrier never returns a stale binding", async () => {
+  // The reuse path runs its own commit-time fence: with a live binding but a
+  // deleting topic, getOrCreate must reject instead of returning the stale
+  // binding to dispatch.
+  const { bots, runtime, state } = createHarness();
+  await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const tester = await bots.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const reviewer = Object.values(state.bots).find((b) => b.name === "Reviewer")!;
+  const group = await bots.createGroup({ title: "Release Team", botIds: [reviewer.id, tester.id] });
+  const topicId = "topic_reuse_1";
+  state.conversation_topics[topicId] = {
+    id: topicId,
+    conversationId: group.id,
+    title: "Reuse",
+    status: "active",
+    createdAt: NOW,
+    updatedAt: NOW,
+    executionTarget: { workspace: "backend", isolation: "shared-single-writer" },
+  };
+  const first = await runtime.getOrCreateGroupMemberSession({
+    botId: reviewer.id, conversationId: group.id, topicId,
+  });
+  state.conversation_topics[topicId] = { ...state.conversation_topics[topicId]!, status: "deleting" };
+  await expect(
+    runtime.getOrCreateGroupMemberSession({ botId: reviewer.id, conversationId: group.id, topicId }),
+  ).rejects.toMatchObject({ code: "topic_deleting" });
+  expect(state.bot_runtime_bindings[first.id]).toBeDefined();
 });

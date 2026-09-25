@@ -1,4 +1,4 @@
-import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotSummaryDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, TopicSummaryDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotSummaryDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, ExecutionTargetDto, GroupDetailDto, GroupSummaryDto, TopicSummaryDto } from "./dtos.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
     readonly instanceAuth: "instance.auth";
@@ -94,6 +94,13 @@ export declare const MSG: {
     readonly conversationsGet: "control.conversations.get";
     readonly topicsList: "control.topics.list";
     readonly topicsCreate: "control.topics.create";
+    readonly groupsCreate: "control.groups.create";
+    readonly groupsUpdate: "control.groups.update";
+    readonly groupsDelete: "control.groups.delete";
+    readonly groupsGet: "control.groups.get";
+    readonly groupTopicsCreate: "control.group.topics.create";
+    readonly groupTopicsArchive: "control.group.topics.archive";
+    readonly groupTopicsTeardown: "control.group.topics.teardown";
     readonly conversationPrompt: "control.conversation.prompt";
     readonly conversationHistory: "control.conversation.history";
     readonly runsGet: "control.runs.get";
@@ -407,6 +414,47 @@ export interface TopicsCreatePayload {
 }
 export interface TopicsCreateResult {
     topic: TopicSummaryDto;
+}
+export interface GroupsCreatePayload {
+    title: string;
+    description?: string;
+    botIds: string[];
+    leadBotId?: string;
+}
+export interface GroupsCreateResult {
+    group: GroupSummaryDto;
+}
+export interface GroupsUpdatePayload {
+    id: string;
+    title?: string;
+    description?: string | null;
+    botIds?: string[];
+    leadBotId?: string | null;
+}
+export interface GroupsUpdateResult {
+    group: GroupSummaryDto;
+}
+export interface GroupsDeletePayload {
+    id: string;
+}
+export interface GroupsGetPayload {
+    id: string;
+}
+export interface GroupsGetResult {
+    group: GroupDetailDto;
+}
+export interface GroupTopicsCreatePayload {
+    conversationId: string;
+    title: string;
+    target: ExecutionTargetDto;
+}
+export interface GroupTopicsArchivePayload {
+    conversationId: string;
+    topicId: string;
+}
+export interface GroupTopicsTeardownPayload {
+    conversationId: string;
+    topicId: string;
 }
 export interface ConversationPromptPayload {
     conversationId: string;

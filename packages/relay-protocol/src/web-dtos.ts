@@ -20,7 +20,7 @@ import {
   TERMINAL_REBASE_CHUNK_BYTES,
 } from "./limits.js";
 import type { InstanceNoticePayload, TerminalRole } from "./messages.js";
-import { isBoundedStr, isIntInRange, isNonNegInt, isStr, optStr, optNum, optBool, optNonNegInt, parseCanonicalBase64 } from "./validate-primitives.js";
+import { isBoundedStr, isIntInRange, isNonNegInt, isStr, optBool, optNonNegInt, optNum, optStr, optStrArr, parseCanonicalBase64 } from "./validate-primitives.js";
 
 
 /** Envelope `type` for every relay→web push. */
@@ -526,6 +526,15 @@ function validConversationCorrelation(value: unknown): boolean {
     && typeof c.memberTurnId === "string";
 }
 
+function validExecutionTarget(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const t = value as Record<string, unknown>;
+  return typeof t.workspace === "string"
+    && (t.cwd === undefined || typeof t.cwd === "string")
+    && (t.isolation === "shared" || t.isolation === "shared-single-writer" || t.isolation === "worktree-per-member");
+}
+
 function validTopicSummary(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const c = value as Record<string, unknown>;
@@ -534,7 +543,8 @@ function validTopicSummary(value: unknown): boolean {
     && typeof c.title === "string"
     && (c.status === "active" || c.status === "archived" || c.status === "deleting")
     && typeof c.createdAt === "string"
-    && typeof c.updatedAt === "string";
+    && typeof c.updatedAt === "string"
+    && validExecutionTarget(c.executionTarget);
 }
 
 function validConversationMessage(value: unknown): boolean {
@@ -558,13 +568,20 @@ function validConversationRun(value: unknown): boolean {
     && typeof c.topicId === "string"
     && typeof c.requestMessageId === "string"
     && typeof c.requestId === "string"
-    && c.mode === "explicit"
+    && (c.mode === "explicit" || c.mode === "automatic")
     && (c.state === "queued" || c.state === "running" || c.state === "waiting-human"
       || c.state === "completed" || c.state === "failed" || c.state === "cancelled"
       || c.state === "indeterminate")
     && typeof c.profileRevision === "number"
+    && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number")
+    && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number")
+    && (c.failedBotIds === undefined
+      || (Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")))
+    && (c.unavailableBotIds === undefined
+      || (Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")))
     && typeof c.createdAt === "string"
-    && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt);
+    && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt)
+    && (c.activeBatch === undefined || typeof c.activeBatch === "number");
 }
 
 function validMemberTurnSummary(value: unknown): boolean {
@@ -576,13 +593,18 @@ function validMemberTurnSummary(value: unknown): boolean {
     && typeof c.topicId === "string"
     && typeof c.botId === "string"
     && typeof c.batch === "number"
+    && optNonNegInt(c.memberIndex)
     && typeof c.attempt === "number"
-    && (c.origin === "human" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery")
+    && (c.origin === "human-explicit" || c.origin === "human"
+      || c.origin === "router" || c.origin === "handoff" || c.origin === "followup"
+      || c.origin === "retry" || c.origin === "recovery")
     && (c.state === "queued" || c.state === "dispatched" || c.state === "running"
       || c.state === "completed" || c.state === "failed" || c.state === "cancelled"
       || c.state === "indeterminate")
     && typeof c.createdAt === "string"
-    && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt);
+    && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt)
+    && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput)
+    && optStrArr(c.dependsOn) && optStr(c.failureReason);
 }
 
 /** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.

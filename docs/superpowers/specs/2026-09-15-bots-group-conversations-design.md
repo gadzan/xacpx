@@ -499,8 +499,8 @@ Bot edits must not be treated uniformly.
 | name / avatar / description | immediate presentation update; runtime identity unchanged |
 | instructions | next ordinary turn uses new instructions; existing model history is not erased |
 | model / effort | apply at turn boundary when supported; otherwise recreate/rebind |
-| agent | recreate/rebind runtime |
-| workspace | recreate/rebind runtime |
+| agent | recreate/rebind runtime (locked by any materialized runtime: direct or group-member) |
+| workspace | recreate/rebind runtime, but only when the Bot default is actually consumed — direct sessions. Group Topics always carry an explicit workspace, so a Bot-default change never rebuilds existing member sessions |
 | cwd | recreate/rebind runtime |
 | reset context | create a new Topic or explicit reset operation |
 
