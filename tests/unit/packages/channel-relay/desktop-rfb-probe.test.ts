@@ -2,8 +2,11 @@ import { expect, test } from "bun:test";
 
 import {
   evaluateRfbHandshake,
+  parseBanner,
   probeLoopbackRfb,
+  RFB_CLIENT_VERSION_BYTES,
 } from "../../../../packages/channel-relay/src/desktop/rfb-probe";
+import net from "node:net";
 import { desktopSetupGuidance } from "../../../../packages/channel-relay/src/desktop/platform-guidance";
 
 function bytes(s: string): Uint8Array {
@@ -70,6 +73,38 @@ test("truncated handshakes wait for more bytes, truncated banners fail via probe
   expect(evaluateRfbHandshake(handshake37(2).subarray(0, 13))).toBeNull();
   const verdict = await probeLoopbackRfb({ port: 5900, connectTimeoutMs: 500, dial: async () => bytes("RFB 00") });
   expect(verdict).toMatchObject({ ok: false, code: "desktop-not-rfb" });
+});
+
+test("probe performs the RFB version exchange against a real server", async () => {
+  // A standards-compliant fake: banner first, then WAIT for the client
+  // version before sending SecurityTypes. The old read-only probe deadlocked
+  // here (both sides waiting); the fixed probe writes the client banner.
+  const serverBanner = Buffer.from("RFB 003.008\n", "ascii");
+  const security = Buffer.from([1, 2]);
+  const seen: Buffer[] = [];
+  const server = net.createServer((socket) => {
+    socket.write(serverBanner);
+    socket.on("data", (chunk: Buffer) => {
+      seen.push(chunk);
+      socket.write(security);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const verdict = await probeLoopbackRfb({ port, connectTimeoutMs: 2000 });
+    expect(verdict).toEqual({ ok: true, version: "RFB 003.008", security: "vnc-auth" });
+    expect(Buffer.concat(seen).equals(RFB_CLIENT_VERSION_BYTES)).toBe(true);
+  } finally {
+    server.close();
+  }
+});
+
+test("live security bytes evaluate after the banner form", () => {
+  const banner = parseBanner(Uint8Array.from(Buffer.from("RFB 003.008\n", "ascii")))!;
+  expect(banner.version).toBe("RFB 003.008");
+  expect(evaluateRfbHandshake(banner, Uint8Array.from([1, 2]))).toEqual({ ok: true, version: "RFB 003.008", security: "vnc-auth" });
+  expect(evaluateRfbHandshake(banner, Uint8Array.from([]))).toBeNull();
 });
 
 test("dial failures map to desktop-rfb-unavailable", async () => {

@@ -9,7 +9,7 @@ export { relayCliProvider } from "./relay-provider.js";
 export { retireRelayChannelFromCli } from "./retire-channel-cli.js";
 export { parseRelayChannelConfig, parseRelayTerminalConfig, parseRelayDesktopConfig } from "./config.js";
 export type { RelayChannelConfig, RelayDesktopConfig, RelayTerminalConfig } from "./config.js";
-export { evaluateRfbHandshake, probeLoopbackRfb, RFB_LOOPBACK_HOST } from "./desktop/rfb-probe.js";
+export { evaluateRfbHandshake, parseBanner, probeLoopbackRfb, RFB_CLIENT_VERSION_BYTES, RFB_LOOPBACK_HOST } from "./desktop/rfb-probe.js";
 export type { RfbProbeErrorCode, RfbProbeVerdict } from "./desktop/rfb-probe.js";
 export { desktopSetupGuidance } from "./desktop/platform-guidance.js";
 export { DesktopTunnelRuntime } from "./desktop/desktop-tunnel-runtime.js";

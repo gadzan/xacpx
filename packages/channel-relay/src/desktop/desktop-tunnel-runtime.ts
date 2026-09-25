@@ -22,7 +22,7 @@ import {
 
 import type { RelayDesktopConfig } from "../config.js";
 import { desktopSetupGuidance } from "./platform-guidance.js";
-import { evaluateRfbHandshake, probeLoopbackRfb, RFB_LOOPBACK_HOST } from "./rfb-probe.js";
+import { parseBanner, probeLoopbackRfb, RFB_LOOPBACK_HOST } from "./rfb-probe.js";
 
 export interface DesktopTunnelDeps {
   config: RelayDesktopConfig;
@@ -110,6 +110,10 @@ export class DesktopTunnelRuntime {
   private async openTunnel(streamId: string, ticket: string): Promise<void> {
     const config = this.deps.config;
     const tcp = net.createConnection({ host: RFB_LOOPBACK_HOST, port: config.port });
+    // Any throw below must not leak the loopback socket: openHubSocket can
+    // reject after the banner was already read (hub down / bad ticket).
+    // closeActive only drops this.active, so destroy explicitly on failure.
+    let opened = false;
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         tcp.destroy();
@@ -124,25 +128,47 @@ export class DesktopTunnelRuntime {
         reject(err instanceof Error ? err : new Error(String(err)));
       });
     });
-    // Re-verify the banner on the real tunnel socket: the probe ran earlier and
-    // the port may have been rebound since. Never forward non-RFB bytes.
-    const verified = await verifyTunnelBanner(tcp, config.connectTimeoutMs);
-    if (!verified) {
+    // Re-verify ONLY the 12-byte server banner on the real tunnel socket: the
+    // probe ran earlier and the port may have been rebound since. Never forward
+    // non-RFB bytes — but never consume security state either: noVNC owns the
+    // full handshake (client version + security negotiation) on this socket.
+    // Reading past the banner here would race noVNC for the SecurityTypes.
+    let serverBanner: Buffer;
+    try {
+      const banner = await readTunnelBanner(tcp, config.connectTimeoutMs);
+      if (!banner) throw new Error("RFB server banner changed before tunnel start");
+      serverBanner = banner;
+    } catch (err) {
       tcp.destroy();
-      throw new Error("RFB server banner changed before tunnel start");
+      throw err;
     }
+    // Pause the RFB socket until the hub WS is open: any server bytes that
+    // arrive first (starting with the banner noVNC must see) are buffered in
+    // order and replayed once the binary plane is up. Nothing is consumed.
+    tcp.pause();
+    const earlyChunks: Buffer[] = serverBanner.length > 0 ? [serverBanner] : [];
+    tcp.on("data", (chunk: Buffer) => {
+      earlyChunks.push(chunk);
+    });
     const url = toBinaryWsUrl(this.deps.hubUrl, ticket);
-    const socket = (this.deps.createSocket ?? ((u: string) => new WebSocket(u)))(url);
+    // Attach the error swallow SYNCHRONOUSLY with construction: `ws` may emit
+    // 'error' for an upgrade rejection on a later tick, but any gap between
+    // construction and the first listener is still an unhandled throw under
+    // `bun test` (the rejection is attributed to the file, not the await).
+    let socket: WebSocket;
+    const createSocket = this.deps.createSocket ?? ((u: string) => new WebSocket(u));
+    try {
+      socket = await openHubSocket(createSocket, url, config.connectTimeoutMs);
+    } catch (err) {
+      tcp.removeAllListeners("data");
+      tcp.destroy();
+      throw err;
+    }
     const tunnel: ActiveTunnel = { streamId, ticket, socket, tcp, closed: false };
     this.active = tunnel;
-    let handshakePrefix = verified;
-    socket.on("open", () => {
-      if (handshakePrefix.length > 0) {
-        // The bytes consumed for verification belong to noVNC, not the probe.
-        forwardToWs(socket, tcp, handshakePrefix);
-        handshakePrefix = Buffer.alloc(0);
-      }
-    });
+    opened = true;
+    tcp.removeAllListeners("data");
+    tcp.resume();
     socket.on("message", (data, isBinary) => {
       if (tunnel.closed) return;
       if (!isBinary || !(data instanceof Buffer)) {
@@ -159,6 +185,11 @@ export class DesktopTunnelRuntime {
         try { (socket as { resume?: () => void }).resume?.(); } catch { /* gone */ }
       });
     });
+    // A persistent error swallow MUST exist alongside the close handler: the
+    // `ws` client emits 'error' (with a bare ErrorEvent) before 'close' on
+    // every abnormal shutdown, and an 'error' with no listener throws — which
+    // under `bun test` fails the entire file even when the close is handled.
+    socket.on("error", () => {});
     const onSocketClose = () => this.closeActive("hub-close");
     socket.on("close", onSocketClose);
     socket.on("error", () => this.closeActive("hub-error"));
@@ -209,7 +240,13 @@ function forwardToWs(socket: WebSocket, tcp: net.Socket, chunk: Buffer): void {
   }
 }
 
-async function verifyTunnelBanner(tcp: net.Socket, timeoutMs: number): Promise<Buffer | null> {
+/**
+ * Read exactly the 12-byte RFB server banner off a connected tunnel socket.
+ * Returns the banner bytes (kept for verbatim replay to noVNC) or null when
+ * the peer is not speaking RFB. Never reads past byte 12: security-type bytes
+ * belong to noVNC's handshake, not to this preflight.
+ */
+async function readTunnelBanner(tcp: net.Socket, timeoutMs: number): Promise<Buffer | null> {
   return new Promise<Buffer | null>((resolve) => {
     const chunks: Buffer[] = [];
     let done = false;
@@ -223,15 +260,81 @@ async function verifyTunnelBanner(tcp: net.Socket, timeoutMs: number): Promise<B
     const timer = setTimeout(() => finish(null), Math.min(timeoutMs, 2000));
     const onData = (chunk: Buffer) => {
       chunks.push(chunk);
-      const bytes = new Uint8Array(Buffer.concat(chunks));
-      const verdict = evaluateRfbHandshake(bytes);
-      if (verdict === null) return;
-      if (!verdict.ok) {
-        finish(null);
-        return;
-      }
-      finish(Buffer.concat(chunks));
+      const buffered = Buffer.concat(chunks);
+      if (buffered.length < 12) return;
+      finish(parseBanner(new Uint8Array(buffered.subarray(0, 12))) ? buffered.subarray(0, 12) : null);
     };
     tcp.on("data", onData);
   });
+}
+
+async function openHubSocket(createSocket: (url: string) => WebSocket, url: string, timeoutMs: number): Promise<WebSocket> {
+  // Guard synchronously: if the factory itself throws (or emits 'error' on
+  // the same tick before our once-listeners attach), Node treats an
+  // emitter 'error' with zero listeners as a throw. Wrap construction so a
+  // pre-listener emission can never escape as an unhandled file-level error.
+  let socket: WebSocket;
+  try {
+    socket = createSocket(url);
+  } catch (err) {
+    throw err instanceof Error ? err : new Error(String(err));
+  }
+  // A temporary swallow covers the gap between construction and the
+  // once-listeners below; detached on first settle.
+  const guard = () => {};
+  socket.on("error", guard);
+  return new Promise<WebSocket>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      try { socket.close(); } catch { /* gone */ }
+      reject(new Error(`desktop hub socket timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    // One-shot listeners MUST all detach on first settle: the tunnel registers
+    // its own persistent `on("error")`/`on("close")` afterwards. `ws` emits
+    // BOTH error and close for an upgrade rejection, so without detach the
+    // second event re-rejects an already-settled promise (unhandled).
+    let settled = false;
+    const detach = () => {
+      clearTimeout(timer);
+      socket.removeListener("error", guard);
+      socket.removeListener("error", onError as (...args: never[]) => void);
+      socket.removeListener("close", onClose);
+    };
+    const onError = (err: unknown) => {
+      if (settled) return;
+      settled = true;
+      detach();
+      reject(err instanceof Error ? err : new Error(describeHubSocketError(err)));
+    };
+    const onClose = () => {
+      if (settled) return;
+      settled = true;
+      detach();
+      reject(new Error("desktop hub socket closed before open"));
+    };
+    socket.once("open", () => {
+      if (settled) return;
+      settled = true;
+      detach();
+      resolve(socket);
+    });
+    socket.once("error", onError);
+    socket.once("close", onClose);
+  });
+}
+
+/**
+ * Best-effort human rendering of a ws failure: the `ws` package reports
+ * upgrade rejections (e.g. hub-side 4403 for a bad ticket) as a bare
+ * ErrorEvent with no message, which otherwise surfaces as
+ * `[object ErrorEvent]` in prepare results.
+ */
+function describeHubSocketError(err: unknown): string {
+  if (!err || typeof err !== "object") return String(err);
+  const record = err as Record<string, unknown>;
+  const message = typeof record.message === "string" && record.message ? record.message : "";
+  const code = typeof (record.target as Record<string, unknown> | undefined)?.url === "string"
+    ? ` (${String((record.target as Record<string, unknown>).url)})`
+    : "";
+  const type = typeof record.type === "string" ? record.type : "error";
+  return message ? `${type}: ${message}${code}` : `hub websocket ${type} during upgrade${code}`;
 }

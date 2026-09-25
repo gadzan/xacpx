@@ -1,7 +1,8 @@
 // packages/channel-relay/src/desktop/rfb-probe.ts
 // Loopback RFB preflight: confirm the local VNC server speaks RFB and reports
 // an auth scheme the hub/browser path can serve (v1: VncAuth only). The probe
-// never sends credentials; noVNC completes VncAuth end-to-end over the tunnel.
+// performs the version exchange (read server banner, write client banner)
+// but never sends credentials; noVNC completes VncAuth end-to-end over the tunnel.
 import net from "node:net";
 
 export const RFB_LOOPBACK_HOST = "127.0.0.1";
@@ -31,6 +32,8 @@ export type RfbProbeErrorCode =
   | "desktop-auth-unsupported";
 
 const RFB_BANNER_RE = /^RFB (\d{3})\.(\d{3})\n$/;
+/** Exact 12 bytes the probe writes back: the negotiated ProtocolVersion. */
+export const RFB_CLIENT_VERSION_BYTES = Buffer.from("RFB 003.008\n", "ascii");
 
 function asciiToString(bytes: Uint8Array, start: number, end: number): string {
   let out = "";
@@ -38,7 +41,7 @@ function asciiToString(bytes: Uint8Array, start: number, end: number): string {
   return out;
 }
 
-function parseBanner(bytes: Uint8Array): { version: string; major: number; minor: number } | null {
+export function parseBanner(bytes: Uint8Array): { version: string; major: number; minor: number } | null {
   if (bytes.length < 12) return null;
   const text = asciiToString(bytes, 0, 12);
   const m = RFB_BANNER_RE.exec(text);
@@ -51,11 +54,25 @@ function parseBanner(bytes: Uint8Array): { version: string; major: number; minor
 }
 
 /**
- * Evaluate one RFB Security handshake from buffered server bytes.
- * Pure (no sockets): the connector feeds whatever the loopback server sent;
- * returns null when more bytes are needed, otherwise a closed verdict.
+ * Evaluate the server SecurityTypes that follow the client's ProtocolVersion
+ * reply (RFB: server banner -> client banner -> security types). Two call
+ * shapes: the legacy single-buffer form (banner + security bytes together,
+ * kept for unit tests), and the live form (parsed banner, then the bytes that
+ * arrived AFTER the client version was written). Returns null when more bytes
+ * are needed, otherwise a closed verdict. Banner parsing stays in
+ * `parseBanner` so the tunnel path can verify the banner without consuming
+ * security state that belongs to noVNC.
  */
-export function evaluateRfbHandshake(bytes: Uint8Array): RfbProbeVerdict | null {
+export function evaluateRfbHandshake(bytes: Uint8Array): RfbProbeVerdict | null;
+export function evaluateRfbHandshake(banner: { version: string; major: number; minor: number }, rest: Uint8Array): RfbProbeVerdict | null;
+export function evaluateRfbHandshake(
+  bannerOrBytes: Uint8Array | { version: string; major: number; minor: number },
+  rest?: Uint8Array,
+): RfbProbeVerdict | null {
+  if (rest !== undefined) {
+    return evaluateSecurityTypes(bannerOrBytes as { version: string; major: number; minor: number }, rest, 0);
+  }
+  const bytes = bannerOrBytes as Uint8Array;
   const banner = parseBanner(bytes);
   if (!banner) {
     // A short non-RFB greeting (e.g. HTTP/SSH on the port) fails fast; a short
@@ -72,7 +89,14 @@ export function evaluateRfbHandshake(bytes: Uint8Array): RfbProbeVerdict | null 
     }
     return null;
   }
-  const offset = 12;
+  return evaluateSecurityTypes(banner, bytes, 12);
+}
+
+function evaluateSecurityTypes(
+  banner: { version: string; major: number; minor: number },
+  bytes: Uint8Array,
+  offset: number,
+): RfbProbeVerdict | null {
   const fail = (code: RfbProbeErrorCode, detail: string): RfbProbeVerdict => ({ ok: false, code, detail });
 
   if (banner.major === 3 && banner.minor >= 7) {
@@ -151,47 +175,91 @@ export async function probeLoopbackRfb(options: RfbProbeOptions): Promise<RfbPro
   }
   return verdict;
 }
+/**
+ * Disposable probe connection with the CORRECT RFB order: read the 12-byte
+ * server banner, write back our ProtocolVersion, THEN read the SecurityTypes.
+ * A standards-compliant server (TigerVNC/TightVNC) waits for the client
+ * version after its banner; reading-then-writing is what unblocks it. The
+ * socket is always destroyed afterwards — the real tunnel opens its own
+ * connection so noVNC owns the full handshake there.
+ */
 async function dialLoopbackTcp(port: number, timeoutMs: number): Promise<Uint8Array> {
   return new Promise<Uint8Array>((resolve, reject) => {
-    const chunks: Buffer[] = [];
+    const bannerChunks: Buffer[] = [];
+    const securityChunks: Buffer[] = [];
     let settled = false;
+    let phase: "banner" | "security" = "banner";
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       socket.destroy();
       reject(new Error(`RFB connect timed out after ${timeoutMs}ms`));
     }, timeoutMs);
-    const socket = net.createConnection({ host: RFB_LOOPBACK_HOST, port }, () => {
-      // Banner + 3.7 security-type list arrive in the first packets; 256 bytes
-      // covers banner (12) + count (1) + types. Enough for the verdict.
-      socket.once("data", (chunk: Buffer) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        chunks.push(chunk);
-        socket.destroy();
-        resolve(new Uint8Array(Buffer.concat(chunks).subarray(0, 256)));
-      });
-    });
-    socket.on("data", (chunk: Buffer) => {
-      if (settled || chunks.length === 0) return;
-      chunks.push(chunk);
-    });
-    socket.on("error", (err) => {
+    const fail = (err: unknown) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      socket.destroy();
       reject(err instanceof Error ? err : new Error(String(err)));
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      const banner = Buffer.concat(bannerChunks);
+      const security = Buffer.concat(securityChunks).subarray(0, 256);
+      socket.destroy();
+      resolve(new Uint8Array(Buffer.concat([banner.subarray(0, 12), security])));
+    };
+    const socket = net.createConnection({ host: RFB_LOOPBACK_HOST, port });
+    socket.on("data", (chunk: Buffer) => {
+      if (settled) return;
+      if (phase === "banner") {
+        bannerChunks.push(chunk);
+        const buffered = Buffer.concat(bannerChunks);
+        if (buffered.length < 12) return;
+        const parsed = parseBanner(new Uint8Array(buffered.subarray(0, 12)));
+        if (!parsed) {
+          fail(new Error("not an RFB server banner"));
+          return;
+        }
+        phase = "security";
+        try {
+          socket.write(RFB_CLIENT_VERSION_BYTES);
+        } catch (err) {
+          fail(err);
+          return;
+        }
+        const rest = buffered.subarray(12);
+        if (rest.length > 0) securityChunks.push(rest);
+        // Some servers answer synchronously; otherwise the next data event continues.
+        if (securityChunks.length > 0) setImmediate(checkSecurity);
+        return;
+      }
+      securityChunks.push(chunk);
+      checkSecurity();
     });
+    const checkSecurity = () => {
+      if (settled || phase !== "security") return;
+      const banner = Buffer.concat(bannerChunks).subarray(0, 12);
+      const parsed = parseBanner(new Uint8Array(banner));
+      if (!parsed) {
+        fail(new Error("not an RFB server banner"));
+        return;
+      }
+      const verdict = evaluateRfbHandshake(parsed, new Uint8Array(Buffer.concat(securityChunks)));
+      if (verdict === null) return;
+      finish();
+    };
+    socket.on("error", fail);
     socket.on("close", () => {
       if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (chunks.length > 0) {
-        resolve(new Uint8Array(Buffer.concat(chunks).subarray(0, 256)));
-      } else {
-        reject(new Error("RFB server closed the connection"));
+      // Server closed mid-handshake: whatever arrived still feeds the verdict.
+      if (phase === "banner" && bannerChunks.length === 0) {
+        fail(new Error("RFB server closed the connection"));
+        return;
       }
+      finish();
     });
   });
 }
