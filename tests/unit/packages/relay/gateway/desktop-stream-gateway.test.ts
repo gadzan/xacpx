@@ -119,6 +119,32 @@ test("precheck consumes the connector ticket before the handshake completes", ()
   expect(gateway.attachConnector(precheck.claim, connector as unknown as DesktopBinarySocket).ok).toBe(true);
 });
 
+test("connector banner before browser attach is buffered and flushed in order", () => {
+  const { tickets, streams, gateway } = setup();
+  const reserved = streams.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
+  expect(reserved.ok).toBe(true);
+  if (!reserved.ok) return;
+  const bt = tickets.mintTicket({ streamId: reserved.record.streamId, accountId: "a1", instanceId: "i1", side: "browser" });
+  const ct = tickets.mintTicket({ streamId: reserved.record.streamId, accountId: "a1", instanceId: "i1", side: "connector" });
+  const connector = new FakeBinarySocket();
+  expect(gateway.attachConnector(ct.ticket, connector as unknown as DesktopBinarySocket).ok).toBe(true);
+  // Connector replays the RFB banner during prepare, before any browser exists.
+  const banner = Uint8Array.from([82, 70, 66, 32, 48, 48, 51, 46, 48, 48, 56, 10]);
+  connector.emit(banner, true);
+  // Browser attaches later; security was already reported during prepare.
+  const browser = new FakeBinarySocket();
+  expect(gateway.attachBrowser(bt.ticket, browser as unknown as DesktopBinarySocket).ok).toBe(true);
+  expect(gateway.reportConnectorReady(reserved.record.streamId, "vnc-auth")).toBe(true);
+  expect(streams.get(reserved.record.streamId)?.state).toBe("active");
+  expect(browser.sent.length).toBe(1);
+  expect(browser.sent[0]).toEqual(banner);
+  // Live frames still flow after the flush.
+  const live = Uint8Array.from([1, 2, 3]);
+  connector.emit(live, true);
+  expect(browser.sent.length).toBe(2);
+  expect(browser.sent[1]).toEqual(live);
+});
+
 test("ticket reuse and text/oversize frames fail closed", () => {
   const { tickets, streams, gateway } = setup();
   const reserved = streams.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });

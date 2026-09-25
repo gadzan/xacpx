@@ -32,7 +32,17 @@ export type RfbProbeErrorCode =
   | "desktop-auth-unsupported";
 
 const RFB_BANNER_RE = /^RFB (\d{3})\.(\d{3})\n$/;
-/** Exact 12 bytes the probe writes back: the negotiated ProtocolVersion. */
+/**
+ * Client ProtocolVersion per server banner (RFB §6.1.1: the client must not
+ * request a version higher than the server announced). Servers ≥3.8 get 3.8,
+ * ≥3.7 get 3.7, anything else that parses as RFB 3.x gets 3.3.
+ */
+export function clientVersionForBanner(banner: { major: number; minor: number }): Buffer {
+  if (banner.major === 3 && banner.minor >= 8) return Buffer.from("RFB 003.008\n", "ascii");
+  if (banner.major === 3 && banner.minor >= 7) return Buffer.from("RFB 003.007\n", "ascii");
+  return Buffer.from("RFB 003.003\n", "ascii");
+}
+/** Legacy alias: exact bytes for the common 3.8 path (unit-test readability). */
 export const RFB_CLIENT_VERSION_BYTES = Buffer.from("RFB 003.008\n", "ascii");
 
 function asciiToString(bytes: Uint8Array, start: number, end: number): string {
@@ -225,7 +235,7 @@ async function dialLoopbackTcp(port: number, timeoutMs: number): Promise<Uint8Ar
         }
         phase = "security";
         try {
-          socket.write(RFB_CLIENT_VERSION_BYTES);
+          socket.write(clientVersionForBanner(parsed));
         } catch (err) {
           fail(err);
           return;

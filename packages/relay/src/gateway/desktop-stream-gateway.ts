@@ -44,14 +44,27 @@ export interface DesktopStreamGatewayOptions {
   onStreamClosed?: (streamId: string) => void;
 }
 
+const PRE_ATTACH_MAX_STREAMS = 64;
+const PRE_ATTACH_MAX_BYTES_PER_STREAM = 64 * 1024;
+
 export class DesktopStreamGateway {
   private readonly tickets: DesktopTicketStore;
   private readonly streams: DesktopStreamRegistry;
+  private readonly paired = new Map<string, PairedSockets>();
+  /**
+   * Frames that arrive before BOTH binary sides are paired (normally the
+   * connector's RFB banner: the connector always attaches during prepare,
+   * the browser only after desktop-opened). Without this the replayed banner
+   * is dropped by onFrame's no-peer guard and both ends deadlock (server
+   * waits for the client version, noVNC waits for the banner). Bounded per
+   * stream; flushed in order once both sides are present; dropped on close
+   * or reservation expiry.
+   */
+  private readonly preAttach = new Map<string, { chunks: Uint8Array[]; bytes: number }>();
   private readonly logger: RelayLogger;
   private readonly maxPayloadBytes: number;
   private readonly hardCloseBufferedBytes: number;
   private readonly onStreamClosed?: (streamId: string) => void;
-  private readonly paired = new Map<string, PairedSockets>();
 
   constructor(options: DesktopStreamGatewayOptions = {}) {
     this.tickets = options.tickets ?? new DesktopTicketStore();
@@ -109,14 +122,19 @@ export class DesktopStreamGateway {
     const pair = this.paired.get(streamId) ?? {};
     pair.security = security;
     this.paired.set(streamId, pair);
-    this.streams.setState(streamId, pair.browser && pair.connector ? "active" : "waiting-browser");
+    if (pair.browser && pair.connector) {
+      this.streams.setState(streamId, "active");
+      this.flushPreAttach(streamId);
+    } else {
+      this.streams.setState(streamId, "waiting-browser");
+    }
     return true;
   }
-
   closeStream(streamId: string, reason = "closed"): void {
     const pair = this.paired.get(streamId);
     const known = pair !== undefined || this.streams.get(streamId) !== undefined;
     this.paired.delete(streamId);
+    this.preAttach.delete(streamId);
     this.streams.close(streamId);
     this.tickets.revokeForStream(streamId);
     if (!known) return;
@@ -126,7 +144,6 @@ export class DesktopStreamGateway {
     try { pair?.connector?.close(1000, reason); } catch { /* already gone */ }
     this.onStreamClosed?.(streamId);
   }
-
   closeForInstance(instanceId: string, reason = "instance-offline"): void {
     for (const record of this.streams.closeForInstance(instanceId)) {
       this.closeStream(record.streamId, reason);
@@ -155,6 +172,7 @@ export class DesktopStreamGateway {
     socket.on("close", () => this.closeStream(streamId, `${side}-close`));
     if (pair.browser && pair.connector && pair.security) {
       this.streams.setState(streamId, "active");
+      this.flushPreAttach(streamId);
     }
     return { ok: true, streamId };
   }
@@ -168,8 +186,7 @@ export class DesktopStreamGateway {
   ): void {
     const record = this.streams.get(streamId);
     const pair = this.paired.get(streamId);
-    const peer = from === "browser" ? pair?.connector : pair?.browser;
-    if (!record || record.state === "closed" || !pair || !peer) {
+    if (!record || record.state === "closed" || !pair) {
       return;
     }
     if (!isBinary || !(data instanceof Uint8Array)) {
@@ -183,6 +200,14 @@ export class DesktopStreamGateway {
         bytes: data.byteLength,
       });
       this.closeStream(streamId, "oversize-frame");
+      return;
+    }
+    const peer = from === "browser" ? pair.connector : pair.browser;
+    if (!peer) {
+      // Peer not attached yet (connector replayed the RFB banner before the
+      // browser opened /desktop/observe). Buffer boundedly and flush in
+      // order once both sides + security coincide; drop on overflow.
+      this.bufferPreAttach(streamId, data);
       return;
     }
     if (peer.bufferedAmount > this.hardCloseBufferedBytes || socket.bufferedAmount > this.hardCloseBufferedBytes) {
@@ -200,5 +225,41 @@ export class DesktopStreamGateway {
   private reject(socket: DesktopBinarySocket, reason: string): { ok: false; reason: string } {
     try { socket.close(4403, reason); } catch { /* already gone */ }
     return { ok: false, reason };
+  }
+
+  private bufferPreAttach(streamId: string, data: Uint8Array): void {
+    const existing = this.preAttach.get(streamId);
+    const bytes = (existing?.bytes ?? 0) + data.byteLength;
+    if (bytes > PRE_ATTACH_MAX_BYTES_PER_STREAM) {
+      this.logger.warn("relay.desktop.preattach_overflow", "pre-attach desktop buffer overflow", { streamId });
+      this.closeStream(streamId, "preattach-overflow");
+      return;
+    }
+    if (!existing && this.preAttach.size >= PRE_ATTACH_MAX_STREAMS) {
+      this.logger.warn("relay.desktop.preattach_overflow", "too many pre-attach desktop streams", { streamId });
+      this.closeStream(streamId, "preattach-overflow");
+      return;
+    }
+    const entry = existing ?? { chunks: [], bytes: 0 };
+    entry.chunks.push(data);
+    entry.bytes = bytes;
+    this.preAttach.set(streamId, entry);
+  }
+
+  private flushPreAttach(streamId: string): void {
+    const entry = this.preAttach.get(streamId);
+    if (!entry) return;
+    this.preAttach.delete(streamId);
+    const pair = this.paired.get(streamId);
+    const peer = pair?.browser;
+    if (!peer || pair?.connector === undefined) return;
+    for (const chunk of entry.chunks) {
+      try {
+        peer.send(chunk);
+      } catch {
+        this.closeStream(streamId, "send-failed");
+        return;
+      }
+    }
   }
 }

@@ -110,7 +110,51 @@ test("desktop hard-gate: probe verdict plus hub binary pipe on an independent co
     expect(tunnel.activeStreamId).toBeNull();
     tunnel.closeAll();
 
-
+    // Success path THROUGH the real tunnel: mint a hub-accepted connector
+    // ticket, run handlePrepare, and assert the browser's FIRST binary frame
+    // is the RFB banner the tunnel replayed — without the replay both sides
+    // deadlock (server waits for client version, noVNC waits for banner).
+    const live = relay.runtime.desktop.streamRegistry.reserve({ accountId: account.id, instanceId: "i-live", ttlMs: 60_000 });
+    expect(live.ok).toBe(true);
+    if (!live.ok) return;
+    const liveBrowserTicket = relay.runtime.desktop.ticketStore.mintTicket({
+      streamId: live.record.streamId, accountId: account.id, instanceId: "i-live", side: "browser",
+    });
+    const liveConnectorTicket = relay.runtime.desktop.ticketStore.mintTicket({
+      streamId: live.record.streamId, accountId: account.id, instanceId: "i-live", side: "connector",
+    });
+    const liveTunnel = new DesktopTunnelRuntime({
+      config: { enabled: true, backend: "rfb", port, connectTimeoutMs: 5000, maxStreams: 1 },
+      hubUrl: `ws://127.0.0.1:${relay.httpPort}`,
+    });
+    let livePrepared: unknown;
+    await liveTunnel.handlePrepare({
+      protocolVersion: 1,
+      kind: "req",
+      id: "hub-live",
+      type: MSG.desktopPrepare,
+      payload: { streamId: live.record.streamId, ticket: liveConnectorTicket.ticket, expiresAt: Date.now() + 60_000 },
+    }, (x) => { livePrepared = x; });
+    expect(livePrepared).toMatchObject({ streamId: live.record.streamId, security: "vnc-auth" });
+    expect(liveTunnel.activeStreamId).toBe(live.record.streamId);
+    expect(relay.runtime.desktop.reportConnectorReady(live.record.streamId, "vnc-auth")).toBe(true);
+    const liveBrowserWs = await openSocket(
+      `ws://127.0.0.1:${relay.httpPort}/desktop/observe?ticket=${liveBrowserTicket.ticket}`,
+      { cookie },
+    );
+    trackSocket(sockets, liveBrowserWs);
+    // reportConnectorReady ran before the browser attached, so the stream is
+    // still waiting-browser; the browser attach alone does not flip it (only
+    // the gateway's pair() does once browser+connector+security coincide).
+    // Re-mark ready now that both binary sides are paired.
+    expect(relay.runtime.desktop.reportConnectorReady(live.record.streamId, "vnc-auth")).toBe(true);
+    expect(relay.runtime.desktop.streamRegistry.get(live.record.streamId)?.state).toBe("active");
+    const firstFrame = await nextBinary(liveBrowserWs);
+    expect(firstFrame.subarray(0, 12)).toEqual(Buffer.from("RFB 003.008\n", "ascii"));
+    // The live stream still holds its instance + account slots: close it (and
+    // its tunnel) before the cap-filling section below needs 8 free slots.
+    liveTunnel.closeAll();
+    relay.runtime.desktop.closeStream(live.record.streamId, "test-done");
     // End-to-end through the real hub broker: reserve + tickets + binary pipe.
     // Account cap path shares the same atomic reservation: fill 8 sibling
     // streams first, then the 9th reserve (this instance's slot is free, the

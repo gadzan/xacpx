@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import {
+  clientVersionForBanner,
   evaluateRfbHandshake,
   parseBanner,
   probeLoopbackRfb,
@@ -95,6 +96,36 @@ test("probe performs the RFB version exchange against a real server", async () =
     const verdict = await probeLoopbackRfb({ port, connectTimeoutMs: 2000 });
     expect(verdict).toEqual({ ok: true, version: "RFB 003.008", security: "vnc-auth" });
     expect(Buffer.concat(seen).equals(RFB_CLIENT_VERSION_BYTES)).toBe(true);
+  } finally {
+    server.close();
+  }
+});
+
+test("client version negotiates down per server banner", () => {
+  expect(clientVersionForBanner({ major: 3, minor: 8 }).toString("ascii")).toBe("RFB 003.008\n");
+  expect(clientVersionForBanner({ major: 3, minor: 7 }).toString("ascii")).toBe("RFB 003.007\n");
+  expect(clientVersionForBanner({ major: 3, minor: 3 }).toString("ascii")).toBe("RFB 003.003\n");
+  expect(clientVersionForBanner({ major: 3, minor: 5 }).toString("ascii")).toBe("RFB 003.003\n");
+});
+
+test("probe negotiates 3.3 against a 3.3 server that waits for the client version", async () => {
+  const serverBanner = Buffer.from("RFB 003.003\n", "ascii");
+  // RFB 3.3 form: u32 security type directly after the banner.
+  const security = Buffer.from([0, 0, 0, 2]);
+  const seen: Buffer[] = [];
+  const server = net.createServer((socket) => {
+    socket.write(serverBanner);
+    socket.on("data", (chunk: Buffer) => {
+      seen.push(chunk);
+      socket.write(security);
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const verdict = await probeLoopbackRfb({ port, connectTimeoutMs: 2000 });
+    expect(verdict).toEqual({ ok: true, version: "RFB 003.003", security: "vnc-auth" });
+    expect(Buffer.concat(seen).toString("ascii")).toBe("RFB 003.003\n");
   } finally {
     server.close();
   }

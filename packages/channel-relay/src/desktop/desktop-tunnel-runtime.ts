@@ -113,7 +113,6 @@ export class DesktopTunnelRuntime {
     // Any throw below must not leak the loopback socket: openHubSocket can
     // reject after the banner was already read (hub down / bad ticket).
     // closeActive only drops this.active, so destroy explicitly on failure.
-    let opened = false;
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         tcp.destroy();
@@ -133,6 +132,9 @@ export class DesktopTunnelRuntime {
     // non-RFB bytes — but never consume security state either: noVNC owns the
     // full handshake (client version + security negotiation) on this socket.
     // Reading past the banner here would race noVNC for the SecurityTypes.
+    // Pause BEFORE reading so nothing past the banner can slip through
+    // between the banner reader's removeListener and the collector below.
+    tcp.pause();
     let serverBanner: Buffer;
     try {
       const banner = await readTunnelBanner(tcp, config.connectTimeoutMs);
@@ -142,10 +144,9 @@ export class DesktopTunnelRuntime {
       tcp.destroy();
       throw err;
     }
-    // Pause the RFB socket until the hub WS is open: any server bytes that
-    // arrive first (starting with the banner noVNC must see) are buffered in
-    // order and replayed once the binary plane is up. Nothing is consumed.
-    tcp.pause();
+    // Any server bytes that arrive while the hub WS dials (starting with the
+    // banner noVNC must see) are buffered in order and replayed once the
+    // binary plane is up. Nothing is consumed.
     const earlyChunks: Buffer[] = serverBanner.length > 0 ? [serverBanner] : [];
     tcp.on("data", (chunk: Buffer) => {
       earlyChunks.push(chunk);
@@ -166,9 +167,15 @@ export class DesktopTunnelRuntime {
     }
     const tunnel: ActiveTunnel = { streamId, ticket, socket, tcp, closed: false };
     this.active = tunnel;
-    opened = true;
     tcp.removeAllListeners("data");
     tcp.resume();
+    // Replay what the banner preflight consumed, IN ORDER, before live
+    // forwarding resumes: the hub socket just opened, so forwardToWs now
+    // delivers. Without this noVNC never sees "RFB 003.xxx" and both sides
+    // deadlock (server waits for the client version, noVNC waits for banner).
+    for (const replay of earlyChunks) {
+      forwardToWs(socket, tcp, replay);
+    }
     socket.on("message", (data, isBinary) => {
       if (tunnel.closed) return;
       if (!isBinary || !(data instanceof Buffer)) {
@@ -255,6 +262,7 @@ async function readTunnelBanner(tcp: net.Socket, timeoutMs: number): Promise<Buf
       done = true;
       clearTimeout(timer);
       tcp.removeListener("data", onData);
+      tcp.pause();
       resolve(value);
     };
     const timer = setTimeout(() => finish(null), Math.min(timeoutMs, 2000));
@@ -264,7 +272,12 @@ async function readTunnelBanner(tcp: net.Socket, timeoutMs: number): Promise<Buf
       if (buffered.length < 12) return;
       finish(parseBanner(new Uint8Array(buffered.subarray(0, 12))) ? buffered.subarray(0, 12) : null);
     };
+    // The socket is paused by the caller, but 'data' was attached while
+    // flowing semantics still apply to already-buffered kernel data: resume
+    // once so the banner arrives, then finish() re-pauses immediately.
     tcp.on("data", onData);
+    tcp.resume();
+    // Safety: if the banner never arrives, finish(null) via the timer above.
   });
 }
 
