@@ -9,6 +9,7 @@ import type { SessionService } from "../sessions/session-service";
 import { ConversationError } from "./conversation-error";
 import { conversationExecutionOrigin, conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
 import type { ClaimedWork, ConversationStore } from "./conversation-store";
+import { isEffectConcurrencySafe } from "./conversation-filesystem-policy";
 import {
   emitConversationProductEvent,
   type ConversationProductEvent,
@@ -126,12 +127,23 @@ export class ConversationDispatcher {
           if (!claimed) {
             break;
           }
+          // PR7 filesystem scheduling: a claimed Group sibling that must
+          // take the Topic single-writer slot waits while another member of
+          // the same Run is already executing. The claim is released back to
+          // pending (same generation fence) and the Topic deferred for this
+          // pass so the sibling finishes first; a later wake (the sibling's
+          // completion persists + kicks via accept/autoKick path) starts a
+          // fresh pass with the deferred set cleared. The Run card still
+          // presents one multi-member batch.
+          if (this.mustDeferForWriterSlot(claimed)) {
+            this.deferClaimForWriterSlot(claimed);
+            continue;
+          }
           await this.execute(claimed);
         }
       }
     } finally {
       this.draining = false;
-      this.deferredTopicIds.clear();
     }
     if (!this.closed && seen !== this.wakeGeneration) {
       await this.kick();
@@ -223,6 +235,40 @@ export class ConversationDispatcher {
       ...(this.deferredTopicIds.size > 0 ? { skipTopicIds: [...this.deferredTopicIds] } : {}),
     });
   }
+  /**
+   * PR7 filesystem scheduling gate. PR7 accepts carry no proven read-only
+   * capability, so every Group member is conservatively unknown and takes
+   * the Topic single-writer slot. While another member of the same Run is
+   * already executing, a newly claimed sibling defers instead of running
+   * concurrently. Direct Runs are unaffected.
+   */
+  private mustDeferForWriterSlot(work: ClaimedWork): boolean {
+    if (this.runtime.conversationKind(work.run.conversationId) !== "group") {
+      return false;
+    }
+    const siblings = this.store.listMemberTurns(work.run.id);
+    const otherExecuting = siblings.filter((turn) => turn.id !== work.memberTurn.id
+      && (turn.state === "running" || turn.state === "dispatched"));
+    if (otherExecuting.length === 0) {
+      return false;
+    }
+    return !isEffectConcurrencySafe(undefined, "shared-single-writer", otherExecuting.length);
+  }
+
+  private deferClaimForWriterSlot(work: ClaimedWork): void {
+    try {
+      this.store.releaseClaimToPending({
+        dispatchId: work.dispatch.id,
+        owner: this.ownerId,
+        generation: work.dispatch.generation,
+        now: this.now().toISOString(),
+      });
+    } catch {
+      return;
+    }
+    this.deferredTopicIds.add(work.run.topicId);
+  }
+
 
   private async execute(work: ClaimedWork): Promise<void> {
     await this.hooks?.afterClaim?.(work);
@@ -244,30 +290,42 @@ export class ConversationDispatcher {
         throw materializeFail;
       }
       const snapshot = work.memberSnapshot ?? work.memberTurn.profileSnapshot ?? work.run.profileSnapshot;
-      const live = this.runtime.getBot(work.memberTurn.botId);
-      if (live.agent !== snapshot.execution.agent || live.workspace !== snapshot.execution.workspace) {
-        this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
-        return;
+      const isGroup = this.runtime.conversationKind(work.run.conversationId) === "group";
+      if (!isGroup) {
+        const live = this.runtime.getBot(work.memberTurn.botId);
+        if (live.agent !== snapshot.execution.agent || live.workspace !== snapshot.execution.workspace) {
+          this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
+          return;
+        }
       }
       await this.hooks?.afterAcceptedIdentityCheck?.(work);
-      const binding = await this.runtime.getOrCreateDirectSession({
-        botId: work.memberTurn.botId,
-        conversationId: work.run.conversationId,
-        topicId: work.run.topicId,
-        execution: snapshot.execution,
-        assertStillDispatchable: () => {
-          this.store.assertLiveDispatchForMaterialize({
-            dispatchId: work.dispatch.id,
-            owner: this.ownerId,
-            generation: work.dispatch.generation,
-            runId: work.run.id,
-            memberTurnId: work.memberTurn.id,
-            conversationId: work.run.conversationId,
-            topicId: work.run.topicId,
-            now: this.now().toISOString(),
-          });
-        },
-      });
+      const assertStillDispatchable = (): void => {
+        this.store.assertLiveDispatchForMaterialize({
+          dispatchId: work.dispatch.id,
+          owner: this.ownerId,
+          generation: work.dispatch.generation,
+          runId: work.run.id,
+          memberTurnId: work.memberTurn.id,
+          conversationId: work.run.conversationId,
+          topicId: work.run.topicId,
+          now: this.now().toISOString(),
+        });
+      };
+      const binding = isGroup
+        ? await this.runtime.getOrCreateGroupMemberSession({
+          botId: work.memberTurn.botId,
+          conversationId: work.run.conversationId,
+          topicId: work.run.topicId,
+          execution: snapshot.execution,
+          assertStillDispatchable,
+        })
+        : await this.runtime.getOrCreateDirectSession({
+          botId: work.memberTurn.botId,
+          conversationId: work.run.conversationId,
+          topicId: work.run.topicId,
+          execution: snapshot.execution,
+          assertStillDispatchable,
+        });
       const session = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
       if (!session || !sessionMatchesExecution(session, snapshot.execution)) {
         this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
@@ -312,7 +370,9 @@ export class ConversationDispatcher {
       }
       this.emitProduct({ type: "conversation-run-changed", run: latestRun });
       this.emitProduct({ type: "member-turn-started", run: latestRun, memberTurn: latestMember });
-      const text = composeBotTurnPromptFromSnapshot(snapshot, this.requestText(work.run.requestMessageId));
+      const text = isGroup
+        ? composeBotTurnPromptFromSnapshot(snapshot, this.frozenGroupTranscript(work))
+        : composeBotTurnPromptFromSnapshot(snapshot, this.requestText(work.run.requestMessageId));
       const result = await this.runner.run({
         conversationId: work.run.conversationId,
         topicId: work.run.topicId,
@@ -459,11 +519,16 @@ export class ConversationDispatcher {
         now,
       });
       this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage);
+      // A deferred writer-slot sibling may be parked on this Topic: wake the
+      // drain so it is claimed in a fresh pass. Fire-and-forget by design —
+      // persistResult is sync and drain re-entry is generation-guarded.
+      void this.kick().catch(() => {});
       return;
     }
     if (result.status === "cancelled") {
       const run = this.store.completeCancel(work.run.id, started.id, now, result.unknown === true, true);
       this.emitRunAndMember(run, started.id);
+      void this.kick().catch(() => {});
       return;
     }
     const run = this.store.failExecution({
@@ -473,6 +538,7 @@ export class ConversationDispatcher {
       reason: result.error ?? "failed",
     });
     this.emitRunAndMember(run, started.id);
+    void this.kick().catch(() => {});
   }
 
   /**
@@ -487,7 +553,6 @@ export class ConversationDispatcher {
    * state is an evidence no-op. A reconciliation/store failure is swallowed:
    * the durable indeterminate seal keeps teardown fail-closed, and nothing
    * in the provider settlement path is in a position to observe or retry
-   * the error.
    */
   reconcileLateProviderResult(input: ConversationTurnRunInput, result: ConversationTurnRunResult): void {
     try {
@@ -555,6 +620,36 @@ export class ConversationDispatcher {
     return this.store.getMessage(messageId)?.content ?? "";
   }
 
+  /**
+   * Frozen public transcript for one parallel explicit batch. Every primary
+   * member carries `triggerMessageIds` stamped at durable accept; rendering
+   * only messages at or before that boundary (plus the request itself) keeps
+   * sibling completions from leaking into an already-selected input. Reads
+   * durable Conversation rows only — never session hidden history, Direct
+   * history, other Groups, or other Topics.
+   */
+  private frozenGroupTranscript(work: ClaimedWork): string {
+    const request = this.store.getMessage(work.run.requestMessageId);
+    const boundary = request?.seq ?? Number.POSITIVE_INFINITY;
+    const transcript = this.store.listMessages({
+      conversationId: work.run.conversationId,
+      topicId: work.run.topicId,
+      limit: 500,
+    }).filter((message) => message.seq < boundary);
+    const lines = transcript.map((message) => {
+      if (message.role === "human") {
+        return `Human: ${message.content}`;
+      }
+      const sender = message.senderBotId ? `Bot ${message.senderBotId}` : "Bot";
+      return `${sender}: ${message.content}`;
+    });
+    const requestText = request?.content ?? this.requestText(work.run.requestMessageId);
+    if (lines.length === 0) {
+      return requestText;
+    }
+    return `${lines.join("\n\n")}\n\nHuman: ${requestText}`;
+  }
+
   private resolveMaterializeFail(): Error | undefined {
     const fail = this.hooks?.failRuntimeMaterialize;
     if (!fail) {
@@ -582,5 +677,8 @@ function isMaterializeAbandoned(error: unknown): boolean {
     || error.code === "run_not_runnable"
     || error.code === "conversation_deleting"
     || error.code === "topic_deleting"
-  );
+  ) || (error instanceof BotError
+    && (error.code === "group_member_not_member"
+      || error.code === "conversation_not_group"
+      || error.code === "bot_not_found"));
 }

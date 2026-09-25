@@ -1873,3 +1873,39 @@ test("group CRUD and topic lifecycle dispatch with product IDs", async () => {
   await dispatch(bridge, req(MSG.groupsDelete, { id: "conversation_g" }));
   expect(calls.deleteGroup).toEqual(["conversation_g"]);
 });
+
+test("PR7 groups.list dispatches and structured prompt target passes through", async () => {
+  const prompts: unknown[] = [];
+  const { control } = makeFakeControl({
+    listGroups: () => [{ id: "conversation_g", kind: "group", title: "Team", botIds: ["bot_a", "bot_b"] }],
+    promptConversation: async (input: unknown) => {
+      prompts.push(input);
+      return { ok: true };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.groupsList, {}))).toMatchObject({
+    groups: [{ id: "conversation_g" }],
+  });
+  expect(await dispatch(bridge, req(MSG.conversationPrompt, {
+    conversationId: "conversation_g",
+    topicId: "topic_1",
+    requestId: "req",
+    text: "ship it",
+    target: { mode: "members", botIds: ["bot_a", "bot_b"] },
+  }))).toMatchObject({ ok: true });
+  expect(prompts).toEqual([{
+    conversationId: "conversation_g",
+    topicId: "topic_1",
+    requestId: "req",
+    text: "ship it",
+    target: { mode: "members", botIds: ["bot_a", "bot_b"] },
+  }]);
+  expect(await dispatch(bridge, req(MSG.conversationPrompt, {
+    conversationId: "conversation_g",
+    topicId: "topic_1",
+    requestId: "req",
+    text: "bad",
+    target: { mode: "members", botIds: [] },
+  }))).toMatchObject({ error: { code: "invalid-payload" } });
+});

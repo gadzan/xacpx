@@ -1996,6 +1996,10 @@ export class ControlService {
     return { ...toGroupSummary(group), topics };
   }
 
+  listGroups(): GroupSummaryDto[] {
+    const runtime = this.requireConversations();
+    return runtime.runs.listGroups().map((group) => toGroupSummary(group));
+  }
   async createGroupTopic(
     conversationId: string,
     title: string,
@@ -2065,7 +2069,7 @@ export class ControlService {
         topicId: input.topicId,
         requestId: input.requestId,
         text: input.text,
-        ...(input.target?.botId ? { targetBotId: input.target.botId } : {}),
+        ...(input.target ? { target: input.target } : {}),
         ...(parsedIngress ? { humanIngress: parsedIngress } : {}),
       });
       // Topic-wide authoritative owner as of accept: executing, else oldest
@@ -2082,6 +2086,8 @@ export class ControlService {
         run: toConversationRun(accepted.run),
         message: toConversationMessage(accepted.message),
         memberTurn: toMemberTurnSummary(accepted.memberTurn),
+        ...(accepted.memberTurns.length > 1
+          ? { memberTurns: accepted.memberTurns.map(toMemberTurnSummary) } : {}),
         ...(listed.activeRunId ? { activeRunId: listed.activeRunId } : {}),
         ...(listed.activeRun ? { activeRun: toConversationRun(listed.activeRun) } : {}),
       };

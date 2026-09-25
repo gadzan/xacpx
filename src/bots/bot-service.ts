@@ -738,6 +738,14 @@ export class BotService {
     return record;
   }
 
+  /** PR7 separate Group listing. Never merged into the Direct-only
+   *  conversations list: kinds stay on distinct surfaces. */
+  listGroups(): ConversationRecord[] {
+    return Object.values(this.state.conversations)
+      .filter((conversation) => conversation.kind === "group")
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
   private requireGroupTitle(title: string): string {
     if (typeof title !== "string" || !title.trim()) {
       throw new BotError("title_required", "group title must be a non-empty string");

@@ -372,6 +372,18 @@ export interface BotProfileSnapshotDto {
         effort?: string;
     };
 }
+/** Explicit Group routing target. IDs are authority; display names never route.
+ *  `automatic` is a durable-mode reservation (PR8) rejected by PR7 accept. */
+export type ConversationTargetDto = {
+    botId: string;
+} | {
+    mode: "members";
+    botIds: string[];
+} | {
+    mode: "everyone";
+} | {
+    mode: "automatic";
+};
 export interface MemberTurnSummaryDto {
     id: string;
     runId: string;
@@ -407,6 +419,9 @@ export interface ConversationPromptResponseDto {
     run: ConversationRunDto;
     message: ConversationMessageDto;
     memberTurn: MemberTurnSummaryDto;
+    /** Every accepted member in durable order (first mirrors `memberTurn`).
+     *  Optional for wire compat with older connectors. */
+    memberTurns?: MemberTurnSummaryDto[];
     /** Topic-wide authoritative owner as of accept (executing, else oldest
      *  queued). Lets the caller adopt the true owner without a second
      *  runs.list round trip: an HTTP accept proves only the accepted Run is

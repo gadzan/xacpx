@@ -44,12 +44,24 @@ function isTrustedControlMethod(prop: PropertyKey): prop is TrustedControlMethod
 export function sanitizePublicConversationPrompt(
   input: ConversationPromptRequestDto,
 ): ConversationPromptRequestDto {
+  const target = input.target;
+  let sanitized: ConversationPromptRequestDto["target"];
+  if (target !== undefined && typeof target === "object") {
+    if ("botId" in target && typeof target.botId === "string") {
+      sanitized = { botId: target.botId };
+    } else if ("mode" in target && target.mode === "members" && "botIds" in target
+      && Array.isArray(target.botIds) && target.botIds.every((entry): entry is string => typeof entry === "string")) {
+      sanitized = { mode: "members", botIds: [...target.botIds] };
+    } else if ("mode" in target && (target.mode === "everyone" || target.mode === "automatic")) {
+      sanitized = { mode: target.mode };
+    }
+  }
   return {
     conversationId: input.conversationId,
     topicId: input.topicId,
     requestId: input.requestId,
     text: input.text,
-    ...(input.target?.botId ? { target: { botId: input.target.botId } } : {}),
+    ...(sanitized ? { target: sanitized } : {}),
   };
 }
 

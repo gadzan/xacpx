@@ -175,7 +175,19 @@ test("Bot and Conversation control RPCs validate product IDs, not hidden aliases
   })).not.toBeNull();
   expect(parseControlPayload(MSG.conversationPrompt, {
     conversationId: "conversation_1", topicId: "topic_1", requestId: "req", text: "hi",
-    target: {},
+    target: { mode: "members", botIds: ["bot_1", "bot_2"] },
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, {
+    conversationId: "conversation_1", topicId: "topic_1", requestId: "req", text: "hi",
+    target: { mode: "everyone" },
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, {
+    conversationId: "conversation_1", topicId: "topic_1", requestId: "req", text: "hi",
+    target: { mode: "members", botIds: [] },
+  })).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, {
+    conversationId: "conversation_1", topicId: "topic_1", requestId: "req", text: "hi",
+    target: { mode: "members", botIds: "bot_1" },
   })).toBeNull();
   expect(parseControlPayload(MSG.conversationHistory, {
     conversationId: "conversation_1", topicId: "topic_1", afterSeq: 0, limit: 50,
@@ -206,6 +218,8 @@ test("parseControlPayload validates group RPC shapes and rejects junk isolation"
   expect(parseControlPayload(MSG.groupsUpdate, { title: "Renamed" })).toBeNull();
   expect(parseControlPayload(MSG.groupsDelete, { id: "conversation_g" })).not.toBeNull();
   expect(parseControlPayload(MSG.groupsGet, { id: "conversation_g" })).not.toBeNull();
+  expect(parseControlPayload(MSG.groupsList, {})).not.toBeNull();
+  expect(parseControlPayload(MSG.groupsList, undefined)).not.toBeNull();
   expect(parseControlPayload(MSG.groupTopicsCreate, {
     conversationId: "conversation_g", title: "Sprint 1",
     target: { workspace: "backend", isolation: "shared-single-writer" },

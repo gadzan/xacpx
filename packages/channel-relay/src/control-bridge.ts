@@ -95,7 +95,7 @@ export interface ControlBridgeOptions {
   clearTimeoutFn?: (timer: unknown) => void;
   now?: () => number;
   /**
-   * Hub-authenticated Direct Conversation accept. Ingress is overwritten by
+   * Hub-authenticated Conversation accept. Ingress is overwritten by
    * the Hub; public `control.promptConversation` never takes it.
    */
   trustedConversationPrompt?: (
@@ -104,7 +104,7 @@ export interface ControlBridgeOptions {
       topicId: string;
       requestId: string;
       text: string;
-      target?: { botId: string };
+      target?: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" };
     },
     ingress: {
       chatKey: string;
@@ -1055,6 +1055,11 @@ async function dispatchControlRequest(
       const input = parseControlPayload(MSG.groupsGet, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.groupsGet}: malformed payload`);
       return { group: control.getGroup(input.id) };
+    }
+    case MSG.groupsList: {
+      const input = parseControlPayload(MSG.groupsList, payload ?? {});
+      if (!input) return errorPayload("invalid-payload", `${MSG.groupsList}: malformed payload`);
+      return { groups: control.listGroups() };
     }
     case MSG.groupTopicsCreate: {
       const input = parseControlPayload(MSG.groupTopicsCreate, payload);

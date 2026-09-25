@@ -6,8 +6,13 @@ export type ConversationTopicStatus = "active" | "archived" | "deleting";
 export type ConversationMessageRole = "human" | "bot" | "system";
 
 export type ConversationRunMode = "explicit" | "automatic";
-
 export type WorkspaceIsolationPolicy = "shared" | "shared-single-writer" | "worktree-per-member";
+/** PR7 structured explicit Group target. IDs are authority; display names
+ *  never route. `automatic` is a durable-mode reservation (PR8) rejected by
+ *  the PR7 explicit accept path. */
+export type ConversationTarget =
+  | { mode: "members"; botIds: string[] }
+  | { mode: "everyone" };
 
 export interface ExecutionTarget {
   workspace: string;

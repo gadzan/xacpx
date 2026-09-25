@@ -1,4 +1,4 @@
-import { snapshotBotProfile, type BotProfile } from "../bots/bot-types";
+import { snapshotBotProfile, snapshotGroupMemberProfile, type BotProfile } from "../bots/bot-types";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import {
@@ -64,9 +64,13 @@ export interface ConversationRunServiceOptions {
   createTopicId?: () => string;
   stateMutex?: AsyncMutex;
   beforeAcceptPersist?: () => Promise<void>;
+  /** Test-only seam: runs between the Group accept gate-set probe and gate
+   *  acquisition, so tests can deterministically interleave a racing
+   *  membership commit. Never wired in production. */
+  beforeGroupAcceptGatesAcquired?: () => Promise<void>;
   /** Test-only seam: runs between the archive gate-set probe and gate
-   * acquisition, so tests can deterministically interleave a racing
-   * membership commit. Never wired in production. */
+   *  acquisition, so tests can deterministically interleave a racing
+   *  membership commit. Never wired in production. */
   beforeArchiveGatesAcquired?: () => Promise<void>;
   beforeTeardownFinalize?: () => Promise<void>;
   afterTeardownMarkedDeleting?: () => Promise<void>;
@@ -91,6 +95,7 @@ export class ConversationRunService {
   private readonly createTopicIdFn: () => string;
   private readonly stateMutex: AsyncMutex;
   private readonly beforeAcceptPersist?: () => Promise<void>;
+  private readonly beforeGroupAcceptGatesAcquired?: () => Promise<void>;
   private readonly beforeArchiveGatesAcquired?: () => Promise<void>;
   private readonly beforeTeardownFinalize?: () => Promise<void>;
   private readonly afterTeardownMarkedDeleting?: () => Promise<void>;
@@ -116,6 +121,7 @@ export class ConversationRunService {
     this.createTopicIdFn = options.createTopicId ?? (() => createTopicId());
     this.stateMutex = options.stateMutex ?? new AsyncMutex();
     this.beforeAcceptPersist = options.beforeAcceptPersist;
+    this.beforeGroupAcceptGatesAcquired = options.beforeGroupAcceptGatesAcquired;
     this.beforeArchiveGatesAcquired = options.beforeArchiveGatesAcquired;
     this.beforeTeardownFinalize = options.beforeTeardownFinalize;
     this.afterTeardownMarkedDeleting = options.afterTeardownMarkedDeleting;
@@ -244,6 +250,117 @@ export class ConversationRunService {
     }
     return accepted;
   }
+  /**
+   * PR7 explicit Group accept. Structured target only: `members` selects Bot
+   *  IDs (deduplicated, stable order) or `everyone` expands to current
+   *  eligible members. Linearized against membership edits with the same
+   *  probe → acquire → re-verify → retry-with-widen pattern as updateGroup:
+   *  targeted mode holds selected Bot gates; everyone mode retries when the
+   *  live set widens beyond held gates. Per-member snapshots use
+   *  snapshotGroupMemberProfile (Topic workspace wins); disabled/missing
+   *  members fail closed at accept, and dispatch re-checks authoritatively.
+   *  `automatic` mode is rejected (PR8).
+   */
+  async acceptGroupPrompt(input: {
+    conversationId: string;
+    topicId: string;
+    requestId: string;
+    text: string;
+    target?: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" };
+    humanIngress?: HumanIngressContext;
+  }): Promise<AcceptRequestResult> {
+    this.assertAccepting();
+    const conversation = this.requireConversation(input.conversationId);
+    if (conversation.kind !== "group") {
+      throw new ConversationError("conversation_not_group", `conversation "${input.conversationId}" is not a Group`);
+    }
+    const parsed = this.parseGroupTarget(input.target, conversation);
+    for (;;) {
+      const probeIds = this.groupMemberCandidates(input.conversationId, parsed);
+      const gateSet = new Set(probeIds);
+      await this.beforeGroupAcceptGatesAcquired?.();
+      const accepted = await this.bots.runLifecycleAll([...gateSet], async () => {
+        const live = this.requireConversation(input.conversationId);
+        if (live.kind !== "group") {
+          throw new ConversationError("conversation_not_group", `conversation "${input.conversationId}" is not a Group`);
+        }
+        const topic = this.requireGroupTopic(input.conversationId, input.topicId);
+        if (topic.status !== "active") {
+          throw new ConversationError("topic_not_active", `topic "${input.topicId}" is not active`);
+        }
+        if (this.store.isConversationDeleting(input.conversationId) || this.store.isTopicDeleting(input.topicId)) {
+          throw new ConversationError("conversation_deleting", "conversation is deleting");
+        }
+        const selected = this.resolveGroupMembers(live, parsed);
+        // Widen detection: `selected` is re-derived from live membership
+        // inside the held gates. Targeted mode holds exactly its selection,
+        // so this is trivially covered; everyone mode retries when live
+        // membership widened beyond the probed gate set. Shrink races need
+        // no retry: a remover holds every removed Bot's gate (old ∪ new),
+        // so it cannot commit between this re-read and the durable write
+        // below — accept either sees the member (remover then fails
+        // group_member_has_work) or misses it (accept rejects not-member).
+        const uncovered = selected.filter((botId) => !gateSet.has(botId));
+        if (uncovered.length > 0) {
+          return null;
+        }
+        const existing = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
+        if (existing) {
+          return existing;
+        }
+        const timestamp = this.now().toISOString();
+        const target = topic.executionTarget;
+        if (!target) {
+          throw new ConversationError("execution_target_missing", `topic "${input.topicId}" has no execution target`);
+        }
+        const snapshots = selected.map((botId) => {
+          const bot = this.bots.getBot(botId);
+          if (!bot.enabled) {
+            throw new BotError("bot_disabled", `bot "${botId}" is disabled`);
+          }
+          return snapshotGroupMemberProfile(bot, target, timestamp);
+        });
+        await this.beforeAcceptPersist?.();
+        const humanIngress = parseHumanIngress(input.humanIngress);
+        const [firstId, ...restIds] = selected;
+        const [firstSnapshot, ...restSnapshots] = snapshots;
+        if (!firstId || !firstSnapshot) {
+          throw new ConversationError("empty_target", "explicit Group target selects no members");
+        }
+        const created = this.store.acceptRequest({
+          conversationId: input.conversationId,
+          topicId: input.topicId,
+          requestId: input.requestId,
+          botId: firstId,
+          content: input.text,
+          profileSnapshot: firstSnapshot,
+          ...(restIds.length > 0
+            ? {
+              members: restIds.map((botId, index) => ({
+                botId,
+                profileSnapshot: restSnapshots[index]!,
+              })),
+            }
+            : {}),
+          now: timestamp,
+          ...(humanIngress
+            ? { authorityEpoch: this.dispatcher.authorityEpoch, humanIngress }
+            : {}),
+        });
+        return created;
+      });
+      if (accepted !== null) {
+        if (!accepted.reused) {
+          this.emitAcceptProjection(accepted);
+        }
+        if (this.autoKick && this.activation === "activated") {
+          void this.dispatcher.kick();
+        }
+        return accepted;
+      }
+    }
+  }
+
 
   async acceptConversationPrompt(input: {
     conversationId: string;
@@ -251,11 +368,24 @@ export class ConversationRunService {
     requestId: string;
     text: string;
     targetBotId?: string;
+    target?: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" };
     humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
     this.assertOpen();
+    const conversation = this.requireConversation(input.conversationId);
+    if (conversation.kind === "group") {
+      return this.acceptGroupPrompt({
+        conversationId: input.conversationId,
+        topicId: input.topicId,
+        requestId: input.requestId,
+        text: input.text,
+        ...(input.target ? { target: input.target } : {}),
+        ...(input.humanIngress ? { humanIngress: input.humanIngress } : {}),
+      });
+    }
     const botId = this.resolveDirectBotId(input.conversationId);
-    if (input.targetBotId && input.targetBotId !== botId) {
+    const legacyTarget = input.target && "botId" in input.target ? input.target.botId : input.targetBotId;
+    if (legacyTarget && legacyTarget !== botId) {
       throw new ConversationError(
         "conversation_target_mismatch",
         "Direct conversation target must match the owning Bot",
@@ -311,6 +441,12 @@ export class ConversationRunService {
     return [...byId.values()]
       .map((conversation) => this.presentDirect(conversation))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  /** PR7 separate Group listing surface. Direct-only list above is untouched. */
+  listGroups(): ConversationRecord[] {
+    this.assertOpen();
+    return this.bots.listGroups();
   }
 
   listTopics(conversationId: string): ConversationTopic[] {
@@ -543,6 +679,85 @@ export class ConversationRunService {
         return archived;
       }
     }
+  }
+
+  /** Normalize the wire target into an explicit selection. Legacy Direct
+   *  `{ botId }` on a Group path selects that single member. `automatic`
+   *  is rejected: PR7 ships explicit routing only. */
+  private parseGroupTarget(
+    target: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" } | undefined,
+    conversation: ConversationRecord,
+  ): { kind: "members"; botIds: string[] } | { kind: "everyone" } {
+    if (!target) {
+      throw new ConversationError("target_required", "explicit Group prompt requires a target");
+    }
+    if ("botId" in target) {
+      if (typeof target.botId !== "string" || !target.botId) {
+        throw new ConversationError("invalid-target", "explicit Group target member must be a Bot id");
+      }
+      return { kind: "members", botIds: [target.botId] };
+    }
+    if (target.mode === "members") {
+      if (!Array.isArray(target.botIds)) {
+        throw new ConversationError("invalid-target", "explicit Group target members must be Bot ids");
+      }
+      const deduped = [...new Set(target.botIds)];
+      for (const botId of deduped) {
+        if (typeof botId !== "string" || !botId) {
+          throw new ConversationError("invalid-target", "explicit Group target member must be a Bot id");
+        }
+      }
+      return { kind: "members", botIds: deduped };
+    }
+    if (target.mode === "everyone") {
+      return { kind: "everyone" };
+    }
+    throw new ConversationError("automatic_unsupported", "automatic Group routing is not available in this release");
+  }
+
+  /** Gate-set probe for accept linearization. Targeted mode probes selected
+   *  IDs; everyone mode probes live membership plus runtime residue (same
+   *  union as archive) so a widening commit always triggers a retry. */
+  private groupMemberCandidates(
+    conversationId: string,
+    parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" },
+  ): string[] {
+    if (parsed.kind === "members") {
+      return [...parsed.botIds];
+    }
+    const conversation = this.state.conversations[conversationId];
+    const membership = conversation?.kind === "group" ? conversation.botIds : [];
+    const residue = Object.values(this.state.conversation_topics)
+      .filter((topic) => topic.conversationId === conversationId && topic.status === "active")
+      .flatMap((topic) => this.groupTopicMemberBotIds(conversationId, topic.id));
+    return [...new Set([...membership, ...residue])];
+  }
+
+  /** Resolve the durable member list inside held gates. Everyone expands to
+   *  live membership order (disabled/missing members reject at snapshot, the
+   *  same fail-closed rule as targeted mode); unknown/non-member, empty,
+   *  and removed-member selections reject. */
+  private resolveGroupMembers(
+    conversation: ConversationRecord,
+    parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" },
+  ): string[] {
+    const membership = [...conversation.botIds];
+    if (parsed.kind === "everyone") {
+      if (membership.length === 0) {
+        throw new ConversationError("empty_target", "explicit Group target selects no members");
+      }
+      return membership;
+    }
+    if (parsed.botIds.length === 0) {
+      throw new ConversationError("empty_target", "explicit Group target selects no members");
+    }
+    for (const botId of parsed.botIds) {
+      if (!membership.includes(botId)) {
+        throw new BotError("group_member_not_member", `bot "${botId}" is not a member of group "${conversation.id}"`);
+      }
+      this.bots.getBot(botId);
+    }
+    return [...parsed.botIds];
   }
 
   private requireGroupTopic(conversationId: string, topicId: string): ConversationTopic {
