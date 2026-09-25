@@ -444,31 +444,44 @@ export class FeishuElicitationRenderer {
       });
       return { handled: false, settled: false };
     }
-    // STALE-GENERATION REJECTION.
+    // CARD REVISION FENCE.
     //
-    // Every re-render bumps the entry's generation and stamps it into the
-    // controls it draws. A callback carrying an OLDER generation comes from a
-    // card the user has already navigated away from, and honouring it would let a
-    // replayed value overwrite a newer answer: Feishu retries callbacks, users
-    // double-tap, and `submit()` writes to whichever field the cursor is on —
-    // which entering Review does NOT clear, because the review page needs the
-    // cursor to know where an Edit lands.
+    // Every re-render draws a card stamped with its own generation and commits it
+    // to the entry only once the update has landed (see `renderCurrentField`). A
+    // callback carrying an OLDER generation comes from a card the user has already
+    // navigated away from, and honouring it would let a replayed value or a
+    // replayed Skip overwrite a newer answer: Feishu retries callbacks, users
+    // double-tap, and every state-mutating control writes wherever the cursor is.
     //
     // Drop it without touching state: the current card stays live and its own
     // controls still work, so the user is not punished for a platform retry.
-    // Only `save` carries a generation, so only it can be stale by construction;
-    // a control without one (opening, terminal, review submit) is not versioned
-    // and is judged on its own action semantics, as before.
-    if (
-      parsed.renderGeneration !== undefined
-      && parsed.renderGeneration < entry.renderGeneration
-    ) {
-      this.options.log?.("feishu.elicitation.stale_callback", "dropped a callback from an earlier card render", {
-        requestId: entry.requestId,
-        callbackGeneration: parsed.renderGeneration,
-        currentGeneration: entry.renderGeneration,
-      });
-      return { handled: false, settled: false };
+    //
+    // A callback carrying a NEWER generation is a different situation and must
+    // NOT be refused. The card update is acknowledged by the platform, but an
+    // acknowledgement can be lost; when that happens the entry has not committed
+    // the newer generation while the user IS looking at the newer card. Refusing
+    // it would make that card dead. So the entry adopts it.
+    //
+    // Callbacks are platform-signed, so the generation in the payload is
+    // authenticated: a client cannot forge a newer card into existence, it can
+    // only relay one the platform actually signed.
+    if (parsed.renderGeneration !== undefined) {
+      if (parsed.renderGeneration < entry.renderGeneration) {
+        this.options.log?.("feishu.elicitation.stale_callback", "dropped a callback from an earlier card render", {
+          requestId: entry.requestId,
+          callbackGeneration: parsed.renderGeneration,
+          currentGeneration: entry.renderGeneration,
+        });
+        return { handled: false, settled: false };
+      }
+      if (parsed.renderGeneration > entry.renderGeneration) {
+        this.options.log?.("feishu.elicitation.generation_promoted", "adopted a newer card generation the update acknowledgement lost", {
+          requestId: entry.requestId,
+          callbackGeneration: parsed.renderGeneration,
+          previousGeneration: entry.renderGeneration,
+        });
+        entry.renderGeneration = parsed.renderGeneration;
+      }
     }
 
     switch (parsed.action) {
@@ -510,6 +523,13 @@ export class FeishuElicitationRenderer {
         // so a redelivery of the same old callback used to skip a DIFFERENT
         // field, and if that field already had an answer, `markSkipped` deleted
         // it. Naming the field makes the duplicate a no-op on the same field.
+        //
+        // Position alone is not sufficient, though: Skip MUTATES field state, so a
+        // replay that arrives after the user has since Edited the same field
+        // would delete the newer answer — `Skip -> Edit -> save staging ->
+        // review -> replay(Skip)` submitted the field as omitted. The generation
+        // fence above is what closes that, because the replayed Skip came from a
+        // card the user has left.
         const named = parsed.fieldIndex !== undefined ? entry.request.fields[parsed.fieldIndex] : undefined;
         if (!named) return { handled: false, settled: false };
         if (named.required) return { handled: false, settled: false };
@@ -691,19 +711,29 @@ export class FeishuElicitationRenderer {
     if (key === undefined) return;
     const field = entry.request.fields.find((f) => f.key === key);
     if (!field) return;
-    // Advance BEFORE drawing, so the generation stamped into the controls is the
-    // one the entry reports while that card is on screen. The alternative — stamp
-    // the current value and bump afterwards — makes a callback from the card the
-    // user is actually using arrive already stale, which refuses the legitimate
-    // save and keeps the older answer.
-    entry.renderGeneration += 1;
+    // The generation this drawn card will carry, staged locally and committed to
+    // the entry only once the update has actually LANDED.
+    //
+    // Committing before the send is the old behaviour and it is wrong in both
+    // directions. The entry reports generation N+1 while the card on screen is
+    // still generation N, so the user's next interaction with the very card they
+    // are looking at arrives "stale" and is dropped — which turns a transient
+    // CardKit failure into a form the user cannot submit. Conversely, if the
+    // platform APPLIED the card but its acknowledgement was lost, the entry stays
+    // on N and a signed callback from the applied card carries N+1; that is not
+    // an old card but a newer one, and rejecting it on `<` would be wrong too.
+    //
+    // Staging handles both: a failed update leaves the entry and the screen in
+    // agreement (both N), and a genuinely newer signed callback promotes the
+    // entry's generation instead of being refused.
+    const nextGeneration = entry.renderGeneration + 1;
     const card = buildElicitationFieldCard(
       entry.request,
       entry.token,
       field,
       entry.request.fields.indexOf(field) + 1,
       entry.values[field.key],
-      entry.renderGeneration,
+      nextGeneration,
     );
     try {
       await this.options.transport.updateCard({
@@ -711,11 +741,15 @@ export class FeishuElicitationRenderer {
         sequence: nextSequence(entry),
         card,
       });
+      // Only now is the drawn generation the one on screen.
+      entry.renderGeneration = nextGeneration;
       // The render landed, so nothing is owed for this step.
       entry.pendingRender = false;
     } catch (error) {
       // A failed re-render is not a decision: the card stays live and the user
       // can retry, so the request is unsettled and Feishu's own retry applies.
+      // The generation is deliberately NOT advanced — the card on screen is still
+      // the previous one, and its controls must stay usable.
       this.options.log?.("feishu.elicitation.update_failed", "failed to update elicitation card", {
         requestId: entry.requestId,
         message: error instanceof Error ? error.message : String(error),

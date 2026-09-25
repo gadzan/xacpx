@@ -356,7 +356,16 @@ export function buildElicitationFieldCard(
             // Skip that names its field is idempotent when Feishu retries the
             // callback or a user double-taps, instead of skipping whatever the
             // shared cursor has moved to.
-            ...(!field.required ? [button(messages.elicitationSkip, routingValue(token, "skip", request.fields.indexOf(field)), "default", true)] : []),
+            //
+            // It also carries this card's GENERATION, for the same reason Save
+            // does. Skip MUTATES field state — `markSkipped` deletes any answer
+            // already recorded — so a replayed Skip is not merely idempotent per
+            // field: after a later Edit restores a value, replaying the older
+            // Skip deletes that value and submits the field as omitted. Position
+            // alone cannot express "this is the card I am looking at".
+            ...(!field.required
+              ? [button(messages.elicitationSkip, routingValue(token, "skip", request.fields.indexOf(field), renderGeneration), "default", true)]
+              : []),
             // "save" is deliberately NOT the review page's "submit": the two are
             // different acts, and reusing one action would let this button's
             // semantics depend on mutable renderer state. A retried or double

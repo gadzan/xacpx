@@ -1396,3 +1396,128 @@ test("a save from the card currently on screen still works", async () => {
   await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { env: "prod" } });
 });
+
+test("a replayed Skip cannot delete an answer the user gave after it", async () => {
+  // Position made a replayed Skip idempotent PER FIELD. That is not enough: Skip
+  // MUTATES field state (`markSkipped` deletes any recorded answer), so once the
+  // user has Edited the field back to a value, replaying the OLDER Skip deletes
+  // that value and the form submits the field as omitted.
+  //
+  // Optional field, so Skip is rendered. One field, so the cursor stays on it for
+  // the whole chain — with two fields the wizard advances past the first on its
+  // first save and a replay would land on the second, hiding the loss.
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "note", title: "Note", required: false, maxLength: 1000 },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { entry, token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  // Skip, enter review, Edit back to the field, save a real answer.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "skip", f: 0 }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: entry.renderGeneration }, formValues: { f0: "staging" } });
+  expect(entry.values.note).toBe("staging");
+  // Feishu redelivers the Skip from the card the user has already left.
+  const replay = await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "skip", f: 0, g: 1 },
+    formValues: {},
+  });
+  // Dropped without touching state, so the answer the user typed survives.
+  expect(replay.handled).toBe(false);
+  expect(entry.values.note).toBe("staging");
+  expect(entry.skipped.size).toBe(0);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(await promise).toEqual({
+    action: "accept",
+    responderId: "ou_initiator",
+    content: { note: "staging" },
+  });
+});
+
+test("a failed card update leaves the visible card usable, and a lost acknowledgement still works", async () => {
+  // The generation must be committed only once the update has LANDED. Committing
+  // before the send made the entry report N+1 while the screen still showed N:
+  // when `card.update` then failed, the user's next interaction with the card
+  // they were looking at arrived "stale" and was refused \u2014 a transient
+  // network error turned into a form nobody could submit.
+  const rec = makeRenderer();
+  const promise = rec.renderer.requestElicitation(request(ENV_FIELD), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { entry, token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  const generationOnScreen = entry.renderGeneration;
+  // Answer the single field, so the form reaches review fully answered.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: generationOnScreen }, formValues: { f0: "staging" } });
+  // From here on every render FAILS.
+  let failureCount = 0;
+  (rec.transport as { updateCard: unknown }).updateCard = async (input: never) => {
+    failureCount += 1;
+    throw new Error("card update failed");
+  };
+  // Edit back to the field: the render that would put the field card on screen
+  // fails, so the user is still looking at the PREVIOUS card.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "field", f: 0 }, formValues: {} });
+  expect(failureCount).toBe(1);
+  // The failed render did NOT advance the generation, so the card still on
+  // screen is the current one and its controls are not refused.
+  expect(entry.renderGeneration).toBe(generationOnScreen);
+  // Retrying on the very card the user can still see works.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: generationOnScreen }, formValues: { f0: "prod" } });
+  expect(entry.values.env).toBe("prod");
+  expect(failureCount).toBe(2);
+  // And the reverse ambiguity: the platform APPLIED a card whose
+  // acknowledgement was lost, so a signed callback arrives carrying a generation
+  // the entry has not adopted. That is a newer card, not an older one, and must
+  // not be refused.
+  // No-op: the promotion assertion is about the callback being ACCEPTED, not
+  // about a render landing.
+  (rec.transport as { updateCard: unknown }).updateCard = async () => {};
+  const promoted = await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "save", g: generationOnScreen + 5 },
+    formValues: { f0: "staging" },
+  });
+  expect(promoted.handled).toBe(true);
+  expect(entry.renderGeneration).toBe(generationOnScreen + 5);
+  expect(entry.values.env).toBe("staging");
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit" }, formValues: {} });
+  expect(await promise).toEqual({
+    action: "accept",
+    responderId: "ou_initiator",
+    content: { env: "staging" },
+  });
+});
+
+test("every state-mutating control the field card draws carries the card's generation", () => {
+  // The renderer's own tests drive callbacks directly, so they can hand a
+  // generation to Skip even when the BUILDER no longer stamps one. Only a real
+  // card closes that: Skip MUTATES field state, so a card without a generation
+  // makes a replay indistinguishable from a first click no matter how good the
+  // handler is.
+  const optional: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "note", title: "Note", required: false, maxLength: 1000 },
+  ];
+  const card = buildElicitationFieldCard(request(optional), "tok-abc", optional[0]!, 1, undefined, 7);
+  const form = (card as { body: { elements: Array<Record<string, unknown>> } }).body.elements.find((e) => e.tag === "form");
+  const buttons = (form as { elements: Array<Record<string, unknown>> }).elements.filter((e) => e.tag === "button");
+  // Skip and Save both change recorded field state, so both carry `g: 7`.
+  for (const label of ["Skip", "Submit"]) {
+    const control = buttons.find((b) => JSON.stringify(b).includes(label));
+    expect(control).toBeDefined();
+    const value = (control as { behaviors: Array<{ value: Record<string, unknown> }> }).behaviors[0]!.value;
+    expect(value).toMatchObject({ t: "tok-abc", g: 7 });
+  }
+  // Decline and Cancel are terminal decisions, not field-state mutations.
+  for (const label of ["Decline", "Cancel"]) {
+    const control = buttons.find((b) => JSON.stringify(b).includes(label));
+    expect(control).toBeDefined();
+    const value = (control as { behaviors: Array<{ value: Record<string, unknown> }> }).behaviors[0]!.value;
+    expect(value.g).toBeUndefined();
+  }
+});

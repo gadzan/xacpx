@@ -1018,3 +1018,137 @@ test("a form capability lost mid-startup ends the run instead of starting anyway
   // And the eligibility loss was surfaced through the daemon logger.
   expect(logErrors.some((entry) => entry.event === "daemon.channels.elicit_form_lost")).toBe(true);
 });
+
+test("a form capability lost AFTER a clean startup audit still ends the run", async () => {
+  // The listener fires once, the audit finds nothing broken, the scheduler
+  // starts — and only then does Feishu fail to bind. A readiness gate that
+  // RESOLVES on success cannot act on this: once resolved, a later reject is a
+  // no-op, so the daemon aborts itself and then finishes starting normally.
+  const events: string[] = [];
+  const signalHandlers = new Map<string, () => void>();
+  let notify: (formCapable: boolean) => void = () => {};
+  let liveForm = ["channel-feishu"];
+  let releaseChannelStart: () => void = () => {};
+  // Held pending, like a healthy channel's loop in production.
+  const channelStarted = new Promise<void>((resolve) => { releaseChannelStart = resolve; });
+
+  const runPromise = runConsole(
+    { configPath: "/cfg", statePath: "/state" },
+    {
+      buildApp: async () => ({
+        ...createRuntime(),
+        scheduled: {
+          service: {} as never,
+          scheduler: {
+            start: async () => { events.push("scheduler:start"); },
+            stop: () => { events.push("scheduler:stop"); },
+          } as never,
+        },
+        logger: {
+          ...createNoopAppLogger(),
+          error: async (event) => { events.push(`log:${event}`); },
+        },
+        dispose: async () => { events.push("dispose"); },
+      }),
+      channels: {
+        startAll: async () => {
+          events.push("channel:start");
+          // HEALTHY at this instant, so the first audit passes.
+          notify(true);
+          return channelStarted;
+        },
+        setElicitationReadinessListener: (listener) => {
+          notify = (formCapable) => listener({ formCapable } as never);
+        },
+        declaredElicitationFormChannelIds: () => ["channel-feishu"],
+        // Read fresh on every call — this is what makes the delayed loss visible
+        // to the audit the listener triggers.
+        formElicitationChannelIds: () => liveForm,
+        stopAll: async () => { events.push("channel:stop"); },
+      },
+      channelStartupPolicy: "best-effort",
+      daemonRuntime: {
+        start: async () => { events.push("daemon:start"); },
+        heartbeat: async () => {},
+        stop: async () => { events.push("daemon:stop"); },
+      },
+      addProcessListener: (signal, handler) => { signalHandlers.set(signal, handler); },
+      removeProcessListener: (signal, handler) => {
+        if (signalHandlers.get(signal) === handler) signalHandlers.delete(signal);
+      },
+    },
+  );
+
+  // Let the initial audit run clean and the scheduler start, so the loss arrives
+  // after startup would otherwise already have succeeded.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(events).toContain("scheduler:start");
+  expect(events).toContain("channel:start");
+  // NOW the form channel dies: the window the success-resolving gate closed off.
+  liveForm = [];
+  notify(false);
+  // The healthy sibling channel's loop finally yields — the event that used to
+  // let the run return successfully.
+  releaseChannelStart();
+
+  await expect(runPromise).rejects.toThrow(/form elicitation is advertised but no form-capable channel started/);
+});
+
+test("an immediately-failing form channel under best-effort is not an ordinary channel failure", async () => {
+  // The channel early-return used to sit BEFORE the readiness listener was even
+  // installed, so the only form channel failing at that instant took the
+  // "all channels failed, daemon stays for IPC" exit — the exact case the
+  // audit's comment calls fatal regardless of policy.
+  const events: string[] = [];
+  const logErrors: Array<{ event: string; message: string }> = [];
+  const signalHandlers = new Map<string, () => void>();
+
+  const runPromise = runConsole(
+    { configPath: "/cfg", statePath: "/state" },
+    {
+      buildApp: async () => ({
+        ...createRuntime(),
+        logger: {
+          ...createNoopAppLogger(),
+          error: async (event, message) => { logErrors.push({ event, message }); },
+        },
+        scheduled: {
+          service: {} as never,
+          scheduler: {
+            start: async () => { events.push("scheduler:start"); },
+            stop: () => { events.push("scheduler:stop"); },
+          } as never,
+        },
+        dispose: async () => { events.push("dispose"); },
+      }),
+      channels: {
+        // Rejects immediately — the shape that used to escape through the
+        // pre-listener early return.
+        startAll: async () => {
+          throw new Error("all channels failed to start");
+        },
+        setElicitationReadinessListener: (listener) => {
+          listener({ formCapable: false } as never);
+        },
+        declaredElicitationFormChannelIds: () => ["channel-feishu"],
+        formElicitationChannelIds: () => [],
+        stopAll: async () => { events.push("channel:stop"); },
+      },
+      channelStartupPolicy: "best-effort",
+      daemonRuntime: {
+        start: async () => { events.push("daemon:start"); },
+        heartbeat: async () => {},
+        stop: async () => { events.push("daemon:stop"); },
+      },
+      addProcessListener: (signal, handler) => { signalHandlers.set(signal, handler); },
+      removeProcessListener: (signal, handler) => {
+        if (signalHandlers.get(signal) === handler) signalHandlers.delete(signal);
+      },
+    },
+  );
+
+  // Fatal: the form capability was advertised to the bridge and the agent, and
+  // no channel can deliver it any more.
+  await expect(runPromise).rejects.toThrow(/form elicitation is advertised but no form-capable channel started/);
+  expect(logErrors.some((entry) => entry.event === "daemon.channels.elicit_form_lost")).toBe(true);
+});
