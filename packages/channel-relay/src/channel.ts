@@ -58,6 +58,7 @@ import {
   isTerminalEventType,
   isTerminalRequestType,
 } from "./terminal-bridge.js";
+import { retireRelayTerminals } from "./terminal/retire-terminals.js";
 import { DesktopTunnelRuntime } from "./desktop/desktop-tunnel-runtime.js";
 import { logTerminalEvent } from "./terminal/terminal-log.js";
 import {
@@ -126,6 +127,10 @@ export class RelayChannel implements MessageChannelRuntime {
   private control: PublicControlService | null = null;
   private terminal: DefaultRelayTerminalRuntime | null = null;
   private terminalReady = false;
+  private terminalSupervisor: RmuxSidecarSupervisor | null = null;
+  private startLogger: ChannelStartInput["logger"] | undefined;
+  private readonly pendingRetirements = new Set<Promise<void>>();
+  private endpointSyncTimer: ReturnType<typeof setTimeout> | null = null;
   private desktop: DesktopTunnelRuntime | null = null;
 
   constructor(
