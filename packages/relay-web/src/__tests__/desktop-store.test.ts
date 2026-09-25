@@ -25,6 +25,12 @@ vi.mock("../lib/desktop-client", () => ({
   connectDesktopRfb: vi.fn(() => ({ sendCredentials: vi.fn(), setScaleViewport: vi.fn(), dispose: vi.fn() })),
 }));
 
+async function lastConnectTarget(): Promise<HTMLElement | undefined> {
+  const { connectDesktopRfb } = await import("../lib/desktop-client");
+  const calls = (connectDesktopRfb as unknown as { mock: { calls: Array<[{ target?: HTMLElement }]> } }).mock.calls;
+  return calls[calls.length - 1]?.[0]?.target;
+}
+
 describe("desktop store", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
@@ -47,6 +53,20 @@ describe("desktop store", () => {
     expect(localStorage.getItem("xacpx.desktop.ticket")).toBeNull();
     expect(sessionStorage.getItem("xacpx.desktop.ticket")).toBeNull();
     expect(JSON.stringify(view)).not.toContain("t-browser");
+  });
+
+  it("open() forwards the mounted host element as the noVNC target", async () => {
+    const store = useDesktopStore();
+    const target = document.createElement("div");
+    target.dataset.test = "desktop-host";
+    await store.open("i1", {}, { target });
+    expect(await lastConnectTarget()).toBe(target);
+  });
+
+  it("open() without a target still opens (client falls back, tab stays responsible)", async () => {
+    const store = useDesktopStore();
+    await store.open("i1", {});
+    expect(await lastConnectTarget()).toBeUndefined();
   });
 
   it("close() drops the in-memory session and notifies the hub", async () => {

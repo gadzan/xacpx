@@ -68,7 +68,7 @@ export const useDesktopStore = defineStore("desktop", () => {
   async function open(
     instanceId: string,
     hooks: DesktopRfbHooks,
-    opts: { signal?: AbortSignal } = {},
+    opts: { signal?: AbortSignal; target?: HTMLElement | null } = {},
   ): Promise<void> {
     const existing = connections.get(instanceId);
     if (existing) return;
@@ -108,6 +108,7 @@ export const useDesktopStore = defineStore("desktop", () => {
     const connection = connectDesktopRfb({
       url,
       security: opened.security,
+      ...(opts.target ? { target: opts.target } : {}),
       hooks: {
         onConnect: () => {
           patch(instanceId, { status: "open", needsPassword: false });

@@ -30,7 +30,9 @@ async function open(): Promise<void> {
   password.value = "";
   showPassword.value = false;
   try {
-    await desktops.open(props.instanceId, {}, {});
+    // The mounted [data-test=desktop-host] div is noVNC's render target:
+    // without it the framebuffer lands in a detached div and the tab stays black.
+    await desktops.open(props.instanceId, {}, { target: host.value });
   } catch {
     /* store holds the error code for render */
   }
