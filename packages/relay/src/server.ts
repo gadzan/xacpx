@@ -1253,13 +1253,17 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     // the upgrade still burns it), and the binary plane runs under the 1 MiB
     // DESKTOP_WS_MAX_PAYLOAD_BYTES gate. ws's noServer mode attaches to a
     // Node HTTP server, so bind our own and route upgrades from it.
-    gatewayHttpServer = createServer((req, res) => {
+    // Block-local + non-nullable: the outer declaration stays `| undefined`
+    // for close()/wsPort, and TS narrowing would not survive into the async
+    // listen callback (TS18048) if we used the outer name there.
+    const dedicatedHttpServer = createServer((req, res) => {
       res.writeHead(426, { "Content-Type": "text/plain" });
       res.end("Upgrade Required");
     });
+    gatewayHttpServer = dedicatedHttpServer;
     wss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
     dedicatedControlWss = new WebSocketServer({ noServer: true });
-    gatewayHttpServer.on("upgrade", (req, socket, head) => {
+    dedicatedHttpServer.on("upgrade", (req, socket, head) => {
       const path = (req.url ?? "").split("?")[0] ?? "";
       // Connector desktop binary plane (never a separate VNC port): the ticket
       // is consumed BEFORE the handshake completes and a rejected ticket is
@@ -1283,9 +1287,9 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     });
     await new Promise<void>((resolve, reject) => {
       const onErr = (err: unknown) => reject(err instanceof Error ? err : new Error(String(err)));
-      gatewayHttpServer.once("error", onErr);
-      gatewayHttpServer.listen(options.wsPort, host, () => {
-        gatewayHttpServer.removeListener("error", onErr);
+      dedicatedHttpServer.once("error", onErr);
+      dedicatedHttpServer.listen(options.wsPort, host, () => {
+        dedicatedHttpServer.removeListener("error", onErr);
         resolve();
       });
     });
