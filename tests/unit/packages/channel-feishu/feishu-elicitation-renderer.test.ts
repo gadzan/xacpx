@@ -2009,3 +2009,66 @@ test("a number whose widest legal answer is negative is also bounded", () => {
   expect(measureElicitationCardBytes(negative))
     .toBeGreaterThan(measureElicitationCardBytes(positive));
 });
+
+test("the sample measures the rendered field line, so the widest answer wins on bytes", () => {
+  // The budget is UTF-8 bytes, and the two answers here disagree in every metric
+  // but the one that matters.
+  //
+  //   "~".repeat(50)  escapes to `&#126;` x 50  -> ~300 bytes rendered
+  //   "a".repeat(256) passes through untouched -> ~256 bytes rendered
+  //
+  // So the tilde answer is the WIDER review. A comparator that also counted the
+  // raw value added 256 to one side and 50 to the other and picked backwards,
+  // leaving the sample narrower than a review the user can legally submit.
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "single-select", key: "s", title: "S", required: true, options: [
+      { value: "a".repeat(256), label: "Ascii" },
+      { value: "~".repeat(50), label: "Tilde" },
+    ] },
+  ];
+  const req = request(fields);
+  const tildeReview = buildElicitationReviewCard(req, "tok", { s: "~".repeat(50) });
+  const asciiReview = buildElicitationReviewCard(req, "tok", { s: "a".repeat(256) });
+  // The premise of the test: the tilde answer really is the wider review.
+  expect(measureElicitationCardBytes(tildeReview))
+    .toBeGreaterThan(measureElicitationCardBytes(asciiReview));
+  // And the sample bounds it.
+  const sample = buildWorstCaseReviewCard(req, "tok");
+  expect(measureElicitationCardBytes(sample))
+    .toBeGreaterThanOrEqual(measureElicitationCardBytes(tildeReview));
+});
+
+test("an unbounded-enumeration number field is bounded by a conservative width, not by its interval", () => {
+  // The space of legal numbers cannot be bounded by enumerating them.
+  //
+  // `{minimum: 1, maximum: 2}` admits `1.2345678901234567`, which renders 18
+  // characters. Every candidate an endpoint walk can produce inside that interval
+  // renders 1, so the sample was a single character wide and the gate blessed a
+  // review the user could legally make several times wider.
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "number", key: "n", title: "N", required: true, minimum: 1, maximum: 2 },
+  ];
+  const req = request(fields);
+  const longMantissa = buildElicitationReviewCard(req, "tok", { n: 1.2345678901234567 });
+  const sample = buildWorstCaseReviewCard(req, "tok");
+  expect(measureElicitationCardBytes(sample))
+    .toBeGreaterThanOrEqual(measureElicitationCardBytes(longMantissa));
+  // The old candidate set really was narrower than this legal answer, so the test
+  // is not vacuous: `2` is the widest the endpoints could reach.
+  const endpointOnly = buildElicitationReviewCard(req, "tok", { n: 2 });
+  expect(measureElicitationCardBytes(longMantissa))
+    .toBeGreaterThan(measureElicitationCardBytes(endpointOnly));
+});
+
+test("a negative-number field is bounded like any other", () => {
+  // Same bound in the other direction: a wide negative interval must not survive
+  // on the sign alone, and the sample has to stay an upper bound for it.
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "number", key: "n", title: "N", required: true, minimum: -1e17, maximum: 100 },
+  ];
+  const req = request(fields);
+  const negative = buildElicitationReviewCard(req, "tok", { n: -1e17 });
+  const sample = buildWorstCaseReviewCard(req, "tok");
+  expect(measureElicitationCardBytes(sample))
+    .toBeGreaterThanOrEqual(measureElicitationCardBytes(negative));
+});

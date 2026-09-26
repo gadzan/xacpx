@@ -3093,3 +3093,119 @@ test("a field that demands a non-empty value keeps the platform requirement", ()
   const input = modal.components[0]!.component as { required?: boolean };
   expect(input.required).toBe(true);
 });
+
+test("a failed rerender leaves the visible card's controls live, and a retry works", async () => {
+  // A revision is only valid once its controls are on screen.
+  //
+  // `rerenderElicitationCard` used to write `entry.renderRevision` before its
+  // first transport call, so a single failed `editMessage` left the app answering
+  // to a number no control on screen could name. The Start control on the opening
+  // card was then refused as stale, Decline and Cancel with it, and the request
+  // wedged until the timeout — with no way out for the user at all.
+  const client = makeFakeClient();
+  const realEdit = client.editMessage.bind(client);
+  let failNextEdit = false;
+  (client as unknown as { editMessage: unknown }).editMessage = async (
+    target: unknown,
+    messageId: string,
+    body: unknown,
+  ) => {
+    if (failNextEdit) {
+      failNextEdit = false;
+      throw new Error("simulated transient discord failure");
+    }
+    return realEdit(target as never, messageId, body as never);
+  };
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
+    ]);
+    const { settled } = await startWizard(client, channel, req.request, "note");
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { renderRevision: number; claimedRevision: number }>;
+    }).pendingElicitations;
+    // A wizard is live, so the card on screen is the FIELD card and its revision
+    // is published.
+    const entry = [...store.values()][0]!;
+    expect(entry.renderRevision).toBeGreaterThan(1);
+    const liveRevision = entry.renderRevision;
+
+    // Reject the next transition's primary edit. The screen keeps the live card.
+    failNextEdit = true;
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 10));
+    // The visible revision is UNCHANGED: nothing new was published, so nothing
+    // new may be addressable.
+    expect(entry.renderRevision).toBe(liveRevision);
+    // And the claim still moved — the allocator never reuses a spent number.
+    expect(entry.claimedRevision).toBeGreaterThan(entry.renderRevision);
+
+    // The terminal controls on the card the user is looking at still settle the
+    // request. This is the half the old comment asserted and the old code broke.
+    client.emitButton(click(client, idFor(client, "decline"), "user-A"));
+    expect(await settled).toEqual({ action: "decline", responderId: "user-A" });
+  } finally {
+    await cleanup();
+  }
+});
+
+
+test("the same Start control can be retried after its rerender failed", async () => {
+  // The other half of the same invariant: a TRANSIENT failure must not consume
+  // the control. The user clicks the very same Start button again, and it has to
+  // work — otherwise one failed edit makes the form unstartable.
+  const client = makeFakeClient();
+  const realEdit = client.editMessage.bind(client);
+  // Fail only the FIRST transition's edit, so the wizard never starts the first
+  // time and the opening card stays exactly as it is on screen.
+  let failNextEdit = true;
+  (client as unknown as { editMessage: unknown }).editMessage = async (
+    target: unknown,
+    messageId: string,
+    body: unknown,
+  ) => {
+    if (failNextEdit) {
+      failNextEdit = false;
+      throw new Error("simulated transient discord failure");
+    }
+    return realEdit(target as never, messageId, body as never);
+  };
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
+    ]);
+    const pending = channel.requestElicitation(req.request);
+    pending.catch(() => {});
+    await new Promise((r) => setTimeout(r, 10));
+    // The opening card, whose Start control is `:start:1`.
+    const startId = idFor(client, "start");
+    client.emitButton(click(client, startId));
+    await new Promise((r) => setTimeout(r, 10));
+    // The transition failed: no interactive card was published.
+    const interactiveEdits = client.edited.filter((e) => (e.body.components ?? []).length > 0);
+    expect(interactiveEdits).toHaveLength(0);
+
+    // The SAME control, again, against a healthy transport.
+    client.emitButton(click(client, startId));
+    await new Promise((r) => setTimeout(r, 10));
+    // The field card is on screen, so the wizard really moved.
+    expect(client.edited.filter((e) => (e.body.components ?? []).length > 0).length).toBeGreaterThan(0);
+
+    // And the request still resolves through the normal path, rather than
+    // having been wedged by the failed attempt.
+    client.emitButton(click(client, idFor(client, "decline"), "user-A"));
+    expect(await pending).toEqual({ action: "decline", responderId: "user-A" });
+  } finally {
+    await cleanup();
+  }
+});

@@ -1161,14 +1161,12 @@ export class DiscordChannel implements MessageChannelRuntime {
     // repainting it would restore interactive content that was just withdrawn —
     // including any answers the review was showing.
     const live = (): boolean => !entry.settled;
-    // The revision this card is drawn at. It is claimed before the interaction's
-    // ACK, so the controls on the newly published card name a number the app has
-    // already spent — the only thing that can then be delivered against them is
-    // newer still. Publishing the number and settling `renderRevision` here is
-    // what keeps the card addressable: leaving `renderRevision` behind would make
-    // the freshly drawn card unreachable for every subsequent interaction.
+    // The revision the NEW card will be drawn at. Held in a local, and NOT
+    // written to `entry.renderRevision` yet: the controls on it name this number,
+    // so the number only becomes valid once they are actually on screen. A
+    // revision published before its edit succeeded is a number the user has no
+    // way to reach — see the commit at the end of the success path.
     const cardRevision = revision ?? entry.claimedRevision;
-    entry.renderRevision = cardRevision;
     let card: {
       content: string;
       /** Extra chunks past the first; empty when the card fits in one message. */
@@ -1297,6 +1295,13 @@ export class DiscordChannel implements MessageChannelRuntime {
           components: gated.components,
         });
         entry.submitGateClosed = true;
+        // COMMIT POINT. This edit just put controls bearing `cardRevision` on
+        // screen — the same review the user was reading, with Submit disabled — so
+        // the number is now reachable and may become the published revision.
+        // Committing here rather than only at the primary keeps the addressable
+        // card and the visible card in step across a multi-message review, where
+        // several edits succeed in sequence.
+        entry.renderRevision = cardRevision;
       }
 
       // Continuations FIRST, primary LAST.
@@ -1320,12 +1325,32 @@ export class DiscordChannel implements MessageChannelRuntime {
         ...(card.selectRows && card.selectRows.length > 0 ? { selectRows: card.selectRows } : {}),
       });
       entry.submitGateClosed = false;
+      // COMMIT POINT. The control-bearing primary is on screen, so its revision is
+      // now the one a user can actually click. This is the commit for every path
+      // that did not take the gate edit above — and it deliberately happens AFTER
+      // the transport call, because a revision advanced before its edit landed is
+      // one the visible card can never name.
+      entry.renderRevision = cardRevision;
     } catch (error) {
       // The gate CLOSES on failure rather than reopening: a failure here means
       // the channel may still hold a mixed review, so the submit gate stays
       // disabled until a later rerender completes. The user can retry the same
       // control; Decline/Cancel remain available, and no partial content can be
       // submitted.
+      //
+      // That claim now actually holds. `entry.renderRevision` was NOT advanced
+      // above — it is committed only once a control-bearing edit succeeds — so
+      // the card on screen still names the revision the user is clicking, and
+      // both the retry and the terminal controls pass their fences. Advancing it
+      // before the edit (the earlier behaviour) made every one of those controls
+      // unreachable: the screen showed revision 1 while the app answered to
+      // revision 2, and a single transport failure wedged the whole request until
+      // the timeout.
+      //
+      // The CLAIM is not rolled back, and must not be. It is a high-water mark:
+      // retrying re-claims a fresh number, and the allocator never reuses one that
+      // was already spent — which is what stops a late duplicate from a previous
+      // attempt being mistaken for the live card.
       await this.logger?.warn("discord.elicitation.edit_failed", "failed to update elicitation message", {
         requestId: entry.requestId,
         message: error instanceof Error ? error.message : String(error),
