@@ -107,24 +107,31 @@ interface MentionToken {
 }
 
 /** Committed tokens during typing. A token commits only when a real delimiter
- *  closes it — whitespace after it, or the closing quote — never at end-of-text:
- *  while the user is still typing the caret sits at EOF, and an EOF rule would
- *  route the current prefix (`@Ann` on the way to `@Anna`).
- *  `endOfTextTerminates` opts into the EOF rule for explicit boundaries (send,
- *  blur) where no further character will arrive. */
+ *  closes it — whitespace after a bare token, or the closing quote of a quoted
+ *  token — never at end-of-text: while the user is still typing the caret sits
+ *  at EOF, and an EOF rule would route the current prefix (`@Ann` on the way to
+ *  `@Anna`). `endOfTextTerminates` opts into the EOF rule for explicit
+ *  boundaries (send, blur) where no further character will arrive.
+ *
+ *  The closing quote proves termination on its own: the regex already matched
+ *  the complete `"..."`, so punctuation after it (`:"` / `,"`) must not demote
+ *  the token — that would silently route the message to the previous target. */
 function committedMentionTokens(text: string, endOfTextTerminates: boolean): MentionToken[] {
   const tokens: MentionToken[] = [];
   for (const match of text.matchAll(MENTION_TOKEN)) {
-    const start = match.index ?? 0;
-    const end = start + match[0].length;
-    if (end >= text.length ? !endOfTextTerminates : !/[\s\n]/.test(text[end] ?? "")) {
-      continue;
-    }
     const quoted = match[3];
     const bare = match[4] ?? "";
     if (quoted !== undefined) {
+      // Quoted token: the closing quote closed it. Committed even mid-sentence.
       if (quoted.length === 0) continue;
       tokens.push({ name: quoted, everyone: false });
+      continue;
+    }
+    // Bare token: needs an explicit boundary — whitespace after it, or EOF at an
+    // explicit send/blur boundary where no further character will arrive.
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    if (end >= text.length ? !endOfTextTerminates : !/[\s\n]/.test(text[end] ?? "")) {
       continue;
     }
     if (bare.length === 0) continue;
@@ -170,8 +177,6 @@ function onInput(): void {
   const serialized = JSON.stringify(derived);
   if (serialized === lastDerivedTarget.value) return;
   lastDerivedTarget.value = serialized;
-  // Replace, never append: the mention text is the latest explicit intent and
-  // a superseded token must not double-select.
   groupsStore.setTarget(derived);
 }
 

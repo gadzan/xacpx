@@ -120,11 +120,63 @@ describe("Group Components", () => {
         global: { plugins: [i18n] },
       });
       const textarea = wrapper.find('[data-test="group-composer-textarea"]');
-      for (const step of ["@", "@A", "@An", "@Ann", "@Ann", "@Anna", "@Anna "]) {
+      // True char-by-char typing: each setValue leaves the caret at EOF, which
+      // must NOT commit the current prefix. Asserting at every step is what
+      // keeps a reintroduced "select Ann, then replace with Anna" bug red — a
+      // single post-loop assertion would still pass once the final text resolves.
+      for (const step of ["@", "@A", "@An", "@Ann", "@Ann", "@Anna"]) {
         await textarea.setValue(step);
+        expect(groups.targetSelection).toEqual({ mode: "members", botIds: [] });
       }
-      // The pending/paused prefix never commits: only the finished token did.
+      // The trailing space terminates the token: only Anna is selected, and the
+      // intermediate Ann prefix never polluted the target.
+      await textarea.setValue("@Anna ");
       expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+    });
+
+    it("commits a quoted mention even when punctuation follows the closing quote", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: {
+          bots: [
+            { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+            { id: "bot_c", name: "Code Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          ],
+        },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      // The closing quote is itself the delimiter: no trailing whitespace needed.
+      await textarea.setValue('@"Code Reviewer"');
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_c"] });
+      await textarea.trigger("blur");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_c"] });
+    });
+
+    it("routes a quoted mention followed by punctuation at send time", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: {
+          bots: [
+            { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+            { id: "bot_c", name: "Code Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          ],
+        },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      // Punctuation directly after the quote used to leave the target on Bot A.
+      await textarea.setValue('@"Code Reviewer": please review');
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_c"] });
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      expect(wrapper.emitted("send")).toEqual([['@"Code Reviewer": please review']]);
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_c"] });
+      // Same for a comma: the punctuation must not demote the token.
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      await textarea.setValue('wait @"Code Reviewer", please');
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_c"] });
     });
 
     it("typing @everyones leaves everyone behind when the token does not match", async () => {
