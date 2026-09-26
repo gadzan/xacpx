@@ -640,42 +640,43 @@ function widestOf(
 /**
  * UTF-8 bytes this field's LINE contributes to a review card.
  *
- * Exactly the string `buildElicitationReviewCard` pushes for this field — the
- * same two `escapeFeishuCardText` calls, the same `displayValue`, the same
- * `**title**\nvalue` shape. Anything else is a different measurement, and a
- * different measurement can rank the candidates backwards:
+ * Measured as the JSON string the card serializes it into, because that is the
+ * metric the budget actually uses: `measureElicitationCardBytes` is
+ * `Buffer.byteLength(JSON.stringify(card), "utf8")`, and JSON escaping expands
+ * characters the card escaper leaves alone.
  *
- *   `"a".repeat(256)` renders to ~256 bytes.
- *   `"~".repeat(50)` escapes to `&#126;` x 50, rendering to ~300 bytes.
+ *   "\\".repeat(256) is 256 bytes of line text and ~512 bytes once JSON-escaped.
+ *   "~".repeat(50) escapes to `&#126;` x 50, ~300 bytes, and JSON-escapes not at
+ *   all (none of its characters are JSON-special).
  *
- * so the tilde answer is the wider review. Including the RAW value in the
- * measurement added 256 to the first and only 50 to the second, flipping the
- * comparison and making the sample narrower than a review the user can legally
- * submit.
+ * so the backslash answer is the wider CARD even though the tilde answer is the
+ * wider line. Comparing raw line bytes ranked those two backwards, and the sample
+ * ended up narrower than a review the user can legally submit.
  *
- * Measuring the rendered line alone is also what makes the estimate track the
- * escaper: if a character's entity grows, the width of every candidate containing
- * it grows with it, because both sides go through the same function.
+ * The wrapper — `Buffer.byteLength(JSON.stringify(...))` — is fixed and identical
+ * across candidates, so the added quotes and any per-string JSON overhead do not
+ * disturb the ordering. What matters is that both sides are expanded by the same
+ * JSON layer the budget will apply.
  */
 function reviewFieldBytes(field: ChannelElicitationField, value: ChannelElicitationValue): number {
   return Buffer.byteLength(
-    `**${escapeFeishuCardText(field.title)}**\n${escapeFeishuCardText(displayValue(value))}`,
+    JSON.stringify(`**${escapeFeishuCardText(field.title)}**\n${escapeFeishuCardText(displayValue(value))}`),
     "utf8",
   );
 }
 
 /**
- * UTF-8 bytes of the UNANSWERED state's line, through the same shape.
+ * UTF-8 bytes of the UNANSWERED state's line, through the identical measurement.
  *
  * The review card renders `messages.elicitationNoAnswer` wherever the answer is
  * absent, so this is the width of the line the user sees for a field they never
  * touched. Comparing it against `reviewFieldBytes` is a comparison between two
  * states the review can actually be in — which is the only thing that makes the
- * choice meaningful.
+ * choice meaningful. Measured the same way, or the two sides are not comparable.
  */
 function omittedFieldBytes(field: ChannelElicitationField): number {
   return Buffer.byteLength(
-    `**${escapeFeishuCardText(field.title)}**\n${escapeFeishuCardText(getMessages().elicitationNoAnswer)}`,
+    JSON.stringify(`**${escapeFeishuCardText(field.title)}**\n${escapeFeishuCardText(getMessages().elicitationNoAnswer)}`),
     "utf8",
   );
 }
@@ -706,10 +707,18 @@ function omittedFieldBytes(field: ChannelElicitationField): number {
  */
 /**
  * Width, in characters, of the widest rendering `String()` produces for a finite
- * double: `Number.MAX_VALUE` is `1.7976931348623157e+308`. Derived rather than
- * written, so it cannot drift from what the runtime actually does.
+ * double.
+ *
+ * The NEGATIVE form is the widest: `Number.MAX_VALUE` is
+ * `1.7976931348623157e+308`, and its negation renders one character longer because
+ * of the sign. Derived rather than written, so it cannot drift from what the
+ * runtime actually does.
+ *
+ * It does not change the sample's width in bytes today — `highestExpansionFill`
+ * multiplies by the escaper's widest entity — but the invariant should be stated
+ * as what it claims to bound, not as something that happens to be wide enough.
  */
-const NUMBER_RENDER_WIDTH_BOUND = String(Number.MAX_VALUE).length;
+const NUMBER_RENDER_WIDTH_BOUND = String(-Number.MAX_VALUE).length;
 
 function widestNumberFor(field: Extract<ChannelElicitationField, { kind: "number" }>): ChannelElicitationValue {
   // The widest rendering of any finite double: `String(Number.MAX_VALUE)` is

@@ -987,6 +987,47 @@ export class DiscordChannel implements MessageChannelRuntime {
       // Drop WITHOUT settling: the initiator must still be able to answer.
       return;
     }
+    // STATE-WRITE FENCE, BEFORE ANY CLAIM.
+    //
+    // Skip is not only navigation: `markSkipped` DELETES an answer, and value ->
+    // omitted is a real state write. So it is judged against `claimedRevision` —
+    // the number the app has already spent — and not against `renderRevision`,
+    // the number of the card currently on screen.
+    //
+    // The two differ exactly when a transition was applied remotely but its
+    // confirmation was lost, which is the case `claimedRevision` exists to
+    // express. `editMessage` throwing does not prove the update did not land; if
+    // it DID land, the user is looking at a newer card than the one they think
+    // they are on, and a control naming the older number must not be allowed to
+    // write.
+    //
+    //   field card rev=2 with answer "staging"
+    //   -> user clicks Review, claim=3, remote applies rev=3, ACK lost
+    //   -> renderRevision still 2, claimedRevision 3
+    //   -> a duplicate or delayed Skip naming rev=2 arrives
+    //
+    // Judging that against `renderRevision` accepts it, `markSkipped` runs, and
+    // the answer disappears behind the user's back. Judging it against
+    // `claimedRevision` drops it.
+    //
+    // It has to run BEFORE the claim below, or this handler's own number would
+    // retire the one it is about to be tested against and every legitimate Skip
+    // would drop itself. A duplicate Skip delivered twice still works: the first
+    // claims and writes, the second now finds its number already spent and drops.
+    if (
+      parsed.action === "skip"
+      && parsed.revision !== undefined
+      && parsed.revision < entry.claimedRevision
+    ) {
+      await this.logger?.warn("discord.elicitation.stale_skip", "dropped a Skip from a superseded card revision", {
+        requestId: entry.requestId,
+        interactionRevision: parsed.revision,
+        claimedRevision: entry.claimedRevision,
+        action: parsed.action,
+      });
+      await interaction.acknowledge();
+      return;
+    }
     // CLAIM THE NEXT REVISION BEFORE THE FIRST AWAIT.
     //
     // `handleElicitationClick` mutates wizard state, and only afterwards does the

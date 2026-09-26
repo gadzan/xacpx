@@ -3209,3 +3209,124 @@ test("the same Start control can be retried after its rerender failed", async ()
     await cleanup();
   }
 });
+
+test("a replayed Skip cannot delete an answer after a remote-applied update lost its ACK", async () => {
+  // The ambiguity that makes this a state write: `editMessage` throwing does NOT
+  // prove the update did not land. Discord may have applied it and lost the
+  // confirmation, so the number has to be retired against what the app SENT, not
+  // against what it can still see.
+  //
+  //   field card rev=2 with answer "staging"
+  //   -> Review is clicked, claim=3, the remote applies rev=3, the ACK is lost
+  //   -> renderRevision is still 2 (nothing confirmed), claimedRevision is 3
+  //   -> the Skip control from rev=2, replayed
+  //
+  // Skip is a state write — value -> omitted is a real mutation — and it was being
+  // judged against `renderRevision`, so `2 < 2` was false, the handler claimed a
+  // new number, and `markSkipped` deleted the answer while the user was looking
+  // at a card they had already moved past.
+  const client = makeFakeClient();
+  const realEdit = client.editMessage.bind(client);
+  // Apply the edit, THEN throw: this is remote-applied / ACK-lost, not a
+  // rejected write. A throw before applying is a different, uninteresting case.
+  let loseNextAck = false;
+  (client as unknown as { editMessage: unknown }).editMessage = async (
+    target: unknown,
+    messageId: string,
+    body: unknown,
+  ) => {
+    const applied = await realEdit(target as never, messageId, body as never);
+    if (loseNextAck) {
+      loseNextAck = false;
+      throw new Error("simulated ACK loss after the update was applied");
+    }
+    return applied;
+  };
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "text", key: "note", title: "Note", required: false, maxLength: 4000 },
+    ]);
+    const { settled } = await startWizard(client, channel, req.request, "note");
+    // Answer the field, so there is something a replayed Skip could delete.
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { note: "staging" }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 6));
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, {
+        values: Record<string, unknown>;
+        skipped: Set<string>;
+        renderRevision: number;
+        claimedRevision: number;
+      }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.values.note).toBe("staging");
+    // The Skip control on the card the user is actually looking at, saved before
+    // anything else happens.
+    const earlierSkip = idFor(client, "skip", 0);
+
+    // Click Review, and lose its ACK after the remote applies it.
+    loseNextAck = true;
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 10));
+    // The remote DID advance — that is the point — but nothing was confirmed.
+    expect(entry.claimedRevision).toBeGreaterThan(entry.renderRevision);
+
+    // The replayed Skip from the superseded field card.
+    client.emitButton(click(client, earlierSkip));
+    await new Promise((r) => setTimeout(r, 10));
+    // The answer SURVIVES. The Skip is dropped rather than applied.
+    expect(entry.values.note).toBe("staging");
+    expect([...entry.skipped]).not.toContain("note");
+
+    // And the request is still answerable, which is the point of dropping rather
+    // than settling.
+    expect(await Promise.race([settled, new Promise((r) => setTimeout(() => r("pending"), 20))])).toBe("pending");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a live Skip still clears the answer, and a duplicate of it is idempotent", async () => {
+  // The other side: the same change must not make Skip unusable. A Skip naming
+  // the CURRENT claimed revision is the honest way to clear an answer, and
+  // clicking it twice must not do anything the first click did not.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "text", key: "note", title: "Note", required: false, maxLength: 4000 },
+    ]);
+    await startWizard(client, channel, req.request, "note");
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { note: "staging" }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 6));
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { values: Record<string, unknown>; skipped: Set<string> }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.values.note).toBe("staging");
+    const liveSkip = idFor(client, "skip", 0);
+    client.emitButton(click(client, liveSkip));
+    await new Promise((r) => setTimeout(r, 6));
+    expect(entry.values.note).toBeUndefined();
+    expect([...entry.skipped]).toEqual(["note"]);
+    // A duplicate of the same control: still just once, and nothing new is removed.
+    client.emitButton(click(client, liveSkip));
+    await new Promise((r) => setTimeout(r, 6));
+    expect([...entry.skipped]).toEqual(["note"]);
+  } finally {
+    await cleanup();
+  }
+});

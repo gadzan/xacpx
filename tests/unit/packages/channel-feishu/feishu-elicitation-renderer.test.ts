@@ -2072,3 +2072,33 @@ test("a negative-number field is bounded like any other", () => {
   expect(measureElicitationCardBytes(sample))
     .toBeGreaterThanOrEqual(measureElicitationCardBytes(negative));
 });
+
+test("the sample bounds a review whose widest answer is wider after JSON escaping", () => {
+  // The budget is JSON-serialized UTF-8, and the two answers disagree in both
+  // directions depending on which expansion you count:
+  //
+  //   "\".repeat(256) -> 256 bytes of line text, ~512 bytes once JSON escapes
+  //     every backslash into `\\`.
+  //   "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"   -> escaped to `&#126;` x 50, ~300 bytes, and JSON escapes
+  //     none of those characters.
+  //
+  // So the tilde answer is the wider LINE and the backslash answer is the wider
+  // CARD. A comparator on line bytes picks the tilde answer and the sample comes
+  // out narrower than a review the user can legally submit.
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "single-select", key: "s", title: "S", required: true, options: [
+      { value: "\\".repeat(256), label: "Backslash" },
+      { value: "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~", label: "Tilde" },
+    ] },
+  ];
+  const req = request(fields);
+  const backslashReview = buildElicitationReviewCard(req, "tok", { s: "\\".repeat(256) });
+  const tildeReview = buildElicitationReviewCard(req, "tok", { s: "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" });
+  // The premise of the test: in the metric the budget uses, the backslash answer
+  // is the wider review. Without this the assertion below could pass vacuously.
+  expect(measureElicitationCardBytes(backslashReview))
+    .toBeGreaterThan(measureElicitationCardBytes(tildeReview));
+  const sample = buildWorstCaseReviewCard(req, "tok");
+  expect(measureElicitationCardBytes(sample))
+    .toBeGreaterThanOrEqual(measureElicitationCardBytes(backslashReview));
+});
