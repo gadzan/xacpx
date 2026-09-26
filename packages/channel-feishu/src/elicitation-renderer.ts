@@ -490,8 +490,22 @@ export class FeishuElicitationRenderer {
     // Callbacks are platform-signed, so the generation in the payload is
     // authenticated: a client cannot forge a newer card into existence, it can
     // only relay one the platform actually signed.
+    //
+    // TERMINAL intents are exempt from the drop, and only from the drop.
+    //
+    // Decline and Cancel are the user's decision about the REQUEST as a whole, not
+    // a statement about the wizard's position — the same exemption Discord's
+    // handler makes. A user who pressed Decline on the review card meant it even
+    // if a later rerender has changed what they were looking at, and fencing them
+    // made the decision vanish: the request stayed live with no visible way to end
+    // it, which is exactly the wedge the timeout is supposed to prevent.
+    //
+    // They keep the promotion path, because adopting a newer generation is what
+    // keeps a card whose update acknowledgement was lost usable, and that is
+    // orthogonal to whether the callback is stale.
+    const isTerminalIntent = parsed.action === "decline" || parsed.action === "cancel";
     if (parsed.renderGeneration !== undefined) {
-      if (parsed.renderGeneration < entry.renderGeneration) {
+      if (parsed.renderGeneration < entry.renderGeneration && !isTerminalIntent) {
         this.options.log?.("feishu.elicitation.stale_callback", "dropped a callback from an earlier card render", {
           requestId: entry.requestId,
           callbackGeneration: parsed.renderGeneration,

@@ -313,7 +313,10 @@ test("a text field renders an input bounded by the platform's max_length", () =>
   expect(input).toBeDefined();
   expect((input as { name: string }).name).toBe("f0");
   expect((input as { max_length: number }).max_length).toBe(1000);
-  expect((input as { required: boolean }).required).toBe(true);
+  // NOT platform-required. This field's schema says the key must be present, which
+  // `""` satisfies, and the widget's `required` would forbid submitting it — see
+  // `inputRequiresNonEmptyInput`.
+  expect((input as { required: boolean }).required).toBe(false);
 });
 
 test("the select's initial_option shows the default so it is visible and changeable", () => {
@@ -2101,4 +2104,204 @@ test("the sample bounds a review whose widest answer is wider after JSON escapin
   const sample = buildWorstCaseReviewCard(req, "tok");
   expect(measureElicitationCardBytes(sample))
     .toBeGreaterThanOrEqual(measureElicitationCardBytes(backslashReview));
+});
+
+test("a Feishu input is not made platform-required when the schema permits the empty string", () => {
+  // Feishu's `input.required: true` means the widget refuses to submit while it is
+  // empty — the client prompts "required field not filled" and does not send the
+  // form callback at all. The schema's property-`required` means the KEY must be
+  // present, and `""` is a present value core accepts.
+  //
+  // So `{required: true, maxLength: 10}` with no `minLength` accepts `{note: ""}`,
+  // and copying the schema bit onto the widget made that answer unsendable: the
+  // form sat refusing until the timeout. Discord was fixed for this in an earlier
+  // round; Feishu had not been.
+  const fields: ChannelElicitationRequest["fields"] = [{
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    maxLength: 10,
+  }];
+  const card = buildElicitationFieldCard(request(fields), "tok", fields[0]!, 0, undefined);
+  const input = findFormInput(card);
+  expect(input?.required).toBe(false);
+});
+
+test("a Feishu input that demands a non-empty value keeps the platform requirement", () => {
+  // The other side: `minLength >= 1` admits no empty answer, so the widget's
+  // requirement is not a restriction the schema would contradict.
+  const fields: ChannelElicitationRequest["fields"] = [{
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    minLength: 1,
+    maxLength: 10,
+  }];
+  const card = buildElicitationFieldCard(request(fields), "tok", fields[0]!, 0, undefined);
+  const input = findFormInput(card);
+  expect(input?.required).toBe(true);
+});
+
+test("a Feishu number input keeps the schema requirement", () => {
+  // A number's empty input is not a legal answer — there is no `minLength` on it
+  // — so the widget may keep demanding content, which is the only way the answer
+  // can be expressed at all.
+  const fields: ChannelElicitationRequest["fields"] = [{
+    kind: "number",
+    key: "hours",
+    title: "Hours",
+    required: true,
+  }];
+  const card = buildElicitationFieldCard(request(fields), "tok", fields[0]!, 0, undefined);
+  const input = findFormInput(card);
+  expect(input?.required).toBe(true);
+});
+
+/** The `input` component inside a field card's form element, if it has one. */
+function findFormInput(card: Record<string, unknown>): { required?: boolean } | undefined {
+  const body = card.body as { elements?: Array<Record<string, unknown>> } | undefined;
+  const form = body?.elements?.find((element) => element.tag === "form");
+  const elements = form?.elements as Array<Record<string, unknown>> | undefined;
+  return elements?.find((element) => element.tag === "input") as { required?: boolean } | undefined;
+}
+
+test("a captured Decline still settles after the card's generation advances", async () => {
+  // Decline and Cancel are the user's decision about the REQUEST, not a statement
+  // about the wizard's position. They are stamped onto the review card like every
+  // other control, and the comment that accompanies them says they stay unversioned
+  // in the handler for exactly that reason — but the stale-generation drop ran
+  // before the switch and dropped them anyway. A user who pressed Decline on the
+  // review card saw the request stay live with no visible way to end it.
+  const rec = makeRenderer();
+  // TWO fields, so the last one's save renders the review page and a later
+  // navigation genuinely supersedes the card its Decline was drawn on.
+  const twoFields: ChannelElicitationRequest["fields"] = [ENV_FIELD[0]!, {
+    kind: "single-select",
+    key: "region",
+    title: "Region",
+    required: true,
+    options: [
+      { value: "backend", label: "Backend" },
+      { value: "frontend", label: "Frontend" },
+    ],
+  }];
+  const promise = rec.renderer.requestElicitation(request(twoFields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "save", g: onScreenGeneration(token, rec) },
+    formValues: { f0: "prod" },
+  });
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "save", g: onScreenGeneration(token, rec) },
+    formValues: { f1: "backend" },
+  });
+  // The review page is on screen, and its Decline carries the generation of THAT
+  // card. Captured before anything advances.
+  const capturedDecline = onScreenGeneration(token, rec);
+
+  // Advance the card: back to the FIRST field, which renders a newer generation.
+  // Navigated by position to the other field, so the destination really differs
+  // from the review page the Decline was drawn on.
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "field", g: onScreenGeneration(token, rec), f: 1 },
+    formValues: {},
+  });
+  const entry = rec.pending.get(token)!;
+  // The captured Decline now names a superseded generation.
+  expect(capturedDecline).toBeLessThan(entry.renderGeneration);
+
+  // The delayed terminal decision, delivered against the newer card.
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "decline", g: capturedDecline },
+    formValues: {},
+  });
+  expect(await promise).toEqual({ action: "decline", responderId: "ou_initiator" });
+});
+
+test("a captured Cancel still settles after the card's generation advances", async () => {
+  // The other terminal int, and the one that matters most to exempt: Cancel is the
+  // user's way out of a request they no longer want, and a stale fence turned it
+  // into a timeout instead.
+  const rec = makeRenderer();
+  const promise = rec.renderer.requestElicitation(request(ENV_FIELD), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "save", g: onScreenGeneration(token, rec) },
+    formValues: { f0: "prod" },
+  });
+  const capturedCancel = onScreenGeneration(token, rec);
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "field", g: onScreenGeneration(token, rec), f: 0 },
+    formValues: {},
+  });
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "cancel", g: capturedCancel },
+    formValues: {},
+  });
+  expect(await promise).toEqual({ action: "cancel", responderId: "ou_initiator" });
+});
+
+test("a superseded field save is still refused, so the terminal exemption is not a blanket bypass", async () => {
+  // The exemption must not become "everything is live": a stale save would
+  // overwrite a newer answer with one the user already replaced.
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "single-select", key: "env", title: "Env", required: true, options: [
+      { value: "prod", label: "Prod" },
+      { value: "staging", label: "Staging" },
+    ] },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  // Answer, then navigate away so a newer generation exists.
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "save", g: onScreenGeneration(token, rec) },
+    formValues: { f0: "staging" },
+  });
+  const staleSave = onScreenGeneration(token, rec);
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "field", g: onScreenGeneration(token, rec), f: 0 },
+    formValues: {},
+  });
+  const entry = rec.pending.get(token)!;
+  expect(staleSave).toBeLessThan(entry.renderGeneration);
+
+  // Replay the superseded save with the OLD answer.
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "save", g: staleSave },
+    formValues: { f0: "prod" },
+  });
+  // The newer answer survives.
+  expect(entry.values.env).toBe("staging");
+  // And the request still resolves the honest way.
+  await rec.renderer.handleAction({
+    openId: "ou_initiator",
+    value: { t: token, a: "submit", g: onScreenGeneration(token, rec) },
+    formValues: {},
+  });
+  expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: { env: "staging" } });
 });

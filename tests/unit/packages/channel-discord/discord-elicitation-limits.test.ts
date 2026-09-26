@@ -5,9 +5,11 @@ import {
   DISCORD_SELECT_OPTION_COUNT_MAX,
   DISCORD_TEXT_INPUT_LABEL_MAX,
   buildElicitationFieldLines,
+  escapeDiscordLiteralText,
   FIELD_CARD_ANSWER_ECHO_MAX,
 } from "../../../../packages/channel-discord/src/elicitation-limits";
 import type { ChannelElicitationField, ChannelElicitationRequest } from "xacpx/plugin-api";
+import { escapeDiscordLiteralText } from "../../../../packages/channel-discord/src/permission-ui";
 
 /** A request the gate can measure the field cards against. */
 function requestFor(fields: readonly ChannelElicitationField[]): ChannelElicitationRequest {
@@ -442,9 +444,11 @@ test("the field budget reserves room for the answer echo", async () => {
   expect(verdict.renderable).toBe(false);
   expect(verdict.reason).toBe("field-text-too-long");
 
-  // The same field, small enough for BOTH the initial body and the reserved echo,
-  // is allowed — so the refusal above is the echo's doing, not the description's
-  // raw length alone.
+  // The same field, sized for BOTH the initial body and the reserved echo. Named
+  // for what it fits, and re-interpreted below against the ESCAPED worst case —
+  // an answer of 200 Markdown metacharacters renders an echo double the width of
+  // 200 "x"s, and a field page cannot be chunked, so the reserve has to cover the
+  // echo a user can actually produce.
   const roomForEcho = [{
     kind: "text" as const,
     key: "note",
@@ -453,7 +457,6 @@ test("the field budget reserves room for the answer echo", async () => {
     maxLength: 1000,
     description: "*".repeat(750),
   }];
-  expect(checkElicitationRenderability(roomForEcho, requestFor(roomForEcho)).renderable).toBe(true);
   // Confirm the reserve is real: building the card with a maximum answer would
   // overflow, which is exactly the second render this protects.
   const overflow = buildElicitationFieldLines(
@@ -472,4 +475,42 @@ test("the field budget reserves room for the answer echo", async () => {
     "x".repeat(FIELD_CARD_ANSWER_ECHO_MAX),
   ).join("\n\n");
   expect(fits.length).toBeLessThanOrEqual(1800);
+  // THE ECHO IS AN ESCAPED-SPACE BOUND.
+  //
+  // An "x" sample is 200 characters and stays 200 once escaped, so it only proves
+  // the reserve for an answer made of characters the escaper leaves alone. A legal
+  // answer of Markdown metacharacters is cut to 200 RAW characters and then
+  // escaped, which doubles it — and that is the answer a user can actually give.
+  const worstCaseEcho = "*".repeat(FIELD_CARD_ANSWER_ECHO_MAX);
+  const withWorstEcho = buildElicitationFieldLines(
+    requestFor(roomForEcho),
+    roomForEcho[0]!,
+    1,
+    worstCaseEcho,
+  ).join("\n\n");
+  // So the field above must be REFUSED: its second render overflows, and a field
+  // page cannot be chunked — `buildElicitationFieldCard` throws rather than split
+  // it, which is how a gate-passing form became a field the user could not return
+  // to after answering.
+  expect(checkElicitationRenderability(roomForEcho, requestFor(roomForEcho)).renderable).toBe(false);
+  expect(withWorstEcho.length).toBeGreaterThan(1800);
+  // And the smaller description that survives the worst-case echo is the one the
+  // gate is supposed to accept, which proves the refusal above is the reserve's
+  // doing and not a blanket tightening.
+  const roomForWorstEcho = [{
+    kind: "text" as const,
+    key: "note",
+    title: "Note",
+    required: true,
+    maxLength: 1000,
+    description: "*".repeat(640),
+  }];
+  expect(checkElicitationRenderability(roomForWorstEcho, requestFor(roomForWorstEcho)).renderable).toBe(true);
+  const worstFits = buildElicitationFieldLines(
+    requestFor(roomForWorstEcho),
+    roomForWorstEcho[0]!,
+    1,
+    worstCaseEcho,
+  ).join("\n\n");
+  expect(worstFits.length).toBeLessThanOrEqual(1800);
 });

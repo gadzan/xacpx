@@ -330,7 +330,25 @@ export function buildElicitationFieldCard(
       label: { tag: "plain_text", content: escapeFeishuCardText(field.title) },
       label_position: "top",
       placeholder: plainText(field.title),
-      required: field.required,
+      // The PLATFORM's required, which is not the schema's.
+      //
+      // Feishu's `input.required: true` means the widget refuses to submit while
+      // it is empty — the client prompts "required field not filled" and does not
+      // send the form callback at all. The schema's property-`required` means
+      // something different: the KEY must be present in the answer, and `""` is a
+      // present value that core accepts.
+      //
+      // Copying one onto the other therefore made a legal answer unsendable. A
+      // field of `{required: true, maxLength: 10}` with no `minLength` accepts
+      // `{note: ""}`, but the widget would not let the user submit it: the form
+      // sat there refusing, with no explanation, until the timeout.
+      //
+      // So the widget's requirement follows what the schema demands of the VALUE
+      // rather than of the KEY's presence: `minLength >= 1` admits no empty
+      // answer, so the widget may demand one; anything else permits `""`, and
+      // PRESENCE of the key is enforced by the wizard's own missing-field check
+      // on submit, which is exactly the rule core applies.
+      required: inputRequiresNonEmptyInput(field),
       max_length: maxLengthFor(field),
       ...(prefillFor(field, current) !== undefined ? { default_value: prefillFor(field, current) } : {}),
     });
@@ -500,6 +518,33 @@ function prefillFor(
   if (current === undefined && typeof field.defaultValue === "number") return String(field.defaultValue);
   if (current === undefined && typeof field.defaultValue === "boolean") return String(field.defaultValue);
   return undefined;
+}
+
+/**
+ * Whether the platform input must be non-empty to be submittable.
+ *
+ * Derived from `minLength` and from NOTHING ELSE, for the reason spelled out at
+ * the call site: `minLength >= 1` is the only declaration that admits no empty
+ * answer. A property marked `required` still accepts `""`, and so does a
+ * `maxLength` of anything at all, so neither can decide whether the empty form
+ * must be offered.
+ *
+ * Non-text kinds keep the schema's bit. `number` is reached here too, and an
+ * empty input is not a legal number — there is no `minLength` on it, and
+ * demanding content is the only way its answer can be expressed.
+ */
+function inputRequiresNonEmptyInput(field: ChannelElicitationField): boolean {
+  // A text field follows `minLength` and nothing else. The absence of a declared
+  // minimum is not a maximum: the schema is silent on the empty value, and the
+  // widget must not invent a requirement the schema never made. Key presence is
+  // enforced by the wizard's missing-field gate on submit instead.
+  if (field.kind === "text") {
+    return "minLength" in field && field.minLength !== undefined && field.minLength >= 1;
+  }
+  // Every other kind keeps the schema's bit. A number's empty input is not a
+  // legal answer — there is no `minLength` on it — so demanding content is the
+  // only way its answer can be expressed at all.
+  return field.required;
 }
 
 /**

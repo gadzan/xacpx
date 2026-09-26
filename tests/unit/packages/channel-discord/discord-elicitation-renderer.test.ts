@@ -2575,15 +2575,16 @@ test("the gate's field budget is the builder's, not a subset of it", async () =>
     // Every agent-controlled character here doubles, so the escaped field body
     // crosses the 1800-char budget.
     //
-    // Measured EXACTLY the way the gate measures: the reserved answer echo is
-    // part of what the card can be asked to show, because a user returning to an
-    // answered field adds that line. Omitting it here would test a different
-    // question than the gate answers.
+    // Measured EXACTLY the way the gate measures, which is with the WORST-CASE
+    // echo: the reserved echo is the escaped upper bound, because the answer is
+    // cut to 200 RAW characters and only then escaped. Probing with a friendly
+    // ASCII sample here would measure a narrower card than the gate judges, and
+    // the two sides would disagree for the wrong reason.
     const escapedBody = buildElicitationFieldLines(
       request,
       field,
       1,
-      "x".repeat(FIELD_CARD_ANSWER_ECHO_MAX),
+      "*".repeat(FIELD_CARD_ANSWER_ECHO_MAX),
     ).join("\n\n");
     return { verdict, escapedBody, fitsOneMessage: escapedBody.length <= 1800 };
   };
@@ -3326,6 +3327,133 @@ test("a live Skip still clears the answer, and a duplicate of it is idempotent",
     client.emitButton(click(client, liveSkip));
     await new Promise((r) => setTimeout(r, 6));
     expect([...entry.skipped]).toEqual(["note"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a captured terminal decision still settles after the card advances", async () => {
+  // Decline and Cancel are the user's decision about the REQUEST, not about the
+  // wizard's position. The parser deliberately leaves their revision optional on
+  // exactly that basis, but the handler's generic fence ran before the switch and
+  // dropped them anyway: a user who pressed Decline on the review card saw the
+  // request stay live with no visible way to end it.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "single-select", key: "env", title: "Env", required: true, options: [
+        { value: "prod", label: "Prod" },
+        { value: "staging", label: "Staging" },
+      ] },
+    ]);
+    const { settled } = await startWizard(client, channel, req.request, "env");
+    // The review card, and its Decline control, captured before anything moves.
+    client.emitSelect(select(client, selectCustomIdOf(client, "env"), ["prod"]));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 6));
+    const capturedDecline = idFor(client, "decline");
+
+    // Advance the card: Edit back to the field, which publishes a newer revision.
+    client.emitButton(click(client, idFor(client, "edit", 0)));
+    await new Promise((r) => setTimeout(r, 6));
+    // The captured Decline now names a superseded revision.
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { renderRevision: number }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    const [capturedRevision] = capturedDecline.split(":").slice(-1);
+    expect(Number(capturedRevision)).toBeLessThan(entry.renderRevision);
+
+    // The delayed terminal decision, delivered against the newer card.
+    client.emitButton(click(client, capturedDecline, "user-A"));
+    expect(await settled).toEqual({ action: "decline", responderId: "user-A" });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a captured Cancel still settles after the card advances", async () => {
+  // The other terminal int, and the one that matters most to exempt: Cancel is the
+  // user's way out of a request they no longer want, and a stale fence turned it
+  // into a timeout instead.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "single-select", key: "env", title: "Env", required: true, options: [
+        { value: "prod", label: "Prod" },
+        { value: "staging", label: "Staging" },
+      ] },
+    ]);
+    const { settled } = await startWizard(client, channel, req.request, "env");
+    client.emitSelect(select(client, selectCustomIdOf(client, "env"), ["prod"]));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 6));
+    const capturedCancel = idFor(client, "cancel");
+
+    client.emitButton(click(client, idFor(client, "edit", 0)));
+    await new Promise((r) => setTimeout(r, 6));
+
+    client.emitButton(click(client, capturedCancel, "user-A"));
+    expect(await settled).toEqual({ action: "cancel", responderId: "user-A" });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a superseded navigation control is still refused, so the exemption is not a blanket bypass", async () => {
+  // The terminal exemption must not become "everything is live". A stale Skip
+  // would still delete an answer, and a stale Edit would move the wizard.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "text", key: "note", title: "Note", required: false, maxLength: 4000 },
+    ]);
+    await startWizard(client, channel, req.request, "note");
+    // Answer, so a stale Skip would have something to delete.
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { note: "ship it" }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 6));
+    // The Skip control on the card the user is looking at, captured before the
+    // wizard moves on.
+    const staleSkip = idFor(client, "skip", 0);
+    // Advance past it, to the review page and therefore to a newer revision.
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 6));
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, {
+        values: Record<string, unknown>;
+        visitedReview: boolean;
+        renderRevision: number;
+      }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.visitedReview).toBe(true);
+    const [capturedRevision] = staleSkip.split(":").slice(-1);
+    expect(Number(capturedRevision)).toBeLessThan(entry.renderRevision);
+
+    // Replay the superseded Skip.
+    client.emitButton(click(client, staleSkip));
+    await new Promise((r) => setTimeout(r, 6));
+    // The answer survives: the exemption is scoped to terminal intent.
+    expect(entry.values.note).toBe("ship it");
   } finally {
     await cleanup();
   }

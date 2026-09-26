@@ -1076,7 +1076,21 @@ export async function handleElicitationClick(input: ElicitationClickInput): Prom
   // modal submit) compares against `claimedRevision`, which is what stops a
   // write from arriving during the Edit's ACK. A navigation interaction cannot
   // write anything, so this comparison is sound.
-  if (parsed.revision !== undefined && parsed.revision < entry.renderRevision) {
+  //
+  // A TERMINAL intent is exempt entirely. Decline and Cancel are the user's own
+  // decision about the request as a whole, not a statement about the wizard's
+  // position: a user who pressed Decline on the review card meant it even if a
+  // later rerender has since changed what they were looking at. Fencing them made
+  // the explicit decision vanish — the request stayed live with no visible way to
+  // end it, which is precisely the wedge the timeout exists to prevent.
+  //
+  // The parser already treats these two as optional-revision for exactly this
+  // reason; the exemption is what makes that true in the handler as well. It is
+  // still an AUTHENTICATED click by the initiator, and `trySettle` still guarantees
+  // only one decision is ever produced, so this widens nothing an intruder can use
+  // and prevents no duplicate resolution.
+  const isTerminalIntent = parsed.action === "decline" || parsed.action === "cancel";
+  if (!isTerminalIntent && parsed.revision !== undefined && parsed.revision < entry.renderRevision) {
     input.log?.("discord.elicitation.stale_interaction", "dropped an interaction from an earlier card revision", {
       requestId: entry.requestId,
       interactionRevision: parsed.revision,

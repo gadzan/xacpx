@@ -114,20 +114,83 @@ function boundedAnswerEcho(field: ChannelElicitationField): ChannelElicitationVa
   if (field.kind === "number") return 0;
   if (field.kind === "boolean") return true;
   if (field.kind === "single-select") {
-    return field.options.reduce(
-      (widest, option) => (option.value.length > widest.length ? option.value : widest),
-      field.options[0]?.value ?? "",
-    );
+    return widestRenderedOption(field);
   }
   if (field.kind === "multi-select") {
-    return field.options.map((option) => option.value);
+    return widestRenderedOptions(field);
   }
-  return "x".repeat(FIELD_CARD_ANSWER_ECHO_MAX);
+  // 200 of the character the escaper expands the most, NOT 200 ASCII "x"s.
+  //
+  // The echo the builder emits is `escapeDiscordLiteralText(truncate(displayValue(current), 200))` —
+  // the answer is cut to 200 RAW characters and only then escaped, and the escaper
+  // turns a Markdown metacharacter into two. So a legal answer of `"*".repeat(200)`
+  // renders an echo of 400 escaped characters where the "x" sample rendered 200.
+  //
+  // That is 200 escaped characters of understatement on a 1800-char budget, and
+  // the field card refuses to chunk: `buildElicitationFieldCard` throws rather
+  // than splitting a field page. The consequence was a form the gate accepted,
+  // then a field the user could not get back to after answering it.
+  return WIDEST_ESCAPE_CHARACTER.repeat(FIELD_CARD_ANSWER_ECHO_MAX);
 }
 
 /** Cut a rendered string to `max`, appending an ellipsis when it is cut. */
 function truncate(value: string, max: number): string {
   return value.length <= max ? value : `${value.slice(0, max - 1)}...`;
+}
+
+/**
+ * The character `escapeDiscordLiteralText` expands the most.
+ *
+ * Measured rather than hardcoded, so the echo tracks the escaper: if the escaping
+ * ever changes, the worst case changes with it instead of quietly going optimistic.
+ */
+const WIDEST_ESCAPE_CHARACTER = ((): string => {
+  // Every metacharacter Discord's literal escaper rewrites. `*` is the one that
+  // becomes two characters; the others are included so a change to the escaper
+  // cannot leave this constant stale.
+  const candidates = [..."*_`~|\\<>()[]#+.!-"];
+  let widest = candidates[0]!;
+  for (const candidate of candidates) {
+    if (escapeDiscordLiteralText(candidate).length > escapeDiscordLiteralText(widest).length) widest = candidate;
+  }
+  return widest;
+})();
+
+/**
+ * The option whose DISPLAYED value renders widest, through the same truncate and
+ * escape the echo applies.
+ *
+ * Using the longest RAW value was the optimistic half: a value full of escapable
+ * characters renders wider than a longer one that happens to be plain, and the
+ * echo is the rendered string.
+ */
+function widestRenderedOption(field: Extract<ChannelElicitationField, { kind: "single-select" }>): string {
+  let widest = field.options[0]?.value ?? "";
+  let widestWidth = echoWidth(widest);
+  for (const option of field.options.slice(1)) {
+    const width = echoWidth(option.value);
+    if (width > widestWidth) {
+      widest = option.value;
+      widestWidth = width;
+    }
+  }
+  return widest;
+}
+
+/**
+ * The set of options whose combined display renders widest.
+ *
+ * ALL of them, because a multi-select answer may hold every value and the echo is
+ * `displayValue` of the whole set — there is no subset that renders wider than the
+ * full set once the join separator is taken into account.
+ */
+function widestRenderedOptions(field: Extract<ChannelElicitationField, { kind: "multi-select" }>): string[] {
+  return field.options.map((option) => option.value);
+}
+
+/** Escaped width of the echo a value produces, exactly as the builder emits it. */
+function echoWidth(value: string): number {
+  return escapeDiscordLiteralText(truncate(value, FIELD_CARD_ANSWER_ECHO_MAX)).length;
 }
 
 /**
