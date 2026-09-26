@@ -99,38 +99,93 @@ export const FIELD_CARD_TEXT_MAX = 1800;
 export const FIELD_CARD_ANSWER_ECHO_MAX = 200;
 
 /**
- * The worst "Answer saved" line a field card can carry, as an answer VALUE.
+ * The worst "Answer saved" echo a field card can carry, as an answer VALUE.
  *
  * The gate must reserve space for the echo, not just the initial render: a user
  * returning to an answered field gets an extra line, and an initial body near the
- * limit would otherwise overflow on the second render — after the answer had
- * already been given, when refusing is no longer possible.
+ * limit would otherwise overflow on the SECOND render — after the answer had
+ * already been given, when refusing is no longer possible. A field page cannot be
+ * chunked, so that overflow is a throw in the builder and a field the user cannot
+ * get back to.
  *
- * `"x"` repeated to the echo bound is the worst case for a text field (no escape
- * expansion). A select's worst case is its widest option value, joined for a
- * multi-select, which is what the card would actually echo.
+ * WHY THIS IS A BOUND AND NOT A SAMPLE. No "representative" value can be an upper
+ * bound, because the echo is
+ * `escape(truncate(displayValue(current), 200))` — cut to 200 RAW characters and
+ * only THEN escaped. So a value that looks narrow can render wide, and a value
+ * that looks wide can be cut down to almost nothing. Two concrete examples:
+ *
+ *   - number. `0` is one character; `-Number.MAX_VALUE` is 24. Reserving for the
+ *     first underestimates by 23.
+ *   - multi-select. With options A=x*100, B=y*100, C=*x100 and `maxItems: 2`,
+ *     the "all options" sample is cut to `x...x, y` — it never reaches C at all,
+ *     while the legal subset [B, C] renders ~298 escaped characters from 200 raw.
+ *     A narrower ILLEGAL sample is the opposite of a bound.
+ *
+ * So each kind reserves the widest thing its own legal answers can produce, in
+ * whichever of two ways is sound:
+ *
+ *   - where the space is small enough to know, the widest legal VALUE: `false`
+ *     for a boolean, the widest finite double for a number (clamped to the
+ *     schema's declared range).
+ *   - where it is not — a text answer of any shape, or any subset of a
+ *     multi-select — the widest thing a 200-raw-character string can render to,
+ *     which is an upper bound for all of them by construction and cannot be
+ *     beaten by choosing a cleverer answer.
  */
 function boundedAnswerEcho(field: ChannelElicitationField): ChannelElicitationValue | undefined {
-  if (field.kind === "number") return 0;
-  if (field.kind === "boolean") return true;
-  if (field.kind === "single-select") {
-    return widestRenderedOption(field);
+  switch (field.kind) {
+    // The longer spelling. `false` renders one character wider than `true`, and
+    // that is the whole space.
+    case "boolean":
+      return false;
+    case "number":
+      return widestNumberEcho(field);
+    case "single-select":
+      return widestRenderedOption(field);
+    case "multi-select":
+      // No subset can be enumerated in bounded time, and the joined sample is not
+      // a bound for the reason above. The universal raw-expansion bound is one:
+      // 200 raw characters of the character the escaper expands the most, which
+      // is the widest ANY 200-raw-character string can render to, whatever its
+      // shape. A legal answer can therefore never exceed it.
+      return worstEchoText(field);
+    default:
+      // text, and every format variant of it (date/email/uri arrive as text).
+      // Clamped to the field's own declared `maxLength` where there is one, so a
+      // field that caps its answer at 10 characters does not have 200 reserved
+      // against it. Without the clamp this over-refuses legal forms at the
+      // boundary, which is the failure mode in the other direction.
+      return worstEchoText(field);
   }
-  if (field.kind === "multi-select") {
-    return widestRenderedOptions(field);
-  }
-  // 200 of the character the escaper expands the most, NOT 200 ASCII "x"s.
-  //
-  // The echo the builder emits is `escapeDiscordLiteralText(truncate(displayValue(current), 200))` —
-  // the answer is cut to 200 RAW characters and only then escaped, and the escaper
-  // turns a Markdown metacharacter into two. So a legal answer of `"*".repeat(200)`
-  // renders an echo of 400 escaped characters where the "x" sample rendered 200.
-  //
-  // That is 200 escaped characters of understatement on a 1800-char budget, and
-  // the field card refuses to chunk: `buildElicitationFieldCard` throws rather
-  // than splitting a field page. The consequence was a form the gate accepted,
-  // then a field the user could not get back to after answering it.
-  return WIDEST_ESCAPE_CHARACTER.repeat(FIELD_CARD_ANSWER_ECHO_MAX);
+}
+
+/**
+ * 200 raw characters (or the field's own bound, whichever is smaller) of the
+ * character the escaper expands the most.
+ */
+function worstEchoText(field: ChannelElicitationField): string {
+  const declared = "maxLength" in field && typeof field.maxLength === "number" ? field.maxLength : undefined;
+  const raw = Math.min(declared ?? FIELD_CARD_ANSWER_ECHO_MAX, FIELD_CARD_ANSWER_ECHO_MAX);
+  return WIDEST_ESCAPE_CHARACTER.repeat(Math.max(0, raw));
+}
+
+/**
+ * The number whose rendered form is the widest a legal answer can produce.
+ *
+ * `String()` of a finite double is at most 24 characters — `-Number.MAX_VALUE` —
+ * and none of the characters it can emit (digits, `-`, `.`, `e`, `+`) are escaped
+ * by `escapeDiscordLiteralText`, so the rendered width equals the character count.
+ * That makes the bound exact rather than approximate: 24 characters is the
+ * widest, and every other finite number renders at or under it.
+ *
+ * Clamped to the schema's declared bounds when it has them, so a
+ * `maximum: 100` field does not carry 24 characters it can never reach.
+ */
+function widestNumberEcho(field: Extract<ChannelElicitationField, { kind: "number" }>): number {
+  const widest = -Number.MAX_VALUE;
+  if (field.minimum !== undefined && widest < field.minimum) return field.minimum;
+  if (field.maximum !== undefined && widest > field.maximum) return field.maximum;
+  return widest;
 }
 
 /** Cut a rendered string to `max`, appending an ellipsis when it is cut. */
@@ -165,32 +220,20 @@ const WIDEST_ESCAPE_CHARACTER = ((): string => {
  * echo is the rendered string.
  */
 function widestRenderedOption(field: Extract<ChannelElicitationField, { kind: "single-select" }>): string {
+  // Escaped width of the echo a value produces, exactly as the builder emits it:
+  // cut to the bound in RAW characters first, then escaped.
+  const width = (value: string): number =>
+    escapeDiscordLiteralText(truncate(value, FIELD_CARD_ANSWER_ECHO_MAX)).length;
   let widest = field.options[0]?.value ?? "";
-  let widestWidth = echoWidth(widest);
+  let widestWidth = width(widest);
   for (const option of field.options.slice(1)) {
-    const width = echoWidth(option.value);
-    if (width > widestWidth) {
+    const optionWidth = width(option.value);
+    if (optionWidth > widestWidth) {
       widest = option.value;
-      widestWidth = width;
+      widestWidth = optionWidth;
     }
   }
   return widest;
-}
-
-/**
- * The set of options whose combined display renders widest.
- *
- * ALL of them, because a multi-select answer may hold every value and the echo is
- * `displayValue` of the whole set — there is no subset that renders wider than the
- * full set once the join separator is taken into account.
- */
-function widestRenderedOptions(field: Extract<ChannelElicitationField, { kind: "multi-select" }>): string[] {
-  return field.options.map((option) => option.value);
-}
-
-/** Escaped width of the echo a value produces, exactly as the builder emits it. */
-function echoWidth(value: string): number {
-  return escapeDiscordLiteralText(truncate(value, FIELD_CARD_ANSWER_ECHO_MAX)).length;
 }
 
 /**

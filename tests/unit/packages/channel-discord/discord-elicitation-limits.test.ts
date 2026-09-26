@@ -514,3 +514,127 @@ test("the field budget reserves room for the answer echo", async () => {
   ).join("\n\n");
   expect(worstFits.length).toBeLessThanOrEqual(1800);
 });
+test("a number field's reserved echo is the widest legal number, not zero", () => {
+  // `0` is one character; `-Number.MAX_VALUE` renders 24. Reserving for the
+  // first underestimates by 23 characters, and that is enough to cross the
+  // 1800-char budget for a number field carrying an expanding description.
+  //
+  // The consequence is the same shape as the text echo: the gate accepts, the
+  // user answers, and the second field-card render overflows — with no way to
+  // refuse it any more, because `buildElicitationFieldCard` throws rather than
+  // chunking a field page.
+  const fields: ChannelElicitationRequest["fields"] = [{
+    kind: "number",
+    key: "n",
+    title: "N",
+    required: true,
+    // Chosen so the widest-number echo is what crosses the budget. Measured
+    // rather than derived, so a wording change does not silently invalidate it.
+    description: "*".repeat(855),
+  }];
+  // The premise: reserving for zero would have passed this field. Built by hand
+  // here, because that is exactly what the old gate did.
+  const request = requestFor(fields);
+  const withZero = buildElicitationFieldLines(request, fields[0]!, 1, 0).join("\n\n").length;
+  const withWorst = buildElicitationFieldLines(request, fields[0]!, 1, -Number.MAX_VALUE).join("\n\n").length;
+  expect(withZero).toBeLessThanOrEqual(1800);
+  // And the widest legal number really does cross it.
+  expect(withWorst).toBeGreaterThan(1800);
+
+  // The gate must have reserved the wider one, so it refuses.
+  const verdict = checkElicitationRenderability(fields, request);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("field-text-too-long");
+});
+
+test("a number field bounded by a small maximum does not carry a 24-char echo", () => {
+  // The other direction: the bound is clamped to the schema's own range, so a
+  // `maximum: 100` field does not have 24 characters reserved against it that it
+  // can never reach. Reserving the widest finite double unconditionally would
+  // over-refuse legal forms, which is the opposite failure.
+  const fields: ChannelElicitationRequest["fields"] = [{
+    kind: "number",
+    key: "n",
+    title: "N",
+    required: true,
+    maximum: 100,
+    description: "*".repeat(840),
+  }];
+  const request = requestFor(fields);
+  const withMax = buildElicitationFieldLines(request, fields[0]!, 1, 100).join("\n\n").length;
+  // With the clamp, the reserved echo is `100` (3 chars), so a field sized for
+  // that stays inside the budget.
+  expect(withMax).toBeLessThanOrEqual(1800);
+  expect(checkElicitationRenderability(fields, request).renderable).toBe(true);
+});
+test("a multi-select's reserved echo bounds a legal subset, not the all-options sample", () => {
+  // The echo is `escape(truncate(displayValue(answer), 200))` — cut to 200 RAW
+  // characters and only THEN escaped. That ordering is what makes the
+  // "all options" sample not a bound:
+  //
+  //   A = "x".repeat(100), B = "y".repeat(100), C = "*".repeat(100), maxItems 2
+  //
+  // The all-options sample is "A, B, C", cut to 200 raw characters of mostly-x —
+  // it never reaches C, so its expanded width is ~200. The legal subset [B, C] is
+  // cut to y's then stars, which expand, giving ~298. The sample is narrower than
+  // a REAL answer, and it is not even a legal answer itself (maxItems is 2).
+  //
+  // Same consequence as the text echo: gate accepts, user answers, second render
+  // overflows, field unreachable.
+  const a = "x".repeat(100);
+  const b = "y".repeat(100);
+  const c = "*".repeat(100);
+  const fields: ChannelElicitationRequest["fields"] = [{
+    kind: "multi-select",
+    key: "picks",
+    title: "Picks",
+    required: true,
+    maxItems: 2,
+    // Sized so the old all-options sample landed just under the budget while the
+    // legal [B, C] subset lands well over it.
+    description: "*".repeat(755),
+    options: [
+      { value: a, label: "A" },
+      { value: b, label: "B" },
+      { value: c, label: "C" },
+    ],
+  }];
+  const request = requestFor(fields);
+  // The premise: the legal subset really is wider than the sample, at this
+  // description size. The sample lands just UNDER the budget and the legal
+  // answer well over it, which is the case the old gate got backwards.
+  const subsetEcho = buildElicitationFieldLines(request, fields[0]!, 1, [b, c]).join("\n\n").length;
+  const allOptionsEcho = buildElicitationFieldLines(request, fields[0]!, 1, [a, b, c]).join("\n\n").length;
+  expect(subsetEcho).toBeGreaterThan(allOptionsEcho);
+  expect(allOptionsEcho).toBeLessThanOrEqual(1800);
+  expect(subsetEcho).toBeGreaterThan(1800);
+
+  // The gate must have reserved for the wider one, so it refuses.
+  const verdict = checkElicitationRenderability(fields, request);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("field-text-too-long");
+});
+
+test("a text field's reserved echo does not exceed its own declared maxLength", () => {
+  // The bound is clamped to the field's own cap, so a `maxLength: 10` field is not
+  // forced to carry 200 characters. Over-refusing legal boundary forms is the
+  // failure in the other direction, and the clamp is what keeps the bound tight
+  // rather than merely large.
+  const fields: ChannelElicitationRequest["fields"] = [{
+    kind: "text",
+    key: "small",
+    title: "Small",
+    required: true,
+    maxLength: 10,
+    description: "*".repeat(840),
+  }];
+  const request = requestFor(fields);
+  const withClamp = buildElicitationFieldLines(request, fields[0]!, 1, "*".repeat(10)).join("\n\n").length;
+  expect(withClamp).toBeLessThanOrEqual(1800);
+  // A 200-char echo would push the same field over, which is what the clamp
+  // avoids: the reserved width is the field's own, not the universal bound.
+  const withFull = buildElicitationFieldLines(request, fields[0]!, 1, "*".repeat(200)).join("\n\n").length;
+  expect(withFull).toBeGreaterThan(1800);
+  // So the gate accepts it, and correctly: the user cannot produce the wider echo.
+  expect(checkElicitationRenderability(fields, request).renderable).toBe(true);
+});

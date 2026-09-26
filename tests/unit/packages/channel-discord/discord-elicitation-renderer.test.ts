@@ -2577,14 +2577,21 @@ test("the gate's field budget is the builder's, not a subset of it", async () =>
     //
     // Measured EXACTLY the way the gate measures, which is with the WORST-CASE
     // echo: the reserved echo is the escaped upper bound, because the answer is
-    // cut to 200 RAW characters and only then escaped. Probing with a friendly
-    // ASCII sample here would measure a narrower card than the gate judges, and
-    // the two sides would disagree for the wrong reason.
+    // cut to RAW characters and only then escaped. Probing with a friendly ASCII
+    // sample would measure a narrower card than the gate judges, and the two sides
+    // would disagree for the wrong reason.
+    //
+    // The raw length is the field's OWN `maxLength`, not the echo bound: a field
+    // that caps its answer at 100 characters can never echo more than 100 raw
+    // characters, so reserving the full 200 against it would over-refuse legal
+    // forms — the opposite failure, and just as wrong. The gate and the probe must
+    // therefore agree on which of the two applies.
+    const echoRaw = Math.min(field.maxLength, FIELD_CARD_ANSWER_ECHO_MAX);
     const escapedBody = buildElicitationFieldLines(
       request,
       field,
       1,
-      "*".repeat(FIELD_CARD_ANSWER_ECHO_MAX),
+      "*".repeat(echoRaw),
     ).join("\n\n");
     return { verdict, escapedBody, fitsOneMessage: escapedBody.length <= 1800 };
   };
