@@ -543,6 +543,7 @@ export default {
     rfbUnavailable: "No VNC server is listening on the instance loopback port.",
     notRfb: "The desktop port is not speaking RFB/VNC.",
     authUnsupported: "This VNC auth scheme is not supported (None, VeNCrypt, and ARD need Phase B).",
+    authFailed: "The VNC server rejected the password. Check it and reconnect.",
     streamTimeout: "Desktop open timed out. Retry in a moment.",
     statusIdle: "Idle.",
     statusOpening: "Requesting desktop…",

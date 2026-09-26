@@ -540,6 +540,7 @@ export default {
     rfbUnavailable: "实例回环端口上没有 VNC 服务在监听。",
     notRfb: "桌面端口不是 RFB/VNC 服务。",
     authUnsupported: "不支持该 VNC 认证方式（None、VeNCrypt 与 ARD 需要 Phase B）。",
+    authFailed: "VNC 服务器拒绝了密码，请检查后重连。",
     streamTimeout: "打开桌面超时，请稍后重试。",
     statusIdle: "空闲。",
     statusOpening: "正在请求桌面…",

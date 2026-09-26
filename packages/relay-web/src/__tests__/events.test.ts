@@ -131,6 +131,46 @@ describe("connectEvents", () => {
     await expect(closing).rejects.toBeInstanceOf(TerminalRequestError);
   });
 
+  it("an unexpected terminal-opened rejects a live ack request immediately", async () => {
+    // Regression: the desktop refactor made settleTerminalRequest ignore a
+    // terminal-opened whose pending entry expected an "ack", so a hub that
+    // answers take-control/resync/terminate with the wrong frame left the
+    // caller hanging until the RPC deadline instead of surfacing the protocol
+    // error at once.
+    connectEvents(() => {});
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+
+    const id = nextTerminalRequestId();
+    const pending = requestTerminal(
+      { kind: "terminal-take-control", requestId: id, instanceId: "i1", attachmentId: "a1", generation: "g1" },
+      { expect: "ack", timeoutMs: 60_000 },
+    );
+    const settled = expect(pending).rejects.toMatchObject({ code: "terminal-protocol-error" });
+    pushEvent(ws, {
+      kind: "terminal-opened",
+      requestId: id,
+      instanceId: "i1",
+      terminalId: "t1",
+      generation: "g1",
+      attachmentId: "a1",
+      role: "controller",
+      viewerCount: 1,
+    });
+    await settled;
+    // The entry is gone: a second delivery settles nothing.
+    expect(settleTerminalRequest({
+      kind: "terminal-opened",
+      requestId: id,
+      instanceId: "i1",
+      terminalId: "t1",
+      generation: "g1",
+      attachmentId: "a1",
+      role: "controller",
+      viewerCount: 1,
+    })).toBe(false);
+  });
+
   it("treats ok/terminated/cleanup-pending request-failed codes as ack success", async () => {
     connectEvents(() => {});
     FakeWS.instances[0].onopen?.();

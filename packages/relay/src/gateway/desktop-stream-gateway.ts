@@ -23,6 +23,18 @@ export interface DesktopBinarySocket {
   on(event: "close", listener: () => void): unknown;
 }
 
+/**
+ * Close-reason token for the wire. ws caps the reason at 123 UTF-8 bytes and
+ * `close()` THROWS past that, so an application reason (which can come from a
+ * connector-supplied ErrorPayload code) is bucketed into a short fixed token:
+ * the detailed value is logged, the bounded one travels.
+ */
+function wireCloseReason(reason: string): string {
+  const bytes = Buffer.byteLength(reason, "utf8");
+  if (bytes <= 64) return reason;
+  return "stream-closed";
+}
+
 interface PairedSockets {
   browser?: DesktopBinarySocket;
   connector?: DesktopBinarySocket;
@@ -193,10 +205,16 @@ export class DesktopStreamGateway {
     this.streams.close(streamId);
     this.tickets.revokeForStream(streamId);
     if (!known) return;
-    // Never log ticket material: stream ids + reason only.
+    // Never log ticket material: stream ids + reason only. The wire reason is
+    // a short fixed token: ws close reasons are capped at 123 UTF-8 bytes and
+    // `close()` THROWS past that, which would leave the registry believing the
+    // stream is closed while the socket is still open. `reason` also arrives
+    // from a connector-supplied ErrorPayload code, so its length is not ours
+    // to trust — the full value goes to the log, a bounded token to the wire.
     this.logger.info("relay.desktop.stream_closed", "desktop stream closed", { streamId, reason });
-    try { pair?.browser?.close(1000, reason); } catch { /* already gone */ }
-    try { pair?.connector?.close(1000, reason); } catch { /* already gone */ }
+    const wireReason = wireCloseReason(reason);
+    try { pair?.browser?.close(1000, wireReason); } catch { /* already gone */ }
+    try { pair?.connector?.close(1000, wireReason); } catch { /* already gone */ }
     this.onStreamClosed?.(streamId);
   }
   closeForInstance(instanceId: string, reason = "instance-offline"): void {

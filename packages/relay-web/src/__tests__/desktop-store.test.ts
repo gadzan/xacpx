@@ -290,4 +290,64 @@ describe("desktop store", () => {
     store.setFit("i1", false);
     expect(store.viewFor("i1").fit).toBe(false);
   });
+
+  it("a rejected VNC password is classified as an auth failure, not a scheme error", async () => {
+    // Regression: every noVNC `securityfailure` was mapped to
+    // `desktop-auth-unsupported` ("VNC auth scheme is not supported"), which is
+    // the wrong message for a rejected password.
+    const { classifySecurityFailure } = await import("../stores/desktop");
+    expect(classifySecurityFailure("authentication failure")).toMatchObject({
+      code: "desktop-auth-failed",
+      retryable: true,
+    });
+    expect(classifySecurityFailure("no matching security types")).toMatchObject({
+      code: "desktop-auth-unsupported",
+      retryable: false,
+    });
+
+    // The driver path uses it. Reuse the hook-capturing mock, then fire noVNC's
+    // real order: credentialsrequired → securityfailure → disconnect(clean:false).
+    const store = useDesktopStore();
+    const { connectDesktopRfb } = await import("../lib/desktop-client");
+    const hookSets: Array<Record<string, (...args: unknown[]) => void>> = [];
+    (connectDesktopRfb as unknown as {
+      mockImplementation: (fn: (i: { hooks?: Record<string, (...a: unknown[]) => void> }) => unknown) => void;
+    }).mockImplementation((i) => {
+      hookSets.push(i.hooks ?? {});
+      return { sendCredentials: vi.fn(), setScaleViewport: vi.fn(), dispose: vi.fn() };
+    });
+    await store.open("i1", {});
+    const hooks = hookSets[0];
+    expect(hooks).toBeDefined();
+    hooks?.onCredentialsRequired?.();
+    expect(store.viewFor("i1").status).toBe("auth-required");
+    hooks?.onSecurityFailure?.("authentication failure");
+    expect(store.viewFor("i1").status).toBe("error");
+    expect(store.viewFor("i1").lastErrorCode).toBe("desktop-auth-failed");
+    // noVNC answers _fail() by marking the connection unclean and emitting
+    // disconnect{clean:false}. That must NOT overwrite the auth failure with a
+    // generic desktop-stream-timeout.
+    hooks?.onDisconnect?.({ clean: false, reason: "authentication failure" });
+    expect(store.viewFor("i1").status).toBe("error");
+    expect(store.viewFor("i1").lastErrorCode).toBe("desktop-auth-failed");
+  });
+
+  it("a retryable prepare failure keeps its reason on the closed row", async () => {
+    // `desktop-instance-offline` / `desktop-stream-timeout` / `events-offline`
+    // are retryable, so the store marks the row `closed`. That reason must
+    // survive to the row: otherwise the tab shows only the bare
+    // "Disconnected" copy and the (already translated) cause is dropped.
+    const store = useDesktopStore();
+    const { requestDesktop } = await import("../api/events");
+    (requestDesktop as unknown as {
+      mockImplementationOnce: (fn: () => Promise<unknown>) => void;
+    }).mockImplementationOnce(async () => {
+      throw new DesktopRequestError("desktop-instance-offline", "Instance is offline.");
+    });
+    await expect(store.open("i1", {})).rejects.toBeInstanceOf(DesktopRequestError);
+    const view = store.viewFor("i1");
+    expect(view.status).toBe("closed");
+    expect(view.lastErrorCode).toBe("desktop-instance-offline");
+    expect(view.lastErrorMessage).toContain("offline");
+  });
 });

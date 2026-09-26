@@ -479,33 +479,40 @@ const rowSwipes = computed(() => {
          the dimmed state reads from the muted name/label/dot, which pass AA at full opacity. -->
     <div v-for="inst in store.instances" :key="inst.id" data-test="instance-card"
          class="rounded-lg border border-border bg-surface/60 p-[3px]">
-      <!-- Instance header: chevron + online/offline dot + name + session count. -->
-      <button
-        class="group flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 transition-colors hover:bg-raised"
-        @click="toggle(inst.id)"
-      >
-        <ChevronDown v-if="isExpanded(inst.id)" :size="12" class="shrink-0 text-fg-muted" />
-        <ChevronRight v-else :size="12" class="shrink-0 text-fg-muted" />
-        <span class="h-2 w-2 shrink-0 rounded-full" :class="inst.online ? 'bg-run' : 'bg-fg-muted'" data-test="online-dot" />
-        <span class="flex-1 truncate text-left text-[12.5px] font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
-              :title="inst.coreVersion ? $t('instance.coreVersion', { version: inst.coreVersion }) : $t('instance.coreVersionUnknown')">{{ inst.name }}</span>
-        <span v-if="inst.online" class="font-mono text-[10px] tabular-nums text-fg-muted">{{ activeSessions(inst).length }}</span>
+      <!-- Instance header: a flex CONTAINER (not one <button>) so the expand
+           toggle and the sibling Desktop entry stay independent interactive
+           controls — a nested <button> is invalid HTML and breaks keyboard
+           semantics. -->
+      <div class="group flex h-7 items-center gap-1.5 rounded-md px-1.5 transition-colors hover:bg-raised">
+        <button type="button"
+                class="flex min-w-0 flex-1 items-center gap-1.5 rounded-md text-left transition-colors"
+                :aria-expanded="isExpanded(inst.id)"
+                data-test="instance-header-toggle"
+                @click="toggle(inst.id)">
+          <ChevronDown v-if="isExpanded(inst.id)" :size="12" class="shrink-0 text-fg-muted" />
+          <ChevronRight v-else :size="12" class="shrink-0 text-fg-muted" />
+          <span class="h-2 w-2 shrink-0 rounded-full" :class="inst.online ? 'bg-run' : 'bg-fg-muted'" data-test="online-dot" />
+          <span class="truncate text-[12.5px] font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
+                :title="inst.coreVersion ? $t('instance.coreVersion', { version: inst.coreVersion }) : $t('instance.coreVersionUnknown')">{{ inst.name }}</span>
+          <span v-if="inst.online" class="shrink-0 font-mono text-[10px] tabular-nums text-fg-muted">{{ activeSessions(inst).length }}</span>
+          <span v-else-if="!inst.online" class="shrink-0 text-[10px] font-medium text-fg-muted">{{ $t("instance.offline") }}</span>
+        </button>
         <!-- Instance-level Desktop entry. Deliberately NOT session-scoped: the
              design makes Desktop an instance resource, so an online desktop-capable
              instance with zero sessions (or one viewed in Direct Bot mode) must
-             still reach it. -->
-        <span v-if="supportsDesktop(inst)" class="shrink-0" @click.stop>
-          <button type="button"
-                  data-test="instance-desktop"
-                  :title="$t('desktop.title')"
-                  :aria-label="$t('desktop.title')"
-                  class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-accent"
-                  @click="emit('openDesktop', inst.id)">
-            <Monitor :size="13" />
-          </button>
-        </span>
-        <span v-else class="text-[10px] font-medium text-fg-muted">{{ $t("instance.offline") }}</span>
-      </button>
+             still reach it. Only shown for online desktop-capable instances, so an
+             instance whose connector predates the capability (or keeps desktop
+             disabled — the default) shows neither the button nor a bogus
+             "Offline" label. -->
+        <button v-if="supportsDesktop(inst)" type="button"
+                data-test="instance-desktop"
+                :title="$t('desktop.title')"
+                :aria-label="$t('desktop.title')"
+                class="grid h-6 w-6 shrink-0 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-accent"
+                @click="emit('openDesktop', inst.id)">
+          <Monitor :size="13" />
+        </button>
+      </div>
 
       <!-- Session area: flat rows, or tinted group zones (workspace/agent mode).
            Instead of a border-l indent rail, hierarchy reads from background tint +

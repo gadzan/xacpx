@@ -158,9 +158,20 @@ export function settleTerminalRequest(event: WebServerEvent): boolean {
   }
   if (event.kind === "terminal-opened") {
     const entry = pending.get(event.requestId);
-    if (!entry || entry.expect !== "opened") return false;
+    // A live pending entry that was NOT waiting for `opened` is a protocol
+    // violation: the hub answered an ack-taking request (take-control, resync,
+    // terminate) with a terminal-opened frame. Reject immediately instead of
+    // letting the caller hang until the RPC deadline.
+    if (!entry) return false;
     clearTimeout(entry.timer);
     pending.delete(event.requestId);
+    if (entry.expect !== "opened") {
+      entry.reject(new TerminalRequestError(
+        "terminal-protocol-error",
+        "unexpected terminal-opened",
+      ));
+      return true;
+    }
     entry.resolve({
       requestId: event.requestId,
       instanceId: event.instanceId,

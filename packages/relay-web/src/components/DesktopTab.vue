@@ -36,6 +36,20 @@ const errorDetail = computed(() => {
   if (s.status !== "error") return "";
   return desktopErrorKey(s.lastErrorCode) ? t(desktopErrorKey(s.lastErrorCode)!) : s.lastErrorCode ?? "";
 });
+/**
+ * Why a `closed` row closed. Retryable prepare failures keep their reason on
+ * the row, so a row that is closed because the instance went offline (or the
+ * open timed out) must show that reason rather than the bare
+ * `desktop.statusClosed` copy. A plain viewer-initiated close carries no
+ * `lastErrorCode`, so it keeps the generic message.
+ */
+const closedDetail = computed(() => {
+  const s = session.value;
+  if (s.lastErrorCode === undefined) return "";
+  const key = desktopErrorKey(s.lastErrorCode);
+  if (key) return t(key);
+  return s.lastErrorMessage ? s.lastErrorCode : "";
+});
 
 async function open(): Promise<void> {
   password.value = "";
@@ -142,7 +156,7 @@ onBeforeUnmount(() => {
       <button type="button" class="ml-2 underline" @click="reconnect">{{ $t("desktop.reconnect") }}</button>
     </div>
     <div v-else-if="session.status === 'closed'" class="shrink-0 border-b border-border bg-surface px-3 py-2 text-[12px] text-fg-muted" data-test="desktop-closed">
-      {{ $t("desktop.statusClosed") }}
+      {{ closedDetail || $t("desktop.statusClosed") }}
       <button type="button" class="ml-2 underline" @click="reconnect">{{ $t("desktop.reconnect") }}</button>
     </div>
 

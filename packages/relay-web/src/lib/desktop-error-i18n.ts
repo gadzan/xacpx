@@ -23,16 +23,21 @@ export const DESKTOP_ERROR_I18N_KEYS: Record<DesktopErrorCode, string> = {
 /** Codes the browser transport itself can produce (no hub round-trip). */
 const TRANSPORT_ERROR_I18N_KEYS: Record<string, string> = {
   "events-offline": "desktop.offline",
+  /** Browser-local: the VNC server rejected the password. */
+  "desktop-auth-failed": "desktop.authFailed",
 };
 
 /** i18n key for a desktop error code, or undefined when unknown. */
 export function desktopErrorKey(code: string | undefined): string | undefined {
   if (!code) return undefined;
-  // Object.hasOwn, not `in`: a connector-reported code like "toString" or
-  // "constructor" would otherwise hit Object.prototype and resolve to a key
-  // that is not part of the desktop mapping at all.
+  // Object.hasOwn on BOTH tables: a plain `in` (or a bracket read on the second
+  // table) would let an unknown connector code like "toString" or "constructor"
+  // resolve through Object.prototype to a key that is not in this mapping.
   if (Object.hasOwn(DESKTOP_ERROR_I18N_KEYS, code)) {
     return DESKTOP_ERROR_I18N_KEYS[code as DesktopErrorCode];
   }
-  return TRANSPORT_ERROR_I18N_KEYS[code];
+  if (Object.hasOwn(TRANSPORT_ERROR_I18N_KEYS, code)) {
+    return TRANSPORT_ERROR_I18N_KEYS[code];
+  }
+  return undefined;
 }

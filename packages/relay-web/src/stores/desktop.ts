@@ -38,6 +38,29 @@ export interface DesktopSessionView {
   fit: boolean;
 }
 
+/**
+ * Browser-local error code for a VNC password the server rejected. Distinct from
+ * the stable `desktop-auth-unsupported` (which means the auth SCHEME was refused
+ * — None/Tight/VeNCrypt/ARD): a wrong password is retryable and says nothing
+ * about the scheme.
+ */
+export const DESKTOP_AUTH_FAILED_CODE = "desktop-auth-failed";
+
+/**
+ * Classify a noVNC `securityfailure` reason.
+ *
+ * noVNC 1.7.0 emits this event for a rejected security type AND for a rejected
+ * VncAuth password — both go through `_fail()` with a free-text `details`
+ * string. The VncAuth failure carries the server's "authentication failure"
+ * wording, so match on it rather than guessing from the event name.
+ */
+export function classifySecurityFailure(reason: string): { code: string; retryable: boolean } {
+  if (/authenticat|password|credential/i.test(reason)) {
+    return { code: DESKTOP_AUTH_FAILED_CODE, retryable: true };
+  }
+  return { code: "desktop-auth-unsupported", retryable: false };
+}
+
 function errorMessageFor(code: string, fallback: string): string {
   return fallback || code;
 }
@@ -174,6 +197,17 @@ export const useDesktopStore = defineStore("desktop", () => {
           // below is not the only state this closure touches).
           if (!mine()) return;
           connections.delete(instanceId);
+          // A security failure is TERMINAL for this attempt: noVNC answers it
+          // with `_fail()`, which marks the connection unclean and immediately
+          // emits disconnect{clean:false}. Without this guard that second
+          // event would overwrite "wrong password" with a generic
+          // desktop-stream-timeout and the user would reconnect forever into
+          // the same wall.
+          const settled = viewFor(instanceId).lastErrorCode;
+          if (settled === DESKTOP_AUTH_FAILED_CODE || settled === "desktop-auth-unsupported") {
+            hooks.onDisconnect?.(detail);
+            return;
+          }
           patch(instanceId, {
             status: detail.clean ? "closed" : "error",
             ...(detail.clean ? {} : { lastErrorCode: "desktop-stream-timeout", lastErrorMessage: detail.reason }),
@@ -188,10 +222,16 @@ export const useDesktopStore = defineStore("desktop", () => {
         onSecurityFailure: (reason) => {
           if (!mine()) return;
           connections.delete(instanceId);
+          // Classify by the actual cause. noVNC emits `securityfailure` for
+          // BOTH a rejected security type and a rejected VncAuth password; the
+          // latter is a wrong password (retryable), not "VNC auth scheme is not
+          // supported". The client sends the server's own wording in `reason`,
+          // and `reconnect` never resets a row that already failed auth.
+          const failed = classifySecurityFailure(reason);
           patch(instanceId, {
             status: "error",
             needsPassword: false,
-            lastErrorCode: "desktop-auth-unsupported",
+            lastErrorCode: failed.code,
             lastErrorMessage: reason,
           });
           hooks.onSecurityFailure?.(reason);
