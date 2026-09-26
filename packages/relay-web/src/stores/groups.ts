@@ -551,6 +551,34 @@ export const useGroupsStore = defineStore("groups", () => {
     return res.topics;
   }
 
+  /** Authoritative Topic snapshot for the selected Group.
+   *
+   *  A Topic teardown publishes no tombstone, so reconciliation cannot merge
+   *  event-driven updates into an HTTP list: `loadTopics` re-merges its previous
+   *  cache whenever a Topic event landed mid-request, which would resurrect a
+   *  just-deleted Topic. Instead re-fetch until one snapshot arrives with no
+   *  Topic event landing during its request, bounded so a busy Topic stream can
+   *  never spin forever. */
+  async function authoritativeTopics(
+    instId: string,
+    conversationId: string,
+    isStale: () => boolean,
+  ): Promise<TopicSummaryDto[]> {
+    let last: TopicSummaryDto[] = [];
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const seqBefore = topicsSeq[`${instId}:${conversationId}`] ?? 0;
+      last = await loadTopics(instId, conversationId);
+      if (isStale()) return last;
+      const seqAfter = topicsSeq[`${instId}:${conversationId}`] ?? 0;
+      if (seqAfter === seqBefore) {
+        return last;
+      }
+      // A Topic event mutated the cache during this request: the snapshot is not
+      // authoritative for deletion, so ask again.
+    }
+    return last;
+  }
+
   /** Authoritative Topic refresh for the selected Group. Replaces the cached
    *  list wholesale (a teardown must disappear, not merge) and converges the
    *  active selection when the active Topic no longer exists: prefer the first
@@ -564,11 +592,12 @@ export const useGroupsStore = defineStore("groups", () => {
     // user opened Group B and compare B's activeTopicId against A's Topic list.
     const generation = currentSelectionGeneration;
     const groupId = selectedGroupId.value;
-    const topics = await loadTopics(instId, conversationId);
-    if (generation !== currentSelectionGeneration
+    const isStale = (): boolean => generation !== currentSelectionGeneration
       || instanceId.value !== instId
       || selectedGroupId.value !== groupId
-      || activeConversationId.value !== conversationId) {
+      || activeConversationId.value !== conversationId;
+    const topics = await authoritativeTopics(instId, conversationId, isStale);
+    if (isStale()) {
       return;
     }
     const stillThere = activeTopicId.value
@@ -1302,9 +1331,41 @@ export const useGroupsStore = defineStore("groups", () => {
     await sendPrompt(prior.text, prior.target);
   }
 
+  /** Resolve an uncertain prompt against a canonically observed Run. Durable
+   *  recovery (state-snapshot runs.get, retryDiscovery, recoverActiveRun) proves
+   *  our lost-response prompt really was accepted when the Run carries the same
+   *  requestId. Clearing the tuple then is what makes reconnect self-healing:
+   *  the user's request is durably represented, so there is nothing left to
+   *  retry and no fresh-send block. A mismatch means this Run belongs to someone
+   *  else's request and must not consume our pending identity. */
+  function resolveUncertainPromptAgainstRun(run: ConversationRunDto | undefined | null): void {
+    if (!run || run.requestId === "") return;
+    const prompt = uncertainPrompt.value;
+    if (!prompt || prompt.requestId !== run.requestId) return;
+    uncertainPrompt.value = null;
+    if (promptError.value === "promptPendingConfirmation") {
+      promptError.value = null;
+      promptErrorDetail.value = null;
+    }
+    ownershipUncertain.value = false;
+    if (cancelError.value === "ownershipChecking") cancelError.value = null;
+  }
+
   async function sendPrompt(text: string, forcedTarget?: ConversationTargetDto): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed || !instanceId.value || !selectedGroupId.value || !activeConversationId.value || !activeTopicId.value) {
+      return;
+    }
+    if (forcedTarget) {
+      // Frozen-tuple replay, ranked ABOVE every other guard. It carries the exact
+      // requestId/text/target the server may already have durably accepted, so it
+      // is safe by construction: acceptConversationPrompt checks
+      // getAcceptedRequest() before any live-state validation and returns the
+      // existing Run. It must therefore still work once reconnection proves the
+      // Run is active — otherwise Retry is unreachable for the entire duration of
+      // a long-running Run, leaving the user stranded on their own lost response.
+      const reqId = preparePromptRequestId(trimmed, forcedTarget);
+      await runPromptSend(trimmed, forcedTarget, reqId);
       return;
     }
     if (!topicReady.value) {
@@ -1315,12 +1376,6 @@ export const useGroupsStore = defineStore("groups", () => {
     if (isRunActive.value) {
       promptError.value = "runInProgress";
       promptErrorDetail.value = null;
-      return;
-    }
-    if (forcedTarget) {
-      // Replaying the frozen tuple: never re-resolve the live UI selection.
-      const reqId = preparePromptRequestId(trimmed, forcedTarget);
-      await runPromptSend(trimmed, forcedTarget, reqId);
       return;
     }
     // Invariant: an uncertain prompt may only be resolved by replaying its own
@@ -1666,6 +1721,7 @@ export const useGroupsStore = defineStore("groups", () => {
             const run = unwrapRpc(getRes).run;
             const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
             activeRun.value = mergeRun(activeRun.value, run);
+                resolveUncertainPromptAgainstRun(run);
             if (run.memberTurns?.length) {
               memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, run.memberTurns);
             }
@@ -1875,6 +1931,7 @@ export const useGroupsStore = defineStore("groups", () => {
                 const run = unwrapRpc(res).run;
                 const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
                 activeRun.value = mergeRun(activeRun.value, run);
+                resolveUncertainPromptAgainstRun(run);
                 if (run.memberTurns?.length) {
                   memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, run.memberTurns);
                 }
@@ -1911,6 +1968,7 @@ export const useGroupsStore = defineStore("groups", () => {
               }
               const run = unwrapRpc(res).run;
               activeRun.value = mergeRun(activeRun.value, run);
+                resolveUncertainPromptAgainstRun(run);
               if (isTerminalRunState(activeRun.value.state)) {
                 liveTurnsByMember.value = {};
               }
@@ -2005,6 +2063,7 @@ export const useGroupsStore = defineStore("groups", () => {
         ) {
           const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
           activeRun.value = mergeRun(activeRun.value, run);
+                resolveUncertainPromptAgainstRun(run);
           if (isTerminalRunState(activeRun.value.state)) {
             liveTurnsByMember.value = {};
             resolveCancelUncertainty(run.id);
@@ -2064,6 +2123,7 @@ export const useGroupsStore = defineStore("groups", () => {
           (!activeRun.value && isTerminalRunState(run.state))
         ) {
           activeRun.value = mergeRun(activeRun.value, run);
+                resolveUncertainPromptAgainstRun(run);
           memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, [memberTurn]);
         } else if (!isTerminalRunState(run.state)) {
           const isOwnDraft =
@@ -2116,6 +2176,7 @@ export const useGroupsStore = defineStore("groups", () => {
         }
         const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
         activeRun.value = mergeRun(activeRun.value, run);
+                resolveUncertainPromptAgainstRun(run);
         memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, [memberTurn]);
         const next = { ...liveTurnsByMember.value };
         delete next[memberTurn.id];

@@ -756,6 +756,64 @@ describe("useGroupsStore", () => {
     });
   });
 
+  it("replays the frozen tuple even while the Run is active", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.uncertainPrompt = {
+      requestId: "req_active",
+      text: "review",
+      target: { mode: "members", botIds: ["bot_a"] },
+    };
+    // Reconnect proved the Run is running, so isRunActive is true. The frozen
+    // replay must still reach the wire: the backend's idempotent accept returns
+    // the existing Run for this requestId, so no second Run can be created.
+    store.activeRun = {
+      id: "run_active", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_active", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now", startedAt: "now",
+    };
+    store.memberTurnsById = {
+      turn_live: {
+        id: "turn_live", runId: "run_active", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+        state: "running", createdAt: "now",
+      },
+    };
+    mockRpc.mockResolvedValue({
+      reused: true,
+      conversationId: "conversation_g",
+      topicId: "topic_1",
+      requestId: "req_active",
+      message: {
+        id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1,
+        role: "human", content: "review", createdAt: "now",
+      },
+      run: {
+        id: "run_active", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_active", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now", startedAt: "now",
+      },
+      memberTurn: {
+        id: "turn_live", runId: "run_active", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+        state: "running", createdAt: "now",
+      },
+    });
+    await store.retryUncertainPrompt();
+    const promptCalls = mockRpc.mock.calls.filter((c) => c[1] === "control.conversation.prompt");
+    expect(promptCalls).toHaveLength(1);
+    expect(promptCalls[0]?.[2]).toMatchObject({
+      requestId: "req_active",
+      text: "review",
+      target: { mode: "members", botIds: ["bot_a"] },
+    });
+    expect(store.promptError).toBeNull();
+  });
+
   it("clears the uncertain tuple on a definitive rejection so the user can correct and resend", async () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";
@@ -818,6 +876,82 @@ describe("useGroupsStore", () => {
     expect(store.promptError).toBe("socket closed");
   });
 
+  it("clears the uncertain prompt when reconnect proves the Run is ours", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.groupsByInstance["inst_1"] = [GROUP];
+    store.uncertainPrompt = {
+      requestId: "req_lost",
+      text: "review",
+      target: { mode: "members", botIds: ["bot_a"] },
+    };
+    const runningRun: ConversationRunDto = {
+      id: "run_lost", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_lost", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now", startedAt: "now",
+    };
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.runs.get") return { run: runningRun };
+      if (type === "control.runs.list") return { runs: [runningRun], conversationId: "conversation_g", topicId: "topic_1", activeRunId: runningRun.id, activeRun: runningRun };
+      if (type === "control.conversation.history") return historyWith([]);
+      throw new Error(`unexpected ${type}`);
+    });
+    // Reconnect sees a live turn for our lost request, then confirms it durably.
+    store.applyEvent({
+      kind: "state-snapshot",
+      instanceId: "inst_1",
+      turns: [{
+        instanceId: "inst_1", sessionAlias: "s_a", status: "working", startedAt: 1,
+        parts: [{ type: "text", text: "working" }],
+        conversation: { conversationId: "conversation_g", topicId: "topic_1", botId: "bot_a", runId: "run_lost", memberTurnId: "turn_lost" },
+      }],
+    } as never);
+    await flushPromises();
+    // The durable Run carries our requestId, so the pending prompt is resolved
+    // without the user having to retry anything.
+    expect(store.uncertainPrompt).toBeNull();
+    expect(store.hasUncertainPrompt).toBe(false);
+    expect(store.activeRun?.id).toBe("run_lost");
+    expect(store.activeRun?.state).toBe("running");
+  });
+
+  it("keeps the uncertain prompt when the discovered Run belongs to another request", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.groupsByInstance["inst_1"] = [GROUP];
+    store.uncertainPrompt = {
+      requestId: "req_mine",
+      text: "review",
+      target: { mode: "members", botIds: ["bot_a"] },
+    };
+    const foreignRun: ConversationRunDto = {
+      id: "run_other", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_9", requestId: "req_someone_else", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now", startedAt: "now",
+    };
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.runs.get") return { run: foreignRun };
+      if (type === "control.runs.list") return { runs: [foreignRun], conversationId: "conversation_g", topicId: "topic_1", activeRunId: foreignRun.id };
+      if (type === "control.conversation.history") return historyWith([]);
+      throw new Error(`unexpected ${type}`);
+    });
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: { type: "conversation-run-changed", run: foreignRun },
+    } as never);
+    await flushPromises();
+    expect(store.uncertainPrompt?.requestId).toBe("req_mine");
+  });
+
   it("does not let a stale Topic refresh overwrite a newly opened Group", async () => {
     const store = useGroupsStore();
     const groupA: GroupSummaryDto = { ...GROUP, id: "conversation_a", title: "A", botIds: ["bot_a"], leadBotId: "bot_a" };
@@ -872,6 +1006,62 @@ describe("useGroupsStore", () => {
     expect(store.activeConversationId).toBe("conversation_b");
     expect(store.activeTopicId).toBe(bTopicId);
     expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+  });
+
+  it("does not resurrect a torn-down Topic when a sibling Topic event lands mid-refresh", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.topicReady = true;
+    store.groupsByInstance["inst_1"] = [GROUP];
+    const deleted = { id: "topic_deleted", conversationId: "conversation_g", title: "Doomed", status: "active" as const, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" };
+    const surviving = { id: "topic_alive", conversationId: "conversation_g", title: "Alive", status: "active" as const, createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" };
+    store.topicsByConversation["inst_1:conversation_g"] = [deleted, surviving];
+    store.activeTopicId = "topic_deleted";
+
+    let releaseList!: () => void;
+    const listHang = new Promise<void>((resolve) => { releaseList = resolve; });
+    let listCalls = 0;
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        listCalls += 1;
+        if (listCalls === 1) {
+          // The coarse teardown refresh parks here.
+          await listHang;
+        }
+        // Authoritative server state: the doomed Topic is gone.
+        return { topics: [surviving] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_alive" };
+      throw new Error(`unexpected ${type}`);
+    });
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: { type: "conversations-changed" },
+    } as never);
+    await flushPromises();
+    expect(listCalls).toBe(1);
+    // A sibling Topic update lands while the refetch is in flight.
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: { type: "conversation-topic-changed", topic: surviving },
+    } as never);
+    await flushPromises();
+    // The list now resolves with the authoritative, tombstone-free snapshot.
+    releaseList();
+    await flushPromises();
+    // The refresh must have re-fetched until it got an event-free window.
+    expect(listCalls).toBeGreaterThan(1);
+    const ids = store.currentTopics.map((t2) => t2.id);
+    expect(ids).not.toContain("topic_deleted");
+    expect(ids).toContain("topic_alive");
+    // The active selection converges onto a Topic that still exists.
+    expect(store.activeTopicId).toBe("topic_alive");
   });
 
   it("never widens the default target to everyone when the bot catalog is unconfirmed", async () => {
