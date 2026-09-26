@@ -684,6 +684,7 @@ export default {
       topicRecovering: "Topic is still recovering. Wait for history to finish loading before sending.",
       botDisabled: "Bot is disabled. Enable it before sending messages.",
       runInProgress: "A run is already in progress. Wait for it to finish or cancel it.",
+      promptPendingConfirmation: "Previous message is still unconfirmed. Retry it or wait for it to settle before sending a new one.",
       cancelUnknown: "Cancellation outcome unknown. Waiting for instance state...",
       instanceOffline: "Instance is offline",
     },

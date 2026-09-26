@@ -295,16 +295,12 @@ describe("useGroupsStore", () => {
     store.activeTopicId = "topic_1";
     store.topicReady = true;
     store.targetSelection = { mode: "everyone" };
-    store.uncertainPrompt = {
-      requestId: "req_draft_everyone",
-      text: "all hands",
-      target: { mode: "everyone" },
-    };
+    store.uncertainPrompt = null;
     const promptResponse: ConversationPromptResponseDto = {
       reused: false,
       conversationId: "conversation_g",
       topicId: "topic_1",
-      requestId: "req_draft_everyone",
+      requestId: "req_everyone",
       message: {
         id: "msg_9", conversationId: "conversation_g", topicId: "topic_1", seq: 9,
         role: "human", content: "all hands", createdAt: "now",
@@ -697,6 +693,185 @@ describe("useGroupsStore", () => {
     // Same requestId as the original attempt: the server dedupes on it.
     const firstCall = promptCalls[0];
     expect(retryCall?.[2]).toMatchObject({ requestId: firstCall?.[2].requestId });
+  });
+
+  it("refuses a fresh send while an earlier prompt's outcome is unknown", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    const promptResponse: ConversationPromptResponseDto = {
+      reused: false,
+      conversationId: "conversation_g",
+      topicId: "topic_1",
+      requestId: "req_first",
+      message: {
+        id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1,
+        role: "human", content: "review", createdAt: "now",
+      },
+      run: {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_first", mode: "explicit", state: "queued",
+        profileRevision: 1, createdAt: "now",
+      },
+      memberTurn: {
+        id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_a", batch: 1, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "now",
+      },
+    };
+    // Server accepted, response lost: the tuple stays frozen.
+    mockRpc.mockRejectedValueOnce(new Error("network down"));
+    await store.sendPrompt("review");
+    expect(store.hasUncertainPrompt).toBe(true);
+    const frozenRequestId = store.uncertainPrompt?.requestId;
+    // User re-points at Bot B and presses the ordinary Send.
+    store.targetSelection = { mode: "members", botIds: ["bot_b"] };
+    mockRpc.mockResolvedValue(promptResponse);
+    await store.sendPrompt("review");
+    // No second prompt may be sent: the original Run is executing and minting a
+    // new request would execute Bot B as well.
+    const promptCalls = mockRpc.mock.calls.filter((c) => c[1] === "control.conversation.prompt");
+    expect(promptCalls).toHaveLength(1);
+    expect(promptCalls[0]?.[2]).toMatchObject({
+      target: { mode: "members", botIds: ["bot_a"] },
+    });
+    void promptResponse;
+    expect(store.uncertainPrompt).toMatchObject({ requestId: frozenRequestId, text: "review" });
+    expect(store.promptError).toBe("promptPendingConfirmation");
+    // Same-text fresh send is blocked too: identity would be wrong for the new text.
+    store.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    await store.sendPrompt("another ask");
+    expect(mockRpc.mock.calls.filter((c) => c[1] === "control.conversation.prompt")).toHaveLength(1);
+    // Retrying the frozen tuple still resolves it.
+    await store.retryUncertainPrompt().catch(() => {});
+    const retryCalls = mockRpc.mock.calls.filter((c) => c[1] === "control.conversation.prompt");
+    expect(retryCalls).toHaveLength(2);
+    expect(retryCalls[1]?.[2]).toMatchObject({
+      requestId: frozenRequestId,
+      text: "review",
+      target: { mode: "members", botIds: ["bot_a"] },
+    });
+  });
+
+  it("clears the uncertain tuple on a definitive rejection so the user can correct and resend", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.targetSelection = { mode: "members", botIds: ["bot_ghost"] };
+    // Server-side refusals arrive as a resolved error payload, not a rejection.
+    mockRpc.mockResolvedValueOnce({ error: { code: "group_member_not_member", message: "not a member" } });
+    await store.sendPrompt("review");
+    expect(store.hasUncertainPrompt).toBe(false);
+    expect(store.promptError).toBe("targetUnknownMember");
+    // Correcting the target and sending fresh now works: the acceptance could
+    // never have happened, so there is nothing to reconcile.
+    const promptResponse: ConversationPromptResponseDto = {
+      reused: false,
+      conversationId: "conversation_g",
+      topicId: "topic_1",
+      requestId: "req_fixed",
+      message: {
+        id: "msg_2", conversationId: "conversation_g", topicId: "topic_1", seq: 2,
+        role: "human", content: "review", createdAt: "now",
+      },
+      run: {
+        id: "run_2", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_2", requestId: "req_fixed", mode: "explicit", state: "queued",
+        profileRevision: 1, createdAt: "now",
+      },
+      memberTurn: {
+        id: "turn_fix", runId: "run_2", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_a", batch: 1, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "now",
+      },
+    };
+    store.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    mockRpc.mockReset();
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.conversation.prompt") return promptResponse;
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_1" };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.sendPrompt("review");
+    const promptCalls = mockRpc.mock.calls.filter((c) => c[1] === "control.conversation.prompt");
+    expect(promptCalls).toHaveLength(1);
+    expect(promptCalls[0]?.[2]).toMatchObject({ target: { mode: "members", botIds: ["bot_a"] } });
+  });
+
+  it("keeps the uncertain tuple when the failure is only a transport error", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    // A plain network failure says nothing about the durable outcome.
+    mockRpc.mockRejectedValueOnce(new Error("socket closed"));
+    await store.sendPrompt("review");
+    expect(store.hasUncertainPrompt).toBe(true);
+    expect(store.promptError).toBe("socket closed");
+  });
+
+  it("does not let a stale Topic refresh overwrite a newly opened Group", async () => {
+    const store = useGroupsStore();
+    const groupA: GroupSummaryDto = { ...GROUP, id: "conversation_a", title: "A", botIds: ["bot_a"], leadBotId: "bot_a" };
+    const groupB: GroupSummaryDto = { ...GROUP, id: "conversation_b", title: "B", botIds: ["bot_b"], leadBotId: "bot_b" };
+    let releaseA!: () => void;
+    const aHang = new Promise<void>((resolve) => { releaseA = resolve; });
+    let topicsListCalls = 0;
+    mockRpc.mockImplementation(async (inst: string, type: string, payload?: unknown) => {
+      if (type === "control.groups.list") return { groups: [groupA, groupB] };
+      if (type === "control.topics.list") {
+        topicsListCalls += 1;
+        const conversationId = (payload as { conversationId: string }).conversationId;
+        // Call 1 is Group A's initial load (must resolve). Call 2 is the
+        // coarse-change refresh, which parks until the test releases it.
+        if (topicsListCalls === 2) {
+          await aHang;
+          return { topics: [] };
+        }
+        return { topics: [{ id: `topic_${conversationId}`, conversationId, title: "S", status: "active", createdAt: "now", updatedAt: "now" }] };
+      }
+      if (type === "control.bots.list") {
+        return { bots: [
+          { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        return { runs: [], conversationId: store.activeConversationId ?? "conversation_b", topicId: store.activeTopicId ?? "topic_conversation_b" };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    // Open Group A, which completes its initial topics.list.
+    await store.selectGroup("inst_1", "conversation_a");
+    // Reply with a coarse change for A whose refresh parks on the hanging call.
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: { type: "conversations-changed" },
+    } as never);
+    await flushPromises();
+    expect(topicsListCalls).toBe(2);
+    // Open Group B fully.
+    await store.selectGroup("inst_1", "conversation_b");
+    expect(store.selectedGroupId).toBe("conversation_b");
+    const bTopicId = store.activeTopicId;
+    expect(bTopicId).toBe("topic_conversation_b");
+    // Now A's stale response lands.
+    releaseA();
+    await flushPromises();
+    expect(store.selectedGroupId).toBe("conversation_b");
+    expect(store.activeConversationId).toBe("conversation_b");
+    expect(store.activeTopicId).toBe(bTopicId);
+    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
   });
 
   it("never widens the default target to everyone when the bot catalog is unconfirmed", async () => {

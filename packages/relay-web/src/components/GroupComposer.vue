@@ -196,6 +196,9 @@ const canSend = computed(() => !props.disabled
   && !groupsStore.promptInFlight
   && !groupsStore.isRunActive
   && groupsStore.topicReady
+  // A fresh send is refused while a previous prompt's outcome is unknown: the
+  // only way forward is replaying that prompt's frozen tuple.
+  && !groupsStore.hasUncertainPrompt
   && groupsStore.targetResolvable
   && promptText.value.trim().length > 0);
 
@@ -259,7 +262,7 @@ function onInputResize(): void {
         <button
           type="button"
           data-test="group-target-button"
-          :disabled="disabled"
+          :disabled="disabled || groupsStore.hasUncertainPrompt"
           class="flex items-center gap-1.5 rounded-lg border border-border bg-bg px-2.5 py-1.5 text-xs font-medium text-fg transition-colors hover:border-accent/40 disabled:opacity-50"
           @click="toggleMenu"
         >

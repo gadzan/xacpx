@@ -238,6 +238,31 @@ describe("Group Components", () => {
       expect(groups.targetSelection).toEqual({ mode: "everyone" });
     });
 
+    it("locks the target selector and Send while a prompt awaits confirmation", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      groups.topicReady = true;
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      await textarea.setValue("review this");
+      expect(wrapper.find('[data-test="group-send-prompt-button"]').attributes("disabled")).toBeUndefined();
+      // A prompt whose durable outcome is unknown: only Retry is allowed.
+      groups.uncertainPrompt = {
+        requestId: "req_uncertain",
+        text: "review this",
+        target: { mode: "members", botIds: ["bot_a"] },
+      };
+      // The banner (and therefore Retry) shows while the failure is reported.
+      groups.promptError = "Network timeout";
+      await flushPromises();
+      expect(wrapper.find('[data-test="group-send-prompt-button"]').attributes("disabled")).toBeDefined();
+      expect(wrapper.find('[data-test="group-target-button"]').attributes("disabled")).toBeDefined();
+      expect(wrapper.find('[data-test="group-retry-prompt-button"]').exists()).toBe(true);
+    });
+
     it("commits the pending token when the text is sent", async () => {
       const groups = seedGroupSelection();
       groups.targetSelection = { mode: "members", botIds: ["bot_a"] };

@@ -42,6 +42,7 @@ export type GroupErrorCode =
   | "ownershipChecking"
   | "topicRecovering"
   | "runInProgress"
+  | "promptPendingConfirmation"
   | "cancelUnknown"
   | "instanceOffline"
   | "targetRequired"
@@ -87,6 +88,28 @@ function upsertTool(parts: TurnPartDto[], step: ToolStepDto): void {
   const i = parts.findIndex((p) => p.type === "tool" && p.step.toolCallId === step.toolCallId);
   if (i >= 0) parts[i] = { type: "tool", step };
   else parts.push({ type: "tool", step });
+}
+
+/** Server rejections that prove the durable accept never committed. These free
+ *  the frozen prompt tuple so the user can correct the request and send again.
+ *  Anything else (transport loss, timeout, internal error, connector-too-old)
+ *  is outcome-unknown: the accept may exist, so the tuple stays frozen. */
+function isDefinitiveRejection(code: string | null): boolean {
+  return code === "empty_target"
+    || code === "target_required"
+    || code === "group_member_not_member"
+    || code === "bot_not_found"
+    || code === "bot_disabled"
+    || code === "no_eligible_members"
+    || code === "conversation_target_mismatch"
+    || code === "conversation_mismatch"
+    || code === "conversation_not_group"
+    || code === "topic_not_found"
+    || code === "topic_not_active"
+    || code === "conversation_deleting"
+    || code === "invalid-target"
+    || code === "invalid-isolation"
+    || code === "worktree_unprovisioned";
 }
 
 function mintRequestId(): string {
@@ -308,6 +331,10 @@ export const useGroupsStore = defineStore("groups", () => {
   const uncertainPrompt = ref<UncertainPrompt | null>(null);
   /** Text of the pending-certainty prompt; drives the Retry affordance. */
   const uncertainPromptText = computed<string | null>(() => uncertainPrompt.value?.text ?? null);
+  /** True while a sent prompt has an unknown durable outcome. The composer locks
+   *  the target selector and Send until the user retries the frozen tuple (or
+   *  reconciliation proves it landed). */
+  const hasUncertainPrompt = computed<boolean>(() => uncertainPrompt.value !== null);
   /** Target frozen with the uncertain prompt. A retry replays exactly this. */
   const uncertainPromptTarget = computed<ConversationTargetDto | null>(() => uncertainPrompt.value?.target ?? null);
   const promptInFlight = ref<boolean>(false);
@@ -532,7 +559,18 @@ export const useGroupsStore = defineStore("groups", () => {
   async function refreshTopicsForSelection(conversationId: string): Promise<void> {
     const instId = instanceId.value;
     if (!instId || activeConversationId.value !== conversationId) return;
+    // Capture the identity so the post-await writes cannot apply to a different
+    // Group. Without this, a slow topics.list for Group A would land after the
+    // user opened Group B and compare B's activeTopicId against A's Topic list.
+    const generation = currentSelectionGeneration;
+    const groupId = selectedGroupId.value;
     const topics = await loadTopics(instId, conversationId);
+    if (generation !== currentSelectionGeneration
+      || instanceId.value !== instId
+      || selectedGroupId.value !== groupId
+      || activeConversationId.value !== conversationId) {
+      return;
+    }
     const stillThere = activeTopicId.value
       ? topics.some((topic) => topic.id === activeTopicId.value)
       : false;
@@ -1285,6 +1323,17 @@ export const useGroupsStore = defineStore("groups", () => {
       await runPromptSend(trimmed, forcedTarget, reqId);
       return;
     }
+    // Invariant: an uncertain prompt may only be resolved by replaying its own
+    // tuple (or by durable reconciliation discovering it). Minting a fresh
+    // requestId meanwhile would leave the original Run executing AND run the new
+    // members — exactly the double-execution the frozen tuple exists to prevent.
+    // Enforced here, not only in the UI, so a future view cannot bypass it. The
+    // forced-target branch above is the sole escape hatch (the replay itself).
+    if (uncertainPrompt.value) {
+      promptError.value = "promptPendingConfirmation";
+      promptErrorDetail.value = null;
+      return;
+    }
     const resolved = resolveTarget();
     if ("error" in resolved) {
       promptError.value = resolved.error === "targetRequired" ? "targetRequired" : "targetEmpty";
@@ -1422,11 +1471,15 @@ export const useGroupsStore = defineStore("groups", () => {
         cancelError.value = "ownershipChecking";
       }
     } catch (err: unknown) {
-      // Lost response or server error: the durable accept may or may not exist.
-      // Keep the frozen tuple so a retry replays the exact requestId/text/target
-      // the server may already have committed.
       if (isCurrent() && uncertainPrompt.value?.requestId === reqId) {
         const code = err instanceof GroupRpcError ? err.code : null;
+        // A definitive rejection proves the durable accept never happened, so
+        // the frozen tuple is dead weight: keeping it would trap the user on a
+        // request that can never succeed. Only outcome-unknown failures
+        // (transport loss, timeout, internal error) keep the tuple.
+        if (isDefinitiveRejection(code)) {
+          uncertainPrompt.value = null;
+        }
         if (code === "unknown-type") {
           promptError.value = "connectorOutdated";
           promptErrorDetail.value = null;
@@ -2202,6 +2255,7 @@ export const useGroupsStore = defineStore("groups", () => {
     uncertainPrompt,
     uncertainPromptText,
     uncertainPromptTarget,
+    hasUncertainPrompt,
     promptInFlight,
     promptError,
     promptErrorDetail,

@@ -681,6 +681,7 @@ export default {
       topicRecovering: "话题仍在恢复中。请等待历史加载完成后再发送。",
       botDisabled: "Bot 已被禁用。请启用后再发送消息。",
       runInProgress: "已有运行正在进行。请等待完成或取消后再试。",
+      promptPendingConfirmation: "上一条消息尚未确认。请重试该消息或等待其结束后再发送新消息。",
       cancelUnknown: "取消结果未知。正在等待实例状态...",
       instanceOffline: "实例已离线",
     },
