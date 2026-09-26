@@ -15,12 +15,23 @@ export interface RelayTerminalConfig {
   historyLimit: number;
 }
 
+export interface RelayDesktopConfig {
+  enabled: boolean;
+  backend: "rfb";
+  /** Loopback RFB port. The target host is fixed to 127.0.0.1 and never configurable. */
+  port: number;
+  connectTimeoutMs: number;
+  maxStreams: number;
+}
+
 export interface RelayChannelConfig {
   url: string;
   pairingToken?: string;
   name?: string;
   /** Always present and frozen after parse; defaults keep terminal disabled. */
   terminal: RelayTerminalConfig;
+  /** Always present and frozen after parse; defaults keep desktop disabled. */
+  desktop: RelayDesktopConfig;
 }
 
 const TERMINAL_DEFAULTS: RelayTerminalConfig = {
@@ -34,6 +45,13 @@ const TERMINAL_DEFAULTS: RelayTerminalConfig = {
   maxSessions: 16,
   maxViewersPerTerminal: 4,
   historyLimit: 10000,
+};
+const DESKTOP_DEFAULTS: RelayDesktopConfig = {
+  enabled: false,
+  backend: "rfb",
+  port: 5900,
+  connectTimeoutMs: 1500,
+  maxStreams: 1,
 };
 
 /**
@@ -213,6 +231,56 @@ export function parseRelayTerminalConfig(raw: unknown): RelayTerminalConfig {
   return Object.freeze(terminal);
 }
 
+/** Parse and normalize `options.desktop`; missing/undefined → disabled defaults.
+ *  The RFB target host is fixed to 127.0.0.1 and never configurable: `host`,
+ *  `hostname`, and `target` keys are rejected so desktop can never become a
+ *  generic TCP proxy. */
+export function parseRelayDesktopConfig(raw: unknown): RelayDesktopConfig {
+  if (raw === undefined || raw === null) {
+    return Object.freeze({ ...DESKTOP_DEFAULTS });
+  }
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("relay channel options.desktop must be an object");
+  }
+  const o = raw as Record<string, unknown>;
+  if (o.host !== undefined || o.hostname !== undefined || o.target !== undefined) {
+    throw new Error("relay channel options.desktop must not set host/hostname/target (fixed to 127.0.0.1)");
+  }
+
+  const enabled = o.enabled === undefined ? DESKTOP_DEFAULTS.enabled : o.enabled === true;
+  if (o.enabled !== undefined && typeof o.enabled !== "boolean") {
+    throw new Error("relay channel options.desktop.enabled must be a boolean");
+  }
+
+  const backend = o.backend === undefined ? DESKTOP_DEFAULTS.backend : o.backend;
+  if (backend !== "rfb") {
+    throw new Error('relay channel options.desktop.backend must be "rfb"');
+  }
+
+  const port = o.port === undefined ? DESKTOP_DEFAULTS.port : o.port;
+  if (!isIntInRange(port, 1, 65535)) {
+    throw new Error("relay channel options.desktop.port must be an integer in 1..65535");
+  }
+
+  const connectTimeoutMs = o.connectTimeoutMs === undefined ? DESKTOP_DEFAULTS.connectTimeoutMs : o.connectTimeoutMs;
+  if (!isIntInRange(connectTimeoutMs, 250, 10000)) {
+    throw new Error("relay channel options.desktop.connectTimeoutMs must be an integer in 250..10000");
+  }
+
+  const maxStreams = o.maxStreams === undefined ? DESKTOP_DEFAULTS.maxStreams : o.maxStreams;
+  if (maxStreams !== 1) {
+    throw new Error("relay channel options.desktop.maxStreams must be 1 (v1 single-viewer)");
+  }
+
+  return Object.freeze({
+    enabled,
+    backend: "rfb",
+    port,
+    connectTimeoutMs,
+    maxStreams,
+  });
+}
+
 export function parseRelayChannelConfig(options: Record<string, unknown> | undefined): RelayChannelConfig {
   const raw = typeof options?.url === "string" ? options.url : "";
   const url = normalizeRelayUrl(raw);
@@ -225,6 +293,7 @@ export function parseRelayChannelConfig(options: Record<string, unknown> | undef
   const config: RelayChannelConfig = {
     url,
     terminal: parseRelayTerminalConfig(options?.terminal),
+    desktop: parseRelayDesktopConfig(options?.desktop),
   };
   if (typeof options?.pairingToken === "string" && options.pairingToken.trim()) {
     config.pairingToken = options.pairingToken.trim();

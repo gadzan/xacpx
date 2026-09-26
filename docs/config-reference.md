@@ -370,6 +370,7 @@ Long-lived instance credentials live at `<xacpx-home>/relay/credential.json` (mo
 | `options.pairingToken` | `string` | Yes (first pair) | Access / pairing token used on first connect. After credential exchange it may remain in config but is not re-sent while `credential.json` is valid. |
 | `options.name` | `string` | No | Instance display name shown on the hub. |
 | `options.terminal` | `object` | No | Opt-in RMUX terminal backend. **Omitted / disabled by default** — enabling allows hub login holders to open an interactive shell in the session workspace. |
+| `options.desktop` | `object` | No | Opt-in instance desktop (RFB/VNC) backend. **Omitted / disabled by default** — enabling advertises `desktop.rfb.v1` and allows hub login holders to watch/control the instance's local graphical desktop through relay-web. |
 
 #### `options.terminal` (defaults apply when the object is present or parsed)
 
@@ -388,6 +389,20 @@ Long-lived instance credentials live at `<xacpx-home>/relay/credential.json` (mo
 | `bridgeCommand` / `rmuxCommand` | absolute path | unset | Optional explicit binaries (both always win when set). When unset, the bridge resolves via `@ganglion/xacpx-rmux-bridge-<os>-<arch>` optional packages then `PATH`. The platform packages ship **both** the bridge and the pinned RMUX runtime (`bin/rmux[.exe]` + `libexec/rmux/rmux[.exe]`, `RMUX_VERSION=0.10.0` matching the bridge's `rmux-sdk` pin), so production resolution is: bundled RMUX beside the selected bridge (source `platform-package`) → legacy managed helper `~/.local/libexec/rmux/rmux[.exe]` (source `managed-helper`) → `PATH` `rmux-daemon` / `rmux` (source `path`). A machine-local stale RMUX on PATH or in `~/.local/libexec/rmux` never shadows the bundled one (Windows field bug: WinGet rmux 0.9.0 vs bridge rmux-sdk 0.10.0); `xacpx doctor` reports the chosen source and the expected vs actual version. |
 
 **Security:** enabling terminal is equivalent to granting every hub account that can open the instance an interactive shell in that workspace. Terminal bytes are never written to the messages DB or app logs (IDs / sizes / error class only).
+
+#### `options.desktop` (defaults apply when the object is present or parsed)
+
+| Field | Type | Default | Range / notes |
+|------|------|------|------|
+| `enabled` | `boolean` | `false` | Master switch. When `false`, no desktop capability is advertised and no stream state is created. |
+| `backend` | `"rfb"` | `"rfb"` | Only `"rfb"` is accepted (Phase A). Windows RDP is not a backend. |
+| `port` | `number` | `5900` | `1..65535`. Loopback RFB port the connector dials. The target host is fixed to `127.0.0.1` and never configurable — `host`/`hostname`/`target` keys are rejected. |
+| `connectTimeoutMs` | `number` | `1500` | `250..10000`. Loopback RFB probe/connect timeout. |
+| `maxStreams` | `number` | `1` | Must be `1` (v1 single-viewer per instance). |
+
+**Security:** enabling desktop exposes the instance's graphical desktop (keyboard + mouse) to hub login holders. The VNC server must listen on loopback with VNC authentication; unauthenticated (`None`), VeNCrypt/TLS-only, proprietary, and macOS ARD-auth servers are rejected in Phase A. The VNC password is entered in relay-web per tab and kept in tab memory only — it never enters RelayEnvelope, tickets, logs, or storage. Tickets are single-use with a 60s TTL and bound to account + instance + side; framebuffer bytes travel on an independent binary WebSocket (`/desktop/observe` + `/desktop/instance`), never through the control plane.
+
+**Setup / troubleshooting:** [`docs/desktop-rfb-setup.md`](docs/desktop-rfb-setup.md) — per-platform VNC server setup (TightVNC / TigerVNC / x11vnc / WayVNC), lock-and-UAC limits, and the open-time error-code table.
 
 ### WeChat Channel Extended Configuration (`openclaw.json`)
 

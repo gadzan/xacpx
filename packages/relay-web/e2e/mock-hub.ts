@@ -10,6 +10,7 @@
 // production.
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { connect as netConnect } from "node:net";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
   decodeEnvelope,
@@ -26,7 +27,7 @@ export const TERMINAL_ID = "term-e2e";
 export const GENERATION = "gen-e2e";
 export const ATTACHMENT_ID = "att-e2e";
 
-const CAPS = ["terminal.rmux.recovery.v1", "terminal.multi-view.v1"];
+const CAPS = ["terminal.rmux.recovery.v1", "terminal.multi-view.v1", "desktop.rfb.v1"];
 
 export interface MockHub {
   port: number;
@@ -43,6 +44,13 @@ export interface MockHub {
   sendBytes(data: string | Buffer): void;
   closeSockets(): void;
   setRole(role: "controller" | "spectator"): void;
+  setDesktopMode(mode: "succeed" | "fail"): void;
+  lastDesktopOpen: { requestId: string; instanceId: string } | null;
+  desktopStreamIds: string[];
+  desktopCloseRequests: string[];
+  setDesktopRfb(port: number): void;
+  desktopBinarySockets: WebSocket[];
+  desktopFrames: Array<{ from: "browser" | "rfb"; bytes: number }>;
   close(): Promise<void>;
 }
 
@@ -81,6 +89,14 @@ export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<
   let role: "controller" | "spectator" = "controller";
   let rebaseEpoch = 1;
   let sequence = 0;
+  let browserTicketSeq = 0;
+  let desktopMode: "succeed" | "fail" = "succeed";
+  const desktopStreamIds: string[] = [];
+  const desktopCloseRequests: string[] = [];
+  let lastDesktopOpen: { requestId: string; instanceId: string } | null = null;
+  let desktopRfbPort = 0;
+  const desktopBinarySockets: WebSocket[] = [];
+  const desktopFrames: Array<{ from: "browser" | "rfb"; bytes: number }> = [];
   /** Epoch of the most recently SENT rebase - live bytes must carry it. */
   let liveEpoch = 1;
 
@@ -149,13 +165,51 @@ export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<
   });
 
   const wss = new WebSocketServer({ noServer: true });
+  const desktopWss = new WebSocketServer({ noServer: true });
   http.on("upgrade", (req, socket, head) => {
-    if ((req.url ?? "").split("?")[0] !== "/ws") {
+    const path = (req.url ?? "").split("?")[0];
+    if (path === "/desktop/observe") {
+      desktopWss.handleUpgrade(req, socket, head, (ws) => {
+        sockets.push(ws);
+        desktopBinarySockets.push(ws);
+        const drop = () => {
+          const i = sockets.indexOf(ws);
+          if (i >= 0) sockets.splice(i, 1);
+          const j = desktopBinarySockets.indexOf(ws);
+          if (j >= 0) desktopBinarySockets.splice(j, 1);
+        };
+        ws.on("close", drop);
+        pipeDesktopToRfb(ws);
+      });
+      return;
+    }
+    if (path !== "/ws") {
       socket.destroy();
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   });
+
+  /**
+   * Bridge the browser binary plane to the mock RFB server, verbatim in BOTH
+   * directions, so real noVNC runs its actual handshake, VncAuth
+   * challenge/response and framebuffer parsing against a real RFB speaker.
+   */
+  function pipeDesktopToRfb(ws: WebSocket): void {
+    if (!desktopRfbPort) return;
+    const rfb = netConnect(desktopRfbPort, "127.0.0.1");
+    rfb.on("data", (chunk: Buffer) => {
+      desktopFrames.push({ from: "rfb", bytes: chunk.length });
+      if (ws.readyState === ws.OPEN) ws.send(chunk);
+    });
+    rfb.on("error", () => { try { ws.close(1011, "rfb-upstream-error"); } catch { /* gone */ } });
+    ws.on("message", (data) => {
+      desktopFrames.push({ from: "browser", bytes: (data as Uint8Array).length });
+      if (!rfb.destroyed) rfb.write(Buffer.from(data as Uint8Array));
+    });
+    ws.on("close", () => rfb.destroy());
+    ws.on("error", () => rfb.destroy());
+  }
 
   function send(event: WebServerEvent): void {
     const line = encodeEnvelope(webEventEnvelope(event));
@@ -232,6 +286,36 @@ export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<
   });
 
   function handleClient(msg: WebClientMessage): void {
+    if (msg.kind === "desktop-open") {
+      lastDesktopOpen = { requestId: msg.requestId, instanceId: msg.instanceId };
+      if (desktopMode === "fail") {
+        send({
+          kind: "desktop-request-failed",
+          requestId: msg.requestId,
+          instanceId: msg.instanceId,
+          code: "desktop-protocol-error",
+          message: "desktop is not enabled on this hub",
+        });
+        return;
+      }
+      browserTicketSeq += 1;
+      const streamId = `ds-e2e-${browserTicketSeq}`;
+      desktopStreamIds.push(streamId);
+      send({
+        kind: "desktop-opened",
+        requestId: msg.requestId,
+        instanceId: msg.instanceId,
+        streamId,
+        wsPath: `/desktop/observe?ticket=e2e-browser-${browserTicketSeq}`,
+        expiresAt: Date.now() + 60_000,
+        security: "vnc-auth",
+      });
+      return;
+    }
+    if (msg.kind === "desktop-close") {
+      desktopCloseRequests.push(msg.streamId);
+      return;
+    }
     if (msg.kind === "terminal-open") {
       lastOpen = { cols: msg.cols, rows: msg.rows, requestId: msg.requestId };
       send({
@@ -308,6 +392,13 @@ export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<
       for (const ws of [...sockets]) ws.close();
     },
     setRole(next) { role = next; },
+    setDesktopMode(next) { desktopMode = next; },
+    get lastDesktopOpen() { return lastDesktopOpen; },
+    desktopStreamIds,
+    desktopCloseRequests,
+    setDesktopRfb(next) { desktopRfbPort = next; },
+    desktopBinarySockets,
+    desktopFrames,
     close() {
       return new Promise((resolve) => {
         for (const ws of [...sockets]) ws.close();

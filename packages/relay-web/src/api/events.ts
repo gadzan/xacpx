@@ -1,5 +1,6 @@
 import {
   decodeEnvelope,
+  DESKTOP_RPC_TIMEOUT_MS,
   encodeEnvelope,
   parseWebServerEvent,
   TERMINAL_RPC_TIMEOUT_MS,
@@ -61,6 +62,24 @@ export type TerminalOpenedResult = {
   viewerCount: number;
 };
 
+export class DesktopRequestError extends Error {
+  readonly code: string;
+  constructor(code: string, message: string) {
+    super(message || code);
+    this.name = "DesktopRequestError";
+    this.code = code;
+  }
+}
+
+export type DesktopOpenedResult = {
+  requestId: string;
+  instanceId: string;
+  streamId: string;
+  wsPath: string;
+  expiresAt: number;
+  security: "vnc-auth" | "ard";
+};
+
 export type TerminalAckResult = {
   code: "ok" | "terminated" | "cleanup-pending";
   message: string;
@@ -83,9 +102,16 @@ type PendingEntry =
     resolve: (v: TerminalAckResult) => void;
     reject: (e: TerminalRequestError) => void;
     timer: ReturnType<typeof setTimeout>;
+  }
+  | {
+    expect: "desktop-opened";
+    resolve: (v: DesktopOpenedResult) => void;
+    reject: (e: DesktopRequestError) => void;
+    timer: ReturnType<typeof setTimeout>;
   };
 
 const pending = new Map<string, PendingEntry>();
+const desktopPending = new Map<string, Extract<PendingEntry, { expect: "desktop-opened" }>>();
 
 let requestSeq = 0;
 let reconnectHandler: (() => void) | null = null;
@@ -115,6 +141,11 @@ function rejectAllPending(code: string, message: string): void {
     pending.delete(id);
     entry.reject(new TerminalRequestError(code, message));
   }
+  for (const [id, entry] of desktopPending) {
+    clearTimeout(entry.timer);
+    desktopPending.delete(id);
+    entry.reject(new DesktopRequestError(code, message));
+  }
 }
 
 /**
@@ -122,13 +153,23 @@ function rejectAllPending(code: string, message: string): void {
  * Returns true when the event settled a pending promise (caller still may forward it).
  */
 export function settleTerminalRequest(event: WebServerEvent): boolean {
+  if (event.kind === "desktop-opened" || event.kind === "desktop-request-failed") {
+    return settleDesktopRequest(event);
+  }
   if (event.kind === "terminal-opened") {
     const entry = pending.get(event.requestId);
+    // A live pending entry that was NOT waiting for `opened` is a protocol
+    // violation: the hub answered an ack-taking request (take-control, resync,
+    // terminate) with a terminal-opened frame. Reject immediately instead of
+    // letting the caller hang until the RPC deadline.
     if (!entry) return false;
     clearTimeout(entry.timer);
     pending.delete(event.requestId);
     if (entry.expect !== "opened") {
-      entry.reject(new TerminalRequestError("terminal-protocol-error", "unexpected terminal-opened"));
+      entry.reject(new TerminalRequestError(
+        "terminal-protocol-error",
+        "unexpected terminal-opened",
+      ));
       return true;
     }
     entry.resolve({
@@ -161,6 +202,33 @@ export function settleTerminalRequest(event: WebServerEvent): boolean {
   }
   return false;
 }
+
+function settleDesktopRequest(event: WebServerEvent): boolean {
+  if (event.kind === "desktop-opened") {
+    const entry = desktopPending.get(event.requestId);
+    if (!entry) return false;
+    clearTimeout(entry.timer);
+    desktopPending.delete(event.requestId);
+    entry.resolve({
+      requestId: event.requestId,
+      instanceId: event.instanceId,
+      streamId: event.streamId,
+      wsPath: event.wsPath,
+      expiresAt: event.expiresAt,
+      security: event.security,
+    });
+    return true;
+  }
+  if (event.kind === "desktop-request-failed") {
+    const entry = desktopPending.get(event.requestId);
+    if (!entry) return false;
+    clearTimeout(entry.timer);
+    desktopPending.delete(event.requestId);
+    entry.reject(new DesktopRequestError(event.code, event.message));
+    return true;
+  }
+   return false;
+ }
 
 /** True when the live socket can carry a request. */
 export function isEventsSocketOpen(): boolean {
@@ -225,6 +293,52 @@ export function requestTerminal(
     }
   });
 }
+/** Stable-enough requestId for desktop RPCs (unique per page lifetime). */
+export function nextDesktopRequestId(): string {
+  requestSeq += 1;
+  return `ds-${Date.now().toString(36)}-${requestSeq.toString(36)}`;
+}
+
+/** Transient desktop codes: the tab should retry, not treat the instance as gone. */
+export function isRetryableDesktopError(code: string): boolean {
+  return code === "desktop-instance-offline"
+    || code === "events-offline"
+    || code === "desktop-stream-timeout";
+}
+
+/**
+ * Send a desktop-open frame and wait for desktop-opened correlation.
+ * Rejects on deadline, socket close, or desktop-request-failed error codes.
+ */
+export function requestDesktop(
+  msg: Extract<WebClientMessage, { kind: "desktop-open" }>,
+  options: { timeoutMs?: number } = {},
+): Promise<DesktopOpenedResult> {
+  const timeoutMs = options.timeoutMs ?? DESKTOP_RPC_TIMEOUT_MS;
+  if (!isEventsSocketOpen()) {
+    return Promise.reject(new DesktopRequestError("events-offline", "events socket is offline"));
+  }
+  if (pending.has(msg.requestId) || desktopPending.has(msg.requestId)) {
+    return Promise.reject(new DesktopRequestError("desktop-protocol-error", "duplicate requestId"));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      desktopPending.delete(msg.requestId);
+      reject(new DesktopRequestError("desktop-stream-timeout", "desktop request timed out"));
+    }, timeoutMs);
+    desktopPending.set(msg.requestId, { expect: "desktop-opened", resolve, reject, timer });
+    try {
+      sendWebClientMessage(msg);
+    } catch (err) {
+      clearTimeout(timer);
+      desktopPending.delete(msg.requestId);
+      reject(new DesktopRequestError(
+        "desktop-protocol-error",
+        err instanceof Error ? err.message : "send failed",
+      ));
+    }
+  });
+}
 
 /** Connects to the relay /ws fan-out and invokes `onEvent` for each web event. Auto-reconnects. */
 export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus?: (online: boolean) => void): () => void {
@@ -276,6 +390,7 @@ export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus
 /** Test-only: clear pending map between cases. */
 export function _resetTerminalRequestStateForTests(): void {
   rejectAllPending("instance-offline", "test reset");
+  desktopPending.clear();
   requestSeq = 0;
   reconnectHandler = null;
   webEventSubscribers.clear();

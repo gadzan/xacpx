@@ -36,11 +36,15 @@ export const test = base.extend<{ hub: MockHub; page: Page }>({
       class HubWS extends Orig {
         constructor(url: string | URL, protocols?: string | string[]) {
           const u = String(url);
-          // Only the Hub events socket. Vite HMR also uses a /ws path.
-          // Hub events socket is exactly /ws. Vite HMR uses /?token=... or /vite-hmr.
           const parsed = new URL(u, "http://127.0.0.1");
           if (parsed.pathname === "/ws") {
             super(`ws://127.0.0.1:${port}/ws`, protocols);
+            return;
+          }
+          // Desktop binary plane: rewrite to the mock hub, which pipes it to
+          // the mock RFB server (see mock-hub.setDesktopRfb upstream).
+          if (parsed.pathname === "/desktop/observe") {
+            super(`ws://127.0.0.1:${port}${parsed.pathname}${parsed.search}`, protocols);
             return;
           }
           super(url, protocols);

@@ -1,9 +1,13 @@
 import type { IncomingMessage } from "node:http";
+import { createServer } from "node:http";
 import type { Duplex } from "node:stream";
 import { serve, type ServerType } from "@hono/node-server";
 import { WebSocketServer } from "ws";
 
 import {
+  DESKTOP_TICKET_TTL_MS,
+  DESKTOP_WS_MAX_PAYLOAD_BYTES,
+  MAX_DESKTOP_TICKET_LENGTH,
   MAX_TOOL_STEPS, MSG, REASONING_CAP, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP,
   type AgentCommandDto, type ControlEventDto, type ConversationTurnCorrelationDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceRecoveryAckPayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
   type InstanceStateSnapshotDto, type ScheduledOriginDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
@@ -19,6 +23,7 @@ import { RecoveryReceiptStore } from "./stores/recovery-receipts.js";
 import { TurnSlotAnchorStore, canonicalRecoveryId } from "./stores/turn-slot-anchors.js";
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
+import { DesktopStreamGateway } from "./gateway/desktop-stream-gateway.js";
 import { PushNotifier, vapidFromEnv, validateVapidConfig, type VapidConfig } from "./push.js";
 import { PushSubscriptionStore } from "./stores/push-subscriptions.js";
 import { handleConnectorTerminalEvent, handleWebClientMessage } from "./gateway/web-inbound.js";
@@ -116,6 +121,17 @@ export interface RelayRuntime {
   pushNotifier: PushNotifier;
   gateway: InstanceGateway;
   webGateway: WebGateway;
+  desktop: DesktopStreamGateway;
+  /**
+   * StreamId → viewer/account/instance owner. Binds a desktop stream to the
+   * control socket that requested it for its whole lifetime (pending prepare and
+   * the paired binary session), so a control-socket close cancels its streams
+   * and a desktop-close from any other viewer is rejected. Ownership is
+   * hub-stamped, never browser-supplied. Exposed so `startRelayServer`'s `/ws`
+   * handler tracks through the SAME map as the runtime's own wiring — two maps
+   * would let one side's `cancel`/`ownsStream` miss the other side's bookkeeping.
+   */
+  desktopStreamOwners: Map<string, { viewerId: string; accountId: string; instanceId: string }>;
   stateSnapshot(instanceId: string): InstanceStateSnapshotDto;
   app: ReturnType<typeof createApp>;
   pendingWebPromptsCount?(): number;
@@ -143,6 +159,17 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   const instances = new InstanceStore(db);
   const messages = new MessageStore(db);
   let gatewayRef: InstanceGateway | null = null;
+  // Desktop streams bind to the requesting control socket's viewerId for their
+  // whole lifetime (pending prepare AND the paired binary session): a
+  // control-socket close cancels its streams, and desktop-close from any other
+  // viewer is rejected. Ownership is hub-stamped, never browser-supplied.
+  const desktopStreamOwners = new Map<string, { viewerId: string; accountId: string; instanceId: string }>();
+  const desktop = new DesktopStreamGateway({
+    logger,
+    onStreamClosed: (streamId) => {
+      desktopStreamOwners.delete(streamId);
+    },
+  });
   const webGateway = new WebGateway({
     logger,
     onAttachmentDetached: (info) => {
@@ -150,6 +177,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         attachmentId: info.attachmentId,
         viewerId: info.viewerId,
       });
+    },
+    onViewerClosed: (viewerId) => {
+      for (const [streamId, owner] of [...desktopStreamOwners]) {
+        if (owner.viewerId !== viewerId) continue;
+        desktopStreamOwners.delete(streamId);
+        desktop.closeStream(streamId, "viewer-disconnected");
+      }
     },
   });
   const pushSubscriptions = new PushSubscriptionStore(db);
@@ -390,6 +424,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     },
     onStatusChange: (instanceId, accountId, online) => {
       if (!online) {
+        desktop.closeForInstance(instanceId, "instance-offline");
         const prefix = `${instanceId}\0`;
         for (const k of turnBuffers.keys()) if (k.startsWith(prefix)) turnBuffers.delete(k);
         for (const k of sessionUsage.keys()) if (k.startsWith(prefix)) sessionUsage.delete(k);
@@ -1101,6 +1136,16 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     60 * 60_000,
   );
   completionRouteSweepTimer.unref?.();
+  // Quiescent TTL reaper for abandoned desktop streams (browser never
+  // attached): reserve()-driven sweep alone cannot fire when no new desktop
+  // opens arrive. Interval matches the desktop ticket/reservation TTL so an
+  // orphan connector tunnel + pre-attach buffer can never outlive one TTL
+  // window past expiry. Routes through the single closeStream path.
+  const desktopSweepTimer = setInterval(
+    () => desktop.sweepExpired(),
+    DESKTOP_TICKET_TTL_MS,
+  );
+  desktopSweepTimer.unref?.();
   return {
     db,
     accounts,
@@ -1112,11 +1157,14 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     pushNotifier,
     gateway,
     webGateway,
+    desktop,
+    desktopStreamOwners,
     stateSnapshot,
     pendingWebPromptsCount: () => pendingWebPrompts.size,
     app,
     close: () => {
       clearInterval(completionRouteSweepTimer);
+      clearInterval(desktopSweepTimer);
       db.close();
     },
   };
@@ -1184,20 +1232,71 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
   // noServer WS upgrade alongside the dashboard's `/ws`. Passing `wsPort` opts
   // into the legacy dedicated-port layout (e.g. to firewall the gateway apart).
   const dedicated = options.wsPort !== undefined;
+  // Shared desktop binary planes: 1 MiB frame gate matching the hub's
+  // DESKTOP_WS_MAX_PAYLOAD_BYTES. Independent connections so framebuffer bursts
+  // never share head-of-line blocking with /ws control. Both the dedicated
+  // gateway-port listener below and the merged httpServer 'upgrade' handler
+  // route into these.
+  const webWss = new WebSocketServer({ noServer: true, maxPayload: WEB_CLIENT_MAX_PAYLOAD_BYTES });
+  const desktopBrowserWss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
+  const desktopConnectorWss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
   let wss: WebSocketServer | undefined;
   let gatewayWss: WebSocketServer | undefined;
+  let dedicatedControlWss: WebSocketServer | undefined;
+  // Dedicated gateway port's HTTP server (ws needs a server to attach to in
+  // noServer mode). Declared here so close() and wsPort can reach it.
+  let gatewayHttpServer: ServerType | undefined;
   if (dedicated) {
-    wss = new WebSocketServer({ port: options.wsPort, host });
-    await new Promise<void>((resolve) => wss!.on("listening", () => resolve()));
-    wss.on("connection", (socket) => runtime.gateway.handleConnection(socket));
+    // Same desktop hard gate as the merged listener: upgrades are routed by
+    // path BEFORE the WS handshake completes, so `/desktop/instance` consumes
+    // its connector ticket at request time (a raw prober that never finishes
+    // the upgrade still burns it), and the binary plane runs under the 1 MiB
+    // DESKTOP_WS_MAX_PAYLOAD_BYTES gate. ws's noServer mode attaches to a
+    // Node HTTP server, so bind our own and route upgrades from it.
+    // Block-local + non-nullable: the outer declaration stays `| undefined`
+    // for close()/wsPort, and TS narrowing would not survive into the async
+    // listen callback (TS18048) if we used the outer name there.
+    const dedicatedHttpServer = createServer((req, res) => {
+      res.writeHead(426, { "Content-Type": "text/plain" });
+      res.end("Upgrade Required");
+    });
+    gatewayHttpServer = dedicatedHttpServer;
+    wss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
+    dedicatedControlWss = new WebSocketServer({ noServer: true });
+    dedicatedHttpServer.on("upgrade", (req, socket, head) => {
+      const path = (req.url ?? "").split("?")[0] ?? "";
+      // Connector desktop binary plane (never a separate VNC port): the ticket
+      // is consumed BEFORE the handshake completes and a rejected ticket is
+      // closed with 4403, exactly like the merged listener's failure mode.
+      if (path === "/desktop/instance") {
+        const ticket = desktopTicketFromUrl(req.url ?? "");
+        if (!ticket) { try { socket.destroy(); } catch { /* gone */ } return; }
+        const precheck = runtime.desktop.precheckConnectorTicket(ticket);
+        if (!precheck.ok) { try { socket.destroy(); } catch { /* gone */ } return; }
+        desktopConnectorWss.handleUpgrade(req, socket, head, (ws) => {
+          const attached = runtime.desktop.attachConnector(precheck.claim, adaptDesktopSocket(ws));
+          if (!attached.ok) {
+            try { ws.close(4403, attached.reason); } catch { /* gone */ }
+          }
+        });
+        return;
+      }
+      // Instance control: the gateway's own credential handshake authenticates
+      // the connector (no cookie on this plane).
+      dedicatedControlWss!.handleUpgrade(req, socket, head, (ws) => runtime.gateway.handleConnection(ws));
+    });
+    await new Promise<void>((resolve, reject) => {
+      const onErr = (err: unknown) => reject(err instanceof Error ? err : new Error(String(err)));
+      dedicatedHttpServer.once("error", onErr);
+      dedicatedHttpServer.listen(options.wsPort, host, () => {
+        dedicatedHttpServer.removeListener("error", onErr);
+        resolve();
+      });
+    });
   } else {
     gatewayWss = new WebSocketServer({ noServer: true });
   }
 
-  // Browser upstream frames are small control/terminal messages. Bound them so an
-  // authenticated client cannot force ws to buffer an arbitrarily large subscribe
-  // array or terminal paste before protocol validation runs.
-  const webWss = new WebSocketServer({ noServer: true, maxPayload: WEB_CLIENT_MAX_PAYLOAD_BYTES });
   httpServer.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const path = (req.url ?? "").split("?")[0] ?? "";
     if (path === "/ws") {
@@ -1211,22 +1310,89 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
           gateway: runtime.gateway,
           webGateway: runtime.webGateway,
           stateSnapshot: runtime.stateSnapshot,
+          desktop: {
+            reserve: (reserveAccountId, instanceId) => {
+              const reserved = runtime.desktop.reserve({
+                accountId: reserveAccountId,
+                instanceId,
+                ttlMs: DESKTOP_TICKET_TTL_MS,
+              });
+              if (!reserved.ok) return reserved;
+              return { ok: true as const, streamId: reserved.record.streamId };
+            },
+            mintConnectorTicket: (streamId, ticketAccountId, instanceId) =>
+              runtime.desktop.ticketStore.mintTicket({ streamId, accountId: ticketAccountId, instanceId, side: "connector" }),
+            mintBrowserTicket: (streamId, ticketAccountId, instanceId) =>
+              runtime.desktop.mintBrowserTicket({ streamId, accountId: ticketAccountId, instanceId }),
+            markReady: (streamId, security) => runtime.desktop.reportConnectorReady(streamId, security),
+            cancel: (streamId, reason) => {
+              runtime.desktopStreamOwners.delete(streamId);
+              runtime.desktop.closeStream(streamId, reason);
+            },
+            ownsStream: (streamId, ownerViewerId) => runtime.desktopStreamOwners.get(streamId)?.viewerId === ownerViewerId,
+            trackOwner: (streamId, owner) => {
+              runtime.desktopStreamOwners.set(streamId, owner);
+            },
+          },
         }, account.id, ws, String(data)));
+      });
+      return;
+    }
+    // Browser desktop binary plane (same HTTP/dashboard port as /ws, separate
+    // connection): cookie-authenticated, then single-use ticket in the query.
+    if (path === "/desktop/observe") {
+      const token = parseCookie(req.headers.cookie ?? "")["xrelay_session"];
+      const account = token ? runtime.accounts.getSessionAccount(token) : null;
+      if (!account) { socket.destroy(); return; }
+      const ticket = desktopTicketFromUrl(req.url ?? "");
+      if (!ticket) { socket.destroy(); return; }
+      desktopBrowserWss.handleUpgrade(req, socket, head, (ws) => {
+        // Enforce the ticket's account binding against the upgrade's cookie
+        // identity: account B presenting account A's unconsumed ticket burns
+        // the ticket (single-use consume) and gets 4403, never the stream.
+        const attached = runtime.desktop.attachBrowser(ticket, adaptDesktopSocket(ws), account.id);
+        if (!attached.ok) {
+          try { ws.close(4403, attached.reason); } catch { /* already gone */ }
+        }
       });
       return;
     }
     // Merged gateway: connectors dial the bare host (root) or an explicit
     // `/gateway`. Auth is the gateway's own token/credential handshake, so no
-    // cookie gate here. In dedicated mode `gatewayWss` is undefined → reject.
+    // cookie gate here. In dedicated --ws-port mode the gateway lives on that
+    // port alone (so it can be firewalled apart), so `gatewayWss` stays
+    // undefined and these paths reject here.
     if (gatewayWss && (path === "/" || path === "/gateway" || path.startsWith("/gateway/"))) {
       gatewayWss.handleUpgrade(req, socket, head, (ws) => runtime.gateway.handleConnection(ws));
+      return;
+    }
+    // Connector desktop binary plane. Merged mode shares the HTTP port; in
+    // dedicated --ws-port mode the plane is served ONLY on the dedicated
+    // listener — exposing it on both ports would defeat the port split the
+    // operator asked for.
+    if (!dedicated && path === "/desktop/instance") {
+      const ticket = desktopTicketFromUrl(req.url ?? "");
+      if (!ticket) { socket.destroy(); return; }
+      // Same pre-upgrade consume as the dedicated listener: the ticket burns
+      // even if the peer aborts mid-handshake, and connector `open` then
+      // implies the hub already accepted this exact ticket.
+      const precheck = runtime.desktop.precheckConnectorTicket(ticket);
+      if (!precheck.ok) { socket.destroy(); return; }
+      desktopConnectorWss.handleUpgrade(req, socket, head, (ws) => {
+        const attached = runtime.desktop.attachConnector(precheck.claim, adaptDesktopSocket(ws));
+        if (!attached.ok) {
+          try { ws.close(4403, attached.reason); } catch { /* already gone */ }
+        }
+      });
       return;
     }
     socket.destroy();
   });
 
   const httpPort = (httpServer.address() as { port: number }).port;
-  const wsPort = wss ? (wss.address() as { port: number }).port : null;
+  const wsPort = dedicated && gatewayHttpServer
+    ? (gatewayHttpServer.address() as { port: number } | null)?.port ?? null
+    : null;
   return {
     runtime,
     httpPort,
@@ -1234,12 +1400,63 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     close: async () => {
       stopMaintenance();
       await new Promise<void>((resolve) => webWss.close(() => resolve()));
+      await new Promise<void>((resolve) => desktopBrowserWss.close(() => resolve()));
+      await new Promise<void>((resolve) => desktopConnectorWss.close(() => resolve()));
       if (gatewayWss) await new Promise<void>((resolve) => gatewayWss!.close(() => resolve()));
+      if (dedicatedControlWss) await new Promise<void>((resolve) => dedicatedControlWss!.close(() => resolve()));
       if (wss) await new Promise<void>((resolve) => wss!.close(() => resolve()));
+      if (gatewayHttpServer) {
+        await new Promise<void>((resolve) => gatewayHttpServer!.close(() => resolve()));
+      }
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
       runtime.close();
     },
   };
+}
+/** Extract the single-use `ticket` query param from a desktop upgrade URL. */
+export function desktopTicketFromUrl(url: string): string | null {
+  const query = url.split("?")[1] ?? "";
+  for (const part of query.split("&")) {
+    const idx = part.indexOf("=");
+    if (idx === -1) continue;
+    if (part.slice(0, idx) !== "ticket") continue;
+    // Fail closed on malformed percent-encoding: /desktop/instance is
+    // reachable without authentication, so a request like `?ticket=%` must
+    // reject as missing-ticket, never throw synchronously out of the
+    // upgrade/connection handler (remote-triggerable process DoS).
+    let ticket: string;
+    try {
+      ticket = decodeURIComponent(part.slice(idx + 1));
+    } catch {
+      return null;
+    }
+    if (ticket.length === 0 || ticket.length > MAX_DESKTOP_TICKET_LENGTH) return null;
+    return ticket;
+  }
+  return null;
+}
+
+/** Adapt a `ws` binary socket to the desktop gateway's narrow socket surface. */
+function adaptDesktopSocket(ws: {
+  send(data: Uint8Array): void;
+  close(code?: number, reason?: string): void;
+  readonly bufferedAmount: number;
+  on(event: "message", listener: (data: unknown, isBinary: boolean) => void): unknown;
+  on(event: "close", listener: () => void): unknown;
+  on(event: "error", listener: (err: unknown) => void): unknown;
+}): {
+  send(data: Uint8Array): void;
+  close(code?: number, reason?: string): void;
+  readonly bufferedAmount: number;
+  on(event: "message", listener: (data: unknown, isBinary: boolean) => void): unknown;
+  on(event: "close", listener: () => void): unknown;
+} {
+  // The `ws` client AND server sockets emit 'error' (bare ErrorEvent) before
+  // 'close' on every abnormal shutdown. Without a persistent error listener
+  // Node throws, which under `bun test` fails the entire file even when the
+  // close path is fully handled.
+  ws.on("error", () => {});
+  return ws;
 }
 
 function parseCookie(header: string): Record<string, string> {
