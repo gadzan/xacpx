@@ -283,6 +283,18 @@ export function mergeEvidence(a: TerminateDescendantsResult, b: TerminateDescend
   // only once: either resolved (an outcome) or still required (a leftover). This
   // is what keeps the durable filename `${ownerToken}-${pid}.json` unambiguous —
   // two records for one pid could never both be proven published.
+  //
+  // `verified` here is the OR of the two attempts' own flags, which is a summary
+  // of the ATTEMPTS and NOT a statement about the merged set: because the OR rides
+  // on the earlier flag, it can be true while the merged evidence still carries
+  // unresolved identities from any attempt. A single LEGAL attempt never has that
+  // shape — `TerminateDescendantsResult.verified` requires the fresh snapshot to
+  // show nothing remaining, and `decodeWindowsDescendantsResponse` independently
+  // recomputes `outcomes.every(safe) && leftover.length === 0`, rejecting any
+  // mismatch. Only the cross-attempt OR produces it.
+  // Nothing may use it to license a terminal discharge — `convergeOrphansBeforeExit`
+  // decides from the attempt's own flag AND the merged set of unresolved
+  // identities. Never from this value.
   return {
     verified: a.verified || b.verified,
     outcomes: arbitrated.filter((item): item is WindowsDescendantOutcome => "outcome" in item),
@@ -782,6 +794,25 @@ async function publishRequired(
 }
 
 /**
+ * The identities in `evidence` that still require the worker to keep ownership:
+ * every non-safe outcome, plus every leftover.
+ *
+ * This is the ACCUMULATED notion, and it is deliberately not `verified`.
+ * `verified` is an ATTEMPT-level proof — "the snapshot this attempt took showed
+ * every discovered descendant safe and nothing remaining" — and says nothing
+ * about identities an earlier attempt captured and this one could not re-observe.
+ * A reused pid whose parent is killed root-first is exactly that case: the
+ * `ParentProcessId` edge that discovered it no longer exists, so an empty later
+ * snapshot is not evidence the process is gone.
+ */
+function unresolvedIdentities(evidence: TerminateDescendantsResult): number {
+  const unresolvedOutcomes = evidence.outcomes.filter(
+    (item) => !(item.outcome in SAFE_OUTCOMES),
+  ).length;
+  return unresolvedOutcomes + evidence.leftover.length;
+}
+
+/**
  * Exact identities currently durable **for this discharge**, or null when the
  * registry cannot be read (which is NOT the same as "nothing is written").
  *
@@ -853,8 +884,22 @@ export async function convergeOrphansBeforeExit(options: ConvergeOrphansOptions 
     generationId: options.generationId ?? randomUUID(),
   };
   for (let round = 0; ; round += 1) {
-    evidence = mergeEvidence(evidence, await attemptOnce(options));
-    if (evidence.verified) return "verified";
+    const attempt = await attemptOnce(options);
+    evidence = mergeEvidence(evidence, attempt);
+    // "verified" is per-ATTEMPT truth, and the merge keeps it OR-ed across
+    // attempts, so it can never by itself license a terminal discharge. The
+    // discharge reads the two notions INDEPENDENTLY: this attempt must have
+    // proved the tree empty, AND the accumulated evidence must hold no unresolved
+    // identity.
+    //
+    // The second half is the issue #363 fix. An earlier round can capture a
+    // descendant that a later round then cannot re-observe — the descendants
+    // worker kills root-first, so the parent that created it is gone and the
+    // `ParentProcessId` edge that discovered it no longer exists. A later empty
+    // snapshot is therefore NOT evidence that process left: trusting the OR-ed
+    // flag retired X silently, so `"spooled"` was unreachable and no residual was
+    // ever written while the worker returned "verified".
+    if (attempt.verified && unresolvedIdentities(evidence) === 0) return "verified";
     // Publication only after the bounded convergence attempts: a transient
     // failure on the retry must not be outrun by an early spool, and the
     // retry must not be skipped because round zero already published.

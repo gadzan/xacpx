@@ -178,6 +178,171 @@ test("windows: transient unverified result retries once and then verifies", asyn
   }
 });
 
+test("windows: an unverifiable leftover is never retired by a later empty snapshot", async () => {
+  // Issue #363. `verified` is an ATTEMPT-level proof ("the snapshot this attempt
+  // took showed every discovered descendant safe and nothing remaining"), and
+  // `mergeEvidence` OR-s it across attempts. An attempt that sees nothing
+  // therefore cannot be allowed to retire an identity an EARLIER attempt
+  // captured: the descendants worker kills root-first, so the parent that created
+  // a late-appearing descendant is gone and the `ParentProcessId` edge that
+  // discovered it no longer exists. Windows does not guarantee such a process is
+  // ever re-discovered.
+  //
+  // Returning "verified" here dropped the descendant from the evidence chain
+  // before publication ever ran, so "spooled" was unreachable and no residual was
+  // written — while the worker claimed a clean tree.
+  const dir = await mkdtemp(join(tmpdir(), "eof-363-"));
+  try {
+    const lost = {
+      pid: 6001, parentPid: 5002,
+      creationDate: "133801632000000010",
+      commandLine: "child", executablePath: "C:\\child.exe",
+      fingerprintSource: "cim" as const,
+    };
+    let calls = 0;
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => {
+        calls += 1;
+        // Round 0 discovers the late descendant; round 1's snapshot cannot see it.
+        return calls === 1
+          ? { verified: false, outcomes: [], leftover: [lost] }
+          : { verified: true, outcomes: [], leftover: [] };
+      },
+      roundDelayMs: 1,
+      runtimeDir: dir,
+      generationId: "00000000-0000-4000-8000-000000000001",
+      ownerToken: "00000000-0000-4000-8000-000000000002",
+    });
+    // Not "verified": the accumulated evidence still holds an unresolved identity.
+    expect(outcome).toBe("spooled");
+    // And that identity is DURABLE — publication ran, rather than being skipped.
+    const registry = new OrphanRegistry(dir);
+    const residuals = await registry.readCategory("residuals");
+    expect(residuals).toHaveLength(1);
+    expect(residuals![0]!.record).toMatchObject({ pid: 6001, kind: "residual" });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("windows: a clean attempt with no accumulated evidence still reports verified", async () => {
+  // The inverse invariant, which the naive fix (`leftover.length > 0` forces
+  // verified false) would break: an attempt that proves the tree empty and holds
+  // no earlier unresolved identity must still discharge. This is the ordinary
+  // clean-exit path, and the only reason EOF convergence terminates at all.
+  const dir = await mkdtemp(join(tmpdir(), "eof-363-clean-"));
+  try {
+    let calls = 0;
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => {
+        calls += 1;
+        return { verified: true, outcomes: [], leftover: [] };
+      },
+      roundDelayMs: 1,
+      runtimeDir: dir,
+    });
+    expect(calls).toBe(1);
+    expect(outcome).toBe("verified");
+    // A verified exit writes nothing and leaves no registry behind.
+    expect(await readdir(dir)).toEqual([]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("windows: an unsafe attempt cannot be retired by the verified flag either", async () => {
+  // The same separation applied to the outcomes side: a round that discovers an
+  // unsafe descendant must not be overridden by a later verified attempt. Both
+  // setters of "unresolved" — non-safe outcomes and leftovers — feed the one
+  // discharge decision.
+  const dir = await mkdtemp(join(tmpdir(), "eof-363-unsafe-"));
+  try {
+    const unsafe = {
+      pid: 5002, outcome: "access-denied",
+      creationDate: "133801632000000010",
+      commandLine: "adapter", executablePath: "C:\\adapter.exe",
+      fingerprintSource: "cim" as const,
+    };
+    let calls = 0;
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => {
+        calls += 1;
+        return calls === 1
+          ? { verified: false, outcomes: [unsafe], leftover: [] }
+          : { verified: true, outcomes: [], leftover: [] };
+      },
+      roundDelayMs: 1,
+      runtimeDir: dir,
+      generationId: "00000000-0000-4000-8000-000000000001",
+      ownerToken: "00000000-0000-4000-8000-000000000002",
+    });
+    expect(outcome).toBe("spooled");
+    const registry = new OrphanRegistry(dir);
+    const residuals = await registry.readCategory("residuals");
+    expect(residuals!.map(({ record }) => ("pid" in record ? record.pid : 0))).toEqual([5002]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("windows: a leftover stops being required only on an explicit safe outcome for the same identity", async () => {
+  // Issue #363 acceptance criterion 3, cross-kind. The exit from "unresolved"
+  // must come from an EXPLICIT safe outcome naming the same process — never from a
+  // later empty snapshot. This is the leftover -> outcome arbitration: `winsOver`
+  // ranks resolution first, so a safe outcome replaces the leftover, and the
+  // identity stops being required. If cross-kind merging fails to resolve it, the
+  // run stays "unresolved" forever, which is the fail-closed side.
+  const dir = await mkdtemp(join(tmpdir(), "eof-363-resolve-"));
+  try {
+    const X = {
+      pid: 6001, parentPid: 5002,
+      creationDate: "133801632000000010",
+      commandLine: "child", executablePath: "C:\\child.exe",
+      fingerprintSource: "cim" as const,
+    };
+    let calls = 0;
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => {
+        calls += 1;
+        // Round 0 discovers X; round 1 is BOTH the first publication round AND the
+        // resolving round, so the safe outcome is in hand before publication runs.
+        // The order matters: publication is gated on `round >= 1`, so a resolving
+        // attempt that arrives earlier would be published as a residual first.
+        if (calls === 1) return { verified: false, outcomes: [], leftover: [X] };
+        return {
+          verified: true,
+          outcomes: [{
+            pid: 6001, outcome: "killed",
+            creationDate: "133801632000000010",
+            commandLine: "child", executablePath: "C:\\child.exe",
+            fingerprintSource: "handle" as const,
+          }],
+          leftover: [],
+        };
+      },
+      maxRounds: 6,
+      roundDelayMs: 1,
+      runtimeDir: dir,
+    });
+    // Discharged on the resolving attempt, and NOTHING was spooled for that pid:
+    // the leftover was replaced by the safe outcome before publication could run.
+    expect(outcome).toBe("verified");
+    expect(calls).toBe(2);
+    const registry = new OrphanRegistry(dir);
+    // `readCategory` yields [] (or a truthy marker) for an absent category; either
+    // way there must be no residual record naming the resolved identity.
+    const residuals = await registry.readCategory("residuals");
+    const records = (Array.isArray(residuals) ? residuals : []).map(({ record }) => record);
+    expect(records).toEqual([]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("windows: first-attempt evidence survives a total retry failure and is spooled", async () => {
   const dir = await mkdtemp(join(tmpdir(), "eof-monotonic-"));
   try {
