@@ -76,9 +76,13 @@ function interaction(token: string, userId: string, action: string, eph: string[
 
 test("custom id round-trips token and routing identity", () => {
   const token = createElicitationToken();
-  const id = elicitationCustomId(token, "field", 3);
-  expect(parseElicitationCustomId(id)).toEqual({ token, action: "field", fieldIndex: 3 });
+  const id = elicitationCustomId(token, "field", 3, 2);
+  expect(parseElicitationCustomId(id)).toEqual({ token, action: "field", fieldIndex: 3, revision: 2 });
+  // The terminal outcomes take an OPTIONAL revision, so both shapes round-trip:
+  // a control can name its card, and a replayed Decline/Cancel is still the
+  // decision the user made on a card they were shown.
   expect(parseElicitationCustomId(elicitationCustomId(token, "submit"))).toEqual({ token, action: "submit" });
+  expect(parseElicitationCustomId(elicitationCustomId(token, "submit", undefined, 4))).toEqual({ token, action: "submit", revision: 4 });
   expect(parseElicitationCustomId(`xacpx-perm:${token}:allow`)).toBeNull();
   expect(parseElicitationCustomId(`${ELICITATION_CUSTOM_ID_PREFIX}bogus`)).toBeNull();
   expect(parseElicitationCustomId(`${ELICITATION_CUSTOM_ID_PREFIX}${token}:nope`)).toBeNull();
@@ -89,7 +93,7 @@ test("custom ids never carry an answer: a sentinel value has no slot", () => {
   // the strongest available assertion is that its argument shape has no answer
   // position at all AND that an id built for a real field stays short.
   const token = createElicitationToken();
-  const id = elicitationCustomId(token, "field", 0);
+  const id = elicitationCustomId(token, "field", 0, 1);
   expect(id).not.toContain(SENTINEL_ANSWER);
   expect(id).not.toContain("prod");
   expect(id.length).toBeLessThanOrEqual(100);
@@ -118,22 +122,42 @@ test("routing is positional, so a hostile schema key cannot reach the id at all"
   ];
   for (const key of hostile) {
     // Whatever the key is, the same field always produces the same control id.
-    const id = elicitationCustomId(token, "field", 7);
-    expect(id).toBe(elicitationCustomId(token, "field", 7));
-    expect(parseElicitationCustomId(id)).toEqual({ token, action: "field", fieldIndex: 7 });
+    const id = elicitationCustomId(token, "field", 7, 3);
+    expect(id).toBe(elicitationCustomId(token, "field", 7, 3));
+    expect(parseElicitationCustomId(id)).toEqual({ token, action: "field", fieldIndex: 7, revision: 3 });
     // And the key text itself is nowhere in the id.
     expect(id).not.toContain(key);
   }
   // A long key is likewise absent: the id length is a function of the token and
   // the index alone, never of the key.
-  const longId = elicitationCustomId(token, "field", 7);
+  const longId = elicitationCustomId(token, "field", 7, 3);
   expect(longId.length).toBeLessThanOrEqual(100);
 });
 
 test("a page control round-trips its page number", () => {
   const token = createElicitationToken();
-  const id = elicitationCustomId(token, "page", 2);
-  expect(parseElicitationCustomId(id)).toEqual({ token, action: "page", fieldIndex: 2 });
+  const id = elicitationCustomId(token, "page", 2, 5);
+  expect(parseElicitationCustomId(id)).toEqual({ token, action: "page", fieldIndex: 2, revision: 5 });
+});
+
+test("every state-writing control must name its card revision, or it is not an id at all", () => {
+  // These are the actions that either write answer state or open a route the
+  // user must be able to see. An id without a revision cannot be placed on any
+  // card this renderer publishes, so accepting it would let a fabricated control
+  // perform the real one's work.
+  const token = createElicitationToken();
+  for (const [action, index] of [["field", 0], ["edit", 0], ["next", 1], ["skip", 0], ["page", 1]] as const) {
+    const withoutRevision = index === undefined
+      ? `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${action}`
+      : `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${action}:${index}`;
+    expect(parseElicitationCustomId(withoutRevision)).toBeNull();
+    // The same control WITH a revision parses, so the rejection is the missing
+    // segment and not the shape.
+    const withRevision = index === undefined
+      ? `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${action}:9`
+      : `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${action}:${index}:9`;
+    expect(parseElicitationCustomId(withRevision)).not.toBeNull();
+  }
 });
 
 test("the initiator's decline is a distinct ACP action and carries their identity", async () => {

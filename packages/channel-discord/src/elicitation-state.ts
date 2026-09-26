@@ -99,6 +99,28 @@ export interface PendingDiscordElicitation {
    */
   renderRevision: number;
   /**
+   * Highest revision already CLAIMED by a handler, one ahead of what the user can
+   * see.
+   *
+   * Two numbers, because one cannot express both facts. `renderRevision` is what
+   * the card on screen wears — the only revision a control could legitimately
+   * name. `claimedRevision` is what the app has already decided is spent, which
+   * is a strictly larger number while a handler is still awaiting its ACK.
+   *
+   * Keeping them apart is what closes the window. A handler claims synchronously,
+   * so a fast `Edit -> Submit` delivered during the Edit's ACK is refused by
+   * number. But if that same counter were the one compared against, the Edit's
+   * OWN interaction would be refused too: by the time `handleElicitationClick`
+   * runs its fence, the claim has already advanced past the number the Click
+   * legitimately named. The fence therefore compares against `renderRevision`,
+   * which stays put until a card is actually published — and the claim is what
+   * makes every LATER interaction stale.
+   *
+   * Normally differs from `renderRevision` only for the duration of an in-flight
+   * handler; equal again once its rerender publishes.
+   */
+  claimedRevision: number;
+  /**
    * Whether the wizard has shown the review page. Distinguishes the review
    * control's two intents (Next forward vs. Edit back) without adding a second
    * control whose action could be confused with a field action.

@@ -1939,3 +1939,73 @@ test("the worst-case review sample is at least as wide as every legal review", a
       .toBeGreaterThanOrEqual(measureElicitationCardBytes(review));
   }
 });
+
+test("the worst-case sample bounds a review whose widest answer is not the widest in characters", () => {
+  // The budget is UTF-8 BYTES, so a shorter JS string can be a larger card.
+  //
+  // A is an ASCII value the escaper leaves alone: 80 characters, and in escaped
+  // space it is nothing. B is 128 emoji: 256 JS characters, so MORE than A in
+  // escaped space, but four bytes each in the metric the budget actually uses.
+  //
+  // Choosing on escaped length therefore picked A as "widest" while B is what the
+  // review actually serializes to.
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "single-select", key: "a", title: "A", required: true, options: [
+      { value: "~".repeat(80), label: "Tilde" },
+      { value: "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀", label: "Emoji" },
+    ] },
+  ];
+  const req = request(fields);
+  const sample = buildWorstCaseReviewCard(req, "tok");
+  // The emoji answer is a legal one the user can select, and its review is the
+  // larger card. The sample must be at least as wide as it.
+  const emojiReview = buildElicitationReviewCard(req, "tok", { a: "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀" });
+  expect(measureElicitationCardBytes(sample))
+    .toBeGreaterThanOrEqual(measureElicitationCardBytes(emojiReview));
+  // And the emoji really is the wider of the two in bytes, so this is not a
+  // vacuous comparison: it is the case the old metric got backwards.
+  const tildeReview = buildElicitationReviewCard(req, "tok", { a: "~".repeat(80) });
+  expect(measureElicitationCardBytes(emojiReview))
+    .toBeGreaterThan(measureElicitationCardBytes(tildeReview));
+});
+
+test("an unbounded number field's sample is bounded by the widest finite double", () => {
+  // Core's number field accepts any finite JS number and the review prints
+  // `String(value)`, so the largest finite double is legal and renders 24
+  // characters. Capping the search at `Number.MAX_SAFE_INTEGER` (16 digits, with
+  // the old `9*10^n` ladder stopping well short of it) made the sample narrower
+  // than a legal review for exactly the schemas the sample exists to protect:
+  // a number field with no declared `maximum`.
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "number", key: "n", title: "N", required: true },
+  ];
+  const req = request(fields);
+  const sample = buildWorstCaseReviewCard(req, "tok");
+  const huge = buildElicitationReviewCard(req, "tok", { n: Number.MAX_VALUE });
+  expect(measureElicitationCardBytes(sample))
+    .toBeGreaterThanOrEqual(measureElicitationCardBytes(huge));
+  // The old ceiling would have failed this, so the case is not vacuous.
+  const oldCeiling = buildElicitationReviewCard(req, "tok", { n: Number.MAX_SAFE_INTEGER });
+  expect(measureElicitationCardBytes(huge))
+    .toBeGreaterThan(measureElicitationCardBytes(oldCeiling));
+});
+
+test("a number whose widest legal answer is negative is also bounded", () => {
+  // A large negative `minimum` with a small positive `maximum` has its widest
+  // legal rendering at the negative end — the minus sign is a character the
+  // positive spine of the search never produced.
+  const fields: ChannelElicitationRequest["fields"] = [
+    // Bounded at both ends so neither extreme can be reused as a floor/ceiling
+    // shortcut: the widest legal rendering is a value no endpoint equals.
+    { kind: "number", key: "n", title: "N", required: true, minimum: -0.5, maximum: 100 },
+  ];
+  const req = request(fields);
+  const sample = buildWorstCaseReviewCard(req, "tok");
+  const negative = buildElicitationReviewCard(req, "tok", { n: -0.5 });
+  expect(measureElicitationCardBytes(sample))
+    .toBeGreaterThanOrEqual(measureElicitationCardBytes(negative));
+  // And the negative answer really is wider than the positive maximum.
+  const positive = buildElicitationReviewCard(req, "tok", { n: 100 });
+  expect(measureElicitationCardBytes(negative))
+    .toBeGreaterThan(measureElicitationCardBytes(positive));
+});

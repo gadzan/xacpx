@@ -214,6 +214,18 @@ export function parseElicitationCustomId(
       fieldIndex = Number(segments[1]);
       if (!Number.isInteger(fieldIndex) || fieldIndex < 0) return null;
       if (!readRevision(2)) return null;
+      // MANDATORY for these. Every one of them either opens a route the user
+      // must be able to see (`field` opens a modal) or writes answer state
+      // (`skip` deletes an answer), and none of them is a decision the user
+      // repeats intentionally. An id without a revision therefore came from
+      // something that is not a card this renderer published — it has no card to
+      // belong to — and it is refused rather than granted the current revision
+      // at handling time, which is what let a stale Skip delete a fresh answer.
+      //
+      // The terminal outcomes above deliberately stay OPTIONAL: a replayed
+      // Decline or Cancel is still a decline the user made on a card they saw,
+      // and the answer must not be invented for them.
+      if (segments.length === 2) return null;
       break;
     default:
       return null;
@@ -489,7 +501,7 @@ export function buildElicitationFieldCard(
   // Booleans are answerable in place (yes/no are their options), so only
   // text-like fields need an "Answer" button that opens a modal.
   if (!isSelect && !isBoolean) {
-    fieldControls.push({ label: messages.elicitationEdit, customId: elicitationCustomId(token, "field", position), style: 3 });
+    fieldControls.push({ label: messages.elicitationEdit, customId: elicitationCustomId(token, "field", position, revision), style: 3 });
   }
   // Skip is offered ONLY for optional fields, and it is the only way back to
   // "no answer". A text field cleared to "" is a real answer, not an omission,
@@ -500,7 +512,7 @@ export function buildElicitationFieldCard(
       label: truncate(messages.elicitationSkip, 80),
       // The field's own position, not a bare action: see the codec. A Skip that
       // names its field is idempotent when Discord retries or a user double-taps.
-      customId: elicitationCustomId(token, "skip", position),
+      customId: elicitationCustomId(token, "skip", position, revision),
       style: 2,
     });
   }
@@ -508,7 +520,7 @@ export function buildElicitationFieldCard(
   // jump to the review page and use its Edit control — a detour that leaves a
   // mid-wizard user with no obvious way forward.
   if (position > 0) {
-    fieldControls.push({ label: truncate(messages.elicitationPrevField, 80), customId: elicitationCustomId(token, "edit", position - 1), style: 2 });
+    fieldControls.push({ label: truncate(messages.elicitationPrevField, 80), customId: elicitationCustomId(token, "edit", position - 1, revision), style: 2 });
   }
   if (position < totalFields - 1) {
     fieldControls.push({ label: truncate(messages.elicitationNextField, 80), customId: elicitationCustomId(token, "next", position + 1, revision), style: 3 });
@@ -667,8 +679,8 @@ export function buildElicitationReviewCard(
     const prevPage = (clamped - 1 + pageCount) % pageCount;
     const nextPage = (clamped + 1) % pageCount;
     rows.push(actionRow([
-      { label: truncate(`${messages.elicitationPagePrev} ${prevPage + 1}/${pageCount}`, 80), customId: `${ELICITATION_CUSTOM_ID_PREFIX}${token}:page:${prevPage}`, style: 2 },
-      { label: truncate(`${messages.elicitationPageNext} ${nextPage + 1}/${pageCount}`, 80), customId: `${ELICITATION_CUSTOM_ID_PREFIX}${token}:page:${nextPage}`, style: 2 },
+      { label: truncate(`${messages.elicitationPagePrev} ${prevPage + 1}/${pageCount}`, 80), customId: elicitationCustomId(token, "page", prevPage, options.revision), style: 2 },
+      { label: truncate(`${messages.elicitationPageNext} ${nextPage + 1}/${pageCount}`, 80), customId: elicitationCustomId(token, "page", nextPage, options.revision), style: 2 },
     ]));
   }
   // The TEXT pages with the controls, and over exactly the same field window:
@@ -819,29 +831,29 @@ export function buildElicitationSelectRows(
 /**
  * Whether the platform input must be non-empty to be submittable.
  *
- * Derived from `minLength`, not from the schema's property-`required`: a required
- * property may legally hold `""` (core's validator accepts it for
- * `maxLength: 0`), while a platform `required` input forbids an empty submit
- * outright. Setting it from `field.required` alone would make those forms
- * unsendable, so the widget's requirement follows what the schema actually
- * demands of the VALUE.
+ * Derived from `minLength` and from NOTHING ELSE.
  *
- * A field with no declared `minLength` is required when it is a required
- * property, matching the intuitive case; a declared `minLength >= 1` makes it
- * required regardless, because no empty answer can satisfy it either.
+ * The schema's property-`required` says the KEY must be present, and `""` is a
+ * present value — core's validator accepts it. Discord's `required` is stronger:
+ * an empty submit is refused outright. So the two bits answer different
+ * questions, and copying the schema one across turns a legal answer into an
+ * unsendable form.
+ *
+ * `maxLength > 0` proves nothing either: `{maxLength: 10}` admits `""` and also
+ * admits ten characters, so it cannot decide whether the empty form must be
+ * offered. Only `minLength` can:
+ *
+ *   - `minLength >= 1` — no empty answer satisfies the schema, so the widget is
+ *     allowed to require one.
+ *   - `minLength: 0`  — the schema EXPLICITLY permits `""`, so it must not.
+ *   - no `minLength`  — the schema is silent on the empty value, and the absence
+ *     of a minimum is not a maximum. The widget must not invent one, and it does
+ *     not need to: presence of the key is guaranteed by the wizard's own
+ *     missing-field check on submit, which is exactly the rule core applies.
  */
 function fieldRequiresNonEmptyInput(field: ChannelElicitationField): boolean {
-  if (field.kind === "text") {
-    // A declared minimum decides it outright: `minLength >= 1` admits no empty
-    // answer, and `minLength: 0` explicitly permits one.
-    if (field.minLength !== undefined) return field.minLength >= 1;
-    // No minimum declared. The empty string is then legal exactly when nothing
-    // forbids it — which is the case unless the field also bounds itself to
-    // nothing else. `maxLength: 0` is the sharp case: the ONLY answer the schema
-    // accepts is `""`, so the widget must not demand one.
-    if (field.maxLength !== undefined) return field.maxLength > 0;
-  }
-  return field.required;
+  if (field.kind === "text" && field.minLength !== undefined) return field.minLength >= 1;
+  return false;
 }
 
 /**
@@ -998,6 +1010,16 @@ export interface ElicitationClickInput {
     replyEphemeral(text: string): Promise<void>;
   };
   pending: Map<string, PendingDiscordElicitation>;
+  /**
+   * The revision this interaction claimed before calling here, if it claimed one.
+   *
+   * A navigation handler retires its own number before it awaits its ACK, so this
+   * is how `submitAnswers` can tell a claim that is SOUND (the click being
+   * handled right now, whose claim is its own) from one that is NOT (a click
+   * delivered while another handler's ACK is in flight). Without the distinction
+   * either every Submit is rejected or none is.
+   */
+  claim?: number;
   /** Resolve/reject the request promise, matching the permission pattern. */
   onSettled: (entry: PendingDiscordElicitation, decision: ChannelElicitationDecision) => void;
   log?: (event: string, message: string, fields?: Record<string, string | number | boolean | undefined>) => void;
@@ -1043,6 +1065,17 @@ export async function handleElicitationClick(input: ElicitationClickInput): Prom
   // trigger them: two clicks can be handled concurrently and the second one's
   // rerender only starts after the first's has finished. So the interaction that
   // raced ahead is still holding a control from the previous card.
+  //
+  // Against `renderRevision` — the card that is actually on screen — and NOT
+  // against `claimedRevision`. The handler that owns a claim has already advanced
+  // it before calling here, so comparing against the spent number would reject the
+  // interaction that produced the claim: a Start click on the opening card would
+  // be judged stale by its own claim and dropped, leaving the form unstartable.
+  //
+  // The claim's real work is done elsewhere: every state-WRITING path (select,
+  // modal submit) compares against `claimedRevision`, which is what stops a
+  // write from arriving during the Edit's ACK. A navigation interaction cannot
+  // write anything, so this comparison is sound.
   if (parsed.revision !== undefined && parsed.revision < entry.renderRevision) {
     input.log?.("discord.elicitation.stale_interaction", "dropped an interaction from an earlier card revision", {
       requestId: entry.requestId,
@@ -1161,7 +1194,7 @@ export async function handleElicitationClick(input: ElicitationClickInput): Prom
         await input.interaction.replyEphemeral(messages.elicitationReviewUpdating);
         return { decided: false };
       }
-      return submitAnswers(entry, input);
+      return submitAnswers(entry, input, parsed.revision);
     }
     default:
       return { decided: false };
@@ -1190,8 +1223,32 @@ function enterWizard(entry: PendingDiscordElicitation): boolean {
 async function submitAnswers(
   entry: PendingDiscordElicitation,
   input: ElicitationClickInput,
+  /** The revision the Submit control named. */
+  revision?: number,
 ): Promise<ElicitationClickOutcome> {
   const messages = getMessages();
+  // CLAIMED, NOT PUBLISHED. This is the one path where a stale interaction is
+  // catastrophic, because a Submit settles the turn instead of asking a question.
+  //
+  // Compare against `claimedRevision` — what the app has spent — rather than
+  // `renderRevision` — what is on screen. The ACK of an Edit, review-page change
+  // or any navigation can still be in flight while the user's Submit from the
+  // previous card lands: the card on screen still names that revision, so a
+  // comparison against the published number would accept a form whose answers
+  // changed while the user was reading it.
+  //
+  // Skipped only when this handler itself made the claim (a self-claim means no
+  // other interaction has happened, and re-checking against it would reject the
+  // very click the user just made).
+  if (revision !== undefined && revision !== input.claim && revision < entry.claimedRevision) {
+    input.log?.("discord.elicitation.stale_submit", "dropped a Submit from a superseded card", {
+      requestId: entry.requestId,
+      interactionRevision: revision,
+      claimedRevision: entry.claimedRevision,
+    });
+    await input.interaction.replyEphemeral(messages.elicitationReviewUpdating);
+    return { decided: false };
+  }
   const missing = entry.request.fields.filter((field) => field.required && !Object.hasOwn(entry.values, field.key));
   if (missing.length > 0) {
     // Stay on the review page and point at the first gap.

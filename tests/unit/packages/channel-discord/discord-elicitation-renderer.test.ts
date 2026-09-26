@@ -12,10 +12,12 @@ import type {
 } from "../../../../packages/channel-discord/src/types";
 import { setChannelLocale } from "../../../../packages/channel-discord/src/i18n";
 import {
-  buildElicitationFieldCard,
-  buildElicitationModal,
-  buildElicitationOpening,
-  ELICITATION_CUSTOM_ID_PREFIX,
+buildElicitationFieldCard,
+buildElicitationModal,
+buildElicitationOpening,
+elicitationCustomId,
+parseElicitationCustomId,
+ELICITATION_CUSTOM_ID_PREFIX,
 } from "../../../../packages/channel-discord/src/elicitation-ui";
 import { buildElicitationFieldLines } from "../../../../packages/channel-discord/src/elicitation-limits";
 import { checkElicitationRenderability, FIELD_CARD_ANSWER_ECHO_MAX } from "../../../../packages/channel-discord/src/elicitation-limits";
@@ -1948,7 +1950,12 @@ test("an abort during a running transition leaves the card inert, never repainte
     const rowIds = (): string[] => (client.edited[client.edited.length - 1]!.body.components ?? [])
       .flatMap((row) => row.components)
       .map((component) => component.customId);
-    const page1 = rowIds().find((id) => id.endsWith(":page:1"))!;
+    // Segments, not a suffix: paging controls now carry the card revision, so the
+    // id ends `:page:1:<revision>` and a bare `endsWith(":page:1")` matches nothing.
+    const page1 = rowIds().find((id) => {
+      const rest = id.slice(ELICITATION_CUSTOM_ID_PREFIX.length).split(":");
+      return rest[1] === "page" && rest[2] === "1";
+    })!;
 
     // Start the transition; it parks on the held m2 edit.
     client.emitButton(click(client, page1));
@@ -2867,6 +2874,222 @@ test("a text field that demands a non-empty value keeps the platform requirement
     maxLength: 10,
   };
   const modal = buildElicitationModal("tok", field, undefined, 0);
+  const input = modal.components[0]!.component as { required?: boolean };
+  expect(input.required).toBe(true);
+});
+
+test("a submit delivered DURING the edit's ack cannot accept the pre-edit answers", async () => {
+  // The real window, with no sleep in it.
+  //
+  // The earlier regression awaited 5ms after the Edit, so the Edit's claim had
+  // already been published by the time the stale Submit arrived. That is not the
+  // race: the Edit handler mutates state, then awaits its ACK, and only THEN does
+  // the channel enqueue the rerender. A Submit that beats the ACK still names the
+  // card on screen — the review the user was reading — so a comparison against
+  // the PUBLISHED revision accepts it, and it settles the turn with the answers
+  // as they were before the edit.
+  //
+  // So the two interactions are emitted back to back and the Edit's ACK is held
+  // open, which is exactly how the window appears in production.
+  const client = makeFakeClient();
+  let release: (() => void) | null = null;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let editAckHeld = false;
+  const startChannelResult = await startChannel(client);
+  const { channel, abort } = startChannelResult;
+  const cleanup = async (): Promise<void> => {
+    release?.();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "single-select", key: "env", title: "Env", required: true, options: [
+        { value: "prod", label: "Prod" },
+        { value: "staging", label: "Staging" },
+      ] },
+    ]);
+    const { settled } = await startWizard(client, channel, req.request, "env");
+    client.emitSelect(select(client, selectCustomIdOf(client, "env"), ["prod"]));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 6));
+    const reviewSubmit = idFor(client, "submit");
+
+    // The Edit, from the review page, back to the field.
+    editAckHeld = true;
+    const edit = click(client, idFor(client, "edit", 0));
+    const editPromise = (async () => {
+      // Re-enter the gateway with the held ACK, so the handler is parked inside
+      // the Edit exactly where the window is.
+      await client.emitButton({ ...edit, acknowledge: async () => { if (editAckHeld) await held; } });
+    })();
+
+    // The stale Submit, delivered while the Edit is still parked. NO sleep: the
+    // claim must have happened before the Edit's first await, or this lands.
+    const submit = click(client, reviewSubmit);
+    void client.emitButton({ ...submit, acknowledge: async () => {} });
+
+    // Let the Edit finish.
+    editAckHeld = false;
+    release?.();
+    await editPromise;
+    await new Promise((r) => setTimeout(r, 6));
+
+    // The turn must still be open: the stale Submit was refused, not settled.
+    expect(await Promise.race([settled, new Promise((r) => setTimeout(() => r("pending"), 20))])).toBe("pending");
+
+    // Change the answer, then submit for real: the decision carries the NEW value.
+    client.emitSelect(select(client, selectCustomIdOf(client, "env"), ["staging"]));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitButton(click(client, idFor(client, "submit")));
+    expect(await settled).toEqual({
+      action: "accept",
+      responderId: "user-A",
+      content: { env: "staging" },
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a replayed answer control cannot open a modal the newer card never drew", async () => {
+  // An unversioned Answer control was stamped with the CURRENT revision when the
+  // modal was built, which laundered a stale click: a modal every later fence
+  // would accept, opening a route the user is no longer on. The control now names
+  // its own card, and one that names no revision is refused outright.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
+    ]);
+    await startWizard(client, channel, req.request, "note");
+    // The Answer control on the current field card, which names its revision.
+    const answer = idFor(client, "field", 0);
+    client.emitButton(click(client, answer));
+    await new Promise((r) => setTimeout(r, 6));
+    const modalsBefore = client.modals.length;
+    expect(client.modals.length).toBeGreaterThan(0);
+
+    // A fabricated control with NO revision. It cannot be placed on any card the
+    // renderer publishes, so the handler must refuse it rather than grant it the
+    // current revision.
+    const token = answer.slice(ELICITATION_CUSTOM_ID_PREFIX.length, ELICITATION_CUSTOM_ID_PREFIX.length + 32);
+    const unversioned = `${ELICITATION_CUSTOM_ID_PREFIX}${token}:field:0`;
+    // Both layers must refuse it, pinned separately so a regression at either one
+    // is visible on its own instead of being masked by the other. Parser first: an
+    // id that names no card is not an id at all.
+    expect(parseElicitationCustomId(unversioned)).toBeNull();
+    // Then the handler, reached directly so its own fence is exercised even
+    // though the parser would already have stopped this id.
+    const modalsBeforeHandler = client.modals.length;
+    client.emitButton(click(client, unversioned));
+    await new Promise((r) => setTimeout(r, 6));
+    expect(client.modals.length).toBe(modalsBeforeHandler);
+    expect(client.modals.length).toBe(modalsBefore);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a replayed unversioned skip cannot delete a fresh answer", async () => {
+  // `old Skip -> Edit -> new answer -> replay(old unversioned Skip)` used to reach
+  // `markSkipped` and delete the answer the user had just given, because the
+  // Skip control carried no revision and the parser accepted it. Every Skip now
+  // names its card, and an id without a revision does not parse.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "text", key: "note", title: "Note", required: false, maxLength: 4000 },
+    ]);
+    await startWizard(client, channel, req.request, "note");
+    // Answer, so there is something a replayed Skip could delete.
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { note: "ship it" }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 6));
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { values: Record<string, unknown>; skipped: Set<string> }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.values.note).toBe("ship it");
+
+    // An UNVERSIONED replay of the Skip. This is the id the old renderer produced
+    // and the old parser accepted, so a duplicate delivery of it reached
+    // `markSkipped` and deleted the answer the user had just given. It must not
+    // parse at all, and the handler must not act on it.
+    const token = idFor(client, "skip", 0).slice(ELICITATION_CUSTOM_ID_PREFIX.length, ELICITATION_CUSTOM_ID_PREFIX.length + 32);
+    expect(parseElicitationCustomId(`${ELICITATION_CUSTOM_ID_PREFIX}${token}:skip:0`)).toBeNull();
+    client.emitButton(click(client, `${ELICITATION_CUSTOM_ID_PREFIX}${token}:skip:0`));
+    await new Promise((r) => setTimeout(r, 6));
+    expect(entry.values.note).toBe("ship it");
+
+    // The live, revisioned Skip still works: it is the honest way to clear an answer.
+    client.emitButton(click(client, idFor(client, "skip", 0)));
+    await new Promise((r) => setTimeout(r, 6));
+    expect(entry.values.note).toBeUndefined();
+    expect([...entry.skipped]).toEqual(["note"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a renderable required field is not made platform-required when the schema permits empty", () => {
+  // The exact row from the review: a REQUIRED property that is fully renderable
+  // and whose schema permits `""`. Copying the schema bit onto the widget made
+  // the empty string unsendable here, even though core accepts it.
+  const field: ChannelElicitationField = {
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    maxLength: 10,
+  };
+  const modal = buildElicitationModal("tok", field, undefined, 0, 1);
+  const input = modal.components[0]!.component as { required?: boolean };
+  expect(input.required).toBe(false);
+});
+
+test("a declared minLength of 0 keeps the empty answer offerable", () => {
+  // minLength: 0 is an EXPLICIT permission for the empty string, so it must not
+  // be turned into a platform requirement even by an inference.
+  const field: ChannelElicitationField = {
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    minLength: 0,
+    maxLength: 10,
+  };
+  const modal = buildElicitationModal("tok", field, undefined, 0, 1);
+  const input = modal.components[0]!.component as { required?: boolean };
+  expect(input.required).toBe(false);
+});
+
+test("a field that demands a non-empty value keeps the platform requirement", () => {
+  // The other side: minLength >= 1 admits no empty answer, so the widget's
+  // requirement is not a restriction the schema would contradict.
+  const field: ChannelElicitationField = {
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    minLength: 1,
+    maxLength: 10,
+  };
+  const modal = buildElicitationModal("tok", field, undefined, 0, 1);
   const input = modal.components[0]!.component as { required?: boolean };
   expect(input.required).toBe(true);
 });

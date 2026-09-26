@@ -212,16 +212,38 @@ function elicitationRequest(overrides: Partial<ChannelElicitationRequest> = {}):
 }
 
 function customIdsOf(client: FakeDiscordClient): string[] {
-  const last = client.sent[client.sent.length - 1];
-  const rows = last?.body.components ?? [];
-  return rows.flatMap((row) => row.components.map((button) => button.customId));
+  // The card in play is the last EDIT once the wizard has started, not the last
+  // sent: a rerender replaces the opening in place, so the controls the user is
+  // looking at live on the edited message. Reading only `sent` returned the
+  // opening's revision-1 controls long after they had been superseded, and every
+  // interaction taken from them was correctly refused as stale.
+  //
+  // Falls back to `sent` when the last edit carries no controls at all, because
+  // that is what a TERMINAL card looks like: the request is decided, the entry is
+  // gone, and there is nothing left to read but the original message.
+  const edited = client.edited[client.edited.length - 1]?.body.components ?? [];
+  const rows = edited.length > 0
+    ? edited
+    : (client.sent[client.sent.length - 1]?.body.components ?? []);
+  return (rows as Array<{ components?: Array<{ customId?: string }> }>)
+    .flatMap((row) => (row.components ?? []).map((button) => button.customId ?? ""));
 }
 
 function idFor(client: FakeDiscordClient, action: string, fieldKey?: string): string {
   const all = customIdsOf(client);
-  const suffix = fieldKey ? `${action}:${fieldKey}` : action;
-  const found = all.find((id) => id.endsWith(`:${suffix}`));
-  if (!found) throw new Error(`no control for ${action}${fieldKey ? `:${fieldKey}` : ""}; had ${all.join(",")}`);
+  // Match on SEGMENTS, not a suffix: controls now carry the card revision as a
+  // final segment, so `endsWith(":decline")` no longer matches `:decline:1`. A
+  // plain suffix match would also collide on `:review` vs `:review:2`.
+  const wanted = fieldKey !== undefined ? [action, fieldKey] : [action];
+  const found = all.find((id) => {
+    const segments = id.slice(ELICITATION_CUSTOM_ID_PREFIX.length).split(":");
+    const rest = segments.slice(1);
+    return rest[0] === wanted[0]
+      && (wanted.length === 1 || rest[1] === wanted[1])
+      // Either no revision at all, or exactly one numeric one.
+      && rest.slice(wanted.length).every((segment) => /^\d+$/.test(segment));
+  });
+  if (!found) throw new Error(`no control for ${wanted.join(":")}; had ${all.join(",")}`);
   return found;
 }
 

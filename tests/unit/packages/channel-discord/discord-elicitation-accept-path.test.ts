@@ -66,6 +66,11 @@ function makeEntry(overrides: Partial<PendingDiscordElicitation> = {}): PendingD
     visitedReview: false,
     reviewPage: 0,
     settled: false,
+    // The published card revision and the spent counter. Both start at 1, like the
+    // opening card, so a control naming revision 7 reads as a FUTURE card and is
+    // never mistaken for a stale one.
+    renderRevision: 1,
+    claimedRevision: 1,
     resolve: () => {},
     reject: () => {},
     ...overrides,
@@ -73,10 +78,13 @@ function makeEntry(overrides: Partial<PendingDiscordElicitation> = {}): PendingD
 }
 
 function interaction(token: string, userId: string, action: string, fieldIndex?: number, eph: string[] = []) {
+  // Every control names the card it was drawn on, so the harness builds the same
+  // shape the renderer does. An unversioned id is not a valid control for any
+  // state-writing action and would be refused by the parser.
   return {
     customId: fieldIndex !== undefined
-      ? elicitationCustomId(token, action as "field", fieldIndex)
-      : `${ELICITATION_CUSTOM_ID_PREFIX}${token}:${action}`,
+      ? elicitationCustomId(token, action as "field", fieldIndex, 7)
+      : elicitationCustomId(token, action as "submit", undefined, 7),
     userId,
     acknowledge: async () => {},
     replyEphemeral: async (text: string) => {
@@ -220,6 +228,10 @@ test("every parsed control maps to a handled action", async () => {
   // so the action set is pinned against the parser's own. `skip` carries a field
   // position now: an action without one is dropped outright rather than falling
   // back to a cursor, which is what made two stale Skips skip two fields.
+  //
+  // Every control also carries its card revision, which is mandatory for all of
+  // the navigation and state-writing actions — so building them without one must
+  // NOT parse, and the loop below builds them the way the renderer does.
   for (const [action, fieldIndex] of [
     ["start", undefined],
     ["review", undefined],
@@ -231,13 +243,18 @@ test("every parsed control maps to a handled action", async () => {
     ["edit", 1],
     ["page", 0],
   ] as const) {
-    const parsed = parseElicitationCustomId(elicitationCustomId(createElicitationToken(), action, fieldIndex));
+    const parsed = parseElicitationCustomId(elicitationCustomId(createElicitationToken(), action, fieldIndex, 4));
     expect(parsed).not.toBeNull();
     expect(["start", "review", "skip", "submit", "decline", "cancel", "field", "edit", "page"]).toContain(parsed!.action);
+    expect(parsed!.revision).toBe(4);
   }
   // A Skip with no position must NOT parse: refusing it is safer than guessing
   // the field from mutable state.
   expect(parseElicitationCustomId(elicitationCustomId(createElicitationToken(), "start"))).not.toBeNull();
   const token = createElicitationToken();
   expect(parseElicitationCustomId(`${ELICITATION_CUSTOM_ID_PREFIX}${token}:skip`)).toBeNull();
+  // And neither must a Skip, field, edit, next or page without its revision.
+  for (const [action, index] of [["skip", 0], ["field", 0], ["edit", 0], ["next", 0], ["page", 1]] as const) {
+    expect(parseElicitationCustomId(`${ELICITATION_CUSTOM_ID_PREFIX}${token}:${action}:${index}`)).toBeNull();
+  }
 });

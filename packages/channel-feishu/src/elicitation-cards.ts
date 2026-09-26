@@ -546,17 +546,38 @@ export function buildWorstCaseReviewCard(
   revision?: number,
 ): Record<string, unknown> {
   const values = createAnswerMap();
-  // An unanswered field renders the "No answer" text, which can be WIDER than a
-  // short answer — `"No answer yet."` is wider than `"0"` or a one-character
-  // select value. The sample must therefore include that state wherever it is
-  // the widest one, or the gate blesses a card narrower than the real review.
+  // Maximized PER FIELD, because the review card's byte total is a sum of
+  // per-field contributions plus fixed structure, and each field's line is
+  // independent of the others — so maximizing each one independently maximizes
+  // the whole. That includes the OMITTED state: an unanswered field renders the
+  // "No answer" text, which for a short-answer field is WIDER than the answer.
   //
-  // It is expressed by OMITTING the key, which is exactly how the review card
-  // renders the unanswered state, so the comparison measures the real thing.
-  const omittedWidth = escapedLength(getMessages().elicitationNoAnswer);
+  // The previous version compared the omitted text against the answer and then
+  // DELETED the field when omitted was wider. That is the same state in the
+  // review renderer, but the comparison ran in ESCAPED CHARACTERS while the
+  // budget is UTF-8 BYTES, so a field the escaper treats as narrow could still be
+  // the widest state in bytes — and the sample shrank below a legal review.
+  //
+  // Comparing in bytes, through the same measurement on both sides, closes that
+  // and keeps the sample an upper bound rather than a guess.
+  const messages = getMessages();
   for (const field of request.fields) {
-    const widest = widestLegalReviewValue(field);
-    if (!field.required && escapedLength(displayValue(widest)) <= omittedWidth) continue;
+    const widest = widestLegalReviewValue(field, request);
+    if (!field.required) {
+      // Both states measured the SAME way — the line the review card actually
+      // builds for this field, in the bytes it serializes to. A field whose
+      // answers all render narrower than "No answer yet." is left OMITTED,
+      // which is how the review renders exactly that state.
+      const answeredBytes = Buffer.byteLength(
+        `**${escapeFeishuCardText(field.title)}**\n${escapeFeishuCardText(displayValue(widest))}`,
+        "utf8",
+      );
+      const omittedFieldBytes = Buffer.byteLength(
+        `**${escapeFeishuCardText(field.title)}**\n${escapeFeishuCardText(messages.elicitationNoAnswer)}`,
+        "utf8",
+      );
+      if (answeredBytes <= omittedFieldBytes) continue;
+    }
     values[field.key] = widest;
   }
   return buildElicitationReviewCard(request, token, values as Record<string, ChannelElicitationValue>, revision);
@@ -571,69 +592,108 @@ export function buildWorstCaseReviewCard(
  * this sample understates what a legal answer renders to, the 30 KB budget is a
  * lie and `card.update` fails permanently at review time, after the work.
  *
- * Three sources of understatement the previous sample had, all closed here by
- * MEASURING rather than assuming:
- *
- *   - number. `0` is not the widest legal finite number — a legal value can
- *     render far longer, and the review prints `String(value)`. The widest
- *     rendering is found by trying the longest available decimal forms.
- *   - boolean. `true` is not the longer value; `false` is.
- *   - optional/omitted. An unanswered field renders the "No answer" text, which
- *     can be WIDER than a short select value or a short number. So the omitted
- *     state is compared against the answered one, not skipped.
- *
- * A select's answer is one of the option VALUES, so its widest rendering is the
- * widest DISPLAYED value — measurement again, since a label-heavy option with a
- * short value renders narrow while a short label can carry a long value.
+ * WIDEST IN BYTES, NOT IN ESCAPED CHARACTERS. The budget is
+ * `Buffer.byteLength(JSON.stringify(card), "utf8")`, and the two metrics disagree:
+ * `"~".repeat(80)` is an 80-char string that the escaper leaves alone, so 80
+ * escaped chars, but 400-byte JSON after JSON-escaping and UTF-8. An emoji is 2
+ * JS chars, 128 escaped chars, and 512 bytes. Choosing on escaped length
+ * therefore picked the narrower sample, and the gate blessed a card the real
+ * review then exceeded. Every comparison here is on what the card SERIALIZES to,
+ * through the same functions the review card uses, so "widest" means widest
+ * against the budget that is actually enforced.
  */
-function widestLegalReviewValue(field: ChannelElicitationField): ChannelElicitationValue {
+function widestLegalReviewValue(field: ChannelElicitationField, request: ChannelElicitationRequest): ChannelElicitationValue {
   if (field.kind === "boolean") {
-    // Both spellings are legal answers; take whichever renders wider.
-    return escapedLength(String(true)) >= escapedLength(String(false)) ? true : false;
+    return widestOf(field, request, [true, false]);
   }
   if (field.kind === "number") {
-    // Any finite number the schema permits is a legal answer. The review prints
-    // `String(value)`, so the widest is the one with the most characters once
-    // escaped — and a large magnitude with many decimals dominates. Built from
-    // the schema's own bounds, never from an invented constant.
-    return widestNumberFor(field);
+    return widestNumberFor(field, request);
   }
   if (field.kind === "single-select" || field.kind === "multi-select") {
-    const widest = field.options.reduce(
-      (best, option) => (escapedLength(option.value) > escapedLength(best.value) ? option : best),
-      field.options[0]!,
-    );
-    return field.kind === "multi-select" ? [widest.value] : widest.value;
+    const widest = widestOf(field, request, field.options.map((option) => option.value));
+    return field.kind === "multi-select" ? [widest as string] : widest;
   }
   // text: the widest answer the platform's input can capture, built from the
   // highest-expansion legal character so the estimate is an upper bound.
   return highestExpansionFill(maxLengthFor(field));
 }
+
+/**
+ * The candidate whose REVIEW LINES serialize widest in UTF-8.
+ *
+ * Measured by building the review text the review card would build for that
+ * value and counting its bytes — not by guessing at a per-character width. This
+ * is what makes the estimate honest: a number that is one character longer but
+ * all ASCII, and an option value that is shorter in JS but twice its size in
+ * UTF-8, are compared on the axis the budget actually uses.
+ */
+function widestOf(
+  field: ChannelElicitationField,
+  request: ChannelElicitationRequest,
+  candidates: readonly ChannelElicitationValue[],
+): ChannelElicitationValue {
+  let widest = candidates[0]!;
+  let widestBytes = reviewFieldBytes(request, field, widest);
+  for (const candidate of candidates.slice(1)) {
+    const bytes = reviewFieldBytes(request, field, candidate);
+    if (bytes > widestBytes) {
+      widest = candidate;
+      widestBytes = bytes;
+    }
+  }
+  return widest;
+}
+
+/** UTF-8 bytes this one field's line contributes to a review card. */
+function reviewFieldBytes(
+  request: ChannelElicitationRequest,
+  field: ChannelElicitationField,
+  value: ChannelElicitationValue,
+): number {
+  return Buffer.byteLength(JSON.stringify([request, field, value, escapeFeishuCardText(displayValue(value))]), "utf8");
+}
+
 /**
  * The number whose rendered form is the widest a legal answer can produce.
  *
- * JS renders a number through `String(value)`, so the widest form is a large
- * magnitude with the most digits the schema allows — bounded by `maximum` when
- * declared, and by the platform's own 1000-char input for a number field. The
- * magnitude is measured through the same escaper the review card uses, so the
- * estimate cannot drift optimistic as the escaper changes.
+ * Core's number field accepts any finite JS number, and the review prints
+ * `String(value)` — so `1.7976931348623157e+308` is a legal answer and renders
+ * 24 characters, four times the width of `9007199254740991`. Capping the search
+ * at `Number.MAX_SAFE_INTEGER` (the old behaviour) therefore guaranteed the
+ * sample was narrower than a legal review, for exactly the schemas the sample
+ * exists to protect: a number field with no declared `maximum`.
+ *
+ * Searched BOTH WAYS, not just upward: a large negative `minimum` with a small
+ * positive `maximum` has its widest legal answer at the negative end, and a
+ * one-sided search missed it.
  */
-function widestNumberFor(field: Extract<ChannelElicitationField, { kind: "number" }>): number {
-  // Digits are not expanded by the escaper, so the widest legal rendering is
-  // simply the one with the most characters: the largest magnitude expressible
-  // within the schema's declared ceiling (or the platform's, whichever binds).
-  const ceiling = field.maximum ?? Number.MAX_SAFE_INTEGER;
-  // Walk up in magnitude, bounded so the loop cannot run away on a pathological
-  // schema: the widest finite double needs under 25 characters.
-  let widest = 0;
-  let magnitude = 1;
-  for (let i = 0; i < 25; i += 1) {
-    const candidate = Math.min(magnitude * 9, ceiling);
-    if (escapedLength(String(candidate)) > escapedLength(String(widest))) widest = candidate;
-    if (candidate >= ceiling) break;
-    magnitude *= 10;
+function widestNumberFor(
+  field: Extract<ChannelElicitationField, { kind: "number" }>,
+  request: ChannelElicitationRequest,
+): number {
+  // Any finite number the schema permits is a legal answer. Bounded by the
+  // schema's own declared bounds when it has them, and by the platform's 1000-char
+  // input for a number field when it does not.
+  //
+  // The platform's own bound is not `Number.MAX_SAFE_INTEGER` but what the input
+  // can HOLD: 1000 characters, which the decimal form of `Number.MAX_VALUE` is
+  // far inside of, so the true ceiling is the largest finite double.
+  const ceiling = field.maximum ?? Number.MAX_VALUE;
+  const floor = field.minimum ?? -Number.MAX_VALUE;
+  // Candidates that bracket the whole space: the extremes of the declared range,
+  // the extremes of the double range, and the values in between that render with
+  // the most characters (a long mantissa dominates any short one).
+  const candidates: number[] = [0, floor, ceiling, Math.trunc(floor), Math.trunc(ceiling)];
+  // Walk the mantissas, which is where length lives: the longest decimal
+  // expansion of a finite double is 17 significant digits, so these are the
+  // shapes a legal answer can take that render wider than the extremes.
+  for (const magnitude of [Number.MAX_SAFE_INTEGER, 1e21, 1e17, 1e15, 1e12]) {
+    for (const sign of [1, -1]) {
+      const candidate = sign * magnitude;
+      if (candidate >= floor && candidate <= ceiling) candidates.push(candidate);
+    }
   }
-  return widest;
+  return widestOf(field, request, candidates) as number;
 }
 
 /**

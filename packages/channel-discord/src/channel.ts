@@ -450,7 +450,7 @@ export class DiscordChannel implements MessageChannelRuntime {
               // elicitation control drives the wizard state machine.
               const parsed = parseElicitationCustomId(interaction.customId);
               if (parsed && parsed.action === "field" && parsed.fieldIndex !== undefined) {
-                void this.handleElicitationAnswerPrompt(interaction, parsed.fieldIndex).catch(() => {});
+                void this.handleElicitationAnswerPrompt(interaction, parsed.fieldIndex, parsed.revision).catch(() => {});
                 return;
               }
               void this.handleElicitationButton(interaction).catch(() => {});
@@ -752,7 +752,11 @@ export class DiscordChannel implements MessageChannelRuntime {
 
     const target: DeliveryTarget = { channelId: route.channelId, ...(route.guildId ? { guildId: route.guildId } : {}) };
     const token = createElicitationToken();
-    const opening = buildElicitationOpening(request, token);
+    // Revision 1: the entry's initial `renderRevision`, so the first navigation
+    // interaction names the card that is actually on screen. Not `undefined` —
+    // an unversioned Start control could be replayed after the wizard has already
+    // moved on, and no fence would see it.
+    const opening = buildElicitationOpening(request, token, 1);
 
     let settle: (decision: ChannelElicitationDecision) => void = () => {};
     let rejectPromise: (error: Error) => void = () => {};
@@ -779,7 +783,12 @@ export class DiscordChannel implements MessageChannelRuntime {
       reviewPage: 0,
       // The opening card is revision 1, so the first field/review card is 2 and a
       // control that never carried a revision is distinguishable from one that did.
+      //
+      // `claimedRevision` starts equal to `renderRevision`: nothing is in flight,
+      // so nothing is spent. A handler that claims one moves it forward while the
+      // visible card still names `renderRevision`.
       renderRevision: 1,
+      claimedRevision: 1,
       settled: false,
       resolve: settle,
       reject: rejectPromise,
@@ -953,9 +962,67 @@ export class DiscordChannel implements MessageChannelRuntime {
     if (!parsed) return;
     const entry = this.pendingElicitations.get(parsed.token);
     if (!entry) return;
+    // AUTHORIZE BEFORE ANYTHING ELSE.
+    //
+    // Every guard keyed on the initiator identity must run before a claim is made,
+    // because a claim has a cost beyond the counter: it retires a card revision.
+    // An intruder's click that claimed a number would burn it, and the very next
+    // legitimate interaction would then be delivered against a card that no
+    // longer works — the initiator's own Start, on the opening card, was dropped
+    // for exactly that reason.
+    //
+    // `handleElicitationClick` re-runs this same authorization below; the check is
+    // cheap and the ordering is what matters, so it is done twice deliberately
+    // rather than being skinned into a claim that a rejected interaction can reach.
+    const denial = authorizeElicitationClick(entry, interaction.userId);
+    if (denial === "settled") {
+      await interaction.replyEphemeral(getMessages().elicitationAlreadyResolved);
+      return;
+    }
+    if (denial === "not-initiator") {
+      await this.logger?.warn("discord.elicitation.unauthorized", "unauthorized elicitation control", {
+        requestId: entry.requestId,
+      });
+      await interaction.replyEphemeral(getMessages().elicitationUnauthorized);
+      // Drop WITHOUT settling: the initiator must still be able to answer.
+      return;
+    }
+    // CLAIM THE NEXT REVISION BEFORE THE FIRST AWAIT.
+    //
+    // `handleElicitationClick` mutates wizard state, and only afterwards does the
+    // channel enqueue the rerender. Between those two points sits the Discord ACK
+    // — a network call that can hang. During that window a control from the
+    // PREVIOUS card is still valid: it names the same revision the user saw, and
+    // no successor has been allocated yet. `Edit(in flight) -> Submit(old card)`
+    // therefore reached `submitAnswers` with the answers as they were before the
+    // edit and accepted them.
+    //
+    // So the revision is retired synchronously, the way a single-threaded renderer
+    // would: the interaction's own control is claimed, and nothing that arrives
+    // after this point can still name it. The ACK then hangs harmlessly, because
+    // even a delivery that beats it has already been made stale.
+    //
+    // Only a navigation interaction claims one. The terminal outcomes do not go
+    // through here at all (they settle inside `handleElicitationClick`), and a
+    // handler that decided nothing leaves the card untouched — there is no new
+    // card to name.
+    const claimsRevision =
+      parsed.action === "start" || parsed.action === "field" || parsed.action === "edit"
+      || parsed.action === "next" || parsed.action === "page" || parsed.action === "review"
+      || parsed.action === "skip";
+    // What the new card will wear. Held here, before any await, so the claim and
+    // the number the queued render stamps are the same one.
+    let claimedRevision: number | undefined;
+    if (claimsRevision && !entry.settled) {
+      claimedRevision = entry.claimedRevision + 1;
+      entry.claimedRevision = claimedRevision;
+    }
     const outcome: ElicitationClickOutcome = await handleElicitationClick({
       interaction,
       pending: this.pendingElicitations,
+      // The number claimed for THIS interaction, so a Submit can tell its own
+      // claim from one another handler is still holding.
+      claim: claimedRevision,
       onSettled: (settledEntry, decision) => {
         // Record the terminal state the card must end in, BEFORE anything can
         // observe it missing. A send-race terminal render runs when the opening
@@ -984,7 +1051,13 @@ export class DiscordChannel implements MessageChannelRuntime {
     // Serialized per elicitation: see `elicitationRenderQueues`. The token (not
     // the requestId) is the key because it is the correlation handle for one
     // pending card, and a request never has two.
-    await this.enqueueElicitationTransition(entry, parsed.action, parsed.fieldIndex);
+    //
+    // The revision was already claimed synchronously above, before the ACK, so
+    // the number this render stamps is the one the claim retired. Allocating here
+    // instead would burn a second number and — worse — leave the card wearing a
+    // revision that no control has ever seen, so every control on the newly
+    // published card would be instantly stale on arrival.
+    await this.enqueueElicitationTransition(entry, parsed.action, parsed.fieldIndex, claimedRevision);
   }
 
   /**
@@ -1030,10 +1103,26 @@ export class DiscordChannel implements MessageChannelRuntime {
     entry: PendingDiscordElicitation,
     action: ElicitationUiAction,
     fieldIndex?: number,
+    /**
+     * Already claimed by the interaction, before its ACK. `undefined` means no
+     * claim was made (a handler that decided nothing, or one whose entry settled
+     * first), in which case this path owns the allocation.
+     */
+    claimed?: number,
   ): Promise<void> {
-    entry.renderRevision += 1;
+    // CAPTURE, do not re-read. The closure runs later, after any successor has
+    // had the chance to allocate its own number: reading `entry.renderRevision`
+    // at run time therefore hands the earlier transition the LATER revision, and
+    // its supersede guard compares a number against itself and never fires. A
+    // queued transition then publishes stale answer text over the newer card.
+    //
+    // Allocate from `claimedRevision`, the spent counter, so an unclaimed path
+    // (a send-race or abort requeue with no interaction behind it) takes a number
+    // no handler has ever claimed — leaving alone any pre-claim card revision,
+    // which is what the state-write paths keep alive.
+    const revision = claimed ?? (entry.claimedRevision += 1);
     return this.enqueueElicitationRender(entry.token, () =>
-      this.rerenderElicitationCard(entry, this.elicitationRuntime(entry), action, fieldIndex, entry.renderRevision));
+      this.rerenderElicitationCard(entry, this.elicitationRuntime(entry), action, fieldIndex, revision));
   }
 
   /**
@@ -1059,15 +1148,27 @@ export class DiscordChannel implements MessageChannelRuntime {
     // A transition whose revision was superseded before it could run publishes
     // nothing. This is the guard that keeps a queued transition from painting a
     // stale answer over the newer card the user is looking at.
-    if (revision !== undefined && entry.renderRevision !== revision) return;
+    //
+    // Compared against CLAIMED, and for the same reason the fences are: the claim
+    // is the only number that moves the instant an interaction starts being
+    // handled, so it is the one that describes "a newer thing has happened". A
+    // transition that was queued first and overtaken by a later handler finds its
+    // number already spent and stops.
+    if (revision !== undefined && revision < entry.claimedRevision) return;
     // A settled entry ends inert. Every step below re-checks, because a terminal
     // render may land WHILE this transition is parked on a transport `await`:
     // by the time it resumes, the card on screen is already Cancelled, and
     // repainting it would restore interactive content that was just withdrawn —
     // including any answers the review was showing.
     const live = (): boolean => !entry.settled;
-    // The revision this card is drawn at, already allocated by the enqueue path.
-    const cardRevision = revision ?? entry.renderRevision;
+    // The revision this card is drawn at. It is claimed before the interaction's
+    // ACK, so the controls on the newly published card name a number the app has
+    // already spent — the only thing that can then be delivered against them is
+    // newer still. Publishing the number and settling `renderRevision` here is
+    // what keeps the card addressable: leaving `renderRevision` behind would make
+    // the freshly drawn card unreachable for every subsequent interaction.
+    const cardRevision = revision ?? entry.claimedRevision;
+    entry.renderRevision = cardRevision;
     let card: {
       content: string;
       /** Extra chunks past the first; empty when the card fits in one message. */
@@ -1320,11 +1421,30 @@ export class DiscordChannel implements MessageChannelRuntime {
   private async handleElicitationAnswerPrompt(
     interaction: DiscordButtonInteraction,
     fieldIndex: number,
+    /** The revision the triggering control named. */
+    revision?: number,
   ): Promise<void> {
     const entry = this.findElicitationByToken(interaction.customId);
     if (!entry) return;
     if (authorizeElicitationClick(entry, interaction.userId) !== null) {
       await interaction.replyEphemeral(getMessages().elicitationUnauthorized);
+      return;
+    }
+    // The control that opened this modal must name the card it came from.
+    //
+    // An unversioned Answer control used to be stamped with the CURRENT revision
+    // at modal-build time, which laundered a stale interaction into a fresh modal:
+    // a click from an old card opened a modal that every later fence would accept.
+    // The modal now carries the revision of the card the user actually clicked,
+    // and an interaction that named no revision at all is refused rather than
+    // granted one.
+    if (revision === undefined || revision < entry.claimedRevision) {
+      await this.logger?.warn("discord.elicitation.stale_answer_prompt", "dropped an Answer control from an earlier card revision", {
+        requestId: entry.requestId,
+        interactionRevision: revision ?? -1,
+        currentRevision: entry.renderRevision,
+      });
+      await interaction.acknowledge();
       return;
     }
     // Position-resolved: a schema key is not a valid routing id (core allows
@@ -1335,7 +1455,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       // Select kinds are answered in place; there is nothing to open a modal for.
       return;
     }
-    const modal = buildElicitationModal(entry.token, field, entry.values[field.key], fieldIndex, entry.renderRevision);
+    const modal = buildElicitationModal(entry.token, field, entry.values[field.key], fieldIndex, revision);
     try {
       await interaction.showModal(modal);
     } catch (error) {
@@ -1368,6 +1488,16 @@ export class DiscordChannel implements MessageChannelRuntime {
       await interaction.replyEphemeral(getMessages().elicitationUnauthorized);
       return;
     }
+    if (parsed.revision === undefined) {
+      // No revision, no write. An unversioned select cannot be placed on any
+      // card, so honouring it would write an answer that no visible control
+      // ever asked for.
+      await this.logger?.warn("discord.elicitation.unversioned_select", "dropped a select that named no card revision", {
+        requestId: entry.requestId,
+      });
+      await interaction.acknowledge();
+      return;
+    }
     // CARD REVISION FENCE. A select is a STATE WRITE, not a rerender trigger: it
     // records an answer directly and the render queue does not serialise it. A
     // select delivered after the wizard moved on would therefore record a value
@@ -1376,11 +1506,19 @@ export class DiscordChannel implements MessageChannelRuntime {
     // screen showed staging, and the next Submit sent the value the user had
     // already replaced. Dropping it is the honest outcome: the card the user is
     // on still has its own live select.
-    if (parsed.revision !== undefined && parsed.revision < entry.renderRevision) {
+    //
+    // NO CLAIM HERE, unlike the navigation paths. A select does not publish a new
+    // card, so bumping the revision would retire the control the user is still
+    // looking at and the very next selection from the same card would be dropped.
+    // The protection comes from the other side instead: every navigation handler
+    // claims its revision synchronously, before its ACK, so an interaction that
+    // raced ahead of it arrives against a retired number and is dropped there.
+    if (parsed.revision < entry.claimedRevision) {
       await this.logger?.warn("discord.elicitation.stale_select", "dropped a select from an earlier card revision", {
         requestId: entry.requestId,
         interactionRevision: parsed.revision,
         currentRevision: entry.renderRevision,
+        claimedRevision: entry.claimedRevision,
       });
       await interaction.acknowledge();
       return;
@@ -1441,10 +1579,19 @@ export class DiscordChannel implements MessageChannelRuntime {
     // STATE WRITE. A modal left open across an Edit can be submitted after the
     // wizard has moved on, and honouring it would overwrite the newer answer with
     // whatever the old modal was showing.
-    if (parsed.revision !== undefined && parsed.revision < entry.renderRevision) {
+    //
+    // MANDATORY, so `parsed.revision === undefined` falls into this branch and is
+    // dropped: an Answer control without a revision is refused before it can open
+    // a modal, so a modal that names no revision was never produced by this
+    // renderer.
+    //
+    // NO CLAIM HERE either, and for the same reason as the select — the submit
+    // does not publish a card, so retiring a number would kill the control the
+    // user is still looking at.
+    if (parsed.revision === undefined || parsed.revision < entry.claimedRevision) {
       await this.logger?.warn("discord.elicitation.stale_modal", "dropped a modal submit from an earlier card revision", {
         requestId: entry.requestId,
-        modalRevision: parsed.revision,
+        modalRevision: parsed.revision ?? -1,
         currentRevision: entry.renderRevision,
       });
       await interaction.replyEphemeral(getMessages().elicitationReviewUpdating);
