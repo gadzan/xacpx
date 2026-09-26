@@ -172,20 +172,37 @@ function worstEchoText(field: ChannelElicitationField): string {
 /**
  * The number whose rendered form is the widest a legal answer can produce.
  *
- * `String()` of a finite double is at most 24 characters — `-Number.MAX_VALUE` —
+ * `String()` of a finite double is at most 24 characters — `Number.MAX_VALUE` —
  * and none of the characters it can emit (digits, `-`, `.`, `e`, `+`) are escaped
  * by `escapeDiscordLiteralText`, so the rendered width equals the character count.
- * That makes the bound exact rather than approximate: 24 characters is the
- * widest, and every other finite number renders at or under it.
+ * That makes 24 the widest any finite number can render to, and every other
+ * finite number renders at or under it.
  *
- * Clamped to the schema's declared bounds when it has them, so a
- * `maximum: 100` field does not carry 24 characters it can never reach.
+ * NO INTERVAL CLAMP. A finite interval's longest `String(number)` cannot be
+ * inferred from its endpoints: `{minimum: 1, maximum: 2}` admits
+ * `1.2345678901234567`, which renders 18 characters from a range whose endpoints
+ * render one each. Clamping to the nearest endpoint is therefore not a bound at
+ * all — it is a single point, and the interior of the range is wider than both of
+ * its ends. That is exactly the failure this function exists to prevent, one level
+ * down: the gate passes, the user answers, and the second field render overflows.
+ *
+ * The only sound narrowing is by SIGN, and only because the negative form is
+ * strictly one character wider than its magnitude. When the schema declares a
+ * non-negative lower bound, the negative spelling is unreachable and the widest
+ * reachable rendering is the positive one. Every other case keeps the negative
+ * form, which subsumes the positive and any interior value.
+ *
+ * The cost of that is ~20 reserved characters on forms already sitting within a
+ * few characters of the 1800 budget. Those forms are refused, so this can
+ * over-refuse at the extreme boundary. The alternative is a post-answer render
+ * failure on a form the gate accepted, which is unrecoverable — and over-refusing
+ * a 20-character-near-1800 description is a far smaller harm than answering a
+ * question and then being unable to see it again.
  */
 function widestNumberEcho(field: Extract<ChannelElicitationField, { kind: "number" }>): number {
-  const widest = -Number.MAX_VALUE;
-  if (field.minimum !== undefined && widest < field.minimum) return field.minimum;
-  if (field.maximum !== undefined && widest > field.maximum) return field.maximum;
-  return widest;
+  return field.minimum !== undefined && field.minimum >= 0
+    ? Number.MAX_VALUE
+    : -Number.MAX_VALUE;
 }
 
 /** Cut a rendered string to `max`, appending an ellipsis when it is cut. */

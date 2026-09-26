@@ -547,26 +547,101 @@ test("a number field's reserved echo is the widest legal number, not zero", () =
   expect(verdict.reason).toBe("field-text-too-long");
 });
 
-test("a number field bounded by a small maximum does not carry a 24-char echo", () => {
-  // The other direction: the bound is clamped to the schema's own range, so a
-  // `maximum: 100` field does not have 24 characters reserved against it that it
-  // can never reach. Reserving the widest finite double unconditionally would
-  // over-refuse legal forms, which is the opposite failure.
+test("a number field's bound is not inferred from its interval's endpoints", () => {
+  // A finite interval's longest `String(number)` is NOT at either end.
+  //
+  // `{minimum: 1, maximum: 2}` renders its endpoints at one character each, and
+  // admits `1.2345678901234567` — 18 characters, from the same range. The previous
+  // implementation clamped the reserved echo to the nearest endpoint, which is a
+  // single point and not a bound: the interior of the range is wider than both of
+  // its ends.
+  //
+  // Same shape as the other echo bugs — gate passes, user answers, second render
+  // overflows, and by then the field cannot be refused any more.
   const fields: ChannelElicitationRequest["fields"] = [{
     kind: "number",
     key: "n",
     title: "N",
     required: true,
-    maximum: 100,
-    description: "*".repeat(840),
+    minimum: 1,
+    maximum: 2,
+    // Sized so the single-character endpoints fit the budget while the legal
+    // interior answer does not.
+    description: "*".repeat(859),
   }];
   const request = requestFor(fields);
-  const withMax = buildElicitationFieldLines(request, fields[0]!, 1, 100).join("\n\n").length;
-  // With the clamp, the reserved echo is `100` (3 chars), so a field sized for
-  // that stays inside the budget.
-  expect(withMax).toBeLessThanOrEqual(1800);
-  expect(checkElicitationRenderability(fields, request).renderable).toBe(true);
+  // The premise, both sides measured: the endpoint would have passed, the legal
+  // interior answer overflows.
+  const atEndpoint = buildElicitationFieldLines(request, fields[0]!, 1, 1).join("\n\n").length;
+  const atInterior = buildElicitationFieldLines(request, fields[0]!, 1, 1.2345678901234567).join("\n\n").length;
+  expect(atEndpoint).toBeLessThanOrEqual(1800);
+  expect(atInterior).toBeGreaterThan(1800);
+
+  // The gate must reserve for the interior, so it refuses.
+  const verdict = checkElicitationRenderability(fields, request);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("field-text-too-long");
 });
+
+test("a number field with a non-negative minimum reserves the positive widest rendering", () => {
+  // The only sound narrowing, and only by SIGN: the negative spelling is exactly
+  // one character wider than its magnitude, so a declared `minimum >= 0` makes
+  // the negative form unreachable and the positive one is the widest REACHABLE
+  // rendering.
+  //
+  // Two things this asserts, so it cannot pass vacuously. First that the sign rule
+  // actually fires (a field with an all-negative range keeps the longer form).
+  // Second that the reserved value is really the one whose width the gate uses,
+  // which is checked by finding a description sized so the sign difference is what
+  // decides the verdict.
+  const { fields: wide, request: wideReq } = numberBoundFixture();
+  const atNegative = buildElicitationFieldLines(wideReq, wide[0]!, 1, -Number.MAX_VALUE).join("\n\n").length;
+  const atPositive = buildElicitationFieldLines(wideReq, wide[0]!, 1, Number.MAX_VALUE).join("\n\n").length;
+  // The premise: one character decides it.
+  expect(atNegative).toBe(atPositive + 1);
+
+  const nonNegative: ChannelElicitationRequest["fields"] = [{
+    kind: "number",
+    key: "n",
+    title: "N",
+    required: true,
+    minimum: 0,
+    description: "*".repeat(numberBoundSize()),
+  }];
+  const nonNegativeRequest = requestFor(nonNegative);
+  const nonNegativeWidth = buildElicitationFieldLines(
+    nonNegativeRequest,
+    nonNegative[0]!,
+    1,
+    Number.MAX_VALUE,
+  ).join("\n\n").length;
+  // Sized to the POSITIVE rendering: the gate reserves the positive form, so this
+  // field is accepted rather than refused for a rendering it cannot reach.
+  expect(nonNegativeWidth).toBeLessThanOrEqual(1800);
+  expect(checkElicitationRenderability(nonNegative, nonNegativeRequest).renderable).toBe(true);
+});
+
+/**
+ * A near-boundary number field and its description size, shared by the two
+ * number-bounds tests so their premises cannot drift apart.
+ */
+function numberBoundFixture(): { fields: ChannelElicitationRequest["fields"]; request: ChannelElicitationRequest } {
+  const fields: ChannelElicitationRequest["fields"] = [{
+    kind: "number",
+    key: "n",
+    title: "N",
+    required: true,
+    // No declared bounds, so the negative form is reachable and the sign rule
+    // does not narrow.
+    description: "*".repeat(numberBoundSize()),
+  }];
+  return { fields, request: requestFor(fields) };
+}
+
+/** The description size that puts a number field exactly at the echo boundary. */
+function numberBoundSize(): number {
+  return 851;
+}
 test("a multi-select's reserved echo bounds a legal subset, not the all-options sample", () => {
   // The echo is `escape(truncate(displayValue(answer), 200))` — cut to 200 RAW
   // characters and only THEN escaped. That ordering is what makes the
