@@ -1055,13 +1055,19 @@ test("merge: an equidistant tie resolves the newer incarnation, not the older on
     new Set(["133801632000000020", "133801632000000015"]),
   );
 
-  // Convergence form: the same situation assembled over two rounds behaves the
-  // same way, so the rule holds in the real caller's shape (accumulate, then
-  // merge each new round). The reverse-side case is deliberately NOT asserted:
-  // `mergeByIdentity` seeds from `a` verbatim as a correctness precondition
-  // (re-clustering the accumulated side would resurrect boundaries an earlier
-  // round established), so production only ever calls it accumulated-first.
-  const firstRound = mergeEvidence(
+  // Convergence form, one round per merge so every side has the shape the real
+  // decoder can produce. `decodeWindowsDescendantsResponse` keeps a `seen` set,
+  // so a single round NEVER reports one pid in both `outcomes` and `leftover` —
+  // each merge below contributes exactly one observation, exactly as in
+  // `convergeOrphansBeforeExit`'s accumulate-then-merge loop.
+  //   round 1: P1 resolves (cim 010, already-exited)
+  //   round 2: P2 appears, still live (cim 020, leftover)
+  //   round 3: P2 is verified by handle (015 killed)
+  // The reverse-side case is deliberately NOT asserted: `mergeByIdentity` seeds
+  // from `a` verbatim as a correctness precondition (re-clustering the
+  // accumulated side would resurrect boundaries an earlier round established),
+  // so production only ever calls it accumulated-first.
+  let converge = mergeEvidence(
     { verified: false, outcomes: [], leftover: [] },
     {
       verified: false,
@@ -1070,14 +1076,19 @@ test("merge: an equidistant tie resolves the newer incarnation, not the older on
         creationDate: "133801632000000010", commandLine: "old", executablePath: "C:\\old.exe",
         fingerprintSource: "cim",
       }],
-      leftover: [{
-        pid: 5002,
-        creationDate: "133801632000000020", commandLine: "live", executablePath: "C:\\live.exe",
-        fingerprintSource: "cim",
-      }],
+      leftover: [],
     },
   );
-  const secondRound = mergeEvidence(firstRound, {
+  converge = mergeEvidence(converge, {
+    verified: false,
+    outcomes: [],
+    leftover: [{
+      pid: 5002,
+      creationDate: "133801632000000020", commandLine: "live", executablePath: "C:\\live.exe",
+      fingerprintSource: "cim",
+    }],
+  });
+  converge = mergeEvidence(converge, {
     verified: true,
     outcomes: [{
       pid: 5002, outcome: "killed",
@@ -1086,59 +1097,72 @@ test("merge: an equidistant tie resolves the newer incarnation, not the older on
     }],
     leftover: [],
   });
-  expect(secondRound.leftover.filter((item) => item.pid === 5002)).toHaveLength(0);
-  const rows2 = secondRound.outcomes.filter((item) => item.pid === 5002);
+  // Same verdict as the single-shot shape: P2 resolves, P1 is untouched, and no
+  // stale P2 evidence is left behind to spool.
+  expect(converge.leftover.filter((item) => item.pid === 5002)).toHaveLength(0);
+  const rows2 = converge.outcomes.filter((item) => item.pid === 5002);
   expect(rows2).toHaveLength(2);
-  expect(rows2.find((item) => item.fingerprintSource === "handle")?.outcome).toBe("killed");
-  expect(rows2.find((item) => item.fingerprintSource === "cim")?.creationDate)
-    .toBe("133801632000000010");
+  const resolved2 = rows2.find((item) => item.fingerprintSource === "handle");
+  expect(resolved2?.outcome).toBe("killed");
+  expect(new Set(resolved2?.identityPrints?.map((print) => print.creationDate)))
+    .toEqual(new Set(["133801632000000020", "133801632000000015"]));
+  const kept2 = rows2.find((item) => item.fingerprintSource === "cim");
+  expect(kept2?.creationDate).toBe("133801632000000010");
+  expect(new Set(kept2?.identityPrints?.map((print) => print.creationDate)))
+    .toEqual(new Set(["133801632000000010"]));
 
-  // A genuinely CLOSER cluster still wins over a farther later-registered one:
-  // this is a tie-break, not a blanket "last wins". cim 040 is older, cim 048 was
-  // registered after it, and handle 044 is 4 from EACH — so this block starts
-  // from the post-tie state and then moves the next print off the midpoint:
-  // handle 045 is 5 from 040 but 3 from 048, so distance must decide.
-  const fartherOlder = {
+  // The precedence this block must actually pin: DISTANCE beats rank, even when
+  // the nearer cluster is the EARLIER one. cim 045 is the older cluster and
+  // cim 056 was registered after it; handle 048 is 3 from the old one and 8 from
+  // the new one. If rank came first, the handle would be pulled into the newer
+  // cluster — the exact inversion the tie-break is meant to prevent, applied to
+  // the non-tie case.
+  //
+  // (The reverse arrangement — nearer cluster also newer — is NOT discriminating:
+  // both rules pick the same one, so it would pass whatever the precedence is.
+  // A regression that passes under both orderings is not a precedence test.)
+  let precedence = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [] },
+    {
+      verified: false,
+      outcomes: [{
+        pid: 5002, outcome: "access-denied",
+        creationDate: "133801632000000045", commandLine: "near-old", executablePath: "C:\\near.exe",
+        fingerprintSource: "cim",
+      }],
+      leftover: [],
+    },
+  );
+  precedence = mergeEvidence(precedence, {
     verified: false,
     outcomes: [{
       pid: 5002, outcome: "access-denied",
-      creationDate: "133801632000000040", commandLine: "far", executablePath: "C:\\far.exe",
-      fingerprintSource: "cim",
-    }],
-    leftover: [],
-  };
-  const twoClusters = mergeEvidence(fartherOlder, {
-    verified: false,
-    outcomes: [{
-      pid: 5002, outcome: "access-denied",
-      creationDate: "133801632000000050", commandLine: "near", executablePath: "C:\\near.exe",
+      creationDate: "133801632000000056", commandLine: "far-new", executablePath: "C:\\far.exe",
       fingerprintSource: "cim",
     }],
     leftover: [],
   });
-  const joined = mergeEvidence(twoClusters, {
+  precedence = mergeEvidence(precedence, {
     verified: false,
     outcomes: [{
       pid: 5002, outcome: "killed",
-      creationDate: "133801632000000045", commandLine: "near", executablePath: "C:\\near.exe",
+      creationDate: "133801632000000048", commandLine: "near-old", executablePath: "C:\\near.exe",
       fingerprintSource: "handle",
     }],
     leftover: [],
   });
-  // The handle joined the LATER cluster, whose survivor is now the handle record
-  // (winsOver prefers the safe outcome); the cluster keeps its own CIM history in
-  // identityPrints, and the older cluster stays at its own cim row untouched.
-  const rows3 = joined.outcomes.filter((item) => item.pid === 5002);
-  expect(rows3).toHaveLength(2);
-  const resolved = rows3.find((item) => item.fingerprintSource === "handle");
-  expect(resolved?.outcome).toBe("killed");
-  expect(new Set(resolved?.identityPrints?.map((print) => print.creationDate)))
-    .toEqual(new Set(["133801632000000050", "133801632000000045"]));
-  const far = rows3.find((item) => item.fingerprintSource === "cim");
-  expect(far?.creationDate).toBe("133801632000000040");
-  expect(far?.outcome).toBe("access-denied");
-  expect(new Set(far?.identityPrints?.map((print) => print.creationDate)))
-    .toEqual(new Set(["133801632000000040"]));
+  const precedenceRows = precedence.outcomes.filter((item) => item.pid === 5002);
+  expect(precedenceRows).toHaveLength(2);
+  const nearHandle = precedenceRows.find((item) => item.fingerprintSource === "handle");
+  expect(nearHandle?.outcome).toBe("killed");
+  expect(new Set(nearHandle?.identityPrints?.map((print) => print.creationDate)))
+    .toEqual(new Set(["133801632000000045", "133801632000000048"]));
+  // The later, farther cluster keeps its own row and did NOT absorb the handle.
+  const farNew = precedenceRows.find((item) => item.fingerprintSource === "cim");
+  expect(farNew?.creationDate).toBe("133801632000000056");
+  expect(farNew?.outcome).toBe("access-denied");
+  expect(new Set(farNew?.identityPrints?.map((print) => print.creationDate)))
+    .toEqual(new Set(["133801632000000056"]));
 });
 
 test("evidence identity is stable when a CIM commandLine is still missing", () => {
