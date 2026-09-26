@@ -98,6 +98,48 @@ describe("useGroupsStore", () => {
     expect(store.topicReady).toBe(true);
   });
 
+  it("does not let a slower Group selection overwrite a newer one", async () => {
+    const store = useGroupsStore();
+    const groupA: GroupSummaryDto = { ...GROUP, id: "conversation_a", title: "A", leadBotId: "bot_a", botIds: ["bot_a"] };
+    const groupB: GroupSummaryDto = { ...GROUP, id: "conversation_b", title: "B", leadBotId: "bot_b", botIds: ["bot_b"] };
+    // Group A's bots.list hangs until the test releases it.
+    let releaseA!: () => void;
+    const aHang = new Promise<void>((resolve) => { releaseA = resolve; });
+    let aBotsRequested = false;
+    mockRpc.mockImplementation(async (inst: string, type: string, payload?: unknown) => {
+      if (type === "control.groups.list") return { groups: [groupA, groupB] };
+      if (type === "control.topics.list") {
+        const conversationId = (payload as { conversationId: string }).conversationId;
+        return { topics: [{ id: `topic_${conversationId}`, conversationId, title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" }] };
+      }
+      if (type === "control.bots.list") {
+        if (!aBotsRequested) {
+          aBotsRequested = true;
+          await aHang;
+          return { bots: [{ id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" }] };
+        }
+        return { bots: [{ id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" }] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        return { runs: [], conversationId: store.activeConversationId ?? "conversation_b", topicId: store.activeTopicId ?? "topic_conversation_b" };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    // Select A (its bots request parks), then complete the selection of B.
+    const selectingA = store.selectGroup("inst_1", "conversation_a");
+    await flushPromises();
+    expect(aBotsRequested).toBe(true);
+    await store.selectGroup("inst_1", "conversation_b");
+    // Now let A's slow response land: it must not touch B's selection.
+    releaseA();
+    await selectingA;
+    await flushPromises();
+    expect(store.selectedGroupId).toBe("conversation_b");
+    expect(store.activeConversationId).toBe("conversation_b");
+    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+  });
+
   it("opens the first active Topic, not the oldest archived one", async () => {
     const store = useGroupsStore();
     mockRpc.mockImplementation(async (inst: string, type: string) => {

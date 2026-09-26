@@ -228,6 +228,16 @@ test("parseControlPayload validates group RPC shapes and rejects junk isolation"
     conversationId: "conversation_g", title: "Bad",
     target: { workspace: "backend", isolation: "mesh" },
   })).toBeNull();
+  // Create-time only: worktree-per-member has no provisioning, so a Topic
+  // created with it could never execute. Topic responses stay legacy-tolerant.
+  expect(parseControlPayload(MSG.groupTopicsCreate, {
+    conversationId: "conversation_g", title: "Bad",
+    target: { workspace: "backend", isolation: "worktree-per-member" },
+  })).toBeNull();
+  expect(parseControlPayload(MSG.groupTopicsCreate, {
+    conversationId: "conversation_g", title: "Good",
+    target: { workspace: "backend", isolation: "shared" },
+  })).not.toBeNull();
   expect(parseControlPayload(MSG.groupTopicsCreate, {
     conversationId: "conversation_g", title: "Bad", target: { isolation: "shared" },
   })).toBeNull();

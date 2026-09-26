@@ -1044,6 +1044,12 @@ export const useGroupsStore = defineStore("groups", () => {
       // catalog (enabled state) rather than membership alone: a disabled lead
       // falls through to the first enabled member.
       const bots = await directBotsStore.loadBots(targetInstanceId).catch(() => null);
+      // Fence BEFORE the write, not after: the slower Group's loadBots can
+      // settle after the user has already opened another Group, and writing
+      // here would overwrite that Group's target with the stale one's member.
+      if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
+        return;
+      }
       targetSelection.value = defaultTargetFor(group, bots ?? directBotsStore.botsByInstance[targetInstanceId] ?? []);
       const topics = await loadTopics(targetInstanceId, group.id);
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {

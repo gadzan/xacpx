@@ -276,7 +276,17 @@ export interface BotDetailDto extends BotSummaryDto {
 export interface ExecutionTargetDto {
     workspace: string;
     cwd?: string;
+    /** Responses must stay legacy-tolerant: a Topic persisted before the
+     *  worktree gate can still carry `worktree-per-member`. Creation refuses it. */
     isolation: "shared" | "shared-single-writer" | "worktree-per-member";
+}
+/** Create-time Topic execution target. PR7 supports the two shared policies
+ *  only: `worktree-per-member` has no provisioning lifecycle, so a Topic
+ *  created with it could never execute (materialization fails closed). */
+export interface GroupTopicCreateTargetDto {
+    workspace: string;
+    cwd?: string;
+    isolation: "shared" | "shared-single-writer";
 }
 export interface TopicSummaryDto {
     id: string;

@@ -1006,7 +1006,7 @@ var validateTopicsCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.title) ? o : null;
 };
-var isIsolation = (v) => v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
+var isCreateIsolation = (v) => v === "shared" || v === "shared-single-writer";
 var validateGroupsCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description)) && (o.leadBotId === undefined || isStr(o.leadBotId)) ? o : null;
@@ -1043,7 +1043,7 @@ var validateGroupTopicsCreate = (p) => {
   if (!o || !isStr(o.conversationId) || !isStr(o.title))
     return null;
   const t = o.target;
-  if (!isObj(t) || !isStr(t.workspace) || t.cwd !== undefined && !isStr(t.cwd) || !isIsolation(t.isolation)) {
+  if (!isObj(t) || !isStr(t.workspace) || t.cwd !== undefined && !isStr(t.cwd) || !isCreateIsolation(t.isolation)) {
     return null;
   }
   return o;

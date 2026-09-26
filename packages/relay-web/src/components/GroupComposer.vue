@@ -106,15 +106,20 @@ interface MentionToken {
   everyone: boolean;
 }
 
-/** Committed tokens: every token that is closed (quote) or followed by
- *  whitespace/end-of-text. A trailing unterminated token is still pending. */
-function committedMentionTokens(text: string): MentionToken[] {
+/** Committed tokens during typing. A token commits only when a real delimiter
+ *  closes it — whitespace after it, or the closing quote — never at end-of-text:
+ *  while the user is still typing the caret sits at EOF, and an EOF rule would
+ *  route the current prefix (`@Ann` on the way to `@Anna`).
+ *  `endOfTextTerminates` opts into the EOF rule for explicit boundaries (send,
+ *  blur) where no further character will arrive. */
+function committedMentionTokens(text: string, endOfTextTerminates: boolean): MentionToken[] {
   const tokens: MentionToken[] = [];
   for (const match of text.matchAll(MENTION_TOKEN)) {
     const start = match.index ?? 0;
     const end = start + match[0].length;
-    const terminated = end >= text.length || /[\s\n]/.test(text[end] ?? "");
-    if (!terminated) continue;
+    if (end >= text.length ? !endOfTextTerminates : !/[\s\n]/.test(text[end] ?? "")) {
+      continue;
+    }
     const quoted = match[3];
     const bare = match[4] ?? "";
     if (quoted !== undefined) {
@@ -131,8 +136,9 @@ function committedMentionTokens(text: string): MentionToken[] {
 function deriveMentionTarget(
   text: string,
   bots: BotSummaryDto[],
+  endOfTextTerminates = false,
 ): { mode: "members"; botIds: string[] } | { mode: "everyone" } | null {
-  const tokens = committedMentionTokens(text);
+  const tokens = committedMentionTokens(text, endOfTextTerminates);
   if (tokens.length === 0) return null;
   if (tokens.some((token) => token.everyone)) {
     return { mode: "everyone" };
@@ -165,7 +171,19 @@ function onInput(): void {
   if (serialized === lastDerivedTarget.value) return;
   lastDerivedTarget.value = serialized;
   // Replace, never append: the mention text is the latest explicit intent and
-  // a superseded token (`@Ann` then `@Anna`) must not double-select.
+  // a superseded token must not double-select.
+  groupsStore.setTarget(derived);
+}
+
+/** Explicit boundaries where an unfinished token becomes final: send and blur. */
+function commitMentionAtBoundary(): void {
+  const el = textareaEl.value;
+  if (!el) return;
+  const derived = deriveMentionTarget(el.value, props.bots, true);
+  if (derived === null) return;
+  const serialized = JSON.stringify(derived);
+  if (serialized === lastDerivedTarget.value) return;
+  lastDerivedTarget.value = serialized;
   groupsStore.setTarget(derived);
 }
 
@@ -173,6 +191,9 @@ function handleSend(): void {
   if (props.disabled || groupsStore.promptInFlight || groupsStore.isRunActive || !groupsStore.topicReady) return;
   const text = promptText.value.trim();
   if (!text) return;
+  // The token under the caret is now final, so the structured target must
+  // reflect it before the store resolves the send target.
+  commitMentionAtBoundary();
   emit("send", text);
   promptText.value = "";
   // Textbook semantics: after a send the text no longer carries a mention, so
@@ -283,6 +304,7 @@ function onInputResize(): void {
         @keydown="onKeydown"
         @input="onInputResize"
         @input.capture="onInput"
+        @blur="commitMentionAtBoundary"
       />
       <div class="flex shrink-0 items-center gap-1 pb-1 pr-1">
         <button

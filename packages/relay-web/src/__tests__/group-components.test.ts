@@ -135,17 +135,54 @@ describe("Group Components", () => {
         global: { plugins: [i18n] },
       });
       const textarea = wrapper.find('[data-test="group-composer-textarea"]');
-      // Typing to the exact keyword does commit it, because the token is then
-      // terminated; the wave of exact-name keywords commits on the trailing whisker.
-      for (const step of ["@", "@e", "@ev", "@ever", "@every", "@everyo", "@everyone ", "@everyone"]) {
-        await textarea.setValue(step);
+      // Real char-by-char input through the exact keyword: no prefix commits
+      // while typing, because the caret sits at EOF the whole time.
+      let value = "";
+      for (const ch of ["@", "e", "v", "e", "r", "y", "o", "n", "e"]) {
+        value += ch;
+        await textarea.setValue(value);
+        expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
       }
+      // One more character makes the token not match: still unchanged.
+      await textarea.setValue(`${value}s`);
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+      // Backspacing to the keyword is still pending (no terminator yet).
+      await textarea.setValue(value);
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+      // The terminating space commits it.
+      await textarea.setValue(`${value} `);
       expect(groups.targetSelection).toEqual({ mode: "everyone" });
-      // Editing the mention out of the text leaves no committed token. The
-      // store keeps the last explicit pick (never silently-routes to nobody),
-      // and the picker menu is the way to change it back.
-      await textarea.setValue("plain text");
+    });
+
+    it("commits the pending token when the text is sent", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      // Typed to the exact keyword with no terminator, then sent: the boundary
+      // commit must apply the target that the send actually resolves.
+      await textarea.setValue("@everyone");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      expect(wrapper.emitted("send")).toEqual([["@everyone"]]);
       expect(groups.targetSelection).toEqual({ mode: "everyone" });
+    });
+
+    it("commits the pending token on blur", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      await textarea.setValue("@Tester");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+      await textarea.trigger("blur");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
     });
 
     it("commits @everyone once the token is terminated", async () => {

@@ -419,8 +419,11 @@ const validateTopicsCreate: Validator<TopicsCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.title) ? (o as unknown as TopicsCreatePayload) : null;
 };
-const isIsolation = (v: unknown): boolean =>
-  v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
+/** Create-time only: `worktree-per-member` is refused because no provisioning
+ *  exists, so the Topic could never execute. Topic responses use the separate
+ *  legacy-tolerant `validExecutionTarget` check. */
+const isCreateIsolation = (v: unknown): boolean =>
+  v === "shared" || v === "shared-single-writer";
 const validateGroupsCreate: Validator<GroupsCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description))
@@ -452,7 +455,7 @@ const validateGroupTopicsCreate: Validator<GroupTopicsCreatePayload> = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.conversationId) || !isStr(o.title)) return null;
   const t = o.target;
-  if (!isObj(t) || !isStr(t.workspace) || (t.cwd !== undefined && !isStr(t.cwd)) || !isIsolation(t.isolation)) {
+  if (!isObj(t) || !isStr(t.workspace) || (t.cwd !== undefined && !isStr(t.cwd)) || !isCreateIsolation(t.isolation)) {
     return null;
   }
   return o as unknown as GroupTopicsCreatePayload;

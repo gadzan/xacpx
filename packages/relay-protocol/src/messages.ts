@@ -32,6 +32,7 @@ import type {
   ExecutionTargetDto,
   GroupDetailDto,
   GroupSummaryDto,
+  GroupTopicCreateTargetDto,
   TopicSummaryDto,
 } from "./dtos.js";
 
@@ -527,7 +528,7 @@ export interface GroupsListResult {
 export interface GroupTopicsCreatePayload {
   conversationId: string;
   title: string;
-  target: ExecutionTargetDto;
+  target: GroupTopicCreateTargetDto;
 }
 export interface GroupTopicsArchivePayload {
   conversationId: string;
