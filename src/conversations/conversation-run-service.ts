@@ -725,8 +725,9 @@ export class ConversationRunService {
   }
 
   /** Gate-set probe for accept linearization. Targeted mode probes selected
-   *  IDs; everyone mode probes live membership plus runtime residue (same
-   *  union as archive) so a widening commit always triggers a retry. */
+   *  IDs; everyone mode probes the whole live membership plus runtime residue
+   *  (same union as archive), so any membership change — or a Bot flipping
+   *  between disabled/enabled, which changes the eligible set — retries. */
   private groupMemberCandidates(
     conversationId: string,
     parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" },
@@ -743,19 +744,22 @@ export class ConversationRunService {
   }
 
   /** Resolve the durable member list inside held gates. Everyone expands to
-   *  live membership order (disabled/missing members reject at snapshot, the
-   *  same fail-closed rule as targeted mode); unknown/non-member, empty,
-   *  and removed-member selections reject. */
+   *  the current eligible members — live membership filtered by the Bot being
+   *  enabled — because a disabled Bot is never executable and Group membership
+   *  deliberately tolerates disabled members. Targeted mode still rejects a
+   *  disabled/non-member/removed selection outright (the human named that Bot
+   *  explicitly); unknown selections and an empty eligible set reject. */
   private resolveGroupMembers(
     conversation: ConversationRecord,
     parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" },
   ): string[] {
     const membership = [...conversation.botIds];
     if (parsed.kind === "everyone") {
-      if (membership.length === 0) {
+      const eligible = membership.filter((botId) => this.bots.getBot(botId).enabled);
+      if (eligible.length === 0) {
         throw new ConversationError("empty_target", "explicit Group target selects no members");
       }
-      return membership;
+      return eligible;
     }
     if (parsed.botIds.length === 0) {
       throw new ConversationError("empty_target", "explicit Group target selects no members");

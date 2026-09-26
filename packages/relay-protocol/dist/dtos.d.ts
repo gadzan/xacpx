@@ -373,7 +373,9 @@ export interface BotProfileSnapshotDto {
     };
 }
 /** Explicit Group routing target. IDs are authority; display names never route.
- *  `automatic` is a durable-mode reservation (PR8) rejected by PR7 accept. */
+ *  `everyone` expands at accept to the current eligible members — live Group
+ *  membership filtered by the Bot being enabled. `automatic` is a durable-mode
+ *  reservation (PR8) rejected by PR7 accept. */
 export type ConversationTargetDto = {
     botId: string;
 } | {

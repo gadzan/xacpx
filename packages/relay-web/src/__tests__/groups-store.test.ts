@@ -80,6 +80,12 @@ describe("useGroupsStore", () => {
           role: "human", content: "hi", createdAt: "now",
         }]);
       }
+      if (type === "control.bots.list") {
+        return { bots: [
+          { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ] };
+      }
       if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_1" };
       throw new Error(`unexpected ${type}`);
     });
@@ -92,6 +98,80 @@ describe("useGroupsStore", () => {
     expect(store.topicReady).toBe(true);
   });
 
+  it("opens the first active Topic, not the oldest archived one", async () => {
+    const store = useGroupsStore();
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        // Oldest Topic is archived: the picker must skip it.
+        return { topics: [
+          { id: "topic_old", conversationId: "conversation_g", title: "Old", status: "archived", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+          { id: "topic_new", conversationId: "conversation_g", title: "Current", status: "active", createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" },
+        ] };
+      }
+      if (type === "control.bots.list") {
+        return { bots: [
+          { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_new" };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.selectGroup("inst_1", "conversation_g");
+    expect(store.activeTopicId).toBe("topic_new");
+    expect(store.currentTopic?.status).toBe("active");
+  });
+
+  it("skips a disabled lead and a disabled first member in the default target", async () => {
+    const store = useGroupsStore();
+    const disabledLead: GroupSummaryDto = { ...GROUP, leadBotId: "bot_a", botIds: ["bot_a", "bot_b"] };
+    // Bot catalog marks the lead disabled and the first member disabled: the
+    // default must fall to an executable member.
+    const store1 = useGroupsStore();
+    void store1;
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [disabledLead] };
+      if (type === "control.topics.list") {
+        return { topics: [{ id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" }] };
+      }
+      if (type === "control.bots.list") {
+        return { bots: [
+          { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: false, updatedAt: "now" },
+          { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_1" };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.selectGroup("inst_1", "conversation_g");
+    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+  });
+
+  it("default target falls back to everyone when every member is disabled", async () => {
+    const store = useGroupsStore();
+    const allDisabled: GroupSummaryDto = { ...GROUP, leadBotId: "bot_a", botIds: ["bot_a", "bot_b"] };
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [allDisabled] };
+      if (type === "control.topics.list") {
+        return { topics: [{ id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" }] };
+      }
+      if (type === "control.bots.list") {
+        return { bots: [
+          { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: false, updatedAt: "now" },
+          { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: false, updatedAt: "now" },
+        ] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_1" };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.selectGroup("inst_1", "conversation_g");
+    expect(store.targetSelection).toEqual({ mode: "everyone" });
+  });
+
   it("falls back to deterministic first-by-ID member when no lead is set", async () => {
     const store = useGroupsStore();
     const noLead: GroupSummaryDto = { ...GROUP, leadBotId: undefined, botIds: ["bot_b", "bot_a"] };
@@ -99,6 +179,12 @@ describe("useGroupsStore", () => {
       if (type === "control.groups.list") return { groups: [noLead] };
       if (type === "control.topics.list") {
         return { topics: [{ id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" }] };
+      }
+      if (type === "control.bots.list") {
+        return { bots: [
+          { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ] };
       }
       if (type === "control.conversation.history") return historyWith([]);
       if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_1" };

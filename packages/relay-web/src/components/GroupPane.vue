@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { MessageSquare, Plus, Users, X } from "lucide-vue-next";
+import { Archive, MessageSquare, Plus, Users, X } from "lucide-vue-next";
 import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useGroupsStore } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
@@ -35,6 +35,10 @@ function handleSend(text: string): void {
 function handleCancel(): void {
   void groupsStore.cancelCurrentRun();
 }
+
+// An archived Topic stays browsable (its transcript is durable history), but it
+// cannot accept new Runs — sending there is a guaranteed `topic_not_active`.
+const isActiveTopic = computed(() => groupsStore.currentTopic?.status === "active");
 </script>
 
 <template>
@@ -65,6 +69,7 @@ function handleCancel(): void {
           :key="topic.id"
           type="button"
           data-test="group-topic-pill"
+          :data-topic-status="topic.status"
           class="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors"
           :class="groupsStore.activeTopicId === topic.id
             ? 'bg-accent/15 font-semibold text-accent'
@@ -72,6 +77,7 @@ function handleCancel(): void {
           @click="groupsStore.switchTopic(topic.id)"
         >
           <span class="max-w-[140px] truncate">{{ topic.title || $t("bot.topic.default") }}</span>
+          <Archive v-if="topic.status !== 'active'" :size="10" class="shrink-0 opacity-70" />
         </button>
       </div>
       <button
@@ -96,7 +102,7 @@ function handleCancel(): void {
 
     <GroupComposer
       :bots="memberBots"
-      :disabled="!groupsStore.activeTopicId || !groupsStore.topicReady"
+      :disabled="!groupsStore.activeTopicId || !groupsStore.topicReady || !isActiveTopic"
       :instance-id="groupsStore.instanceId"
       @send="handleSend"
       @cancel="handleCancel"

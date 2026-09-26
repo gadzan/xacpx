@@ -105,22 +105,99 @@ describe("Group Components", () => {
       expect(off.attributes("disabled")).toBeDefined();
     });
 
-    it("only commits @everyone on the full token", async () => {
+    it("typing @Ann into @Anna never selects Ann first", async () => {
       const groups = seedGroupSelection();
-      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      groups.targetSelection = { mode: "members", botIds: [] };
+      // Both Ann and Anna are enabled members: the prefix is a real, valid
+      // target while it is being typed, so only the committed token may route.
       const wrapper = mount(GroupComposer, {
-        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        props: {
+          bots: [
+            { id: "bot_a", name: "Ann", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+            { id: "bot_b", name: "Anna", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          ],
+        },
         global: { plugins: [i18n] },
       });
       const textarea = wrapper.find('[data-test="group-composer-textarea"]');
-      await textarea.setValue("@");
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
-      await textarea.setValue("@e");
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
-      await textarea.setValue("@everyon");
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
-      await textarea.setValue("@everyone");
+      for (const step of ["@", "@A", "@An", "@Ann", "@Ann", "@Anna", "@Anna "]) {
+        await textarea.setValue(step);
+      }
+      // The pending/paused prefix never commits: only the finished token did.
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+    });
+
+    it("typing @everyones leaves everyone behind when the token does not match", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      // Typing to the exact keyword does commit it, because the token is then
+      // terminated; the wave of exact-name keywords commits on the trailing whisker.
+      for (const step of ["@", "@e", "@ev", "@ever", "@every", "@everyo", "@everyone ", "@everyone"]) {
+        await textarea.setValue(step);
+      }
       expect(groups.targetSelection).toEqual({ mode: "everyone" });
+      // Editing the mention out of the text leaves no committed token. The
+      // store keeps the last explicit pick (never silently-routes to nobody),
+      // and the picker menu is the way to change it back.
+      await textarea.setValue("plain text");
+      expect(groups.targetSelection).toEqual({ mode: "everyone" });
+    });
+
+    it("commits @everyone once the token is terminated", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      await textarea.setValue("@everyone ");
+      expect(groups.targetSelection).toEqual({ mode: "everyone" });
+      await textarea.setValue("@everyone please review");
+      expect(groups.targetSelection).toEqual({ mode: "everyone" });
+    });
+
+    it("supports CJK names and quoted spaced names", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: [] };
+      const wrapper = mount(GroupComposer, {
+        props: {
+          bots: [
+            { id: "bot_a", name: "张三", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+            { id: "bot_b", name: "Code Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          ],
+        },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      // Unquoted CJK token contains no whitespace, so it terminates at end-of-text.
+      await textarea.setValue("@张三 ");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+      // Spaced names need the quoted form: the unquoted prefix stays ambiguous.
+      groups.targetSelection = { mode: "members", botIds: [] };
+      await textarea.setValue("@Code ");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: [] });
+      await textarea.setValue('@"Code Reviewer" ');
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+    });
+
+    it("replaces rather than appends when the mention set changes", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: [] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      await textarea.setValue("@Reviewer ");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+      await textarea.setValue("@Tester ");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
     });
 
     it("resolves @Name only for a unique enabled member", async () => {
@@ -131,23 +208,24 @@ describe("Group Components", () => {
         global: { plugins: [i18n] },
       });
       const textarea = wrapper.find('[data-test="group-composer-textarea"]');
-      await textarea.setValue("@Tester");
+      // Token must be terminated: end-of-text counts, then whitespace.
+      await textarea.setValue("@Tester ");
       expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
       // Disabled Sleeper is not routable even though its name is exact.
-      await textarea.setValue("@Sleeper");
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
-      // Ambiguous duplicate name: never auto-pick the first row.
       groups.targetSelection = { mode: "members", botIds: [] };
+      await textarea.setValue("@Sleeper ");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: [] });
+      // Ambiguous duplicate name: never auto-pick the first row.
       const dup = [
         { ...BOTS[0]!, id: "bot_a", name: "Same" },
         { ...BOTS[1]!, id: "bot_b", name: "Same" },
       ];
       await wrapper.setProps({ bots: dup });
-      await textarea.setValue("@Same");
+      await textarea.setValue("@Same ");
       expect(groups.targetSelection).toEqual({ mode: "members", botIds: [] });
       // Unique match still routes after the ambiguity is removed.
       await wrapper.setProps({ bots: [dup[0]!] });
-      await textarea.setValue("@Same");
+      await textarea.setValue("@Same ");
       expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
     });
   });
@@ -240,6 +318,20 @@ describe("Group Components", () => {
       expect(wrapper.find('[data-test="group-topic-pill"]').exists()).toBe(true);
       expect(wrapper.find('[data-test="group-send-prompt-button"]').exists()).toBe(true);
       expect(direct.isBotSelected).toBe(false);
+    });
+
+    it("disables the composer and marks the pill on an archived Topic", async () => {
+      seedGroupSelection();
+      const groups = useGroupsStore();
+      groups.topicsByConversation["i1:conversation_g"] = [
+        { id: "topic_1", conversationId: "conversation_g", title: "Old", status: "archived", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+      ];
+      groups.activeTopicId = "topic_1";
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      expect(wrapper.find('[data-test="group-topic-pill"]').attributes("data-topic-status")).toBe("archived");
+      expect(wrapper.find('[data-test="group-composer-textarea"]').attributes("disabled")).toBeDefined();
+      expect(wrapper.find('[data-test="group-send-prompt-button"]').exists()).toBe(true);
     });
   });
 

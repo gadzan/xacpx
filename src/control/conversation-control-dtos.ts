@@ -193,10 +193,12 @@ export interface MemberTurnSummaryDto {
 }
 
 /** Explicit Group routing target. IDs are authority; display names are
- *  presentation only and never route. `members` deduplicates by Bot ID with
- *  stable order; `everyone` expands to current eligible members at accept.
- *  `automatic` is a durable-mode reservation (PR8) and is rejected by the
- *  PR7 explicit accept path. */
+ * presentation only and never route. `members` deduplicates by Bot ID with
+ * stable order; `everyone` expands at accept to the current eligible members
+ * (live Group membership with enabled Bots), so a disabled member is skipped
+ * while a deliberately disabled Group member keeps its seat. `automatic` is a
+ * durable-mode reservation (PR8) and is rejected by the PR7 explicit accept
+ * path. */
 export type ConversationTarget =
   | { botId: string }
   | { mode: "members"; botIds: string[] }

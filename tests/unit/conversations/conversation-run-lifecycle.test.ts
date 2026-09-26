@@ -5893,13 +5893,25 @@ test("PR7 group accept: duplicate IDs deduplicate, everyone expands, empty/unkno
     text: "disabled",
     target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
   })).rejects.toMatchObject({ code: "bot_disabled" });
-  await expect(first.service.acceptGroupPrompt({
+  // Everyone is the eligible set, not the full membership: a disabled member
+  // is skipped rather than failing the whole accept.
+  const everyoneEligible = await first.service.acceptGroupPrompt({
     conversationId: group.id,
     topicId: topic.id,
     requestId: "req-pr7-everyone-disabled",
     text: "all disabled",
     target: { mode: "everyone" },
-  })).rejects.toMatchObject({ code: "bot_disabled" });
+  });
+  expect(everyoneEligible.memberTurns.map((turn) => turn.botId)).toEqual([BOT_ID]);
+  // No eligible member at all: stable empty_target.
+  await first.bots.updateBot(BOT_ID, { enabled: false });
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-everyone-none",
+    text: "no eligible",
+    target: { mode: "everyone" },
+  })).rejects.toMatchObject({ code: "empty_target" });
   await expect(first.service.acceptGroupPrompt({
     conversationId: group.id,
     topicId: topic.id,

@@ -22,6 +22,7 @@ import {
   type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
+import { useDirectBotsStore } from "./direct-bots";
 
 export interface GroupLiveTurn {
   parts: TurnPartDto[];
@@ -215,6 +216,9 @@ function persistGroupSelection(instanceId: string | null, groupId: string | null
  * composer always sends an explicit members/everyone selection.
  */
 export const useGroupsStore = defineStore("groups", () => {
+  // Shared Bot catalog: Group default targets and member labels need the
+  // enabled state the Direct list already resolves. Read-only consumer.
+  const directBotsStore = useDirectBotsStore();
   let currentSelectionGeneration = 0;
   let recoveryGeneration = 0;
   let historyRequestSequence = 0;
@@ -343,11 +347,16 @@ export const useGroupsStore = defineStore("groups", () => {
   });
   const liveTurns = computed<Record<string, GroupLiveTurn>>(() => liveTurnsByMember.value);
 
-  function defaultTargetFor(group: GroupSummaryDto | GroupDetailDto): GroupTargetSelection {
-    if (group.leadBotId) {
+  /** Default target for a freshly opened Group: the enabled lead if the lead is
+   *  still executable, else the first enabled member in stable ID order, else
+   *  everyone (which itself expands to the eligible set). A disabled lead must
+   *  never become a default that the first send cannot execute. */
+  function defaultTargetFor(group: GroupSummaryDto | GroupDetailDto, bots: BotSummaryDto[]): GroupTargetSelection {
+    const eligible = group.botIds.filter((id) => bots.find((b) => b.id === id)?.enabled);
+    if (group.leadBotId && eligible.includes(group.leadBotId)) {
       return { mode: "members", botIds: [group.leadBotId] };
     }
-    const first = [...group.botIds].sort()[0];
+    const first = [...eligible].sort()[0];
     return first ? { mode: "members", botIds: [first] } : { mode: "everyone" };
   }
 
@@ -1031,12 +1040,21 @@ export const useGroupsStore = defineStore("groups", () => {
         return;
       }
       activeConversationId.value = group.id;
-      targetSelection.value = defaultTargetFor(group);
+      // The default target must be executable, so it derives from the Bot
+      // catalog (enabled state) rather than membership alone: a disabled lead
+      // falls through to the first enabled member.
+      const bots = await directBotsStore.loadBots(targetInstanceId).catch(() => null);
+      targetSelection.value = defaultTargetFor(group, bots ?? directBotsStore.botsByInstance[targetInstanceId] ?? []);
       const topics = await loadTopics(targetInstanceId, group.id);
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
         return;
       }
-      const targetTopicId = group.defaultTopicId ?? topics[0]?.id;
+      // Prefer the Group's default, else the first ACTIVE Topic: opening a Group
+      // whose oldest Topic is archived must not land the composer in a state
+      // where every send is refused with topic_not_active.
+      const targetTopicId = group.defaultTopicId
+        ?? topics.find((topic) => topic.status === "active")?.id
+        ?? topics[0]?.id;
       if (targetTopicId) {
         activeTopicId.value = targetTopicId;
         await loadHistory(targetInstanceId, group.id, targetTopicId);

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { AtSign, Check, ChevronDown, Users, X } from "lucide-vue-next";
 import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
@@ -24,6 +24,11 @@ const promptText = ref("");
 const menuOpen = ref(false);
 const textareaEl = ref<HTMLTextAreaElement | null>(null);
 
+/** Serialized target last derived from the mention text. Lets an unchanged
+ *  text (caret moves, resize) skip the store write, and lets the text be
+ *  edited away without a stale suppression. */
+const lastDerivedTarget = ref<string | null>(null);
+
 const selection = computed(() => groupsStore.targetSelection);
 const isEveryone = computed(() => selection.value?.mode === "everyone");
 const selectedIds = computed<string[]>(() =>
@@ -37,6 +42,12 @@ const selectionLabel = computed(() => {
     return props.bots.find((b) => b.id === selectedIds.value[0])?.name ?? t("group.target.selectMembers");
   }
   return t("group.target.memberCount", { count: selectedIds.value.length });
+});
+
+// A Group/Topic switch drops the draft text, so the derived suppression must
+// drop with it (otherwise the first mention in the next draft is ignored).
+watch(() => groupsStore.activeTopicId, () => {
+  lastDerivedTarget.value = null;
 });
 
 function toggleMenu(): void {
@@ -79,30 +90,83 @@ function onKeydown(e: KeyboardEvent): void {
   if (e.key === "Escape") closeMenu();
 }
 
-function handleInput(e: InputEvent): void {
+/** Terminated mention tokens only. A token is committed when it is closed or
+ *  followed by whitespace — never mid-typing, so typing `@Ann` towards `@Anna`
+ *  (both are members) cannot select Ann first and then append Anna.
+ *  Quoted tokens (`@"Code Reviewer"`) allow display names with spaces; unquoted
+ *  tokens stop at whitespace so they cannot swallow the rest of the sentence.
+ *  Names may be CJK or any non-space character (Bot names are only bounded by
+ *  a non-empty ≤80 rule). */
+const MENTION_TOKEN = /(^|[\s\n])@("([^"]*)"|([^\s@]*))/g;
+
+interface MentionToken {
+  /** Selected display name (bare `@` tokens are skipped). */
+  name: string;
+  /** True for the literal `everyone` keyword (unquoted only). */
+  everyone: boolean;
+}
+
+/** Committed tokens: every token that is closed (quote) or followed by
+ *  whitespace/end-of-text. A trailing unterminated token is still pending. */
+function committedMentionTokens(text: string): MentionToken[] {
+  const tokens: MentionToken[] = [];
+  for (const match of text.matchAll(MENTION_TOKEN)) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    const terminated = end >= text.length || /[\s\n]/.test(text[end] ?? "");
+    if (!terminated) continue;
+    const quoted = match[3];
+    const bare = match[4] ?? "";
+    if (quoted !== undefined) {
+      if (quoted.length === 0) continue;
+      tokens.push({ name: quoted, everyone: false });
+      continue;
+    }
+    if (bare.length === 0) continue;
+    tokens.push({ name: bare, everyone: bare === "everyone" });
+  }
+  return tokens;
+}
+
+function deriveMentionTarget(
+  text: string,
+  bots: BotSummaryDto[],
+): { mode: "members"; botIds: string[] } | { mode: "everyone" } | null {
+  const tokens = committedMentionTokens(text);
+  if (tokens.length === 0) return null;
+  if (tokens.some((token) => token.everyone)) {
+    return { mode: "everyone" };
+  }
+  // IDs are authority: a display name contributes a Bot only when exactly one
+  // enabled member carries it. Duplicate names stay ambiguous on purpose.
+  const botIds: string[] = [];
+  for (const token of tokens) {
+    const key = token.name.toLowerCase();
+    const matches = bots.filter((b) => b.enabled && b.name.toLowerCase() === key);
+    if (matches.length === 1 && matches[0] && !botIds.includes(matches[0].id)) {
+      botIds.push(matches[0].id);
+    }
+  }
+  if (botIds.length === 0) return null;
+  return { mode: "members", botIds };
+}
+
+function onInput(): void {
   const el = textareaEl.value;
   if (!el) return;
-  const value = el.value;
-  const cursor = el.selectionStart ?? value.length;
-  const before = value.slice(0, cursor);
-  const atMatch = before.match(/@([\w-]*)$/);
-  if (!atMatch) return;
-  const query = atMatch[1]?.toLowerCase() ?? "";
-  // Authority stays with the structured target, so a partial token must never
-  // commit a selection: `@` or `@e` leaves the target untouched, and only a
-  // complete `@everyone` switches to everyone.
-  if (query === "everyone") {
-    groupsStore.mentionEveryone();
+  const derived = deriveMentionTarget(el.value, props.bots);
+  if (derived === null) {
+    // No committed mention left: keep a manual selection, but forget the
+    // derived state so the next mention re-derives from scratch.
+    lastDerivedTarget.value = null;
     return;
   }
-  if (query.length === 0) return;
-  // Display name only nominates a Bot when it is unambiguous: duplicate names
-  // across members must not silently resolve to the first array row, and a
-  // disabled member is never an executable target.
-  const matches = props.bots.filter((b) => b.enabled && b.name.toLowerCase() === query);
-  if (matches.length === 1 && matches[0]) {
-    groupsStore.mentionBot(matches[0].id);
-  }
+  const serialized = JSON.stringify(derived);
+  if (serialized === lastDerivedTarget.value) return;
+  lastDerivedTarget.value = serialized;
+  // Replace, never append: the mention text is the latest explicit intent and
+  // a superseded token (`@Ann` then `@Anna`) must not double-select.
+  groupsStore.setTarget(derived);
 }
 
 function handleSend(): void {
@@ -111,6 +175,9 @@ function handleSend(): void {
   if (!text) return;
   emit("send", text);
   promptText.value = "";
+  // Textbook semantics: after a send the text no longer carries a mention, so
+  // the derived state must reset or the next draft would inherit suppression.
+  lastDerivedTarget.value = null;
   if (textareaEl.value) textareaEl.value.style.height = "auto";
   closeMenu();
 }
@@ -215,7 +282,7 @@ function onInputResize(): void {
         class="max-h-[200px] min-h-[38px] w-full resize-none bg-transparent px-2.5 py-2 text-sm text-fg outline-none placeholder:text-fg-muted disabled:cursor-not-allowed disabled:opacity-50"
         @keydown="onKeydown"
         @input="onInputResize"
-        @input.capture="handleInput"
+        @input.capture="onInput"
       />
       <div class="flex shrink-0 items-center gap-1 pb-1 pr-1">
         <button
