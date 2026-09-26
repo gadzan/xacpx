@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Expand, Maximize, Minimize, Monitor, Shrink, X } from "lucide-vue-next";
 import { useDesktopStore } from "../stores/desktop";
+import { desktopErrorKey } from "../lib/desktop-error-i18n";
 
 const props = withDefaults(
   defineProps<{ instanceId: string; instanceName?: string; active?: boolean }>(),
@@ -19,23 +20,6 @@ const session = computed(() => desktops.viewFor(props.instanceId));
 /** Fullscreen state of the desktop container (design §14 v1 UI). */
 const fullscreen = ref(false);
 
-/**
- * Protocol/connector error codes → i18n keys. Unmapped codes fall back to the
- * server's own message so a new hub code still shows something useful.
- */
-const DESKTOP_ERROR_I18N_KEYS: Record<string, string> = {
-  "desktop-disabled": "desktop.disabled",
-  "desktop-offline": "desktop.offline",
-  "instance-offline": "desktop.offline",
-  "events-offline": "desktop.offline",
-  "desktop-busy": "desktop.busy",
-  "desktop-rfb-unavailable": "desktop.rfbUnavailable",
-  "desktop-not-rfb": "desktop.notRfb",
-  "desktop-auth-unsupported": "desktop.authUnsupported",
-  "desktop-stream-timeout": "desktop.streamTimeout",
-  "desktop-auth-unsupported-ard": "desktop.authUnsupported",
-};
-
 const statusLabel = computed(() => {
   const s = session.value.status;
   if (s === "opening") return "desktop.statusOpening";
@@ -43,15 +27,14 @@ const statusLabel = computed(() => {
   if (s === "connecting") return "desktop.statusConnecting";
   if (s === "open") return "desktop.statusOpen";
   if (s === "closed") return "desktop.statusClosed";
-  if (s === "error") return session.value.lastErrorCode ? DESKTOP_ERROR_I18N_KEYS[session.value.lastErrorCode] ?? "desktop.statusError" : "desktop.statusError";
+  if (s === "error") return desktopErrorKey(session.value.lastErrorCode) ?? "desktop.statusError";
   return "desktop.statusIdle";
 });
 /** Final error banner copy: translated protocol code + the server's detail. */
 const errorDetail = computed(() => {
   const s = session.value;
   if (s.status !== "error") return "";
-  const key = s.lastErrorCode ? DESKTOP_ERROR_I18N_KEYS[s.lastErrorCode] : undefined;
-  return key ? t(key) : s.lastErrorCode ?? "";
+  return desktopErrorKey(s.lastErrorCode) ? t(desktopErrorKey(s.lastErrorCode)!) : s.lastErrorCode ?? "";
 });
 
 async function open(): Promise<void> {

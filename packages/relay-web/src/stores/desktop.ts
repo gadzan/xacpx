@@ -169,8 +169,11 @@ export const useDesktopStore = defineStore("desktop", () => {
           hooks.onConnect?.();
         },
         onDisconnect: (detail) => {
-          connections.delete(instanceId);
+          // Generation guard FIRST: a stale connection's late hook must not
+          // delete the CURRENT connection from the registry (the row patch
+          // below is not the only state this closure touches).
           if (!mine()) return;
+          connections.delete(instanceId);
           patch(instanceId, {
             status: detail.clean ? "closed" : "error",
             ...(detail.clean ? {} : { lastErrorCode: "desktop-stream-timeout", lastErrorMessage: detail.reason }),
@@ -183,8 +186,8 @@ export const useDesktopStore = defineStore("desktop", () => {
           hooks.onCredentialsRequired?.();
         },
         onSecurityFailure: (reason) => {
-          connections.delete(instanceId);
           if (!mine()) return;
+          connections.delete(instanceId);
           patch(instanceId, {
             status: "error",
             needsPassword: false,

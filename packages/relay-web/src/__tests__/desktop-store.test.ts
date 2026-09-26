@@ -218,37 +218,65 @@ describe("desktop store", () => {
     expect(store.viewFor("i1").lastErrorCode).toBeTruthy();
   });
 
-  it("stale connection hooks cannot overwrite a newer attempt's row", async () => {
+  it("stale connection hooks cannot delete the newer attempt's connection", async () => {
     // After a supersede the old RFB connection is disposed, but its queued hooks
-    // must be inert: onConnect/onDisconnect/onSecurityFailure all patch the row,
-    // which would resurrect a closed panel.
+    // must be inert: they patch the session row AND delete from the connection
+    // registry. A stale onDisconnect/onSecurityFailure that only guarded the row
+    // would still evict the CURRENT connection, leaving sendCredentials(),
+    // setFit(), close().dispose() and a later open() all pointing at nothing.
     const store = useDesktopStore();
     const { connectDesktopRfb } = await import("../lib/desktop-client");
+    const conns: Array<{ sent: string[]; fits: boolean[]; disposed: boolean }> = [];
     const hookSets: Array<Record<string, (...args: unknown[]) => void>> = [];
     (connectDesktopRfb as unknown as {
       mockImplementation: (fn: (input: { hooks?: Record<string, (...args: unknown[]) => void> }) => unknown) => void;
     }).mockImplementation((input) => {
       hookSets.push(input.hooks ?? {});
-      return { sendCredentials: vi.fn(), setScaleViewport: vi.fn(), dispose: vi.fn() };
+      const rec = { sent: [] as string[], fits: [] as boolean[], disposed: false };
+      conns.push(rec);
+      const conn = {
+        sendCredentials: (p: string) => { rec.sent.push(p); },
+        setScaleViewport: (f: boolean) => { rec.fits.push(f); },
+        dispose: () => { rec.disposed = true; },
+      };
+      return conn;
     });
+
     // First open completes fully.
     await store.open("i1", {});
-    expect(hookSets.length).toBe(1);
+    expect(conns.length).toBe(1);
     const first = hookSets[0];
     expect(first).toBeDefined();
     first?.onConnect?.();
     expect(store.viewFor("i1").status).toBe("open");
-    // close + reopen: the second attempt owns the row now.
+    // close + reopen: the second attempt owns the row AND the connection now.
     store.close("i1");
+    expect(conns[0]?.disposed).toBe(true);
     expect(store.sessions.has("i1")).toBe(false);
     await store.open("i1", {});
-    expect(hookSets.length).toBe(2);
-    // Firing the FIRST connection's (stale) hooks must not touch the row.
-    first?.onConnect?.();
+    expect(conns.length).toBe(2);
+    const second = hookSets[1];
+    expect(second).toBeDefined();
+    // Fire the FIRST (stale) connection's hooks: they must not touch state.
     first?.onDisconnect?.({ clean: true, reason: "stale" });
     first?.onSecurityFailure?.("stale failure");
+    first?.onConnect?.();
     expect(store.viewFor("i1").status).not.toBe("closed");
     expect(store.viewFor("i1").lastErrorCode).not.toBe("desktop-auth-unsupported");
+    // The CURRENT connection is still reachable through the store: a stale hook
+    // that evicted it would make these no-ops.
+    store.sendCredentials("i1", "s3cret");
+    expect(conns[1]?.sent).toEqual(["s3cret"]);
+    expect(conns[0]?.sent).toEqual([]);
+    store.setFit("i1", false);
+    // [true] comes from open() applying the session's initial fit state.
+    expect(conns[1]?.fits).toEqual([true, false]);
+    expect(conns[0]?.fits).toEqual([true]);
+    // close() disposes B, and A stays disposed exactly once.
+    expect(conns[1]?.disposed).toBe(false);
+    store.close("i1");
+    expect(conns[1]?.disposed).toBe(true);
+    expect(conns[0]?.disposed).toBe(true);
   });
 
   it("applies the session's fit state to the RFB client", async () => {

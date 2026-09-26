@@ -548,6 +548,7 @@ export default {
     statusOpen: "已连接。",
     statusClosed: "已断开。",
     statusError: "桌面出错。",
+    errorTitle: "无法打开桌面。",
     passwordPlaceholder: "VNC 密码",
     connect: "连接",
     disconnect: "断开桌面",

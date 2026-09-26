@@ -6,6 +6,8 @@ import DesktopTab from "../components/DesktopTab.vue";
 import { useDesktopStore } from "../stores/desktop";
 import type { DesktopRfbConnectInput, DesktopRfbConnection, NoVncRfb } from "../lib/desktop-client";
 import type { MockedFunction } from "vitest";
+import { DESKTOP_ERROR_CODES } from "@ganglion/xacpx-relay-protocol";
+import { desktopErrorKey } from "../lib/desktop-error-i18n";
 vi.mock("../lib/desktop-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/desktop-client")>();
   return {
@@ -218,6 +220,128 @@ describe("DesktopTab", () => {
     expect(shape.disconnected).toBe(true);
   });
 
+  it("a fit toggle during the async noVNC import is not overwritten by the construction snapshot", async () => {
+    // Regression: on resolve the wrapper re-applied `input.fit` (the
+    // construction-time snapshot), so toggling Actual while noVNC was still
+    // loading got flipped back to Fit once the module arrived.
+    interface FakeRfbShape {
+      listeners: Map<string, Array<(event: Record<string, unknown>) => void>>;
+      credentials: Array<Record<string, unknown>>;
+      disconnected: boolean;
+      scaleViewport: boolean;
+    }
+    const instances: FakeRfbShape[] = [];
+    const FakeRfb = function FakeRfb(this: unknown) {
+      const self = this as unknown as FakeRfbShape & NoVncRfb & {
+        _isSupportedSecurityType: (type: number) => boolean;
+        _negotiateAuthentication: () => boolean;
+        _fail: (details: string) => boolean;
+        _rfbAuthScheme: number;
+      };
+      const shape: FakeRfbShape = {
+        listeners: new Map(),
+        credentials: [],
+        disconnected: false,
+        scaleViewport: false,
+      };
+      instances.push(shape);
+      self._rfbAuthScheme = 2;
+      self._isSupportedSecurityType = () => true;
+      self._negotiateAuthentication = () => true;
+      self._fail = () => false;
+      self.addEventListener = () => {};
+      self.removeEventListener = () => {};
+      self.sendCredentials = (credentials: Record<string, unknown>) => { shape.credentials.push(credentials); };
+      self.disconnect = () => { shape.disconnected = true; };
+      // A real writable property: the wrapper's assignment must land here.
+      Object.defineProperty(self, "scaleViewport", {
+        enumerable: true,
+        get: () => shape.scaleViewport,
+        set: (v: boolean) => { shape.scaleViewport = v; },
+      });
+    } as unknown as new (
+      target: HTMLElement,
+      url: string,
+      options: Record<string, unknown>,
+    ) => NoVncRfb;
+
+    const { connectDesktopRfb: mocked } = await import("../lib/desktop-client");
+    const real = (mocked as unknown as MockedFunction<(input: DesktopRfbConnectInput) => DesktopRfbConnection>).getMockImplementation?.();
+    if (!real) throw new Error("connectDesktopRfb mock missing passthrough");
+
+    // Deferred module: nothing is constructed until we release it.
+    let release!: () => void;
+    const loaded = new Promise<void>((resolve) => { release = resolve; });
+    const conn = real({
+      url: "wss://hub/desktop/observe?ticket=t",
+      security: "vnc-auth",
+      fit: true,
+      loadNoVnc: async () => { await loaded; return { default: FakeRfb }; },
+    });
+
+    // No instance yet — and the switch to Actual must stick across the import.
+    expect(instances.length).toBe(0);
+    conn.setScaleViewport(false);
+    release();
+    await vi.waitFor(() => expect(instances.length).toBe(1));
+    const shape = instances[0];
+    if (!shape) throw new Error("no tunneled session captured");
+    expect(shape.scaleViewport).toBe(false);
+
+    // And the reverse: a toggle ON during the import applies too.
+    conn.setScaleViewport(true);
+    expect(shape.scaleViewport).toBe(true);
+    conn.dispose();
+  });
+
+  it("applies the initial fit flag once noVNC resolves", async () => {
+    const instances: Array<{ scaleViewport: boolean }> = [];
+    const FakeRfb = function FakeRfb(this: unknown) {
+      const shape = { scaleViewport: false };
+      instances.push(shape);
+      const self = this as unknown as {
+        addEventListener: () => void;
+        removeEventListener: () => void;
+        sendCredentials: () => void;
+        disconnect: () => void;
+        _isSupportedSecurityType: () => boolean;
+        _negotiateAuthentication: () => boolean;
+        _fail: () => boolean;
+        _rfbAuthScheme: number;
+        scaleViewport: boolean;
+      };
+      self._rfbAuthScheme = 2;
+      self._isSupportedSecurityType = () => true;
+      self._negotiateAuthentication = () => true;
+      self._fail = () => false;
+      self.addEventListener = () => {};
+      self.removeEventListener = () => {};
+      self.sendCredentials = () => {};
+      self.disconnect = () => {};
+      Object.defineProperty(self, "scaleViewport", {
+        enumerable: true,
+        get: () => shape.scaleViewport,
+        set: (v: boolean) => { shape.scaleViewport = v; },
+      });
+    } as unknown as new (
+      target: HTMLElement,
+      url: string,
+      options: Record<string, unknown>,
+    ) => NoVncRfb;
+    const { connectDesktopRfb: mocked } = await import("../lib/desktop-client");
+    const real = (mocked as unknown as MockedFunction<(input: DesktopRfbConnectInput) => DesktopRfbConnection>).getMockImplementation?.();
+    if (!real) throw new Error("connectDesktopRfb mock missing passthrough");
+    const conn = real({
+      url: "wss://hub/desktop/observe?ticket=t",
+      security: "vnc-auth",
+      fit: true,
+      loadNoVnc: async () => ({ default: FakeRfb }),
+    });
+    await vi.waitFor(() => expect(instances.length).toBe(1));
+    expect(instances[0]?.scaleViewport).toBe(true);
+    conn.dispose();
+  });
+
   it("fails closed when noVNC internals drift instead of connecting unconstrained", async () => {
     // P2 hardening: the auth narrowing depends on noVNC 1.7.0 private hooks
     // (_isSupportedSecurityType/_negotiateAuthentication/_fail). If a future
@@ -243,5 +367,56 @@ describe("DesktopTab", () => {
     await vi.waitFor(() => expect(failure).toBeDefined());
     expect(failure).toMatch(/auth guard unavailable/);
     conn.dispose();
+  });
+});
+
+describe("DesktopTab error i18n", () => {
+  // Every stable desktop error code must render a TRANSLATED string in the
+  // banner. A code that falls through shows the raw protocol string (e.g.
+  // "desktop-instance-offline") in an otherwise localized UI — the exact class
+  // of bug that survived several review rounds because only two codes were
+  // exercised by hand.
+  for (const code of DESKTOP_ERROR_CODES) {
+    it(`translates ${code} instead of showing the raw code`, async () => {
+      const { i18n } = await import("../i18n");
+      const wrapper = mount(DesktopTab, {
+        props: { instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      const store = useDesktopStore();
+      // Seed the error row AFTER mount: the component's open() overwrites an
+      // earlier status, and the banner only renders from a set row.
+      await flushPromises();
+      store.sessions.set("i1", {
+        instanceId: "i1",
+        status: "error",
+        needsPassword: false,
+        fit: true,
+        lastErrorCode: code,
+        lastErrorMessage: "hub detail",
+      });
+      await flushPromises();
+      const banner = wrapper.find('[data-test="desktop-error"]');
+      expect(banner.exists()).toBe(true);
+      expect(banner.text()).not.toContain(code);
+      // The hub's own detail still rides along: useful diagnostics survive.
+      expect(banner.text()).toContain("hub detail");
+      wrapper.unmount();
+    });
+  }
+
+  it("keeps both locales free of raw codes for every desktop error code", async () => {
+    const { i18n } = await import("../i18n");
+    const locales = ["en", "zh-CN"] as const;
+    for (const locale of locales) {
+      i18n.global.locale.value = locale;
+      for (const code of DESKTOP_ERROR_CODES) {
+        const key = desktopErrorKey(code);
+        expect(key, `${code} has no i18n key`).toBeTruthy();
+        const translated = i18n.global.t(key!);
+        // vue-i18n returns the key itself when a message is missing.
+        expect(translated, `${code}/${locale} missing translation`).not.toBe(key);
+      }
+    }
   });
 });

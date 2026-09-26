@@ -551,6 +551,7 @@ export default {
     statusOpen: "Connected.",
     statusClosed: "Disconnected.",
     statusError: "Desktop error.",
+    errorTitle: "Could not open the desktop.",
     passwordPlaceholder: "VNC password",
     connect: "Connect",
     disconnect: "Disconnect desktop",

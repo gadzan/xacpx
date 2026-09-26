@@ -61,11 +61,11 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
   let rfb: NoVncRfb | null = null;
   let disposed = false;
   let connected = false;
-  // Desired fit state, kept independent of the RFB object: the module import is
-  // async, so a setScaleViewport() call that lands before noVNC loads must not
-  // be dropped. noVNC's constructor options do NOT include scaleViewport (it is
-  // a writable property defaulting to false), so the value cannot go in the bag.
-  let desiredFit = false;
+  // Desired fit state. Seeded from the initial request so an RFB object created
+  // later reflects it, and updated by setScaleViewport() BEFORE the module
+  // resolves so a click that lands during the import is not overwritten by the
+  // stale construction-time snapshot.
+  let desiredFit = input.fit ?? false;
 
   const target = input.target ?? document.createElement("div");
   if (!input.target) {
@@ -103,11 +103,9 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
     });
     // Fit is a post-construction writable property on noVNC 1.7.0 — the option
     // bag does not accept it, and the property default is `false`. Apply the
-    // desired value (and anything requested before the import resolved) now.
-    if (input.fit) {
-      desiredFit = true;
-      try { rfbInstance.scaleViewport = true; } catch { /* older build: leave as-is */ }
-    }
+    // CURRENT desired value only: `input.fit` is the construction-time snapshot
+    // and must not override a toggle that landed while we were importing.
+    try { rfbInstance.scaleViewport = desiredFit; } catch { /* older build: leave as-is */ }
     if (input.security === "vnc-auth") {
       const narrow = rfbInstance as unknown as {
         _isSupportedSecurityType?: (type: number) => boolean;
