@@ -345,9 +345,28 @@ function describeHubSocketError(err: unknown): string {
   if (!err || typeof err !== "object") return String(err);
   const record = err as Record<string, unknown>;
   const message = typeof record.message === "string" && record.message ? record.message : "";
-  const code = typeof (record.target as Record<string, unknown> | undefined)?.url === "string"
-    ? ` (${String((record.target as Record<string, unknown>).url)})`
-    : "";
   const type = typeof record.type === "string" ? record.type : "error";
+  // The failed socket's URL carries the single-use connector ticket. Never echo
+  // it: this string lands in the prepare result the browser displays and in
+  // hub logs, and an unconsumed ticket must not travel along the control path.
+  // Origin + path is enough to diagnose which listener/route refused.
+  const target = (record.target as Record<string, unknown> | undefined)?.url;
+  const location = typeof target === "string" ? safeSocketLocation(target) : "";
+  const code = location ? ` (${location})` : "";
   return message ? `${type}: ${message}${code}` : `hub websocket ${type} during upgrade${code}`;
+}
+
+/** Origin+path only: drops the `?ticket=…` query of a ws URL. */
+function safeSocketLocation(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return "";
+  }
+}
+
+/** Test-only surface for the ticket scrub (module-private otherwise). */
+export function describeHubSocketErrorForTests(err: unknown): string {
+  return describeHubSocketError(err);
 }

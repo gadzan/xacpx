@@ -295,3 +295,62 @@ test("desktop hard-gate: probe verdict plus hub binary pipe on an independent co
     await relay.close();
   }
 }, 30000);
+
+test("dedicated --ws-port applies the same desktop hard gate as merged", async () => {
+  // Dedicated mode shares one port between instance control and the connector
+  // desktop plane. The gate must stay pre-handshake: a connector presenting an
+  // unknown ticket gets 4403 (not a completed handshake), and the same ticket
+  // cannot be retried after a refusal.
+  const relay = await startRelayServer({
+    dbPath: ":memory:",
+    httpPort: 0,
+    wsPort: 0,
+    host: "127.0.0.1",
+  });
+  const sockets: WebSocket[] = [];
+  try {
+    expect(relay.wsPort).not.toBeNull();
+    if (relay.wsPort === null) return;
+    const account = relay.runtime.accounts.createAccount("admin");
+    const reserved = relay.runtime.desktop.reserve({ accountId: account.id, instanceId: "i-dedicated", ttlMs: 60_000 });
+    expect(reserved.ok).toBe(true);
+    if (!reserved.ok) return;
+    const connectorTicket = relay.runtime.desktop.ticketStore.mintTicket({
+      streamId: reserved.record.streamId,
+      accountId: account.id,
+      instanceId: "i-dedicated",
+      side: "connector",
+    });
+    const url = `ws://127.0.0.1:${relay.wsPort}/desktop/instance?ticket=${connectorTicket.ticket}`;
+    // Same pre-upgrade consume as merged: an unknown/absent ticket must be
+    // refused before any handshake completes (raw destroy path, not 4403),
+    // and the hub must stay alive afterwards.
+    const bogus = new WebSocket(`ws://127.0.0.1:${relay.wsPort}/desktop/instance?ticket=nope`);
+    trackSocket(sockets, bogus);
+    const bogusOutcome = await new Promise<{ code: number; opened: boolean }>((resolve) => {
+      bogus.on("close", (code: number) => resolve({ code, opened: false }));
+      bogus.on("open", () => resolve({ code: 0, opened: true }));
+      bogus.on("error", () => {});
+    });
+    expect(bogusOutcome.opened).toBe(false);
+    expect(bogusOutcome.code).not.toBe(0);
+    // Valid ticket pairs through the dedicated listener: the connector attach
+    // succeeds and the registry shows the stream still reserved (not closed).
+    const connector = new WebSocket(url);
+    trackSocket(sockets, connector);
+    const opened = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), 5000);
+      connector.on("open", () => { clearTimeout(timer); resolve(true); });
+      connector.on("close", () => { clearTimeout(timer); resolve(false); });
+      connector.on("error", () => {});
+    });
+    expect(opened).toBe(true);
+    expect(relay.runtime.desktop.streamRegistry.get(reserved.record.streamId)?.state).not.toBe("closed");
+  } finally {
+    for (const ws of sockets) {
+      try { ws.close(); } catch { /* gone */ }
+    }
+    await new Promise((r) => setTimeout(r, 100));
+    await relay.close();
+  }
+}, 30000);

@@ -1,4 +1,5 @@
 import type { IncomingMessage } from "node:http";
+import { createServer } from "node:http";
 import type { Duplex } from "node:stream";
 import { serve, type ServerType } from "@hono/node-server";
 import { WebSocketServer } from "ws";
@@ -7,6 +8,7 @@ import {
   DESKTOP_TICKET_TTL_MS,
   DESKTOP_WS_MAX_PAYLOAD_BYTES,
   MAX_DESKTOP_TICKET_LENGTH,
+  MAX_TOOL_STEPS, MSG, REASONING_CAP, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP,
   type AgentCommandDto, type ControlEventDto, type ConversationTurnCorrelationDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceRecoveryAckPayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
   type InstanceStateSnapshotDto, type ScheduledOriginDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
   validControlEvent, validInstanceStateSync,
@@ -1230,47 +1232,67 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
   // noServer WS upgrade alongside the dashboard's `/ws`. Passing `wsPort` opts
   // into the legacy dedicated-port layout (e.g. to firewall the gateway apart).
   const dedicated = options.wsPort !== undefined;
+  // Shared desktop binary planes: 1 MiB frame gate matching the hub's
+  // DESKTOP_WS_MAX_PAYLOAD_BYTES. Independent connections so framebuffer bursts
+  // never share head-of-line blocking with /ws control. Both the dedicated
+  // gateway-port listener below and the merged httpServer 'upgrade' handler
+  // route into these.
+  const webWss = new WebSocketServer({ noServer: true, maxPayload: WEB_CLIENT_MAX_PAYLOAD_BYTES });
+  const desktopBrowserWss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
+  const desktopConnectorWss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
   let wss: WebSocketServer | undefined;
   let gatewayWss: WebSocketServer | undefined;
+  // Dedicated gateway port's HTTP server (ws needs a server to attach to in
+  // noServer mode). Declared here so close() and wsPort can reach it.
+  let gatewayHttpServer: ServerType | undefined;
   if (dedicated) {
-    wss = new WebSocketServer({ port: options.wsPort, host });
-    await new Promise<void>((resolve) => wss!.on("listening", () => resolve()));
-    // Dedicated gateway listener serves instance control AND the connector
-    // desktop binary plane on the same port (never a separate VNC port):
-    // control handshakes at `/`/`/gateway`, desktop tickets at `/desktop/instance`.
-    wss.on("connection", (socket, req) => {
-      const path = (req?.url ?? "").split("?")[0] ?? "";
+    // Same desktop hard gate as the merged listener: upgrades are routed by
+    // path BEFORE the WS handshake completes, so `/desktop/instance` consumes
+    // its connector ticket at request time (a raw prober that never finishes
+    // the upgrade still burns it), and the binary plane runs under the 1 MiB
+    // DESKTOP_WS_MAX_PAYLOAD_BYTES gate. ws's noServer mode attaches to a
+    // Node HTTP server, so bind our own and route upgrades from it.
+    gatewayHttpServer = createServer((req, res) => {
+      res.writeHead(426, { "Content-Type": "text/plain" });
+      res.end("Upgrade Required");
+    });
+    wss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
+    const dedicatedControlListener = new WebSocketServer({ noServer: true });
+    gatewayWss = dedicatedControlListener;
+    gatewayHttpServer.on("upgrade", (req, socket, head) => {
+      const path = (req.url ?? "").split("?")[0] ?? "";
+      // Connector desktop binary plane (never a separate VNC port): the ticket
+      // is consumed BEFORE the handshake completes and a rejected ticket is
+      // closed with 4403, exactly like the merged listener's failure mode.
       if (path === "/desktop/instance") {
-        const ticket = desktopTicketFromUrl(req?.url ?? "");
-        if (!ticket) { try { socket.close(4403, "missing-ticket"); } catch { /* gone */ } return; }
-        // Consume the connector ticket BEFORE the WS handshake completes: a raw
-        // TCP prober that never finishes the upgrade must still burn the
-        // single-use ticket, and `open` below then implies hub acceptance.
+        const ticket = desktopTicketFromUrl(req.url ?? "");
+        if (!ticket) { try { socket.destroy(); } catch { /* gone */ } return; }
         const precheck = runtime.desktop.precheckConnectorTicket(ticket);
-        if (!precheck.ok) {
-          try { socket.close(4403, precheck.reason); } catch { /* gone */ } return;
-        }
-        const attached = runtime.desktop.attachConnector(precheck.claim, adaptDesktopSocket(socket));
-        if (!attached.ok) {
-          try { socket.close(4403, attached.reason); } catch { /* gone */ }
-        }
+        if (!precheck.ok) { try { socket.destroy(); } catch { /* gone */ } return; }
+        desktopConnectorWss.handleUpgrade(req, socket, head, (ws) => {
+          const attached = runtime.desktop.attachConnector(precheck.claim, adaptDesktopSocket(ws));
+          if (!attached.ok) {
+            try { ws.close(4403, attached.reason); } catch { /* gone */ }
+          }
+        });
         return;
       }
-      runtime.gateway.handleConnection(socket);
+      // Instance control: the gateway's own credential handshake authenticates
+      // the connector (no cookie on this plane).
+      dedicatedControlListener.handleUpgrade(req, socket, head, (ws) => runtime.gateway.handleConnection(ws));
+    });
+    await new Promise<void>((resolve, reject) => {
+      const onErr = (err: unknown) => reject(err instanceof Error ? err : new Error(String(err)));
+      gatewayHttpServer.once("error", onErr);
+      gatewayHttpServer.listen(options.wsPort, host, () => {
+        gatewayHttpServer.removeListener("error", onErr);
+        resolve();
+      });
     });
   } else {
     gatewayWss = new WebSocketServer({ noServer: true });
   }
 
-  // Browser upstream frames are small control/terminal messages. Bound them so an
-  // authenticated client cannot force ws to buffer an arbitrarily large subscribe
-  // array or terminal paste before protocol validation runs.
-  const webWss = new WebSocketServer({ noServer: true, maxPayload: WEB_CLIENT_MAX_PAYLOAD_BYTES });
-  // Desktop binary plane: independent connections so framebuffer bursts never
-  // share head-of-line blocking with /ws control. 1 MiB matches the hub's
-  // DESKTOP_WS_MAX_PAYLOAD_BYTES frame gate.
-  const desktopBrowserWss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
-  const desktopConnectorWss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
   httpServer.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     const path = (req.url ?? "").split("?")[0] ?? "";
     if (path === "/ws") {
@@ -1360,7 +1382,9 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
   });
 
   const httpPort = (httpServer.address() as { port: number }).port;
-  const wsPort = wss ? (wss.address() as { port: number }).port : null;
+  const wsPort = dedicated && gatewayHttpServer
+    ? (gatewayHttpServer.address() as { port: number } | null)?.port ?? null
+    : null;
   return {
     runtime,
     httpPort,
@@ -1372,6 +1396,9 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
       await new Promise<void>((resolve) => desktopConnectorWss.close(() => resolve()));
       if (gatewayWss) await new Promise<void>((resolve) => gatewayWss!.close(() => resolve()));
       if (wss) await new Promise<void>((resolve) => wss!.close(() => resolve()));
+      if (gatewayHttpServer) {
+        await new Promise<void>((resolve) => gatewayHttpServer!.close(() => resolve()));
+      }
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
       runtime.close();
     },

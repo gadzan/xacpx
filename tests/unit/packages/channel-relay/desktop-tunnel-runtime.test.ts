@@ -53,6 +53,25 @@ test("cancel for the active stream closes it; other streams are ignored", () => 
   runtime.closeAll();
 });
 
+test("prepare error never echoes the connector ticket from the hub socket URL", async () => {
+  // The failed ws ErrorEvent's target URL carries `?ticket=<connector-ticket>`.
+  // That text lands in the prepare result shown to the browser (and logs), so an
+  // unconsumed single-use ticket must not ride the control path.
+  const { describeHubSocketErrorForTests } = await import("../../../../packages/channel-relay/src/desktop/desktop-tunnel-runtime") as never as {
+    describeHubSocketErrorForTests: (err: unknown) => string;
+  };
+  const ticket = "connector-secret-ticket-xyz";
+  const text = describeHubSocketErrorForTests({
+    type: "error",
+    message: "Unexpected server response: 4403",
+    target: { url: `ws://hub.example/desktop/instance?ticket=${ticket}` },
+  });
+  expect(text).toContain("error");
+  expect(text).toContain("hub.example/desktop/instance");
+  expect(text).not.toContain(ticket);
+  expect(text).not.toContain("ticket=");
+});
+
 test("RFB handshake evaluator used by the tunnel accepts VncAuth", async () => {
   // Tunnel-level unit: the shared probe verdict gates openTunnel before any socket.
   const { evaluateRfbHandshake } = await import("../../../../packages/channel-relay/src/desktop/rfb-probe");

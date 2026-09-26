@@ -45,6 +45,12 @@ function errorMessageFor(code: string, fallback: string): string {
 export const useDesktopStore = defineStore("desktop", () => {
   const sessions = ref(new Map<string, DesktopSessionView>());
   const connections = new Map<string, DesktopRfbConnection>();
+  // Own the abort handle for in-flight `desktop-open`s: close()/unmount()/instance
+  // change arrive BEFORE prepare resolves, so the component's own AbortController
+  // (if any) must not be the only way to abandon a pending stream. Without this a
+  // close during prepare leaves the panel gone while the RPC continues, and
+  // `desktop-opened` later resurrects the session on an unmounted target.
+  const pending = new Map<string, AbortController>();
 
   function viewFor(instanceId: string): DesktopSessionView {
     let view = sessions.value.get(instanceId);
@@ -72,6 +78,11 @@ export const useDesktopStore = defineStore("desktop", () => {
   ): Promise<void> {
     const existing = connections.get(instanceId);
     if (existing) return;
+    // A superseding open aborts the previous pending prepare: its streamId never
+    // existed yet, so it can only be closed by the cloud, never desynced here.
+    pending.get(instanceId)?.abort();
+    const controller = new AbortController();
+    pending.set(instanceId, controller);
     const view = patch(instanceId, { status: "opening", lastErrorCode: undefined, lastErrorMessage: undefined });
     void view;
     let opened;
@@ -88,10 +99,16 @@ export const useDesktopStore = defineStore("desktop", () => {
         lastErrorMessage: errorMessageFor(code, err instanceof Error ? err.message : String(err)),
       });
       throw err;
+    } finally {
+      pending.delete(instanceId);
     }
-    if (opts.signal?.aborted) {
+    if (controller.signal.aborted || opts.signal?.aborted) {
+      // Abandoned mid-prepare: the hub already minted a stream + browser ticket,
+      // so close it now instead of letting it linger as an orphan stream. The
+      // session row must also go: `viewFor`'s lazy recreate would otherwise
+      // resurrect an idle row for a panel that is already gone.
       sendWebClientMessage({ kind: "desktop-close", instanceId, streamId: opened.streamId });
-      patch(instanceId, { status: "closed" });
+      sessions.value.delete(instanceId);
       return;
     }
     patch(instanceId, {
@@ -156,6 +173,11 @@ export const useDesktopStore = defineStore("desktop", () => {
   function close(instanceId: string): void {
     const view = sessions.value.get(instanceId);
     const connection = connections.get(instanceId);
+    // Abort any in-flight prepare BEFORE the view lookup: the pending RPC must
+    // not resurrect this session (no connectDesktopRfb, no session row) when
+    // `desktop-opened` lands after the panel is gone.
+    pending.get(instanceId)?.abort();
+    pending.delete(instanceId);
     connections.delete(instanceId);
     try { connection?.dispose(); } catch { /* gone */ }
     if (view?.streamId) {

@@ -77,4 +77,28 @@ describe("desktop store", () => {
     expect(sendWebClientMessage).toHaveBeenCalledWith({ kind: "desktop-close", instanceId: "i1", streamId: "s1" });
     expect(store.sessions.has("i1")).toBe(false);
   });
+
+  it("close() during prepare abandons the pending open and closes the stream", async () => {
+    const store = useDesktopStore();
+    let release!: (value: unknown) => void;
+    const { requestDesktop, sendWebClientMessage } = await import("../api/events");
+    (requestDesktop as unknown as { mockImplementationOnce: (fn: () => Promise<unknown>) => void })
+      .mockImplementationOnce(async () => new Promise((resolve) => { release = resolve; }));
+    const pending = store.open("i1", {});
+    // Panel disappears before `desktop-opened` ever lands.
+    store.close("i1");
+    release({
+      requestId: "r1",
+      instanceId: "i1",
+      streamId: "s9",
+      wsPath: "/desktop/observe?ticket=t9",
+      expiresAt: 1,
+      security: "vnc-auth",
+    });
+    await pending;
+    expect(sendWebClientMessage).toHaveBeenCalledWith({ kind: "desktop-close", instanceId: "i1", streamId: "s9" });
+    // The late resolve must not resurrect the session or bind noVNC to a dead host.
+    expect(await lastConnectTarget()).toBeUndefined();
+    expect(store.sessions.has("i1")).toBe(false);
+  });
 });
