@@ -1182,6 +1182,126 @@ describe("useGroupsStore", () => {
     expect(store.activeTopicId).toBe("topic_deleted");
   });
 
+  it("stops a stale ordinary topics.list from resurrecting a torn-down Topic", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.topicReady = true;
+    store.groupsByInstance["inst_1"] = [GROUP];
+    const deleted = { id: "topic_deleted", conversationId: "conversation_g", title: "Doomed", status: "active" as const, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" };
+    const alive = { id: "topic_alive", conversationId: "conversation_g", title: "Alive", status: "active" as const, createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" };
+    store.topicsByConversation["inst_1:conversation_g"] = [deleted, alive];
+    store.activeTopicId = "topic_alive";
+
+    let releaseOrdinary!: () => void;
+    const ordinaryHang = new Promise<void>((resolve) => { releaseOrdinary = resolve; });
+    let ordinaryRequests = 0;
+    mockRpc.mockImplementation(async (inst: string, type: string, payload?: unknown) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        ordinaryRequests += 1;
+        if (ordinaryRequests === 1) {
+          // An ordinary loadTopics (reconcile path) parks, still holding a
+          // snapshot that contains the doomed Topic.
+          await ordinaryHang;
+          return { topics: [deleted, alive] };
+        }
+        // The coarse refresh sees the authoritative post-teardown state.
+        return { topics: [alive] };
+      }
+      if (type === "control.conversation.history") {
+        const conversationId = (payload as { conversationId: string }).conversationId;
+        return historyWith([]);
+      }
+      if (type === "control.runs.list") {
+        return { runs: [], conversationId: store.activeConversationId ?? "conversation_g", topicId: store.activeTopicId ?? "topic_alive" };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    // Start the ordinary list (it parks).
+    const ordinary = store.loadTopics("inst_1", "conversation_g");
+    await flushPromises();
+    // Another client tears the doomed Topic down: the coarse refresh reconciles
+    // and removes it.
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: { type: "conversations-changed" },
+    } as never);
+    await flushPromises();
+    expect(store.currentTopics.map((t2) => t2.id)).toEqual(["topic_alive"]);
+    // Now the stale ordinary response arrives. It predates the deletion, so it
+    // must be discarded, never merged.
+    releaseOrdinary();
+    await ordinary;
+    await flushPromises();
+    expect(store.currentTopics.map((t2) => t2.id)).toEqual(["topic_alive"]);
+    // The reconcile path's own view also converges (it discards, not merges).
+    expect(store.activeTopicId).toBe("topic_alive");
+  });
+
+  it("keeps the newest coarse refresh when two arrive out of order", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.topicReady = true;
+    store.groupsByInstance["inst_1"] = [GROUP];
+    const t1 = { id: "topic_1", conversationId: "conversation_g", title: "One", status: "active" as const, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" };
+    const t2 = { id: "topic_2", conversationId: "conversation_g", title: "Two", status: "active" as const, createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" };
+    store.topicsByConversation["inst_1:conversation_g"] = [t1, t2];
+    store.activeTopicId = "topic_2";
+    // Two coarse refreshes: the first response parks (stale, still reports both
+    // Topics), the second resolves immediately (both Topics gone).
+    let releaseFirst!: () => void;
+    const firstHang = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let listRequests = 0;
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        listRequests += 1;
+        if (listRequests === 1) {
+          await firstHang;
+          // Stale window: this response predates the deletion the newer refresh
+          // committed, so committing it would re-add both Topics.
+          return { topics: [t1, t2] };
+        }
+        return { topics: [t2] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_1" };
+      throw new Error(`unexpected ${type}`);
+    });
+    // First coarse refresh: parks inside topics.list.
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: { type: "conversations-changed" },
+    } as never);
+    await flushPromises();
+    expect(listRequests).toBe(1);
+    // Second coarse refresh: resolves immediately and commits.
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: { type: "conversations-changed" },
+    } as never);
+    await flushPromises();
+    expect(listRequests).toBe(2);
+    // The newer refresh removed one Topic but left an active one, so the
+    // selection stays valid and the generation is NOT bumped — nothing but
+    // request ordering can stop the older response from committing.
+    expect(store.currentTopics.map((t3) => t3.id)).toEqual(["topic_2"]);
+    // Now the first (older) refresh resolves with its stale snapshot.
+    releaseFirst();
+    await flushPromises();
+    expect(store.currentTopics.map((t3) => t3.id)).toEqual(["topic_2"]);
+    // Exactly two list requests: the aborted stale attempt issued no third
+    // request, so the cache survives on ordering, not on a retry.
+    expect(listRequests).toBe(2);
+  });
+
   it("never widens the default target to everyone when the bot catalog is unconfirmed", async () => {
     const store = useGroupsStore();
     const leadGroup: GroupSummaryDto = { ...GROUP, leadBotId: "bot_a" };

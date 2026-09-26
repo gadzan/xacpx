@@ -299,6 +299,18 @@ export const useGroupsStore = defineStore("groups", () => {
    *  reconciler can tell "my own fetch moved the counter" from "a concurrent
    *  event changed Topic state while I was waiting". */
   const topicEventRevision: Record<string, number> = {};
+  /** Deletion epoch, bumped ONLY when a Topic authoritatively disappears (a
+   *  coarse reconciliation committing a snapshot that dropped Topics, or a Topic
+   *  event deleting one). A Topic teardown publishes no tombstone, so a deletion
+   *  is knowledge that exists only in the writer that observed it: any list
+   *  request that captured an older epoch and returns afterwards is carrying a
+   *  snapshot taken BEFORE that deletion, and must never be merged into the
+   *  cache — doing so resurrects the deleted Topic. */
+  const topicDeletionEpoch: Record<string, number> = {};
+  /** Latest-request fence for coarse Topic refreshes: the newest refresh owns the
+   *  commit, so two out-of-order conversations-changed responses cannot rewind
+   *  each other's deletion. */
+  const topicRefreshSeq: Record<string, number> = {};
 
   const messages = ref<ConversationMessageDto[]>([]);
   const oldestSeq = ref<number | undefined>(undefined);
@@ -560,10 +572,18 @@ export const useGroupsStore = defineStore("groups", () => {
     const key = `${targetInstanceId}:${conversationId}`;
     const seq = (topicsSeq[key] ?? 0) + 1;
     topicsSeq[key] = seq;
+    const epochBefore = topicDeletionEpoch[key] ?? 0;
     const res = unwrapRpc(
       await api.rpc<{ topics: TopicSummaryDto[] }>(targetInstanceId, MSG.topicsList, { conversationId }),
     );
     if (topicsSeq[key] !== seq) {
+      // A newer request already landed, so this snapshot is stale. When the
+      // cache moved because of a DELETION epoch, this response predates the
+      // deletion and merging it would resurrect the deleted Topic: discard it
+      // and read back the current cache.
+      if ((topicDeletionEpoch[key] ?? 0) !== epochBefore) {
+        return topicsByConversation.value[key] ?? [];
+      }
       const currentList = topicsByConversation.value[key] ?? [];
       const merged: Record<string, TopicSummaryDto> = {};
       for (const t of res.topics) merged[t.id] = t;
@@ -572,6 +592,9 @@ export const useGroupsStore = defineStore("groups", () => {
       topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
       return next;
     }
+    // This is the newest request, so its snapshot is authoritative for the
+    // cache: replace wholesale so a Topic deleted since the last fetch actually
+    // leaves the list.
     topicsByConversation.value = { ...topicsByConversation.value, [key]: res.topics };
     return res.topics;
   }
@@ -596,18 +619,31 @@ export const useGroupsStore = defineStore("groups", () => {
     isStale: () => boolean,
   ): Promise<TopicSummaryDto[] | null> {
     const key = `${instId}:${conversationId}`;
+    // Latest-request fence for coarse refreshes: if a newer refresh is already
+    // in flight, this one must not commit afterwards and undo its deletion.
+    const requestId = (topicRefreshSeq[key] ?? 0) + 1;
+    topicRefreshSeq[key] = requestId;
     for (let attempt = 0; attempt < 4; attempt++) {
       const revisionBefore = topicEventRevision[key] ?? 0;
       const res = unwrapRpc(
         await api.rpc<{ topics: TopicSummaryDto[] }>(instId, MSG.topicsList, { conversationId }),
       );
-      if (isStale()) return null;
+      if (isStale() || topicRefreshSeq[key] !== requestId) return null;
       if ((topicEventRevision[key] ?? 0) === revisionBefore) {
         // Clean window: commit this snapshot wholesale, replacing (not merging
         // with) the cache so a vanished Topic is actually removed from it.
         topicsSeq[key] = (topicsSeq[key] ?? 0) + 1;
-        topicsByConversation.value = { ...topicsByConversation.value, [key]: res.topics };
-        return res.topics;
+        const previous = topicsByConversation.value[key] ?? [];
+        const next = res.topics;
+        const droppedAny = previous.some((topic) => !next.some((item) => item.id === topic.id));
+        if (droppedAny) {
+          // Deletion observed: advance the epoch so in-flight list requests that
+          // captured the older epoch discard their pre-deletion snapshots
+          // instead of merging the deleted Topic back in.
+          topicDeletionEpoch[key] = (topicDeletionEpoch[key] ?? 0) + 1;
+        }
+        topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
+        return next;
       }
       // A Topic event landed during this request: this snapshot says nothing
       // about what was deleted, so ask again.
