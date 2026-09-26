@@ -28,9 +28,21 @@ export interface DesktopTunnelDeps {
   config: RelayDesktopConfig;
   /** Hub base URL (ws:// or wss://), reused to dial `/desktop/instance`. */
   hubUrl: string;
-  createSocket?: (url: string) => WebSocket;
+  createSocket?: (url: string, options: WebSocketConnectOptions) => WebSocket;
   logger?: { error(event: string, message: string, context?: Record<string, unknown>): void };
   platform?: NodeJS.Platform;
+}
+
+/**
+ * Client-side options for the hub binary socket. `maxPayload` is the PARSER
+ * gate: without it `ws`'s client default allows a 100 MiB message, so the
+ * in-`message` size check below only runs after the oversized frame is already
+ * fully buffered. Passing the same limit the hub enforces (see the hub's
+ * DESKTOP_WS_MAX_PAYLOAD_BYTES server options) makes an errant/compromised hub
+ * close the socket at the parser instead of forcing the allocation.
+ */
+export interface WebSocketConnectOptions {
+  maxPayload: number;
 }
 
 interface ActiveTunnel {
@@ -157,9 +169,12 @@ export class DesktopTunnelRuntime {
     // construction and the first listener is still an unhandled throw under
     // `bun test` (the rejection is attributed to the file, not the await).
     let socket: WebSocket;
-    const createSocket = this.deps.createSocket ?? ((u: string) => new WebSocket(u));
+    const createSocket = this.deps.createSocket
+      ?? ((u: string, options: WebSocketConnectOptions) => new WebSocket(u, options));
     try {
-      socket = await openHubSocket(createSocket, url, config.connectTimeoutMs);
+      socket = await openHubSocket(createSocket, url, config.connectTimeoutMs, {
+        maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES,
+      });
     } catch (err) {
       tcp.removeAllListeners("data");
       tcp.destroy();
@@ -187,10 +202,17 @@ export class DesktopTunnelRuntime {
         return;
       }
       const ok = tcp.write(data);
-      if (!ok) socket.pause?.();
-      tcp.once("drain", () => {
-        try { (socket as { resume?: () => void }).resume?.(); } catch { /* gone */ }
-      });
+      // Only wait for drain when the socket actually applied backpressure.
+      // Registering a one-shot listener on every frame leaks: with a healthy
+      // loopback RFB server write() keeps returning true, no drain ever fires,
+      // and a long session trips MaxListenersExceededWarning while holding the
+      // references alive.
+      if (!ok) {
+        socket.pause?.();
+        tcp.once("drain", () => {
+          try { (socket as { resume?: () => void }).resume?.(); } catch { /* gone */ }
+        });
+      }
     });
     // A persistent error swallow MUST exist alongside the close handler: the
     // `ws` client emits 'error' (with a bare ErrorEvent) before 'close' on
@@ -281,14 +303,19 @@ async function readTunnelBanner(tcp: net.Socket, timeoutMs: number): Promise<Buf
   });
 }
 
-async function openHubSocket(createSocket: (url: string) => WebSocket, url: string, timeoutMs: number): Promise<WebSocket> {
+async function openHubSocket(
+  createSocket: (url: string, options: WebSocketConnectOptions) => WebSocket,
+  url: string,
+  timeoutMs: number,
+  options: WebSocketConnectOptions,
+): Promise<WebSocket> {
   // Guard synchronously: if the factory itself throws (or emits 'error' on
   // the same tick before our once-listeners attach), Node treats an
   // emitter 'error' with zero listeners as a throw. Wrap construction so a
   // pre-listener emission can never escape as an unhandled file-level error.
   let socket: WebSocket;
   try {
-    socket = createSocket(url);
+    socket = createSocket(url, options);
   } catch (err) {
     throw err instanceof Error ? err : new Error(String(err));
   }

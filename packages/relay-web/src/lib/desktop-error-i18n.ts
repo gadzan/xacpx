@@ -28,7 +28,10 @@ const TRANSPORT_ERROR_I18N_KEYS: Record<string, string> = {
 /** i18n key for a desktop error code, or undefined when unknown. */
 export function desktopErrorKey(code: string | undefined): string | undefined {
   if (!code) return undefined;
-  if (code in DESKTOP_ERROR_I18N_KEYS) {
+  // Object.hasOwn, not `in`: a connector-reported code like "toString" or
+  // "constructor" would otherwise hit Object.prototype and resolve to a key
+  // that is not part of the desktop mapping at all.
+  if (Object.hasOwn(DESKTOP_ERROR_I18N_KEYS, code)) {
     return DESKTOP_ERROR_I18N_KEYS[code as DesktopErrorCode];
   }
   return TRANSPORT_ERROR_I18N_KEYS[code];

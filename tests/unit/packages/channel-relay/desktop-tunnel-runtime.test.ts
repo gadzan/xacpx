@@ -79,3 +79,4 @@ test("RFB handshake evaluator used by the tunnel accepts VncAuth", async () => {
   expect(encodeEnvelope).toBeDefined();
   expect(decodeEnvelope).toBeDefined();
 });
+

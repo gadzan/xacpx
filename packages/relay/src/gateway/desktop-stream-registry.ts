@@ -86,6 +86,25 @@ export class DesktopStreamRegistry {
     return record;
   }
 
+  /**
+   * Push a non-closed record's deadline out. Used when the browser ticket is
+   * minted (after the connector prepare succeeds): the reservation TTL started
+   * at reserve() time, so without this the stream could be swept before its own
+   * valid browser ticket expires. `max()` semantics — the deadline can only move
+   * forward, never shorten a still-valid stream.
+   */
+  extendExpiry(streamId: string, expiresAt: number): DesktopStreamRecord | undefined {
+    const record = this.records.get(streamId);
+    if (!record || record.state === "closed") return undefined;
+    if (expiresAt > record.expiresAt) record.expiresAt = expiresAt;
+    return record;
+  }
+
+  /** True when the record exists, is not closed, and its deadline has not passed. */
+  isLive(record: DesktopStreamRecord | undefined, now = this.now()): record is DesktopStreamRecord {
+    return record !== undefined && record.state !== "closed" && record.expiresAt > now;
+  }
+
   /** Terminal state: the record stays briefly so late binary upgrades fail closed. */
   close(streamId: string): DesktopStreamRecord | undefined {
     const record = this.records.get(streamId);
@@ -106,16 +125,18 @@ export class DesktopStreamRegistry {
   }
 
   /**
-   * List TTL-expired preparing/waiting-browser records WITHOUT marking them
-   * closed. The gateway's sweepExpired owns the transition via closeStream
-   * (see closeForInstance above for why pre-marking breaks idempotency).
+   * List TTL-expired live records WITHOUT marking them closed. The gateway's
+   * sweepExpired owns the transition via closeStream (see closeForInstance
+   * above for why pre-marking breaks idempotency).
+   *
+   * Reaps every non-closed state, not just preparing/waiting-browser: an
+   * `active` record whose deadline has passed (an active stream outliving its
+   * own browser ticket) can never be reaped by a preparing/waiting-browser-only
+   * filter, so it would pair-and-leak forever.
    */
   sweepExpired(now = this.now()): DesktopStreamRecord[] {
     return [...this.records.values()].filter(
-      (r) =>
-        r.state !== "closed" &&
-        (r.state === "preparing" || r.state === "waiting-browser") &&
-        r.expiresAt <= now,
+      (r) => r.state !== "closed" && r.expiresAt <= now,
     );
   }
 

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArchiveRestore, Bot, ChevronDown, ChevronRight, Folder, Link2, Loader2, MessageSquare, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug } from "lucide-vue-next";
-import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey } from "../stores/instances";
+import { ArchiveRestore, Bot, ChevronDown, ChevronRight, Folder, Link2, Loader2, MessageSquare, Monitor, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug } from "lucide-vue-next";
+import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey, supportsDesktop } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
@@ -45,6 +45,8 @@ function driverForAgentName(inst: InstanceView, agentName: string): string | und
 const emit = defineEmits<{
   select: [instanceId: string, alias: string];
   selectBot: [instanceId: string, botId: string];
+  /** Instance-level Desktop open: independent of any chat/session selection. */
+  openDesktop: [instanceId: string];
 }>();
 const dialogFor = ref<{ id: string; name: string; presetAgent?: string; presetWorkspace?: string } | null>(null);
 const manageFor = ref<{ id: string; name: string } | null>(null);
@@ -488,6 +490,20 @@ const rowSwipes = computed(() => {
         <span class="flex-1 truncate text-left text-[12.5px] font-semibold" :class="inst.online ? 'text-fg' : 'text-fg-muted'"
               :title="inst.coreVersion ? $t('instance.coreVersion', { version: inst.coreVersion }) : $t('instance.coreVersionUnknown')">{{ inst.name }}</span>
         <span v-if="inst.online" class="font-mono text-[10px] tabular-nums text-fg-muted">{{ activeSessions(inst).length }}</span>
+        <!-- Instance-level Desktop entry. Deliberately NOT session-scoped: the
+             design makes Desktop an instance resource, so an online desktop-capable
+             instance with zero sessions (or one viewed in Direct Bot mode) must
+             still reach it. -->
+        <span v-if="supportsDesktop(inst)" class="shrink-0" @click.stop>
+          <button type="button"
+                  data-test="instance-desktop"
+                  :title="$t('desktop.title')"
+                  :aria-label="$t('desktop.title')"
+                  class="grid h-6 w-6 place-items-center rounded text-fg-muted transition-colors hover:bg-raised hover:text-accent"
+                  @click="emit('openDesktop', inst.id)">
+            <Monitor :size="13" />
+          </button>
+        </span>
         <span v-else class="text-[10px] font-medium text-fg-muted">{{ $t("instance.offline") }}</span>
       </button>
 

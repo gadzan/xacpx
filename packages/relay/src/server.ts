@@ -1323,7 +1323,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
             mintConnectorTicket: (streamId, ticketAccountId, instanceId) =>
               runtime.desktop.ticketStore.mintTicket({ streamId, accountId: ticketAccountId, instanceId, side: "connector" }),
             mintBrowserTicket: (streamId, ticketAccountId, instanceId) =>
-              runtime.desktop.ticketStore.mintTicket({ streamId, accountId: ticketAccountId, instanceId, side: "browser" }),
+              runtime.desktop.mintBrowserTicket({ streamId, accountId: ticketAccountId, instanceId }),
             markReady: (streamId, security) => runtime.desktop.reportConnectorReady(streamId, security),
             cancel: (streamId, reason) => {
               runtime.desktopStreamOwners.delete(streamId);

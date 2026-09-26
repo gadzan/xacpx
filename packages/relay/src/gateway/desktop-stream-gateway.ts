@@ -12,7 +12,7 @@ import {
 
 import type { RelayLogger } from "../logging.js";
 import { createNoopRelayLogger } from "../logging.js";
-import { DesktopTicketStore } from "./desktop-ticket-store.js";
+import { DesktopTicketStore, type DesktopTicket } from "./desktop-ticket-store.js";
 import { DesktopStreamRegistry, type DesktopStreamRecord } from "./desktop-stream-registry.js";
 
 export interface DesktopBinarySocket {
@@ -113,6 +113,24 @@ export class DesktopStreamGateway {
     return expired.length;
   }
 
+  /**
+   * Mint the browser ticket for a stream that just passed its RFB probe, and
+   * align the stream's deadline with it.
+   *
+   * The reservation TTL started at reserve() time, but the connector prepare
+   * (probe + TCP handshake) runs AFTER that, so the stream's original deadline
+   * can expire before its own browser ticket does. Two directions matter:
+   * the sweep killing a stream whose ticket is still valid, and ( worse) the
+   * sweep missing between ticks so `pair()` resurrects an expired record as
+   * `active`. Extending to `max(current, ticket.expiresAt)` makes the ticket's
+   * TTL the single authoritative deadline for the stream.
+   */
+  mintBrowserTicket(input: { streamId: string; accountId: string; instanceId: string }): DesktopTicket {
+    const ticket = this.tickets.mintTicket({ ...input, side: "browser" });
+    this.streams.extendExpiry(ticket.streamId, ticket.expiresAt);
+    return ticket;
+  }
+
   attachBrowser(ticket: string, socket: DesktopBinarySocket, authenticatedAccountId?: string): { ok: true; streamId: string } | { ok: false; reason: string } {
     const record = this.tickets.consume(ticket, "browser", authenticatedAccountId);
     if (!record) return this.reject(socket, "unknown-or-reused-ticket");
@@ -129,7 +147,9 @@ export class DesktopStreamGateway {
     const record = this.tickets.consume(ticket, "connector");
     if (!record) return { ok: false, reason: "unknown-or-reused-ticket" };
     const registryRecord = this.streams.get(record.streamId);
-    if (!registryRecord || registryRecord.state === "closed") return { ok: false, reason: "stream-closed" };
+    // Same liveness semantics as pair(): an expired-but-unswept reservation
+    // must not reserve a tunnel slot on the connector.
+    if (!this.streams.isLive(registryRecord)) return { ok: false, reason: "stream-expired" };
     if (registryRecord.accountId !== record.accountId || registryRecord.instanceId !== record.instanceId) {
       return { ok: false, reason: "ticket-identity-mismatch" };
     }
@@ -195,7 +215,12 @@ export class DesktopStreamGateway {
     // Defense in depth: the ticket's account/instance binding must match the
     // registry's authoritative stream identity. A ticket minted for stream X
     // must never attach to stream Y, even if both ids are somehow valid.
-    if (!registryRecord || registryRecord.state === "closed") return this.reject(socket, "stream-closed");
+    // The liveness check is not just `closed`: the periodic sweep only reaps
+    // preparing/waiting-browser records, so an expiry that lands between ticks
+    // (or a record promoted to active past its deadline) must still fail
+    // closed here — otherwise a stale reservation survives as `active` and the
+    // sweep can never touch it again.
+    if (!this.streams.isLive(registryRecord)) return this.reject(socket, "stream-expired");
     if (registryRecord.accountId !== record.accountId || registryRecord.instanceId !== record.instanceId) {
       return this.reject(socket, "ticket-identity-mismatch");
     }

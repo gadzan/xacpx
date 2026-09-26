@@ -305,3 +305,109 @@ test("repeated abandoned streams never exhaust the pre-attach cap", () => {
   freshConnector.emit(banner, true);
   expect(streams.get(fresh.record.streamId)?.state).not.toBe("closed");
 });
+
+/**
+ * Browser-ticket vs reservation-deadline alignment.
+ *
+ * The reservation TTL starts at reserve() time, but the connector's RFB probe
+ * runs AFTER it, so the stream's own deadline can expire before the browser
+ * ticket it later issues. Two failure modes follow, both sweep-phase dependent:
+ *  - the sweep killing a stream whose ticket is still valid, or
+ *  - the sweep missing between ticks, letting pair() promote an expired record
+ *    to `active` where the (preparing/waiting-browser) sweep can never reach it.
+ *
+ * The browser ticket's TTL is therefore authoritative: mintBrowserTicket pushes
+ * the stream deadline out to it, and pair() re-checks liveness synchronously.
+ */
+function fakeClockSetup(startAt = 1_000_000) {
+  let clock = startAt;
+  let seq = 0;
+  const tickets = new DesktopTicketStore({
+    mint: () => `t${(seq += 1)}`,
+    now: () => clock,
+  });
+  const streams = new DesktopStreamRegistry({
+    createStreamId: () => "s-1",
+    now: () => clock,
+  });
+  const closed: string[] = [];
+  const gateway = new DesktopStreamGateway({
+    tickets,
+    streams,
+    onStreamClosed: (id) => closed.push(id),
+  });
+  return { tickets, streams, gateway, closed, advance: (ms: number) => { clock += ms; }, now: () => clock };
+}
+
+test("minting the browser ticket extends the stream deadline to it", () => {
+  const { gateway, streams, advance } = fakeClockSetup();
+  const reserved = streams.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
+  expect(reserved.ok).toBe(true);
+  if (!reserved.ok) return;
+  const original = streams.get(reserved.record.streamId)?.expiresAt ?? 0;
+
+  // The connector prepare takes 8s; the reservation deadline has not moved.
+  advance(8_000);
+  const ticket = gateway.mintBrowserTicket({ streamId: reserved.record.streamId, accountId: "a1", instanceId: "i1" });
+  // Ticket TTL is measured from the mint, and the stream is pushed out to it.
+  expect(ticket.expiresAt).toBe(1_008_000 + 60_000);
+  expect(streams.get(reserved.record.streamId)?.expiresAt).toBe(ticket.expiresAt);
+  // max() semantics: a later mint cannot SHORTEN a still-valid deadline.
+  const second = gateway.mintBrowserTicket({ streamId: reserved.record.streamId, accountId: "a1", instanceId: "i1" });
+  expect(streams.get(reserved.record.streamId)?.expiresAt).toBeGreaterThanOrEqual(second.expiresAt);
+});
+
+test("an expired reservation cannot be revived by a valid-ticket browser attach", () => {
+  const { gateway, streams, advance } = fakeClockSetup();
+  const reserved = streams.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
+  expect(reserved.ok).toBe(true);
+  if (!reserved.ok) return;
+
+  // t=8s: the connector prepare completes and the hub mints the browser ticket.
+  advance(8_000);
+  const browserTicket = gateway.mintBrowserTicket({
+    streamId: reserved.record.streamId, accountId: "a1", instanceId: "i1",
+  });
+  expect(browserTicket.expiresAt).toBe(1_008_000 + 60_000);
+
+  // t=64s: the ticket is still live, but the stream's own reservation deadline
+  // has passed. Rewind the record to model a hub whose deadline was never
+  // aligned, so only the pair()-time liveness check can save it.
+  const record = streams.get(reserved.record.streamId);
+  if (record) record.expiresAt = 1_060_000;
+  advance(56_000);
+  expect(1_064_000).toBeLessThan(browserTicket.expiresAt); // ticket still valid
+
+  // A browser holding a still-valid ticket must NOT resurrect the stream.
+  const browser = new FakeBinarySocket();
+  const result = gateway.attachBrowser(browserTicket.ticket, browser as unknown as DesktopBinarySocket);
+  expect(result.ok).toBe(false);
+  expect(browser.closed).toBe(true);
+  expect(browser.closeCode).toBe(4403);
+  expect(streams.get(reserved.record.streamId)?.state).toBe("preparing");
+});
+
+test("the sweep reaps an active stream that outlived its deadline", () => {
+  // A record promoted to `active` past its deadline used to be invisible to the
+  // preparing/waiting-browser sweep, so the tunnel could never be terminated.
+  const { gateway, streams, advance } = fakeClockSetup();
+  const reserved = streams.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
+  expect(reserved.ok).toBe(true);
+  const connectorTicket = gateway.ticketStore.mintTicket({
+    streamId: reserved.record.streamId, accountId: "a1", instanceId: "i1", side: "connector",
+  });
+  const connector = new FakeBinarySocket();
+  expect(gateway.attachConnector(connectorTicket.ticket, connector as unknown as DesktopBinarySocket).ok).toBe(true);
+  expect(gateway.reportConnectorReady(reserved.record.streamId, "vnc-auth")).toBe(true);
+  // Ticket mint extends the deadline; attach both sides to reach `active`.
+  const browserTicket = gateway.mintBrowserTicket({ streamId: reserved.record.streamId, accountId: "a1", instanceId: "i1" });
+  const browser = new FakeBinarySocket();
+  expect(gateway.attachBrowser(browserTicket.ticket, browser as unknown as DesktopBinarySocket).ok).toBe(true);
+  expect(streams.get(reserved.record.streamId)?.state).toBe("active");
+
+  // Past the (extended) deadline the record is still `active` — and must be
+  // reapable, not immortal.
+  advance(60_001);
+  expect(streams.sweepExpired().map((r) => r.streamId)).toEqual([reserved.record.streamId]);
+});
+

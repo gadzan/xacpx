@@ -259,22 +259,51 @@ const terminalCapable = computed(() => {
   return !!inst && supportsRmuxTerminal(inst);
 });
 
-const desktopCapable = computed(() => {
+/**
+ * Instance-scoped Desktop target: independent of the chat/session selection so
+ * an instance with zero sessions — or one viewed in Direct Bot mode — can still
+ * open its Desktop. The toolbar button bumps this whenever a session is
+ * selected; the per-instance tree entry sets it directly.
+ */
+const desktopInstanceId = ref<string | null>(null);
+
+/**
+ * Toolbar entry visibility: keyed off the chat-selected instance so the control
+ * appears as soon as a desktop-capable instance is selected. The OPEN viewer
+ * (`desktopInstanceId`) is tracked separately so an instance with no session
+ * selection can still hold the viewer after being opened from the instance tree.
+ */
+const desktopCapableForSelection = computed(() => {
   const id = chat.instanceId;
   if (!id) return false;
   const inst = instances.byId(id);
   return !!inst && supportsDesktop(inst);
 });
 
-function openDesktop(): void {
-  if (!chat.instanceId || !desktopCapable.value) return;
-  desktops.viewFor(chat.instanceId);
+/** The instance the toolbar button would open: the current viewer, else the selection. */
+const desktopToolbarTarget = computed(() => desktopInstanceId.value ?? chat.instanceId);
+
+function openDesktop(instanceId?: string): void {
+  const target = instanceId ?? chat.instanceId;
+  if (!target) return;
+  const inst = instances.byId(target);
+  if (!inst || !supportsDesktop(inst)) return;
+  // Switching instances closes the previous viewer: v1 is single-viewer per
+  // instance and the hub rejects a second, so leaving it open would strand the
+  // old stream (its socket is gone from the UI) until the TTL sweep reaped it.
+  if (desktopInstanceId.value && desktopInstanceId.value !== target) {
+    desktops.close(desktopInstanceId.value);
+  }
+  desktopInstanceId.value = target;
+  desktops.viewFor(target);
   desktopTabOpen.value = true;
   rightOpen.value = false;
+  leftOpen.value = false;
 }
 
 function closeDesktop(): void {
-  if (chat.instanceId) desktops.close(chat.instanceId);
+  if (desktopInstanceId.value) desktops.close(desktopInstanceId.value);
+  desktopInstanceId.value = null;
   desktopTabOpen.value = false;
 }
 
@@ -295,9 +324,11 @@ function onGlobalKey(e: KeyboardEvent) {
 }
 
 function onSelect(instanceId: string, alias: string) {
-  if (chat.instanceId && chat.instanceId !== instanceId) {
-    desktops.close(chat.instanceId);
-    desktopTabOpen.value = false;
+  // The desktop viewer is instance-scoped: switching instances closes it, but
+  // selecting another session on the SAME instance keeps it open — that is the
+  // point of an instance-level resource.
+  if (desktopInstanceId.value && desktopInstanceId.value !== instanceId) {
+    closeDesktop();
   }
   directBotsStore.clearSelection();
   chat.select(instanceId, alias);
@@ -310,8 +341,7 @@ function onSelectBot(instanceId: string, botId: string) {
   // chat.instanceId becomes null, but leaving `desktopTabOpen` true means a
   // later ordinary-session select re-mounts it (the v-if below) and silently
   // re-prepares a desktop stream the user never asked for again.
-  if (chat.instanceId) desktops.close(chat.instanceId);
-  desktopTabOpen.value = false;
+  closeDesktop();
   chat.clearSelection();
   void directBotsStore.selectBot(instanceId, botId);
   leftOpen.value = false;
@@ -378,7 +408,11 @@ onMounted(async () => {
     notices.applyEvent(event);
     terminals.applyEvent(event);
     desktops.applyEvent(event);
-    if (event.kind === "instance-status" && event.online === false) desktopTabOpen.value = false;
+    // An offline instance can no longer serve its desktop: close the viewer so
+    // the button drops out and the (now unopenable) target is released.
+    if (event.kind === "instance-status" && event.online === false && event.instanceId === desktopInstanceId.value) {
+      closeDesktop();
+    }
   }, onStatus);
   setNotificationClickHandler((instId, alias) => onSelect(instId, alias));
   if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
@@ -467,11 +501,11 @@ onUnmounted(() => {
           <SquareTerminal :size="15" />
         </button>
         <button
-          v-if="desktopCapable"
+          v-if="desktopCapableForSelection"
           data-test="toggle-desktop"
           :aria-label='$t("desktop.title")'
           :title='$t("desktop.title")'
-          :disabled="!chat.instanceId"
+          :disabled="!desktopToolbarTarget"
           class="grid h-7 w-7 place-items-center rounded-lg border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-not-allowed disabled:opacity-40"
           :class="desktopTabOpen ? 'border-accent/40 bg-accent/10 text-accent' : 'border-border text-fg-muted hover:bg-raised'"
           @click="desktopTabOpen ? closeDesktop() : openDesktop()"
@@ -542,7 +576,7 @@ onUnmounted(() => {
                     class="text-fg-muted hover:text-fg lg:hidden" @click="leftOpen = false"><X :size="18" /></button>
           </div>
         </div>
-        <InstanceTree @select="onSelect" @select-bot="onSelectBot" />
+        <InstanceTree @select="onSelect" @select-bot="onSelectBot" @open-desktop="openDesktop" />
       </div>
 
       <!-- Slim edge handle to bring the sidebar back once collapsed (desktop only). -->
@@ -595,9 +629,9 @@ onUnmounted(() => {
                          :instance-id="keyInstance(key)" :session-alias="keyAlias(key)"
                          @close="requestCloseTab(key, tab.id)" />
           </template>
-          <DesktopTab v-if="desktopTabOpen && chat.instanceId" class="absolute inset-0 z-20"
-                      :instance-id="chat.instanceId"
-                      :instance-name="instances.byId(chat.instanceId)?.name ?? chat.instanceId"
+          <DesktopTab v-if="desktopTabOpen && desktopInstanceId" class="absolute inset-0 z-20"
+                      :instance-id="desktopInstanceId"
+                      :instance-name="instances.byId(desktopInstanceId)?.name ?? desktopInstanceId"
                       @close="closeDesktop()" />
         </div>
       </div>
