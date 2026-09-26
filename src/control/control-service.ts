@@ -2003,7 +2003,7 @@ export class ControlService {
   async createGroupTopic(
     conversationId: string,
     title: string,
-    target: { workspace: string; cwd?: string; isolation: "shared" | "shared-single-writer" | "worktree-per-member" },
+    target: { workspace: string; cwd?: string; isolation: "shared" | "shared-single-writer" },
   ) {
     return this.runConversationMutation(async (runtime) => {
       const topic = await runtime.runs.createGroupTopic(conversationId, title, target);

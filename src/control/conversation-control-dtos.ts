@@ -76,7 +76,9 @@ export interface BotUpdateRequestDto {
 export interface ExecutionTargetDto {
   workspace: string;
   cwd?: string;
-  isolation: "shared" | "shared-single-writer" | "worktree-per-member";
+  /** PR7 supports the two shared policies only; worktree-per-member has no
+ *  provisioning lifecycle (PR10) and every Run on it would be unexecutable. */
+  isolation: "shared" | "shared-single-writer";
 }
 
 export interface TopicSummaryDto {

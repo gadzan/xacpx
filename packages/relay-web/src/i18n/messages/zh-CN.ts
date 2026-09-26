@@ -715,7 +715,6 @@ export default {
       isolationLabel: "文件系统隔离",
       isolationSingleWriter: "共享单写者（推荐）",
       isolationShared: "共享",
-      isolationWorktree: "每成员工作树（暂不支持）",
     },
     prompt: {
       placeholder: "给所选成员发消息...（@名称、@everyone）",

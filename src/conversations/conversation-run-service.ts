@@ -790,8 +790,11 @@ export class ConversationRunService {
     }
     this.bots.assertWorkspaceRegistered(target.workspace);
     if (target.isolation !== "shared"
-      && target.isolation !== "shared-single-writer"
-      && target.isolation !== "worktree-per-member") {
+      && target.isolation !== "shared-single-writer") {
+      // worktree-per-member stays a rejected value here: PR10 provisioning is
+      // unimplemented, and materialization fails closed with
+      // `worktree_unprovisioned`. Persisting it would mint a Topic whose every
+      // Run is unexecutable (and requeues forever), so refuse it at create.
       throw new ConversationError("invalid-isolation", `unknown isolation policy "${target.isolation}"`);
     }
     // Topic cwd is not honored by member session materialization yet (the

@@ -3711,18 +3711,47 @@ test("automatic cancel that races a member completion still terminals the run", 
   }
 });
 
-test("worktree-per-member topics fail closed at member materialization", async () => {
-  const first = await createLifecycle();
+test("worktree-per-member topics are refused at creation and never leave a queued Run", async () => {
+  const first = await createLifecycle({ autoKick: true });
+  await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
   const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
-  const topic = await first.service.createGroupTopic(group.id, "WT", {
+  // Create refuses the policy: PR10 provisioning does not exist, so a Topic
+  // created with it could never execute.
+  await expect(first.service.createGroupTopic(group.id, "WT", {
     workspace: "backend",
     isolation: "worktree-per-member",
+  })).rejects.toMatchObject({ code: "invalid-isolation" });
+  expect(first.state.conversation_topics["wt-missing"]).toBeUndefined();
+
+  // A durable row that predates the gate (legacy/damaged state) must settle
+  // terminally at dispatch instead of requeueing on every kick forever.
+  const topic = await first.service.createGroupTopic(group.id, "Legacy WT", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
   });
-  expect(topic.executionTarget?.isolation).toBe("worktree-per-member");
+  const legacy = first.state.conversation_topics[topic.id];
+  if (legacy?.executionTarget) legacy.executionTarget.isolation = "worktree-per-member";
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-legacy-wt",
+    text: "go",
+    target: { mode: "members", botIds: [BOT_ID] },
+  });
+  await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "failed");
+  const settled = first.store.getRun(accepted.run.id)!;
+  expect(settled.state).toBe("failed");
+  expect(settled.completionReason).toContain("worktree_unprovisioned");
+  // Materialization itself still fails closed for direct callers.
   await expect(first.runtime.getOrCreateGroupMemberSession({
     botId: BOT_ID, conversationId: group.id, topicId: topic.id,
   })).rejects.toMatchObject({ code: "worktree_unprovisioned" });
+  // The dispatch must be terminally settled, never left pending: a pending
+  // row would make every later kick re-attempt an unexecutable target.
+  const dispatch = first.store.getDispatchForRun(accepted.run.id);
+  expect(dispatch?.state).toBe("completed");
+  expect(first.store.listMemberTurns(accepted.run.id)[0]?.state).toBe("failed");
   first.store.close();
 });
 

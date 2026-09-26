@@ -16,7 +16,7 @@ useModalA11y(dialogEl, () => emit("close"));
 
 const title = ref("");
 const workspace = ref("");
-const isolation = ref<"shared" | "shared-single-writer" | "worktree-per-member">("shared-single-writer");
+const isolation = ref<"shared" | "shared-single-writer">("shared-single-writer");
 const creating = ref(false);
 
 const workspaces = computed(() => {
@@ -77,7 +77,6 @@ async function handleCreate(): Promise<void> {
         >
           <option value="shared-single-writer">{{ $t("group.topic.isolationSingleWriter") }}</option>
           <option value="shared">{{ $t("group.topic.isolationShared") }}</option>
-          <option value="worktree-per-member">{{ $t("group.topic.isolationWorktree") }}</option>
         </select>
         <div class="flex items-center justify-end gap-2">
           <button

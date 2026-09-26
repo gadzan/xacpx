@@ -411,6 +411,14 @@ export class ConversationDispatcher {
       if (isMaterializeAbandoned(error)) {
         return;
       }
+      if (!started && isUnsupportedTarget(error)) {
+        // A Topic whose durable target can never execute (unprovisioned
+        // worktree, unsupported cwd, missing workspace) would otherwise stay
+        // pending and requeue on every kick forever. Settle the claim
+        // terminally before the execution-start CAS fence.
+        this.failOwnClaimBeforeStart(work, error instanceof BotError ? error.code : "target_unsupported");
+        return;
+      }
       if (started?.startedAt) {
         const run = this.store.failExecution({
           runId: work.run.id,
@@ -694,4 +702,15 @@ function isMaterializeAbandoned(error: unknown): boolean {
     && (error.code === "group_member_not_member"
       || error.code === "conversation_not_group"
       || error.code === "bot_not_found"));
+}
+
+/** Pre-start materialization refusals that will never succeed while the
+ *  Topic's durable ExecutionTarget stays unchanged. Requeueing these spins
+ *  forever on every kick, so the claim must settle terminally instead. */
+function isUnsupportedTarget(error: unknown): boolean {
+  return error instanceof BotError && (
+    error.code === "worktree_unprovisioned"
+    || error.code === "cwd_unsupported"
+    || error.code === "workspace_not_registered"
+  );
 }

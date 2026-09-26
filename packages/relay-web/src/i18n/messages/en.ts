@@ -718,7 +718,6 @@ export default {
       isolationLabel: "Filesystem isolation",
       isolationSingleWriter: "Shared single writer (recommended)",
       isolationShared: "Shared",
-      isolationWorktree: "Worktree per member (unsupported)",
     },
     prompt: {
       placeholder: "Message the selected members... (@name, @everyone)",
