@@ -470,6 +470,33 @@ test("exact run cancel only affects that Run", async () => {
   expect(control.getRun(runA.run.id).state).toBe("cancelled");
 });
 
+test("Direct prompt refuses Group-shaped structured targets instead of silently routing to the owning Bot", async () => {
+  const { control } = await wire({ autoKick: false });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  for (const target of [
+    { mode: "members", botIds: [bot.id] },
+    { mode: "members", botIds: ["some-other-bot"] },
+    { mode: "everyone" },
+    { mode: "automatic" },
+  ]) {
+    await expect(control.promptConversation({
+      conversationId,
+      requestId: `req-structured-${JSON.stringify(target)}`,
+      text: "hello",
+      target,
+    })).rejects.toMatchObject({ code: "conversation_target_mismatch" });
+  }
+  // The refusal must not consume or shadow the (conversation, topic, request)
+  // identity space: a legitimate later Direct prompt still works.
+  const accepted = await control.promptConversation({
+    conversationId,
+    requestId: "req-after-refusal",
+    text: "hello",
+  });
+  expect(accepted.memberTurn.botId).toBe(bot.id);
+});
+
 test("Direct target must match the Conversation Bot and cannot inject a hidden alias", async () => {
   const { control } = await wire({ autoKick: false });
   const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });

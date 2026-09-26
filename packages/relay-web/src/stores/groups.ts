@@ -295,8 +295,21 @@ export const useGroupsStore = defineStore("groups", () => {
     return out;
   });
 
-  const currentDraftRequestId = ref<string | null>(null);
-  const lastPromptText = ref<string>("");
+  /** A prompt whose accept outcome is uncertain (request sent, response lost or
+   *  errored). The tuple is immutable and is what any retry replays verbatim:
+   *  the server keyed the durable accept on (conversation, topic, requestId), so
+   *  a retry must NOT re-resolve the current UI target — that would silently
+   *  re-route an already-durable Run to different members. */
+  interface UncertainPrompt {
+    requestId: string;
+    text: string;
+    target: ConversationTargetDto;
+  }
+  const uncertainPrompt = ref<UncertainPrompt | null>(null);
+  /** Text of the pending-certainty prompt; drives the Retry affordance. */
+  const uncertainPromptText = computed<string | null>(() => uncertainPrompt.value?.text ?? null);
+  /** Target frozen with the uncertain prompt. A retry replays exactly this. */
+  const uncertainPromptTarget = computed<ConversationTargetDto | null>(() => uncertainPrompt.value?.target ?? null);
   const promptInFlight = ref<boolean>(false);
   const promptError = ref<string | null>(null);
   const promptErrorDetail = ref<string | null>(null);
@@ -351,7 +364,33 @@ export const useGroupsStore = defineStore("groups", () => {
    *  still executable, else the first enabled member in stable ID order, else
    *  everyone (which itself expands to the eligible set). A disabled lead must
    *  never become a default that the first send cannot execute. */
-  function defaultTargetFor(group: GroupSummaryDto | GroupDetailDto, bots: BotSummaryDto[]): GroupTargetSelection {
+  /** Default target for a freshly opened Group.
+   *
+   *  `catalogKnown` must be false when the Bot catalog could not be confirmed
+   *  (bots.list failed and nothing is cached). Eligibility metadata is
+   *  presentation context, so an RPC failure must fail narrow — never widen:
+   *  returning `everyone` on an unknown catalog would expand execution from the
+   *  lead Bot to the whole Group because of a read-only listing failure.
+   *
+   *  With a known catalog the order is: enabled lead, then the first enabled
+   *  member in stable ID order. Without one, the lead (or first member by ID)
+   *  stays the single-member default and the server authoritatively rejects it
+   *  if that Bot is disabled. */
+  function defaultTargetFor(
+    group: GroupSummaryDto | GroupDetailDto,
+    bots: BotSummaryDto[],
+    catalogKnown = true,
+  ): GroupTargetSelection {
+    const fallback = (): GroupTargetSelection => {
+      if (group.leadBotId && group.botIds.includes(group.leadBotId)) {
+        return { mode: "members", botIds: [group.leadBotId] };
+      }
+      const first = [...group.botIds].sort()[0];
+      return first ? { mode: "members", botIds: [first] } : { mode: "everyone" };
+    };
+    if (!catalogKnown) {
+      return fallback();
+    }
     const eligible = group.botIds.filter((id) => bots.find((b) => b.id === id)?.enabled);
     if (group.leadBotId && eligible.includes(group.leadBotId)) {
       return { mode: "members", botIds: [group.leadBotId] };
@@ -367,6 +406,20 @@ export const useGroupsStore = defineStore("groups", () => {
     const deduped = [...new Set(selection.botIds)];
     if (deduped.length === 0) return { error: "targetEmpty" };
     return { target: { mode: "members", botIds: deduped } };
+  }
+
+  /** True when the current selection can be resolved into a wire target. Lets the
+   *  composer disable Send (and keep the draft) instead of throwing the typed
+   *  message away after the store rejects it. */
+  const targetResolvable = computed<boolean>(() => !("error" in resolveTarget()));
+
+  /** Surface the reason a prompt was refused without touching the draft. */
+  function reportTargetProblem(): void {
+    const resolved = resolveTarget();
+    if ("error" in resolved) {
+      promptError.value = resolved.error === "targetRequired" ? "targetRequired" : "targetEmpty";
+      promptErrorDetail.value = null;
+    }
   }
 
   function setTarget(selection: GroupTargetSelection): void {
@@ -469,6 +522,43 @@ export const useGroupsStore = defineStore("groups", () => {
     }
     topicsByConversation.value = { ...topicsByConversation.value, [key]: res.topics };
     return res.topics;
+  }
+
+  /** Authoritative Topic refresh for the selected Group. Replaces the cached
+   *  list wholesale (a teardown must disappear, not merge) and converges the
+   *  active selection when the active Topic no longer exists: prefer the first
+   *  active Topic, otherwise drop the selection so the composer cannot offer a
+   *  send that the server would refuse. */
+  async function refreshTopicsForSelection(conversationId: string): Promise<void> {
+    const instId = instanceId.value;
+    if (!instId || activeConversationId.value !== conversationId) return;
+    const topics = await loadTopics(instId, conversationId);
+    const stillThere = activeTopicId.value
+      ? topics.some((topic) => topic.id === activeTopicId.value)
+      : false;
+    if (activeTopicId.value && !stillThere) {
+      const nextActive = topics.find((topic) => topic.status === "active");
+      if (nextActive) {
+        await switchTopic(nextActive.id);
+      } else {
+        // No active Topic remains: clear the active selection entirely.
+        const generation = ++currentSelectionGeneration;
+        void generation;
+        activeTopicId.value = null;
+        messages.value = [];
+        oldestSeq.value = undefined;
+        newestSeq.value = undefined;
+        contiguousNewestSeq.value = undefined;
+        hasMoreBefore.value = false;
+        hasMoreAfter.value = false;
+        activeRun.value = null;
+        memberTurnsById.value = {};
+        liveTurnsByMember.value = {};
+        topicReady.value = true;
+        targetSelection.value = topics.length > 0 ? targetSelection.value : null;
+        uncertainPrompt.value = null;
+      }
+    }
   }
 
   async function createGroupTopic(
@@ -1024,8 +1114,7 @@ export const useGroupsStore = defineStore("groups", () => {
     promptInFlight.value = false;
     promptError.value = null;
     promptErrorDetail.value = null;
-    currentDraftRequestId.value = null;
-    lastPromptText.value = "";
+    uncertainPrompt.value = null;
     generalError.value = null;
     generalErrorCode.value = null;
     targetSelection.value = null;
@@ -1040,17 +1129,22 @@ export const useGroupsStore = defineStore("groups", () => {
         return;
       }
       activeConversationId.value = group.id;
-      // The default target must be executable, so it derives from the Bot
-      // catalog (enabled state) rather than membership alone: a disabled lead
-      // falls through to the first enabled member.
+      // The default target prefers an executable member, which needs the Bot
+      // catalog's enabled flags. A listing failure (with no cache) must not
+      // widen routing, so it falls back to the lead / first member and lets the
+      // server be authoritative about disabled Bots.
       const bots = await directBotsStore.loadBots(targetInstanceId).catch(() => null);
+      const cachedBots = directBotsStore.botsByInstance[targetInstanceId];
+      const catalogKnown = Array.isArray(bots) && bots.length > 0
+        || Array.isArray(cachedBots) && cachedBots.length > 0;
+      const catalogBots = bots ?? cachedBots ?? [];
       // Fence BEFORE the write, not after: the slower Group's loadBots can
       // settle after the user has already opened another Group, and writing
       // here would overwrite that Group's target with the stale one's member.
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
         return;
       }
-      targetSelection.value = defaultTargetFor(group, bots ?? directBotsStore.botsByInstance[targetInstanceId] ?? []);
+      targetSelection.value = defaultTargetFor(group, catalogBots, catalogKnown);
       const topics = await loadTopics(targetInstanceId, group.id);
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
         return;
@@ -1100,8 +1194,7 @@ export const useGroupsStore = defineStore("groups", () => {
     promptInFlight.value = false;
     promptError.value = null;
     promptErrorDetail.value = null;
-    currentDraftRequestId.value = null;
-    lastPromptText.value = "";
+    uncertainPrompt.value = null;
     generalError.value = null;
     generalErrorCode.value = null;
     if (instanceId.value && activeConversationId.value) {
@@ -1141,23 +1234,37 @@ export const useGroupsStore = defineStore("groups", () => {
     promptInFlight.value = false;
     promptError.value = null;
     promptErrorDetail.value = null;
-    currentDraftRequestId.value = null;
-    lastPromptText.value = "";
+    uncertainPrompt.value = null;
     generalError.value = null;
     generalErrorCode.value = null;
     targetSelection.value = null;
     persistGroupSelection(null, null);
   }
 
-  function preparePromptRequestId(text: string): string {
-    if (!currentDraftRequestId.value || text !== lastPromptText.value) {
-      currentDraftRequestId.value = mintRequestId();
-      lastPromptText.value = text;
+  /** requestId for a fresh send. An existing uncertain tuple keeps its identity
+   *  only when the text AND target still match it; any divergence means this is
+   *  a genuinely new request and must get a new durable identity. */
+  function preparePromptRequestId(text: string, target: ConversationTargetDto): string {
+    const prior = uncertainPrompt.value;
+    if (prior && prior.text === text && JSON.stringify(prior.target) === JSON.stringify(target)) {
+      return prior.requestId;
     }
-    return currentDraftRequestId.value;
+    const requestId = mintRequestId();
+    uncertainPrompt.value = { requestId, text, target };
+    return requestId;
   }
 
-  async function sendPrompt(text: string): Promise<void> {
+  /** Replay an uncertain prompt exactly as first sent. The frozen tuple is what
+   *  the durable accept is keyed on, so a retry must never re-resolve the
+   *  current UI target: switching targets under a live requestId would leave the
+   *  UI claiming one routing while the server executes the original one. */
+  async function retryUncertainPrompt(): Promise<void> {
+    const prior = uncertainPrompt.value;
+    if (!prior) return;
+    await sendPrompt(prior.text, prior.target);
+  }
+
+  async function sendPrompt(text: string, forcedTarget?: ConversationTargetDto): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed || !instanceId.value || !selectedGroupId.value || !activeConversationId.value || !activeTopicId.value) {
       return;
@@ -1172,16 +1279,38 @@ export const useGroupsStore = defineStore("groups", () => {
       promptErrorDetail.value = null;
       return;
     }
+    if (forcedTarget) {
+      // Replaying the frozen tuple: never re-resolve the live UI selection.
+      const reqId = preparePromptRequestId(trimmed, forcedTarget);
+      await runPromptSend(trimmed, forcedTarget, reqId);
+      return;
+    }
     const resolved = resolveTarget();
     if ("error" in resolved) {
       promptError.value = resolved.error === "targetRequired" ? "targetRequired" : "targetEmpty";
       promptErrorDetail.value = null;
       return;
     }
-    const targetInstId = instanceId.value;
-    const targetGroupId = selectedGroupId.value;
-    const targetConvId = activeConversationId.value;
-    const targetTopicId = activeTopicId.value;
+    const reqId = preparePromptRequestId(trimmed, resolved.target);
+    await runPromptSend(trimmed, resolved.target, reqId);
+  }
+
+  /** Transport half of a send: all fences, the RPC, and the projection. Kept
+   *  separate so a frozen-tuple retry shares exactly one code path. */
+  async function runPromptSend(
+    runText: string,
+    target: ConversationTargetDto,
+    reqId: string,
+  ): Promise<void> {
+    // The caller's guards already proved these non-null; restate them here so
+    // this shared path stays directly callable from the frozen-tuple retry.
+    const targetInstId = instanceId.value ?? "";
+    const targetGroupId = selectedGroupId.value ?? "";
+    const targetConvId = activeConversationId.value ?? "";
+    const targetTopicId = activeTopicId.value ?? "";
+    if (!targetInstId || !targetConvId || !targetTopicId) {
+      return;
+    }
     const generation = currentSelectionGeneration;
     const isCurrent = (): boolean =>
       generation === currentSelectionGeneration &&
@@ -1190,7 +1319,6 @@ export const useGroupsStore = defineStore("groups", () => {
       activeConversationId.value === targetConvId &&
       activeTopicId.value === targetTopicId;
     latestPlanRunId.value = null;
-    const reqId = preparePromptRequestId(trimmed);
     promptInFlight.value = true;
     promptError.value = null;
     promptErrorDetail.value = null;
@@ -1201,15 +1329,16 @@ export const useGroupsStore = defineStore("groups", () => {
           conversationId: targetConvId,
           topicId: targetTopicId,
           requestId: reqId,
-          text: trimmed,
-          target: resolved.target,
+          text: runText,
+          target,
         }),
       );
       if (!isCurrent()) {
         return;
       }
-      currentDraftRequestId.value = null;
-      lastPromptText.value = "";
+      // The accept is confirmed: drop the uncertain tuple so a later send with
+      // the same text gets a fresh durable identity.
+      uncertainPrompt.value = null;
 
       const existing = messages.value.find((m) => m.id === res.message.id);
       if (!existing) {
@@ -1293,7 +1422,10 @@ export const useGroupsStore = defineStore("groups", () => {
         cancelError.value = "ownershipChecking";
       }
     } catch (err: unknown) {
-      if (isCurrent() && currentDraftRequestId.value === reqId) {
+      // Lost response or server error: the durable accept may or may not exist.
+      // Keep the frozen tuple so a retry replays the exact requestId/text/target
+      // the server may already have committed.
+      if (isCurrent() && uncertainPrompt.value?.requestId === reqId) {
         const code = err instanceof GroupRpcError ? err.code : null;
         if (code === "unknown-type") {
           promptError.value = "connectorOutdated";
@@ -1745,15 +1877,24 @@ export const useGroupsStore = defineStore("groups", () => {
     if (event.instanceId !== instanceId.value) return;
 
     if (e.type === "conversations-changed") {
-      if (selectedGroupId.value) {
-        void loadGroups(event.instanceId).then((groups) => {
-          if (
-            instanceId.value === event.instanceId &&
-            selectedGroupId.value &&
-            !groups.some((g) => g.id === selectedGroupId.value)
-          ) {
-            clearSelection();
+      const groupIdAtEvent = selectedGroupId.value;
+      const generationAtEvent = currentSelectionGeneration;
+      if (groupIdAtEvent) {
+        void loadGroups(event.instanceId).then(async (groups) => {
+          if (generationAtEvent !== currentSelectionGeneration
+            || instanceId.value !== event.instanceId
+            || selectedGroupId.value !== groupIdAtEvent) {
+            return;
           }
+          if (!groups.some((g) => g.id === groupIdAtEvent)) {
+            clearSelection();
+            return;
+          }
+          // A Topic teardown has no per-topic tombstone — the backend
+          // deliberately broadcasts this coarse refetch instead — so the Topic
+          // list must be re-fetched or a deleted pill (and a dead active Topic)
+          // lingers until the next reconnect.
+          await refreshTopicsForSelection(groupIdAtEvent);
         }).catch(() => {});
       } else {
         void loadGroups(event.instanceId).catch(() => {});
@@ -1825,8 +1966,8 @@ export const useGroupsStore = defineStore("groups", () => {
         } else if (!isTerminalRunState(run.state)) {
           const isOwnDraft =
             run.requestId !== "" &&
-            currentDraftRequestId.value !== null &&
-            run.requestId === currentDraftRequestId.value;
+            uncertainPrompt.value !== null &&
+            run.requestId === uncertainPrompt.value.requestId;
           if (
             !isOwnDraft &&
             (!activeRun.value || isTerminalRunState(activeRun.value.state)) &&
@@ -1854,8 +1995,9 @@ export const useGroupsStore = defineStore("groups", () => {
             liveTurnsByMember.value = {};
             promptError.value = null;
             promptErrorDetail.value = null;
-            currentDraftRequestId.value = null;
-            lastPromptText.value = "";
+            // The Run durably adopted our uncertain prompt, closing the retry
+            // window: a later send with the same text needs a new requestId.
+            uncertainPrompt.value = null;
           }
         }
       }
@@ -1873,8 +2015,8 @@ export const useGroupsStore = defineStore("groups", () => {
         } else if (!isTerminalRunState(run.state)) {
           const isOwnDraft =
             run.requestId !== "" &&
-            currentDraftRequestId.value !== null &&
-            run.requestId === currentDraftRequestId.value;
+            uncertainPrompt.value !== null &&
+            run.requestId === uncertainPrompt.value.requestId;
           if (
             !isOwnDraft &&
             (!activeRun.value || isTerminalRunState(activeRun.value.state)) &&
@@ -1892,8 +2034,7 @@ export const useGroupsStore = defineStore("groups", () => {
             memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, [memberTurn]);
             promptError.value = null;
             promptErrorDetail.value = null;
-            currentDraftRequestId.value = null;
-            lastPromptText.value = "";
+            uncertainPrompt.value = null;
           } else {
             return;
           }
@@ -2058,8 +2199,9 @@ export const useGroupsStore = defineStore("groups", () => {
     cancelUncertaintyRunId,
     runParts,
     completeRunParts,
-    currentDraftRequestId,
-    lastPromptText,
+    uncertainPrompt,
+    uncertainPromptText,
+    uncertainPromptTarget,
     promptInFlight,
     promptError,
     promptErrorDetail,
@@ -2078,6 +2220,8 @@ export const useGroupsStore = defineStore("groups", () => {
     isRunActive,
     defaultTargetFor,
     resolveTarget,
+    targetResolvable,
+    reportTargetProblem,
     setTarget,
     toggleTargetMember,
     mentionBot,
@@ -2094,6 +2238,7 @@ export const useGroupsStore = defineStore("groups", () => {
     clearSelection,
     preparePromptRequestId,
     sendPrompt,
+    retryUncertainPrompt,
     cancelCurrentRun,
     reconcileOnReconnect,
     applyEvent,

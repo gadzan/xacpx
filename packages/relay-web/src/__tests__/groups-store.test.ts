@@ -295,8 +295,11 @@ describe("useGroupsStore", () => {
     store.activeTopicId = "topic_1";
     store.topicReady = true;
     store.targetSelection = { mode: "everyone" };
-    store.currentDraftRequestId = "req_draft_everyone";
-    store.lastPromptText = "all hands";
+    store.uncertainPrompt = {
+      requestId: "req_draft_everyone",
+      text: "all hands",
+      target: { mode: "everyone" },
+    };
     const promptResponse: ConversationPromptResponseDto = {
       reused: false,
       conversationId: "conversation_g",
@@ -646,5 +649,101 @@ describe("useGroupsStore", () => {
     const liveB = store.liveTurnsByMember["turn_b"];
     expect(liveA?.parts).toEqual([{ type: "text", text: "alpha work" }]);
     expect(liveB?.parts).toEqual([{ type: "text", text: "beta work" }]);
+  });
+
+  it("retries an uncertain prompt with the frozen target, not the current one", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    const promptResponse: ConversationPromptResponseDto = {
+      reused: false,
+      conversationId: "conversation_g",
+      topicId: "topic_1",
+      requestId: "req_frozen",
+      message: {
+        id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1,
+        role: "human", content: "review", createdAt: "now",
+      },
+      run: {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_frozen", mode: "explicit", state: "queued",
+        profileRevision: 1, createdAt: "now",
+      },
+      memberTurn: {
+        id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_a", batch: 1, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "now",
+      },
+    };
+    // First send: server accepted (response lost — model the transport error).
+    mockRpc.mockRejectedValueOnce(new Error("network down"));
+    await store.sendPrompt("review");
+    expect(store.uncertainPromptText).toBe("review");
+    // The user re-points the UI at Bot B before retrying.
+    store.targetSelection = { mode: "members", botIds: ["bot_b"] };
+    mockRpc.mockResolvedValueOnce(promptResponse);
+    await store.retryUncertainPrompt();
+    // The retry must resend the ORIGINAL target: the durable accept is keyed on
+    // that (conversation, topic, requestId) triple, so re-routing here would
+    // show Bot B in the UI while the server keeps executing Bot A.
+    const promptCalls = mockRpc.mock.calls.filter((c) => c[1] === "control.conversation.prompt");
+    const retryCall = promptCalls[promptCalls.length - 1];
+    expect(retryCall?.[2]).toMatchObject({
+      target: { mode: "members", botIds: ["bot_a"] },
+    });
+    // Same requestId as the original attempt: the server dedupes on it.
+    const firstCall = promptCalls[0];
+    expect(retryCall?.[2]).toMatchObject({ requestId: firstCall?.[2].requestId });
+  });
+
+  it("never widens the default target to everyone when the bot catalog is unconfirmed", async () => {
+    const store = useGroupsStore();
+    const leadGroup: GroupSummaryDto = { ...GROUP, leadBotId: "bot_a" };
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [leadGroup] };
+      if (type === "control.topics.list") {
+        return { topics: [{ id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" }] };
+      }
+      if (type === "control.bots.list") throw new Error("bots.list unavailable");
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_1" };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.selectGroup("inst_1", "conversation_g");
+    // A read-only eligibility RPC must not widen execution from lead -> everyone.
+    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+  });
+
+  it("drops an externally torn-down Topic from the list and the active selection", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.groupsByInstance["inst_1"] = [GROUP];
+    store.topicReady = true;
+    store.topicsByConversation["inst_1:conversation_g"] = [
+      { id: "topic_1", conversationId: "conversation_g", title: "Gone", status: "active", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" },
+    ];
+    store.activeTopicId = "topic_1";
+    store.activeConversationId = "conversation_g";
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") return { topics: [] };
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_1" };
+      throw new Error(`unexpected ${type}`);
+    });
+    // Another client tore the active Topic down: only the coarse broadcast lands.
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: { type: "conversations-changed" },
+    } as never);
+    await flushPromises();
+    expect(store.currentTopics).toEqual([]);
+    expect(store.activeTopicId).toBeNull();
   });
 });

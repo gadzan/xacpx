@@ -393,6 +393,17 @@ export class ConversationRunService {
       });
     }
     const botId = this.resolveDirectBotId(input.conversationId);
+    if (input.target !== undefined && !("botId" in input.target)) {
+      throw new ConversationError(
+        "conversation_target_mismatch",
+        "Direct conversation accepts only a Bot-id target",
+      );
+    }
+    // A Direct Conversation routes to exactly one Bot. Group-shaped structured
+    // targets must be rejected rather than silently dropped: accepting
+    // `{mode:"members"}` and then executing the owning Bot would run the
+    // opposite of what the caller asked for, and `automatic` would quietly
+    // become an explicit Direct Run.
     const legacyTarget = input.target && "botId" in input.target ? input.target.botId : input.targetBotId;
     if (legacyTarget && legacyTarget !== botId) {
       throw new ConversationError(

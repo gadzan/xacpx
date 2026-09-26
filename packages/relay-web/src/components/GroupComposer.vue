@@ -64,13 +64,13 @@ function pickEveryone(): void {
   closeMenu();
 }
 
+/** The Lead shortcut and the Group-open default share one resolver so a
+ *  "Lead" pick can never re-select a Bot the member list itself disables. */
 function pickLead(): void {
   const group = groupsStore.currentGroup;
   if (!group) return;
-  const lead = group.leadBotId && group.botIds.includes(group.leadBotId)
-    ? group.leadBotId
-    : [...group.botIds].sort()[0];
-  if (lead) groupsStore.setTarget({ mode: "members", botIds: [lead] });
+  const selection = groupsStore.defaultTargetFor(group, props.bots);
+  groupsStore.setTarget(selection);
   closeMenu();
 }
 
@@ -192,10 +192,22 @@ function commitMentionAtBoundary(): void {
   groupsStore.setTarget(derived);
 }
 
+const canSend = computed(() => !props.disabled
+  && !groupsStore.promptInFlight
+  && !groupsStore.isRunActive
+  && groupsStore.topicReady
+  && groupsStore.targetResolvable
+  && promptText.value.trim().length > 0);
+
 function handleSend(): void {
-  if (props.disabled || groupsStore.promptInFlight || groupsStore.isRunActive || !groupsStore.topicReady) return;
+  if (!canSend.value) {
+    // Refuse before touching the draft: the store reports why (targetRequired /
+    // targetEmpty), and clearing the textarea would throw the typed message away
+    // with no recoverable request id and no Retry content.
+    groupsStore.reportTargetProblem();
+    return;
+  }
   const text = promptText.value.trim();
-  if (!text) return;
   // The token under the caret is now final, so the structured target must
   // reflect it before the store resolves the send target.
   commitMentionAtBoundary();
@@ -212,6 +224,14 @@ function handleCancel(): void {
   emit("cancel");
 }
 
+/** Replay the frozen prompt tuple (requestId + text + target). Never re-derives
+ *  from the current UI selection: the server keyed the durable accept on the
+ *  original requestId, so a retry must resend exactly what may already be
+ *  committed — switching members here would desync UI and execution. */
+function handleRetry(): void {
+  void groupsStore.retryUncertainPrompt();
+}
+
 function onInputResize(): void {
   if (!textareaEl.value) return;
   textareaEl.value.style.height = "auto";
@@ -224,10 +244,11 @@ function onInputResize(): void {
     <div v-if="groupsStore.promptError" class="mb-2 flex items-center justify-between gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs text-danger">
       <span class="truncate">{{ groupsStore.promptErrorDetail ?? groupsStore.promptError }}</span>
       <button
-        v-if="groupsStore.lastPromptText"
+        v-if="groupsStore.uncertainPromptText"
         type="button"
+        data-test="group-retry-prompt-button"
         class="rounded bg-danger/20 px-2 py-0.5 font-medium hover:bg-danger/30"
-        @click="emit('send', groupsStore.lastPromptText)"
+        @click="handleRetry"
       >
         {{ $t("bot.prompt.retry") }}
       </button>
@@ -326,7 +347,7 @@ function onInputResize(): void {
           v-else
           type="button"
           data-test="group-send-prompt-button"
-          :disabled="disabled || groupsStore.promptInFlight || !promptText.trim()"
+          :disabled="!canSend"
           class="grid h-8 w-8 place-items-center rounded-lg bg-accent text-accent-fg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
           @click="handleSend"
         >

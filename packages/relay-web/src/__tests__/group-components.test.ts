@@ -78,6 +78,38 @@ describe("Group Components", () => {
       expect(wrapper.find('[data-test="group-target-button"]').text()).toContain("Reviewer");
     });
 
+    it("keeps the typed draft when the target is empty", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      // Deselect the only member: the target becomes empty.
+      await wrapper.find('[data-test="group-target-button"]').trigger("click");
+      await wrapper.find('[data-test="group-target-member-bot_a"]').trigger("click");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: [] });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      await textarea.setValue("please review this");
+      // Send must be disabled and must not clear the typed text.
+      expect(wrapper.find('[data-test="group-send-prompt-button"]').attributes("disabled")).toBeDefined();
+      expect(wrapper.find('[data-test="group-retry-prompt-button"]').exists()).toBe(false);
+      await textarea.trigger("keydown", { key: "Enter" });
+      expect((textarea.element as HTMLTextAreaElement).value).toBe("please review this");
+    });
+
+    it("Lead shortcut never selects a disabled Bot", async () => {
+      const groups = seedGroupSelection();
+      groups.groupsByInstance["i1"] = [{ ...GROUP, leadBotId: "bot_off", botIds: ["bot_off", "bot_a"] }];
+      groups.groupDetails["i1:conversation_g"] = { ...GROUP, leadBotId: "bot_off", botIds: ["bot_off", "bot_a"], topics: [] } as never;
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-target-button"]').trigger("click");
+      await wrapper.find('[data-test="group-target-lead"]').trigger("click");
+      // The disabled lead must fall through to an executable member.
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+    });
+
     it("toggles members and switches to everyone", async () => {
       const groups = seedGroupSelection();
       groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
