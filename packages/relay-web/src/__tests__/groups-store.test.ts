@@ -861,6 +861,37 @@ describe("useGroupsStore", () => {
     expect(promptCalls[0]?.[2]).toMatchObject({ target: { mode: "members", botIds: ["bot_a"] } });
   });
 
+  it("clears the uncertain tuple on execution_target_missing", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    // A legacy/pre-Group Topic can legitimately carry no execution target; the
+    // backend rejects before acceptRequest, so nothing durable exists.
+    mockRpc.mockResolvedValueOnce({ error: { code: "execution_target_missing", message: "no target" } });
+    await store.sendPrompt("review");
+    expect(store.hasUncertainPrompt).toBe(false);
+    // The user is not locked out: a corrected request can be sent fresh.
+    store.targetSelection = { mode: "members", botIds: ["bot_b"] };
+    mockRpc.mockReset();
+    mockRpc.mockResolvedValue({
+      reused: false,
+      conversationId: "conversation_g",
+      topicId: "topic_1",
+      requestId: "req_after",
+      message: { id: "msg_3", conversationId: "conversation_g", topicId: "topic_1", seq: 3, role: "human", content: "review", createdAt: "now" },
+      run: { id: "run_3", conversationId: "conversation_g", topicId: "topic_1", requestMessageId: "msg_3", requestId: "req_after", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" },
+      memberTurn: { id: "turn_3", runId: "run_3", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_b", batch: 1, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "now" },
+    });
+    await store.sendPrompt("review");
+    const calls = mockRpc.mock.calls.filter((c) => c[1] === "control.conversation.prompt");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[2]).toMatchObject({ target: { mode: "members", botIds: ["bot_b"] } });
+  });
+
   it("keeps the uncertain tuple when the failure is only a transport error", async () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";
@@ -917,6 +948,44 @@ describe("useGroupsStore", () => {
     expect(store.hasUncertainPrompt).toBe(false);
     expect(store.activeRun?.id).toBe("run_lost");
     expect(store.activeRun?.state).toBe("running");
+  });
+
+  it("clears the uncertain prompt on reconnect with no live turn (queued Run)", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.groupsByInstance["inst_1"] = [GROUP];
+    store.uncertainPrompt = {
+      requestId: "req_queued",
+      text: "review",
+      target: { mode: "members", botIds: ["bot_a"] },
+    };
+    const queuedRun: ConversationRunDto = {
+      id: "run_queued", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_queued", mode: "explicit", state: "queued",
+      profileRevision: 1, createdAt: "now",
+    };
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [{ id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" }] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      // No live turn on the hub (the Run is still queued), so reconnect goes
+      // through loadHistory -> recoverActiveRun, not the state-snapshot path.
+      if (type === "control.runs.list") return { runs: [queuedRun], conversationId: "conversation_g", topicId: "topic_1", activeRunId: queuedRun.id };
+      if (type === "control.runs.get") return { run: { ...queuedRun, memberTurns: [] } };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.reconcileOnReconnect();
+    await flushPromises();
+    // Durable discovery through recoverActiveRun resolved the pending prompt:
+    // the Run carries our requestId, so nothing is outcome-unknown any more.
+    expect(store.hasUncertainPrompt).toBe(false);
+    expect(store.activeRun?.id).toBe("run_queued");
   });
 
   it("keeps the uncertain prompt when the discovered Run belongs to another request", async () => {
@@ -1062,6 +1131,55 @@ describe("useGroupsStore", () => {
     expect(ids).toContain("topic_alive");
     // The active selection converges onto a Topic that still exists.
     expect(store.activeTopicId).toBe("topic_alive");
+  });
+
+  it("aborts teardown reconciliation when a Topic event lands on every attempt", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.topicReady = true;
+    store.groupsByInstance["inst_1"] = [GROUP];
+    const deleted = { id: "topic_deleted", conversationId: "conversation_g", title: "Doomed", status: "active" as const, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" };
+    const surviving = { id: "topic_alive", conversationId: "conversation_g", title: "Alive", status: "active" as const, createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" };
+    store.topicsByConversation["inst_1:conversation_g"] = [deleted, surviving];
+    store.activeTopicId = "topic_deleted";
+    let listCalls = 0;
+    const topicEvent = () => ({
+      kind: "control-event" as const,
+      instanceId: "inst_1",
+      event: { type: "conversation-topic-changed" as const, topic: surviving },
+    });
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        listCalls += 1;
+        // The event lands inside the request window: the reconciler sampled the
+        // revision BEFORE awaiting, so this dirties its own comparison.
+        if (listCalls <= 4) store.applyEvent(topicEvent());
+        return { topics: [surviving] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_alive" };
+      throw new Error(`unexpected ${type}`);
+    });
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: { type: "conversations-changed" },
+    } as never);
+    // Let the bounded loop run to exhaustion.
+    for (let i = 0; i < 8; i++) {
+      await flushPromises();
+    }
+    // Bounded retry, then abort. Abort means "not reconciled": the stale cache is
+    // kept unchanged (deleted still listed, still active) instead of committing
+    // an unproven list — and critically, the retry never silently reports
+    // success with a list it could not verify.
+    expect(listCalls).toBeGreaterThan(1);
+    expect(listCalls).toBeLessThanOrEqual(4);
+    expect(store.currentTopics.map((t2) => t2.id)).toEqual(["topic_deleted", "topic_alive"]);
+    expect(store.activeTopicId).toBe("topic_deleted");
   });
 
   it("never widens the default target to everyone when the bot catalog is unconfirmed", async () => {

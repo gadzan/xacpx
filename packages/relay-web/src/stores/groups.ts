@@ -90,26 +90,47 @@ function upsertTool(parts: TurnPartDto[], step: ToolStepDto): void {
   else parts.push({ type: "tool", step });
 }
 
-/** Server rejections that prove the durable accept never committed. These free
- *  the frozen prompt tuple so the user can correct the request and send again.
- *  Anything else (transport loss, timeout, internal error, connector-too-old)
- *  is outcome-unknown: the accept may exist, so the tuple stays frozen. */
+/** Server rejections that prove the durable accept never committed, so the
+ *  frozen prompt tuple is dead weight and must be released.
+ *
+ *  This list mirrors the throw sites in ConversationRunService.acceptGroupPrompt()
+ *  that sit BEFORE `store.acceptRequest()` — a rejection there can never have
+ *  created durable rows. Everything else (transport loss, timeout, internal
+ *  error, connector-too-old) is outcome-unknown and keeps the tuple frozen.
+ *
+ *  Codes (pre-acceptGroupPrompt): conversation_not_group
+ *  Codes (parseGroupTarget): target_required, invalid-target, automatic_unsupported
+ *  Codes (requireGroupTopic / barriers): topic_not_active, conversation_deleting,
+ *    topic_deleting, topic_not_found
+ *  Codes (requireExecutionTarget): execution_target_missing, cwd_unsupported,
+ *    workspace_not_registered, invalid-isolation, worktree_unprovisioned
+ *  Codes (resolveGroupMembers): empty_target, group_member_not_member
+ *  Codes (snapshotGroupMemberProfile): bot_disabled
+ *  Codes (isConversationDeleting / requester lookup): conversation_not_found,
+ *    bot_not_found
+ */
 function isDefinitiveRejection(code: string | null): boolean {
-  return code === "empty_target"
-    || code === "target_required"
+  return code === "target_required"
+    || code === "invalid-target"
+    || code === "automatic_unsupported"
+    || code === "conversation_not_group"
+    || code === "conversation_not_found"
+    || code === "conversation_deleting"
+    || code === "topic_not_active"
+    || code === "topic_deleting"
+    || code === "topic_not_found"
+    || code === "execution_target_missing"
+    || code === "cwd_unsupported"
+    || code === "workspace_not_registered"
+    || code === "invalid-isolation"
+    || code === "worktree_unprovisioned"
+    || code === "empty_target"
     || code === "group_member_not_member"
-    || code === "bot_not_found"
     || code === "bot_disabled"
+    || code === "bot_not_found"
     || code === "no_eligible_members"
     || code === "conversation_target_mismatch"
-    || code === "conversation_mismatch"
-    || code === "conversation_not_group"
-    || code === "topic_not_found"
-    || code === "topic_not_active"
-    || code === "conversation_deleting"
-    || code === "invalid-target"
-    || code === "invalid-isolation"
-    || code === "worktree_unprovisioned";
+    || code === "conversation_mismatch";
 }
 
 function mintRequestId(): string {
@@ -274,6 +295,10 @@ export const useGroupsStore = defineStore("groups", () => {
 
   const topicsByConversation = ref<Record<string, TopicSummaryDto[]>>({});
   const topicsSeq: Record<string, number> = {};
+  /** Revision bumped only by Topic events (never by a topics.list fetch), so a
+   *  reconciler can tell "my own fetch moved the counter" from "a concurrent
+   *  event changed Topic state while I was waiting". */
+  const topicEventRevision: Record<string, number> = {};
 
   const messages = ref<ConversationMessageDto[]>([]);
   const oldestSeq = ref<number | undefined>(undefined);
@@ -551,32 +576,43 @@ export const useGroupsStore = defineStore("groups", () => {
     return res.topics;
   }
 
-  /** Authoritative Topic snapshot for the selected Group.
+  /** Authoritative Topic snapshot for the selected Group, or null when none
+   *  could be established.
    *
-   *  A Topic teardown publishes no tombstone, so reconciliation cannot merge
-   *  event-driven updates into an HTTP list: `loadTopics` re-merges its previous
-   *  cache whenever a Topic event landed mid-request, which would resurrect a
-   *  just-deleted Topic. Instead re-fetch until one snapshot arrives with no
-   *  Topic event landing during its request, bounded so a busy Topic stream can
-   *  never spin forever. */
+   *  A Topic teardown publishes no tombstone, so reconciliation can never merge
+   *  event-driven state into an HTTP list — and `loadTopics` would do exactly
+   *  that (it re-merges the previous cache whenever the Topic revision moved
+   *  during its request), resurrecting a just-deleted Topic. This path therefore
+   *  fetches raw, keeps its OWN revision counter instead of borrowing one that
+   *  `loadTopics` increments, and only commits a snapshot taken in a window with
+   *  no Topic event.
+   *
+   *  Returns null on any abort: selection went stale, or the Topic stream stayed
+   *  too busy to produce a clean window. A null result means "not reconciled"
+   *  and must never be mistaken for "the Topic list is now empty". */
   async function authoritativeTopics(
     instId: string,
     conversationId: string,
     isStale: () => boolean,
-  ): Promise<TopicSummaryDto[]> {
-    let last: TopicSummaryDto[] = [];
+  ): Promise<TopicSummaryDto[] | null> {
+    const key = `${instId}:${conversationId}`;
     for (let attempt = 0; attempt < 4; attempt++) {
-      const seqBefore = topicsSeq[`${instId}:${conversationId}`] ?? 0;
-      last = await loadTopics(instId, conversationId);
-      if (isStale()) return last;
-      const seqAfter = topicsSeq[`${instId}:${conversationId}`] ?? 0;
-      if (seqAfter === seqBefore) {
-        return last;
+      const revisionBefore = topicEventRevision[key] ?? 0;
+      const res = unwrapRpc(
+        await api.rpc<{ topics: TopicSummaryDto[] }>(instId, MSG.topicsList, { conversationId }),
+      );
+      if (isStale()) return null;
+      if ((topicEventRevision[key] ?? 0) === revisionBefore) {
+        // Clean window: commit this snapshot wholesale, replacing (not merging
+        // with) the cache so a vanished Topic is actually removed from it.
+        topicsSeq[key] = (topicsSeq[key] ?? 0) + 1;
+        topicsByConversation.value = { ...topicsByConversation.value, [key]: res.topics };
+        return res.topics;
       }
-      // A Topic event mutated the cache during this request: the snapshot is not
-      // authoritative for deletion, so ask again.
+      // A Topic event landed during this request: this snapshot says nothing
+      // about what was deleted, so ask again.
     }
-    return last;
+    return null;
   }
 
   /** Authoritative Topic refresh for the selected Group. Replaces the cached
@@ -597,7 +633,10 @@ export const useGroupsStore = defineStore("groups", () => {
       || selectedGroupId.value !== groupId
       || activeConversationId.value !== conversationId;
     const topics = await authoritativeTopics(instId, conversationId, isStale);
-    if (isStale()) {
+    if (topics === null) {
+      // Not reconciled: either the selection changed ownership or the Topic
+      // stream never produced an event-free snapshot. Fail closed — keep the
+      // current cache and active Topic rather than commit an unproven list.
       return;
     }
     const stillThere = activeTopicId.value
@@ -928,6 +967,9 @@ export const useGroupsStore = defineStore("groups", () => {
       } else {
         activeRun.value = mergeRun(activeRun.value?.id === candidate.id ? activeRun.value : null, candidate);
       }
+      // Canonical recovery: a candidate for our own lost prompt is durable proof
+      // the accept landed, so the prompt stops being outcome-unknown.
+      resolveUncertainPromptAgainstRun(candidate);
       if (
         harvestTerminalHandoff &&
         activeRun.value.id === harvestTerminalHandoff.runId &&
@@ -966,6 +1008,7 @@ export const useGroupsStore = defineStore("groups", () => {
           if (detail.run.memberTurns?.length) {
             memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, detail.run.memberTurns);
           }
+          resolveUncertainPromptAgainstRun(detail.run);
         }
         if (isTerminalRunState(activeRun.value.state)) {
           liveTurnsByMember.value = {};
@@ -1612,6 +1655,9 @@ export const useGroupsStore = defineStore("groups", () => {
       } else {
         activeRun.value = mergeRun(activeRun.value?.id === candidate.id ? activeRun.value : null, candidate);
       }
+      // Canonical discovery: a candidate for our own lost prompt is durable
+      // proof the accept landed, so the prompt stops being outcome-unknown.
+      resolveUncertainPromptAgainstRun(candidate);
       if (isTerminalRunState(activeRun.value.state)) {
         liveTurnsByMember.value = {};
         ownershipUncertain.value = false;
@@ -1636,6 +1682,7 @@ export const useGroupsStore = defineStore("groups", () => {
           if (detail.run.memberTurns?.length) {
             memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, detail.run.memberTurns);
           }
+          resolveUncertainPromptAgainstRun(detail.run);
         }
         if (isTerminalRunState(activeRun.value.state)) {
           liveTurnsByMember.value = {};
@@ -1815,6 +1862,7 @@ export const useGroupsStore = defineStore("groups", () => {
         if (incomingRun.memberTurns?.length) {
           memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, incomingRun.memberTurns);
         }
+        resolveUncertainPromptAgainstRun(incomingRun);
         if (isTerminalRunState(activeRun.value.state)) {
           liveTurnsByMember.value = {};
           if (cId && tId) {
@@ -2018,6 +2066,7 @@ export const useGroupsStore = defineStore("groups", () => {
       if (topic.conversationId === activeConversationId.value) {
         const key = `${event.instanceId}:${topic.conversationId}`;
         topicsSeq[key] = (topicsSeq[key] ?? 0) + 1;
+        topicEventRevision[key] = (topicEventRevision[key] ?? 0) + 1;
         const currentList = topicsByConversation.value[key] ?? [];
         const idx = currentList.findIndex((t) => t.id === topic.id);
         if (idx >= 0) {
