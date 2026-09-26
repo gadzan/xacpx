@@ -280,6 +280,16 @@ interface MergeableEvidence extends ProcessIdentity {
   parentPid?: number;
   /** Every creation-time print this identity has carried across merge rounds. */
   identityPrints?: readonly ProcessIdentity[];
+  /**
+   * Establishment order of THIS CLUSTER among its pid's clusters: 0 for the first
+   * incarnation of a pid ever seen, +1 for each further one. Unlike array
+   * position, this SURVIVES the `outcomes` / `leftover` projection that
+   * `mergeEvidence` applies on every round, which reorders clusters by kind and
+   * therefore destroys chronology (an older leftover can end up positioned after
+   * a newer outcome). Only monotonically assigned, never renumbered, so it stays
+   * a true chronology no matter how the surrounding arrays are reshaped.
+   */
+  clusterOrdinal?: number;
 }
 
 /**
@@ -458,23 +468,33 @@ function clustersCompatible(left: readonly ProcessIdentity[], right: readonly Pr
  * behind as a permanent residual — the same fence-liveness loss the closest-but-
  * not-first rule already prevents, reached through the tie instead of a distinct
  * distance.
+ *
+ * Establishment order is `clusterOrdinal` on the record, NOT the array position.
+ * `mergeEvidence` re-projects every round into `outcomes` before `leftover`, so an
+ * older incarnation that is still an unresolved leftover ends up positioned AFTER
+ * a newer one that already resolved. Deriving chronology from position therefore
+ * inverts older/newer across rounds — which is exactly the worker-reachable shape
+ * where a reused pid appears first as an S2 leftover and later resolves inside S1.
+ * The ordinal is assigned once when a cluster is created, is carried unchanged by
+ * whichever record wins arbitration, and survives any reshaping of the arrays.
  */
 function mergeByIdentity<T extends MergeableEvidence>(a: readonly T[], b: readonly T[]): T[] {
   // Seed with `a` exactly as-is: its clusters, their survivors, and their
-  // boundaries are already established and must not be re-derived.
-  const merged: T[] = a.map((item) => ({ ...item, identityPrints: dedupePrints(item.identityPrints ?? [item]) }));
-  // Positional rank of a cluster WITHIN one pid: how many clusters of the same
-  // pid precede it in `merged`. `merged` is append-only, so this is a stable
-  // establishment order and a HIGHER rank is the more recent incarnation — which
-  // is what an equidistant print must prefer. Computing it from position (rather
-  // than a separately maintained map) keeps it correct as clusters are appended.
-  const rankOf = (index: number) => {
-    const pid = merged[index]!.pid;
-    let rank = 0;
-    for (let i = 0; i < index; i += 1) {
-      if (merged[i]!.pid === pid) rank += 1;
-    }
-    return rank;
+  // boundaries are already established and must not be re-derived. `clusterOrdinal`
+  // is carried on the record itself, so seeding preserves each cluster's
+  // chronology; new clusters get the next ordinal for their pid below.
+  const merged: T[] = a.map((item) => ({
+    ...item,
+    identityPrints: dedupePrints(item.identityPrints ?? [item]),
+  }));
+  const ordinalOf = (item: MergeableEvidence): number => item.clusterOrdinal ?? 0;
+  // The next ordinal for a NEW cluster. Taken from the maximum already assigned
+  // rather than a per-pid counter, so a pid's ordinals stay strictly increasing and
+  // a tie can never compare two clusters both assigned in the same round.
+  const nextOrdinal = () => {
+    let max = -1;
+    for (const item of merged) max = Math.max(max, ordinalOf(item));
+    return max + 1;
   };
   for (const item of [...b]) {
     const fits = merged
@@ -483,7 +503,7 @@ function mergeByIdentity<T extends MergeableEvidence>(a: readonly T[], b: readon
       .sort((left, right) => {
         if (left.distance !== right.distance) return left.distance < right.distance ? -1 : 1;
         // EQUIDISTANT TIE: the print cannot be told apart from either
-        // incarnation by tolerance alone, so the accumulator's order breaks it.
+        // incarnation by tolerance alone, so establishment order breaks it.
         // Prefer the cluster established LAST for this pid, not the first: an
         // equidistant timestamp sits between two CIM approximations that are
         // already >= 10 ticks apart, and the observation being merged is the most
@@ -492,15 +512,21 @@ function mergeByIdentity<T extends MergeableEvidence>(a: readonly T[], b: readon
         // evidence behind as a spooled residual the reaper can never retire
         // (`already-exited` proves nothing about descendants), so the fence
         // generation's namespace never empties and the fence never lifts.
-        const rankDiff = rankOf(left.index) - rankOf(right.index);
-        if (rankDiff !== 0) return rankDiff > 0 ? -1 : 1;
-        // Same rank (same pid, established together) — keep the insertion order.
+        const ordinalDiff = ordinalOf(merged[left.index]!) - ordinalOf(merged[right.index]!);
+        if (ordinalDiff !== 0) return ordinalDiff > 0 ? -1 : 1;
+        // Same ordinal (same pid, established together) — keep the insertion order.
         return right.index - left.index;
       })[0];
     if (fits === undefined) {
-      // A new cluster for this pid is the newest one we have seen so far, and
-      // `rankOf` derives that from position alone, so nothing needs bookkeeping.
-      merged.push({ ...item, identityPrints: dedupePrints([...(item.identityPrints ?? []), item]) } as T);
+      // A brand-new cluster: it is the newest establishment we have, so it takes
+      // the next ordinal. Derived from the merged maximum (rather than the
+      // incoming item, which carries none on its first appearance) so the
+      // sequence stays strictly increasing across rounds.
+      merged.push({
+        ...item,
+        identityPrints: dedupePrints([...(item.identityPrints ?? []), item]),
+        clusterOrdinal: nextOrdinal(),
+      } as T);
       continue;
     }
     const current = merged[fits.index]!;
@@ -509,9 +535,11 @@ function mergeByIdentity<T extends MergeableEvidence>(a: readonly T[], b: readon
       ...item.identityPrints ?? [item],
     ]);
     // The survivor keeps its own observation, plus the deduplicated union of both
-    // histories so a later round still sees what this one superseded.
+    // histories so a later round still sees what this one superseded, plus the
+    // cluster's ordinal, which the survivor must carry unchanged: chronology is a
+    // property of the CLUSTER, not of whichever record won.
     const survivor = (winsOver(item, current) ? item : current) as T;
-    merged[fits.index] = { ...survivor, identityPrints: prints } as T;
+    merged[fits.index] = { ...survivor, identityPrints: prints, clusterOrdinal: ordinalOf(current) } as T;
   }
   return merged;
 }

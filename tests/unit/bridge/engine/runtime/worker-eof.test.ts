@@ -1221,6 +1221,83 @@ test("merge: a creation-date-canonicalized safe outcome resolves the earlier qua
   expect(merged.leftover.map((item) => item.pid)).toEqual([5003]);
 });
 
+test("merge: tie chronology survives the outcomes-before-leftover projection", () => {
+  // The ordinal must not be derived from array position. `mergeEvidence` returns
+  // `outcomes` before `leftover` every round, so a pid reused ACROSS kinds ends up
+  // positioned with the NEWER incarnation first and the OLDER one after it. A
+  // position-derived tie-break would then invert older/newer and resolve the
+  // stale process.
+  //
+  //   round 1: P1 newly discovered in S2, VF fails   -> leftover cim 010
+  //   round 2: pid reused; P2 resolves in S1, fails  -> outcome access-denied cim 020
+  //   round 3: P2 handle-verified                   -> killed handle 015
+  //
+  // After round 2 the returned shape is outcomes=[P2], leftover=[P1], i.e. P1 —
+  // the OLDER incarnation — is positioned second. Handle 015 is 5 from each CIM
+  // print, so the tie decides, and it must go to P2.
+  const round1 = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [] },
+    {
+      verified: false,
+      outcomes: [],
+      leftover: [{
+        pid: 5002, parentPid: 1,
+        creationDate: "133801632000000010", commandLine: "P1", executablePath: "C:\\p1.exe",
+        fingerprintSource: "cim",
+      }],
+    },
+  );
+  const round2 = mergeEvidence(round1, {
+    verified: false,
+    outcomes: [{
+      pid: 5002, outcome: "access-denied",
+      creationDate: "133801632000000020", commandLine: "P2", executablePath: "C:\\p2.exe",
+      fingerprintSource: "cim",
+    }],
+    leftover: [],
+  });
+  // The projection really did put the newer incarnation first.
+  expect(round2.outcomes.filter((item) => item.pid === 5002)).toHaveLength(1);
+  expect(round2.outcomes.find((item) => item.pid === 5002)!.creationDate).toBe("133801632000000020");
+  expect(round2.leftover.filter((item) => item.pid === 5002)).toHaveLength(1);
+  expect(round2.leftover.find((item) => item.pid === 5002)!.creationDate).toBe("133801632000000010");
+  // Chronology is carried on the record, so P2 is still the newer cluster even
+  // though it now sits at index 0.
+  const p2 = round2.outcomes.find((item) => item.pid === 5002)! as { clusterOrdinal?: number };
+  const p1 = round2.leftover.find((item) => item.pid === 5002)! as { clusterOrdinal?: number };
+  expect(p2.clusterOrdinal ?? 0).toBeGreaterThan(p1.clusterOrdinal ?? 0);
+
+  const round3 = mergeEvidence(round2, {
+    verified: true,
+    outcomes: [{
+      pid: 5002, outcome: "killed",
+      creationDate: "133801632000000015", commandLine: "P2", executablePath: "C:\\p2.exe",
+      fingerprintSource: "handle",
+    }],
+    leftover: [],
+  });
+  // P2 — the process actually killed — resolved, and no stale P2 evidence
+  // survives to spool as a residual the reaper must retain forever. P1 remains
+  // required evidence in its own right: it is still an unresolved process of its
+  // own (an older incarnation that never resolved), so it stays a leftover.
+  const stale = round3.leftover.filter((item) => item.pid === 5002);
+  expect(stale).toHaveLength(1);
+  expect(stale[0]!.creationDate).toBe("133801632000000010");
+  expect(new Set((stale[0] as { identityPrints?: { creationDate: string }[] }).identityPrints
+    ?.map((print) => print.creationDate)))
+    .toEqual(new Set(["133801632000000010"]));
+  const rows = round3.outcomes.filter((item) => item.pid === 5002);
+  expect(rows).toHaveLength(1);
+  const resolved = rows.find((item) => item.fingerprintSource === "handle");
+  expect(resolved?.outcome).toBe("killed");
+  // The handle landed in P2's cluster: the history carries P2's own cim 020.
+  expect(new Set(resolved?.identityPrints?.map((print) => print.creationDate)))
+    .toEqual(new Set(["133801632000000020", "133801632000000015"]));
+  // P1 is NOT in the outcome rows at all — it never resolved, and the handle
+  // print that would have resolved it went to the cluster the ordinal names.
+  expect(rows.some((item) => item.fingerprintSource === "cim")).toBe(false);
+});
+
 test("merge: a complete fingerprint replaces an incomplete one for the same process", () => {
   // Round 1 could not see the commandLine or the resolved path yet. Round 2
   // observes the complete fingerprint for the SAME process (CIM quantizes DOWN,
