@@ -993,6 +993,154 @@ test("evidence identity keeps a reused pid separate", () => {
   expect(sameProcessIdentity(reused, fresh)).toBe(false);
 });
 
+test("merge: an equidistant tie resolves the newer incarnation, not the older one", () => {
+  // Distance alone cannot separate two incarnations here. Two CIM
+  // approximations of one pid that are >= 10 ticks apart put their midpoint
+  // inside BOTH tolerance windows:
+  //
+  //   P1 (older): cim 010, already-exited
+  //   P2 (newer): cim 020, access-denied, still live
+  //   incoming:   handle 015 == P2's exact kernel time, killed
+  //
+  // |handle 015 - cim 010| == |handle 015 - cim 020| == 5, so both clusters fit
+  // and the accumulator's order decides. Taking the FIRST would resolve P1 and
+  // leave P2's unsafe cim evidence behind as a spooled residual the reaper can
+  // never retire (replay against an already-exited root proves nothing about
+  // descendants), so the generation's spool namespace never empties and the fence
+  // never lifts. The tie must go to the cluster established LAST.
+  const accumulated = {
+    verified: false,
+    outcomes: [{
+      pid: 5002, outcome: "already-exited",
+      creationDate: "133801632000000010", commandLine: "old", executablePath: "C:\\old.exe",
+      fingerprintSource: "cim",
+    }],
+    leftover: [{
+      pid: 5002,
+      creationDate: "133801632000000020", commandLine: "live", executablePath: "C:\\live.exe",
+      fingerprintSource: "cim",
+    }],
+  };
+  const round = {
+    verified: true,
+    outcomes: [{
+      pid: 5002, outcome: "killed",
+      creationDate: "133801632000000015", commandLine: "live", executablePath: "C:\\live.exe",
+      fingerprintSource: "handle",
+    }],
+    leftover: [],
+  };
+  const merged = mergeEvidence(accumulated, round);
+  // The live process resolves; nothing survives with cim 020 as unsafe evidence.
+  expect(merged.leftover.filter((item) => item.pid === 5002)).toHaveLength(0);
+  const rows = merged.outcomes.filter((item) => item.pid === 5002);
+  expect(rows).toHaveLength(2);
+  const live = rows.find((item) => item.fingerprintSource === "handle");
+  expect(live?.outcome).toBe("killed");
+  expect(live?.creationDate).toBe("133801632000000015");
+  // The older incarnation keeps its own record, untouched by this round.
+  const old = rows.find((item) => item.fingerprintSource === "cim");
+  expect(old?.creationDate).toBe("133801632000000010");
+  expect(old?.outcome).toBe("already-exited");
+  // ...and it did NOT absorb the handle print as part of its own history.
+  expect(new Set(old?.identityPrints?.map((print) => print.creationDate))).toEqual(
+    new Set(["133801632000000010"]),
+  );
+  // The handle landed in the NEWER cluster: its history now carries cim 020, the
+  // observation that cluster was built from. This is the assertion that actually
+  // discriminates the direction — the leftover assertions above are satisfied
+  // either way, because `mergeEvidence` arbitrates outcomes and leftovers in one
+  // pass and an outcome always displaces a same-process leftover.
+  expect(new Set(live?.identityPrints?.map((print) => print.creationDate))).toEqual(
+    new Set(["133801632000000020", "133801632000000015"]),
+  );
+
+  // Convergence form: the same situation assembled over two rounds behaves the
+  // same way, so the rule holds in the real caller's shape (accumulate, then
+  // merge each new round). The reverse-side case is deliberately NOT asserted:
+  // `mergeByIdentity` seeds from `a` verbatim as a correctness precondition
+  // (re-clustering the accumulated side would resurrect boundaries an earlier
+  // round established), so production only ever calls it accumulated-first.
+  const firstRound = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [] },
+    {
+      verified: false,
+      outcomes: [{
+        pid: 5002, outcome: "already-exited",
+        creationDate: "133801632000000010", commandLine: "old", executablePath: "C:\\old.exe",
+        fingerprintSource: "cim",
+      }],
+      leftover: [{
+        pid: 5002,
+        creationDate: "133801632000000020", commandLine: "live", executablePath: "C:\\live.exe",
+        fingerprintSource: "cim",
+      }],
+    },
+  );
+  const secondRound = mergeEvidence(firstRound, {
+    verified: true,
+    outcomes: [{
+      pid: 5002, outcome: "killed",
+      creationDate: "133801632000000015", commandLine: "live", executablePath: "C:\\live.exe",
+      fingerprintSource: "handle",
+    }],
+    leftover: [],
+  });
+  expect(secondRound.leftover.filter((item) => item.pid === 5002)).toHaveLength(0);
+  const rows2 = secondRound.outcomes.filter((item) => item.pid === 5002);
+  expect(rows2).toHaveLength(2);
+  expect(rows2.find((item) => item.fingerprintSource === "handle")?.outcome).toBe("killed");
+  expect(rows2.find((item) => item.fingerprintSource === "cim")?.creationDate)
+    .toBe("133801632000000010");
+
+  // A genuinely CLOSER cluster still wins over a farther later-registered one:
+  // this is a tie-break, not a blanket "last wins". cim 040 is older, cim 048 was
+  // registered after it, and handle 044 is 4 from EACH — so this block starts
+  // from the post-tie state and then moves the next print off the midpoint:
+  // handle 045 is 5 from 040 but 3 from 048, so distance must decide.
+  const fartherOlder = {
+    verified: false,
+    outcomes: [{
+      pid: 5002, outcome: "access-denied",
+      creationDate: "133801632000000040", commandLine: "far", executablePath: "C:\\far.exe",
+      fingerprintSource: "cim",
+    }],
+    leftover: [],
+  };
+  const twoClusters = mergeEvidence(fartherOlder, {
+    verified: false,
+    outcomes: [{
+      pid: 5002, outcome: "access-denied",
+      creationDate: "133801632000000050", commandLine: "near", executablePath: "C:\\near.exe",
+      fingerprintSource: "cim",
+    }],
+    leftover: [],
+  });
+  const joined = mergeEvidence(twoClusters, {
+    verified: false,
+    outcomes: [{
+      pid: 5002, outcome: "killed",
+      creationDate: "133801632000000045", commandLine: "near", executablePath: "C:\\near.exe",
+      fingerprintSource: "handle",
+    }],
+    leftover: [],
+  });
+  // The handle joined the LATER cluster, whose survivor is now the handle record
+  // (winsOver prefers the safe outcome); the cluster keeps its own CIM history in
+  // identityPrints, and the older cluster stays at its own cim row untouched.
+  const rows3 = joined.outcomes.filter((item) => item.pid === 5002);
+  expect(rows3).toHaveLength(2);
+  const resolved = rows3.find((item) => item.fingerprintSource === "handle");
+  expect(resolved?.outcome).toBe("killed");
+  expect(new Set(resolved?.identityPrints?.map((print) => print.creationDate)))
+    .toEqual(new Set(["133801632000000050", "133801632000000045"]));
+  const far = rows3.find((item) => item.fingerprintSource === "cim");
+  expect(far?.creationDate).toBe("133801632000000040");
+  expect(far?.outcome).toBe("access-denied");
+  expect(new Set(far?.identityPrints?.map((print) => print.creationDate)))
+    .toEqual(new Set(["133801632000000040"]));
+});
+
 test("evidence identity is stable when a CIM commandLine is still missing", () => {
   // The CIM row can lag the handle-derived identity, so one round reports
   // commandLine null and a later one the full argv. commandLine is evidence, not

@@ -448,17 +448,58 @@ function clustersCompatible(left: readonly ProcessIdentity[], right: readonly Pr
  * because replaying it against a root that already exited is retained
  * (`rootOutcome: already-exited` proves nothing about descendants), which would
  * keep the fence generation's spool namespace non-empty forever.
+ *
+ * Distance alone cannot always separate two incarnations: two CIM approximations
+ * of one pid that are >= 10 ticks apart put their midpoint inside BOTH tolerance
+ * windows, so a print lands equidistant from both. A TIE prefers the cluster
+ * established LAST for that pid, because the observation being merged is the one
+ * in hand NOW, so the newer incarnation is the likelier owner. Preferring the
+ * first would resolve a stale process and leave the live one's unsafe evidence
+ * behind as a permanent residual — the same fence-liveness loss the closest-but-
+ * not-first rule already prevents, reached through the tie instead of a distinct
+ * distance.
  */
 function mergeByIdentity<T extends MergeableEvidence>(a: readonly T[], b: readonly T[]): T[] {
   // Seed with `a` exactly as-is: its clusters, their survivors, and their
   // boundaries are already established and must not be re-derived.
   const merged: T[] = a.map((item) => ({ ...item, identityPrints: dedupePrints(item.identityPrints ?? [item]) }));
+  // Positional rank of a cluster WITHIN one pid: how many clusters of the same
+  // pid precede it in `merged`. `merged` is append-only, so this is a stable
+  // establishment order and a HIGHER rank is the more recent incarnation — which
+  // is what an equidistant print must prefer. Computing it from position (rather
+  // than a separately maintained map) keeps it correct as clusters are appended.
+  const rankOf = (index: number) => {
+    const pid = merged[index]!.pid;
+    let rank = 0;
+    for (let i = 0; i < index; i += 1) {
+      if (merged[i]!.pid === pid) rank += 1;
+    }
+    return rank;
+  };
   for (const item of [...b]) {
     const fits = merged
       .map((existing, index) => ({ index, ...clusterFit(item, existing.identityPrints ?? [existing]) }))
       .filter((fit) => fit.joins)
-      .sort((left, right) => (left.distance < right.distance ? -1 : left.distance > right.distance ? 1 : left.index - right.index))[0];
+      .sort((left, right) => {
+        if (left.distance !== right.distance) return left.distance < right.distance ? -1 : 1;
+        // EQUIDISTANT TIE: the print cannot be told apart from either
+        // incarnation by tolerance alone, so the accumulator's order breaks it.
+        // Prefer the cluster established LAST for this pid, not the first: an
+        // equidistant timestamp sits between two CIM approximations that are
+        // already >= 10 ticks apart, and the observation being merged is the most
+        // recent hand we hold — the newer incarnation. Assigning it to the older
+        // cluster resolves the WRONG process and leaves the real one's unsafe
+        // evidence behind as a spooled residual the reaper can never retire
+        // (`already-exited` proves nothing about descendants), so the fence
+        // generation's namespace never empties and the fence never lifts.
+        const rankDiff = rankOf(left.index) - rankOf(right.index);
+        if (rankDiff !== 0) return rankDiff > 0 ? -1 : 1;
+        // Same rank (same pid, established together) — keep the insertion order.
+        return right.index - left.index;
+      })[0];
     if (fits === undefined) {
+      // A new cluster for this pid is the newest one we have seen so far, and
+      // `rankOf` derives that from position alone, so nothing needs bookkeeping.
       merged.push({ ...item, identityPrints: dedupePrints([...(item.identityPrints ?? []), item]) } as T);
       continue;
     }

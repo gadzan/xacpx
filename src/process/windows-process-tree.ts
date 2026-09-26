@@ -11,8 +11,10 @@ export interface BatchTarget {
   /**
    * Provenance of `creationDate` / `executablePath`. "cim" tells the worker the
    * caller could only observe the process through a WMI/CIM snapshot, so the
-   * creationDate is quantized to 6-digit microseconds (1-9 ticks below the
-   * kernel's FILETIME) and the executablePath is the create-time launcher path.
+   * creationDate is quantized to 6-digit microseconds and may differ from the
+   * kernel's FILETIME by up to 9 ticks IN EITHER DIRECTION (rounding direction is
+   * not a documented guarantee, so no direction is assumed), and the
+   * executablePath is the create-time launcher path.
    * The worker then treats the record like a CIM-derived descendant: the creation
    * date is compared with tolerance, and the path is not compared at all (a CIM
    * path is never a handle image under a symlinked launcher). Note this makes the
@@ -60,8 +62,9 @@ export interface TerminateProcessTreeResult {
  * Provenance of a descendant's `creationDate` / `executablePath`:
  *   "handle" — both came from a RETAINED process handle (the kernel values);
  *   "cim"    — both came from a WMI/CIM snapshot, so `creationDate` is
- *              quantized to 6-digit microseconds (1-9 ticks below the kernel's
- *              FILETIME) and `executablePath` is the create-time launcher path.
+ *              quantized to 6-digit microseconds and may differ from the
+ *              kernel's FILETIME by up to 9 ticks, and `executablePath` is the
+ *              create-time launcher path.
  * `"unknown"` means the worker could not attribute either value for this pid.
  */
 export type WindowsDescendantFingerprintSource = "handle" | "cim" | "unknown";
