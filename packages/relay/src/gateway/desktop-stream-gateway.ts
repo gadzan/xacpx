@@ -215,11 +215,10 @@ export class DesktopStreamGateway {
     // Defense in depth: the ticket's account/instance binding must match the
     // registry's authoritative stream identity. A ticket minted for stream X
     // must never attach to stream Y, even if both ids are somehow valid.
-    // The liveness check is not just `closed`: the periodic sweep only reaps
-    // preparing/waiting-browser records, so an expiry that lands between ticks
-    // (or a record promoted to active past its deadline) must still fail
-    // closed here — otherwise a stale reservation survives as `active` and the
-    // sweep can never touch it again.
+    // Liveness includes the admission deadline: an expiry that lands between
+    // sweep ticks must fail closed here rather than let a stale reservation
+    // pair and start a session its own deadline forbids. (This guards
+    // admission only — `pair()` is not how a live `active` session ends.)
     if (!this.streams.isLive(registryRecord)) return this.reject(socket, "stream-expired");
     if (registryRecord.accountId !== record.accountId || registryRecord.instanceId !== record.instanceId) {
       return this.reject(socket, "ticket-identity-mismatch");

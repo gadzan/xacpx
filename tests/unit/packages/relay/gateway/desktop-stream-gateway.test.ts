@@ -387,27 +387,72 @@ test("an expired reservation cannot be revived by a valid-ticket browser attach"
   expect(streams.get(reserved.record.streamId)?.state).toBe("preparing");
 });
 
-test("the sweep reaps an active stream that outlived its deadline", () => {
-  // A record promoted to `active` past its deadline used to be invisible to the
-  // preparing/waiting-browser sweep, so the tunnel could never be terminated.
+test("an active desktop survives every admission deadline sweep", () => {
+  // `expiresAt` is an ADMISSION deadline (how long a reservation may wait for
+  // its probe and browser), not a session lifetime. Sweeping `active` records
+  // would drop every desktop after ~60s; the design defines no session cap —
+  // an active stream ends only when a socket closes, the instance goes
+  // offline, or the viewer closes it.
   const { gateway, streams, advance } = fakeClockSetup();
   const reserved = streams.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
   expect(reserved.ok).toBe(true);
+  if (!reserved.ok) return;
   const connectorTicket = gateway.ticketStore.mintTicket({
     streamId: reserved.record.streamId, accountId: "a1", instanceId: "i1", side: "connector",
   });
   const connector = new FakeBinarySocket();
   expect(gateway.attachConnector(connectorTicket.ticket, connector as unknown as DesktopBinarySocket).ok).toBe(true);
   expect(gateway.reportConnectorReady(reserved.record.streamId, "vnc-auth")).toBe(true);
-  // Ticket mint extends the deadline; attach both sides to reach `active`.
   const browserTicket = gateway.mintBrowserTicket({ streamId: reserved.record.streamId, accountId: "a1", instanceId: "i1" });
   const browser = new FakeBinarySocket();
   expect(gateway.attachBrowser(browserTicket.ticket, browser as unknown as DesktopBinarySocket).ok).toBe(true);
   expect(streams.get(reserved.record.streamId)?.state).toBe("active");
 
-  // Past the (extended) deadline the record is still `active` — and must be
-  // reapable, not immortal.
+  // Far past the admission deadline — the record is still active.
+  advance(600_000);
+  expect(streams.sweepExpired()).toEqual([]);
+  expect(streams.get(reserved.record.streamId)?.state).toBe("active");
+
+  // Several more sweep cycles (the hub timer runs every 60s) change nothing.
+  for (let i = 0; i < 5; i++) {
+    advance(60_001);
+    expect(gateway.sweepExpired()).toBe(0);
+  }
+  expect(streams.get(reserved.record.streamId)?.state).toBe("active");
+  // Neither side was closed by the sweeps.
+  expect(browser.closed).toBe(false);
+  expect(connector.closed).toBe(false);
+
+  // A real close still terminates it and reaches both sockets.
+  gateway.closeStream(reserved.record.streamId, "browser-close");
+  expect(streams.get(reserved.record.streamId)?.state).toBe("closed");
+  expect(browser.closed).toBe(true);
+  expect(connector.closed).toBe(true);
+});
+
+test("the sweeper reaps a waiting-browser stream that never gets its browser", () => {
+  // Admission deadline still applies BEFORE pairing: a connector attached and
+  // ready, but the browser never shows up, must not pin the instance's
+  // single-viewer slot forever.
+  const { gateway, streams, advance, closed } = fakeClockSetup();
+  const reserved = streams.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
+  expect(reserved.ok).toBe(true);
+  if (!reserved.ok) return;
+  const connectorTicket = gateway.ticketStore.mintTicket({
+    streamId: reserved.record.streamId, accountId: "a1", instanceId: "i1", side: "connector",
+  });
+  const connector = new FakeBinarySocket();
+  expect(gateway.attachConnector(connectorTicket.ticket, connector as unknown as DesktopBinarySocket).ok).toBe(true);
+  expect(gateway.reportConnectorReady(reserved.record.streamId, "vnc-auth")).toBe(true);
+  expect(streams.get(reserved.record.streamId)?.state).toBe("waiting-browser");
+
   advance(60_001);
-  expect(streams.sweepExpired().map((r) => r.streamId)).toEqual([reserved.record.streamId]);
+  expect(gateway.sweepExpired()).toBe(1);
+  expect(closed).toEqual([reserved.record.streamId]);
+  // Close propagation reaches the paired connector so its tunnel drops too.
+  expect(connector.closed).toBe(true);
+  // The slot is released: a new reservation for the same instance succeeds.
+  const again = streams.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
+  expect(again.ok).toBe(true);
 });
 

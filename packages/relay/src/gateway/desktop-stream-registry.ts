@@ -16,6 +16,13 @@ export interface DesktopStreamRecord {
   instanceId: string;
   state: DesktopStreamState;
   createdAt: number;
+  /**
+   * ADMISSION deadline: the last moment this reservation may wait for its
+   * connector probe and browser attach. Extended when the browser ticket mints
+   * (so a slow probe cannot outlive the ticket it just earned). NOT a session
+   * lifetime — once the stream reaches `active` the RFB session runs until a
+   * socket closes, the instance goes offline, or the viewer closes it.
+   */
   expiresAt: number;
 }
 
@@ -125,18 +132,22 @@ export class DesktopStreamRegistry {
   }
 
   /**
-   * List TTL-expired live records WITHOUT marking them closed. The gateway's
-   * sweepExpired owns the transition via closeStream (see closeForInstance
-   * above for why pre-marking breaks idempotency).
+   * List records past their ADMISSION deadline WITHOUT marking them closed.
+   * The gateway's sweepExpired owns the transition via closeStream (see
+   * closeForInstance above for why pre-marking breaks idempotency).
    *
-   * Reaps every non-closed state, not just preparing/waiting-browser: an
-   * `active` record whose deadline has passed (an active stream outliving its
-   * own browser ticket) can never be reaped by a preparing/waiting-browser-only
-   * filter, so it would pair-and-leak forever.
+   * `expiresAt` is an admission deadline, not a session lifetime: it bounds how
+   * long a reservation may wait for its connector probe and browser attach.
+   * Once both sides pair and the stream goes `active` the RFB session runs
+   * until a socket closes, the instance goes offline, or the viewer closes it —
+   * never on a timer. Sweeping `active` records here would turn every desktop
+   * into a one-minute experience and the design defines no session cap.
    */
   sweepExpired(now = this.now()): DesktopStreamRecord[] {
     return [...this.records.values()].filter(
-      (r) => r.state !== "closed" && r.expiresAt <= now,
+      (r) =>
+        (r.state === "preparing" || r.state === "waiting-browser") &&
+        r.expiresAt <= now,
     );
   }
 
