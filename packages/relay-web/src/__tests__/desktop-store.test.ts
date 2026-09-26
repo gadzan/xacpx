@@ -101,4 +101,55 @@ describe("desktop store", () => {
     expect(await lastConnectTarget()).toBeUndefined();
     expect(store.sessions.has("i1")).toBe(false);
   });
+
+  it("A/B interleaved prepares keep the newer open abortable across the older finally", async () => {
+    // Regression (generation race): A opens → close() aborts A → B opens
+    // (map now holds B's controller) → A's prepare settles and its `finally`
+    // must NOT delete B's entry, otherwise the next close() cannot abort B and
+    // B's late resolve would resurrect the panel and open a noVNC stream.
+    const store = useDesktopStore();
+    const { requestDesktop, sendWebClientMessage } = await import("../api/events");
+    let releaseA!: (value: unknown) => void;
+    let releaseB!: (value: unknown) => void;
+    let aCalls = 0;
+    (requestDesktop as unknown as { mockImplementation: (fn: () => Promise<unknown>) => void })
+      .mockImplementation(async () => {
+        aCalls += 1;
+        return aCalls === 1
+          ? new Promise((resolve) => { releaseA = resolve; })
+          : new Promise((resolve) => { releaseB = resolve; });
+      });
+    const openA = store.open("i1", {});
+    store.close("i1");            // aborts A
+    const openB = store.open("i1", {}); // B supersedes A in the pending map
+    // A settles AFTER B started: its finally must leave B's controller intact.
+    releaseA({ requestId: "rA", instanceId: "i1", streamId: "sA", wsPath: "/desktop/observe?ticket=tA", expiresAt: 1, security: "vnc-auth" });
+    await openA;
+    // Second close() must still be able to abort B's in-flight prepare.
+    store.close("i1");
+    releaseB({ requestId: "rB", instanceId: "i1", streamId: "sB", wsPath: "/desktop/observe?ticket=tB", expiresAt: 1, security: "vnc-auth" });
+    await openB;
+    // Both abandoned prepares sent their close; no noVNC connection was created
+    // and no session row survives for a panel that was closed twice.
+    expect(sendWebClientMessage).toHaveBeenCalledWith({ kind: "desktop-close", instanceId: "i1", streamId: "sA" });
+    expect(sendWebClientMessage).toHaveBeenCalledWith({ kind: "desktop-close", instanceId: "i1", streamId: "sB" });
+    const { connectDesktopRfb } = await import("../lib/desktop-client");
+    expect(connectDesktopRfb).not.toHaveBeenCalled();
+    expect(store.sessions.has("i1")).toBe(false);
+  });
+
+  it("an aborted prepare that ends in an error does not recreate the session row", async () => {
+    // The catch branch must not patch(): close() already deleted the row, and a
+    // patch would resurrect an idle/error row for a panel that is gone.
+    const store = useDesktopStore();
+    const { requestDesktop } = await import("../api/events");
+    let rejectA!: (err: unknown) => void;
+    (requestDesktop as unknown as { mockImplementationOnce: (fn: () => Promise<unknown>) => void })
+      .mockImplementationOnce(async () => new Promise((_resolve, reject) => { rejectA = reject; }));
+    const openA = store.open("i1", {});
+    store.close("i1");
+    rejectA(new Error("hub closed the socket"));
+    await expect(openA).rejects.toThrow("hub closed the socket");
+    expect(store.sessions.has("i1")).toBe(false);
+  });
 });

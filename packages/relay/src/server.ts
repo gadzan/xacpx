@@ -1242,6 +1242,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
   const desktopConnectorWss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
   let wss: WebSocketServer | undefined;
   let gatewayWss: WebSocketServer | undefined;
+  let dedicatedControlWss: WebSocketServer | undefined;
   // Dedicated gateway port's HTTP server (ws needs a server to attach to in
   // noServer mode). Declared here so close() and wsPort can reach it.
   let gatewayHttpServer: ServerType | undefined;
@@ -1257,8 +1258,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
       res.end("Upgrade Required");
     });
     wss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
-    const dedicatedControlListener = new WebSocketServer({ noServer: true });
-    gatewayWss = dedicatedControlListener;
+    dedicatedControlWss = new WebSocketServer({ noServer: true });
     gatewayHttpServer.on("upgrade", (req, socket, head) => {
       const path = (req.url ?? "").split("?")[0] ?? "";
       // Connector desktop binary plane (never a separate VNC port): the ticket
@@ -1279,7 +1279,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
       }
       // Instance control: the gateway's own credential handshake authenticates
       // the connector (no cookie on this plane).
-      dedicatedControlListener.handleUpgrade(req, socket, head, (ws) => runtime.gateway.handleConnection(ws));
+      dedicatedControlWss!.handleUpgrade(req, socket, head, (ws) => runtime.gateway.handleConnection(ws));
     });
     await new Promise<void>((resolve, reject) => {
       const onErr = (err: unknown) => reject(err instanceof Error ? err : new Error(String(err)));
@@ -1355,14 +1355,18 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
     }
     // Merged gateway: connectors dial the bare host (root) or an explicit
     // `/gateway`. Auth is the gateway's own token/credential handshake, so no
-    // cookie gate here. In dedicated mode `gatewayWss` is undefined → reject.
+    // cookie gate here. In dedicated --ws-port mode the gateway lives on that
+    // port alone (so it can be firewalled apart), so `gatewayWss` stays
+    // undefined and these paths reject here.
     if (gatewayWss && (path === "/" || path === "/gateway" || path.startsWith("/gateway/"))) {
       gatewayWss.handleUpgrade(req, socket, head, (ws) => runtime.gateway.handleConnection(ws));
       return;
     }
-    // Connector desktop binary plane. Merged mode shares the HTTP port;
-    // dedicated --ws-port mode serves it on the gateway listener below.
-    if (path === "/desktop/instance") {
+    // Connector desktop binary plane. Merged mode shares the HTTP port; in
+    // dedicated --ws-port mode the plane is served ONLY on the dedicated
+    // listener — exposing it on both ports would defeat the port split the
+    // operator asked for.
+    if (!dedicated && path === "/desktop/instance") {
       const ticket = desktopTicketFromUrl(req.url ?? "");
       if (!ticket) { socket.destroy(); return; }
       // Same pre-upgrade consume as the dedicated listener: the ticket burns
@@ -1395,6 +1399,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
       await new Promise<void>((resolve) => desktopBrowserWss.close(() => resolve()));
       await new Promise<void>((resolve) => desktopConnectorWss.close(() => resolve()));
       if (gatewayWss) await new Promise<void>((resolve) => gatewayWss!.close(() => resolve()));
+      if (dedicatedControlWss) await new Promise<void>((resolve) => dedicatedControlWss!.close(() => resolve()));
       if (wss) await new Promise<void>((resolve) => wss!.close(() => resolve()));
       if (gatewayHttpServer) {
         await new Promise<void>((resolve) => gatewayHttpServer!.close(() => resolve()));

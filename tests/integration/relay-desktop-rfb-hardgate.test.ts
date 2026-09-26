@@ -70,6 +70,28 @@ function trackSocket(sockets: WebSocket[], ws: WebSocket): WebSocket {
   return ws;
 }
 
+/** True when the server answered a WS upgrade with a 101 handshake. */
+async function rawUpgradeOutcome(port: number, path: string): Promise<{ completed: boolean; status: number }> {
+  const sock = netConnect(port, "127.0.0.1", () => {
+    sock.write(
+      `GET ${path} HTTP/1.1\r\n` +
+      `Host: 127.0.0.1:${port}\r\n` +
+      "Upgrade: websocket\r\n" +
+      "Connection: Upgrade\r\n" +
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+      "Sec-WebSocket-Version: 13\r\n\r\n",
+    );
+  });
+  let buf = "";
+  sock.on("data", (chunk: Buffer) => { buf += chunk.toString("latin1"); });
+  await new Promise<void>((resolve) => {
+    sock.on("close", () => resolve());
+    setTimeout(() => { sock.destroy(); resolve(); }, 3000).unref?.();
+  });
+  const status = Number(/^HTTP\/1\.\d (\d{3})/.exec(buf)?.[1] ?? 0);
+  return { completed: status === 101, status };
+}
+
 test("desktop hard-gate: probe verdict plus hub binary pipe on an independent connection", async () => {
   const relay = await startRelayServer({ dbPath: ":memory:", httpPort: 0, host: "127.0.0.1" });
   const sockets: WebSocket[] = [];
@@ -346,6 +368,18 @@ test("dedicated --ws-port applies the same desktop hard gate as merged", async (
     });
     expect(opened).toBe(true);
     expect(relay.runtime.desktop.streamRegistry.get(reserved.record.streamId)?.state).not.toBe("closed");
+    // PORT ISOLATION (regression): the operator asked for the gateway on its
+    // own port so it can be firewalled apart. Serving the connector control or
+    // desktop planes on the HTTP/dashboard port too would silently defeat that,
+    // so neither `/gateway` nor `/desktop/instance` may upgrade there.
+    const httpGateway = await rawUpgradeOutcome(relay.httpPort, "/gateway");
+    expect(httpGateway.completed).toBe(false);
+    const httpDesktop = await rawUpgradeOutcome(relay.httpPort, "/desktop/instance?ticket=nope");
+    expect(httpDesktop.completed).toBe(false);
+    // And the HTTP port must still serve the dashboard: no residue from those
+    // rejected upgrades (a throw in the upgrade handler would take it down).
+    const version = await fetch(`http://127.0.0.1:${relay.httpPort}/api/version`).catch(() => null);
+    expect(version).not.toBeNull();
   } finally {
     for (const ws of sockets) {
       try { ws.close(); } catch { /* gone */ }

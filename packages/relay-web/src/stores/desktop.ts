@@ -92,6 +92,12 @@ export const useDesktopStore = defineStore("desktop", () => {
         { timeoutMs: DESKTOP_RPC_TIMEOUT_MS },
       );
     } catch (err) {
+      if (controller.signal.aborted || opts.signal?.aborted) {
+        // Abandoned: close() already deleted the session row. Patching here
+        // (even to "error") would recreate a row for a gone panel, and the hub
+        // already reaps the stream via its TTL sweep.
+        throw err;
+      }
       const code = err instanceof DesktopRequestError ? err.code : "desktop-protocol-error";
       patch(instanceId, {
         status: isRetryableDesktopError(code) ? "closed" : "error",
@@ -100,7 +106,11 @@ export const useDesktopStore = defineStore("desktop", () => {
       });
       throw err;
     } finally {
-      pending.delete(instanceId);
+      // Identity-safe cleanup: a newer open() for the same instance may have
+      // already replaced the entry (A aborted → B opened while A's prepare was
+      // still in flight). Deleting unconditionally would orphan B's controller
+      // so a later close() could not abort it.
+      if (pending.get(instanceId) === controller) pending.delete(instanceId);
     }
     if (controller.signal.aborted || opts.signal?.aborted) {
       // Abandoned mid-prepare: the hub already minted a stream + browser ticket,
