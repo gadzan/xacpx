@@ -158,6 +158,17 @@ export interface ProcessIdentity {
   creationDate: string | null;
   fingerprintSource?: WindowsDescendantFingerprintSource;
   /**
+   * The CIM snapshot's own fingerprint for this row, when the worker could report
+   * one. Not part of the identity comparison for a timestamped row — path and
+   * command line deliberately are NOT (the whole point of this PR is that a
+   * create-time launcher path is not a handle image under a symlinked launcher).
+   * A row denied its creation time has no creation-time authority at all, so for
+   * a NULL creation date these are the only fields left that can tell two
+   * processes of one pid apart; see `itemRepeatOf`.
+   */
+  commandLine?: string | null;
+  executablePath?: string | null;
+  /**
    * Every creation-time print this identity has carried across merge rounds,
    * deduplicated on (pid, creationDate, provenance). Internal to merge: it is
    * what makes cluster matching transitive and keeps an established boundary
@@ -170,10 +181,12 @@ export interface ProcessIdentity {
 export const CREATION_IDENTITY_TOLERANCE_TICKS = 9n;
 
 /**
- * True when both records name the same process. A null creation time is only
- * compatible with ANOTHER null: two null-creation records DO collapse into one
- * entry (neither can be matched against a non-null one, so there is nothing to
- * separate them), while a null never merges with a timestamped record.
+ * True when both records name the same process. A null creation time carries NO
+ * creation-time identity authority, so it is only compatible with ANOTHER null,
+ * and even then the relation is not proof: `clusterFit` additionally requires a
+ * null observation to be an exact repeat of the cluster's row before it may merge,
+ * because two different processes of a reused pid both report null when their
+ * creation time cannot be read. A null never merges with a timestamped record.
  *
  * Attribution decides what timestamp equality means:
  *   handle ↔ handle — exact. Both are the kernel value.
@@ -293,6 +306,30 @@ interface MergeableEvidence extends ProcessIdentity {
 }
 
 /**
+ * True when a null-creation `item` is an EXACT REPEAT of the observation
+ * `record`, i.e. the same process reporting the same denied-identity row rather
+ * than a different process that happens to share the pid.
+ *
+ * Both rows were denied their creation time, so creation-time comparison cannot
+ * separate them. What CAN separate them is what the worker reports alongside a
+ * failed OpenProcess: the CIM snapshot's own fingerprint (commandLine and
+ * executablePath), which came from the same snapshot that produced the original
+ * row. An exact repeat of those is the best available identity, while any
+ * disagreement is positive evidence of a DIFFERENT process.
+ *
+ * Note this is strictly narrower than the identity comparator used for
+ * timestamped rows: no tolerance, no provenance reasoning, because there is no
+ * creation-time authority to grant either. Provenance (`fingerprintSource`) is
+ * deliberately NOT compared — a row denied a creation time is also denied the
+ * attribution that would give its other fields meaning, so requiring agreement
+ * there would discard information rather than compare it.
+ */
+function itemRepeatOf(item: ProcessIdentity, record: ProcessIdentity): boolean {
+  return item.commandLine === record.commandLine
+    && item.executablePath === record.executablePath;
+}
+
+/**
  * True when `item` names the same process as the identity that accumulated
  * `prints`.
  *
@@ -316,9 +353,10 @@ interface MergeableEvidence extends ProcessIdentity {
  *     about quantization and join only on exact equality — including against an
  *     attributed print of the same value.
  *
- * `distance` reports HOW WELL the item fits the cluster, so that a print matching
- * several incarnations of one pid can be assigned to the closest one instead of
- * the first.
+ * `distance` reports HOW WELL the item fits the cluster, and is consulted only
+ * as a fallback: a fresh observation belongs to the pid's current or a NEWER
+ * incarnation, so establishment ORDER decides first and distance only breaks the
+ * case where that order is unknown.
  */
 function clusterFit(item: ProcessIdentity, prints: readonly ProcessIdentity[]): { joins: boolean; distance: bigint } {
   // Identity is per process: a pid never joins another pid's cluster, whatever
@@ -327,8 +365,44 @@ function clusterFit(item: ProcessIdentity, prints: readonly ProcessIdentity[]): 
   // An exactly equal timestamp always joins. One instant prints one value through
   // any single source, so equality is identity in every attribution pairing —
   // including an unattributed print meeting an attributed one.
+  //
+  // EXCEPTION for a null creation time. `null` is not a value, it is the ABSENCE
+  // of the one field that gives a row creation-time identity authority, so
+  // "null equals null" is not evidence of anything: it only says two rows were
+  // both denied that authority. Two different processes of a reused pid both show
+  // up as null when OpenProcess fails before the creation time can be read, and
+  // treating that as identity lets an older SAFE record resolve a NEW live,
+  // inaccessible process through `winsOver` — a false terminal proof, because the
+  // worker then reports `"spooled"` with no durable ownership for a live process.
+  //
+  // A null observation therefore joins only when the cluster can PROVE it is the
+  // same incident by creation time: the cluster already carries this exact null
+  // row (an exact repeat, which is how a failing process re-reports itself every
+  // round), or it carries a timestamped print for the SAME row — i.e. the item
+  // arrives pointing at a cluster whose history already identified it. A bare
+  // null observation is otherwise its own cluster and stays required evidence.
+  const itemIsNull = item.creationDate === null;
   const exact = prints.find((record) => record.creationDate === item.creationDate);
-  if (exact) return { joins: true, distance: 0n };
+  if (exact && (!itemIsNull || itemRepeatOf(item, exact))) return { joins: true, distance: 0n };
+  // No exact match. A timestamped item can still join on tolerance; a null item
+  // cannot be measured, so it joins only by pointing at a cluster its OWN history
+  // already identifies: the cluster carries the timestamped print this very
+  // observation was derived from (a canonicalized row whose current creationDate
+  // was later denied). Absent that pointer the null row is its own cluster and
+  // stays required evidence, because nothing ties it to another process.
+  if (itemIsNull) {
+    const history = item.identityPrints ?? [];
+    const identified = history.some((print) =>
+      print.creationDate !== null
+      && prints.some((record) => record.creationDate === print.creationDate),
+    );
+    // The cluster already carries the timestamped print this row was derived
+    // from, so the row is that identity observed again. Otherwise the null row is
+    // its own cluster and stays required evidence, because nothing ties it to
+    // another process.
+    if (!identified) return { joins: false, distance: -1n };
+    return { joins: true, distance: 0n };
+  }
   const print = (record: ProcessIdentity): { value: bigint; source: "handle" | "cim" } | null => {
     if (record.creationDate === null) return null;
     const source = record.fingerprintSource;
@@ -483,7 +557,7 @@ function mergeByIdentity<T extends MergeableEvidence>(a: readonly T[], b: readon
   // Seed with `a` exactly as-is: its clusters, their survivors, and their
   // boundaries are already established and must not be re-derived. `clusterOrdinal`
   // is carried on the record itself, so seeding preserves each cluster's
-  // chronology; new clusters get the next ordinal for their pid below.
+  // chronology; new clusters get the next global ordinal below.
   const merged: T[] = a.map((item) => ({
     ...item,
     identityPrints: dedupePrints(item.identityPrints ?? [item]),

@@ -81,6 +81,59 @@ test("merge: a later safe outcome resolves an earlier unsafe identity", () => {
   expect(resolved.leftover).toEqual([]);
 });
 
+test("windows: a null-creation live descendant is never discharged on the strength of a dead look-alike", async () => {
+  // End-to-end layer of the null-identity rule. A reused pid reports two
+  // processes that were BOTH denied a creation time (the worker snapshots through
+  // CIM and OpenProcess then fails before the kernel time is readable): a dead one
+  // that resolved safe, and a live, inaccessible one that did not. The live one's
+  // fingerprint is incomplete, so it can NEVER become a handle-bound residual.
+  //
+  // Merging the two on `null === null` erases the live one's evidence, which
+  // leaves the unrelated-but-complete Y as the only requirement — and then the
+  // worker discharges as "spooled" with a live process having NO durable
+  // ownership. That is the false terminal proof this pins: the worker must keep
+  // ownership and report unresolved instead.
+  const dir = await mkdtemp(join(tmpdir(), "eof-null-"));
+  try {
+    let calls = 0;
+    const outcome = await convergeOrphansBeforeExit({
+      platform: "win32",
+      terminateDescendants: async () => {
+        calls += 1;
+        const dead = {
+          pid: 5002, outcome: "already-exited" as const,
+          creationDate: null, commandLine: "old", executablePath: "C:\\old.exe",
+          fingerprintSource: "cim" as const,
+        };
+        const live = {
+          pid: 5002, outcome: "access-denied" as const,
+          creationDate: null, commandLine: "new", executablePath: "C:\\new.exe",
+          fingerprintSource: "cim" as const,
+        };
+        const blocker = {
+          pid: 6001, parentPid: 5002,
+          creationDate: "133801632000000030", commandLine: "y", executablePath: "C:\\y.exe",
+          fingerprintSource: "cim" as const,
+        };
+        return {
+          verified: false,
+          outcomes: calls === 1 ? [dead] : [dead, live],
+          leftover: [blocker],
+        };
+      },
+      maxRounds: 3,
+      roundDelayMs: 1,
+      runtimeDir: dir,
+    });
+    expect(outcome).toBe("unresolved");
+    // And the dead one's residual is not written either: publishing it would
+    // discharge on the incomplete set, which must stay impossible.
+    expect(calls).toBeGreaterThan(1);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("windows: verified convergence exits without spooling residuals", async () => {
   const dir = await mkdtemp(join(tmpdir(), "eof-verified-"));
   try {
@@ -994,6 +1047,138 @@ test("evidence identity keeps a reused pid separate", () => {
   const reused = { pid: 5002, creationDate: "133801632000000000" };
   const fresh = { pid: 5002, creationDate: "133801632000100000" };
   expect(sameProcessIdentity(reused, fresh)).toBe(false);
+});
+
+test("merge: a null creation time is no identity authority - a safe null cannot resolve a live null", () => {
+  // A row's creation time can be denied: the worker snapshots through CIM
+  // (creationDate null) and OpenProcess then fails BEFORE the kernel creation time
+  // is read, so the row carries no creation-time authority at all. Two different
+  // processes of one reused pid can BOTH be in that state, so `null === null` is
+  // the absence of evidence, not evidence of identity.
+  //
+  //   round 0: P1 / null / "old" -> exits after the snapshot -> already-exited (SAFE)
+  //   round 1: P2 / null / "new" -> still live, access denied -> access-denied (UNSAFE)
+  //
+  // Merging on the null let P1's safe record resolve P2 through `winsOver`
+  // (resolution is the first criterion), which ERASED the live process's evidence.
+  // With that evidence gone the only remaining requirement was the unrelated Y,
+  // publication succeeded, and the worker returned "spooled" while a live process
+  // had no durable ownership - a false terminal proof, not a livelock.
+  const round0 = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [] },
+    {
+      verified: false,
+      outcomes: [{
+        pid: 5002, outcome: "already-exited",
+        creationDate: null, commandLine: "old", executablePath: "C:\\old.exe",
+        fingerprintSource: "cim",
+      }],
+      // An unrelated, complete, publishable blocker so publication can be tested.
+      leftover: [{
+        pid: 6001, parentPid: 5002,
+        creationDate: "133801632000000030", commandLine: "y", executablePath: "C:\\y.exe",
+        fingerprintSource: "cim",
+      }],
+    },
+  );
+  const merged = mergeEvidence(round0, {
+    verified: false,
+    outcomes: [{
+      pid: 5002, outcome: "access-denied",
+      creationDate: null, commandLine: "new", executablePath: "C:\\new.exe",
+      fingerprintSource: "cim",
+    }],
+    leftover: [],
+  });
+  // BOTH incarnations survive as required evidence: the live one's unsafe record is
+  // never absorbed by the dead one's safe record.
+  const rows = merged.outcomes.filter((item) => item.pid === 5002);
+  expect(rows).toHaveLength(2);
+  const byCommand = new Map(rows.map((item) => [item.commandLine, item]));
+  expect(byCommand.get("new")?.outcome).toBe("access-denied");
+  expect(byCommand.get("old")?.outcome).toBe("already-exited");
+  // Neither history absorbed the other's print.
+  expect(new Set(byCommand.get("new")?.identityPrints?.map((print) => print.commandLine)))
+    .toEqual(new Set(["new"]));
+  expect(new Set(byCommand.get("old")?.identityPrints?.map((print) => print.commandLine)))
+    .toEqual(new Set(["old"]));
+});
+
+test("merge: an identical null observation still dedupes, so failing rounds cannot grow it", () => {
+  // `convergeOrphansBeforeExit` runs an UNBOUNDED loop and a process that keeps
+  // failing convergence re-reports the SAME denied-identity row every round. The
+  // null-repeat exemption therefore only applies to an EXACT repeat: same
+  // commandLine and executablePath, i.e. the same observation from the same
+  // snapshot. Anything else is a different process.
+  let acc = { verified: false, outcomes: [], leftover: [] };
+  for (let round = 0; round < 2_000; round += 1) {
+    acc = mergeEvidence(acc, {
+      verified: false,
+      outcomes: [{
+        pid: 5002, outcome: "access-denied",
+        creationDate: null, commandLine: "same", executablePath: "C:\\same.exe",
+        fingerprintSource: "cim",
+      }],
+      leftover: [],
+    });
+  }
+  expect(acc.outcomes).toHaveLength(1);
+  expect(acc.outcomes[0]!.identityPrints).toHaveLength(1);
+});
+
+test("merge: a canonicalized row later denied its creation time stays the same identity", () => {
+  // The reverse direction, so the exemption is not a blanket "null never joins".
+  // A row that WAS identified (the worker wrote the kernel values back on a
+  // successful handle check) and is LATER reported with a denied creation time is
+  // still that same identity: it arrives carrying the print the cluster already
+  // holds, which is the pointer that identifies it.
+  const identified = mergeEvidence(
+    { verified: false, outcomes: [], leftover: [] },
+    {
+      verified: false,
+      outcomes: [{
+        pid: 5002, outcome: "access-denied",
+        creationDate: "133801632000000010", commandLine: "a", executablePath: "C:\\a.exe",
+        fingerprintSource: "cim",
+      }],
+      leftover: [],
+    },
+  );
+  const merged = mergeEvidence(identified, {
+    verified: false,
+    outcomes: [{
+      pid: 5002, outcome: "killed",
+      creationDate: null, commandLine: "a", executablePath: "C:\\a.exe",
+      fingerprintSource: "handle",
+      identityPrints: [{
+        pid: 5002, creationDate: "133801632000000010", fingerprintSource: "cim" as const,
+        commandLine: "a", executablePath: "C:\\a.exe",
+      }],
+    }],
+    leftover: [],
+  });
+  // One identity, resolved - and it did NOT fork into a permanently unresolved
+  // null cluster that could never discharge.
+  expect(merged.outcomes.filter((item) => item.pid === 5002)).toHaveLength(1);
+  expect(merged.outcomes[0]!.outcome).toBe("killed");
+  expect(merged.leftover.filter((item) => item.pid === 5002)).toHaveLength(0);
+
+  // A null row carrying a FOREIGN history is a different process and must not join
+  // on the strength of the pointer alone.
+  const foreign = mergeEvidence(identified, {
+    verified: false,
+    outcomes: [{
+      pid: 5002, outcome: "killed",
+      creationDate: null, commandLine: "b", executablePath: "C:\\b.exe",
+      fingerprintSource: "handle",
+      identityPrints: [{
+        pid: 5002, creationDate: "133801632000000099", fingerprintSource: "cim" as const,
+        commandLine: "b", executablePath: "C:\\b.exe",
+      }],
+    }],
+    leftover: [],
+  });
+  expect(foreign.outcomes.filter((item) => item.pid === 5002)).toHaveLength(2);
 });
 
 test("merge: an equidistant tie resolves the newer incarnation, not the older one", () => {
