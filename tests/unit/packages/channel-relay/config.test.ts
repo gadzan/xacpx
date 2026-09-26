@@ -95,6 +95,10 @@ test("pairingToken and name are optional; url is required", () => {
     terminal: DEFAULT_TERMINAL,
     desktop: DEFAULT_DESKTOP,
   });
+  // A missing url must still fail loudly: without it the connector would dial
+  // an unresolved hub instead of reporting a config error.
+  expect(() => parseRelayChannelConfig({})).toThrow(/url/);
+  expect(() => parseRelayChannelConfig(undefined)).toThrow(/url/);
 });
 
 test("parseRelayChannelConfig normalizes bare domain to wss://", () => {
