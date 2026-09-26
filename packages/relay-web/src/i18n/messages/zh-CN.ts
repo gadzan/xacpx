@@ -554,6 +554,8 @@ export default {
     reconnect: "重新连接",
     fit: "适应窗口",
     actual: "实际尺寸",
+    fullscreen: "全屏",
+    exitFullscreen: "退出全屏",
   },
   terminal: {
     title: "终端",

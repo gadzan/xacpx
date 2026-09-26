@@ -306,6 +306,12 @@ function onSelect(instanceId: string, alias: string) {
 }
 
 function onSelectBot(instanceId: string, botId: string) {
+  // Leave the desktop tab explicitly: the DesktopTab unmounts when
+  // chat.instanceId becomes null, but leaving `desktopTabOpen` true means a
+  // later ordinary-session select re-mounts it (the v-if below) and silently
+  // re-prepares a desktop stream the user never asked for again.
+  if (chat.instanceId) desktops.close(chat.instanceId);
+  desktopTabOpen.value = false;
   chat.clearSelection();
   void directBotsStore.selectBot(instanceId, botId);
   leftOpen.value = false;

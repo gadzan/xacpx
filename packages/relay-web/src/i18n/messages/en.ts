@@ -557,6 +557,8 @@ export default {
     reconnect: "Reconnect",
     fit: "Fit to window",
     actual: "Actual size",
+    fullscreen: "Fullscreen",
+    exitFullscreen: "Exit fullscreen",
   },
   terminal: {
     title: "Terminal",

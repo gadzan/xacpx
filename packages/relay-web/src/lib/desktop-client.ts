@@ -16,11 +16,25 @@ export interface DesktopRfbConnection {
   dispose(): void;
 }
 
+/**
+ * noVNC 1.7.0's public `sendCredentials` contract takes a credentials OBJECT —
+ * `RFB.sendCredentials(creds)` assigns `this._rfbCredentials = creds`, and every
+ * security handler reads named fields off it (`_rfbCredentials.password` for
+ * standard VncAuth DES, `.username` for Plain/MSLogonII/ARD). Passing a bare
+ * string leaves `.password === undefined`, so noVNC re-fires
+ * `credentialsrequired` forever and the auth challenge never completes.
+ */
+export interface NoVncCredentials {
+  password?: string;
+  username?: string;
+}
+
 export interface NoVncRfb {
   addEventListener(type: string, listener: (event: Record<string, unknown>) => void): void;
   removeEventListener(type: string, listener: (event: Record<string, unknown>) => void): void;
-  sendCredentials(password: string): void;
+  sendCredentials(credentials: NoVncCredentials): void;
   disconnect(): void;
+  /** Writable post-construction property (noVNC defaults it to `false`). */
   scaleViewport: boolean;
 }
 
@@ -32,6 +46,8 @@ export interface DesktopRfbConnectInput {
   url: string;
   security: DesktopSecurity;
   target?: HTMLElement | null;
+  /** Apply `scaleViewport = true` once the RFB object exists (default: false). */
+  fit?: boolean;
   hooks?: DesktopRfbHooks;
   loadNoVnc?: () => Promise<NoVncModule>;
 }
@@ -45,6 +61,11 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
   let rfb: NoVncRfb | null = null;
   let disposed = false;
   let connected = false;
+  // Desired fit state, kept independent of the RFB object: the module import is
+  // async, so a setScaleViewport() call that lands before noVNC loads must not
+  // be dropped. noVNC's constructor options do NOT include scaleViewport (it is
+  // a writable property defaulting to false), so the value cannot go in the bag.
+  let desiredFit = false;
 
   const target = input.target ?? document.createElement("div");
   if (!input.target) {
@@ -78,13 +99,15 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
       credentials: input.security === "ard" ? undefined : {},
       repeaterID: "",
       shared: true,
-      scaleViewport: true,
-      resizeSession: false,
-      viewOnly: false,
-      showDotCursor: false,
-      background: "rgb(40,40,40)",
       wsProtocols: ["binary"],
     });
+    // Fit is a post-construction writable property on noVNC 1.7.0 — the option
+    // bag does not accept it, and the property default is `false`. Apply the
+    // desired value (and anything requested before the import resolved) now.
+    if (input.fit) {
+      desiredFit = true;
+      try { rfbInstance.scaleViewport = true; } catch { /* older build: leave as-is */ }
+    }
     if (input.security === "vnc-auth") {
       const narrow = rfbInstance as unknown as {
         _isSupportedSecurityType?: (type: number) => boolean;
@@ -149,10 +172,15 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
 
   return {
     sendCredentials(password: string): void {
-      rfb?.sendCredentials(password);
+      // noVNC requires the credentials OBJECT, not a bare string: VncAuth reads
+      // `_rfbCredentials.password` to build the DES response.
+      try { rfb?.sendCredentials({ password }); } catch { /* gone */ }
     },
     setScaleViewport(fit: boolean): void {
-      if (rfb) rfb.scaleViewport = fit;
+      desiredFit = fit;
+      if (rfb) {
+        try { rfb.scaleViewport = fit; } catch { /* gone */ }
+      }
     },
     dispose(): void {
       disposed = true;

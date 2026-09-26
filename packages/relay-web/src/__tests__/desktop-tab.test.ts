@@ -146,7 +146,8 @@ describe("DesktopTab", () => {
     // store, sendCredentials was a no-op, and dispose never disconnected.
     interface FakeRfbShape {
       listeners: Map<string, Array<(event: Record<string, unknown>) => void>>;
-      credentialsSent: string[];
+      /** Mirrors upstream: `sendCredentials(creds)` assigns _rfbCredentials. */
+      credentials: Array<Record<string, unknown>>;
       disconnected: boolean;
       scaleViewport: boolean;
     }
@@ -156,9 +157,16 @@ describe("DesktopTab", () => {
         _isSupportedSecurityType: (type: number) => boolean;
         _negotiateAuthentication: () => boolean;
         _fail: (details: string) => boolean;
+        _rfbAuthScheme: number;
       };
-      const shape: FakeRfbShape = { listeners: new Map(), credentialsSent: [], disconnected: false, scaleViewport: false };
+      const shape: FakeRfbShape = {
+        listeners: new Map(),
+        credentials: [],
+        disconnected: false,
+        scaleViewport: false,
+      };
       instances.push(shape);
+      self._rfbAuthScheme = 2;
       self._isSupportedSecurityType = () => true;
       self._negotiateAuthentication = () => true;
       self._fail = () => false;
@@ -168,7 +176,10 @@ describe("DesktopTab", () => {
         shape.listeners.set(type, list);
       };
       self.removeEventListener = () => {};
-      self.sendCredentials = (password: string) => { shape.credentialsSent.push(password); };
+      // Upstream contract: sendCredentials stores the OBJECT and VncAuth later
+      // reads `_rfbCredentials.password`. A fake that accepts a bare string
+      // would prove nothing about the real API.
+      self.sendCredentials = (credentials: Record<string, unknown>) => { shape.credentials.push(credentials); };
       self.disconnect = () => { shape.disconnected = true; };
       self.scaleViewport = false;
     } as unknown as new (
@@ -197,7 +208,11 @@ describe("DesktopTab", () => {
     for (const listener of shape.listeners.get("credentialsrequired") ?? []) listener({});
     expect(credentialPrompts).toBe(1);
     conn.sendCredentials("s3cret");
-    expect(shape.credentialsSent).toEqual(["s3cret"]);
+    // Upstream VncAuth reads `.password` off the credentials OBJECT, so the
+    // wrapper must send an object — a bare string leaves `.password` undefined
+    // and noVNC re-fires credentialsrequired forever.
+    expect(shape.credentials).toEqual([{ password: "s3cret" }]);
+    expect((shape.credentials[0] as { password?: string }).password).toBe("s3cret");
     conn.setScaleViewport(false);
     conn.dispose();
     expect(shape.disconnected).toBe(true);

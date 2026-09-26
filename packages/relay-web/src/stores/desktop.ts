@@ -51,6 +51,11 @@ export const useDesktopStore = defineStore("desktop", () => {
   // close during prepare leaves the panel gone while the RPC continues, and
   // `desktop-opened` later resurrects the session on an unmounted target.
   const pending = new Map<string, AbortController>();
+  // Monotonic attempt counter per instance. Every patch/delete of a session row
+  // is tagged with the generation that owns it, so a superseded attempt (A
+  // aborted by close, B opened and already wrote its own row) can never mutate
+  // or delete B's row when A's prepare finally settles.
+  const generation = new Map<string, number>();
 
   function viewFor(instanceId: string): DesktopSessionView {
     let view = sessions.value.get(instanceId);
@@ -67,6 +72,19 @@ export const useDesktopStore = defineStore("desktop", () => {
     return view;
   }
 
+  /** True when `attempt` still owns this instance's session row. */
+  function owns(instanceId: string, attempt: number): boolean {
+    return generation.get(instanceId) === attempt;
+  }
+
+  /** Delete the session row only if `attempt` still owns it. */
+  function dropRow(instanceId: string, attempt: number): void {
+    if (owns(instanceId, attempt)) {
+      generation.delete(instanceId);
+      sessions.value.delete(instanceId);
+    }
+  }
+
   function canOpen(instance: { online: boolean; capabilities?: string[] | null }): boolean {
     return supportsDesktop(instance);
   }
@@ -81,10 +99,11 @@ export const useDesktopStore = defineStore("desktop", () => {
     // A superseding open aborts the previous pending prepare: its streamId never
     // existed yet, so it can only be closed by the cloud, never desynced here.
     pending.get(instanceId)?.abort();
+    const attempt = (generation.get(instanceId) ?? 0) + 1;
+    generation.set(instanceId, attempt);
     const controller = new AbortController();
     pending.set(instanceId, controller);
-    const view = patch(instanceId, { status: "opening", lastErrorCode: undefined, lastErrorMessage: undefined });
-    void view;
+    patch(instanceId, { status: "opening", lastErrorCode: undefined, lastErrorMessage: undefined });
     let opened;
     try {
       opened = await requestDesktop(
@@ -92,10 +111,10 @@ export const useDesktopStore = defineStore("desktop", () => {
         { timeoutMs: DESKTOP_RPC_TIMEOUT_MS },
       );
     } catch (err) {
-      if (controller.signal.aborted || opts.signal?.aborted) {
-        // Abandoned: close() already deleted the session row. Patching here
-        // (even to "error") would recreate a row for a gone panel, and the hub
-        // already reaps the stream via its TTL sweep.
+      if (controller.signal.aborted || opts.signal?.aborted || !owns(instanceId, attempt)) {
+        // Abandoned or superseded: a newer attempt owns the row now. Patching
+        // (even to "error") would clobber its status, and the hub already
+        // reaps the abandoned stream via its TTL sweep.
         throw err;
       }
       const code = err instanceof DesktopRequestError ? err.code : "desktop-protocol-error";
@@ -112,13 +131,15 @@ export const useDesktopStore = defineStore("desktop", () => {
       // so a later close() could not abort it.
       if (pending.get(instanceId) === controller) pending.delete(instanceId);
     }
-    if (controller.signal.aborted || opts.signal?.aborted) {
-      // Abandoned mid-prepare: the hub already minted a stream + browser ticket,
-      // so close it now instead of letting it linger as an orphan stream. The
-      // session row must also go: `viewFor`'s lazy recreate would otherwise
-      // resurrect an idle row for a panel that is already gone.
+    if (controller.signal.aborted || opts.signal?.aborted || !owns(instanceId, attempt)) {
+      // Abandoned or superseded mid-prepare. The hub already minted a stream +
+      // browser ticket for THIS attempt, so close it rather than leaving an
+      // orphan stream. The session row must only go while we still own it:
+      // otherwise we would delete the newer attempt's row (e.g. its Busy/Error
+      // state), which `viewFor`'s lazy recreate would then turn back into a
+      // bare idle row.
       sendWebClientMessage({ kind: "desktop-close", instanceId, streamId: opened.streamId });
-      sessions.value.delete(instanceId);
+      dropRow(instanceId, attempt);
       return;
     }
     patch(instanceId, {
@@ -132,17 +153,24 @@ export const useDesktopStore = defineStore("desktop", () => {
     });
     if (opened.security !== "vnc-auth") return;
     const url = desktopBinaryUrl(opened.wsPath);
+    // Only this attempt may touch the row from now on: a superseding open()
+    // bumps the generation, so a late hook from a stale connection must not
+    // resurrect/overwrite the newer attempt's row.
+    const mine = (): boolean => owns(instanceId, attempt);
     const connection = connectDesktopRfb({
       url,
       security: opened.security,
+      fit: viewFor(instanceId).fit,
       ...(opts.target ? { target: opts.target } : {}),
       hooks: {
         onConnect: () => {
+          if (!mine()) return;
           patch(instanceId, { status: "open", needsPassword: false });
           hooks.onConnect?.();
         },
         onDisconnect: (detail) => {
           connections.delete(instanceId);
+          if (!mine()) return;
           patch(instanceId, {
             status: detail.clean ? "closed" : "error",
             ...(detail.clean ? {} : { lastErrorCode: "desktop-stream-timeout", lastErrorMessage: detail.reason }),
@@ -150,11 +178,13 @@ export const useDesktopStore = defineStore("desktop", () => {
           hooks.onDisconnect?.(detail);
         },
         onCredentialsRequired: () => {
+          if (!mine()) return;
           patch(instanceId, { status: "auth-required", needsPassword: true });
           hooks.onCredentialsRequired?.();
         },
         onSecurityFailure: (reason) => {
           connections.delete(instanceId);
+          if (!mine()) return;
           patch(instanceId, {
             status: "error",
             needsPassword: false,
@@ -166,6 +196,8 @@ export const useDesktopStore = defineStore("desktop", () => {
       },
     });
     connections.set(instanceId, connection);
+    // The desired fit may have been toggled while noVNC was still loading.
+    connection.setScaleViewport(viewFor(instanceId).fit);
   }
 
   function sendCredentials(instanceId: string, password: string): void {
@@ -188,6 +220,10 @@ export const useDesktopStore = defineStore("desktop", () => {
     // `desktop-opened` lands after the panel is gone.
     pending.get(instanceId)?.abort();
     pending.delete(instanceId);
+    // Bump the generation so a prepare still in flight (or a connection hook
+    // from the just-disposed RFB) is provably stale and cannot re-create or
+    // overwrite a row after this close.
+    generation.set(instanceId, (generation.get(instanceId) ?? 0) + 1);
     connections.delete(instanceId);
     try { connection?.dispose(); } catch { /* gone */ }
     if (view?.streamId) {
@@ -195,6 +231,8 @@ export const useDesktopStore = defineStore("desktop", () => {
         sendWebClientMessage({ kind: "desktop-close", instanceId, streamId: view.streamId });
       } catch { /* offline: hub times the stream out */ }
     }
+    // Deliberately keep the bumped generation: it must outlive this close so
+    // the NEXT open() cannot reuse a number an in-flight attempt still holds.
     sessions.value.delete(instanceId);
   }
 

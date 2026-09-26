@@ -179,4 +179,77 @@ describe("DashboardView Direct Bot integration", () => {
 
     expect(selectBotSpy).toHaveBeenCalledWith("i1", "bot_saved");
   });
+
+  it("leaves the desktop tab when switching to a Direct Bot", async () => {
+    // Regression: onSelectBot only cleared the chat selection, leaving
+    // desktopTabOpen true. DesktopTab unmounts (chat.instanceId is null), but a
+    // later ordinary-session select re-mounts it via the v-if and silently
+    // re-prepares a desktop stream the user never asked for again.
+    localStorage.clear();
+    sessionStorage.clear();
+    const instances = useInstancesStore();
+    instances.instances = [
+      {
+        id: "i1",
+        name: "Local",
+        online: true,
+        lastSeenAt: null,
+        capabilities: ["desktop.rfb.v1"],
+        sessions: [{ alias: "ordinary_session", agent: "codex", workspace: "repo" }],
+        sessionsLoaded: true,
+        agents: [{ name: "codex", driver: "codex" }],
+        workspaces: [{ name: "repo", cwd: "/repo" }],
+      } as never,
+    ];
+
+    const directBots = useDirectBotsStore();
+    directBots.botsByInstance["i1"] = [
+      { id: "bot_1", name: "SecurityBot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+    ];
+    directBots.botsLoaded["i1"] = true;
+    vi.spyOn(directBots, "selectBot").mockResolvedValue();
+
+    const wrapper = mount(DashboardView, {
+      global: { plugins: [i18n], stubs: { routerLink: true } },
+    });
+    await flushPromises();
+    // Seed AFTER mount: the mount-time loadInstances() (fetch-stubbed to an
+    // empty list) would otherwise overwrite a pre-seeded array.
+    instances.instances = [
+      {
+        id: "i1",
+        name: "Local",
+        online: true,
+        lastSeenAt: null,
+        capabilities: ["desktop.rfb.v1"],
+        sessions: [{ alias: "ordinary_session", agent: "codex", workspace: "repo" }],
+        sessionsLoaded: true,
+        agents: [{ name: "codex", driver: "codex" }],
+        workspaces: [{ name: "repo", cwd: "/repo" }],
+      } as never,
+    ];
+
+    // Open the desktop tab through the real control.
+    const chat = useChatStore();
+    chat.select("i1", "ordinary_session");
+    await flushPromises();
+    const toggle = wrapper.find('[data-test="toggle-desktop"]');
+    expect(toggle.exists()).toBe(true);
+    await toggle.trigger("click");
+    await flushPromises();
+    expect(wrapper.findComponent({ name: "DesktopTab" }).exists()).toBe(true);
+
+    // Switch to the Direct Bot: DesktopTab must go away.
+    const tree = wrapper.findComponent({ name: "InstanceTree" });
+    expect(tree.exists()).toBe(true);
+    await tree.vm.$emit("select-bot", "i1", "bot_1");
+    await flushPromises();
+    expect(wrapper.findComponent({ name: "DesktopTab" }).exists()).toBe(false);
+
+    // Now pick the ordinary session again: DesktopTab must NOT come back on its
+    // own — only an explicit desktop open may bring it back.
+    await tree.vm.$emit("select", "i1", "ordinary_session");
+    await flushPromises();
+    expect(wrapper.findComponent({ name: "DesktopTab" }).exists()).toBe(false);
+  });
 });
