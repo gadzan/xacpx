@@ -39,6 +39,7 @@ import {
   terminateWindowsDescendantsOf,
   type KillOutcome,
   type TerminateDescendantsResult,
+  type WindowsDescendantFingerprintSource,
   type WindowsDescendantLeftover,
   type WindowsDescendantOutcome,
 } from "../../../process/windows-process-tree";
@@ -133,53 +134,573 @@ export interface ConvergeOrphansOptions {
 const EMPTY_EVIDENCE: TerminateDescendantsResult = { verified: false, outcomes: [], leftover: [] };
 
 /**
+ * A process identity, NOT a fingerprint. `commandLine` and `executablePath` are
+ * deliberately excluded: both are OBSERVATION fields whose value depends on how
+ * the process was reached (a shim alias vs the resolved image) or on what the
+ * CIM row happened to publish yet (the row can lag the handle-derived identity),
+ * so keying on them splits ONE process into several identities. A split leaves
+ * a stale record required forever — it is spooled as a residual for a process
+ * that is already dead, and two "identities" for one pid compete for the single
+ * durable filename `${ownerToken}-${pid}.json`, which read-back can never
+ * satisfy.
+ *
+ * `pid` alone is not identity either on Windows (reuse), so the creation time is
+ * part of it. `fingerprintSource` records HOW that creation time was obtained,
+ * which decides what equality means: a CIM `datetime` is quantized to
+ * microseconds, so a CIM value differs from the kernel FILETIME by up to 9
+ * ticks for the SAME process. Comparing timestamps without that attribution is
+ * not an equivalence relation — a plain `abs(delta) <= 9` band can bridge two
+ * distinct pid incarnations (CIM_A ~ handle_A and handle_A ~ CIM_B "proves"
+ * CIM_A ~ CIM_B even when the kernel values are 18 ticks apart).
+ */
+export interface ProcessIdentity {
+  pid: number;
+  creationDate: string | null;
+  fingerprintSource?: WindowsDescendantFingerprintSource;
+  /**
+   * The CIM snapshot's own fingerprint for this row, when the worker could report
+   * one. Not part of the identity comparison for a timestamped row — path and
+   * command line deliberately are NOT (the whole point of this PR is that a
+   * create-time launcher path is not a handle image under a symlinked launcher).
+   * A row denied its creation time has no creation-time authority at all, so for
+   * a NULL creation date these are the only fields left that can tell two
+   * processes of one pid apart; see `itemRepeatOf`.
+   */
+  commandLine?: string | null;
+  executablePath?: string | null;
+  /**
+   * Every creation-time print this identity has carried across merge rounds,
+   * deduplicated on (pid, creationDate, provenance). Internal to merge: it is
+   * what makes cluster matching transitive and keeps an established boundary
+   * from being re-derived on a later round.
+   */
+  identityPrints?: readonly ProcessIdentity[];
+}
+
+/** CIM creationDate precision: 6-digit microseconds vs FILETIME's 100ns. */
+export const CREATION_IDENTITY_TOLERANCE_TICKS = 9n;
+
+/**
+ * True when both records name the same process. A null creation time carries NO
+ * creation-time identity authority, so it is only compatible with ANOTHER null,
+ * and even then the relation is not proof: `clusterFit` additionally requires a
+ * null observation to be an exact repeat of the cluster's row before it may merge,
+ * because two different processes of a reused pid both report null when their
+ * creation time cannot be read. A null never merges with a timestamped record.
+ *
+ * Because of that, the null branch FAILS CLOSED on any positive disagreement in
+ * the snapshot fingerprint: two null records naming the same pid with different
+ * commandLine or executablePath are NOT the same process by this predicate
+ * either. Returning true there would make this helper assert the very identity
+ * `clusterFit` refuses, and it is exported — a caller treating it as the
+ * authoritative comparison would re-introduce an unsafe merge. Absent that
+ * disagreement this is still only the weaker "compatible" relation, so merge
+ * still decides through `clusterFit`, never through this function.
+ *
+ * Attribution decides what timestamp equality means:
+ *   handle ↔ handle — exact. Both are the kernel value.
+ *   cim ↔ cim       — exact. Both rows quantize the same instant identically.
+ *   handle ↔ cim     — within the quantization window, SYMMETRICALLY. Which way
+ *                      a provider rounds a FILETIME down to microseconds is not
+ *                      a documented guarantee (`ManagementDateTimeConverter`
+ *                      rounds to nearest), so the direction is never assumed.
+ *   unattributed    — exact, on either side. `"unknown"` and an absent field
+ *                      make no claim about quantization, so they grant no
+ *                      tolerance.
+ *
+ * CAUTION: this pairwise relation is NOT transitive on its own, and merge does
+ * not rely on it alone. A survivor may have been canonicalized from CIM to the
+ * kernel value, so a later observation must be matched against the identity's
+ * WHOLE print history, per provenance — see `joinsCluster`, which is what keeps
+ * a reused pid from being bridged into an earlier incarnation.
+ */
+export function sameProcessIdentity(a: ProcessIdentity, b: ProcessIdentity): boolean {
+  if (a.pid !== b.pid) return false;
+  if (a.creationDate === null || b.creationDate === null) {
+    // Only one null: no creation-time authority to bridge, and the one timestamped
+    // side's value says nothing about the other. Never the same process.
+    if (a.creationDate === null && b.creationDate === null) {
+      // Both null: compatible only as far as the snapshot fingerprint agrees.
+      // Disagreement on either field is positive evidence of two processes of one
+      // reused pid, so this must return false rather than assert identity.
+      return a.commandLine === b.commandLine && a.executablePath === b.executablePath;
+    }
+    return false;
+  }
+  if (a.fingerprintSource === b.fingerprintSource) return a.creationDate === b.creationDate;
+  // An unattributed print (explicit "unknown" or an absent field) makes no claim
+  // about quantization, so it grants no tolerance.
+  const attributed = (source: ProcessIdentity["fingerprintSource"]): boolean =>
+    source === "handle" || source === "cim";
+  if (!attributed(a.fingerprintSource) || !attributed(b.fingerprintSource)) return a.creationDate === b.creationDate;
+  // handle vs cim: the same instant through two quantizations. The window is
+  // symmetric because the rounding direction is not guaranteed.
+  const delta = BigInt(a.creationDate) - BigInt(b.creationDate);
+  const magnitude = delta < 0n ? -delta : delta;
+  return magnitude <= CREATION_IDENTITY_TOLERANCE_TICKS;
+}
+
+/**
+ * Exact publication identity: `pid` + the retained creation time, with NO
+ * tolerance.
+ *
+ * This is deliberately stricter than `sameProcessIdentity`, because it answers a
+ * different question — "is THIS record durable?", not "is this the same
+ * process?". A residual file is keyed by pid alone (`${ownerToken}-${pid}.json`),
+ * so two distinct identities that share a pid (a reused pid, creation times 10+
+ * ticks apart) cannot both be durable. Any tolerance here would let one file
+ * prove both were published, i.e. a false proof of ownership for the process
+ * whose evidence was silently overwritten.
+ *
+ * Deliberately NOT exported: publication has exactly one decision point
+ * (`publishRequired`), and a second consumer would have to re-derive the
+ * filename/read-back correspondence to stay correct.
+ */
+function publicationIdentity(item: ProcessIdentity): string {
+  return `${item.pid}|${item.creationDate ?? ""}`;
+}
+
+/**
  * Merge one convergence attempt into the accumulated evidence. Monotonic: a
  * later attempt can only ADD identities or RESOLVE previously unsafe ones —
  * it can never erase evidence, so a total failure on a retry cannot discard
  * what an earlier attempt already captured.
  */
-/**
- * Stable evidence identity: pid is NOT identity on Windows (reuse), so every
- * merge/publication/verification decision is keyed on the full observed
- * fingerprint. Two records sharing a pid but differing in creationDate are
- * DIFFERENT processes and both stay required evidence.
- */
-export function evidenceIdentity(item: { pid: number; creationDate: string | null; commandLine: string | null; executablePath: string | null }): string {
-  return `${item.pid}|${item.creationDate ?? ""}|${item.executablePath ?? ""}|${item.commandLine ?? ""}`;
-}
-
 export function mergeEvidence(a: TerminateDescendantsResult, b: TerminateDescendantsResult): TerminateDescendantsResult {
-  const byIdentity = new Map<string, WindowsDescendantOutcome>();
-  for (const item of [...a.outcomes, ...b.outcomes]) {
-    const key = evidenceIdentity(item);
-    const existing = byIdentity.get(key);
-    if (!existing || (SAFE_OUTCOMES[item.outcome] && !SAFE_OUTCOMES[existing.outcome])) byIdentity.set(key, item);
-  }
-  const leftover = new Map<string, WindowsDescendantLeftover>();
-  for (const item of [...a.leftover, ...b.leftover]) {
-    const key = evidenceIdentity(item);
-    if (!byIdentity.has(key)) leftover.set(key, item);
-  }
-  for (const key of byIdentity.keys()) leftover.delete(key);
-  const outcomes = [...byIdentity.values()];
-  const remaining = [...leftover.values()];
+  // Both lists participate in ONE arbitration per process, so provenance and
+  // completeness decide any collision — including an outcome meeting a leftover.
+  // An outcome carrying a weaker fingerprint must not silently displace a
+  // stronger leftover: the discarded record is exactly what would have been
+  // spooled with exact handle fencing.
+  const arbitrated = mergeByIdentity<MergedEvidence>([
+    ...a.outcomes,
+    ...a.leftover,
+  ], [
+    ...b.outcomes,
+    ...b.leftover,
+  ]);
+  // The survivor keeps the KIND it won as, so a process is represented once and
+  // only once: either resolved (an outcome) or still required (a leftover). This
+  // is what keeps the durable filename `${ownerToken}-${pid}.json` unambiguous —
+  // two records for one pid could never both be proven published.
   return {
-    // Attempt-level proof, never recomputed from accumulated evidence: an
-    // empty merged set must NOT count as a verified empty tree. Only a real
-    // terminate-descendants-of attempt whose own final snapshot showed every
-    // discovered descendant safe and none remaining proves discharge.
     verified: a.verified || b.verified,
-    outcomes,
-    leftover: remaining,
+    outcomes: arbitrated.filter((item): item is WindowsDescendantOutcome => "outcome" in item),
+    leftover: arbitrated.filter((item): item is WindowsDescendantLeftover => !("outcome" in item)),
   };
 }
-function residualFor(candidate: WindowsDescendantOutcome | WindowsDescendantLeftover, base: Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath">): ResidualRecord {
+
+/**
+ * An arbitrated evidence record: either kind, discriminated by `parentPid`
+ * (present only on leftovers) as `mergeByIdentity` preserves the input object
+ * verbatim.
+ */
+type MergedEvidence = WindowsDescendantOutcome | WindowsDescendantLeftover;
+
+/**
+ * The evidence shape shared by outcomes and leftovers: a process identity plus
+ * the observation fields `winsOver` compares when picking the survivor. An
+ * `outcome` is absent on a leftover, which is correct: a leftover is by
+ * definition an unresolved process, i.e. never "resolved".
+ */
+interface MergeableEvidence extends ProcessIdentity {
+  outcome?: KillOutcome;
+  fingerprintSource?: WindowsDescendantFingerprintSource;
+  commandLine: string | null;
+  executablePath: string | null;
+  /** Present only on leftovers; carried through so the kind survives arbitration. */
+  parentPid?: number;
+  /** Every creation-time print this identity has carried across merge rounds. */
+  identityPrints?: readonly ProcessIdentity[];
+  /**
+   * Establishment order of this cluster across the whole merge: 0 for the first
+   * cluster ever established, +1 for each further one, GLOBAL rather than per pid,
+   * because the value must be strictly increasing for ANY pair of clusters a tie
+   * might compare. Unlike array position it SURVIVES the `outcomes`/`leftover`
+   * projection `mergeEvidence` applies every round, which reorders clusters by
+   * kind and therefore destroys chronology. Never renumbered, so it stays a true
+   * chronology however the surrounding arrays are reshaped.
+   */
+  clusterOrdinal?: number;
+}
+
+/**
+ * True when a null-creation `item` is an EXACT REPEAT of the observation
+ * `record`, i.e. the same process reporting the same denied-identity row rather
+ * than a different process that happens to share the pid.
+ *
+ * Both rows were denied their creation time, so creation-time comparison cannot
+ * separate them. What CAN separate them is what the worker reports alongside a
+ * failed OpenProcess: the CIM snapshot's own fingerprint (commandLine and
+ * executablePath), which came from the same snapshot that produced the original
+ * row. An exact repeat of those is the best available identity, while any
+ * disagreement is positive evidence of a DIFFERENT process.
+ *
+ * Note this is strictly narrower than the identity comparator used for
+ * timestamped rows: no tolerance, no provenance reasoning, because there is no
+ * creation-time authority to grant either. Provenance (`fingerprintSource`) is
+ * deliberately NOT compared — a row denied a creation time is also denied the
+ * attribution that would give its other fields meaning, so requiring agreement
+ * there would discard information rather than compare it.
+ */
+function itemRepeatOf(item: ProcessIdentity, record: ProcessIdentity): boolean {
+  return item.commandLine === record.commandLine
+    && item.executablePath === record.executablePath;
+}
+
+/**
+ * True when `item` names the same process as the identity that accumulated
+ * `prints`.
+ *
+ * The print history is what makes matching transitive, because
+ * `sameProcessIdentity` is pairwise and is NOT. A survivor may have been
+ * canonicalized (the worker writes both kernel values back once it holds a
+ * handle), and the superseded CIM print it replaced is exactly the benchmark a
+ * later pid incarnation must be refused against: without it, tolerance would
+ * bridge CIM_A ~ handle_A and handle_A ~ CIM_B into "CIM_A ~ CIM_B" for
+ * processes whose kernel values are 18 ticks apart.
+ *
+ * The rule is decisive per provenance:
+ *   - a print whose provenance the cluster ALREADY has joins only on exact
+ *     equality — one instant quantizes one way, so two different values from the
+ *     same source are two different processes, with no tolerance;
+ *   - the cluster's FIRST print of a provenance joins the other provenance's
+ *     benchmark inside the quantization window, in EITHER direction: which way a
+ *     provider rounds a FILETIME down to microseconds is not a documented
+ *     guarantee, so no direction is assumed;
+ *   - unattributed prints (explicit "unknown", or an absent field) claim nothing
+ *     about quantization and join only on exact equality — including against an
+ *     attributed print of the same value.
+ *
+ * `distance` reports HOW WELL the item fits the cluster, and is consulted only
+ * as a fallback: a fresh observation belongs to the pid's current or a NEWER
+ * incarnation, so establishment ORDER decides first and distance only breaks the
+ * case where that order is unknown.
+ */
+function clusterFit(item: ProcessIdentity, prints: readonly ProcessIdentity[]): { joins: boolean; distance: bigint } {
+  // Identity is per process: a pid never joins another pid's cluster, whatever
+  // the timestamps look like.
+  if (!prints.some((record) => record.pid === item.pid)) return { joins: false, distance: -1n };
+  // An exactly equal timestamp always joins. One instant prints one value through
+  // any single source, so equality is identity in every attribution pairing —
+  // including an unattributed print meeting an attributed one.
+  //
+  // EXCEPTION for a null creation time. `null` is not a value, it is the ABSENCE
+  // of the one field that gives a row creation-time identity authority, so
+  // "null equals null" is not evidence of anything: it only says two rows were
+  // both denied that authority. Two different processes of a reused pid both show
+  // up as null when OpenProcess fails before the creation time can be read, and
+  // treating that as identity lets an older SAFE record resolve a NEW live,
+  // inaccessible process through `winsOver` — a false terminal proof, because the
+  // worker then reports `"spooled"` with no durable ownership for a live process.
+  //
+  // A null observation therefore joins only when the cluster can PROVE it is the
+  // same incident by creation time: the cluster already carries this exact null
+  // row (an exact repeat, which is how a failing process re-reports itself every
+  // round), or it carries a timestamped print for the SAME row — i.e. the item
+  // arrives pointing at a cluster whose history already identified it. A bare
+  // null observation is otherwise its own cluster and stays required evidence.
+  const itemIsNull = item.creationDate === null;
+  const exact = prints.find((record) => record.creationDate === item.creationDate);
+  if (exact && (!itemIsNull || itemRepeatOf(item, exact))) return { joins: true, distance: 0n };
+  // No exact match. A timestamped item can still join on tolerance; a null item
+  // cannot be measured, so it joins only by pointing at a cluster its OWN history
+  // already identifies: the cluster carries the timestamped print this very
+  // observation was derived from (a canonicalized row whose current creationDate
+  // was later denied). Absent that pointer the null row is its own cluster and
+  // stays required evidence, because nothing ties it to another process.
+  if (itemIsNull) {
+    const history = item.identityPrints ?? [];
+    const identified = history.some((print) =>
+      print.creationDate !== null
+      && prints.some((record) => record.creationDate === print.creationDate),
+    );
+    // The cluster already carries the timestamped print this row was derived
+    // from, so the row is that identity observed again. Otherwise the null row is
+    // its own cluster and stays required evidence, because nothing ties it to
+    // another process.
+    if (!identified) return { joins: false, distance: -1n };
+    return { joins: true, distance: 0n };
+  }
+  const print = (record: ProcessIdentity): { value: bigint; source: "handle" | "cim" } | null => {
+    if (record.creationDate === null) return null;
+    const source = record.fingerprintSource;
+    if (source !== "handle" && source !== "cim") return null;
+    return { value: BigInt(record.creationDate), source };
+  };
+  const itemPrint = print(item);
+  // Unattributed item: no benchmark, so only exact-identical values join.
+  if (!itemPrint) return { joins: false, distance: -1n };
+  // An item arriving with its OWN history may carry a print of the cluster's
+  // provenance: the two must agree, exactly, or they are different processes.
+  // Without this, an observation carrying a foreign incarnation's history could
+  // join on tolerance and silently bridge across a boundary an earlier round had
+  // already established.
+  const itemPrints = item.identityPrints ?? [item];
+  if (!clustersCompatible(prints, itemPrints)) return { joins: false, distance: -1n };
+  const same = prints.filter((record) => print(record)?.source === itemPrint.source);
+  const other = prints.filter((record) => {
+    const source = print(record)?.source;
+    return source !== undefined && source !== itemPrint.source;
+  });
+  if (same.length > 0) {
+    // The cluster already carries this provenance: exact equality only, which the
+    // `exact` scan above already ruled out.
+    return { joins: false, distance: -1n };
+  }
+  const magnitude = (a: bigint, b: bigint): bigint => (a > b ? a - b : b - a);
+  const nearest = other
+    .map((record) => magnitude(BigInt(record.creationDate!), itemPrint.value))
+    .reduce<bigint | null>((best, distance) => (best === null || distance < best ? distance : best), null);
+  if (nearest === null || nearest > CREATION_IDENTITY_TOLERANCE_TICKS) return { joins: false, distance: -1n };
+  // Otherwise this is the cluster's FIRST print of the item's provenance, matched
+  // against the other provenance's benchmark inside the window.
+  return { joins: true, distance: nearest };
+}
+
+/**
+ * A record's deduplicated print history: the same (pid, creationDate,
+ * provenance) observation seen again adds nothing, because a cluster's decision
+ * can only ever use one instance of a value.
+ *
+ * Deduplication is not cosmetic. `convergeOrphansBeforeExit` runs an UNBOUNDED
+ * loop in production (no `maxRounds`, one round every `roundDelayMs`), and a
+ * process that keeps failing convergence re-reports the same observation every
+ * round. Appending without deduplication grows the history linearly with uptime
+ * — and every cluster test scans it — so the comparison cost per round would grow
+ * linearly too, quadratically in total. A legal identity needs at most one print
+ * per provenance plus any unattributed exact ones, so the history is tiny by
+ * construction.
+ */
+function dedupePrints(prints: readonly ProcessIdentity[]): ProcessIdentity[] {
+  const seen = new Set<string>();
+  return prints.filter((record) => {
+    const key = `${record.pid}|${record.creationDate ?? ""}|${record.fingerprintSource ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/**
+ * True when two ALREADY-FORMED clusters may be treated as one process.
+ *
+ * Cluster↔cluster compatibility is a different question from "does a new
+ * observation join a cluster", and it must be answered from BOTH histories: two
+ * prints of the same provenance that disagree are two different processes, so
+ * touching or overlapping histories alone cannot make the clusters compatible.
+ * This is what keeps a boundary that an earlier round already established —
+ * it is checked on every later round, because every round re-runs the merge.
+ */
+function clustersCompatible(left: readonly ProcessIdentity[], right: readonly ProcessIdentity[]): boolean {
+  const print = (record: ProcessIdentity): { value: bigint; source: "handle" | "cim" } | null => {
+    if (record.creationDate === null) return null;
+    const source = record.fingerprintSource;
+    if (source !== "handle" && source !== "cim") return null;
+    return { value: BigInt(record.creationDate), source };
+  };
+  for (const source of ["handle", "cim"] as const) {
+    const leftValues = new Set(left.filter((record) => print(record)?.source === source).map((record) => record.creationDate));
+    if (leftValues.size === 0) continue;
+    // Both clusters print this provenance: they must agree EXACTLY, in which case
+    // one of them is redundant rather than a second incarnation.
+    for (const record of right) {
+      if (print(record)?.source !== source) continue;
+      if (!leftValues.has(record.creationDate)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Merge two evidence lists by process identity: two records naming the same
+ * process collapse to one (`winsOver` picks the survivor), and records naming
+ * DIFFERENT processes all survive.
+ *
+ * This is a linear scan over a cluster test rather than a bucketed map. A bucket
+ * cannot serve as a map key: its width is `2 * tolerance + 1` ticks, so two
+ * creation times 10–18 ticks apart — provably DIFFERENT processes by the
+ * comparator — land in the same bucket and one would silently overwrite the
+ * other's evidence, discarding an unresolved ownership record. Evidence sets
+ * here are tiny (an adapter tree), so the scan costs nothing and correctness is
+ * directly readable from the comparator it calls.
+ *
+ * Cluster membership is decided by the print history carried on the record
+ * (`identityPrints`), not by a per-call map, because merge runs once per
+ * convergence round and the history must survive across all of them. A record
+ * that merges in inherits the union of both print histories and keeps carrying
+ * it, so a later round still sees the CIM print an earlier canonicalization
+ * superseded.
+ *
+ * **The accumulated side is never re-clustered.** `a` already holds the clusters
+ * earlier rounds established — each with the history that proved its boundary —
+ * so it seeds the merge verbatim, and only `b`'s new observations are inserted.
+ * Re-clustering `a` from scratch would let a cluster's SURVIVOR be matched
+ * against another cluster, while the evidence that separated them (the superseded
+ * CIM print inside its own history) is never consulted — so two incarnations that
+ * an earlier round correctly kept apart would bridge back together, and the safe
+ * record of the earlier one would erase the live one's unsafe evidence. That is a
+ * false terminal proof, not merely a retry artefact. The worker protocol agrees:
+ * a real round never repeats a pid (`decodeWindowsDescendantsResponse` keeps a
+ * `seen` set), so nothing in `b` can require re-partitioning `a`.
+ *
+ * One pid can hold SEVERAL clusters (a reused pid), and a new print can sit
+ * within tolerance of more than one of them. The NEWEST compatible cluster wins:
+ * taking the first match would assign an observation to an earlier incarnation,
+ * leaving the real one's unsafe evidence behind — a residual the reaper can never
+ * retire, because replaying it against a root that already exited is retained
+ * (`rootOutcome: already-exited` proves nothing about descendants), which would
+ * keep the fence generation's spool namespace non-empty forever.
+ *
+ * Chronology outranks distance, not merely breaks ties with it. A fresh
+ * observation can only describe the pid's CURRENT or a NEWER incarnation: Windows
+ * never lets two live processes share a pid, so every older incarnation is already
+ * gone when the observation exists. The quantization is symmetric (+-9 in either
+ * direction, because rounding direction is not a documented guarantee), so a
+ * fresh kernel print may be 1 tick from an older cluster's CIM value while being
+ * 9 from the current one's — for identities 10 ticks apart, which the contract
+ * itself defines as different processes. Ranking on that distance would credit a
+ * safe outcome to a process that no longer exists and leave the live one's unsafe
+ * evidence behind as a permanent residual.
+ *
+ * Establishment order is `clusterOrdinal` on the record, NOT the array position.
+ * `mergeEvidence` re-projects every round into `outcomes` before `leftover`, so an
+ * older incarnation that is still an unresolved leftover ends up positioned AFTER
+ * a newer one that already resolved. Deriving chronology from position therefore
+ * inverts older/newer across rounds — which is exactly the worker-reachable shape
+ * where a reused pid appears first as an S2 leftover and later resolves inside S1.
+ * The ordinal is assigned once when a cluster is created, is carried unchanged by
+ * whichever record wins arbitration, and survives any reshaping of the arrays.
+ */
+function mergeByIdentity<T extends MergeableEvidence>(a: readonly T[], b: readonly T[]): T[] {
+  // Seed with `a` exactly as-is: its clusters, their survivors, and their
+  // boundaries are already established and must not be re-derived. `clusterOrdinal`
+  // is carried on the record itself, so seeding preserves each cluster's
+  // chronology; new clusters get the next global ordinal below.
+  const merged: T[] = a.map((item) => ({
+    ...item,
+    identityPrints: dedupePrints(item.identityPrints ?? [item]),
+  }));
+  const ordinalOf = (item: MergeableEvidence): number => item.clusterOrdinal ?? 0;
+  // The next ordinal for a NEW cluster. Taken from the maximum already assigned
+  // rather than a per-pid counter, so a pid's ordinals stay strictly increasing and
+  // a tie can never compare two clusters both assigned in the same round.
+  const nextOrdinal = () => {
+    let max = -1;
+    for (const item of merged) max = Math.max(max, ordinalOf(item));
+    return max + 1;
+  };
+  for (const item of [...b]) {
+    const fits = merged
+      .map((existing, index) => ({ index, ...clusterFit(item, existing.identityPrints ?? [existing]) }))
+      .filter((fit) => fit.joins)
+      .sort((left, right) => {
+        // CHRONOLOGY FIRST. A fresh observation can only belong to the pid's
+        // current or a NEWER incarnation: Windows never lets two live processes
+        // share a pid, so an older incarnation is already gone by the time this
+        // observation exists. Ranking distance first is wrong even under the
+        // symmetric +-9 contract — CIM may quantize UP as well as down, so a
+        // fresh kernel print can sit 1 tick from the OLD cluster's CIM value and
+        // 9 from the current one's (identities 10 ticks apart, which the contract
+        // defines as distinct processes). Resolving on that distance credits the
+        // safe outcome to a process that no longer exists while the live one keeps
+        // its unsafe evidence — a residual the reaper must retain forever
+        // (`already-exited` proves nothing about descendants), so the generation's
+        // spool namespace never empties and the fence never lifts.
+        const ordinalDiff = ordinalOf(merged[left.index]!) - ordinalOf(merged[right.index]!);
+        if (ordinalDiff !== 0) return ordinalDiff > 0 ? -1 : 1;
+        // Same ordinal (possible only for a seed whose ordinals are absent, both
+        // defaulting to 0): fall back to distance, then to insertion order.
+        if (left.distance !== right.distance) return left.distance < right.distance ? -1 : 1;
+        return right.index - left.index;
+      })[0];
+    if (fits === undefined) {
+      // A brand-new cluster: it is the newest establishment we have, so it takes
+      // the next ordinal. Derived from the merged maximum (rather than the
+      // incoming item, which carries none on its first appearance) so the
+      // sequence stays strictly increasing across rounds.
+      merged.push({
+        ...item,
+        identityPrints: dedupePrints([...(item.identityPrints ?? []), item]),
+        clusterOrdinal: nextOrdinal(),
+      } as T);
+      continue;
+    }
+    const current = merged[fits.index]!;
+    const prints = dedupePrints([
+      ...current.identityPrints ?? [current],
+      ...item.identityPrints ?? [item],
+    ]);
+    // The survivor keeps its own observation, plus the deduplicated union of both
+    // histories so a later round still sees what this one superseded, plus the
+    // cluster's ordinal, which the survivor must carry unchanged: chronology is a
+    // property of the CLUSTER, not of whichever record won.
+    const survivor = (winsOver(item, current) ? item : current) as T;
+    merged[fits.index] = { ...survivor, identityPrints: prints, clusterOrdinal: ordinalOf(current) } as T;
+  }
+  return merged;
+}
+
+/**
+ * True when `next` should replace `current` as the retained record for one
+ * process identity, in order:
+ *   1. resolution  — an explicitly SAFE outcome resolves the process; a leftover
+ *                    (no outcome) is unresolved and must stay required evidence;
+ *   2. completeness — a full fingerprint can become durable evidence, an
+ *                     incomplete one cannot, and must NOT sit in the way of one
+ *                     that can, regardless of provenance. An incomplete
+ *                     handle-derived record blocking a complete CIM one is a
+ *                     livelock: the survivor could never be spooled while the
+ *                     discarded one publishes cleanly;
+ *   3. provenance   — handle > cim > unknown (kernel values are authoritative);
+ *   4. incumbent    — otherwise keep the first observation (deterministic).
+ *
+ * Completeness outranks provenance precisely where provenance alone is not a
+ * discharge criterion but publishability is: `residualFor` records every
+ * non-handle provenance as "cim" anyway, so a complete CIM fingerprint becomes
+ * fully durable evidence while an incomplete handle one publishes nothing.
+ */
+function winsOver(next: MergeableEvidence, current: MergeableEvidence): boolean {
+  const nextResolved = next.outcome !== undefined && next.outcome in SAFE_OUTCOMES;
+  const currentResolved = current.outcome !== undefined && current.outcome in SAFE_OUTCOMES;
+  if (nextResolved !== currentResolved) return nextResolved;
+  // A complete fingerprint can become durable evidence; an incomplete one
+  // cannot, and must not sit in the way of one that can.
+  const nextComplete = next.creationDate !== null && next.commandLine !== null && next.executablePath !== null;
+  const currentComplete = current.creationDate !== null && current.commandLine !== null && current.executablePath !== null;
+  if (nextComplete !== currentComplete) return nextComplete;
+  const nextRank = provenanceRank(next.fingerprintSource);
+  const currentRank = provenanceRank(current.fingerprintSource);
+  if (nextRank !== currentRank) return nextRank > currentRank;
+  return false;
+}
+
+function provenanceRank(source: WindowsDescendantFingerprintSource | undefined): number {
+  if (source === "handle") return 2;
+  if (source === "cim") return 1;
+  return 0;
+}
+/**
+ * Spawn a durable residual from one evidence record. The provenance is carried
+ * through verbatim so the reaper's replay can pick the tolerance that matches
+ * how the fingerprint was obtained — an exact compare against a CIM-quantized
+ * creationDate would condemn every legitimate record.
+ */
+function residualFor(
+  candidate: WindowsDescendantOutcome | WindowsDescendantLeftover,
+  base: Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath" | "fingerprintSource">,
+): ResidualRecord {
   return {
     ...base,
     pid: candidate.pid,
     creationDate: candidate.creationDate ?? "",
     commandLine: candidate.commandLine ?? "",
     executablePath: candidate.executablePath ?? "",
+    // Only a handle-derived fingerprint is trustworthy under an exact compare;
+    // anything else (including an unattributed one) is recorded as CIM-derived,
+    // which demands the WIDER replay match (±9 ticks, no path equality). That is
+    // the intended default for a record whose provenance is unknown.
+    fingerprintSource: candidate.fingerprintSource === "handle" ? "handle" : "cim",
   };
 }
 
@@ -191,7 +712,6 @@ function residualFor(candidate: WindowsDescendantOutcome | WindowsDescendantLeft
  */
 async function publishRequired(
   evidence: TerminateDescendantsResult,
-  published: Set<string>,
   discharge: { ownerToken: string; generationId: string },
   options: ConvergeOrphansOptions,
 ): Promise<boolean> {
@@ -219,17 +739,28 @@ async function publishRequired(
     agentCommand: options.agentCommand?.() ?? "runtime-worker-orphan",
     generationId: discharge.generationId,
     killAttempts: 0,
-  } satisfies Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath">;
+  } satisfies Omit<ResidualRecord, "pid" | "creationDate" | "commandLine" | "executablePath" | "fingerprintSource">;
+  // The registry is the ONLY authority on what is durable. `published` is not a
+  // cross-round cache: a residual file is keyed by pid alone, so a later write
+  // for a DIFFERENT identity of the same pid silently overwrites an earlier one.
+  // "A write succeeded once" is therefore not "A is still durable", and trusting
+  // it would leave a required identity unwritten forever while the read-back
+  // keeps failing — the worker keeps ownership (correct) but can never converge
+  // even once writing would succeed (livelock). Deciding solely from the current
+  // registry content keeps the state model one-layered, and the evidence set is
+  // small enough that the extra reads cost nothing.
   const passes = options.spoolRetryPasses ?? 3;
   for (let pass = 0; pass < passes; pass += 1) {
-    const pending = complete.filter((item) => !published.has(evidenceIdentity(item)));
+    const present = await durableIdentities(registry, discharge);
+    // A read that fails must not be mistaken for "everything is written".
+    if (present === null) return false;
+    const pending = complete.filter((item) => !present.has(publicationIdentity(item)));
     let failed = 0;
     for (const candidate of pending) {
       const record = residualFor(candidate, base);
       if (!decodeResidualRecord(record)) return false;
       try {
         await registry.writeResidual(record);
-        published.add(evidenceIdentity(candidate));
       } catch {
         failed += 1;
       }
@@ -241,18 +772,40 @@ async function publishRequired(
       await promise;
     }
   }
-  // Read-back verification: publication is proven by registry content whose
-  // FULL fingerprint (pid + creationDate + executablePath + commandLine)
-  // matches the required identity — a same-pid record from a different
-  // (reused) process proves nothing.
+  // Final proof: every required identity must be present in the registry RIGHT
+  // NOW, by exact identity AND as a record THIS discharge wrote. A residual file
+  // is keyed by pid alone, so two distinct identities sharing a pid cannot both
+  // be durable — proving them from one file would be a false proof of ownership
+  // for the record that was overwritten.
+  const present = await durableIdentities(registry, discharge);
+  return fullyPublishable && present !== null && complete.every((item) => present.has(publicationIdentity(item)));
+}
+
+/**
+ * Exact identities currently durable **for this discharge**, or null when the
+ * registry cannot be read (which is NOT the same as "nothing is written").
+ *
+ * Scoped by `generationId` and `ownerToken`: a residual left by an EARLIER
+ * generation names the same process with the same fingerprint, and treating it
+ * as proof would let the current discharge skip writing its own record and then
+ * claim "spooled". The fence handshake that lifts the fence is generation-bound
+ * (`runtime-worker-manager` only counts records whose `generationId` matches),
+ * so it would not see the foreign record — a false terminal proof that then lets
+ * a successor owner in.
+ */
+async function durableIdentities(
+  registry: OrphanRegistry,
+  discharge: { ownerToken: string; generationId: string },
+): Promise<Set<string> | null> {
   const records = await registry.readCategory("residuals").catch(() => null);
-  if (!records) return false;
-  const present = new Set(
+  if (!records) return null;
+  return new Set(
     records.flatMap(({ record }) => ("pid" in record && "creationDate" in record
-      ? [evidenceIdentity({ pid: record.pid, creationDate: record.creationDate, commandLine: record.commandLine ?? null, executablePath: record.executablePath ?? null })]
+      && record.generationId === discharge.generationId
+      && record.ownerToken === discharge.ownerToken
+      ? [publicationIdentity({ pid: record.pid, creationDate: record.creationDate })]
       : [])),
   );
-  return fullyPublishable && complete.every((item) => present.has(evidenceIdentity(item)));
 }
 
 async function attemptOnce(options: ConvergeOrphansOptions): Promise<TerminateDescendantsResult> {
@@ -295,9 +848,6 @@ export async function convergeOrphansBeforeExit(options: ConvergeOrphansOptions 
   // After the first publication pass, every further round retries both
   // convergence and publication until discharge is terminal.
   let evidence = EMPTY_EVIDENCE;
-  // One stable proof namespace for the whole discharge: records published by
-  // different rounds share it, so the read-back can match them exactly.
-  const published = new Set<string>();
   const discharge = {
     ownerToken: options.ownerToken ?? randomUUID(),
     generationId: options.generationId ?? randomUUID(),
@@ -309,7 +859,7 @@ export async function convergeOrphansBeforeExit(options: ConvergeOrphansOptions 
     // failure on the retry must not be outrun by an early spool, and the
     // retry must not be skipped because round zero already published.
     if (round >= 1) {
-      if (await publishRequired(evidence, published, discharge, options)) return "spooled";
+      if (await publishRequired(evidence, discharge, options)) return "spooled";
       if (options.maxRounds !== undefined && round + 1 >= options.maxRounds) return "unresolved";
     }
     await delay(options.roundDelayMs ?? 2_000);
