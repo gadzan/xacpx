@@ -281,13 +281,13 @@ interface MergeableEvidence extends ProcessIdentity {
   /** Every creation-time print this identity has carried across merge rounds. */
   identityPrints?: readonly ProcessIdentity[];
   /**
-   * Establishment order of THIS CLUSTER among its pid's clusters: 0 for the first
-   * incarnation of a pid ever seen, +1 for each further one. Unlike array
-   * position, this SURVIVES the `outcomes` / `leftover` projection that
-   * `mergeEvidence` applies on every round, which reorders clusters by kind and
-   * therefore destroys chronology (an older leftover can end up positioned after
-   * a newer outcome). Only monotonically assigned, never renumbered, so it stays
-   * a true chronology no matter how the surrounding arrays are reshaped.
+   * Establishment order of this cluster across the whole merge: 0 for the first
+   * cluster ever established, +1 for each further one, GLOBAL rather than per pid,
+   * because the value must be strictly increasing for ANY pair of clusters a tie
+   * might compare. Unlike array position it SURVIVES the `outcomes`/`leftover`
+   * projection `mergeEvidence` applies every round, which reorders clusters by
+   * kind and therefore destroys chronology. Never renumbered, so it stays a true
+   * chronology however the surrounding arrays are reshaped.
    */
   clusterOrdinal?: number;
 }
@@ -452,22 +452,23 @@ function clustersCompatible(left: readonly ProcessIdentity[], right: readonly Pr
  * `seen` set), so nothing in `b` can require re-partitioning `a`.
  *
  * One pid can hold SEVERAL clusters (a reused pid), and a new print can sit
- * within tolerance of more than one of them. The CLOSEST cluster wins: taking the
- * first match would assign an observation to an earlier incarnation, leaving the
- * real one's unsafe evidence behind — a residual the reaper can never retire,
- * because replaying it against a root that already exited is retained
+ * within tolerance of more than one of them. The NEWEST compatible cluster wins:
+ * taking the first match would assign an observation to an earlier incarnation,
+ * leaving the real one's unsafe evidence behind — a residual the reaper can never
+ * retire, because replaying it against a root that already exited is retained
  * (`rootOutcome: already-exited` proves nothing about descendants), which would
  * keep the fence generation's spool namespace non-empty forever.
  *
- * Distance alone cannot always separate two incarnations: two CIM approximations
- * of one pid that are >= 10 ticks apart put their midpoint inside BOTH tolerance
- * windows, so a print lands equidistant from both. A TIE prefers the cluster
- * established LAST for that pid, because the observation being merged is the one
- * in hand NOW, so the newer incarnation is the likelier owner. Preferring the
- * first would resolve a stale process and leave the live one's unsafe evidence
- * behind as a permanent residual — the same fence-liveness loss the closest-but-
- * not-first rule already prevents, reached through the tie instead of a distinct
- * distance.
+ * Chronology outranks distance, not merely breaks ties with it. A fresh
+ * observation can only describe the pid's CURRENT or a NEWER incarnation: Windows
+ * never lets two live processes share a pid, so every older incarnation is already
+ * gone when the observation exists. The quantization is symmetric (+-9 in either
+ * direction, because rounding direction is not a documented guarantee), so a
+ * fresh kernel print may be 1 tick from an older cluster's CIM value while being
+ * 9 from the current one's — for identities 10 ticks apart, which the contract
+ * itself defines as different processes. Ranking on that distance would credit a
+ * safe outcome to a process that no longer exists and leave the live one's unsafe
+ * evidence behind as a permanent residual.
  *
  * Establishment order is `clusterOrdinal` on the record, NOT the array position.
  * `mergeEvidence` re-projects every round into `outcomes` before `leftover`, so an
@@ -501,20 +502,23 @@ function mergeByIdentity<T extends MergeableEvidence>(a: readonly T[], b: readon
       .map((existing, index) => ({ index, ...clusterFit(item, existing.identityPrints ?? [existing]) }))
       .filter((fit) => fit.joins)
       .sort((left, right) => {
-        if (left.distance !== right.distance) return left.distance < right.distance ? -1 : 1;
-        // EQUIDISTANT TIE: the print cannot be told apart from either
-        // incarnation by tolerance alone, so establishment order breaks it.
-        // Prefer the cluster established LAST for this pid, not the first: an
-        // equidistant timestamp sits between two CIM approximations that are
-        // already >= 10 ticks apart, and the observation being merged is the most
-        // recent hand we hold — the newer incarnation. Assigning it to the older
-        // cluster resolves the WRONG process and leaves the real one's unsafe
-        // evidence behind as a spooled residual the reaper can never retire
-        // (`already-exited` proves nothing about descendants), so the fence
-        // generation's namespace never empties and the fence never lifts.
+        // CHRONOLOGY FIRST. A fresh observation can only belong to the pid's
+        // current or a NEWER incarnation: Windows never lets two live processes
+        // share a pid, so an older incarnation is already gone by the time this
+        // observation exists. Ranking distance first is wrong even under the
+        // symmetric +-9 contract — CIM may quantize UP as well as down, so a
+        // fresh kernel print can sit 1 tick from the OLD cluster's CIM value and
+        // 9 from the current one's (identities 10 ticks apart, which the contract
+        // defines as distinct processes). Resolving on that distance credits the
+        // safe outcome to a process that no longer exists while the live one keeps
+        // its unsafe evidence — a residual the reaper must retain forever
+        // (`already-exited` proves nothing about descendants), so the generation's
+        // spool namespace never empties and the fence never lifts.
         const ordinalDiff = ordinalOf(merged[left.index]!) - ordinalOf(merged[right.index]!);
         if (ordinalDiff !== 0) return ordinalDiff > 0 ? -1 : 1;
-        // Same ordinal (same pid, established together) — keep the insertion order.
+        // Same ordinal (possible only for a seed whose ordinals are absent, both
+        // defaulting to 0): fall back to distance, then to insertion order.
+        if (left.distance !== right.distance) return left.distance < right.distance ? -1 : 1;
         return right.index - left.index;
       })[0];
     if (fits === undefined) {

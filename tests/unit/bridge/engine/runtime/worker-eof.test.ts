@@ -597,8 +597,9 @@ test("evidence identity is stable when the worker canonicalizes the creation tim
   // VF() writes the handle creation time back on success, so the SAME process is
   // reported with a CIM-quantized value one round and the kernel FILETIME the
   // next — different numbers, ONE process (measured 43/48 non-zero on a live
-  // host, deltas 1-9 ticks). CIM quantizes 6-digit microseconds DOWN onto the
-  // 100ns tick grid, so the kernel value is 0-9 ticks ABOVE the CIM one.
+  // host, deltas 1-9 ticks). The quantization is compared SYMMETRICALLY (+-9,
+  // either direction): rounding direction is not a documented guarantee, so no
+  // direction is assumed even though measurements so far show CIM below.
   const quantized = { pid: 5002, creationDate: "133801632000000010", fingerprintSource: "cim" as const };
   const exact = { pid: 5002, creationDate: "133801632000000017", fingerprintSource: "handle" as const };
   expect(sameProcessIdentity(quantized, exact)).toBe(true);
@@ -775,7 +776,7 @@ test("merge: an unattributed print is never absorbed into a tolerant identity", 
   }
 });
 
-test("merge: a print matching several incarnations of one pid joins the CLOSEST cluster", () => {
+test("merge: a print matching several incarnations of one pid resolves the newest, not the first", () => {
   // Two incarnations of pid 5002 coexist because their CIM prints differ:
   //   A = P1 [cim ...010], already-exited (safe)
   //   B = P2 [cim ...020], access-denied (unsafe)
@@ -786,6 +787,8 @@ test("merge: a print matching several incarnations of one pid joins the CLOSEST 
   // root is already-exited (that outcome proves nothing about descendants), so
   // the fence generation's spool namespace would never empty and the fence could
   // never discharge.
+  // (Chronology and distance agree here; the shapes where they disagree are
+  // pinned separately, under the symmetric quantization below.)
   let acc = { verified: false, outcomes: [], leftover: [] };
   const incomplete = [{ pid: 6001, parentPid: 5002, creationDate: null, commandLine: null, executablePath: null }];
   acc = mergeEvidence(acc, {
@@ -994,20 +997,19 @@ test("evidence identity keeps a reused pid separate", () => {
 });
 
 test("merge: an equidistant tie resolves the newer incarnation, not the older one", () => {
-  // Distance alone cannot separate two incarnations here. Two CIM
-  // approximations of one pid that are >= 10 ticks apart put their midpoint
-  // inside BOTH tolerance windows:
+  // Distance and chronology can coincide, disagree, or be unable to decide. This
+  // test covers the two shapes where they DISAGREE-or-TIE and chronology must win;
+  // the symmetric extreme below is the dangerous one, because it is not a tie at
+  // all while still requiring chronology to win.
   //
-  //   P1 (older): cim 010, already-exited
-  //   P2 (newer): cim 020, access-denied, still live
-  //   incoming:   handle 015 == P2's exact kernel time, killed
+  //   distance tie: CIM010 / CIM020 / HANDLE015      (5 vs 5)
+  //   symmetric:     CIM010 / CIM020 / HANDLE011     (1 vs 9, nearer-but-older)
   //
-  // |handle 015 - cim 010| == |handle 015 - cim 020| == 5, so both clusters fit
-  // and the accumulator's order decides. Taking the FIRST would resolve P1 and
-  // leave P2's unsafe cim evidence behind as a spooled residual the reaper can
-  // never retire (replay against an already-exited root proves nothing about
-  // descendants), so the generation's spool namespace never empties and the fence
-  // never lifts. The tie must go to the cluster established LAST.
+  // Both must resolve the NEWER incarnation. Assigning either to the older one
+  // resolves a process that no longer exists and leaves the live one's unsafe
+  // evidence behind as a residual the reaper can never retire
+  // (`already-exited` proves nothing about descendants), so the generation's
+  // spool namespace never empties and the fence never lifts.
   const accumulated = {
     verified: false,
     outcomes: [{
@@ -1111,58 +1113,66 @@ test("merge: an equidistant tie resolves the newer incarnation, not the older on
   expect(new Set(kept2?.identityPrints?.map((print) => print.creationDate)))
     .toEqual(new Set(["133801632000000010"]));
 
-  // The precedence this block must actually pin: DISTANCE beats rank, even when
-  // the nearer cluster is the EARLIER one. cim 045 is the older cluster and
-  // cim 056 was registered after it; handle 048 is 3 from the old one and 8 from
-  // the new one. If rank came first, the handle would be pulled into the newer
-  // cluster — the exact inversion the tie-break is meant to prevent, applied to
-  // the non-tie case.
+  // CHRONOLOGY, NOT DISTANCE. The dangerous case is where the nearer cluster is
+  // the OLDER one, and it is reachable because the quantization is symmetric
+  // (+-9 in EITHER direction): CIM may round UP as well as down.
   //
-  // (The reverse arrangement — nearer cluster also newer — is NOT discriminating:
-  // both rules pick the same one, so it would pass whatever the precedence is.
-  // A regression that passes under both orderings is not a precedence test.)
-  let precedence = mergeEvidence(
+  //   P1: kernel 001 -> CIM 010        (+9)
+  //   P2: kernel 011 -> CIM 020        (+9)   <- 10 ticks from P1: distinct
+  //
+  // A later round resolves P2 by handle, and that print is P2's OWN kernel value
+  // 011: 9 from its own CIM 020 (legal), but only 1 from P1's CIM 010. Ranking
+  // distance first resolves the STALE process with P2's safe outcome and leaves
+  // the live P2's unsafe evidence behind — a residual the reaper must retain
+  // forever, so the generation's spool namespace never empties and the fence
+  // never lifts.
+  //
+  // There is no tie here at all: 1 vs 9. An earlier revision of this test asserted
+  // "nearer-but-older wins" and thereby pinned this exact bug.
+  let symmetric = mergeEvidence(
     { verified: false, outcomes: [], leftover: [] },
     {
       verified: false,
       outcomes: [{
         pid: 5002, outcome: "access-denied",
-        creationDate: "133801632000000045", commandLine: "near-old", executablePath: "C:\\near.exe",
+        creationDate: "133801632000000010", commandLine: "P1", executablePath: "C:\\p1.exe",
         fingerprintSource: "cim",
       }],
       leftover: [],
     },
   );
-  precedence = mergeEvidence(precedence, {
+  symmetric = mergeEvidence(symmetric, {
     verified: false,
     outcomes: [{
       pid: 5002, outcome: "access-denied",
-      creationDate: "133801632000000056", commandLine: "far-new", executablePath: "C:\\far.exe",
+      creationDate: "133801632000000020", commandLine: "P2", executablePath: "C:\\p2.exe",
       fingerprintSource: "cim",
     }],
     leftover: [],
   });
-  precedence = mergeEvidence(precedence, {
-    verified: false,
+  symmetric = mergeEvidence(symmetric, {
+    verified: true,
     outcomes: [{
       pid: 5002, outcome: "killed",
-      creationDate: "133801632000000048", commandLine: "near-old", executablePath: "C:\\near.exe",
+      creationDate: "133801632000000011", commandLine: "P2", executablePath: "C:\\p2.exe",
       fingerprintSource: "handle",
     }],
     leftover: [],
   });
-  const precedenceRows = precedence.outcomes.filter((item) => item.pid === 5002);
-  expect(precedenceRows).toHaveLength(2);
-  const nearHandle = precedenceRows.find((item) => item.fingerprintSource === "handle");
-  expect(nearHandle?.outcome).toBe("killed");
-  expect(new Set(nearHandle?.identityPrints?.map((print) => print.creationDate)))
-    .toEqual(new Set(["133801632000000045", "133801632000000048"]));
-  // The later, farther cluster keeps its own row and did NOT absorb the handle.
-  const farNew = precedenceRows.find((item) => item.fingerprintSource === "cim");
-  expect(farNew?.creationDate).toBe("133801632000000056");
-  expect(farNew?.outcome).toBe("access-denied");
-  expect(new Set(farNew?.identityPrints?.map((print) => print.creationDate)))
-    .toEqual(new Set(["133801632000000056"]));
+  const symmetricRows = symmetric.outcomes.filter((item) => item.pid === 5002);
+  expect(symmetricRows).toHaveLength(2);
+  const killed = symmetricRows.find((item) => item.fingerprintSource === "handle");
+  expect(killed?.outcome).toBe("killed");
+  // The handle joined the NEWER cluster, whose own CIM print is 020 — not P1's 010,
+  // even though 010 is 8 ticks closer.
+  expect(new Set(killed?.identityPrints?.map((print) => print.creationDate)))
+    .toEqual(new Set(["133801632000000020", "133801632000000011"]));
+  // P1 keeps its own row, its own history, and its own unsafe outcome.
+  const stale = symmetricRows.find((item) => item.fingerprintSource === "cim");
+  expect(stale?.creationDate).toBe("133801632000000010");
+  expect(stale?.outcome).toBe("access-denied");
+  expect(new Set(stale?.identityPrints?.map((print) => print.creationDate)))
+    .toEqual(new Set(["133801632000000010"]));
 });
 
 test("evidence identity is stable when a CIM commandLine is still missing", () => {
@@ -1300,11 +1310,11 @@ test("merge: tie chronology survives the outcomes-before-leftover projection", (
 
 test("merge: a complete fingerprint replaces an incomplete one for the same process", () => {
   // Round 1 could not see the commandLine or the resolved path yet. Round 2
-  // observes the complete fingerprint for the SAME process (CIM quantizes DOWN,
-  // so a kernel value 1-2 ticks above the CIM one is the same process). An
-  // incomplete record can never become durable evidence, so the complete one
-  // must REPLACE it — otherwise the incomplete one occupies the identity and
-  // blocks discharge forever.
+  // observes the complete fingerprint for the SAME process (within the symmetric
+  // +-9 quantization window, so a kernel value a few ticks from the CIM one is
+  // the same process). An incomplete record can never become durable evidence,
+  // so the complete one must REPLACE it — otherwise the incomplete one occupies
+  // the identity and blocks discharge forever.
   const merged = mergeEvidence(
     { verified: false, outcomes: [], leftover: [] },
     {
@@ -1850,7 +1860,8 @@ test("windows: a pid reused after convergence keeps its own durable identity", a
 
 test("windows: the same pid reused 18 ticks later must not inherit the earlier incarnation's resolution", async () => {
   // Comparator-level pin of the exact bridge the full-diff review found, using
-  // the values the real worker produces (CIM quantizes DOWN by 0-9 ticks).
+  // values of the shape the real worker produces (CIM quantized to 6-digit
+  // microseconds, within the symmetric +-9 window).
   const p1Cim = { pid: 5002, creationDate: "133801632000000010", fingerprintSource: "cim" as const };
   const p1Handle = { pid: 5002, creationDate: "133801632000000011", fingerprintSource: "handle" as const };
   const p2Cim = { pid: 5002, creationDate: "133801632000000020", fingerprintSource: "cim" as const };
