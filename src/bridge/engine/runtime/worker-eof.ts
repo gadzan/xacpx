@@ -285,9 +285,13 @@ export function mergeEvidence(a: TerminateDescendantsResult, b: TerminateDescend
   // two records for one pid could never both be proven published.
   //
   // `verified` here is the OR of the two attempts' own flags, which is a summary
-  // of the ATTEMPTS and NOT a statement about the merged set: it can be true while
-  // the merged evidence still carries unresolved identities, exactly as a single
-  // attempt can be verified while it holds a leftover it could not resolve.
+  // of the ATTEMPTS and NOT a statement about the merged set: because the OR rides
+  // on the earlier flag, it can be true while the merged evidence still carries
+  // unresolved identities from any attempt. A single LEGAL attempt never has that
+  // shape — `TerminateDescendantsResult.verified` requires the fresh snapshot to
+  // show nothing remaining, and `decodeWindowsDescendantsResponse` independently
+  // recomputes `outcomes.every(safe) && leftover.length === 0`, rejecting any
+  // mismatch. Only the cross-attempt OR produces it.
   // Nothing may use it to license a terminal discharge — `convergeOrphansBeforeExit`
   // decides from the attempt's own flag AND the merged set of unresolved
   // identities. Never from this value.
