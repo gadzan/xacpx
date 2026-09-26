@@ -568,6 +568,23 @@ export const useGroupsStore = defineStore("groups", () => {
     return res.group;
   }
 
+  /** The single way a wholesale Topic snapshot reaches the cache. Any writer
+   *  that authoritatively replaces the list is, by construction, a writer that can
+   *  observe a disappearance — so every such writer must advance the deletion
+   *  epoch here rather than at its own call site. That keeps in-flight requests
+   *  holding pre-deletion snapshots discarding them instead of merging the
+   *  deleted Topic back in, regardless of which writer observed the deletion
+   *  first (coarse refresh, or an ordinary newest-request list). */
+  function commitTopicSnapshot(key: string, next: TopicSummaryDto[]): TopicSummaryDto[] {
+    const previous = topicsByConversation.value[key] ?? [];
+    const droppedAny = previous.some((topic) => !next.some((item) => item.id === topic.id));
+    if (droppedAny) {
+      topicDeletionEpoch[key] = (topicDeletionEpoch[key] ?? 0) + 1;
+    }
+    topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
+    return next;
+  }
+
   async function loadTopics(targetInstanceId: string, conversationId: string): Promise<TopicSummaryDto[]> {
     const key = `${targetInstanceId}:${conversationId}`;
     const seq = (topicsSeq[key] ?? 0) + 1;
@@ -594,9 +611,9 @@ export const useGroupsStore = defineStore("groups", () => {
     }
     // This is the newest request, so its snapshot is authoritative for the
     // cache: replace wholesale so a Topic deleted since the last fetch actually
-    // leaves the list.
-    topicsByConversation.value = { ...topicsByConversation.value, [key]: res.topics };
-    return res.topics;
+    // leaves the list. The commit helper advances the deletion epoch, which is
+    // what lets an older in-flight request discard instead of resurrect.
+    return commitTopicSnapshot(key, res.topics);
   }
 
   /** Authoritative Topic snapshot for the selected Group, or null when none
@@ -635,15 +652,7 @@ export const useGroupsStore = defineStore("groups", () => {
         topicsSeq[key] = (topicsSeq[key] ?? 0) + 1;
         const previous = topicsByConversation.value[key] ?? [];
         const next = res.topics;
-        const droppedAny = previous.some((topic) => !next.some((item) => item.id === topic.id));
-        if (droppedAny) {
-          // Deletion observed: advance the epoch so in-flight list requests that
-          // captured the older epoch discard their pre-deletion snapshots
-          // instead of merging the deleted Topic back in.
-          topicDeletionEpoch[key] = (topicDeletionEpoch[key] ?? 0) + 1;
-        }
-        topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
-        return next;
+        return commitTopicSnapshot(key, next);
       }
       // A Topic event landed during this request: this snapshot says nothing
       // about what was deleted, so ask again.

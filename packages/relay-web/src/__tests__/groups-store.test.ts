@@ -1241,6 +1241,47 @@ describe("useGroupsStore", () => {
     expect(store.activeTopicId).toBe("topic_alive");
   });
 
+  it("stops a stale ordinary list from resurrecting a Topic a newer ordinary list deleted", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    const deleted = { id: "topic_deleted", conversationId: "conversation_g", title: "Doomed", status: "active" as const, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" };
+    const alive = { id: "topic_alive", conversationId: "conversation_g", title: "Alive", status: "active" as const, createdAt: "2026-02-01T00:00:00.000Z", updatedAt: "2026-02-01T00:00:00.000Z" };
+    store.topicsByConversation["inst_1:conversation_g"] = [deleted, alive];
+    store.activeTopicId = "topic_alive";
+    let releaseA!: () => void;
+    const aHang = new Promise<void>((resolve) => { releaseA = resolve; });
+    let listRequests = 0;
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.topics.list") {
+        listRequests += 1;
+        if (listRequests === 1) {
+          // Older request: parks, holding a snapshot that still has the doomed
+          // Topic.
+          await aHang;
+          return { topics: [deleted, alive] };
+        }
+        // Newer request: the server has already dropped the Topic.
+        return { topics: [alive] };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    // Two ordinary loadTopics calls, started in order.
+    const first = store.loadTopics("inst_1", "conversation_g");
+    await flushPromises();
+    const second = store.loadTopics("inst_1", "conversation_g");
+    await second;
+    // The newer request observed the deletion and removed it from the cache.
+    expect(store.currentTopics.map((t2) => t2.id)).toEqual(["topic_alive"]);
+    // Release the stale older response: it predates the deletion, so the
+    // deletion epoch captured by A must make it discard rather than merge.
+    releaseA();
+    await first;
+    await flushPromises();
+    expect(store.currentTopics.map((t2) => t2.id)).toEqual(["topic_alive"]);
+  });
+
   it("keeps the newest coarse refresh when two arrive out of order", async () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";
