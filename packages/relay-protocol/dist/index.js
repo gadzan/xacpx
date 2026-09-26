@@ -164,6 +164,7 @@ var MSG = {
   groupsUpdate: "control.groups.update",
   groupsDelete: "control.groups.delete",
   groupsGet: "control.groups.get",
+  groupsList: "control.groups.list",
   groupTopicsCreate: "control.group.topics.create",
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
@@ -1005,7 +1006,7 @@ var validateTopicsCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.title) ? o : null;
 };
-var isIsolation = (v) => v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
+var isCreateIsolation = (v) => v === "shared" || v === "shared-single-writer";
 var validateGroupsCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description)) && (o.leadBotId === undefined || isStr(o.leadBotId)) ? o : null;
@@ -1032,12 +1033,17 @@ var validateGroupsGet = (p) => {
   const o = fields(p);
   return o && isStr(o.id) ? o : null;
 };
+var validateGroupsList = (p) => {
+  if (p !== undefined && !isObj(p))
+    return null;
+  return {};
+};
 var validateGroupTopicsCreate = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.conversationId) || !isStr(o.title))
     return null;
   const t = o.target;
-  if (!isObj(t) || !isStr(t.workspace) || t.cwd !== undefined && !isStr(t.cwd) || !isIsolation(t.isolation)) {
+  if (!isObj(t) || !isStr(t.workspace) || t.cwd !== undefined && !isStr(t.cwd) || !isCreateIsolation(t.isolation)) {
     return null;
   }
   return o;
@@ -1050,14 +1056,23 @@ var validateGroupTopicsTeardown = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.topicId) ? o : null;
 };
+var isConversationTarget = (v) => {
+  if (!isObj(v))
+    return false;
+  if (isStr(v.botId))
+    return true;
+  if (v.mode === "members") {
+    return Array.isArray(v.botIds) && v.botIds.length > 0 && v.botIds.every(isStr);
+  }
+  return v.mode === "everyone" || v.mode === "automatic";
+};
 var validateConversationPrompt = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.conversationId) || !isStr(o.topicId) || !isStr(o.requestId) || !isStr(o.text)) {
     return null;
   }
-  if (o.target !== undefined) {
-    if (!isObj(o.target) || !isStr(o.target.botId))
-      return null;
+  if (o.target !== undefined && !isConversationTarget(o.target)) {
+    return null;
   }
   return o;
 };
@@ -1149,6 +1164,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupsUpdate]: validateGroupsUpdate,
   [MSG.groupsDelete]: validateGroupsDelete,
   [MSG.groupsGet]: validateGroupsGet,
+  [MSG.groupsList]: validateGroupsList,
   [MSG.groupTopicsCreate]: validateGroupTopicsCreate,
   [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,

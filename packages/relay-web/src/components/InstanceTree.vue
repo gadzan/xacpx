@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { ArchiveRestore, Bot, ChevronDown, ChevronRight, Folder, Link2, Loader2, MessageSquare, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug } from "lucide-vue-next";
+import { ArchiveRestore, Bot, ChevronDown, ChevronRight, Folder, Link2, Loader2, MessageSquare, Moon, MoreHorizontal, Pencil, Plus, Settings2, SquareTerminal, Trash2, Unplug, Users } from "lucide-vue-next";
 import { useInstancesStore, groupArchivedKey, parseGroupArchivedKey } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { useTerminalStore } from "../stores/terminal";
 import { useDirectBotsStore } from "../stores/direct-bots";
+import { useGroupsStore } from "../stores/groups";
 import { detachSessionTerminal } from "../lib/session-terminal";
 import { confirm } from "../lib/use-confirm";
 import { showActionToast } from "../lib/use-action-toast";
@@ -30,6 +31,7 @@ const chat = useChatStore();
 const centerTabs = useCenterTabsStore();
 const terminals = useTerminalStore();
 const directBotsStore = useDirectBotsStore();
+const groupsStore = useGroupsStore();
 const { t } = useI18n();
 
 // A session row carries the agent NAME; the brand glyph keys on its driver. Prefer the
@@ -45,23 +47,30 @@ function driverForAgentName(inst: InstanceView, agentName: string): string | und
 const emit = defineEmits<{
   select: [instanceId: string, alias: string];
   selectBot: [instanceId: string, botId: string];
+  selectGroup: [instanceId: string, groupId: string];
 }>();
 const dialogFor = ref<{ id: string; name: string; presetAgent?: string; presetWorkspace?: string } | null>(null);
 const manageFor = ref<{ id: string; name: string } | null>(null);
 const botDialogFor = ref<{ instanceId: string; instanceName: string; bot?: BotDetailDto | BotSummaryDto } | null>(null);
 
-const instanceNavMode = ref<Record<string, "sessions" | "bots">>({});
-function modeFor(instanceId: string): "sessions" | "bots" {
+const instanceNavMode = ref<Record<string, "sessions" | "bots" | "groups">>({});
+function modeFor(instanceId: string): "sessions" | "bots" | "groups" {
   return instanceNavMode.value[instanceId] ?? "sessions";
 }
-function setMode(instanceId: string, mode: "sessions" | "bots"): void {
+function setMode(instanceId: string, mode: "sessions" | "bots" | "groups"): void {
   instanceNavMode.value = { ...instanceNavMode.value, [instanceId]: mode };
   if (mode === "bots" && !directBotsStore.botsLoaded[instanceId]) {
     void directBotsStore.loadBots(instanceId).catch(() => {});
   }
+  if (mode === "groups" && !groupsStore.groupsLoaded[instanceId]) {
+    void groupsStore.loadGroups(instanceId).catch(() => {});
+  }
 }
 function onBotTap(instanceId: string, botId: string): void {
   emit("selectBot", instanceId, botId);
+}
+function onGroupTap(instanceId: string, groupId: string): void {
+  emit("selectGroup", instanceId, groupId);
 }
 function onBotSaved(bot: BotDetailDto): void {
   if (botDialogFor.value) {
@@ -475,8 +484,7 @@ const rowSwipes = computed(() => {
          zones inside are one step lighter (visually isomorphic across all modes). -->
     <!-- No whole-card opacity: offline text fell below AA (muted name 3.21 dark / 2.52 light);
          the dimmed state reads from the muted name/label/dot, which pass AA at full opacity. -->
-    <div v-for="inst in store.instances" :key="inst.id" data-test="instance-card"
-         class="rounded-lg border border-border bg-surface/60 p-[3px]">
+    <div v-for="inst in store.instances" :key="inst.id" data-test="instance-card" class="rounded-lg border border-border bg-surface/60 p-[3px]">
       <!-- Instance header: chevron + online/offline dot + name + session count. -->
       <button
         class="group flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 transition-colors hover:bg-raised"
@@ -518,6 +526,19 @@ const rowSwipes = computed(() => {
             <span>{{ $t("nav.bots") }}</span>
             <span v-if="directBotsStore.botsByInstance[inst.id]?.length" class="ml-0.5 font-mono text-[9.5px] tabular-nums opacity-80">
               {{ directBotsStore.botsByInstance[inst.id].length }}
+            </span>
+          </button>
+          <button
+            type="button"
+            data-test="instance-nav-groups"
+            class="flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-medium transition-colors"
+            :class="modeFor(inst.id) === 'groups' ? 'bg-accent/15 text-accent font-semibold' : 'text-fg-muted hover:bg-raised hover:text-fg'"
+            @click="setMode(inst.id, 'groups')"
+          >
+            <Users :size="11" />
+            <span>{{ $t("nav.groups") }}</span>
+            <span v-if="groupsStore.groupsByInstance[inst.id]?.length" class="ml-0.5 font-mono text-[9.5px] tabular-nums opacity-80">
+              {{ groupsStore.groupsByInstance[inst.id].length }}
             </span>
           </button>
         </div>
@@ -607,9 +628,45 @@ const rowSwipes = computed(() => {
             </button>
           </div>
         </div>
+        <!-- GROUPS MODE -->
+        <div v-if="inst.online && modeFor(inst.id) === 'groups'" class="space-y-px">
+          <div v-if="(groupsStore.loadingGroupsByInstance[inst.id] ?? 0) > 0 && !groupsStore.groupsLoaded[inst.id]"
+               data-test="groups-loading"
+               class="py-1 pl-2.5 text-[11px] text-fg-muted">
+            {{ $t("instance.loading") }}
+          </div>
+          <div v-else-if="!(groupsStore.groupsByInstance[inst.id] ?? []).length"
+               data-test="no-groups"
+               class="py-1 pl-2.5 text-[11px] text-fg-muted">
+            {{ $t("group.list.empty") }}
+          </div>
+          <div v-for="g in (groupsStore.groupsByInstance[inst.id] ?? [])"
+               :key="g.id"
+               data-test="group-row"
+               class="group relative flex items-center rounded-md transition-colors"
+               :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'bg-accent/10' : 'hover:bg-raised'">
+            <span v-if="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id"
+                  class="absolute bottom-1 left-0 top-1 w-[3px] rounded-full bg-accent" />
+            <button
+              class="relative flex min-w-0 flex-1 items-center gap-2 py-2 pl-2.5 pr-1.5 text-left"
+              @click="onGroupTap(inst.id, g.id)"
+            >
+              <span class="relative shrink-0">
+                <Users :size="14" class="text-accent" />
+              </span>
+              <div class="flex min-w-0 flex-1 flex-col">
+                <span data-test="group-name" class="min-w-0 truncate text-[12.5px] font-medium"
+                      :class="groupsStore.selectedGroupId === g.id && groupsStore.instanceId === inst.id ? 'font-semibold text-accent' : 'text-fg'">
+                  {{ g.title }}
+                </span>
+                <span class="truncate text-[10.5px] text-fg-muted">{{ $t("group.header.members", { count: g.botIds.length }) }}</span>
+              </div>
+            </button>
+          </div>
+        </div>
 
         <!-- SESSIONS MODE -->
-        <template v-else>
+        <template v-else-if="modeFor(inst.id) === 'sessions'">
         <button v-if="inst.online && !inst.sessionsLoaded && !inst.sessionsLoading" data-test="load-sessions"
                 class="flex w-full items-center gap-1.5 rounded px-2.5 py-1 text-left text-[11px] font-medium text-accent hover:bg-accent/10"
                 @click.stop="store.loadSessions(inst.id).catch(() => {})">

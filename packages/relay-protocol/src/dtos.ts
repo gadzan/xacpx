@@ -298,7 +298,18 @@ export interface BotDetailDto extends BotSummaryDto {
 export interface ExecutionTargetDto {
   workspace: string;
   cwd?: string;
+  /** Responses must stay legacy-tolerant: a Topic persisted before the
+   *  worktree gate can still carry `worktree-per-member`. Creation refuses it. */
   isolation: "shared" | "shared-single-writer" | "worktree-per-member";
+}
+
+/** Create-time Topic execution target. PR7 supports the two shared policies
+ *  only: `worktree-per-member` has no provisioning lifecycle, so a Topic
+ *  created with it could never execute (materialization fails closed). */
+export interface GroupTopicCreateTargetDto {
+  workspace: string;
+  cwd?: string;
+  isolation: "shared" | "shared-single-writer";
 }
 
 export interface TopicSummaryDto {
@@ -400,6 +411,16 @@ export interface BotProfileSnapshotDto {
   execution: { agent: string; workspace: string; model?: string; effort?: string };
 }
 
+/** Explicit Group routing target. IDs are authority; display names never route.
+ *  `everyone` expands at accept to the current eligible members — live Group
+ *  membership filtered by the Bot being enabled. `automatic` is a durable-mode
+ *  reservation (PR8) rejected by PR7 accept. */
+export type ConversationTargetDto =
+  | { botId: string }
+  | { mode: "members"; botIds: string[] }
+  | { mode: "everyone" }
+  | { mode: "automatic" };
+
 export interface MemberTurnSummaryDto {
   id: string;
   runId: string;
@@ -437,6 +458,9 @@ export interface ConversationPromptResponseDto {
   run: ConversationRunDto;
   message: ConversationMessageDto;
   memberTurn: MemberTurnSummaryDto;
+  /** Every accepted member in durable order (first mirrors `memberTurn`).
+   *  Optional for wire compat with older connectors. */
+  memberTurns?: MemberTurnSummaryDto[];
   /** Topic-wide authoritative owner as of accept (executing, else oldest
    *  queued). Lets the caller adopt the true owner without a second
    *  runs.list round trip: an HTTP accept proves only the accepted Run is

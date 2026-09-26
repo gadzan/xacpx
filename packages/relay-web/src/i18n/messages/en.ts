@@ -43,6 +43,7 @@ export default {
     resizePanel: "Drag to resize panel",
     sessions: "Sessions",
     bots: "Bots",
+    groups: "Groups",
   },
   settings: {
     title: "Settings",
@@ -666,6 +667,7 @@ export default {
     },
     run: {
       failed: "Run failed",
+      memberCompleted: "done",
       cancelled: "Run cancelled",
       indeterminate: "Indeterminate",
       indeterminateHint: "The run outcome is uncertain due to cancellation/timeout. State will reconcile when available.",
@@ -682,8 +684,47 @@ export default {
       topicRecovering: "Topic is still recovering. Wait for history to finish loading before sending.",
       botDisabled: "Bot is disabled. Enable it before sending messages.",
       runInProgress: "A run is already in progress. Wait for it to finish or cancel it.",
+      promptPendingConfirmation: "Previous message is still unconfirmed. Retry it or wait for it to settle before sending a new one.",
       cancelUnknown: "Cancellation outcome unknown. Waiting for instance state...",
       instanceOffline: "Instance is offline",
+    },
+  },
+  group: {
+    nav: {
+      title: "Group",
+    },
+    list: {
+      empty: "No groups on this instance.",
+    },
+    header: {
+      members: "{count} members",
+    },
+    target: {
+      lead: "Lead",
+      everyone: "Everyone",
+      selectMembers: "Select members",
+      memberCount: "{count} selected",
+      noEligible: "No enabled members in this group.",
+      hint: "@name adds a member · @everyone selects all",
+    },
+    run: {
+      title: "Collaboration",
+      memberCompleted: "done",
+      memberWaiting: "Waiting for turn",
+    },
+    topic: {
+      createTitle: "Create New Group Topic",
+      createHint: "A new topic keeps the members and settings but starts with fresh conversation context.",
+      workspacePlaceholder: "Select a workspace",
+      isolationLabel: "Filesystem isolation",
+      isolationSingleWriter: "Shared single writer (recommended)",
+      isolationShared: "Shared",
+    },
+    prompt: {
+      placeholder: "Message the selected members... (@name, @everyone)",
+    },
+    chat: {
+      emptyHint: "Select members above, then send a message to start a collaboration run.",
     },
   },
 } as const;

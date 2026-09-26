@@ -73,6 +73,12 @@ export class BotRuntimeManager {
     return this.bots.getBot(botId);
   }
 
+  /** Conversation kind for dispatcher routing. Unknown ids read as Direct
+   *  so legacy rows keep the Direct materialization path. */
+  conversationKind(conversationId: string): "bot" | "group" | undefined {
+    return this.state.conversations[conversationId]?.kind;
+  }
+
   async getOrCreateDirectSession(input: {
     botId: string;
     conversationId?: string;

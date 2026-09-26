@@ -76,7 +76,9 @@ export interface BotUpdateRequestDto {
 export interface ExecutionTargetDto {
   workspace: string;
   cwd?: string;
-  isolation: "shared" | "shared-single-writer" | "worktree-per-member";
+  /** PR7 supports the two shared policies only; worktree-per-member has no
+ *  provisioning lifecycle (PR10) and every Run on it would be unexecutable. */
+  isolation: "shared" | "shared-single-writer";
 }
 
 export interface TopicSummaryDto {
@@ -190,13 +192,27 @@ export interface MemberTurnSummaryDto {
   failureReason?: string;
 }
 
+/** Explicit Group routing target. IDs are authority; display names are
+ * presentation only and never route. `members` deduplicates by Bot ID with
+ * stable order; `everyone` expands at accept to the current eligible members
+ * (live Group membership with enabled Bots), so a disabled member is skipped
+ * while a deliberately disabled Group member keeps its seat. `automatic` is a
+ * durable-mode reservation (PR8) and is rejected by the PR7 explicit accept
+ * path. */
+export type ConversationTarget =
+  | { botId: string }
+  | { mode: "members"; botIds: string[] }
+  | { mode: "everyone" }
+  | { mode: "automatic" };
+
 export interface ConversationPromptRequestDto {
   conversationId: string;
   topicId: string;
   requestId: string;
   text: string;
-  /** Optional Direct target. Server validates it matches the Conversation's Bot. */
-  target?: { botId: string };
+  /** Direct legacy `{ botId }` or explicit Group structured target.
+   *  Server validates against current membership. */
+  target?: ConversationTarget;
 }
 
 export interface ConversationPromptResponseDto {
@@ -207,6 +223,10 @@ export interface ConversationPromptResponseDto {
   run: ConversationRunDto;
   message: ConversationMessageDto;
   memberTurn: MemberTurnSummaryDto;
+  /** Every accepted member in durable order (first entry mirrors the legacy
+   *  singular `memberTurn`). Present on multi-member accepts; Direct
+   *  single-member responses may omit it for wire compat. */
+  memberTurns?: MemberTurnSummaryDto[];
   /** Topic-wide authoritative owner as of accept (executing, else oldest
    *  queued). Lets the caller adopt the true owner without a second
    *  runs.list round trip: an HTTP accept proves only the accepted Run is
