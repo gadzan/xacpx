@@ -134,6 +134,8 @@
 - **归属**：每个 stream 从 reserve 起终身绑定发起 `/ws` 的 hub-stamped viewerId（pending 与已配对 binary 共用同一归属表；`desktop-opened` 成功不解绑）。prepare 返回后重验 owner 仍存活才 mint browser ticket；control socket close 立即 cancel 该 viewer 名下全部 stream；`desktop-close` 非 owner 直接拒绝。
 - **connector**：`packages/channel-relay/src/desktop/`（config、RFB probe、platform guidance、tunnel runtime）。prepare 前 probe `127.0.0.1:<port>`：RFB banner + security 列表；仅 outer VncAuth（type 2）可接受，同时提供 Tight（16）的 endpoint 走 VncAuth 分支直接建连、永不进入 Tight 子协商；Tight-only（outer 16 但无 type 2）返回 `desktop-auth-unsupported`——Tight 子协商可选 `STDVNOAUTH__`/空列表且 noVNC 会照单完成，probe 的 verdict 无法约束真实连接；None 默认拒绝；VeNCrypt/TLS/专有认证与 ARD 返回 `desktop-auth-unsupported`（ARD 需 Phase B connector 预认证）。stream 关闭只关 TCP/tunnel，不停系统 VNC server；stop/logout/disconnect 清所有 tunnel。
 - **平台**：Windows 用 TightVNC（interactive user session + 必须提供 outer VncAuth（type 2）+ loopback，service session 不算可靠桌面源；锁屏/UAC/登录屏不保证）；Linux 优先 TigerVNC/x11vnc（标准 VncAuth），WayVNC 仅 legacy VncAuth 兼容模式（`relax_encryption` + `allow_broken_crypto`，弱安全过渡；默认安全配置报 `desktop-auth-unsupported`），GNOME VeNCrypt 不支持；macOS Phase A 仅标准 VncAuth，ARD 明确报 unsupported。
+- **可诊断性**：open 失败时 `errorPayload(detail)` 的 message 由 `platform-guidance.ts` 追加平台相关设置提示，经 Hub 原样带到 relay-web 错误横幅；connector 日志记录 probe verdict（含 server 拒绝原因原文）与 tunnel 失败原因，Hub 日志记录 stream 生命周期。**不新增独立 desktop doctor**——Phase A 只保证错误文案 + 日志足够定位。
+- **配置与排障**：[`docs/desktop-rfb-setup.md`](desktop-rfb-setup.md) 提供各平台 VNC server 配置步骤、锁屏/UAC 边界与错误码表。
 
 ## Web Push（桌面系统通知）
 

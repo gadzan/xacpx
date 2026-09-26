@@ -402,6 +402,8 @@ Long-lived instance credentials live at `<xacpx-home>/relay/credential.json` (mo
 
 **Security:** enabling desktop exposes the instance's graphical desktop (keyboard + mouse) to hub login holders. The VNC server must listen on loopback with VNC authentication; unauthenticated (`None`), VeNCrypt/TLS-only, proprietary, and macOS ARD-auth servers are rejected in Phase A. The VNC password is entered in relay-web per tab and kept in tab memory only — it never enters RelayEnvelope, tickets, logs, or storage. Tickets are single-use with a 60s TTL and bound to account + instance + side; framebuffer bytes travel on an independent binary WebSocket (`/desktop/observe` + `/desktop/instance`), never through the control plane.
 
+**Setup / troubleshooting:** [`docs/desktop-rfb-setup.md`](docs/desktop-rfb-setup.md) — per-platform VNC server setup (TightVNC / TigerVNC / x11vnc / WayVNC), lock-and-UAC limits, and the open-time error-code table.
+
 ### WeChat Channel Extended Configuration (`openclaw.json`)
 
 The `options` of the built-in weixin channel is currently an empty object; the following fields are read from a separate `openclaw.json` file (the path defaults to `~/.xacpx/state/openclaw.json` and can be overridden with the environment variable `OPENCLAW_CONFIG`). This is an extension point xacpx carried over from openclaw, and **it is not the same file as the main `~/.xacpx/config.json`**.
