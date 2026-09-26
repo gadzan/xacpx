@@ -4,6 +4,9 @@ import type {
   ChannelStartInput,
   ChannelPermissionDecision,
   ChannelPermissionRequest,
+  ChannelElicitationDecision,
+  ChannelElicitationRequest,
+  ChannelElicitationValue,
   ConversationExecutor,
   CoordinatorMessageInput,
   CreateChannelDeps,
@@ -22,7 +25,17 @@ import { mkdir, open, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import type { DiscordChannelConfig, DiscordResolvedAccountConfig } from "./config.js";
 import { parseDiscordChannelConfig } from "./config.js";
-import type { DeliveryTarget, DiscordButtonInteraction, DiscordInboundMessage, DiscordRoute, OutboundBody } from "./types.js";
+import type {
+  DeliveryTarget,
+  DiscordActionRow,
+  DiscordButtonInteraction,
+  DiscordInboundMessage,
+  DiscordModalSubmitInteraction,
+  DiscordRoute,
+  DiscordSelectActionRow,
+  DiscordSelectInteraction,
+  OutboundBody,
+} from "./types.js";
 import type { DiscordBotIdentity, DiscordClientLike } from "./discord-client.js";
 import {
   buildPermissionComponents,
@@ -32,6 +45,32 @@ import {
   terminalPermissionText,
   type PendingDiscordPermission,
 } from "./permission-ui.js";
+import { checkElicitationRenderability } from "./elicitation-limits.js";
+import {
+  authorizeElicitationClick,
+  buildElicitationFieldCard,
+  buildElicitationOpening,
+  buildElicitationModal,
+  buildElicitationReviewCard,
+  createElicitationToken,
+  ELICITATION_CUSTOM_ID_PREFIX,
+  handleElicitationClick,
+  parseElicitationCustomId,
+  parseElicitationFieldCustomId,
+  parseElicitationModalCustomId,
+  parseModalAnswer,
+  type ElicitationClickOutcome,
+  type ElicitationUiAction,
+} from "./elicitation-ui.js";
+import type { PendingDiscordElicitation } from "./elicitation-state.js";
+import {
+  createAnswerMap,
+  hasAnswer,
+  markSkipped,
+  nextUnresolvedKey,
+  recordAnswer,
+  trySettle,
+} from "./elicitation-state.js";
 import { createDiscordClient } from "./discord-client.js";
 import { MessageDedup, isMessageExpired } from "./message-dedup.js";
 import {
@@ -123,6 +162,24 @@ function resolveEffectiveReplyMode(
   return configured;
 }
 
+/**
+ * Whether a Discord error means "that message is already gone".
+ *
+ * `deleteMessage` on an id the platform no longer knows returns 404 /
+ * "Unknown Message", which is the outcome the caller wanted — retrying it can
+ * only fail again. Every other error is a real failure and must propagate, or a
+ * stale continuation would be forgotten while still being visible.
+ */
+function isUnknownMessageError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const record = error as { code?: unknown; status?: unknown; message?: unknown };
+  if (record.code === 10008) return true;
+  if (record.code === "UNKNOWN_MESSAGE") return true;
+  if (record.status === 404) return true;
+  if (typeof record.message === "string" && /unknown message/i.test(record.message)) return true;
+  return false;
+}
+
 function formatScheduledFailureText(input: ScheduledChannelMessageInput, error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return input.taskId
@@ -140,9 +197,38 @@ function parseChatKeyToTarget(chatKey: string): DeliveryTarget | null {
   return { channelId: parsed.channelId, ...(parsed.guildId ? { guildId: parsed.guildId } : {}) };
 }
 
+/**
+ * The terminal wording for a recorded terminal state.
+ *
+ * Every terminal path funnels through here so a card always names the outcome the
+ * daemon actually settled with. Before this existed the send-race terminal render
+ * hard-coded "cancelled", which told a user who pressed Decline that they had
+ * cancelled — the same card-contradicts-decision class the decline and cancel
+ * render paths already fixed.
+ */
+function terminalTextFor(state: NonNullable<PendingDiscordElicitation["terminalState"]>): string {
+  const messages = getMessages();
+  switch (state) {
+    case "expired": return messages.elicitationExpired;
+    case "declined": return messages.elicitationDeclined;
+    case "accepted": return messages.elicitationAccepted;
+    default: return messages.elicitationCancelled;
+  }
+}
+
 export class DiscordChannel implements MessageChannelRuntime {
   readonly id = "discord";
   readonly nativeSessionListFormat: "cards" | "table" = "cards";
+  /**
+   * Form renderer only, declared because it is implemented (see
+   * `requestElicitation` below). Core advertises elicitation support only when
+   * a channel both declares a mode and implements the method, so a missing
+   * implementation would advertise a capability the broker then fails on.
+   *
+   * URL mode is deliberately absent: this renderer collects form values and
+   * has no URL dispatch, and `ChannelElicitationRequest` carries form data only.
+   */
+  readonly elicitationModes = ["form"] as const;
 
   private readonly accounts: Map<string, AccountRuntime> = new Map();
   private dedup: MessageDedup;
@@ -157,6 +243,25 @@ export class DiscordChannel implements MessageChannelRuntime {
   private readonly executor: ConversationExecutor = createConversationExecutor();
   private readonly activeTasks: Map<string, ActiveTask[]> = new Map();
   private readonly pendingPermissions: Map<string, PendingDiscordPermission> = new Map();
+  private readonly pendingElicitations: Map<string, PendingDiscordElicitation> = new Map();
+  /**
+   * Per-elicitation serialization for non-terminal UI transitions.
+   *
+   * `interactionCreate` dispatches fire-and-forget, so two button interactions
+   * for the SAME pending elicitation can run concurrently. A boolean
+   * `submitGateClosed` on shared entry state is then not a lock: transition A
+   * closes the gate and reopens it after its own continuation sync, while
+   * transition B is still editing or deleting the review's continuations —
+   * leaving a live Submit over a mixed review. Both also write
+   * `entry.reviewPage`, so whichever async completion lands last wins.
+   *
+   * Queueing makes "one UI transition at a time" a structural property: the
+   * gate's close/reopen, the continuation mutation, and the primary publish are
+   * one uninterrupted sequence. A generation counter alone would not be enough,
+   * because two transactions could still edit the same continuation messages in
+   * place and the final UI would depend on completion order.
+   */
+  private readonly elicitationRenderQueues: Map<string, Promise<void>> = new Map();
   private readonly config: DiscordChannelConfig;
   private readonly deps: DiscordChannelDeps;
 
@@ -182,6 +287,10 @@ export class DiscordChannel implements MessageChannelRuntime {
 
   async logout(): Promise<void> {
     this.invalidateAllPendingPermissions("cancelled");
+    // Awaited: the terminal renders are queued behind any in-flight UI
+    // transition, and `client.destroy()` below must not win that race. Draining
+    // is what leaves every card inert rather than interactive-with-no-handler.
+    await this.invalidateAllPendingElicitations("cancelled");
     await this.abortAllActiveTasks();
     for (const runtime of this.accounts.values()) {
       try {
@@ -197,9 +306,12 @@ export class DiscordChannel implements MessageChannelRuntime {
   async stop(_reason?: string): Promise<void> {
     // Abort in-flight turns while the clients are still alive, so a preview
     // message can still be deleted; the turns themselves are not awaited.
-    // Pending permission UI is invalidated first so no stale button can
-    // resolve after shutdown.
+    // Pending permission UI and elicitation wizards are invalidated first so no
+    // stale button can resolve after shutdown. For elicitation this also means
+    // no stale wizard step can commit an answer after the turn is gone.
     this.invalidateAllPendingPermissions("cancelled");
+    // Drained before the clients are destroyed — see `logout()`.
+    await this.invalidateAllPendingElicitations("cancelled");
     await this.abortAllActiveTasks();
     for (const runtime of this.accounts.values()) {
       try {
@@ -330,7 +442,29 @@ export class DiscordChannel implements MessageChannelRuntime {
             });
           },
           onButton: (interaction) => {
+            // Routed by custom-id namespace so the two interaction families
+            // cannot collide: an elicitation id must never reach the permission
+            // handler (whose `allowed` outcomes would reject it) and vice versa.
+            if (interaction.customId.startsWith(ELICITATION_CUSTOM_ID_PREFIX)) {
+              // A field control on a text-like field opens a modal; every other
+              // elicitation control drives the wizard state machine.
+              const parsed = parseElicitationCustomId(interaction.customId);
+              if (parsed && parsed.action === "field" && parsed.fieldIndex !== undefined) {
+                void this.handleElicitationAnswerPrompt(interaction, parsed.fieldIndex, parsed.revision).catch(() => {});
+                return;
+              }
+              void this.handleElicitationButton(interaction).catch(() => {});
+              return;
+            }
             void this.handlePermissionButton(interaction).catch(() => {});
+          },
+          onSelect: (interaction) => {
+            if (!interaction.customId.startsWith(ELICITATION_CUSTOM_ID_PREFIX)) return;
+            void this.handleElicitationSelect(interaction).catch(() => {});
+          },
+          onModalSubmit: (interaction) => {
+            if (!interaction.customId.startsWith(ELICITATION_CUSTOM_ID_PREFIX)) return;
+            void this.handleElicitationModalSubmit(interaction).catch(() => {});
           },
         },
         abortSignal: input.abortSignal,
@@ -560,6 +694,1131 @@ export class DiscordChannel implements MessageChannelRuntime {
     } finally {
       cleanup();
     }
+  }
+
+  /**
+   * Render a form Elicitation for the authenticated initiator and resolve the
+   * exact prompt turn.
+   *
+   * The wizard is: opening card (agent identity + message + Start / Decline /
+   * Cancel), one card per field, then a mandatory review page where Edit /
+   * Submit / Decline / Cancel decide. `Submit` is the only path to `accept`,
+   * so no value the user never saw is committed.
+   *
+   * Cancel sources are kept apart, exactly as the plugin contract requires:
+   * a human clicking Decline or Cancel produces an authenticated user decision;
+   * everything external (timeout, `request.signal` abort, channel stop,
+   * unrenderable form) rejects and lets core settle the terminal `cancel`
+   * itself. None of them invents a `responderId`.
+   */
+  async requestElicitation(request: ChannelElicitationRequest): Promise<ChannelElicitationDecision> {
+    const route = parseDiscordChatKey(request.chatKey);
+    if (!route) throw new Error(`cannot route Discord elicitation to non-Discord chatKey: ${request.chatKey}`);
+    const runtime = this.accounts.get(route.accountId);
+    if (!runtime) throw new Error(`discord account "${route.accountId}" is not started`);
+
+    // Renderability is decided before anything is posted: a form Discord cannot
+    // show faithfully cancels with no partial card on screen.
+    //
+    // A form is PRIVATE TO ITS REQUESTER, and the destination has to prove it.
+    // The card carries the agent's question AND the user's answers, and in a
+    // guild or thread every member reads both — so an elicitation asked in a
+    // group publishes what the user told the agent. Authorising who may CLICK
+    // never limited who may SEE, which is a different (and wider) audience.
+    //
+    // `chatType` is the channel's own ingress fact rather than a guess made here.
+    // Anything other than `"direct"`, including a channel that reports nothing,
+    // fails closed: only a provably 1:1 destination may render a form. The gate
+    // runs before the opening is built, so nothing is posted and no answer can
+    // land in a group message.
+    //
+    // `elicitationModes` stays `["form"]` at channel scope — the plugin
+    // capability contract has no route-scoped notion — so the per-turn refusal is
+    // what closes the gap.
+    //
+    // The REQUEST is handed to the gate as well as the fields: the field budget
+    // is measured over the text `buildElicitationFieldCard` actually builds, and
+    // only the request carries the `chatType` that decides whether a form may be
+    // shown at all.
+    const verdict = checkElicitationRenderability(request.fields, request);
+    if (!verdict.renderable) {
+      await this.logger?.warn("discord.elicitation.unsupported", "cancelled unrenderable elicitation", {
+        requestId: request.requestId,
+        reason: verdict.reason ?? "unknown",
+        detail: verdict.detail ?? "",
+      });
+      throw new Error(`elicitation form is not renderable on Discord: ${verdict.reason ?? "unknown"}`);
+    }
+
+    const target: DeliveryTarget = { channelId: route.channelId, ...(route.guildId ? { guildId: route.guildId } : {}) };
+    const token = createElicitationToken();
+    // Revision 1: the entry's initial `renderRevision`, so the first navigation
+    // interaction names the card that is actually on screen. Not `undefined` —
+    // an unversioned Start control could be replayed after the wizard has already
+    // moved on, and no fence would see it.
+    const opening = buildElicitationOpening(request, token, 1);
+
+    let settle: (decision: ChannelElicitationDecision) => void = () => {};
+    let rejectPromise: (error: Error) => void = () => {};
+    const done = new Promise<ChannelElicitationDecision>((resolve, reject) => {
+      settle = resolve;
+      rejectPromise = reject;
+    });
+    // Same reasoning as requestPermission: abort/expiry/stop may reject while
+    // the send is still in flight, so the rejection needs a handler attached.
+    void done.catch(() => {});
+
+    const entry: PendingDiscordElicitation = {
+      token,
+      requestId: request.requestId,
+      requesterId: request.requester.senderId,
+      accountId: route.accountId,
+      target,
+      request,
+      values: createAnswerMap(),
+      skipped: new Set<string>(),
+      continuationMessageIds: [],
+      submitGateClosed: false,
+      visitedReview: false,
+      reviewPage: 0,
+      // The opening card is revision 1, so the first field/review card is 2 and a
+      // control that never carried a revision is distinguishable from one that did.
+      //
+      // `claimedRevision` starts equal to `renderRevision`: nothing is in flight,
+      // so nothing is spent. A handler that claims one moves it forward while the
+      // visible card still names `renderRevision`.
+      renderRevision: 1,
+      claimedRevision: 1,
+      settled: false,
+      resolve: settle,
+      reject: rejectPromise,
+    };
+    this.pendingElicitations.set(token, entry);
+
+    const cleanup = (): void => {
+      this.pendingElicitations.delete(token);
+      clearTimeout(expiryTimer);
+      request.signal.removeEventListener("abort", onAbort);
+    };
+    const onAbort = (): void => {
+      if (!trySettle(entry)) return;
+      entry.terminalState = "cancelled";
+      cleanup();
+      // On the same queue as every UI transition. A rerender already in flight
+      // can be parked mid-`syncElicitationContinuations`; publishing the Cancelled
+      // card outside the queue lets that rerender resume and repaint the terminal
+      // state back into an interactive-looking card, which for a form containing
+      // answers also re-displays text the terminal card had withdrawn.
+      void this.enqueueElicitationRender(entry.token, () =>
+        this.renderElicitationInert(entry, terminalTextFor("cancelled"))).catch(() => {});
+      // Reject, never resolve: an external abort is not a user decision and
+      // must not carry a responderId.
+      entry.reject(new Error("elicitation request aborted"));
+    };
+    const eagerSettle = (terminal: "expired" | "cancelled", reason: string): void => {
+      if (!trySettle(entry)) return;
+      entry.terminalState = terminal;
+      cleanup();
+      // Same serialization domain as `onAbort`: expiry and send failure are
+      // terminal states too, and a running rerender must not outlive them.
+      //
+      // The wording comes from the RECORDED state, not from a literal here. An
+      // expiry hard-coded to "cancelled" rendered one of two different outcomes
+      // depending only on whether the opening had finished landing in time, so
+      // the same request showed "Request cancelled." normally and "Request
+      // expired." when the send raced the timer.
+      void this.enqueueElicitationRender(entry.token, () =>
+        this.renderElicitationInert(entry, terminalTextFor(terminal))).catch(() => {});
+      entry.reject(new Error(reason));
+    };
+    const msUntilExpiry = Math.max(0, request.expiresAt - Date.now());
+    const expiryTimer = setTimeout(() => {
+      eagerSettle("expired", "elicitation request expired");
+    }, msUntilExpiry);
+    if (typeof expiryTimer.unref === "function") expiryTimer.unref();
+
+    if (request.signal.aborted) {
+      // Dead on arrival: settle without ever posting a card.
+      onAbort();
+      throw new Error("elicitation request aborted");
+    }
+    request.signal.addEventListener("abort", onAbort, { once: true });
+
+    try {
+      // A long agent message is split across messages rather than cut: the
+      // question the user is answering must be readable in full. Only the LAST
+      // chunk carries the controls, and its message is the one edited in place
+      // for the rest of the wizard, so the earlier ones are plain text and are
+      // tracked so they can be edited (review) or removed (terminal) later.
+      let sent: { messageId: string } | undefined;
+      // Continuations are tracked as they are sent rather than afterwards: a
+      // mid-way `sendMessage` failure must roll them back, and by then
+      // `entry.messageId` is still unset — the terminal renderer keys off it and
+      // would return immediately, leaving these messages in the chat as a
+      // fragment of the question with no controls and no handler.
+      for (let index = 0; index < opening.contents.length; index += 1) {
+        if (entry.settled) break;
+        const isLast = index === opening.contents.length - 1;
+        const chunk = await runtime.client.sendMessage(target, {
+          content: opening.contents[index]!,
+          // Pings are disabled at send time: agent-controlled text is not trusted
+          // to be mention-free, and the card is a private form for one user.
+          allowedMentions: { parse: [] },
+          ...(isLast ? { components: opening.components } : {}),
+        });
+        // TAKE OWNERSHIP OF THE SEND FIRST, THEN CHECK SETTLEMENT.
+        //
+        // A successful `sendMessage` is an external fact: the message is in the
+        // channel and the daemon now owns it. Checking `settled` before recording
+        // it loses that message in both directions, which is exactly what the
+        // previous ordering did:
+        //
+        //   - a non-final chunk that lands during an abort was never pushed to
+        //     `continuationMessageIds`, so the rollback deleted the earlier ones
+        //     and left it orphaned forever;
+        //   - the FINAL chunk landing during an explicit Decline/Cancel left
+        //     `sent` undefined, so the opening threw "aborted" and a legitimate
+        //     user decision was reported as a rejection. That is the CI failure.
+        //
+        // With the record first, the rollback below can see and delete every
+        // message this opening published, and the send-race branch at the end can
+        // turn a freshly-published primary inert through the normal queue.
+        // ONLY the last chunk is a candidate primary. Assigning `sent` for every
+        // chunk meant an abort between two of them left the last SUCCESSFUL
+        // non-final chunk as the primary — the same message id sitting in both
+        // `entry.messageId` and `continuationMessageIds`. The terminal render
+        // then edited that id into a Cancelled card and immediately deleted it
+        // as a continuation, so the only thing the user was left with was gone.
+        if (isLast) sent = chunk;
+        else entry.continuationMessageIds.push(chunk.messageId);
+        // Now that the message is accounted for, stop: continuing would publish
+        // controls onto a turn the user has already decided. The top-of-loop
+        // guard only catches a settle BETWEEN iterations, not during one.
+        if (entry.settled) break;
+      }
+      // An aborted opening keeps whatever continuations it published and never
+      // claims a primary: the terminal render has no id to edit, and
+      // `discardElicitationContinuations` below removes the fragments instead.
+      if (!sent) {
+        await this.discardElicitationContinuations(entry, runtime).catch(() => {});
+        throw new Error("elicitation opening was aborted before its controls were sent");
+      }
+      entry.messageId = sent.messageId;
+      // Send race: the request may have settled while the send was in flight,
+      // in which case the terminal edit happened before a message id existed.
+      // Queued for the same reason as `onAbort`: a settled entry must end inert,
+      // and nothing later may repaint it.
+      //
+      // The card must show what the user actually chose, so the recorded terminal
+      // state supplies the wording. A generic "cancelled" here would tell a user
+      // who pressed Decline that they cancelled it — the same contradiction the
+      // decline/cancel paths already fixed elsewhere.
+      if (entry.settled && entry.terminalState) {
+        const terminal = entry.terminalState;
+        void this.enqueueElicitationRender(entry.token, () =>
+          this.renderElicitationInert(entry, terminalTextFor(terminal))).catch(() => {});
+      }
+      void this.logger?.info("discord.elicitation.sent", "sent discord elicitation request", {
+        requestId: request.requestId,
+      });
+    } catch (error) {
+      eagerSettle("cancelled", "elicitation send failed");
+      // Roll back anything this opening already published. A multi-message
+      // opening is a partial transaction: the chunks before the failure are
+      // already in the chat, `entry.messageId` is still unset (it is assigned
+      // only after every chunk succeeds), and `renderElicitationInert` returns
+      // immediately without a primary id — so those chunks would stay behind as
+      // a fragment of the question with no controls and no handler, forever.
+      await this.discardElicitationContinuations(entry, runtime).catch(() => {});
+      await this.logger?.warn("discord.elicitation.send_failed", "failed to send elicitation request", {
+        requestId: request.requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+
+    try {
+      const decision = await done;
+      void this.logger?.info("discord.elicitation.resolved", "discord elicitation resolved", {
+        requestId: request.requestId,
+        action: decision.action,
+      });
+      return decision;
+    } finally {
+      cleanup();
+    }
+  }
+
+  /**
+   * Advance the wizard for one interaction and re-render the card in place.
+   *
+   * Kept separate from `requestElicitation` because it must never settle the
+   * request: only a control that produced an authenticated terminal decision
+   * (Submit / Decline / Cancel) resolves, and those go through
+   * `handleElicitationClick` with the responder id attached.
+   */
+  private async handleElicitationButton(interaction: DiscordButtonInteraction): Promise<void> {
+    const parsed = parseElicitationCustomId(interaction.customId);
+    if (!parsed) return;
+    const entry = this.pendingElicitations.get(parsed.token);
+    if (!entry) return;
+    // AUTHORIZE BEFORE ANYTHING ELSE.
+    //
+    // Every guard keyed on the initiator identity must run before a claim is made,
+    // because a claim has a cost beyond the counter: it retires a card revision.
+    // An intruder's click that claimed a number would burn it, and the very next
+    // legitimate interaction would then be delivered against a card that no
+    // longer works — the initiator's own Start, on the opening card, was dropped
+    // for exactly that reason.
+    //
+    // `handleElicitationClick` re-runs this same authorization below; the check is
+    // cheap and the ordering is what matters, so it is done twice deliberately
+    // rather than being skinned into a claim that a rejected interaction can reach.
+    const denial = authorizeElicitationClick(entry, interaction.userId);
+    if (denial === "settled") {
+      await interaction.replyEphemeral(getMessages().elicitationAlreadyResolved);
+      return;
+    }
+    if (denial === "not-initiator") {
+      await this.logger?.warn("discord.elicitation.unauthorized", "unauthorized elicitation control", {
+        requestId: entry.requestId,
+      });
+      await interaction.replyEphemeral(getMessages().elicitationUnauthorized);
+      // Drop WITHOUT settling: the initiator must still be able to answer.
+      return;
+    }
+    // STATE-WRITE FENCE, BEFORE ANY CLAIM.
+    //
+    // Skip is not only navigation: `markSkipped` DELETES an answer, and value ->
+    // omitted is a real state write. So it is judged against `claimedRevision` —
+    // the number the app has already spent — and not against `renderRevision`,
+    // the number of the card currently on screen.
+    //
+    // The two differ exactly when a transition was applied remotely but its
+    // confirmation was lost, which is the case `claimedRevision` exists to
+    // express. `editMessage` throwing does not prove the update did not land; if
+    // it DID land, the user is looking at a newer card than the one they think
+    // they are on, and a control naming the older number must not be allowed to
+    // write.
+    //
+    //   field card rev=2 with answer "staging"
+    //   -> user clicks Review, claim=3, remote applies rev=3, ACK lost
+    //   -> renderRevision still 2, claimedRevision 3
+    //   -> a duplicate or delayed Skip naming rev=2 arrives
+    //
+    // Judging that against `renderRevision` accepts it, `markSkipped` runs, and
+    // the answer disappears behind the user's back. Judging it against
+    // `claimedRevision` drops it.
+    //
+    // It has to run BEFORE the claim below, or this handler's own number would
+    // retire the one it is about to be tested against and every legitimate Skip
+    // would drop itself. A duplicate Skip delivered twice still works: the first
+    // claims and writes, the second now finds its number already spent and drops.
+    if (
+      parsed.action === "skip"
+      && parsed.revision !== undefined
+      && parsed.revision < entry.claimedRevision
+    ) {
+      await this.logger?.warn("discord.elicitation.stale_skip", "dropped a Skip from a superseded card revision", {
+        requestId: entry.requestId,
+        interactionRevision: parsed.revision,
+        claimedRevision: entry.claimedRevision,
+        action: parsed.action,
+      });
+      await interaction.acknowledge();
+      return;
+    }
+    // CLAIM THE NEXT REVISION BEFORE THE FIRST AWAIT.
+    //
+    // `handleElicitationClick` mutates wizard state, and only afterwards does the
+    // channel enqueue the rerender. Between those two points sits the Discord ACK
+    // — a network call that can hang. During that window a control from the
+    // PREVIOUS card is still valid: it names the same revision the user saw, and
+    // no successor has been allocated yet. `Edit(in flight) -> Submit(old card)`
+    // therefore reached `submitAnswers` with the answers as they were before the
+    // edit and accepted them.
+    //
+    // So the revision is retired synchronously, the way a single-threaded renderer
+    // would: the interaction's own control is claimed, and nothing that arrives
+    // after this point can still name it. The ACK then hangs harmlessly, because
+    // even a delivery that beats it has already been made stale.
+    //
+    // Only a navigation interaction claims one. The terminal outcomes do not go
+    // through here at all (they settle inside `handleElicitationClick`), and a
+    // handler that decided nothing leaves the card untouched — there is no new
+    // card to name.
+    const claimsRevision =
+      parsed.action === "start" || parsed.action === "field" || parsed.action === "edit"
+      || parsed.action === "next" || parsed.action === "page" || parsed.action === "review"
+      || parsed.action === "skip";
+    // What the new card will wear. Held here, before any await, so the claim and
+    // the number the queued render stamps are the same one.
+    let claimedRevision: number | undefined;
+    if (claimsRevision && !entry.settled) {
+      claimedRevision = entry.claimedRevision + 1;
+      entry.claimedRevision = claimedRevision;
+    }
+    const outcome: ElicitationClickOutcome = await handleElicitationClick({
+      interaction,
+      pending: this.pendingElicitations,
+      // The number claimed for THIS interaction, so a Submit can tell its own
+      // claim from one another handler is still holding.
+      claim: claimedRevision,
+      onSettled: (settledEntry, decision) => {
+        // Record the terminal state the card must end in, BEFORE anything can
+        // observe it missing. A send-race terminal render runs when the opening
+        // finishes landing after this point, and it needs the word for what the
+        // user actually chose — not the generic "cancelled" an external abort
+        // would use, which would have rendered their Decline as a cancellation.
+        settledEntry.terminalState =
+          decision.action === "accept"
+            ? "accepted"
+            : decision.action === "decline"
+              ? "declined"
+              : "cancelled";
+        settledEntry.resolve(decision);
+        // Also serialized: a terminal render must not interleave with a queued
+        // UI transition for the same card, or the inert card would land under a
+        // continuation that a still-running transition is editing.
+        void this.enqueueElicitationRender(settledEntry.token, () =>
+          this.renderElicitationTerminal(settledEntry, decision)).catch(() => {});
+      },
+      log: (event, message, fields) => {
+        void this.logger?.warn(event, message, fields);
+      },
+    });
+    if (outcome.decided) return;
+    if (!outcome.rerender) return;
+    // Serialized per elicitation: see `elicitationRenderQueues`. The token (not
+    // the requestId) is the key because it is the correlation handle for one
+    // pending card, and a request never has two.
+    //
+    // The revision was already claimed synchronously above, before the ACK, so
+    // the number this render stamps is the one the claim retired. Allocating here
+    // instead would burn a second number and — worse — leave the card wearing a
+    // revision that no control has ever seen, so every control on the newly
+    // published card would be instantly stale on arrival.
+    await this.enqueueElicitationTransition(entry, parsed.action, parsed.fieldIndex, claimedRevision);
+  }
+
+  /**
+   * Run `run` after every previously queued UI transition for `key` finishes.
+   *
+   * A queued item is attached with both handlers so a failing rerender does not
+   * break the chain and block every later transition for that elicitation.
+   */
+  private enqueueElicitationRender(key: string, run: () => Promise<void>): Promise<void> {
+    const previous = this.elicitationRenderQueues.get(key) ?? Promise.resolve();
+    const next = previous.then(run, run).finally(() => {
+      // Only clear the slot if it is still ours: a queued successor has already
+      // installed its own promise by the time this finally runs.
+      if (this.elicitationRenderQueues.get(key) === next) {
+        this.elicitationRenderQueues.delete(key);
+      }
+    });
+    this.elicitationRenderQueues.set(key, next);
+    return next;
+  }
+
+  /** Resolve the account runtime that owns this entry's card. */
+  private elicitationRuntime(entry: PendingDiscordElicitation): AccountRuntime {
+    return (entry.accountId ? this.accounts.get(entry.accountId) : undefined)
+      ?? [...this.accounts.values()][0]!;
+  }
+
+  /**
+   * Allocate a card revision at ENQUEUE time, and return the render to queue.
+   *
+   * Allocating when the transition RUNS cannot work: a transition that was queued
+   * first has already been overtaken by later interactions by the time it is
+   * allowed to run, so it would allocate the newest number and publish stale card
+   * text over the newer card. Allocating here — while the interaction that caused
+   * it is still the newest thing that happened — is what makes the queue order and
+   * the revision order agree.
+   *
+   * The card the transition draws therefore names the revision of the interaction
+   * it came from, and the supersede guard inside `rerenderElicitationCard` lets
+   * only the newest revision publish.
+   */
+  private enqueueElicitationTransition(
+    entry: PendingDiscordElicitation,
+    action: ElicitationUiAction,
+    fieldIndex?: number,
+    /**
+     * Already claimed by the interaction, before its ACK. `undefined` means no
+     * claim was made (a handler that decided nothing, or one whose entry settled
+     * first), in which case this path owns the allocation.
+     */
+    claimed?: number,
+  ): Promise<void> {
+    // CAPTURE, do not re-read. The closure runs later, after any successor has
+    // had the chance to allocate its own number: reading `entry.renderRevision`
+    // at run time therefore hands the earlier transition the LATER revision, and
+    // its supersede guard compares a number against itself and never fires. A
+    // queued transition then publishes stale answer text over the newer card.
+    //
+    // Allocate from `claimedRevision`, the spent counter, so an unclaimed path
+    // (a send-race or abort requeue with no interaction behind it) takes a number
+    // no handler has ever claimed — leaving alone any pre-claim card revision,
+    // which is what the state-write paths keep alive.
+    const revision = claimed ?? (entry.claimedRevision += 1);
+    return this.enqueueElicitationRender(entry.token, () =>
+      this.rerenderElicitationCard(entry, this.elicitationRuntime(entry), action, fieldIndex, revision));
+  }
+
+  /**
+   * Re-render the current wizard step in place, without settling.
+   *
+   * `fieldIndex` is the field position a `field`/`edit` control named, when it
+   * named one: review-page Edit buttons carry the field they jump to, and a field
+   * card's Answer control carries its own field. Either way the navigation target
+   * is explicit rather than inferred from "wherever the wizard happens to be".
+   *
+   * A `page` control carries a review-page number in the same slot.
+   */
+  private async rerenderElicitationCard(
+    entry: PendingDiscordElicitation,
+    runtime: AccountRuntime,
+    action: ElicitationUiAction,
+    fieldIndex?: number,
+    /** Allocated at ENQUEUE time by the caller; see `enqueueElicitationTransition`. */
+    revision?: number,
+  ): Promise<void> {
+    const messageId = entry.messageId;
+    if (!messageId || entry.settled) return;
+    // A transition whose revision was superseded before it could run publishes
+    // nothing. This is the guard that keeps a queued transition from painting a
+    // stale answer over the newer card the user is looking at.
+    //
+    // Compared against CLAIMED, and for the same reason the fences are: the claim
+    // is the only number that moves the instant an interaction starts being
+    // handled, so it is the one that describes "a newer thing has happened". A
+    // transition that was queued first and overtaken by a later handler finds its
+    // number already spent and stops.
+    if (revision !== undefined && revision < entry.claimedRevision) return;
+    // A settled entry ends inert. Every step below re-checks, because a terminal
+    // render may land WHILE this transition is parked on a transport `await`:
+    // by the time it resumes, the card on screen is already Cancelled, and
+    // repainting it would restore interactive content that was just withdrawn —
+    // including any answers the review was showing.
+    const live = (): boolean => !entry.settled;
+    // The revision the NEW card will be drawn at. Held in a local, and NOT
+    // written to `entry.renderRevision` yet: the controls on it name this number,
+    // so the number only becomes valid once they are actually on screen. A
+    // revision published before its edit succeeded is a number the user has no
+    // way to reach — see the commit at the end of the success path.
+    const cardRevision = revision ?? entry.claimedRevision;
+    let card: {
+      content: string;
+      /** Extra chunks past the first; empty when the card fits in one message. */
+      contents?: string[];
+      components: DiscordActionRow[];
+      selectRows?: DiscordSelectActionRow[];
+    };
+    const fieldCard = (key: string): {
+      content: string;
+      components: DiscordActionRow[];
+      selectRows?: DiscordSelectActionRow[];
+      contents?: string[];
+    } => {
+      const field = entry.request.fields.find((f) => f.key === key);
+      if (!field) throw new Error(`wizard field ${JSON.stringify(key)} is not in the request`);
+      return buildElicitationFieldCard(entry.request, entry.token, field, entry.request.fields.indexOf(field) + 1, entry.values[field.key], cardRevision);
+    };
+    switch (action) {
+      case "start": {
+        entry.currentField = entry.request.fields[0]?.key;
+        if (entry.currentField === undefined) {
+          // A zero-field form has nothing to ask, but it is NOT a dead end: M1
+          // keeps `accept` + `content: null` precisely for this, so Start goes
+          // straight to the review page where Submit is the only way to accept.
+          // Returning here left the user with Decline/Cancel and no way to
+          // confirm, which turned a legal form into a timeout.
+          entry.visitedReview = true;
+          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, 0, { revision: cardRevision });
+          break;
+        }
+        card = fieldCard(entry.currentField);
+        break;
+      }
+      case "field":
+      case "edit":
+      case "next": {
+        // Routed by POSITION, resolved against the frozen field list. A schema key
+        // is not a valid routing id — core allows `env.prod`, `a/b`, and keys of
+        // any bounded length, so a cleaned-up key would not match the original.
+        if (fieldIndex !== undefined && entry.request.fields[fieldIndex]) {
+          entry.currentField = entry.request.fields[fieldIndex]!.key;
+        } else if (entry.currentField === undefined) {
+          entry.currentField = entry.request.fields[0]?.key;
+        }
+        if (entry.currentField === undefined) return;
+        card = fieldCard(entry.currentField);
+        break;
+      }
+      case "page": {
+        // Review paging: a form wider than one action row is a navigable list
+        // rather than a truncated one.
+        if (fieldIndex !== undefined) {
+          entry.reviewPage = fieldIndex;
+          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, fieldIndex, { revision: cardRevision });
+        } else {
+          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, entry.reviewPage, { revision: cardRevision });
+        }
+        break;
+      }
+      case "skip": {
+        // The click already marked the field skipped and advanced; this only
+        // re-renders whatever the wizard moved to.
+        const next = entry.currentField ?? nextUnresolvedKey(entry);
+        if (next === undefined) {
+          entry.visitedReview = true;
+          card = buildElicitationReviewCard(entry.request, entry.token, entry.values, entry.reviewPage, { revision: cardRevision });
+          break;
+        }
+        entry.currentField = next;
+        card = fieldCard(next);
+        break;
+      }
+      case "review": {
+        // The field card's Next. Navigation back to a field is the review card's
+        // own `edit`/`page` controls, so this is a one-way forward step.
+        entry.visitedReview = true;
+        card = buildElicitationReviewCard(entry.request, entry.token, entry.values, entry.reviewPage, { revision: cardRevision });
+        break;
+      }
+      default:
+        return;
+    }
+    try {
+      // MULTI-MESSAGE REVIEWS ARE TRANSACTIONAL, and the gate is the primary's
+      // Submit.
+      //
+      // The condition is NOT about the shape of the card being built. It is about
+      // the card CURRENTLY on screen and what is about to happen to it:
+      //
+      //   the primary may only carry a live Submit if it is a review, and that
+      //   review's continuations may only be mutated behind a closed gate.
+      //
+      // `edit` and `page` exist ONLY on a review card, so any `edit`/`page`
+      // rerender starts from a primary whose Submit was live and whose
+      // continuations are about to be edited, trimmed, or deleted. Gating only
+      // when the TARGET was multi-chunk left two holes: review -> field card
+      // (the target has no continuations at all) and review -> single-chunk page
+      // (the target has fewer). Both drove continuation deletes — destroying the
+      // text the live Submit was approving — with the gate still open.
+      //
+      // `visitedReview` is the state that says the primary currently IS a review,
+      // which is the only situation in which the gate-close edit publishes
+      // sensible content. Every path that sets it does so while rendering a
+      // review, so the two cannot disagree.
+      const canMutateCurrentReview =
+        action === "review"
+        || action === "start"
+        || action === "page"
+        || action === "skip"
+        || action === "edit";
+      if (entry.settled) return;
+      if (entry.visitedReview && canMutateCurrentReview && !entry.submitGateClosed) {
+        // Publish the CURRENT review's text with Submit disabled. Same content
+        // the user is looking at, so this is not a visual step: it only removes
+        // the ability to submit while the text underneath is in flux.
+        const gated = buildElicitationReviewCard(
+          entry.request,
+          entry.token,
+          entry.values,
+          entry.reviewPage,
+          { submitDisabled: true, revision: cardRevision },
+        );
+        await runtime.client.editMessage(entry.target, messageId, {
+          content: gated.content,
+          allowedMentions: { parse: [] },
+          components: gated.components,
+        });
+        entry.submitGateClosed = true;
+        // COMMIT POINT. This edit just put controls bearing `cardRevision` on
+        // screen — the same review the user was reading, with Submit disabled — so
+        // the number is now reachable and may become the published revision.
+        // Committing here rather than only at the primary keeps the addressable
+        // card and the visible card in step across a multi-message review, where
+        // several edits succeed in sequence.
+        entry.renderRevision = cardRevision;
+      }
+
+      // Continuations FIRST, primary LAST.
+      //
+      // The primary carries Submit. If it is edited to the review while a
+      // continuation send/edit is still in flight and that send fails, the user
+      // sees an incomplete review with a live Submit — they can approve content
+      // they never fully saw. Layering in the other order means a failure leaves
+      // the previous card up, and the user can retry.
+      if (!live()) return;
+      await this.syncElicitationContinuations(entry, runtime, card.contents);
+
+      // A terminal render cannot have landed during the continuation sync 2014 it
+      // was queued behind this transition 2014 but the guard makes the invariant
+      // local rather than dependent on the queue staying correct.
+      if (!live()) return;
+      await runtime.client.editMessage(entry.target, messageId, {
+        content: card.content,
+        allowedMentions: { parse: [] },
+        components: card.components,
+        ...(card.selectRows && card.selectRows.length > 0 ? { selectRows: card.selectRows } : {}),
+      });
+      entry.submitGateClosed = false;
+      // COMMIT POINT. The control-bearing primary is on screen, so its revision is
+      // now the one a user can actually click. This is the commit for every path
+      // that did not take the gate edit above — and it deliberately happens AFTER
+      // the transport call, because a revision advanced before its edit landed is
+      // one the visible card can never name.
+      entry.renderRevision = cardRevision;
+    } catch (error) {
+      // The gate CLOSES on failure rather than reopening: a failure here means
+      // the channel may still hold a mixed review, so the submit gate stays
+      // disabled until a later rerender completes. The user can retry the same
+      // control; Decline/Cancel remain available, and no partial content can be
+      // submitted.
+      //
+      // That claim now actually holds. `entry.renderRevision` was NOT advanced
+      // above — it is committed only once a control-bearing edit succeeds — so
+      // the card on screen still names the revision the user is clicking, and
+      // both the retry and the terminal controls pass their fences. Advancing it
+      // before the edit (the earlier behaviour) made every one of those controls
+      // unreachable: the screen showed revision 1 while the app answered to
+      // revision 2, and a single transport failure wedged the whole request until
+      // the timeout.
+      //
+      // The CLAIM is not rolled back, and must not be. It is a high-water mark:
+      // retrying re-claims a fresh number, and the allocator never reuses one that
+      // was already spent — which is what stops a late duplicate from a previous
+      // attempt being mistaken for the live card.
+      await this.logger?.warn("discord.elicitation.edit_failed", "failed to update elicitation message", {
+        requestId: entry.requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Bring this request's continuation messages in line with `contents`.
+   *
+   * The primary message shows `contents[0]`; each further chunk is a separate
+   * message. Three cases, all of which have to be handled or the channel shows
+   * the user a mixture of two answers:
+   *
+   *   - shorter than what exists → edit the survivors, DELETE the tail. Only
+   *     handling the survivors left the old ones showing the previous answer's
+   *     fragments directly under the current review.
+   *   - longer → edit the ones that exist, create the rest.
+   *   - none → a field card fits in one message, so any leftover continuation is
+   *     stale text under a different card.
+   *
+   * Continuation ids are reused rather than accumulated: creating a message per
+   * rerender would flood the channel after a few edits.
+   *
+   * REJECTS when a stale tail cannot be deleted. The caller keeps this
+   * transactional on purpose: the primary carries Submit, and switching it to the
+   * new review while the old answer's tail is still live would show the user both
+   * answers at once with no way to tell which one is being submitted — the exact
+   * ambiguity the trim exists to remove. Throwing leaves the previous card up and
+   * the stale ids still tracked, so a retry can finish the job.
+   */
+  private async syncElicitationContinuations(
+    entry: PendingDiscordElicitation,
+    runtime: AccountRuntime,
+    contents: readonly string[] | undefined,
+  ): Promise<void> {
+    if (!contents || contents.length <= 1) {
+      // A single-chunk card (field card, or a review that now fits) must not
+      // leave continuations from a previous, longer review behind.
+      await this.discardElicitationContinuations(entry, runtime, { strict: true });
+      return;
+    }
+    const extras = contents.slice(1);
+    for (let index = 0; index < extras.length; index += 1) {
+      if (entry.settled) return;
+      const existing = entry.continuationMessageIds[index];
+      if (existing) {
+        await runtime.client.editMessage(entry.target, existing, {
+          content: extras[index]!,
+          allowedMentions: { parse: [] },
+        });
+        continue;
+      }
+      const created = await runtime.client.sendMessage(entry.target, {
+        content: extras[index]!,
+        allowedMentions: { parse: [] },
+      });
+      entry.continuationMessageIds.push(created.messageId);
+    }
+    // The review GREW or SHRANK: drop the ones past the new length. Their
+    // content is from an older answer, so leaving them would show the user both
+    // answers at once with no way to tell which one Submit will send. The tracked
+    // list is only truncated once each id is actually gone, so a failure leaves
+    // them retryable rather than orphaned from bookkeeping.
+    if (entry.continuationMessageIds.length > extras.length) {
+      const stale = entry.continuationMessageIds.slice(extras.length);
+      for (const id of stale) {
+        try {
+          await runtime.client.deleteMessage(entry.target, id);
+        } catch (error) {
+          if (isUnknownMessageError(error)) {
+            // Already gone, which is the outcome we wanted.
+            continue;
+          }
+          // A real failure: stop, and do NOT forget the ids we could not remove.
+          // `stale` past this point plus `id` are still live on Discord, so the
+          // caller must not swap the primary out from under them.
+          throw error instanceof Error ? error : new Error(String(error));
+        }
+      }
+      entry.continuationMessageIds = entry.continuationMessageIds.slice(0, extras.length);
+    }
+  }
+
+  /**
+   * Open a modal for the pending field when the initiator asks to answer it.
+   *
+   * Authorization happens before anything is shown: the interaction user must
+   * already be the recorded initiator, because Discord shows a modal only to
+   * the person who triggered the interaction and we must not open one for a
+   * form somebody else started.
+   */
+  private async handleElicitationAnswerPrompt(
+    interaction: DiscordButtonInteraction,
+    fieldIndex: number,
+    /** The revision the triggering control named. */
+    revision?: number,
+  ): Promise<void> {
+    const entry = this.findElicitationByToken(interaction.customId);
+    if (!entry) return;
+    if (authorizeElicitationClick(entry, interaction.userId) !== null) {
+      await interaction.replyEphemeral(getMessages().elicitationUnauthorized);
+      return;
+    }
+    // The control that opened this modal must name the card it came from.
+    //
+    // An unversioned Answer control used to be stamped with the CURRENT revision
+    // at modal-build time, which laundered a stale interaction into a fresh modal:
+    // a click from an old card opened a modal that every later fence would accept.
+    // The modal now carries the revision of the card the user actually clicked,
+    // and an interaction that named no revision at all is refused rather than
+    // granted one.
+    if (revision === undefined || revision < entry.claimedRevision) {
+      await this.logger?.warn("discord.elicitation.stale_answer_prompt", "dropped an Answer control from an earlier card revision", {
+        requestId: entry.requestId,
+        interactionRevision: revision ?? -1,
+        currentRevision: entry.renderRevision,
+      });
+      await interaction.acknowledge();
+      return;
+    }
+    // Position-resolved: a schema key is not a valid routing id (core allows
+    // `env.prod`, `a/b`, arbitrarily long bounded keys).
+    const field = entry.request.fields[fieldIndex];
+    if (!field) return;
+    if (field.kind === "single-select" || field.kind === "multi-select" || field.kind === "boolean") {
+      // Select kinds are answered in place; there is nothing to open a modal for.
+      return;
+    }
+    const modal = buildElicitationModal(entry.token, field, entry.values[field.key], fieldIndex, revision);
+    try {
+      await interaction.showModal(modal);
+    } catch (error) {
+      // A modal must be shown inside its interaction response; a missed
+      // response window is a Discord transport fact, not a decision, so the
+      // wizard stays live and the user can retry.
+      await this.logger?.warn("discord.elicitation.show_modal_failed", "failed to show elicitation modal", {
+        requestId: entry.requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      await interaction.replyEphemeral(getMessages().elicitationTextHint);
+    }
+  }
+
+  /**
+   * Record a String Select answer and advance to the review page.
+   *
+   * The values are option VALUES (what core validates), not labels. A single
+   * select that arrives with zero values is ignored rather than stored as an
+   * empty answer: Discord can deliver an empty selection when the user clears a
+   * multi-select, and treating that as an answer would submit a form the user
+   * never completed.
+   */
+  private async handleElicitationSelect(interaction: DiscordSelectInteraction): Promise<void> {
+    const parsed = parseElicitationCustomId(interaction.customId);
+    if (!parsed || parsed.fieldIndex === undefined) return;
+    const entry = this.pendingElicitations.get(parsed.token);
+    if (!entry) return;
+    if (authorizeElicitationClick(entry, interaction.userId) !== null) {
+      await interaction.replyEphemeral(getMessages().elicitationUnauthorized);
+      return;
+    }
+    if (parsed.revision === undefined) {
+      // No revision, no write. An unversioned select cannot be placed on any
+      // card, so honouring it would write an answer that no visible control
+      // ever asked for.
+      await this.logger?.warn("discord.elicitation.unversioned_select", "dropped a select that named no card revision", {
+        requestId: entry.requestId,
+      });
+      await interaction.acknowledge();
+      return;
+    }
+    // CARD REVISION FENCE. A select is a STATE WRITE, not a rerender trigger: it
+    // records an answer directly and the render queue does not serialise it. A
+    // select delivered after the wizard moved on would therefore record a value
+    // the user is no longer looking at — `prod -> Review -> Edit -> staging ->
+    // Review -> delayed old select(prod)` left memory at prod while the Review on
+    // screen showed staging, and the next Submit sent the value the user had
+    // already replaced. Dropping it is the honest outcome: the card the user is
+    // on still has its own live select.
+    //
+    // NO CLAIM HERE, unlike the navigation paths. A select does not publish a new
+    // card, so bumping the revision would retire the control the user is still
+    // looking at and the very next selection from the same card would be dropped.
+    // The protection comes from the other side instead: every navigation handler
+    // claims its revision synchronously, before its ACK, so an interaction that
+    // raced ahead of it arrives against a retired number and is dropped there.
+    if (parsed.revision < entry.claimedRevision) {
+      await this.logger?.warn("discord.elicitation.stale_select", "dropped a select from an earlier card revision", {
+        requestId: entry.requestId,
+        interactionRevision: parsed.revision,
+        currentRevision: entry.renderRevision,
+        claimedRevision: entry.claimedRevision,
+      });
+      await interaction.acknowledge();
+      return;
+    }
+    const field = entry.request.fields[parsed.fieldIndex];
+    if (!field) return;
+    // The field identity also proves the answer's kind, so it is used below by
+    // the branch that writes the value.
+    //
+    // An EMPTY selection is a LEGAL ANSWER for a multi-select, not a non-answer:
+    // core's validator accepts `[]` and only limits its length when the schema
+    // declares `minItems`. Discord delivers an empty selection when the user
+    // clears the control, so treating it as "no answer" merged two distinct
+    // things — an explicit empty array and an omitted field — and made a
+    // `minItems: 0` answer impossible to express at all.
+    //
+    // For a SINGLE select an empty delivery is still not an answer: there is
+    // exactly one legal value, and clearing it says nothing the schema asked for.
+    if (interaction.values.length === 0 && field.kind !== "multi-select") {
+      await interaction.replyEphemeral(getMessages().elicitationFieldHint);
+      return;
+    }
+    if (field.kind === "multi-select") {
+      recordAnswer(entry, field.key, [...interaction.values]);
+    } else if (field.kind === "boolean") {
+      const truthy = interaction.values[0] === "true";
+      recordAnswer(entry, field.key, truthy);
+    } else {
+      // Single select: exactly one value. A payload with more is not something
+      // this renderer asked for, so it is not coerced into a single answer.
+      if (interaction.values.length !== 1) {
+        await interaction.replyEphemeral(getMessages().elicitationAlreadyResolved);
+        return;
+      }
+      recordAnswer(entry, field.key, interaction.values[0]!);
+    }
+    await interaction.acknowledge();
+  }
+
+  /**
+   * Record a modal answer and advance to the review page.
+   *
+   * Parsing is type-directed and non-coercing: `parseModalAnswer` leaves a
+   * field unanswered rather than storing `NaN` or a guessed boolean, so the
+   * submit gate still blocks on missing required values and the user can fix
+   * the input instead of silently sending a corrupted answer.
+   */
+  private async handleElicitationModalSubmit(interaction: DiscordModalSubmitInteraction): Promise<void> {
+    const parsed = parseElicitationModalCustomId(interaction.customId);
+    if (!parsed) return;
+    const entry = this.pendingElicitations.get(parsed.token);
+    if (!entry) return;
+    if (authorizeElicitationClick(entry, interaction.userId) !== null) {
+      await interaction.replyEphemeral(getMessages().elicitationUnauthorized);
+      return;
+    }
+    // CARD REVISION FENCE, for the same reason as the select: a modal submit is a
+    // STATE WRITE. A modal left open across an Edit can be submitted after the
+    // wizard has moved on, and honouring it would overwrite the newer answer with
+    // whatever the old modal was showing.
+    //
+    // MANDATORY, so `parsed.revision === undefined` falls into this branch and is
+    // dropped: an Answer control without a revision is refused before it can open
+    // a modal, so a modal that names no revision was never produced by this
+    // renderer.
+    //
+    // NO CLAIM HERE either, and for the same reason as the select — the submit
+    // does not publish a card, so retiring a number would kill the control the
+    // user is still looking at.
+    if (parsed.revision === undefined || parsed.revision < entry.claimedRevision) {
+      await this.logger?.warn("discord.elicitation.stale_modal", "dropped a modal submit from an earlier card revision", {
+        requestId: entry.requestId,
+        modalRevision: parsed.revision ?? -1,
+        currentRevision: entry.renderRevision,
+      });
+      await interaction.replyEphemeral(getMessages().elicitationReviewUpdating);
+      return;
+    }
+    // A modal custom id is `<prefix><token>:modal`, so the field identity comes
+    // from the Text Input ids in the payload, never from the modal id. Those ids
+    // are POSITIONAL (`f:<index>`), because core allows a 128-character schema
+    // key and Discord caps component custom ids at 100 — carrying the key made
+    // a legal form's modal unopenable.
+    const answered = new Set<string>();
+    for (const [customId, raw] of Object.entries(interaction.fields)) {
+      const index = parseElicitationFieldCustomId(customId);
+      if (index === null) continue;
+      const field = entry.request.fields[index];
+      if (!field) continue;
+      const value = parseModalAnswer(field, raw);
+      if (value === undefined) continue;
+      recordAnswer(entry, field.key, value);
+      answered.add(field.key);
+    }
+    await interaction.replyEphemeral(answered.size > 0 ? getMessages().elicitationAnswerSaved : getMessages().elicitationNoAnswer);
+  }
+
+  /** Resolve the pending entry a custom id refers to, or undefined. */
+  private findElicitationByToken(customId: string): PendingDiscordElicitation | undefined {
+    const parsed = parseElicitationCustomId(customId);
+    if (!parsed) return undefined;
+    return this.pendingElicitations.get(parsed.token);
+  }
+
+  /** Show the inert terminal card after a user decision. */
+  private async renderElicitationTerminal(
+    entry: PendingDiscordElicitation,
+    decision: ChannelElicitationDecision,
+  ): Promise<void> {
+    // Routed through the same mapping as every other terminal path, so there is
+    // exactly one place where a settled outcome becomes card text. Mapping the
+    // decision to its state here (rather than duplicating the wording) is what
+    // keeps a Decline from ever rendering as a cancellation, on this path or on
+    // the send-race replay.
+    const state = decision.action === "accept"
+      ? "accepted"
+      : decision.action === "decline"
+        ? "declined"
+        : "cancelled";
+    await this.renderElicitationInert(entry, terminalTextFor(state));
+  }
+
+  /**
+   * Delete this request's continuation messages, if any.
+   *
+   * Two modes, because two callers have different obligations:
+   *
+   *   - default (`strict: false`) — the terminal/teardown path. A continuation
+   *     left behind after the request is decided is cosmetic, and failing to
+   *     delete one must not take the request down with it. The list is cleared
+   *     either way so the ids are not retried forever.
+   *   - `strict: true` — the in-wizard trim, where a message still showing the
+   *     PREVIOUS answer directly under the current review is an ambiguity the
+   *     user cannot resolve. There, a failed delete must reach the caller so the
+   *     primary is not switched out from under it.
+   *
+   * Either way a Discord "Unknown Message" is treated as success: that is the
+   * outcome being asked for, however it got there.
+   */
+  private async discardElicitationContinuations(
+    entry: PendingDiscordElicitation,
+    runtime: AccountRuntime,
+    options: { strict?: boolean } = {},
+  ): Promise<void> {
+    const ids = entry.continuationMessageIds;
+    if (ids.length === 0) return;
+    const survivors: string[] = [];
+    let lastError: unknown;
+    for (const id of ids) {
+      try {
+        await runtime.client.deleteMessage(entry.target, id);
+      } catch (error) {
+        if (isUnknownMessageError(error)) continue;
+        if (options.strict) {
+          // Keep the ids we could not remove: they are still live, so the caller
+          // has to know and has to be able to retry them.
+          survivors.push(id);
+          lastError = error;
+          continue;
+        }
+        // Best-effort teardown: already gone, or not deletable. Neither is
+        // actionable on a message the user has stopped looking at.
+      }
+    }
+    entry.continuationMessageIds = survivors;
+    if (options.strict && lastError !== undefined) {
+      // Reject AFTER the whole sweep so a long tail does not stop at the first
+      // failure: every removable id is gone when the caller hears about it, and
+      // the ones that remain are exactly the tracked survivors.
+      throw lastError instanceof Error ? lastError : new Error(String(lastError));
+    }
+  }
+
+  /** Disable the controls and show a bounded terminal line. */
+  private async renderElicitationInert(
+    entry: PendingDiscordElicitation,
+    text: string,
+  ): Promise<void> {
+    const messageId = entry.messageId;
+    if (!messageId) return;
+    const runtime = (entry.accountId ? this.accounts.get(entry.accountId) : undefined)
+      ?? [...this.accounts.values()][0];
+    if (!runtime) return;
+    try {
+      await runtime.client.editMessage(entry.target, messageId, {
+        content: `${getMessages().elicitationTitle}\n\n${text}`,
+        allowedMentions: { parse: [] },
+        // Strip controls: a terminal card must be visibly inert.
+        components: [],
+      });
+      // The continuation messages carried the rest of the review the user was
+      // reading. Leaving them after the decision would show a stale, still
+      // interactive-looking form fragment with no controls to act on.
+      await this.discardElicitationContinuations(entry, runtime);
+    } catch (error) {
+      await this.logger?.warn("discord.elicitation.edit_failed", "failed to update elicitation message", {
+        requestId: entry.requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Terminal-render every pending elicitation, and return a promise that settles
+   * once their queued UI work has run.
+   *
+   * The caller is `stop()`/`logout()`, which destroys the client right after.
+   * Enqueueing the terminal renders without waiting would let the destroy win
+   * the race and leave every card interactive with no controls removed, so the
+   * returned promise is what makes "drain, then destroy" real.
+   */
+  private invalidateAllPendingElicitations(terminal: "expired" | "cancelled"): Promise<void> {
+    if (this.pendingElicitations.size === 0) return Promise.resolve();
+    const entries = [...this.pendingElicitations.values()];
+    this.pendingElicitations.clear();
+    const messages = getMessages();
+    const drains: Array<Promise<void>> = [];
+    for (const entry of entries) {
+      if (!trySettle(entry)) continue;
+      entry.terminalState = terminal;
+      try {
+        entry.reject(new Error("elicitation channel stopped"));
+      } catch {}
+      // Rendered through the same queue as everything else, and rendered as the
+      // entry's terminal state rather than through the decision renderer: a
+      // channel stop is not a user action, so there is no responderId to carry.
+      // The wording comes from the same one mapping every terminal path uses, so
+      // a stop cannot label an expiry as a cancellation either.
+      drains.push(
+        this.enqueueElicitationRender(entry.token, () =>
+          this.renderElicitationInert(entry, terminalTextFor(terminal))),
+      );
+    }
+    return Promise.all(drains).then(() => undefined, () => undefined);
   }
 
   private async handlePermissionButton(interaction: DiscordButtonInteraction): Promise<void> {

@@ -1,4 +1,12 @@
-import type { DeliveryTarget, DiscordButtonInteraction, DiscordInboundMessage, OutboundBody } from "./types.js";
+import type {
+  DeliveryTarget,
+  DiscordButtonInteraction,
+  DiscordInboundMessage,
+  DiscordModalSubmitInteraction,
+  DiscordSelectInteraction,
+  OutboundBody,
+  ShowModalInput,
+} from "./types.js";
 
 export interface DiscordBotIdentity {
   botUserId: string;
@@ -13,7 +21,7 @@ export interface DiscordClientLike {
    *  delivered to `onButton` when provided; slash commands continue to arrive
    *  as synthetic messages via `onMessage` so existing gates still apply.
    *  would silently disable them. */
-  start(input: { handlers: { onMessage(m: DiscordInboundMessage): void; onButton?(i: DiscordButtonInteraction): void }; abortSignal: AbortSignal }): Promise<DiscordBotIdentity>;
+  start(input: { handlers: { onMessage(m: DiscordInboundMessage): void; onSelect?(i: DiscordSelectInteraction): void; onButton?(i: DiscordButtonInteraction): void; onModalSubmit?(i: DiscordModalSubmitInteraction): void }; abortSignal: AbortSignal }): Promise<DiscordBotIdentity>;
   /** Diagnostic-only REST probe. Never used to derive startup identity. */
   probeBot(): Promise<DiscordBotIdentity>;
   sendMessage(target: DeliveryTarget, body: OutboundBody): Promise<{ messageId: string }>;
@@ -29,11 +37,24 @@ export interface CreateDiscordClientOptions {
   applicationId?: string;
   intentsMessageContent: boolean;
   intentsGuildMembers: boolean;
+  /**
+   * Test seam: build the discord.js Client that `start()` attaches to. Omitting
+   * it constructs the real one. The adapter dispatch under test lives in
+   * `start()`, so an injected gateway is the only way to feed it a real-shaped
+   * interaction without a live Gateway connection.
+   */
+  createGateway?: () => unknown;
 }
 
 export function createDiscordClient(options: CreateDiscordClientOptions): DiscordClientLike {
   return new DiscordJsClient(options);
 }
+
+/**
+ * Exported for adapter-level tests that drive the interactionCreate dispatch
+ * directly. Production code goes through `createDiscordClient`.
+ */
+export { DiscordJsClient };
 
 class DiscordJsClient implements DiscordClientLike {
   private client: unknown = null;
@@ -45,7 +66,7 @@ class DiscordJsClient implements DiscordClientLike {
     this.options = options;
   }
 
-  async start(input: { handlers: { onMessage(m: DiscordInboundMessage): void; onButton?(i: DiscordButtonInteraction): void }; abortSignal: AbortSignal }): Promise<DiscordBotIdentity> {
+  async start(input: { handlers: { onMessage(m: DiscordInboundMessage): void; onSelect?(i: DiscordSelectInteraction): void; onButton?(i: DiscordButtonInteraction): void; onModalSubmit?(i: DiscordModalSubmitInteraction): void }; abortSignal: AbortSignal }): Promise<DiscordBotIdentity> {
     const discord = await import("discord.js") as unknown as Record<string, unknown>;
     const Client = discord.Client as new (opts: unknown) => {
       on: (event: string, cb: (...args: unknown[]) => void) => void;
@@ -69,11 +90,21 @@ class DiscordJsClient implements DiscordClientLike {
     if (this.options.intentsMessageContent) intents |= (GatewayIntentBits.MessageContent ?? 0);
     if (this.options.intentsGuildMembers) intents |= (GatewayIntentBits.GuildMembers ?? 0);
 
-    const client = new Client({
-      intents,
-      partials: [Partials.Channel, Partials.Message],
-      allowedMentions: { parse: [] },
-    });
+    const client = (this.options.createGateway
+      ? this.options.createGateway()
+      : new Client({
+          intents,
+          partials: [Partials.Channel, Partials.Message],
+          allowedMentions: { parse: [] },
+        })) as {
+      on: (event: string, cb: (...args: unknown[]) => void) => void;
+      once: (event: string, cb: (...args: unknown[]) => void) => void;
+      login: (token: string) => Promise<string>;
+      destroy: () => void;
+      user: { id: string; tag: string } | null;
+      channels: { fetch: (id: string) => Promise<unknown> };
+      isReady: () => boolean;
+    };
     this.client = client;
 
     client.on("messageCreate", (message: unknown) => {
@@ -85,8 +116,23 @@ class DiscordJsClient implements DiscordClientLike {
       const anyI = interaction as {
         isButton?: () => boolean;
         isChatInputCommand?: () => boolean;
+        isStringSelectMenu?: () => boolean;
+        isModalSubmit?: () => boolean;
         commandName?: string;
         customId?: string;
+        values?: string[];
+        fields?: {
+          /**
+           * discord.js exposes submitted modal inputs as a
+           * `Collection<customId, component>`, which structurally is a
+           * `Map`-like with `get`. The components this renderer OPENED the modal
+           * with are Discordin's Label type (18) whose real input sits at
+           * `component`, so a traversal of `components[].components[]` — the old
+           * shape — finds nothing and drops every answer.
+           */
+          fields?: Map<string, { customId?: string; value?: string }> | Record<string, { customId?: string; value?: string }>;
+          getTextInputValue?: (customId: string) => string;
+        };
         options?: { data?: Array<{ name?: string; value?: unknown }> };
         channelId?: string;
         channel?: { id?: string };
@@ -97,11 +143,53 @@ class DiscordJsClient implements DiscordClientLike {
         replied?: boolean;
         deferred?: boolean;
         reply?: (opts: unknown) => Promise<void>;
+        showModal?: (modal: unknown) => Promise<void>;
         deferUpdate?: () => Promise<void>;
       };
       if (typeof anyI?.isButton === "function" && anyI.isButton()) {
         const customId = typeof anyI.customId === "string" ? anyI.customId : "";
-        if (!customId || !customId.startsWith("xacpx-perm:")) return;
+        // Both interaction namespaces are delivered; the channel routes on
+        // prefix. Filtering to one here would silently drop the other family.
+        if (!customId || (!customId.startsWith("xacpx-perm:") && !customId.startsWith("xacpx-elicit:"))) return;
+        const ack = async (): Promise<void> => {
+          try {
+            if (!anyI.replied && !anyI.deferred && anyI.deferUpdate) await anyI.deferUpdate();
+          } catch {}
+        };
+        const replyEphemeral = async (text: string): Promise<void> => {
+          try {
+            if (anyI.reply && !anyI.replied && !anyI.deferred) {
+              await anyI.reply({ content: text, ephemeral: true, allowedMentions: { parse: [] } });
+            }
+          } catch {}
+        };
+        // A modal may only be shown inside an interaction response, so it is
+        // exposed on the interaction itself. Discord shows it to the user who
+        // acted; there is no recipient argument to get wrong.
+        const showModal = async (modal: ShowModalInput): Promise<void> => {
+          if (typeof anyI.showModal !== "function") {
+            throw new Error("discord interaction cannot show a modal");
+          }
+          await anyI.showModal({
+            title: modal.title,
+            custom_id: modal.customId,
+            components: modal.components.map((label) => ({
+              type: 18,
+              label: label.label,
+              component: {
+                type: 4,
+                custom_id: label.component.customId,
+                style: label.component.style,
+                label: label.component.label,
+                ...(label.component.minLength !== undefined ? { min_length: label.component.minLength } : {}),
+                ...(label.component.maxLength !== undefined ? { max_length: label.component.maxLength } : {}),
+                required: label.component.required ?? false,
+                ...(label.component.value !== undefined ? { value: label.component.value } : {}),
+                ...(label.component.placeholder !== undefined ? { placeholder: label.component.placeholder } : {}),
+              },
+            })),
+          });
+        };
         const channelId = anyI.channelId ?? anyI.channel?.id;
         const userId = anyI.user?.id ?? anyI.member?.user?.id;
         if (!channelId || !userId) return;
@@ -110,10 +198,86 @@ class DiscordJsClient implements DiscordClientLike {
           userId,
           channelId,
           ...(anyI.guildId ? { guildId: anyI.guildId } : {}),
+          acknowledge: ack,
+          replyEphemeral,
+          showModal,
+        };
+        input.handlers.onButton?.(normalized);
+        return;
+      }
+      // String Select: option VALUES, not labels. An option's label is
+      // agent-controlled display text and may be truncated; the value is the
+      // correlation identity core validates.
+      if (typeof anyI?.isStringSelectMenu === "function" && anyI.isStringSelectMenu()) {
+        const customId = typeof anyI.customId === "string" ? anyI.customId : "";
+        if (!customId || !customId.startsWith("xacpx-elicit:")) return;
+        const channelId = anyI.channelId ?? anyI.channel?.id;
+        const userId = anyI.user?.id ?? anyI.member?.user?.id;
+        if (!channelId || !userId) return;
+        const values = Array.isArray(anyI.values) ? anyI.values.map((v) => String(v)) : [];
+        const normalized: DiscordSelectInteraction = {
+          customId,
+          userId,
+          channelId,
+          ...(anyI.guildId ? { guildId: anyI.guildId } : {}),
+          values,
           acknowledge: async () => {
             try {
-              if (!anyI.replied && !anyI.deferred && anyI.deferUpdate) {
-                await anyI.deferUpdate();
+              if (!anyI.replied && !anyI.deferred && anyI.deferUpdate) await anyI.deferUpdate();
+            } catch {}
+          },
+          replyEphemeral: async (text: string) => {
+            try {
+              if (anyI.reply && !anyI.replied && !anyI.deferred) {
+                await anyI.reply({ content: text, ephemeral: true, allowedMentions: { parse: [] } });
+              }
+            } catch {}
+          },
+        };
+        input.handlers.onSelect?.(normalized);
+        return;
+      }
+      // Modal submit: the field map is keyed by the Text Input custom_id, which
+      // is POSITIONAL (`f:<index>`) rather than the schema key, so a legal long
+      // key cannot exceed Discord's component id cap. Values live in the
+      // payload, never in any id.
+      if (typeof anyI?.isModalSubmit === "function" && anyI.isModalSubmit()) {
+        const customId = typeof anyI.customId === "string" ? anyI.customId : "";
+        if (!customId || !customId.startsWith("xacpx-elicit:")) return;
+        const channelId = anyI.channelId ?? anyI.channel?.id;
+        const userId = anyI.user?.id ?? anyI.member?.user?.id;
+        if (!channelId || !userId) return;
+        // discord.js delivers modal fields as a `Collection<customId, field>`
+        // with `getTextInputValue(customId)`. The component tree we OPEN the
+        // modal with is the Label type (18) whose child sits at
+        // `component`, not `row.components` — so the old double loop found
+        // nothing and every real modal submit arrived with an empty map,
+        // silently discarding the user's answer.
+        const fields: Record<string, string> = {};
+        const submitted = anyI.fields;
+        if (submitted && typeof submitted.fields === "object") {
+          const entries = submitted.fields instanceof Map
+            ? [...submitted.fields.entries()]
+            : Object.entries(submitted.fields);
+          for (const [key, component] of entries) {
+            const value = typeof component?.value === "string"
+              ? component.value
+              : typeof submitted.getTextInputValue === "function"
+                ? submitted.getTextInputValue(key)
+                : undefined;
+            if (typeof value === "string") fields[key] = value;
+          }
+        }
+        const normalized: DiscordModalSubmitInteraction = {
+          customId,
+          userId,
+          channelId,
+          ...(anyI.guildId ? { guildId: anyI.guildId } : {}),
+          fields,
+          acknowledge: async () => {
+            try {
+              if (anyI.reply && !anyI.replied && !anyI.deferred) {
+                await anyI.reply({ content: "OK", ephemeral: true, allowedMentions: { parse: [] } });
               }
             } catch {}
           },
@@ -125,7 +289,7 @@ class DiscordJsClient implements DiscordClientLike {
             } catch {}
           },
         };
-        input.handlers.onButton?.(normalized);
+        input.handlers.onModalSubmit?.(normalized);
         return;
       }
       if (!anyI?.isChatInputCommand?.() || !anyI.commandName) return;
@@ -251,6 +415,9 @@ class DiscordJsClient implements DiscordClientLike {
       content: body.content ?? undefined,
       allowedMentions: body.allowedMentions ?? { parse: [] },
       ...(body.components ? { components: body.components } : {}),
+      // Selects may not share an action row with buttons, so they travel as
+      // their own rows appended after the button rows.
+      ...(body.selectRows ? { components: [...(body.components ?? []), ...body.selectRows] } : {}),
     };
     if (body.files && body.files.length > 0) {
       payload.files = body.files.map((f) => ({
@@ -274,8 +441,12 @@ class DiscordJsClient implements DiscordClientLike {
       content: body.content ?? undefined,
       allowedMentions: body.allowedMentions ?? { parse: [] },
       ...(body.components ? { components: body.components } : {}),
+      ...(body.selectRows
+        ? { components: [...(body.components ?? []), ...body.selectRows] }
+        : {}),
     });
   }
+
   async deleteMessage(target: DeliveryTarget, messageId: string): Promise<void> {
     const client = this.client as {
       channels: { fetch: (id: string) => Promise<{ messages: { fetch: (id: string) => Promise<{ delete: () => Promise<void> }> } }> };

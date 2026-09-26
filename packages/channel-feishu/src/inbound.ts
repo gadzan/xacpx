@@ -48,11 +48,35 @@ export function buildFeishuRouteMetadata(input: {
   senderOpenId?: string;
   chatId: string;
   senderIsOwner?: boolean;
-}): { channel: "feishu"; chatType: "direct" | "group"; senderId?: string; groupId?: string; isOwner?: boolean } {
+}): {
+  channel: "feishu";
+  /**
+   * `"direct"` ONLY for a value the platform actually reported as a private chat.
+   *
+   * Feishu reports `chat_type` as `"p2p"` for a private chat and `"group"` for a
+   * group. Anything else — `undefined`, or a value this build has never seen — is
+   * returned as `undefined`, NOT coerced to `direct`.
+   *
+   * Coercing unknown to `direct` was fail-open in the one place the privacy
+   * decision is made: a form renders the agent's question and the user's answers,
+   * and a turn whose private-ness nobody established may not get one. It also
+   * broke every other consumer of this fact — the `scheduled_*` tools and the
+   * group-owner gates both fail closed on a missing `chatType`, so pretending
+   * "unknown" means "direct" let a route nobody had vouched for through them.
+   *
+   * `undefined` therefore means "not provably private", and downstream gates that
+   * need a private route refuse it.
+   */
+  chatType?: "direct" | "group";
+  senderId?: string;
+  groupId?: string;
+  isOwner?: boolean;
+} {
   const isGroup = input.chatType === "group";
+  const isDirect = input.chatType === "p2p";
   return {
     channel: "feishu",
-    chatType: isGroup ? "group" : "direct",
+    ...(isDirect ? { chatType: "direct" as const } : isGroup ? { chatType: "group" as const } : {}),
     ...(input.senderOpenId ? { senderId: input.senderOpenId } : {}),
     ...(isGroup ? { groupId: input.chatId } : {}),
     ...(isGroup ? { isOwner: input.senderIsOwner === true } : {}),

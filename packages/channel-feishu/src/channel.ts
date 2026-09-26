@@ -2,6 +2,8 @@ import path from "node:path";
 import { createConversationExecutor, resolveTurnLane, toDisplaySessionAlias } from "xacpx/plugin-api";
 import type {
   ChannelStartInput,
+  ChannelElicitationDecision,
+  ChannelElicitationRequest,
   ConversationExecutor,
   SessionService,
   ActiveTurnRegistry,
@@ -20,7 +22,21 @@ import { buildFeishuQueueKey, clearFeishuQueueForAccount } from "./chat-queue.js
 import { buildFeishuCompletionNotice } from "./completion-notice.js";
 import { buildFeishuConversationId, buildFeishuRouteMetadata, evaluateFeishuAccessPolicy, parseFeishuConversationId, shouldHandleFeishuMessage } from "./inbound.js";
 import { isMessageExpired } from "./message-dedup.js";
+import {
+  startFeishuCardActionHost,
+  type FeishuCardActionCallback,
+  type FeishuCardActionRuntime,
+} from "./card-action-host.js";
+import type { ChannelElicitationMode } from "xacpx/plugin-api";
+import { checkElicitationRenderability } from "./elicitation-limits.js";
+import { buildCardMessageContent } from "./card/card-builder.js";
+import {
+  FeishuElicitationRenderer,
+  type FeishuCardTransport,
+} from "./elicitation-renderer.js";
+import type { PendingFeishuElicitation } from "./elicitation-state.js";
 import { sendTextFeishu, sendMediaFeishu } from "./send.js";
+import type { FeishuMessageClient } from "./send.js";
 import { addTypingIndicator, removeTypingIndicator, type FeishuReactionClient, type TypingIndicatorState } from "./typing.js";
 import { extractRawTextFromFeishuEvent, isLikelyAbortText } from "./abort-detect.js";
 import { clearMessageUnavailableForAccount, isMessageUnavailable, markIfUnavailableError } from "./message-unavailable.js";
@@ -46,12 +62,36 @@ type OrchestrationTaskRecord = Parameters<MessageChannelRuntime["notifyTaskCompl
 
 interface FeishuChannelDeps extends CreateChannelDeps {
   createClient?: (account: FeishuResolvedAccountConfig) => FeishuLarkClient;
+  /**
+   * Test seam: replaces the card-callback listener so no socket is opened.
+   * Mirrors `createClient`, which does the same for the WS path.
+   */
+  createCardHost?: (options: {
+    config: Extract<FeishuResolvedAccountConfig["cardActions"], object>;
+    onAction: (callback: FeishuCardActionCallback) => Promise<{ ok: true } | { ok: false; reason: "unauthorized" | "malformed" | "unsupported" | "internal" }>;
+    log?: (event: string, message: string, fields?: Record<string, string | number | boolean | undefined>) => void;
+  }) => Promise<FeishuCardActionRuntime>;
 }
 
 interface AccountRuntime {
   account: FeishuResolvedAccountConfig;
   client: FeishuLarkClient;
   botOpenId?: string;
+  /**
+   * Card-callback listener, present only when the account configures
+   * `cardActions`. Stopped on logout alongside the WS client.
+   */
+  cardHost?: FeishuCardActionRuntime;
+  /**
+   * Form renderer for this account, and its pending map. Both are per-account
+   * so one account's in-flight form can never be answered through another
+   * account's callback channel.
+   */
+  elicitation?: {
+    renderer: FeishuElicitationRenderer;
+    pending: Map<string, PendingFeishuElicitation>;
+    transport: FeishuCardTransport;
+  };
 }
 
 interface ActiveTask {
@@ -80,8 +120,49 @@ interface ActiveTask {
   cardController: StreamingCardController | null;
 }
 
+/**
+ * Live accounts that can receive an inbound human turn but CANNOT render a form.
+ *
+ * `elicitationModes` is CHANNEL-scoped (one answer for the whole plugin) while
+ * `requestElicitation` is ACCOUNT-scoped: it resolves the account from the
+ * chatKey and throws when that account has no card-callback listener. An account
+ * without `cardActions` still starts its WebSocket and still receives messages,
+ * so a mixed configuration would advertise a capability that fails on every
+ * request routed to the account that lacks a listener.
+ *
+ * Returns the accounts that create exactly that gap, so the caller can decide
+ * capability truthfully rather than advertising `some()`.
+ */
+function inboundOnlyAccounts(
+  accounts: readonly FeishuResolvedAccountConfig[],
+): readonly FeishuResolvedAccountConfig[] {
+  return accounts.filter(
+    (account) => account.enabled && account.configured && account.cardActions === undefined,
+  );
+}
+
 export class FeishuChannel implements MessageChannelRuntime {
   readonly id = "feishu";
+  /**
+   * Declares form support ONLY when at least one account can actually deliver
+   * it, because core advertises the mode from this value plus the presence of
+   * `requestElicitation()`.
+   *
+   * The renderer itself needs the card-callback channel (Stage 1): without
+   * `cardActions` configured there is no way for a human's answer to arrive, so
+   * every request would fail closed at "no card-callback channel". Declaring
+   * unconditionally told agents "form works here" and then cancelled every
+   * single request — a capability lie the agent pays for.
+   *
+   * `multi-select` is refused by the renderability gate because Feishu cards
+   * have no multi-select component, so a form containing one cancels rather than
+   * being reshaped. URL mode is deliberately absent — the M1 plugin contract is
+   * form-only and there is no URL dispatch.
+   *
+   * Assigned in the constructor rather than as a field initializer: a parameter
+   * property is not readable from a field initializer.
+   */
+  readonly elicitationModes: readonly ChannelElicitationMode[];
   private readonly accounts: Map<string, AccountRuntime> = new Map();
   private dedup: MessageDedup;
   private markDelivered: OrchestrationDeliveryCallbacks["markTaskNoticeDelivered"] | null = null;
@@ -113,6 +194,26 @@ export class FeishuChannel implements MessageChannelRuntime {
     private readonly deps: FeishuChannelDeps = {},
   ) {
     this.config = parseFeishuChannelConfig(options);
+    // Declared from CONFIG, not unconditionally: without an account's
+    // `cardActions` the card-callback listener never starts and no answer can
+    // arrive, so this build cannot render a form.
+    //
+    // ALL inbound-capable accounts, not ANY. The plugin contract has no
+    // route-scoped capability — `elicitationModes` is one answer for the whole
+    // channel — so a mixed configuration cannot be described truthfully: an
+    // account without `cardActions` still starts its WebSocket and still
+    // receives human turns, and `requestElicitation` resolves the account from
+    // the chatKey and throws for it. Declaring form support for such a channel
+    // therefore means the bridge and the agent see a capability that fails on
+    // every request routed to the account that lacks a listener.
+    //
+    // So the channel only claims the capability when NO live account is
+    // inbound-only. A mixed configuration declares nothing, which is honest and
+    // still fully usable for messaging.
+    const inboundOnly = inboundOnlyAccounts(this.config.accounts);
+    this.elicitationModes = inboundOnly.length === 0 && this.config.accounts.length > 0
+      ? ["form"]
+      : [];
     this.dedup = new MessageDedup({ ttlMs: this.config.dedupTtlMs, maxEntries: this.config.dedupMaxEntries });
     this.permissionNotifier = new PermissionNotifier(this.config.tuning.permissionNotifyCooldownMs);
   }
@@ -125,13 +226,104 @@ export class FeishuChannel implements MessageChannelRuntime {
     if (this.isLoggedIn()) return "feishu credentials configured";
     throw new Error("Feishu uses channel.options.appId and channel.options.appSecret; configure them instead of QR login.");
   }
-  logout(): void {
+  /**
+   * Shutdown path, explicitly separate from `logout()`.
+   *
+   * `logout()` is a credential reset and predates elicitation; the registry's
+   * shutdown falls back to it for channels with no `stop()`, which used to mean
+   * a form left open when the daemon stopped had no drain at all: the card stayed
+   * interactive until the HTTP listener died underneath it, and the awaiting turn
+   * only settled if some other path happened to abort its signal.
+   *
+   * The ORDER is the contract: drain every pending form (cards inert, promises
+   * rejected) BEFORE the callback channel and clients go away, so no click can
+   * arrive into a torn-down runtime and no user is left staring at a form that
+   * silently never answers.
+   */
+  async stop(reason: "shutdown" | "disabled" | "removed" | "logout" = "shutdown"): Promise<void> {
+    await this.drainPendingElicitations(reason);
+    this.logout();
+  }
+
+  /**
+   * Withdraw every pending form on every account.
+   *
+   * Rejects rather than resolves: a shutdown is not a user decision, so no
+   * responderId may be invented for it. Each entry is withdrawn by the renderer
+   * that owns it, so the card's terminal state and its promise settle together.
+   */
+  private async drainPendingElicitations(
+    reason: "shutdown" | "disabled" | "removed" | "logout",
+  ): Promise<void> {
+    const drains: Array<Promise<void>> = [];
     for (const [accountId, runtime] of this.accounts) {
-      runtime.client.stop();
-      clearMessageUnavailableForAccount(accountId);
-      clearFeishuQueueForAccount(accountId);
+      if (!runtime.elicitation) continue;
+      const elicitation = runtime.elicitation;
+      for (const entry of [...elicitation.pending.values()]) {
+        // `withdrawPending` settles the AWAITING TURN synchronously and only then
+        // makes a best-effort `card.update`. That update is a network round trip,
+        // and awaiting it here would let one hung CardKit request hold the whole
+        // daemon shutdown open behind a cosmetic change — so it is bounded below.
+        drains.push(
+          elicitation.renderer.withdrawPending(entry, `feishu elicitation channel stopped (${reason})`),
+        );
+      }
+      // Stop the listener only once its forms are inert: a live endpoint after
+      // this would still authenticate and dispatch into a drained renderer.
+      if (runtime.cardHost) {
+        const host = runtime.cardHost;
+        runtime.cardHost = undefined;
+        drains.push(Promise.resolve(host.stop()).catch(() => {}));
+      }
+      void accountId;
     }
-    this.accounts.clear();
+    // BOUND the wait: every turn has already been settled synchronously, so what
+    // is left is cosmetic card work. A refused or hung `card.update` must not be
+    // able to keep the daemon from shutting down. 2s is generous for one HTTP
+    // round trip per form and still bounded.
+    await Promise.race([
+      Promise.all(drains).then(() => undefined, () => undefined),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 2_000);
+        if (typeof timer.unref === "function") timer.unref();
+      }),
+    ]);
+  }
+
+  /**
+   * Stop one account's inbound surfaces and drop it from the registry.
+   *
+   * The card listener goes first, and that order is the contract: a live
+   * endpoint after the client is gone would still authenticate and dispatch
+   * card actions into a torn-down renderer.
+   *
+   * The listener's shutdown promise is returned rather than swallowed so each
+   * caller decides its own policy: `logout()` is synchronous and has nobody
+   * left to tell, so it ignores the promise; the failed-start rollback awaits
+   * it, because there "probably not listening" is not good enough — see
+   * `rollbackFailedStart()`.
+   */
+  private stopAccountInbound(accountId: string, runtime: AccountRuntime): Promise<void> | null {
+    let listenerStopped: Promise<void> | null = null;
+    if (runtime.cardHost) {
+      const host = runtime.cardHost;
+      runtime.cardHost = undefined;
+      listenerStopped = Promise.resolve(host.stop()).catch(() => {});
+    }
+    runtime.client.stop();
+    clearMessageUnavailableForAccount(accountId);
+    clearFeishuQueueForAccount(accountId);
+    this.accounts.delete(accountId);
+    return listenerStopped;
+  }
+
+  logout(): void {
+    // Snapshot the entries: `stopAccountInbound` deletes as it goes, which also
+    // leaves the registry empty here. The listener shutdown is intentionally
+    // left unawaited — logout is synchronous and has nobody left to tell.
+    for (const [accountId, runtime] of [...this.accounts]) {
+      void this.stopAccountInbound(accountId, runtime);
+    }
     // Owner assertions are per-account, per-membership; drop them so a
     // reconfigured restart never trusts a previous login's chat roster. The
     // epoch bump also rejects lookups still in flight from the old lifecycle
@@ -142,6 +334,185 @@ export class FeishuChannel implements MessageChannelRuntime {
     this.chatOwnerLookups.clear();
     this.permissionNotifier.reset();
     this.dedup.dispose();
+  }
+
+  /**
+   * Start the card-callback listener for one account.
+   *
+   * Throws when the listener cannot be created, and the caller lets that fail
+   * the channel start: `elicitationModes` is decided at construction time from
+   * the config, so once an account is configured with `cardActions` the channel
+   * has already told core it can render a form. A bind failure that is swallowed
+   * leaves that advertised capability backed by nothing, and every elicitation
+   * request cancels for a reason the operator was never shown.
+   */
+  private async startCardActions(account: FeishuResolvedAccountConfig): Promise<FeishuCardActionRuntime> {
+    const cardActions = account.cardActions;
+    if (!cardActions) throw new Error(`feishu account "${account.accountId}" has no cardActions to start`);
+    // Card transport built from the account's own client, so a card is always
+    // sent and updated through the credentials of the account that owns it.
+    const transport: FeishuCardTransport = {
+      sendCard: async ({ card, chatId, replyToMessageId }) => {
+        const client = this.cardClientFor(account.accountId);
+        const createResp = await client.cardkit.v1.card.create({
+          data: { type: "card_json", data: JSON.stringify(card) },
+        });
+        const cardId = createResp.data?.card_id;
+        if (!cardId) throw new Error("Feishu card.create returned no card_id");
+        const content = buildCardMessageContent(cardId);
+        let messageId: string | undefined;
+        if (replyToMessageId && !isMessageUnavailable(replyToMessageId, account.accountId)) {
+          try {
+            const replied = await client.im.message.reply({
+              path: { message_id: replyToMessageId },
+              data: { msg_type: "interactive", content },
+            });
+            messageId = replied.data?.message_id;
+          } catch (error) {
+            markIfUnavailableError(replyToMessageId, error, account.accountId);
+          }
+        }
+        if (!messageId) {
+          const created = await client.im.message.create({
+            params: { receive_id_type: "chat_id" },
+            data: { receive_id: chatId, msg_type: "interactive", content },
+          });
+          messageId = created.data?.message_id;
+        }
+        if (!messageId) throw new Error("Feishu interactive message send returned no message_id");
+        return { cardId, messageId };
+      },
+      updateCard: async ({ cardId, sequence, card }) => {
+        const client = this.cardClientFor(account.accountId);
+        await client.cardkit.v1.card.update({
+          path: { card_id: cardId },
+          data: { card: { type: "card_json", data: JSON.stringify(card) }, sequence },
+        });
+      },
+    };
+    const pending = new Map<string, PendingFeishuElicitation>();
+    const renderer = new FeishuElicitationRenderer({
+      transport,
+      pending,
+      log: (event, message, fields) => {
+        void this.logger?.warn(event, message, fields);
+      },
+    });
+    const createHost = this.deps.createCardHost ?? startFeishuCardActionHost;
+    try {
+      const host = await createHost({
+        config: cardActions,
+        onAction: (callback) => this.handleCardAction(account.accountId, callback),
+        log: (event, message, fields) => {
+          void this.logger?.warn(event, message, fields);
+        },
+      });
+      // The renderer is installed only once the listener exists: a card click
+      // that arrives with no listener is never dispatched, and a listener with
+      // no renderer would be the Stage 1 lie.
+      const runtime = this.accounts.get(account.accountId);
+      if (runtime) runtime.elicitation = { renderer, pending, transport };
+      return host;
+    } catch (error) {
+      this.logger?.error("feishu.card_actions_failed", "failed to start feishu card callback channel", {
+        accountId: account.accountId,
+        port: cardActions.port,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Render a form Elicitation for the authenticated initiator and resolve the
+   * exact prompt turn.
+   *
+   * Resolves to only one of the three terminal decisions, each carrying the
+   * platform-asserted responder identity. External causes (timeout, turn
+   * disposal, channel stop) reject instead of resolving, so no responderId is
+   * ever invented for a cancellation the user did not cause.
+   *
+   * The account is chosen from the chatKey: a form is rendered by the account
+   * that owns the conversation, so its card is sent with that account's
+   * credentials and its callback channel.
+   */
+  async requestElicitation(request: ChannelElicitationRequest): Promise<ChannelElicitationDecision> {
+    const route = parseFeishuConversationId(request.chatKey);
+    const accountId = request.accountId ?? route?.accountId ?? this.config.defaultAccount;
+    const runtime = this.accounts.get(accountId);
+    if (!runtime?.elicitation) {
+      throw new Error(`feishu account "${accountId}" cannot render elicitation: no card-callback channel is configured`);
+    }
+    const chatId = route?.chatId ?? request.chatKey;
+    const promise = runtime.elicitation.renderer.requestElicitation(request, chatId);
+
+    // The abort subscription lives here rather than in the renderer because the
+    // renderer is a pure interaction handler, while `request.signal` is a
+    // daemon-owned lifecycle: this is also the hook channel stop drains through.
+    const onAbort = (): void => {
+      const entry = [...runtime.elicitation!.pending.values()].find((candidate) => candidate.requestId === request.requestId);
+      if (entry) void runtime.elicitation!.renderer.withdrawPending(entry, "elicitation request aborted");
+    };
+    if (request.signal.aborted) {
+      onAbort();
+    } else {
+      request.signal.addEventListener("abort", onAbort, { once: true });
+    }
+    try {
+      return await promise;
+    } finally {
+      request.signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  /**
+   * The account's Feishu SDK client, or a thrown error.
+   *
+   * Fails closed rather than returning undefined: a card send/update with no
+   * runtime would otherwise become a runtime `undefined.cardkit` instead of an
+   * explicit, logged failure on the request that asked for it.
+   */
+  private cardClientFor(accountId: string): FeishuMessageClient {
+    const runtime = this.accounts.get(accountId);
+    if (!runtime) throw new Error(`feishu account "${accountId}" is not started`);
+    return runtime.client.sdk;
+  }
+
+  /**
+   * Dispatch a verified card action to the form renderer.
+   *
+   * The renderer owns authorization and the accept path; the channel's job is
+   * to hand it a callback it has already proven came from Feishu, and to keep
+   * the renderer alive across the channel's lifetime.
+   */
+  private async handleCardAction(
+    accountId: string,
+    callback: FeishuCardActionCallback,
+  ): Promise<{ ok: true } | { ok: false; reason: "unauthorized" | "malformed" | "unsupported" | "internal" }> {
+    const runtime = this.accounts.get(accountId);
+    const renderer = runtime?.elicitation?.renderer;
+    if (!renderer) return { ok: false, reason: "unsupported" };
+    // The operator is logged truncated, and no answer value is logged at all:
+    // `formValues` may contain exactly the data the elicitation asked for.
+    await this.logger?.info("feishu.card.action", "received feishu card action", {
+      operatorPrefix: callback.openId.slice(0, 8),
+    });
+    try {
+      const outcome = await renderer.handleAction({
+        openId: callback.openId,
+        value: callback.value,
+        formValues: callback.formValues,
+      });
+      // An unhandled callback is not an error the caller can act on: it belongs
+      // to some other feature, or is a late duplicate. Feishu only needs a 200.
+      if (!outcome.handled) return { ok: true };
+      return { ok: true };
+    } catch (error) {
+      await this.logger?.error("feishu.elicitation.dispatch_failed", "failed to dispatch elicitation action", {
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return { ok: false, reason: "internal" };
+    }
   }
 
   configureOrchestration(callbacks: OrchestrationDeliveryCallbacks): void {
@@ -166,30 +537,205 @@ export class FeishuChannel implements MessageChannelRuntime {
       accounts: eligible.map((account) => account.accountId),
     });
 
-    const startups = eligible.map(async (account) => {
-      const client = this.deps.createClient?.(account) ?? createFeishuLarkClient({
-        appId: account.appId,
-        appSecret: account.appSecret,
-        domain: account.domain,
-      });
-      const probe = await client.probeBot().catch((error) => {
-        void input.logger.error("feishu.probe_failed", "failed to probe feishu bot identity", {
-          accountId: account.accountId,
-          message: error instanceof Error ? error.message : String(error),
-        });
-        return {} as { botOpenId?: string; botName?: string };
-      });
-      const runtime: AccountRuntime = { account, client, ...(probe.botOpenId ? { botOpenId: probe.botOpenId } : {}) };
-      this.accounts.set(account.accountId, runtime);
-      await client.startWS({
-        handlers: {
-          "im.message.receive_v1": (data) => this.handleMessageEvent(account.accountId, data),
-        },
-        abortSignal: input.abortSignal,
-      });
-    });
+    // Runtimes THIS call installs, against a snapshot of what was already
+    // installed. Rolled back if any account fails, and deliberately NOT just
+    // `new Set(this.accounts.keys())`: a previous successful start (the same
+    // channel instance re-started after a failed one, or after a hot-reload)
+    // left live receivers in that map, and tearing those down on a later
+    // failure would take a working channel down with the broken one.
+    const priorAccounts = new Map(this.accounts);
+    const installedByThisStart = new Set<string>();
 
-    await Promise.all(startups);
+    // ATTEMPT-SCOPED LIFECYCLE.
+    //
+    // The daemon signal is forwarded into a controller this start() owns, so a
+    // failure here can cancel the siblings WITHOUT touching the daemon's signal:
+    // aborting the caller's signal would tear down every other channel too.
+    //
+    // A healthy account's `startWS()` does NOT settle — `createFeishuLarkClient`
+    // awaits until its signal aborts, so the promise spans the whole process
+    // lifetime. That is why neither `Promise.all` nor `Promise.allSettled` over
+    // the raw startups can work:
+    //
+    //   Promise.all      -> rejects the instant beta fails, while alpha is
+    //                       still mid-install; rolling back then races alpha's
+    //                       suspended startWS/startCardActions, which resume
+    //                       AFTER the rollback and install a receiver on a
+    //                       runtime object we already dropped.
+    //   Promise.allSettled-> waits for alpha, which never settles, so beta's
+    //                       error never surfaces and start() never rejects.
+    //
+    // The correct sequence is fail-fast -> cancel siblings -> drain -> rollback,
+    // which is what follows.
+    const attempt = new AbortController();
+    const forwardDaemonAbort = (): void => attempt.abort(input.abortSignal.reason);
+    if (input.abortSignal.aborted) {
+      attempt.abort(input.abortSignal.reason);
+    } else {
+      input.abortSignal.addEventListener("abort", forwardDaemonAbort, { once: true });
+    }
+    // Monotonic per attempt, captured by every startup task. A task that resumes
+    // after the attempt moved on (a `probeBot` or a bind that ignored the abort
+    // and resolved late) must install NOTHING. This is the fence: it turns "a
+    // late response might re-install a runtime" into a check instead of a race.
+    //
+    // Bumped ONCE, when the attempt is cancelled — never per task. Bumping per
+    // task would make every concurrent sibling stale the moment a later sibling
+    // resumed, which fences out healthy accounts for no reason.
+    let attemptGeneration = 0;
+
+    try {
+      const startups = eligible.map(async (account) => {
+        // The attempt's generation, captured ONCE when this task is created and
+        // re-checked after every await. A task superseded while its probe or
+        // bind was in flight finds a newer generation and installs nothing, so a
+        // late response cannot resurrect a runtime the rollback is dropping.
+        const generation = attemptGeneration;
+        const client = this.deps.createClient?.(account) ?? createFeishuLarkClient({
+          appId: account.appId,
+          appSecret: account.appSecret,
+          domain: account.domain,
+        });
+        const probe = await client.probeBot().catch((error) => {
+          void input.logger.error("feishu.probe_failed", "failed to probe feishu bot identity", {
+            accountId: account.accountId,
+            message: error instanceof Error ? error.message : String(error),
+          });
+          return {} as { botOpenId?: string; botName?: string };
+        });
+        if (attemptGeneration !== generation || attempt.signal.aborted) return;
+        const runtime: AccountRuntime = { account, client, ...(probe.botOpenId ? { botOpenId: probe.botOpenId } : {}) };
+        this.accounts.set(account.accountId, runtime);
+        installedByThisStart.add(account.accountId);
+        // Card-callback listener, only when the account opted in. Without
+        // `cardActions` the account simply never receives card interactions.
+        if (account.cardActions) {
+          // A failed bind throws, and that propagates out of this startup to
+          // fail the whole channel start. Swallowing it here is what produced a
+          // lie: `elicitationModes` is decided at CONSTRUCTION time from the
+          // config, so core had already been told "form", and every request
+          // would then cancel at "no card-callback channel" with the operator
+          // never told why.
+          runtime.cardHost = await this.startCardActions(account);
+          await input.logger.info("feishu.card_actions", "feishu card callback channel listening", {
+            accountId: account.accountId,
+            port: runtime.cardHost.port(),
+            path: account.cardActions.path,
+          });
+        }
+        // Re-fence after the listener bind: a bind that ignored the abort and
+        // resolved late would otherwise proceed to open a receiver for a runtime
+        // the rollback is already tearing down.
+        if (attemptGeneration !== generation || attempt.signal.aborted) return;
+        await client.startWS({
+          handlers: {
+            "im.message.receive_v1": (data) => this.handleMessageEvent(account.accountId, data),
+          },
+          // The ATTEMPT signal, not the daemon's: cancelling a failed start must
+          // not close a sibling's receiver that a successful start still owns.
+          abortSignal: attempt.signal,
+        });
+      });
+
+      // Fail-fast on the first rejection, then stop the siblings and drain.
+      let firstError: unknown;
+      let firstFailure = false;
+      // Each startup reports its own outcome. `Promise.race` yields the first
+      // SETTLED one, which is not necessarily the first FAILED one, so a
+      // successful outcome is dropped from the race rather than re-raced (it
+      // would resolve again immediately and spin the loop). Only a failure
+      // breaks out, because that is the point at which the remaining siblings
+      // must be CANCELLED instead of waited for — a healthy one never settles
+      // on its own, so waiting is not an option.
+      const unsettled = new Set(startups.map((promise, index) => ({ promise, index })));
+      while (unsettled.size > 0) {
+        const settled = await Promise.race(
+          [...unsettled].map(({ promise, index }) =>
+            promise.then(
+              (): { index: number; failed: false } => ({ index, failed: false }),
+              (error: unknown): { index: number; failed: true; error: unknown } => ({ index, failed: true, error }),
+            ),
+          ),
+        );
+        // Drop this entry whichever way it went: the race re-resolves an
+        // already-settled promise immediately, so leaving it in would spin.
+        for (const entry of [...unsettled]) {
+          if (entry.index === settled.index) unsettled.delete(entry);
+        }
+        if (!settled.failed) continue;
+        firstFailure = true;
+        firstError = settled.error;
+        break;
+      }
+      if (firstFailure) {
+        // Cancel everything this attempt started. A healthy sibling parked in
+        // `startWS()` resolves on this, so the drain below terminates. The
+        // generation bump also invalidates any task that is still between its
+        // awaits, so it cannot install a runtime after the rollback.
+        attemptGeneration += 1;
+        attempt.abort(firstError);
+      }
+      // DRAIN: nothing may still be in flight when the rollback runs, or a late
+      // install can land on a runtime we are about to drop. Every startup is
+      // settled here — cancelled ones resolve, failures are already recorded —
+      // so the rollback sees a quiescent channel.
+      await Promise.allSettled([...unsettled].map((entry) => entry.promise));
+      if (firstFailure) throw firstError;
+    } catch (error) {
+      await this.rollbackFailedStart(installedByThisStart, priorAccounts);
+      throw error;
+    } finally {
+      input.abortSignal.removeEventListener("abort", forwardDaemonAbort);
+    }
+  }
+
+  /**
+   * Undo the installations of a failed `start()` call, then let the caller
+   * rethrow.
+   *
+   * WHY THIS EXISTS: a channel-level startup failure used to leave the
+   * accounts that had already come up installed. The registry marked feishu
+   * failed and dropped it from the advertised form capability, while its live
+   * WebSocket receiver and card listener kept delivering events into a channel
+   * nobody was watching — a logically failed channel still processing messages.
+   *
+   * Each teardown is best-effort and awaited: a throw from one teardown must
+   * not skip the rest, so the rollback is sequential and individually guarded.
+   * When `start()` rejects, no feishu inbound receiver survives it.
+   *
+   * @param installed - Account ids installed by the failed call. Ids missing
+   *   from `this.accounts` are skipped, so rollback can never delete a runtime
+   *   from an earlier, still-valid start.
+   * @param priorAccounts - The registry snapshot taken before the failed call.
+   *   An account it already held keeps its previous runtime restored after the
+   *   failed call's replacement is torn down.
+   */
+  private async rollbackFailedStart(
+    installed: ReadonlySet<string>,
+    priorAccounts: ReadonlyMap<string, AccountRuntime>,
+  ): Promise<void> {
+    for (const accountId of [...installed]) {
+      const runtime = this.accounts.get(accountId);
+      if (!runtime) continue;
+      try {
+        // `stopAccountInbound` is synchronous up to the listener shutdown
+        // promise, so the runtime leaves the map before any await settles.
+        await this.stopAccountInbound(accountId, runtime);
+      } catch {
+        // Best-effort by design: the WS client is already stopped and the
+        // entry already deleted at this point, so there is nothing left to
+        // defend and the original start error is preserved as the cause.
+      }
+      // A successful earlier start (same instance, rolled back hot-reload) had
+      // installed this account; rollback must not turn its failure into an
+      // outage for the survivor. The old runtime was never touched — only its
+      // slot in the map was overwritten — so restoring it keeps that channel
+      // exactly as live as it was.
+      const previous = priorAccounts.get(accountId);
+      if (previous && !this.accounts.has(accountId)) {
+        this.accounts.set(accountId, previous);
+      }
+    }
   }
 
   async notifyTaskCompletion(task: OrchestrationTaskRecord): Promise<void> {

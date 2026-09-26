@@ -299,3 +299,107 @@ test("parseFeishuChannelConfig accepts trustGroupOwner and per-account override"
 test("parseFeishuChannelConfig rejects non-boolean trustGroupOwner", () => {
   expect(() => parseFeishuChannelConfig({ appId: "x", appSecret: "y", trustGroupOwner: "yes" })).toThrow("trustGroupOwner must be a boolean");
 });
+
+test("parseFeishuChannelConfig rejects a card endpoint missing either secret", () => {
+  // Token-only used to parse here, and it is exactly the broken state: the host
+  // signs every new-protocol callback with the encrypt key, so a config
+  // carrying only the verification token would start cleanly and then 401
+  // every real click. The parse must refuse that config instead of shipping it.
+  expect(() => parseFeishuChannelConfig({
+    appId: "x",
+    appSecret: "y",
+    accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871, verificationToken: "t" } } },
+  })).toThrow(/encryptKey is required/);
+
+  // Blank/whitespace-only keys are the same failure with extra steps.
+  expect(() => parseFeishuChannelConfig({
+    appId: "x",
+    appSecret: "y",
+    accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871, encryptKey: "  " } } },
+  })).toThrow(/encryptKey is required/);
+
+  // The mirror image, and the one the previous fix left open: encryptKey-only
+  // serves every click but cannot complete the URL-verification challenge,
+  // which Feishu delivers with no `schema` and no `encrypt` — the legacy branch,
+  // verified against the token. The challenge is read AFTER the signature
+  // check, so a missing token rejects that handshake before the challenge is
+  // ever echoed, and the endpoint can never finish being configured.
+  expect(() => parseFeishuChannelConfig({
+    appId: "x",
+    appSecret: "y",
+    accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871, encryptKey: "k" } } },
+  })).toThrow(/verificationToken is required: the URL-verification challenge/);
+
+  // Neither secret is the original refusal.
+  expect(() => parseFeishuChannelConfig({
+    appId: "x",
+    appSecret: "y",
+    accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871 } } },
+  })).toThrow(/encryptKey is required/);
+});
+
+test("parseFeishuChannelConfig accepts a card endpoint carrying both secrets", () => {
+  // Both handshakes the endpoint has to complete are covered: new-protocol card
+  // actions (encryptKey + SHA-256) and the URL-verification challenge
+  // (verificationToken + SHA-1).
+  const parsed = parseFeishuChannelConfig({
+    appId: "x",
+    appSecret: "y",
+    accounts: { default: { appId: "x", appSecret: "y", cardActions: { port: 9871, encryptKey: "k", verificationToken: "t" } } },
+  });
+  expect(parsed.accounts[0]!.cardActions).toEqual({
+    encryptKey: "k",
+    verificationToken: "t",
+    host: "127.0.0.1",
+    port: 9871,
+    path: "/webhook/card",
+  });
+});
+
+const cardActionSecrets = {
+  encryptKey: "a".repeat(32),
+  verificationToken: "token",
+  port: 18081,
+};
+
+/** The minimal Feishu options block, with `cardActions` on the account. */
+function feishuOptions(cardActions: unknown): unknown {
+  return {
+    appId: "cli_test",
+    appSecret: "secret_test",
+    accounts: { default: { cardActions: cardActions as object } },
+  };
+}
+
+test("parseCardActions rejects a relative path the host can never match", () => {
+  // The HTTP host compares the request target against this path with STRICT
+  // EQUALITY, so a relative path can never match: a request line carries
+  // `/webhook/card`, which is a different string. Left unvalidated the listener
+  // starts, the channel advertises form capability, and every callback 404s — the
+  // shape this parser's own design note says must be a hard startup error.
+  expect(() => parseFeishuChannelConfig(
+    feishuOptions({ ...cardActionSecrets, path: "webhook/card" }),
+  )).toThrow(/absolute path/);
+});
+
+test("parseCardActions accepts an absolute custom path", () => {
+  // Control case: the same configuration with a leading slash is a route the host
+  // can actually match, so it must not be refused.
+  const config = parseFeishuChannelConfig(
+    feishuOptions({ ...cardActionSecrets, path: "/custom/card" }),
+  );
+  expect(JSON.stringify(config)).toContain("/custom/card");
+});
+
+test("cardActions is parsed per account, so the path check runs on each", () => {
+  // A misconfigured path in any account must fail the whole parse rather than
+  // binding a listener that cannot ever serve its own callbacks.
+  expect(() => parseFeishuChannelConfig({
+    appId: "cli_test",
+    appSecret: "secret_test",
+    accounts: {
+      good: { cardActions: { ...cardActionSecrets, path: "/ok" } },
+      broken: { cardActions: { ...cardActionSecrets, path: "relative" } },
+    },
+  })).toThrow(/absolute path/);
+});

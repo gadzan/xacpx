@@ -1078,6 +1078,15 @@ async function promptWithSession(
         ...(permissionRoute.senderId !== undefined ? { senderId: permissionRoute.senderId } : {}),
         ...(permissionRoute.senderName !== undefined ? { senderName: permissionRoute.senderName } : {}),
         ...(permissionRoute.isOwner !== undefined ? { isOwner: permissionRoute.isOwner } : {}),
+        // The channel's OWN report of this turn's route privacy, taken straight
+        // from `ChatRequestMetadata`. Renderers need it to decide whether a form
+        // may be shown at all — a form puts the agent's question and the user's
+        // answers into the chat, and a group destination shows both to everyone.
+        //
+        // Absent stays absent on purpose: a channel that does not report it has
+        // not established a private destination, and treating that as "direct"
+        // would be exactly the fail-open this contract forbids.
+        ...(metadata?.chatType !== undefined ? { chatType: metadata.chatType } : {}),
       };
       let disposePermission: (() => void) | undefined;
       let disposeElicitation: (() => void) | undefined;

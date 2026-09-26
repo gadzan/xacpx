@@ -1,0 +1,3467 @@
+import { beforeAll, expect, test } from "bun:test";
+
+import { DiscordChannel } from "../../../../packages/channel-discord/src/channel";
+import type { DiscordClientLike } from "../../../../packages/channel-discord/src/discord-client";
+import type {
+  DiscordButtonInteraction,
+  DiscordModalSubmitInteraction,
+  DiscordSelectActionRow,
+  DiscordSelectInteraction,
+  OutboundBody,
+  ShowModalInput,
+} from "../../../../packages/channel-discord/src/types";
+import { setChannelLocale } from "../../../../packages/channel-discord/src/i18n";
+import {
+buildElicitationFieldCard,
+buildElicitationModal,
+buildElicitationOpening,
+elicitationCustomId,
+parseElicitationCustomId,
+ELICITATION_CUSTOM_ID_PREFIX,
+} from "../../../../packages/channel-discord/src/elicitation-ui";
+import { buildElicitationFieldLines } from "../../../../packages/channel-discord/src/elicitation-limits";
+import { checkElicitationRenderability, FIELD_CARD_ANSWER_ECHO_MAX } from "../../../../packages/channel-discord/src/elicitation-limits";
+import type { ChannelElicitationField, ChannelElicitationRequest } from "xacpx/plugin-api";
+import type { ChannelStartInput } from "xacpx/plugin-api";
+
+/**
+ * Discord form renderer coverage: every field kind reaches the platform
+ * control that can actually express it, and each answer path produces a value
+ * core can validate.
+ *
+ * These drive the REAL channel handlers (select/modal interaction routing,
+ * answer recording, submit gating) with only Discord's transport faked.
+ */
+beforeAll(() => {
+  setChannelLocale("en");
+});
+
+function makeLogger() {
+  return { info: async () => {}, warn: async () => {}, error: async () => {}, debug: async () => {} };
+}
+
+interface FakeDiscordClient extends DiscordClientLike {
+  emitButton: (interaction: DiscordButtonInteraction) => void;
+  emitSelect: (interaction: DiscordSelectInteraction) => void;
+  emitModal: (interaction: DiscordModalSubmitInteraction) => void;
+  sent: Array<{ channelId: string; body: OutboundBody }>;
+  edited: Array<{ channelId: string; messageId: string; body: OutboundBody }>;
+  deleted: string[];
+  ephemerals: string[];
+  modals: ShowModalInput[];
+}
+
+function makeFakeClient(): FakeDiscordClient {
+  let onButton: ((i: DiscordButtonInteraction) => void) | null = null;
+  let onSelect: ((i: DiscordSelectInteraction) => void) | null = null;
+  let onModal: ((i: DiscordModalSubmitInteraction) => void) | null = null;
+  const sent: Array<{ channelId: string; body: OutboundBody }> = [];
+  const edited: Array<{ channelId: string; messageId: string; body: OutboundBody }> = [];
+  const deleted: string[] = [];
+  const ephemerals: string[] = [];
+  const modals: ShowModalInput[] = [];
+  const client: FakeDiscordClient = {
+    start: async (input) => {
+      onButton = input.handlers.onButton ?? null;
+      onSelect = input.handlers.onSelect ?? null;
+      onModal = input.handlers.onModalSubmit ?? null;
+      return { botUserId: "bot1", botTag: "Bot#0001" };
+    },
+    probeBot: async () => ({ botUserId: "bot1", botTag: "Bot#0001" }),
+    sendMessage: async (target, body) => {
+      sent.push({ channelId: target.channelId, body });
+      return { messageId: `m${sent.length}` };
+    },
+    editMessage: async (target, messageId, body) => {
+      edited.push({ channelId: target.channelId, messageId, body });
+    },
+    deleteMessage: async (_target, messageId) => {
+      deleted.push(messageId);
+    },
+    startTyping: async () => () => {},
+    addReaction: async () => {},
+    destroy: async () => {},
+    emitButton: (interaction) => onButton?.(interaction),
+    emitSelect: (interaction) => onSelect?.(interaction),
+    emitModal: (interaction) => onModal?.(interaction),
+    sent,
+    edited,
+    deleted,
+    ephemerals,
+    modals,
+  };
+  return client;
+}
+
+function click(client: FakeDiscordClient, customId: string, userId = "user-A"): DiscordButtonInteraction {
+  return {
+    customId,
+    userId,
+    channelId: "c1",
+    acknowledge: async () => {},
+    replyEphemeral: async (t: string) => client.ephemerals.push(t),
+    showModal: async (m: ShowModalInput) => client.modals.push(m),
+  };
+}
+
+function select(client: FakeDiscordClient, customId: string, values: string[], userId = "user-A"): DiscordSelectInteraction {
+  return {
+    customId,
+    userId,
+    channelId: "c1",
+    values,
+    acknowledge: async () => {},
+    replyEphemeral: async (t: string) => client.ephemerals.push(t),
+  };
+}
+
+/**
+ * A modal submit.
+ *
+ * The payload keys are POSITIONAL component ids (`f:<index>`), matching what the
+ * channel builds: core allows a 128-character schema key and Discord caps
+ * component ids at 100, so carrying the key would make some legal forms'
+ * modals unopenable. `fieldIndex` names the single Text Input the modal holds.
+ */
+function modal(
+  client: FakeDiscordClient,
+  customId: string,
+  fields: Record<string, string>,
+  userId = "user-A",
+  fieldIndex = 0,
+): DiscordModalSubmitInteraction {
+  const positional: Record<string, string> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    // A caller passing an already-positional key is honoured verbatim.
+    positional[key.startsWith("f:") ? key : `f:${fieldIndex}`] = value;
+  }
+  return {
+    customId,
+    userId,
+    channelId: "c1",
+    fields: positional,
+    acknowledge: async () => {},
+    replyEphemeral: async (t: string) => client.ephemerals.push(t),
+  };
+}
+
+/**
+ * Find a control's custom id by action and optional field PAGE/INDEX.
+ *
+ * `fieldIndex` is a number, matching the codec: routing is positional, never by
+ * schema key.
+ *
+ * The id now ends with an optional `:<revision>` segment, so the match is on the
+ * SEGMENTS rather than a plain suffix — `:review` also appears as the prefix of
+ * `:review:2`, and `endsWith` would then hand back the wrong control.
+ */
+function idFor(client: FakeDiscordClient, action: string, fieldIndex?: number): string {
+  const wanted = fieldIndex !== undefined ? [action, String(fieldIndex)] : [action];
+  const rows = client.edited.length > 0
+    ? (client.edited[client.edited.length - 1]!.body.components ?? [])
+    : (client.sent[client.sent.length - 1]?.body.components ?? []);
+  const ids = rows.flatMap((r) => r.components.map((c) => c.customId));
+  const found = ids.find((id) => {
+    const segments = id.slice(ELICITATION_CUSTOM_ID_PREFIX.length).split(":");
+    // `<token>:<action>[:<fieldIndex>][:<revision>]` — the token is the 32-char
+    // slug, so the segments that follow it are the ones matched.
+    const rest = segments.slice(1);
+    return rest[0] === wanted[0]
+      && (wanted.length === 1 || rest[1] === wanted[1])
+      // Either no revision at all, or exactly one numeric one.
+      && rest.slice(wanted.length).every((s) => /^\d+$/.test(s));
+  });
+  if (!found) throw new Error(`no control "${wanted.join(":")}" in ${ids.join(",")}`);
+  return found;
+}
+
+function selectCustomIdOf(client: FakeDiscordClient, fieldKey: string): string {
+  const rows: DiscordSelectActionRow[] = client.edited.length > 0
+    ? (client.edited[client.edited.length - 1]!.body.selectRows ?? [])
+    : (client.sent[client.sent.length - 1]?.body.selectRows ?? []);
+  const selectRow = rows[0];
+  if (!selectRow) throw new Error("no select row rendered on the current card");
+  return selectRow.components[0]!.customId;
+}
+
+async function startChannel(client: FakeDiscordClient): Promise<{ channel: DiscordChannel; abort: AbortController }> {
+  const abort = new AbortController();
+  const channel = new DiscordChannel(
+    { token: "x", dmPolicy: "open", guildPolicy: "open", requireMention: false, enableAutocomplete: false },
+    { logger: makeLogger() as never, createClient: () => client, identifyStaggerMs: 0 },
+  );
+  const startPromise = channel.start({
+    logger: makeLogger(),
+    abortSignal: abort.signal,
+    agent: { chat: async () => ({ text: "ok" }) },
+    activeTurns: null,
+    sessions: null,
+    quota: { onInbound: () => {} },
+    locale: "en",
+  } as unknown as ChannelStartInput);
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    try {
+      await channel.sendCoordinatorMessage({ chatKey: "discord:default:g:__probe__", text: "" });
+      break;
+    } catch (error) {
+      if (!(error instanceof Error && error.message.includes("not started"))) throw error;
+    }
+    if (Date.now() > deadline) throw new Error("channel did not start in time");
+    await new Promise((r) => setTimeout(r, 2));
+  }
+  void startPromise.catch(() => {});
+  return { channel, abort };
+}
+
+function request(fields: ChannelElicitationRequest["fields"]): {
+  request: ChannelElicitationRequest;
+  abort: AbortController;
+} {
+  const abort = new AbortController();
+  return {
+    abort,
+    request: {
+      requestId: "rr-1",
+      chatKey: "discord:default:g:c1",
+      // A provably private route, so a form may be rendered at all. Tests that
+      // care about route privacy set this explicitly.
+      chatType: "direct",
+      requester: { senderId: "user-A", senderName: "Ada", isOwner: true },
+      agent: { name: "codex" },
+      message: "Fill this in",
+      mode: "form",
+      fields,
+      expiresAt: Date.now() + 60_000,
+      signal: abort.signal,
+    },
+  };
+}
+
+async function startWizard(
+  client: FakeDiscordClient,
+  channel: DiscordChannel,
+  req: ChannelElicitationRequest,
+  fieldKey: string,
+): Promise<{ settled: Promise<ChannelElicitationDecision | Error> }> {
+  const pending = channel.requestElicitation(req);
+  // Observe the rejection so an un-settled wizard at teardown is not an
+  // unhandled error, and expose it so a test can assert the decision.
+  const settled = pending.then(
+    (decision) => decision,
+    (error: Error) => error,
+  );
+  const deadline = Date.now() + 5_000;
+  while (client.sent.length === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 3));
+  client.emitButton(click(client, idFor(client, "start")));
+  await new Promise((r) => setTimeout(r, 5));
+  // If the form has more than one field, navigate to the field under test.
+  if (req.fields[0]?.key !== fieldKey) {
+    const index = req.fields.findIndex((f) => f.key === fieldKey);
+    for (let i = 0; i < index; i += 1) {
+      // Routed by POSITION, matching the codec.
+      client.emitButton(click(client, idFor(client, "edit", i)));
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  }
+  return { settled };
+}
+
+/**
+ * Drive a full wizard: answer every field through its natural control, then
+ * review and submit. Returns the decision (or the teardown error).
+ *
+ * Field order comes from the request, so a field is only ever reached from a
+ * control that names its position — which is what the review-card paging exists
+ * to guarantee for forms wider than one action row.
+ */
+async function driveToSubmit(
+  client: FakeDiscordClient,
+  channel: DiscordChannel,
+  req: ChannelElicitationRequest,
+  answers: Record<string, string>,
+): Promise<ChannelElicitationDecision | Error> {
+  const settled = channel.requestElicitation(req).then(
+    (decision) => decision,
+    (error: Error) => error,
+  );
+  const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
+  const deadline = Date.now() + 5_000;
+  while (client.sent.length === 0 && Date.now() < deadline) await wait();
+  client.emitButton(click(client, idFor(client, "start")));
+  await wait();
+
+  if (req.fields.length === 0) {
+    // Zero-field form: Start goes straight to review, so Submit is next.
+    client.emitButton(click(client, idFor(client, "submit")));
+    return settled;
+  }
+
+  for (let index = 0; index < req.fields.length; index += 1) {
+    const field = req.fields[index]!;
+    const answer = answers[field.key];
+    // The card in front of us is field `index`'s: the opening click landed on 0
+    // and each iteration advanced with the previous field's forward control.
+    if (answer !== undefined) {
+      if (field.kind === "single-select" || field.kind === "multi-select" || field.kind === "boolean") {
+        client.emitSelect(select(client, selectCustomIdOf(client, field.key), [answer]));
+      } else {
+        // Answer opens the modal for THIS field.
+        client.emitButton(click(client, idFor(client, "field", index)));
+        await wait();
+        const modalId = client.modals[client.modals.length - 1]!.customId;
+        client.emitModal(modal(client, modalId, { [field.key]: answer }, "user-A", index));
+      }
+      await wait();
+    }
+    // Advance to the next field using this card's forward control. The last
+    // field has none — its Next goes to review.
+    if (index < req.fields.length - 1) {
+      client.emitButton(click(client, idFor(client, "next", index + 1)));
+      await wait();
+    }
+  }
+  // To review, then submit.
+  client.emitButton(click(client, idFor(client, "review")));
+  await wait();
+  client.emitButton(click(client, idFor(client, "submit")));
+  return settled;
+}
+
+test("a single-select field renders a String Select with its options and selects the value", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      {
+        kind: "single-select",
+        key: "env",
+        title: "Environment",
+        required: true,
+        options: [
+          { value: "prod", label: "Production" },
+          { value: "staging", label: "Staging" },
+        ],
+      },
+    ]);
+    const { settled } = await startWizard(client, channel, req, "env");
+    const rows = client.edited[client.edited.length - 1]!.body.selectRows ?? [];
+    expect(rows).toHaveLength(1);
+    const [component] = rows[0]!.components;
+    expect(component!.type).toBe(3);
+    // Options are the question: both are present, neither truncated away.
+    expect(component!.options.map((o) => o.value)).toEqual(["prod", "staging"]);
+    expect(component!.options.map((o) => o.label)).toEqual(["Production", "Staging"]);
+
+    // The user picks the option VALUE, and that is what the core receives.
+    client.emitSelect(select(client, component!.customId, ["staging"]));
+    await new Promise((r) => setTimeout(r, 5));
+
+    // Review, then Submit: the only path to accept.
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 5));
+    // The pending entry is gone once the decision commits, so no stale select
+    // can still write into it.
+    const store = (channel as unknown as { pendingElicitations: Map<string, unknown> }).pendingElicitations;
+    expect([...store.values()][0]).toBeUndefined();
+    // The decision carries the answer core will validate.
+    expect(await settled).toEqual({ action: "accept", responderId: "user-A", content: { env: "staging" } });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a multi-select renders min/max selection bounds and collects an array", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      {
+        kind: "multi-select",
+        key: "tags",
+        title: "Tags",
+        required: true,
+        minItems: 1,
+        maxItems: 2,
+        options: [
+          { value: "a", label: "Alpha" },
+          { value: "b", label: "Beta" },
+          { value: "g", label: "Gamma" },
+        ],
+      },
+    ]);
+    await startWizard(client, channel, req, "tags");
+    const rows = client.edited[client.edited.length - 1]!.body.selectRows ?? [];
+    const [component] = rows[0]!.components;
+    expect(component!.minValues).toBe(1);
+    expect(component!.maxValues).toBe(2);
+    client.emitSelect(select(client, component!.customId, ["a", "b"]));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    // A multi-select answer is an array, not a joined string.
+    expect(entry.values.tags).toEqual(["a", "b"]);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a boolean renders Yes/No as select options and produces a boolean", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "boolean", key: "confirm", title: "Confirm?", required: true },
+    ]);
+    await startWizard(client, channel, req, "confirm");
+    const rows = client.edited[client.edited.length - 1]!.body.selectRows ?? [];
+    const [component] = rows[0]!.components;
+    expect(component!.options.map((o) => o.value)).toEqual(["true", "false"]);
+    client.emitSelect(select(client, component!.customId, ["true"]));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    // A real boolean, not the string "true".
+    expect(entry.values.confirm).toBe(true);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a text field opens a modal whose input ids are positional, not keys or answers", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
+    ]);
+    await startWizard(client, channel, req, "note");
+    const answerId = idFor(client, "field", 0);
+    client.emitButton(click(client, answerId));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(client.modals).toHaveLength(1);
+    const m = client.modals[0]!;
+    // The modal id is the token namespace; the field identity is the input id.
+    expect(m.customId.startsWith("xacpx-elicit:")).toBe(true);
+    // Positional, NOT the schema key: core allows a 128-char key and Discord
+    // caps component ids at 100, so a legal long key made this modal unopenable.
+    expect(m.components[0]!.component.customId).toBe("f:0");
+    // The platform's own upper bound, since the plugin contract carries no
+    // core-side string bound to forward (core validates the answer itself).
+    expect(m.components[0]!.component.maxLength).toBe(4000);
+
+    // Submitting the modal records the typed answer.
+    client.emitModal(modal(client, m.customId, { note: "ship it" }));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.values.note).toBe("ship it");
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a long schema key still opens a modal, because the id is positional", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    // Core allows a bounded 128-char JSON property name. Discord caps component
+    // custom ids at 100, so a key-derived id made this legal form unrenderable.
+    const longKey = `k${"x".repeat(120)}`;
+    const { request: req } = request([
+      { kind: "text", key: longKey, title: "Note", required: true, maxLength: 4000 },
+    ]);
+    await startWizard(client, channel, req, longKey);
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(client.modals).toHaveLength(1);
+    expect(client.modals[0]!.components[0]!.component.customId).toBe("f:0");
+    client.emitModal(modal(client, client.modals[0]!.customId, { [longKey]: "answer" }));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.values[longKey]).toBe("answer");
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a non-numeric answer for a number field leaves it unanswered instead of storing NaN", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "number", key: "hours", title: "Hours", required: true },
+    ]);
+    await startWizard(client, channel, req, "hours");
+    const answerId = idFor(client, "field", 0);
+    client.emitButton(click(client, answerId));
+    await new Promise((r) => setTimeout(r, 5));
+    const m = client.modals[0]!;
+    client.emitModal(modal(client, m.customId, { hours: "not a number" }));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    // No answer stored, so the submit gate still blocks: it is better to prompt
+    // again than to send NaN (which serializes as null and looks like a value).
+    expect(entry.values.hours).toBeUndefined();
+    // A valid number is stored as a NUMBER.
+    client.emitModal(modal(client, m.customId, { hours: "3" }));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(entry.values.hours).toBe(3);
+    // An integer field rejects a fraction rather than rounding it.
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("an integer field rejects a fractional answer instead of rounding it", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "number", key: "retries", title: "Retries", required: true, integer: true },
+    ]);
+    await startWizard(client, channel, req, "retries");
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    const m = client.modals[0]!;
+    client.emitModal(modal(client, m.customId, { retries: "2.5" }));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.values.retries).toBeUndefined();
+    client.emitModal(modal(client, m.customId, { retries: "4" }));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(entry.values.retries).toBe(4);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a field's own numeric bounds are enforced before submit", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "number", key: "hours", title: "Hours", required: true, minimum: 1, maximum: 8 },
+    ]);
+    await startWizard(client, channel, req, "hours");
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    const m = client.modals[0]!;
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    client.emitModal(modal(client, m.customId, { hours: "0" }));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(entry.values.hours).toBeUndefined();
+    client.emitModal(modal(client, m.customId, { hours: "9" }));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(entry.values.hours).toBeUndefined();
+    client.emitModal(modal(client, m.customId, { hours: "4" }));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(entry.values.hours).toBe(4);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("date/email/uri fields arrive as text and pass through for core to validate", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    // The plugin contract has exactly five kinds. ACP date/email/uri fields
+    // reach the renderer as `text` with the format constraint on the ACP schema,
+    // which core validates — so the renderer must NOT reject a value it does
+    // not recognize the shape of.
+    const { request: req } = request([
+      { kind: "text", key: "mail", title: "Email", required: true, maxLength: 4000 },
+    ]);
+    await startWizard(client, channel, req, "mail");
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    const m = client.modals[0]!;
+    // The renderer does not pre-validate the format: core is authoritative, so
+    // a deliberately malformed value is recorded as-is and core rejects it.
+    client.emitModal(modal(client, m.customId, { mail: "not-an-email" }));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.values.mail).toBe("not-an-email");
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("an intruder's select or modal cannot write an answer", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      {
+        kind: "single-select",
+        key: "env",
+        title: "Environment",
+        required: true,
+        options: [{ value: "prod", label: "Production" }],
+      },
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
+    ]);
+    await startWizard(client, channel, req, "env");
+    const rows = client.edited[client.edited.length - 1]!.body.selectRows ?? [];
+    const envSelectId = rows[0]!.components[0]!.customId;
+
+    client.emitSelect(select(client, envSelectId, ["prod"], "user-INTRUDER"));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.values.env).toBeUndefined();
+    expect(client.ephemerals[0]).toContain("Only the user who started");
+
+    // Same refusal on the modal path: the review page has a per-field Edit for
+    // the text field, so navigate there, then open its modal with the field
+    // card's Answer control.
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "edit", 1)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 1)));
+    await new Promise((r) => setTimeout(r, 5));
+    const m = client.modals[0]!;
+    client.emitModal(modal(client, m.customId, { note: "intruder value" }, "user-INTRUDER", 1));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(entry.values.note).toBeUndefined();
+    // And the legitimate initiator can still answer it.
+    client.emitModal(modal(client, m.customId, { note: "legit" }, "user-A", 1));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(entry.values.note).toBe("legit");
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("an empty multi-select selection is a LEGAL answer, not a non-answer", async () => {
+  // Core's validator accepts `[]` for a multi-select and only limits its length
+  // when the schema declares `minItems`. Treating an empty delivery as "no answer"
+  // merged two distinct statements — an explicit empty array and an omitted field
+  // — and made a `minItems: 0` answer impossible to express at all.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      {
+        kind: "multi-select",
+        key: "tags",
+        title: "Tags",
+        required: false,
+        minItems: 0,
+        options: [{ value: "a", label: "Alpha" }],
+      },
+    ]);
+    await startWizard(client, channel, req, "tags");
+    const rows = client.edited[client.edited.length - 1]!.body.selectRows ?? [];
+    client.emitSelect(select(client, rows[0]!.components[0]!.customId, []));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { values: Record<string, unknown> }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    // Present, and an empty array — NOT absent, and NOT a skip.
+    expect(Object.hasOwn(entry.values, "tags")).toBe(true);
+    expect(entry.values.tags).toEqual([]);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("an empty single-select delivery is still not an answer", async () => {
+  // The mirror image: a single select has exactly one legal value, so clearing it
+  // says nothing the schema asked for. The multi-select carve-out above must not
+  // have widened this.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "single-select", key: "env", title: "Env", required: false, options: [{ value: "a", label: "Alpha" }] },
+    ]);
+    await startWizard(client, channel, req, "env");
+    const rows = client.edited[client.edited.length - 1]!.body.selectRows ?? [];
+    client.emitSelect(select(client, rows[0]!.components[0]!.customId, []));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { values: Record<string, unknown> }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(Object.hasOwn(entry.values, "env")).toBe(false);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a multi-select build states both bounds so the platform cannot narrow them", () => {
+  // A String Select DEFAULTS to 1/1 when a bound is omitted, so leaving them out
+  // silently redefined the schema: no bounds meant "pick exactly one", and
+  // `{ minItems: 2 }` with no `maxItems` produced a component demanding at least
+  // 2 while allowing at most 1 — self-contradictory and rejected by Discord.
+  const build = (
+    field: Extract<ChannelElicitationField, { kind: "multi-select" }>,
+  ): Record<string, unknown> => {
+    setChannelLocale("en");
+    const card = buildElicitationFieldCard(
+      { requestId: "r", chatKey: "c", agent: { name: "codex" }, message: "m", mode: "form", fields: [field], requester: { senderId: "u" }, expiresAt: 0, signal: new AbortController().signal } as never,
+      "tok",
+      field,
+      1,
+      undefined,
+    );
+    return (card.selectRows[0]!.components[0] as unknown as Record<string, unknown>);
+  };
+
+  const options = [
+    { value: "a", label: "Alpha" },
+    { value: "b", label: "Beta" },
+    { value: "c", label: "Gamma" },
+  ];
+  // No bounds: the accepted domain is "any number of the offered options",
+  // expressed explicitly rather than left to Discord's 1/1 default.
+  const unbounded = build({ kind: "multi-select", key: "k", title: "K", required: false, options });
+  expect(unbounded.minValues).toBe(0);
+  expect(unbounded.maxValues).toBe(3);
+
+  // `minItems` only: min is the schema's own, max is the option count.
+  const minOnly = build({ kind: "multi-select", key: "k", title: "K", required: false, minItems: 2, options });
+  expect(minOnly.minValues).toBe(2);
+  expect(minOnly.maxValues).toBe(3);
+
+  // Both declared: both are the schema's own values.
+  const both = build({ kind: "multi-select", key: "k", title: "K", required: false, minItems: 1, maxItems: 2, options });
+  expect(both.minValues).toBe(1);
+  expect(both.maxValues).toBe(2);
+});
+
+test("a pre-set default appears selected in the select render", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      {
+        kind: "single-select",
+        key: "env",
+        title: "Environment",
+        required: true,
+        defaultValue: "prod",
+        options: [
+          { value: "prod", label: "Production" },
+          { value: "staging", label: "Staging" },
+        ],
+      },
+    ]);
+    await startWizard(client, channel, req, "env");
+    const rows = client.edited[client.edited.length - 1]!.body.selectRows ?? [];
+    const options = rows[0]!.components[0]!.options;
+    // The default is VISIBLE and changeable, not silently applied.
+    expect(options.find((o) => o.value === "prod")!.default).toBe(true);
+    expect(options.find((o) => o.value === "staging")!.default).toBeUndefined();
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("an agent-controlled option label renders literally in the select", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      {
+        kind: "single-select",
+        key: "env",
+        title: "Environment",
+        required: true,
+        options: [{ value: "prod", label: "@everyone **bold** <@123>" }],
+      },
+    ]);
+    await startWizard(client, channel, req, "env");
+    const rows = client.edited[client.edited.length - 1]!.body.selectRows ?? [];
+    const [component] = rows[0]!.components;
+    // A select option's label is NOT Markdown: Discord renders it literally, so
+    // escaping it here would double the backslashes the user sees. The mention
+    // defense is `allowedMentions` at send time, not label escaping — and the
+    // option VALUE (what core validates) is never touched by either.
+    expect(component!.options[0]!.label).toBe("@everyone **bold** <@123>");
+    expect(component!.options[0]!.value).toBe("prod");
+    expect(client.edited[client.edited.length - 1]!.body.allowedMentions?.parse).toEqual([]);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+// --- The three flows called out as previously unproven ---------------------
+//
+// Before the fix the advertised `form` capability could not complete these:
+// optional fields were unreachable, field 3+ had no control at all, and a
+// zero-field form could not be accepted at all.
+
+test("a required + optional form reaches BOTH fields before submitting", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "a", title: "A", required: true, maxLength: 4000 },
+      { kind: "text", key: "b", title: "B", required: false, maxLength: 4000 },
+    ]);
+    const decision = await driveToSubmit(client, channel, req, { a: "alpha", b: "beta" });
+    expect(decision).toEqual({
+      action: "accept",
+      responderId: "user-A",
+      content: { a: "alpha", b: "beta" },
+    });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("every field card fits Discord's per-row button limit", async () => {
+  // Structural and platform-facing: a mid-wizard text field needs Answer + Prev
+  // + Next + Review + Decline + Cancel = 6 controls, which exceeds the 5 buttons
+  // Discord allows per action row. Before the split the whole form's second
+  // field was a message Discord rejects, so nothing could be answered at all.
+  const token = "tok-per-row";
+  const { buildElicitationFieldCard } = await import("../../../../packages/channel-discord/src/elicitation-ui");
+  const cases = [
+    request([{ kind: "text", key: "a", title: "A", required: true, maxLength: 4000 }, { kind: "text", key: "b", title: "B", required: true, maxLength: 4000 }]).request,
+    request([{ kind: "text", key: "a", title: "A", required: true, maxLength: 4000 }, { kind: "number", key: "c", title: "C", required: true }]).request,
+  ];
+  for (const req of cases) {
+    for (let index = 0; index < req.fields.length; index += 1) {
+      const card = buildElicitationFieldCard(req, token, req.fields[index]!, index + 1, undefined);
+      expect(card.components.length).toBeGreaterThan(0);
+      for (const row of card.components) {
+        expect(row.components.length).toBeGreaterThan(0);
+        expect(row.components.length).toBeLessThanOrEqual(5);
+      }
+      // Answer control survives the split: the user can still open a modal.
+      const ids = card.components.flatMap((row) => row.components.map((c) => c.customId));
+      expect(ids.some((id) => id.endsWith(":field:" + index))).toBe(true);
+      expect(ids.some((id) => /decline(:|$)/.test(id.split(":").slice(2).join(":")))).toBe(true);
+      expect(ids.some((id) => /cancel(:|$)/.test(id.split(":").slice(2).join(":")))).toBe(true);
+    }
+  }
+});
+
+test("a 3+ field form is completable: the third field is reachable and answerable", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    // The third field is REQUIRED, so a wizard that cannot reach it can never
+    // submit: this is the shape that was previously a dead end.
+    const { request: req } = request([
+      { kind: "text", key: "f1", title: "F1", required: true, maxLength: 4000 },
+      { kind: "number", key: "f2", title: "F2", required: true },
+      { kind: "single-select", key: "f3", title: "F3", required: true, options: [{ value: "c", label: "C" }] },
+    ]);
+    const decision = await driveToSubmit(client, channel, req, { f1: "one", f2: "2", f3: "c" });
+    expect(decision).toEqual({
+      action: "accept",
+      responderId: "user-A",
+      content: { f1: "one", f2: 2, f3: "c" },
+    });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("an all-optional form submitted empty accepts with null content", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "single-select", key: "opt1", title: "Opt 1", required: false, options: [{ value: "x", label: "X" }] },
+      { kind: "text", key: "opt2", title: "Opt 2", required: false, maxLength: 4000 },
+    ]);
+    const decision = await driveToSubmit(client, channel, req, {});
+    // `null` is ACP's "accept with no answers"; `{}` is a different statement.
+    expect(decision).toEqual({ action: "accept", responderId: "user-A", content: null });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a zero-field form accepts through the review page", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([]);
+    const decision = await driveToSubmit(client, channel, req, {});
+    expect(decision).toEqual({ action: "accept", responderId: "user-A", content: null });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("edit after review corrects a field and the correction reaches the decision", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "a", title: "A", required: true, maxLength: 4000 },
+      { kind: "text", key: "b", title: "B", required: true, maxLength: 4000 },
+    ]);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
+    const deadline = Date.now() + 5_000;
+    while (client.sent.length === 0 && Date.now() < deadline) await wait();
+
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await wait();
+    client.emitModal(modal(client, client.modals[0]!.customId, { a: "first" }));
+    await wait();
+    client.emitButton(click(client, idFor(client, "next", 1)));
+    await wait();
+    // Field 1's card: its Answer control opens the modal for b.
+    client.emitButton(click(client, idFor(client, "field", 1)));
+    await wait();
+    client.emitModal(modal(client, client.modals[1]!.customId, { b: "second" }, "user-A", 1));
+    await wait();
+
+    // Review -> Edit field 0 -> correct it -> review -> submit.
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+    client.emitButton(click(client, idFor(client, "edit", 0)));
+    await wait();
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await wait();
+    client.emitModal(modal(client, client.modals[2]!.customId, { a: "corrected" }, "user-A", 0));
+    await wait();
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+    client.emitButton(click(client, idFor(client, "submit")));
+    expect(await settled).toEqual({
+      action: "accept",
+      responderId: "user-A",
+      content: { a: "corrected", b: "second" },
+    });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a 6-field review paginates and every field stays reachable", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const fields = Array.from(
+      { length: 6 },
+      (_, i) => ({ kind: "text" as const, key: `k`, title: `K`, required: true, maxLength: 4000 }),
+    );
+    const { request: req } = request(fields);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
+    const deadline = Date.now() + 5_000;
+    while (client.sent.length === 0 && Date.now() < deadline) await wait();
+
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+
+    const rowIds = (): string[] => {
+      const rows = client.edited[client.edited.length - 1]!.body.components ?? [];
+      return rows.flatMap((r) => r.components.map((c) => c.customId));
+    };
+    // Page 0 shows fewer than all fields, and the rest are reachable by paging.
+    expect(rowIds().filter((id) => /:edit:[0-9]+(:|$)/.test(id)).length).toBeLessThan(6);
+    expect(rowIds().some((id) => /:page:/.test(id))).toBe(true);
+
+    let sawLast = false;
+    for (let step = 0; step < 6 && !sawLast; step += 1) {
+      const ids = rowIds();
+      if (ids.some((id) => /:edit:5(:|$)/.test(id))) {
+        sawLast = true;
+        break;
+      }
+      const next = ids.find((id) => /:page:[0-9]+(:|$)/.test(id) && !/:page:0(:|$)/.test(id));
+      if (!next) break;
+      client.emitButton(click(client, next));
+      await wait();
+    }
+    expect(sawLast).toBe(true);
+
+    await channel.stop();
+    await settled;
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+// --- Field keys that are JavaScript property names --------------------------
+//
+// core treats `__proto__`, `constructor` and `toString` as ordinary field keys
+// and builds null-prototype output to defend against exactly this. If the
+// renderer uses a plain object for its answer map, `constructor` reads back as
+// an answer to a question nobody answered, and `__proto__` writes through to the
+// dictionary's own prototype.
+
+test("a field key named constructor is not mistaken for an answer", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "constructor", title: "Constructor", required: true, maxLength: 4000 },
+    ]);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    // Opening card first; the review control only exists inside the wizard.
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    // Nothing has been answered yet, yet `values["constructor"]` on a plain
+    // object is the Object constructor — truthy. The submit gate must still
+    // block, and the store must not report the field complete.
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(Object.hasOwn(entry.values, "constructor")).toBe(false);
+    // Still live: the user has to actually answer it.
+    client.emitButton(click(client, idFor(client, "edit", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    const m = client.modals[client.modals.length - 1]!;
+    client.emitModal(modal(client, m.customId, { "f:0": "typed" }));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(Object.hasOwn(entry.values, "constructor")).toBe(true);
+    expect(entry.values.constructor).toBe("typed");
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 5));
+    const decision = await settled;
+    expect(decision).toEqual({
+      action: "accept",
+      responderId: "user-A",
+      content: { constructor: "typed" },
+    });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a field key named __proto__ becomes an own answer property", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "__proto__", title: "Proto", required: true, maxLength: 4000 },
+    ]);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    const m = client.modals[client.modals.length - 1]!;
+    client.emitModal(modal(client, m.customId, { "f:0": "proto-answer" }));
+    await new Promise((r) => setTimeout(r, 5));
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    // An own property, not a prototype mutation of the answer map.
+    expect(Object.hasOwn(entry.values, "__proto__")).toBe(true);
+    expect(entry.values.__proto__).toBe("proto-answer");
+    expect(Object.getPrototypeOf(entry.values)).toBe(null);
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 5));
+    const decision = await settled as {
+      action: string;
+      responderId: string;
+      content: Record<string, unknown> | null;
+    };
+    expect(decision.action).toBe("accept");
+    expect(decision.responderId).toBe("user-A");
+    expect(Object.hasOwn(decision.content!, "__proto__")).toBe(true);
+    expect(decision.content!.__proto__).toBe("proto-answer");
+    expect(Object.keys(decision.content!)).toEqual(["__proto__"]);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("an answered optional field can be skipped back to omitted", async () => {
+  // value -> omitted is part of ACP's review-and-modify. A cleared text field is
+  // a real empty answer, not an omission, so there must be a distinct control.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "a", title: "A", required: true, maxLength: 4000 },
+      { kind: "text", key: "b", title: "B", required: false, maxLength: 4000 },
+    ]);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    // Answer both.
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { "a": "alpha" }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "next", 1)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 1)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { "b": "beta" }, "user-A", 1));
+    await new Promise((r) => setTimeout(r, 5));
+    // We are on b's own card after the modal: Skip is here.
+    const store = (channel as unknown as { pendingElicitations: Map<string, { values: Record<string, unknown>; skipped: Set<string> }> }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.values.b).toBe("beta");
+    client.emitButton(click(client, idFor(client, "skip", 1)));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(Object.hasOwn(entry.values, "b")).toBe(false);
+    expect(entry.skipped.has("b")).toBe(true);
+    // Review and submit: only `a` is carried.
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 5));
+    const decision = await settled;
+    expect(decision).toEqual({
+      action: "accept",
+      responderId: "user-A",
+      content: { a: "alpha" },
+    });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+// --- A review must show the WHOLE answer ------------------------------------
+//
+// core lets a text answer be 4000 characters and a Discord card holds 1800, so
+// a real answer spans several messages. Rendering chunk[0] and dropping the rest
+// hid most of what the user was approving while leaving Submit enabled.
+
+test("a 4000-character answer is fully visible on the review before Submit", async () => {
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const longAnswer = "A".repeat(4000);
+    const { request: req } = request([
+      { kind: "text", key: "body", title: "Body", required: true, maxLength: 4000 },
+    ]);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: longAnswer }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+    // Review. The opener is one message; the review's first chunk edits it and
+    // every further chunk goes to a continuation message.
+    const sentBefore = client.sent.length;
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 10));
+
+    // The user-visible review text = the edited card plus every continuation.
+    const visible = [
+      ...client.edited.map((entry) => entry.body.content ?? ""),
+      ...client.sent.slice(sentBefore).map((entry) => entry.body.content ?? ""),
+    ].join("");
+    // The WHOLE answer is present. The earlier failure mode was exactly this
+    // assertion at the 1800-char mark.
+    expect(visible).toContain(longAnswer);
+    expect(visible.split("A").length - 1).toBeGreaterThanOrEqual(4000);
+
+    // And Submit still works.
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 10));
+    const decision = await settled;
+    expect(decision).toEqual({
+      action: "accept",
+      responderId: "user-A",
+      content: { body: longAnswer },
+    });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("review continuation messages are removed once the form is decided", async () => {
+  // A continuation left behind shows a stale fragment of the review with no
+  // controls, which reads as a broken form.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const longAnswer = "B".repeat(4000);
+    const { request: req } = request([
+      { kind: "text", key: "body", title: "Body", required: true, maxLength: 4000 },
+    ]);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: longAnswer }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+    const sentBefore = client.sent.length;
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 10));
+    // Continuation messages exist while the review is up: the review needed
+    // more than one 1800-char chunk, so the extras were sent as new messages.
+    const continuationCount = client.sent.length - sentBefore;
+    expect(continuationCount).toBeGreaterThan(0);
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(await settled).toMatchObject({ action: "accept" });
+    // And they are gone after the decision.
+    expect(client.deleted.length).toBeGreaterThanOrEqual(continuationCount);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("shortening an answer deletes the review's tail continuations", async () => {
+  // 4000 A -> review needs primary + 2 continuations. Editing to 2000 B needs
+  // primary + 1. The extra continuation used to survive, so the user saw the
+  // current review AND a fragment of the previous answer underneath it, with no
+  // way to tell which one Submit sends.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const longAnswer = "A".repeat(4000);
+    const { request: req } = request([
+      { kind: "text", key: "body", title: "Body", required: true, maxLength: 4000 },
+    ]);
+    channel.requestElicitation(req).catch(() => {});
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: longAnswer }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+
+    // First review: create the continuations.
+    const beforeFirstReview = client.sent.length;
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 15));
+    const firstReviewContinuations = client.sent.length - beforeFirstReview;
+    expect(firstReviewContinuations).toBeGreaterThan(1);
+    // Everything from here on is the second pass: snapshot the transport right
+    // after the first review settles so its edits are not counted twice.
+    const sentBefore = client.sent.length;
+    const editedBefore = client.edited.length;
+    const deletedBefore = client.deleted.length;
+
+    // Shorten the answer.
+    const shortAnswer = "B".repeat(2000);
+    client.emitButton(click(client, idFor(client, "edit", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: shortAnswer }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+
+    // Second review.
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 15));
+
+    // What the user sees is: the primary's latest content, and every live
+    // continuation. Continuation edits land on existing messages, so the LAST
+    // edit of each is its live content.
+    const primary = client.edited[client.edited.length - 1]!;
+    // Exclude the primary by messageId, not object identity: it was captured
+    // after the slice below was built.
+    const deletedSet = new Set(client.deleted.slice(deletedBefore));
+    // A deleted message is not live, whatever was last written to it.
+    const continuationEdits = client.edited
+      .slice(editedBefore)
+      .filter((entry) => entry.messageId !== primary.messageId && !deletedSet.has(entry.messageId));
+    const liveContinuations = [
+      // Only what was SENT and not later DELETED is live: the review trims the
+      // ones past its length, and a continuation deleted in that trim is gone.
+      ...client.sent.slice(sentBefore)
+        .filter((entry) => !deletedSet.has(entry.messageId))
+        .map((entry) => entry.body.content ?? ""),
+      // A continuation edited in place shows its latest edit.
+      ...continuationEdits.map((entry) => entry.body.content ?? ""),
+    ];
+    const visible = [primary.body.content ?? "", ...liveContinuations].join("");
+
+    // The new answer is fully present...
+    expect(visible).toContain(shortAnswer);
+    // ...and the OLD answer is nowhere. `not.toContain(longAnswer)` is the real
+    // assertion: the string is 4000 chars of one letter, so any surviving
+    // fragment large enough to show the user is caught by it.
+    expect(visible).not.toContain(longAnswer);
+    // A shorter but still multi-chunk fragment of the old answer would also be
+    // wrong, so count runs of the old letter rather than occurrences of it.
+    const oldRuns = visible.match(/A{100,}/g) ?? [];
+    expect(oldRuns).toHaveLength(0);
+
+    // Net channel state: the live continuation count SHRANK from 3 to 2. The
+    // transient `edit` teardown deleted all three while the wizard was on a field
+    // card, and the new review created two — the same end state an in-place trim
+    // would reach, which is what matters: no message holding the old answer
+    // stays live.
+    const staleDeletes = client.deleted.length - deletedBefore;
+    expect(staleDeletes).toBe(firstReviewContinuations);
+    const newSends = client.sent.slice(sentBefore).length;
+    expect(newSends).toBe(firstReviewContinuations - 1);
+    expect(liveContinuations).toHaveLength(newSends);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a failed continuation send leaves the primary's Submit alone", async () => {
+  // The primary carries Submit. If it is edited to the review while a
+  // continuation send is still in flight and that send fails, the user could
+  // approve content they never saw. Continuations are laid in first, so a failure
+  // leaves the previous card up instead of an incomplete review.
+  const client = makeFakeClient();
+  let failSends = 0;
+  const realSend = client.sendMessage.bind(client);
+  (client as unknown as { sendMessage: unknown }).sendMessage = async (target: unknown, body: unknown) => {
+    // Fail only the continuation sends (bodies WITHOUT components), so the
+    // opening card still goes out.
+    const hasComponents = Boolean((body as { components?: unknown }).components);
+    if (!hasComponents) {
+      failSends += 1;
+      throw new Error("continuation send failed");
+    }
+    return realSend(target as never, body as never);
+  };
+  const { channel, abort } = await startChannel(client);
+  try {
+    const longAnswer = "A".repeat(4000);
+    const { request: req } = request([
+      { kind: "text", key: "body", title: "Body", required: true, maxLength: 4000 },
+    ]);
+    channel.requestElicitation(req).catch(() => {});
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: longAnswer }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+
+    const editsBefore = client.edited.length;
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 15));
+
+    // A continuation send was attempted and failed.
+    expect(failSends).toBeGreaterThan(0);
+    // The primary was NOT switched to the review. It WAS edited once, to the same
+    // review content with Submit DISABLED — the gate that makes a partially
+    // applied multi-message review unsubmittable. So the user sees either the
+    // previous card or a review they cannot submit from, never a live Submit over
+    // content that failed to lay in.
+    const primaryEdits = client.edited.filter((entry) => entry.messageId === "m1");
+    expect(primaryEdits.length).toBe(editsBefore + 1);
+    const submitControl = (primaryEdits[primaryEdits.length - 1]!.body.components ?? [])
+      .flatMap((row) => row.components)
+      .find((component) => /submit(:|$)/.test(component.customId.split(":").slice(2).join(":")));
+    expect(submitControl?.disabled).toBe(true);
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { submitGateClosed: boolean }>;
+    }).pendingElicitations;
+    expect([...store.values()][0]!.submitGateClosed).toBe(true);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a failed stale-tail delete keeps the primary off the shorter review", async () => {
+  // Reached through review PAGING, which is the real entry point for the
+  // `slice(extras.length)` branch: page 0 is long (its answers fill several
+  // chunks), page 1 is short, so moving to it shrinks the continuation set
+  // without ever passing through a field card — the path that previously
+  // bypassed every trim by discarding everything and rebuilding.
+  const client = makeFakeClient();
+  const failsOn = new Set<string>();
+  const realDelete = client.deleteMessage.bind(client);
+  (client as unknown as { deleteMessage: unknown }).deleteMessage =
+    async (target: unknown, messageId: string) => {
+      if (failsOn.has(messageId)) {
+        const error = new Error("delete failed") as Error & { code?: string };
+        error.code = "TRANSIENT";
+        throw error;
+      }
+      return realDelete(target as never, messageId);
+    };
+  const { channel, abort } = await startChannel(client);
+  try {
+    const fields: ChannelElicitationRequest["fields"] = Array.from({ length: 8 }, (_, index) => ({
+      kind: "text" as const,
+      key: `f${index}`,
+      title: `Field ${index}`,
+      required: true,
+      maxLength: 4000,
+    }));
+    const { request: req } = request(fields);
+    void channel.requestElicitation(req).catch(() => {});
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 8));
+    const deadline = Date.now() + 5_000;
+    while (client.sent.length === 0 && Date.now() < deadline) await wait();
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    // Answer so that page 0 is LONG (5 chunks, 4 continuations) and page 1 is
+    // MEDIUM (2 chunks, 1 continuation). Paging 0 -> 1 therefore shrinks 4 extras
+    // to 1 and hits the `slice(extras.length)` tail-trim branch, which is the
+    // only path where a partial failure leaves a MIXED review: the continuations
+    // are edited in place while the primary is still the old card.
+    // (Review pages are 2 fields wide: 5 button slots minus Submit/Decline/Cancel.)
+    const lengths = [1800, 1800, 900, 900, 5, 5, 5, 5];
+    for (let index = 0; index < 8; index += 1) {
+      client.emitButton(click(client, idFor(client, "field", index)));
+      await wait();
+      const modalId = client.modals[client.modals.length - 1]!.customId;
+      client.emitModal(modal(client, modalId, { [fields[index]!.key]: "L".repeat(lengths[index]!) }, "user-A", index));
+      await wait();
+      if (index < 7) {
+        client.emitButton(click(client, idFor(client, "next", index + 1)));
+        await wait();
+      }
+    }
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, {
+        continuationMessageIds: string[];
+        submitGateClosed: boolean;
+      }>;
+    }).pendingElicitations;
+    const liveEntry = [...store.values()][0]!;
+    // The review opened on page 0 with its 4 continuations.
+    expect(liveEntry.continuationMessageIds.length).toBe(4);
+
+    // Move to page 1 — the only other non-zero page control on page 0's row.
+    const rowIds = (): string[] => {
+      const rows = client.edited[client.edited.length - 1]!.body.components ?? [];
+      return rows.flatMap((r) => r.components.map((c) => c.customId));
+    };
+    const page1 = rowIds().find((id) => /:page:1(:|$)/.test(id));
+    expect(page1).toBeDefined();
+    const primaryEditsBefore = client.edited.filter((entry) => entry.messageId === "m1").length;
+
+    // The stale tail's deletes fail from here on.
+    for (const id of liveEntry.continuationMessageIds) {
+      failsOn.add(id);
+    }
+
+    client.emitButton(click(client, page1!));
+    await wait();
+
+    // THE MIXED-REVIEW GATE. The primary is disabled before any continuation is
+    // touched, so whatever the failure left in the channel, the user cannot
+    // submit from it.
+    const gateEntry = [...store.values()][0]!;
+    expect(gateEntry.submitGateClosed).toBe(true);
+    // And the primary's last published controls have Submit disabled.
+    const primaryEdits = client.edited.filter((entry) => entry.messageId === "m1");
+    const lastPrimary = primaryEdits[primaryEdits.length - 1]!;
+    const submitControl = (lastPrimary.body.components ?? [])
+      .flatMap((row) => row.components)
+      .find((component) => /submit(:|$)/.test(component.customId.split(":").slice(2).join(":")));
+    expect(submitControl?.disabled).toBe(true);
+    // The final (enabled) review was never published, so no primary edit carries
+    // a live Submit over the inconsistent set.
+    expect(primaryEdits.length).toBeGreaterThan(primaryEditsBefore);
+    // The unremovable ids are still tracked so a retry can finish the job.
+    expect(gateEntry.continuationMessageIds).toEqual(liveEntry.continuationMessageIds);
+  } finally {
+    failsOn.clear();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("an Unknown Message delete is treated as a successful trim", async () => {
+  // Discord 404s an id the platform already dropped. Counting that as a failure
+  // would block the review forever on a message that is already gone.
+  const client = makeFakeClient();
+  const unknownOn = new Set<string>();
+  const realDelete = client.deleteMessage.bind(client);
+  (client as unknown as { deleteMessage: unknown }).deleteMessage =
+    async (target: unknown, messageId: string) => {
+      if (unknownOn.has(messageId)) {
+        const error = new Error("Unknown Message") as Error & { code?: number };
+        error.code = 10008;
+        throw error;
+      }
+      return realDelete(target as never, messageId);
+    };
+  const { channel, abort } = await startChannel(client);
+  try {
+    const longAnswer = "C".repeat(4000);
+    const { request: req } = request([
+      { kind: "text", key: "body", title: "Body", required: true, maxLength: 4000 },
+    ]);
+    const settled = channel.requestElicitation(req).then((d) => d, (e: Error) => e);
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "start")));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: longAnswer }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 15));
+
+    // Shorten so the tail must be trimmed, and make those deletes 404.
+    const short = "D".repeat(1500);
+    for (const id of client.sent.slice(1).map((_, index) => `m${index + 1}`)) unknownOn.add(id);
+    client.emitButton(click(client, idFor(client, "edit", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 5));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: short }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 5));
+    const editsBefore = client.edited.length;
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 15));
+
+    // The review DID re-render: 404s are the outcome being asked for.
+    expect(client.edited.length).toBeGreaterThan(editsBefore);
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(await settled).toMatchObject({ action: "accept", content: { body: short } });
+  } finally {
+    unknownOn.clear();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("review -> Edit -> field card cannot be submitted when the continuation delete fails", async () => {
+  // `edit` leaves the multi-chunk review for a field card, whose target has NO
+  // continuations — so it takes the strict discard path. Gating on the TARGET
+  // card's shape missed this entirely: the primary is still the old review with a
+  // live Submit while its continuations are being deleted out from under it.
+  const client = makeFakeClient();
+  const failsOn = new Set<string>();
+  const realDelete = client.deleteMessage.bind(client);
+  (client as unknown as { deleteMessage: unknown }).deleteMessage =
+    async (target: unknown, messageId: string) => {
+      if (failsOn.has(messageId)) {
+        const error = new Error("delete failed") as Error & { code?: string };
+        error.code = "TRANSIENT";
+        throw error;
+      }
+      return realDelete(target as never, messageId);
+    };
+  const { channel, abort } = await startChannel(client);
+  try {
+    const longAnswer = "A".repeat(4000);
+    const { request: req } = request([
+      { kind: "text", key: "body", title: "Body", required: true, maxLength: 4000 },
+    ]);
+    channel.requestElicitation(req).catch(() => {});
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 8));
+    await wait();
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await wait();
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { body: longAnswer }, "user-A", 0));
+    await wait();
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, {
+        continuationMessageIds: string[];
+        submitGateClosed: boolean;
+      }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.continuationMessageIds.length).toBeGreaterThan(1);
+    const openingIds = [...entry.continuationMessageIds];
+
+    // Every delete fails from here, including the second one.
+    for (const id of openingIds) failsOn.add(id);
+    const primaryEditsBefore = client.edited.filter((e) => e.messageId === "m1").length;
+
+    client.emitButton(click(client, idFor(client, "edit", 0)));
+    await wait();
+
+    const gateEntry = [...store.values()][0]!;
+    // The gate closed because the CURRENT primary was a review whose text was
+    // about to be deleted — even though the destination is a field card.
+    expect(gateEntry.submitGateClosed).toBe(true);
+    // The primary's last published Submit is disabled.
+    const primaryEdits = client.edited.filter((e) => e.messageId === "m1");
+    const lastPrimary = primaryEdits[primaryEdits.length - 1]!;
+    const submitControl = (lastPrimary.body.components ?? [])
+      .flatMap((row) => row.components)
+      .find((component) => /submit(:|$)/.test(component.customId.split(":").slice(2).join(":")));
+    expect(submitControl?.disabled).toBe(true);
+    // A gate edit was published (the review with Submit disabled) in addition to
+    // whatever else happened.
+    expect(primaryEdits.length).toBeGreaterThan(primaryEditsBefore);
+    // The unremovable ids are still tracked so a retry can finish the job.
+    expect(gateEntry.continuationMessageIds).toEqual(openingIds);
+  } finally {
+    failsOn.clear();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("review -> single-chunk page cannot be submitted when the delete fails", async () => {
+  // The TARGET page fits in one message, so the old condition skipped the gate —
+  // yet the transition deletes the current review's continuations.
+  const client = makeFakeClient();
+  const failsOn = new Set<string>();
+  const realDelete = client.deleteMessage.bind(client);
+  (client as unknown as { deleteMessage: unknown }).deleteMessage =
+    async (target: unknown, messageId: string) => {
+      if (failsOn.has(messageId)) {
+        const error = new Error("delete failed") as Error & { code?: string };
+        error.code = "TRANSIENT";
+        throw error;
+      }
+      return realDelete(target as never, messageId);
+    };
+  const { channel, abort } = await startChannel(client);
+  try {
+    // 8 fields, paged 2 at a time; page 0 long, page 2 short.
+    const fields: ChannelElicitationRequest["fields"] = Array.from({ length: 8 }, (_, index) => ({
+      kind: "text" as const,
+      key: `f${index}`,
+      title: `Field ${index}`,
+      required: true,
+      maxLength: 4000,
+    }));
+    const lengths = [1800, 1800, 5, 5, 5, 5, 5, 5];
+    const { request: req } = request(fields);
+    channel.requestElicitation(req).catch(() => {});
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 8));
+    await wait();
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    for (let index = 0; index < 8; index += 1) {
+      client.emitButton(click(client, idFor(client, "field", index)));
+      await wait();
+      const modalId = client.modals[client.modals.length - 1]!.customId;
+      client.emitModal(modal(client, modalId, { [fields[index]!.key]: "L".repeat(lengths[index]!) }, "user-A", index));
+      await wait();
+      if (index < 7) {
+        client.emitButton(click(client, idFor(client, "next", index + 1)));
+        await wait();
+      }
+    }
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, {
+        continuationMessageIds: string[];
+        submitGateClosed: boolean;
+      }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    // Page 0's long review produced continuations.
+    expect(entry.continuationMessageIds.length).toBeGreaterThan(1);
+    const openingIds = [...entry.continuationMessageIds];
+    for (const id of openingIds) failsOn.add(id);
+
+    // Page 2's answers are tiny, so its review is a SINGLE chunk. It is not
+    // directly reachable from page 0 (whose row is Prev->page3, Next->page1), so
+    // step through page 1 first.
+    const rowIds = (): string[] => (client.edited[client.edited.length - 1]!.body.components ?? [])
+      .flatMap((row) => row.components)
+      .map((component) => component.customId);
+    const goTo = async (suffix: string): Promise<string> => {
+      for (let step = 0; step < 8; step += 1) {
+        const found = rowIds().find((id) => new RegExp(`:page:${suffix}(:|$)`).test(id));
+        if (found) return found;
+        const next = rowIds().find((id) => /:page:[0-9]+(:|$)/.test(id));
+        if (!next) break;
+        client.emitButton(click(client, next));
+        await wait();
+      }
+      throw new Error(`no page:${suffix} control reachable`);
+    };
+    const page2 = await goTo("2");
+    expect(page2).toBeDefined();
+
+    client.emitButton(click(client, page2!));
+    await wait();
+
+    const gateEntry = [...store.values()][0]!;
+    expect(gateEntry.submitGateClosed).toBe(true);
+    const primaryEdits = client.edited.filter((e) => e.messageId === "m1");
+    const submitControl = (primaryEdits[primaryEdits.length - 1]!.body.components ?? [])
+      .flatMap((row) => row.components)
+      .find((component) => /submit(:|$)/.test(component.customId.split(":").slice(2).join(":")));
+    expect(submitControl?.disabled).toBe(true);
+    expect(gateEntry.continuationMessageIds).toEqual(openingIds);
+  } finally {
+    failsOn.clear();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+
+test("a second transition is queued behind a running one, and cannot open the gate", async () => {
+  // Two interactions for the SAME elicitation may overlap: `interactionCreate`
+  // dispatches fire-and-forget and every transport call crosses an `await`. A
+  // boolean `submitGateClosed` on shared entry state is not a lock — transition
+  // A closes it and reopens it after ITS OWN continuation sync, so transition B,
+  // still editing the review's continuations, is left with a live Submit over a
+  // mixed review.
+  //
+  // The discriminator is ORDERING, not just final state: while transition A is
+  // held mid-flight, transition B must not have published anything at all. Held
+  // on transition A's FIRST continuation edit, so B is fired while A is genuinely
+  // inside `syncElicitationContinuations`.
+  const client = makeFakeClient();
+  let release: (() => void) | null = null;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holdsLeft = 1;
+  const realEdit = client.editMessage.bind(client);
+  (client as unknown as { editMessage: unknown }).editMessage = async (
+    target: unknown,
+    messageId: string,
+    body: unknown,
+  ) => {
+    if (messageId === "m2" && holdsLeft > 0) {
+      holdsLeft -= 1;
+      await held;
+    }
+    return realEdit(target as never, messageId, body as never);
+  };
+  const { channel, abort } = await startChannel(client);
+  try {
+    // 8 fields, 2 per review page. Page 0 is long, page 1 medium: both are
+    // multi-chunk, so each transition edits existing continuations.
+    const fields: ChannelElicitationRequest["fields"] = Array.from({ length: 8 }, (_, index) => ({
+      kind: "text" as const,
+      key: `f${index}`,
+      title: `Field ${index}`,
+      required: true,
+      maxLength: 4000,
+    }));
+    const lengths = [1800, 1800, 900, 900, 5, 5, 5, 5];
+    const { request: req } = request(fields);
+    channel.requestElicitation(req).catch(() => {});
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 6));
+    await wait();
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    for (let index = 0; index < 8; index += 1) {
+      client.emitButton(click(client, idFor(client, "field", index)));
+      await wait();
+      const modalId = client.modals[client.modals.length - 1]!.customId;
+      client.emitModal(modal(client, modalId, { [fields[index]!.key]: "L".repeat(lengths[index]!) }, "user-A", index));
+      await wait();
+      if (index < 7) {
+        client.emitButton(click(client, idFor(client, "next", index + 1)));
+        await wait();
+      }
+    }
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { submitGateClosed: boolean; reviewPage: number }>;
+    }).pendingElicitations;
+    expect([...store.values()][0]!.submitGateClosed).toBe(false);
+
+    const rowIds = (): string[] => (client.edited[client.edited.length - 1]!.body.components ?? [])
+      .flatMap((row) => row.components)
+      .map((component) => component.customId);
+    const page1 = rowIds().find((id) => /:page:1(:|$)/.test(id))!;
+
+    // Transition A: page 0 -> page 1. It reaches the held m2 edit inside its
+    // continuation sync.
+    client.emitButton(click(client, page1));
+    await new Promise((r) => setTimeout(r, 25));
+
+    const whileA = client.edited.length;
+    const gateWhileA = [...store.values()][0]!.submitGateClosed;
+    // A is inside its transaction: the gate is closed and its primary has been
+    // published with Submit disabled.
+    expect(gateWhileA).toBe(true);
+    const submitWhileA = (client.edited[client.edited.length - 1]!.body.components ?? [])
+      .flatMap((row) => row.components)
+      .find((component) => /submit(:|$)/.test(component.customId.split(":").slice(2).join(":")));
+    expect(submitWhileA?.disabled).toBe(true);
+
+    // Transition B, fired while A is still held. Nothing new is published: B is
+    // queued behind A rather than interleaving. This is the assertion that fails
+    // without per-entry serialization.
+    client.emitButton(click(client, page1));
+    await new Promise((r) => setTimeout(r, 25));
+    expect(client.edited.length).toBe(whileA);
+
+    // A stale Submit while B is queued behind a running A: still refused.
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 20));
+    const storeDuring = [...store.values()][0]!;
+    expect(storeDuring.submitGateClosed).toBe(true);
+
+    // Let A finish. B then runs to completion in order.
+    release!();
+    await new Promise((r) => setTimeout(r, 120));
+    await wait();
+
+    // The final card is ONE generation: the published page indicator and the
+    // tracked page agree, and the gate is open because the last transition
+    // completed.
+    const finalEntry = [...store.values()][0]!;
+    expect(finalEntry.submitGateClosed).toBe(false);
+    const lastPrimary = client.edited[client.edited.length - 1]!;
+    const indicator = /\((\d)\/4\)/.exec(lastPrimary.body.content ?? "");
+    expect(indicator).not.toBeNull();
+    expect(finalEntry.reviewPage).toBe(Number(indicator![1]) - 1);
+    // Submit on the settled card works.
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 25));
+  } finally {
+    release?.();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("an abort during a running transition leaves the card inert, never repainted", async () => {
+  // A rerender can be parked on a continuation edit when the request is aborted.
+  // The terminal render is queued behind it, so it publishes Cancelled and clears
+  // the continuations AFTER the transition finishes. Without the guard the
+  // transition would resume and repaint the Cancelled card back into an
+  // interactive-looking review — re-displaying answers the terminal card had
+  // just withdrawn.
+  const client = makeFakeClient();
+  let release: (() => void) | null = null;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holdsLeft = 1;
+  const realEdit = client.editMessage.bind(client);
+  (client as unknown as { editMessage: unknown }).editMessage = async (
+    target: unknown,
+    messageId: string,
+    body: unknown,
+  ) => {
+    // Hold on the first continuation edit of the second transition, i.e. inside
+    // `syncElicitationContinuations`.
+    if (messageId === "m2" && holdsLeft > 0) {
+      holdsLeft -= 1;
+      await held;
+    }
+    return realEdit(target as never, messageId, body as never);
+  };
+  const { channel, abort } = await startChannel(client);
+  try {
+    const fields: ChannelElicitationRequest["fields"] = Array.from({ length: 8 }, (_, index) => ({
+      kind: "text" as const,
+      key: `f${index}`,
+      title: `Field ${index}`,
+      required: true,
+      maxLength: 4000,
+    }));
+    const lengths = [1800, 1800, 900, 900, 5, 5, 5, 5];
+    const { request: req, abort: requestAbort } = request(fields);
+    channel.requestElicitation(req).catch(() => {});
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 6));
+    await wait();
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    for (let index = 0; index < 8; index += 1) {
+      client.emitButton(click(client, idFor(client, "field", index)));
+      await wait();
+      const modalId = client.modals[client.modals.length - 1]!.customId;
+      client.emitModal(modal(client, modalId, { [fields[index]!.key]: "L".repeat(lengths[index]!) }, "user-A", index));
+      await wait();
+      if (index < 7) {
+        client.emitButton(click(client, idFor(client, "next", index + 1)));
+        await wait();
+      }
+    }
+    // Open the long review first so its continuations exist.
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+
+    const rowIds = (): string[] => (client.edited[client.edited.length - 1]!.body.components ?? [])
+      .flatMap((row) => row.components)
+      .map((component) => component.customId);
+    // Segments, not a suffix: paging controls now carry the card revision, so the
+    // id ends `:page:1:<revision>` and a bare `endsWith(":page:1")` matches nothing.
+    const page1 = rowIds().find((id) => {
+      const rest = id.slice(ELICITATION_CUSTOM_ID_PREFIX.length).split(":");
+      return rest[1] === "page" && rest[2] === "1";
+    })!;
+
+    // Start the transition; it parks on the held m2 edit.
+    client.emitButton(click(client, page1));
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Abort the request while the transition is in flight.
+    const editsBeforeAbort = client.edited.length;
+    requestAbort.abort();
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Let the parked transition resume.
+    release!();
+    await new Promise((r) => setTimeout(r, 60));
+    await wait();
+
+    // The LAST primary edit must be the inert terminal card: content is the
+    // cancelled text and the controls are stripped.
+    const lastPrimary = client.edited[client.edited.length - 1]!;
+    expect(lastPrimary.messageId).toBe("m1");
+    expect(JSON.stringify(lastPrimary.body.content ?? "")).toContain("ancelled");
+    expect(lastPrimary.body.components ?? []).toHaveLength(0);
+    // No rerender edit landed after the terminal edit: the transition resumed
+    // and repainted nothing.
+    const editsAfterAbort = client.edited.filter((e) => e.messageId === "m1");
+    expect(editsAfterAbort.length).toBe(editsBeforeAbort + 1);
+    // Continuations were cleared.
+    expect(client.deleted.length).toBeGreaterThan(0);
+  } finally {
+    release?.();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("stop() drains a queued terminal render before the client is destroyed", async () => {
+  // A terminal render enqueued but not yet run would lose the race against
+  // `client.destroy()` in stop(), leaving the card interactive with no handler.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  let destroyed = false;
+  const realDestroy = client.destroy ? client.destroy.bind(client) : null;
+  (client as unknown as { destroy: unknown }).destroy = async () => {
+    destroyed = true;
+    if (realDestroy) await realDestroy();
+  };
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "body", title: "Body", required: true, maxLength: 4000 },
+    ]);
+    channel.requestElicitation(req).catch(() => {});
+    await new Promise((r) => setTimeout(r, 5));
+    const editsBefore = client.edited.length;
+
+    await channel.stop();
+
+    // The terminal card was published (and only then the client destroyed).
+    expect(client.edited.length).toBe(editsBefore + 1);
+    const last = client.edited[client.edited.length - 1]!;
+    expect(last.body.components ?? []).toHaveLength(0);
+    expect(destroyed).toBe(true);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("two concurrent Skip interactions cannot skip two different fields", async () => {
+  // Skip resolved its field from the shared `entry.currentField` cursor at
+  // handling time, which runs BEFORE the render queue. Two stale Skips delivered
+  // together therefore skipped two DIFFERENT fields, and a field that already had
+  // an answer lost it. The fix names the field in the custom id, so a duplicate
+  // re-skips the same field.
+  const client = makeFakeClient();
+  let release: (() => void) | null = null;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let holdsLeft = 1;
+  const realAck = async (): Promise<void> => {};
+  // Hold the first Skip's ACK so the second is guaranteed to be handled while the
+  // first is still in flight, which is the interleaving that used to skip B.
+  const heldAcknowledge = async (): Promise<void> => {
+    if (holdsLeft > 0) {
+      holdsLeft -= 1;
+      await held;
+    }
+  };
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "a", title: "A", required: false, maxLength: 4000 },
+      { kind: "text", key: "b", title: "B", required: false, maxLength: 4000 },
+      { kind: "text", key: "c", title: "C", required: false, maxLength: 4000 },
+    ]);
+    channel.requestElicitation(req).catch(() => {});
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 6));
+    await wait();
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    // Field A's card is in front of us.
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { skipped: Set<string>; currentField?: string }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.currentField).toBe("a");
+
+    // The SAME Skip control (A's), twice. The first holds its ACK, so the
+    // second is handled while the first is still in flight — the interleaving
+    // that used to skip B.
+    const skipA = idFor(client, "skip", 0);
+    const firstClick = click(client, skipA);
+    const secondClick = click(client, skipA);
+    const editsBefore = client.edited.length;
+    // Emit both back to back; the hold keeps the first in flight while the
+    // second enters.
+    client.emitButton({ ...firstClick, acknowledge: heldAcknowledge });
+    await wait();
+    client.emitButton({ ...secondClick, acknowledge: realAck });
+    await wait();
+
+    // Only A is skipped. B was NOT skipped by the duplicate.
+    expect([...entry.skipped]).toEqual(["a"]);
+    // And the cursor is on B, the first unresolved field.
+    expect(entry.currentField).toBe("b");
+    // Both interactions were acknowledged (the hold was released by the handler
+    // completing), and no third field was touched.
+    release!();
+    await new Promise((r) => setTimeout(r, 40));
+    expect(client.edited.length).toBeGreaterThan(editsBefore);
+    // A submit now carries only A's absence: B and C are still unanswered, so the
+    // required-gate is not involved — they are optional and simply omitted.
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+    client.emitButton(click(client, idFor(client, "submit")));
+    await wait();
+  } finally {
+    release?.();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a review whose answer core would reject never reaches the Accepted card", async () => {
+  // Submit checked required-presence only, and a known-format text answer is
+  // stored raw on both channels. So an email field of "not-an-email" went:
+  // review -> Submit -> card turns Accepted -> the broker rejects it and the
+  // turn ends as cancel. The user saw success followed by a cancellation.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const fields = [
+      { kind: "text" as const, key: "mail", title: "Email", required: true, maxLength: 4000, format: "email" },
+    ];
+    const { request: req } = request(fields);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    const wait = (): Promise<void> => new Promise((r) => setTimeout(r, 8));
+    await wait();
+    client.emitButton(click(client, idFor(client, "start")));
+    await wait();
+    // Answer with something the email format must refuse.
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await wait();
+    const modalId = client.modals[client.modals.length - 1]!.customId;
+    client.emitModal(modal(client, modalId, { mail: "not-an-email" }, "user-A", 0));
+    await wait();
+    client.emitButton(click(client, idFor(client, "review")));
+    await wait();
+    client.emitButton(click(client, idFor(client, "submit")));
+    await new Promise((r) => setTimeout(r, 40));
+    const painted = client.edited.map((entry) => JSON.stringify(entry.body)).join("\n");
+    expect(painted).not.toContain("accepted");
+    const stillPending = (channel as unknown as { pendingElicitations: Map<string, unknown> }).pendingElicitations;
+    expect(stillPending.size).toBe(1);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a failed opening send rolls back the chunks it already published", async () => {
+  // A multi-message opening is several `sendMessage` round trips. When a later
+  // one throws, `entry.messageId` is still unset — it is assigned only after
+  // every chunk succeeds — so the terminal render has no primary id to edit and
+  // returns immediately. The chunks already in the chat then survive the request
+  // as a fragment of the question with no controls and no handler.
+  const client = makeFakeClient();
+  const failFrom = 2;
+  const realSend = client.sendMessage.bind(client);
+  let sends = 0;
+  (client as unknown as { sendMessage: unknown }).sendMessage = async (target: never, body: never) => {
+    sends += 1;
+    if (sends >= failFrom) throw new Error("discord send failed");
+    return realSend(target, body);
+  };
+  const { channel, abort } = await startChannel(client);
+  try {
+    // A long message forces several opening chunks.
+    const { request: req } = request(
+      [{ kind: "text", key: "a", title: "A", required: true, maxLength: 4000 }],
+    );
+    req.message = "X".repeat(6000);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    await new Promise((r) => setTimeout(r, 60));
+    // The request failed, and every chunk it had already sent is gone.
+    expect(await settled).toBeInstanceOf(Error);
+    expect(sends).toBeGreaterThanOrEqual(failFrom);
+    expect(client.deleted.length).toBeGreaterThanOrEqual(1);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("an abort mid-opening accounts for every message it actually published", async () => {
+  // TWO ownership bugs lived in this loop, both from checking `settled` before
+  // recording a successful send.
+  //
+  // 1. A non-final chunk that landed during an abort was never pushed to
+  //    `continuationMessageIds`, so the rollback deleted the earlier ones and
+  //    left it orphaned in the channel forever.
+  // 2. The FINAL chunk landing during an explicit Decline/Cancel left `sent`
+  //    undefined, so the opening threw "aborted" and a legitimate user decision
+  //    was reported as a rejection instead of resolving the turn. That is the
+  //    failure CI caught.
+  //
+  // A successful `sendMessage` is an external fact — the message is in the
+  // channel and the daemon owns it — so ownership is taken BEFORE the settle
+  // check. This test holds the second send so the abort lands while it is in
+  // flight, then releases it, and asserts that every message that actually went
+  // out is accounted for afterwards.
+  const client = makeFakeClient();
+  const realSend = client.sendMessage.bind(client);
+  let sends = 0;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  // Every message id the transport actually produced, in order.
+  const published: string[] = [];
+  (client as unknown as { sendMessage: unknown }).sendMessage = async (target: never, body: never) => {
+    sends += 1;
+    if (sends === 2) await held;
+    const result = await realSend(target, body);
+    published.push(result.messageId);
+    return result;
+  };
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req, abort: reqAbort } = request([
+      { kind: "text", key: "a", title: "A", required: true, maxLength: 4000 },
+    ]);
+    // A long message forces several opening chunks.
+    req.message = "X".repeat(6000);
+    const settled = channel.requestElicitation(req).then(
+      () => "resolved",
+      (e: Error) => e.message,
+    );
+    // Let chunk 1 publish and chunk 2 park inside sendMessage.
+    await new Promise((r) => setTimeout(r, 15));
+    // Abort while the second send is in flight, then let that send land.
+    reqAbort.abort();
+    release();
+    await new Promise((r) => setTimeout(r, 60));
+
+    const outcome = await Promise.race([
+      settled,
+      new Promise((r) => setTimeout(() => r("timeout"), 1000)),
+    ]);
+    expect(String(outcome)).toContain("aborted");
+
+    // No primary was ever claimed (the controls never went out), so nothing the
+    // aborted opening published survives as an orphaned fragment. The second
+    // chunk DID go out — it was released after the abort — and the rollback must
+    // have seen it, which is precisely what the previous ordering lost.
+    expect(sends).toBeGreaterThanOrEqual(2);
+    expect(published.length).toBeGreaterThanOrEqual(2);
+    expect(client.deleted.length).toBe(published.length);
+    // Every published id is gone; nothing is left behind.
+    const deletedSet = new Set(client.deleted);
+    for (const id of published) expect(deletedSet.has(id)).toBe(true);
+  } finally {
+    release?.();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a Decline whose opening send finishes in flight resolves AND terminalises the card", async () => {
+  // The FINAL chunk carrying the controls can land AFTER the user has already
+  // clicked Decline on it. Two things must both hold:
+  //
+  //   - the request resolves with the user's decision, not a rejection;
+  //   - the freshly-landed primary ends visibly inert, because "a settled card
+  //     must never be left looking answerable" is the invariant every other
+  //     terminal path honours.
+  //
+  // The promise side was fixed by taking ownership before the settle check. The
+  // UI side needs the terminal STATE recorded: the terminal render that fires
+  // when the decision arrives runs before `entry.messageId` exists and returns
+  // immediately, so the send-race replay has to know what the user actually chose.
+  // Without that, `terminalState` stayed unset for a user decision and the card
+  // kept its live Start/Decline/Cancel controls with nothing left to answer them.
+  const { outcome, terminal } = await runOpeningSendRace("decline");
+  expect(outcome).toEqual({ action: "decline", responderId: "user-A" });
+  // The card the user is left with says what they chose and has no controls.
+  expect(terminal.content).toContain("declined");
+  expect(terminal.components).toEqual([]);
+});
+
+test("a Cancel whose opening send finishes in flight resolves AND terminalises the card", async () => {
+  // Same race, other control: Cancel must not be reported as a cancellation the
+  // user did not choose, and its card must end inert too.
+  const { outcome, terminal } = await runOpeningSendRace("cancel");
+  expect(outcome).toEqual({ action: "cancel", responderId: "user-A" });
+  expect(terminal.content).not.toContain("declined");
+  expect(terminal.content).toContain("cancelled");
+  expect(terminal.components).toEqual([]);
+});
+
+/**
+ * Drive the final-chunk send race: the opening's last send is held while the user
+ * clicks the named control, then released.
+ *
+ * Returns the decision the request settled with and the LAST edit applied to the
+ * primary message, which is where the terminal card lands.
+ */
+async function runOpeningSendRace(
+  action: "decline" | "cancel",
+): Promise<{
+  outcome: unknown;
+  terminal: { content: string; components: unknown[] };
+}> {
+  const client = makeFakeClient();
+  const realSend = client.sendMessage.bind(client);
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let released = false;
+  (client as unknown as { sendMessage: unknown }).sendMessage = async (target: never, body: never) => {
+    const isFinal = Boolean((body as { components?: unknown[] }).components?.length);
+    // Hold the FINAL chunk — the one carrying the controls — so the interaction
+    // can arrive while that send is still in flight. The message is recorded
+    // BEFORE the hold so the card is on screen for the user to click, which is
+    // exactly the race being reproduced.
+    if (isFinal && !released) {
+      released = true;
+      const result = await realSend(target, body);
+      await held;
+      return result;
+    }
+    return realSend(target, body);
+  };
+  const { channel } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "a", title: "A", required: true, maxLength: 4000 },
+    ]);
+    req.message = "X".repeat(6000);
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    // Let the opening publish its text chunks and park on the final one.
+    await new Promise((r) => setTimeout(r, 15));
+    // The user decides on the card they can already see.
+    client.emitButton(click(client, idFor(client, action)));
+    // Now the final send lands: the controls exist, and the turn is already
+    // decided. The decision must win, and the card must end up inert.
+    release();
+    const outcome = await Promise.race([
+      settled,
+      new Promise((r) => setTimeout(() => r("timeout"), 1000)),
+    ]);
+    // Wait for the queued terminal render to run: the enqueue is asynchronous to
+    // the decision, so a terminal card can land just after the promise settles.
+    await new Promise((r) => setTimeout(r, 30));
+    const last = client.edited[client.edited.length - 1]!;
+    return {
+      outcome,
+      terminal: {
+        content: String(last.body.content ?? ""),
+        components: (last.body.components ?? []) as unknown[],
+      },
+    };
+  } finally {
+    release?.();
+    await channel.stop().catch(() => {});
+  }
+}
+
+test("a plain expiry renders as expired, not cancelled", async () => {
+  // The send-race path already rendered an expiry through the recorded terminal
+  // state; the ordinary path hard-coded "cancelled". So the SAME outcome showed
+  // two different cards depending only on whether the opening had finished
+  // landing before the timer fired — "Request cancelled." normally, "Request
+  // expired." when the send raced it. Every terminal path now takes its wording
+  // from one mapping, so the race cannot change what the user is told.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    // Expire almost immediately so the timer fires after the opening has fully
+    // landed — the ordinary, non-send-race case.
+    const { request: req } = request([
+      { kind: "text", key: "a", title: "A", required: true, maxLength: 4000 },
+    ]);
+    req.expiresAt = Date.now() + 40;
+    const settled = channel.requestElicitation(req).then(
+      () => "resolved",
+      (e: Error) => e.message,
+    );
+    // Let the opening land in full first.
+    await new Promise((r) => setTimeout(r, 25));
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(await settled).toContain("expired");
+    // The card the user is left with names the outcome that happened and has no
+    // controls, exactly like every other terminal state.
+    const last = client.edited[client.edited.length - 1]!;
+    const content = String(last.body.content ?? "");
+    expect(content).toContain("expired");
+    expect(content).not.toContain("cancelled");
+    expect((last.body.components ?? []) as unknown[]).toEqual([]);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a channel stop renders an expired form as expired, not cancelled", async () => {
+  // The same hard-coded wording existed on the stop path: an entry that expired
+  // and then saw the channel stop would have been relabelled "cancelled" by the
+  // second terminal render, overwriting the correct one.
+  const client = makeFakeClient();
+  const { channel } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "a", title: "A", required: true, maxLength: 4000 },
+    ]);
+    req.expiresAt = Date.now() + 30;
+    const settled = channel.requestElicitation(req).then(
+      () => "resolved",
+      (e: Error) => e.message,
+    );
+    await new Promise((r) => setTimeout(r, 25));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(await settled).toContain("expired");
+    // Stopping the channel must not relabel the card.
+    await channel.stop();
+    const last = client.edited[client.edited.length - 1]!;
+    const content = String(last.body.content ?? "");
+    expect(content).toContain("expired");
+    expect(content).not.toContain("cancelled");
+  } finally {
+    await channel.logout();
+  }
+});
+
+test("chunking cannot reactivate escaped Markdown or split a surrogate pair", () => {
+  // Two boundaries a raw `slice(offset, offset + 1800)` crosses, and both are
+  // correctness bugs rather than cosmetic ones:
+  //
+  //   - it can cut between the `\` of an escape atom and the metacharacter it
+  //     introduces, so the NEXT message opens with a BARE `>` — a blockquote, the
+  //     structure the escaper removed, restored by the chunker;
+  //   - it can cut between a surrogate pair's halves, emitting one unpaired
+  //     surrogate per message so the character is unrecoverable on both sides.
+  const build = (message: string): string[] => {
+    const opening = buildElicitationOpening(
+      {
+        requestId: "r",
+        chatKey: "c",
+        agent: { name: "codex" },
+        message,
+        mode: "form",
+        fields: [],
+        requester: { senderId: "ou" },
+        expiresAt: Date.now() + 60_000,
+        signal: new AbortController().signal,
+      } as never,
+      "a".repeat(32),
+    );
+    return opening.contents;
+  };
+
+  // Structural repro: `"x" + ">".repeat(1000)`. Escaped, that is `\>` repeated
+  // 1000 times, so 1800 code units land exactly between a `\` and its `>`.
+  const structural = build(`x${">".repeat(1000)}`);
+  expect(structural.length).toBeGreaterThan(1);
+  // The FIRST message is the renderer's own header, which deliberately opens with
+  // `**`. Every CONTINUATION is pure agent text, and a continuation opening with a
+  // bare metacharacter is exactly the reactivation this test is for.
+  for (const chunk of structural.slice(1)) {
+    expect(chunk.startsWith(">")).toBe(false);
+    expect(chunk.startsWith("#")).toBe(false);
+    expect(chunk.startsWith("|")).toBe(false);
+    expect(chunk.startsWith("`")).toBe(false);
+    expect(chunk.startsWith("*")).toBe(false);
+    expect(chunk.startsWith("_")).toBe(false);
+    expect(chunk.startsWith("~")).toBe(false);
+  }
+  // The escape atoms survive intact: no chunk ends on a lone `\`.
+  for (const chunk of structural) {
+    expect(chunk.endsWith("\\")).toBe(false);
+  }
+  // And nothing was lost: the concatenation still renders the original text once
+  // Discord processes the escapes, which means every atom is whole.
+  expect(structural.map((chunk) => chunk.replace(/\\/g, "")).join("")).toContain(">".repeat(1000));
+
+  // Surrogate repro: fill past the first boundary with ASCII, then an emoji.
+  const withEmoji = build(`${"a".repeat(1799)}😀${"b".repeat(200)}`);
+  expect(withEmoji.length).toBeGreaterThan(1);
+  // Code-point count is the load-bearing check: a split surrogate pair shows up as
+  // one MORE UTF-16 unit than code points. The emoji is one code point worth two
+  // units, so a whole chunk with the emoji in it has cps === len - 1, and a split
+  // would leave an unpaired half on each side with cps === len.
+  for (const chunk of withEmoji) {
+    expect([...chunk].length).toBe(chunk.length - (chunk.includes("\u{1F600}") ? 1 : 0));
+  }
+  // The emoji is in exactly one message and intact.
+  expect(withEmoji.filter((chunk) => chunk.includes("😀"))).toHaveLength(1);
+});
+
+/**
+ * A request the renderability gate can measure field cards against.
+ *
+ * The gate is REQUEST-REQUIRED: its field budget is measured over the text
+ * `buildElicitationFieldCard` actually builds, which depends on the real
+ * `agent.name`, and it also decides whether a private route may show a form at
+ * all. A DM route keeps every existing case renderable so they keep asserting
+ * what they were written to assert.
+ */
+function rendererRequestFor(
+  fields: readonly ChannelElicitationField[],
+): ChannelElicitationRequest {
+  return {
+    requestId: "r",
+    chatKey: "discord:default:dm:c1",
+    chatType: "direct",
+    requester: { senderId: "ou" },
+    agent: { name: "codex" },
+    message: "m",
+    mode: "form",
+    fields,
+    expiresAt: Date.now() + 60_000,
+    signal: new AbortController().signal,
+  };
+}
+
+test("a field description whose rendered text would overflow one message is refused", () => {
+  // A field page must stay a SINGLE message. The gate used to judge a description
+  // by RAW length (core allows 1000), but escaping doubles every Markdown
+  // metacharacter, so 1000 `*` chars become ~2000 escaped ones — more than one
+  // 1800-char card — and the field card took only `[0]`, silently cutting the
+  // question while its controls stayed enabled.
+  const verdict = checkElicitationRenderability([
+    { kind: "text", key: "note", title: "Note", required: true, maxLength: 100, description: "*".repeat(1000) },
+  ], rendererRequestFor([
+    { kind: "text", key: "note", title: "Note", required: true, maxLength: 100, description: "*".repeat(1000) },
+  ]));
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("field-text-too-long");
+  expect(verdict.detail).toContain("escaped chars");
+
+  // A plain ASCII description of the same raw length fits, because nothing
+  // escapes.
+  expect(checkElicitationRenderability([
+    { kind: "text", key: "note", title: "Note", required: true, maxLength: 100, description: "a".repeat(1000) },
+  ], rendererRequestFor([
+    { kind: "text", key: "note", title: "Note", required: true, maxLength: 100, description: "a".repeat(1000) },
+  ])).renderable).toBe(true);
+});
+
+test("the gate's field budget is the builder's, not a subset of it", async () => {
+  // The gate used to size title + description + default by hand, so it UNDER-
+  // measured by everything else the builder emits: the "Question N of M" label,
+  // the agent line, the hint, and the "Answer saved" line.
+  //
+  // This is the boundary case that slipped through: English locale, agent
+  // `codex`, title `Note`, description of 870 `*`. The subset measured ~1750
+  // escaped chars and passed; the real field body measured ~1818, so
+  // `chunkCardText` produced a SECOND chunk and the card kept only the first —
+  // the tail of the question was silently dropped with the controls still live.
+  //
+  // The gate now builds the exact text the builder builds, through one shared
+  // definition. Assert the two agree, at this boundary and on both sides of it,
+  // rather than pinning a number that a future wording change would invalidate.
+  const build = (
+    description: string,
+  ): { verdict: { renderable: boolean; reason?: string }; escapedBody: string; fitsOneMessage: boolean } => {
+    const field: ChannelElicitationField = {
+      kind: "text",
+      key: "note",
+      title: "Note",
+      required: true,
+      maxLength: 100,
+      description,
+    };
+    const request = {
+      requestId: "r",
+      chatKey: "c",
+      chatType: "direct",
+      agent: { name: "codex" },
+      message: "m",
+      mode: "form",
+      fields: [field],
+      requester: { senderId: "ou" },
+      expiresAt: Date.now() + 60_000,
+      signal: new AbortController().signal,
+    } as unknown as ChannelElicitationRequest;
+    const verdict = checkElicitationRenderability([field], request);
+    // Every agent-controlled character here doubles, so the escaped field body
+    // crosses the 1800-char budget.
+    //
+    // Measured EXACTLY the way the gate measures, which is with the WORST-CASE
+    // echo: the reserved echo is the escaped upper bound, because the answer is
+    // cut to RAW characters and only then escaped. Probing with a friendly ASCII
+    // sample would measure a narrower card than the gate judges, and the two sides
+    // would disagree for the wrong reason.
+    //
+    // The raw length is the field's OWN `maxLength`, not the echo bound: a field
+    // that caps its answer at 100 characters can never echo more than 100 raw
+    // characters, so reserving the full 200 against it would over-refuse legal
+    // forms — the opposite failure, and just as wrong. The gate and the probe must
+    // therefore agree on which of the two applies.
+    const echoRaw = Math.min(field.maxLength, FIELD_CARD_ANSWER_ECHO_MAX);
+    const escapedBody = buildElicitationFieldLines(
+      request,
+      field,
+      1,
+      "*".repeat(echoRaw),
+    ).join("\n\n");
+    return { verdict, escapedBody, fitsOneMessage: escapedBody.length <= 1800 };
+  };
+
+  // The two decisions must AGREE, at the boundary and either side of it. Rather
+  // than hardcoding star counts — which shift whenever the wording or the echo
+  // reserve changes — the boundary is SEARCHED, and both sides must agree on it.
+  //
+  // What is being asserted is the INVARIANT, not a number: whenever the builder's
+  // text fits one message, the gate says renderable; whenever it does not, the
+  // gate refuses with the budget reason. The old subset gate said `renderable:
+  // true` while the real card needed a second message, which is the silent
+  // truncation this closes.
+  for (const stars of [200, 400, 600, 700, 760, 765, 770, 775, 780, 800, 900]) {
+    const built = build("*".repeat(stars));
+    expect(built.verdict.renderable).toBe(built.fitsOneMessage);
+    if (built.fitsOneMessage) continue;
+    expect(built.verdict.reason).toBe("field-text-too-long");
+  }
+
+  // And the builder refuses to produce a card the gate would have passed: if it
+  // ever needs a second message, that is a gate/builder disagreement and must be
+  // loud rather than a truncated question.
+  const overflowing: ChannelElicitationField = {
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    maxLength: 100,
+    description: "*".repeat(900),
+  };
+  expect(() =>
+    buildElicitationFieldCard(
+      {
+        requestId: "r",
+        chatKey: "c",
+        agent: { name: "codex" },
+        message: "m",
+        mode: "form",
+        fields: [overflowing],
+        requester: { senderId: "ou" },
+        expiresAt: Date.now() + 60_000,
+        signal: new AbortController().signal,
+      } as unknown as ChannelElicitationRequest,
+      "tok",
+      overflowing,
+      1,
+      undefined,
+    ),
+  ).toThrow(/needs \d+ messages/);
+});
+
+test("a form asked on a group route is refused before anything is sent", async () => {
+  // The card carries the agent's question AND the user's answers. In a guild every
+  // member reads both, so an elicitation asked in a group publishes what the user
+  // told the agent — an API key, a token, a name. Authorising who may CLICK never
+  // limited who may SEE.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
+    ]);
+    // A group turn reports `group` from the channel's own ingress metadata.
+    req.chatType = "group";
+    const outcome = await channel.requestElicitation(req).then(
+      () => "resolved",
+      (e: Error) => e.message,
+    );
+    expect(outcome).toContain("route-not-private");
+    // Nothing was posted: no question and no controls reached the channel, so
+    // there is nothing for a member to read and nothing for the user to answer.
+    expect(client.sent).toHaveLength(0);
+    expect(client.edited).toHaveLength(0);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a form asked on an unreported route is refused, not treated as direct", async () => {
+  // Absent is not the same as private. A channel that reports no `chatType` has
+  // not established a 1:1 destination, and treating that as `direct` would be the
+  // fail-open this gate exists to prevent.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
+    ]);
+    // Delete what the helper set, so the request carries no `chatType` at all:
+    // that is the case where a channel reported nothing and the renderer has no
+    // evidence of a private destination.
+    delete (req as { chatType?: string }).chatType;
+    const outcome = await channel.requestElicitation(req).then(
+      () => "resolved",
+      (e: Error) => e.message,
+    );
+    expect(outcome).toContain("route-not-private");
+    expect(client.sent).toHaveLength(0);
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+test("a form asked on a direct private route still works", async () => {
+  // The control: a provably 1:1 destination renders normally, so the gate is not
+  // refusing forms outright.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  try {
+    const { request: req } = request([
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
+    ]);
+    req.chatType = "direct";
+    const settled = channel.requestElicitation(req).then(
+      (d) => d,
+      (e: Error) => e,
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    // The opening went out with its controls.
+    expect(client.sent.length).toBeGreaterThan(0);
+    client.emitButton(click(client, idFor(client, "decline")));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(await settled).toEqual({ action: "decline", responderId: "user-A" });
+  } finally {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  }
+});
+
+/** Text of the most recent edit, for asserting what the user is looking at. */
+function lastEditedContent(client: FakeDiscordClient): string {
+  return client.edited[client.edited.length - 1]!.body.content ?? "";
+}
+
+test("a select from an earlier card revision cannot overwrite a newer answer", async () => {
+  // The render queue serialises UI TRANSITIONS, not the answer state they write.
+  // A select interaction is applied straight to the entry, so one delivered after
+  // the wizard moved on would record a value the user is no longer looking at:
+  // `prod -> Review -> Edit -> staging -> Review -> delayed old select(prod)`
+  // left memory at prod while the Review card on screen still showed staging, and
+  // the next Submit sent what the user had replaced.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const req = request([
+    { kind: "single-select", key: "env", title: "Env", required: true, options: [
+      { value: "prod", label: "Prod" },
+      { value: "staging", label: "Staging" },
+    ] },
+  ]);
+  const { settled } = await startWizard(client, channel, req.request, "env");
+
+  // First field card: answer `prod`. The select id names that card's revision.
+  const prodSelect = selectCustomIdOf(client, "env");
+  client.emitSelect(select(client, prodSelect, ["prod"]));
+  await new Promise((r) => setTimeout(r, 5));
+  // The pending state is private; reach it the way the other tests in this file
+  // do, through a narrow structural cast of the entry rather than of the map.
+  const entry = (channel as unknown as {
+    pendingElicitations: Map<string, { values: Record<string, unknown>; renderRevision: number }>;
+  }).pendingElicitations.values().next().value!;
+  const prodRevision = entry.renderRevision;
+
+  // Review -> Edit, so the wizard moves to a later card.
+  client.emitButton(click(client, idFor(client, "review")));
+  await new Promise((r) => setTimeout(r, 5));
+  client.emitButton(click(client, idFor(client, "edit", 0)));
+  await new Promise((r) => setTimeout(r, 5));
+  expect(entry.renderRevision).toBeGreaterThan(prodRevision);
+
+  // Answer `staging` from the CURRENT card's select.
+  const stagingSelect = selectCustomIdOf(client, "env");
+  client.emitSelect(select(client, stagingSelect, ["staging"]));
+  await new Promise((r) => setTimeout(r, 5));
+  expect(entry.values.env).toBe("staging");
+
+  // The DELAYED select from the earlier card. Memory must not move back.
+  client.emitSelect(select(client, prodSelect, ["prod"]));
+  await new Promise((r) => setTimeout(r, 5));
+  expect(entry.values.env).toBe("staging");
+
+  // And the answer the user is looking at is what is sent.
+  client.emitButton(click(client, idFor(client, "review")));
+  await new Promise((r) => setTimeout(r, 5));
+  client.emitButton(click(client, idFor(client, "submit")));
+  expect(await settled).toEqual({
+    action: "accept",
+    responderId: "user-A",
+    content: { env: "staging" },
+  });
+  abort.abort();
+});
+
+test("a submit from an earlier review revision is refused after an edit", async () => {
+  // Review Submit is the accept path, and a Review the user has navigated away
+  // from must not commit pre-edit answers. This is the "user sees staging, system
+  // submits prod" case, and it is distinct from duplicate-click handling: the
+  // click is legitimate, the card it came from is not the current one.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const req = request([
+    { kind: "single-select", key: "env", title: "Env", required: true, options: [
+      { value: "prod", label: "Prod" },
+      { value: "staging", label: "Staging" },
+    ] },
+  ]);
+  const { settled } = await startWizard(client, channel, req.request, "env");
+
+  client.emitSelect(select(client, selectCustomIdOf(client, "env"), ["prod"]));
+  await new Promise((r) => setTimeout(r, 5));
+  client.emitButton(click(client, idFor(client, "review")));
+  await new Promise((r) => setTimeout(r, 5));
+  // The Submit on the FIRST review.
+  const earlyReviewSubmit = idFor(client, "submit");
+
+  // Go back, change the answer, come forward.
+  client.emitButton(click(client, idFor(client, "edit", 0)));
+  await new Promise((r) => setTimeout(r, 5));
+  client.emitSelect(select(client, selectCustomIdOf(client, "env"), ["staging"]));
+  await new Promise((r) => setTimeout(r, 5));
+  client.emitButton(click(client, idFor(client, "review")));
+  await new Promise((r) => setTimeout(r, 5));
+
+  // The stale Submit from the first review.
+  client.emitButton(click(client, earlyReviewSubmit));
+  await new Promise((r) => setTimeout(r, 5));
+  // Still live: the initiator must be able to answer it properly rather than
+  // having the turn end on a card they already navigated away from.
+  expect(await Promise.race([settled, new Promise((r) => setTimeout(() => r("pending"), 20))])).toBe("pending");
+
+  // The current Submit is the one that decides.
+  client.emitButton(click(client, idFor(client, "submit")));
+  expect(await settled).toEqual({
+    action: "accept",
+    responderId: "user-A",
+    content: { env: "staging" },
+  });
+  abort.abort();
+});
+
+test("a legal maxLength of 0 is refused rather than built into an invalid input", () => {
+  // Core's `readOptionalPositiveInteger` accepts 0 and its validator accepts
+  // `""` as satisfying `maxLength: 0`, so `{type:"string", maxLength:0}` is a
+  // legal question. Discord's Text Input `max_length` has a minimum of 1, so
+  // passing it through builds a component the platform rejects — the form
+  // renders its gate and then dies at send.
+  const field: ChannelElicitationField = {
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    maxLength: 0,
+  };
+  const verdict = checkElicitationRenderability([field], request([field]).request);
+  expect(verdict.renderable).toBe(false);
+  // Named for the impossibility, not for a capacity the field is nowhere near.
+  expect(verdict.reason).toBe("text-max-unsatisfiable");
+});
+
+test("a required text field that accepts the empty string is not made platform-required", () => {
+  // A JSON Schema `required` property means the key must be PRESENT, and `""` is
+  // present — core accepts it for `maxLength: 0`. Discord's `required` is
+  // stronger: an empty submit is refused outright. Copying the schema bit across
+  // therefore makes the ONLY legal answer unsendable.
+  const field: ChannelElicitationField = {
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    maxLength: 0,
+  };
+  const modal = buildElicitationModal("tok", field, undefined, 0);
+  const input = modal.components[0]!.component as { required?: boolean };
+  expect(input.required).toBe(false);
+});
+
+test("a text field that demands a non-empty value keeps the platform requirement", () => {
+  // The other side of the same mapping: `minLength >= 1` admits no empty answer,
+  // so the widget's requirement is not a restriction the schema would contradict.
+  const field: ChannelElicitationField = {
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    minLength: 1,
+    maxLength: 10,
+  };
+  const modal = buildElicitationModal("tok", field, undefined, 0);
+  const input = modal.components[0]!.component as { required?: boolean };
+  expect(input.required).toBe(true);
+});
+
+test("a submit delivered DURING the edit's ack cannot accept the pre-edit answers", async () => {
+  // The real window, with no sleep in it.
+  //
+  // The earlier regression awaited 5ms after the Edit, so the Edit's claim had
+  // already been published by the time the stale Submit arrived. That is not the
+  // race: the Edit handler mutates state, then awaits its ACK, and only THEN does
+  // the channel enqueue the rerender. A Submit that beats the ACK still names the
+  // card on screen — the review the user was reading — so a comparison against
+  // the PUBLISHED revision accepts it, and it settles the turn with the answers
+  // as they were before the edit.
+  //
+  // So the two interactions are emitted back to back and the Edit's ACK is held
+  // open, which is exactly how the window appears in production.
+  const client = makeFakeClient();
+  let release: (() => void) | null = null;
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  let editAckHeld = false;
+  const startChannelResult = await startChannel(client);
+  const { channel, abort } = startChannelResult;
+  const cleanup = async (): Promise<void> => {
+    release?.();
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "single-select", key: "env", title: "Env", required: true, options: [
+        { value: "prod", label: "Prod" },
+        { value: "staging", label: "Staging" },
+      ] },
+    ]);
+    const { settled } = await startWizard(client, channel, req.request, "env");
+    client.emitSelect(select(client, selectCustomIdOf(client, "env"), ["prod"]));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 6));
+    const reviewSubmit = idFor(client, "submit");
+
+    // The Edit, from the review page, back to the field.
+    editAckHeld = true;
+    const edit = click(client, idFor(client, "edit", 0));
+    const editPromise = (async () => {
+      // Re-enter the gateway with the held ACK, so the handler is parked inside
+      // the Edit exactly where the window is.
+      await client.emitButton({ ...edit, acknowledge: async () => { if (editAckHeld) await held; } });
+    })();
+
+    // The stale Submit, delivered while the Edit is still parked. NO sleep: the
+    // claim must have happened before the Edit's first await, or this lands.
+    const submit = click(client, reviewSubmit);
+    void client.emitButton({ ...submit, acknowledge: async () => {} });
+
+    // Let the Edit finish.
+    editAckHeld = false;
+    release?.();
+    await editPromise;
+    await new Promise((r) => setTimeout(r, 6));
+
+    // The turn must still be open: the stale Submit was refused, not settled.
+    expect(await Promise.race([settled, new Promise((r) => setTimeout(() => r("pending"), 20))])).toBe("pending");
+
+    // Change the answer, then submit for real: the decision carries the NEW value.
+    client.emitSelect(select(client, selectCustomIdOf(client, "env"), ["staging"]));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitButton(click(client, idFor(client, "submit")));
+    expect(await settled).toEqual({
+      action: "accept",
+      responderId: "user-A",
+      content: { env: "staging" },
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a replayed answer control cannot open a modal the newer card never drew", async () => {
+  // An unversioned Answer control was stamped with the CURRENT revision when the
+  // modal was built, which laundered a stale click: a modal every later fence
+  // would accept, opening a route the user is no longer on. The control now names
+  // its own card, and one that names no revision is refused outright.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
+    ]);
+    await startWizard(client, channel, req.request, "note");
+    // The Answer control on the current field card, which names its revision.
+    const answer = idFor(client, "field", 0);
+    client.emitButton(click(client, answer));
+    await new Promise((r) => setTimeout(r, 6));
+    const modalsBefore = client.modals.length;
+    expect(client.modals.length).toBeGreaterThan(0);
+
+    // A fabricated control with NO revision. It cannot be placed on any card the
+    // renderer publishes, so the handler must refuse it rather than grant it the
+    // current revision.
+    const token = answer.slice(ELICITATION_CUSTOM_ID_PREFIX.length, ELICITATION_CUSTOM_ID_PREFIX.length + 32);
+    const unversioned = `${ELICITATION_CUSTOM_ID_PREFIX}${token}:field:0`;
+    // Both layers must refuse it, pinned separately so a regression at either one
+    // is visible on its own instead of being masked by the other. Parser first: an
+    // id that names no card is not an id at all.
+    expect(parseElicitationCustomId(unversioned)).toBeNull();
+    // Then the handler, reached directly so its own fence is exercised even
+    // though the parser would already have stopped this id.
+    const modalsBeforeHandler = client.modals.length;
+    client.emitButton(click(client, unversioned));
+    await new Promise((r) => setTimeout(r, 6));
+    expect(client.modals.length).toBe(modalsBeforeHandler);
+    expect(client.modals.length).toBe(modalsBefore);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a replayed unversioned skip cannot delete a fresh answer", async () => {
+  // `old Skip -> Edit -> new answer -> replay(old unversioned Skip)` used to reach
+  // `markSkipped` and delete the answer the user had just given, because the
+  // Skip control carried no revision and the parser accepted it. Every Skip now
+  // names its card, and an id without a revision does not parse.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "text", key: "note", title: "Note", required: false, maxLength: 4000 },
+    ]);
+    await startWizard(client, channel, req.request, "note");
+    // Answer, so there is something a replayed Skip could delete.
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { note: "ship it" }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 6));
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { values: Record<string, unknown>; skipped: Set<string> }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.values.note).toBe("ship it");
+
+    // An UNVERSIONED replay of the Skip. This is the id the old renderer produced
+    // and the old parser accepted, so a duplicate delivery of it reached
+    // `markSkipped` and deleted the answer the user had just given. It must not
+    // parse at all, and the handler must not act on it.
+    const token = idFor(client, "skip", 0).slice(ELICITATION_CUSTOM_ID_PREFIX.length, ELICITATION_CUSTOM_ID_PREFIX.length + 32);
+    expect(parseElicitationCustomId(`${ELICITATION_CUSTOM_ID_PREFIX}${token}:skip:0`)).toBeNull();
+    client.emitButton(click(client, `${ELICITATION_CUSTOM_ID_PREFIX}${token}:skip:0`));
+    await new Promise((r) => setTimeout(r, 6));
+    expect(entry.values.note).toBe("ship it");
+
+    // The live, revisioned Skip still works: it is the honest way to clear an answer.
+    client.emitButton(click(client, idFor(client, "skip", 0)));
+    await new Promise((r) => setTimeout(r, 6));
+    expect(entry.values.note).toBeUndefined();
+    expect([...entry.skipped]).toEqual(["note"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a renderable required field is not made platform-required when the schema permits empty", () => {
+  // The exact row from the review: a REQUIRED property that is fully renderable
+  // and whose schema permits `""`. Copying the schema bit onto the widget made
+  // the empty string unsendable here, even though core accepts it.
+  const field: ChannelElicitationField = {
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    maxLength: 10,
+  };
+  const modal = buildElicitationModal("tok", field, undefined, 0, 1);
+  const input = modal.components[0]!.component as { required?: boolean };
+  expect(input.required).toBe(false);
+});
+
+test("a declared minLength of 0 keeps the empty answer offerable", () => {
+  // minLength: 0 is an EXPLICIT permission for the empty string, so it must not
+  // be turned into a platform requirement even by an inference.
+  const field: ChannelElicitationField = {
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    minLength: 0,
+    maxLength: 10,
+  };
+  const modal = buildElicitationModal("tok", field, undefined, 0, 1);
+  const input = modal.components[0]!.component as { required?: boolean };
+  expect(input.required).toBe(false);
+});
+
+test("a field that demands a non-empty value keeps the platform requirement", () => {
+  // The other side: minLength >= 1 admits no empty answer, so the widget's
+  // requirement is not a restriction the schema would contradict.
+  const field: ChannelElicitationField = {
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    minLength: 1,
+    maxLength: 10,
+  };
+  const modal = buildElicitationModal("tok", field, undefined, 0, 1);
+  const input = modal.components[0]!.component as { required?: boolean };
+  expect(input.required).toBe(true);
+});
+
+test("a failed rerender leaves the visible card's controls live, and a retry works", async () => {
+  // A revision is only valid once its controls are on screen.
+  //
+  // `rerenderElicitationCard` used to write `entry.renderRevision` before its
+  // first transport call, so a single failed `editMessage` left the app answering
+  // to a number no control on screen could name. The Start control on the opening
+  // card was then refused as stale, Decline and Cancel with it, and the request
+  // wedged until the timeout — with no way out for the user at all.
+  const client = makeFakeClient();
+  const realEdit = client.editMessage.bind(client);
+  let failNextEdit = false;
+  (client as unknown as { editMessage: unknown }).editMessage = async (
+    target: unknown,
+    messageId: string,
+    body: unknown,
+  ) => {
+    if (failNextEdit) {
+      failNextEdit = false;
+      throw new Error("simulated transient discord failure");
+    }
+    return realEdit(target as never, messageId, body as never);
+  };
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
+    ]);
+    const { settled } = await startWizard(client, channel, req.request, "note");
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { renderRevision: number; claimedRevision: number }>;
+    }).pendingElicitations;
+    // A wizard is live, so the card on screen is the FIELD card and its revision
+    // is published.
+    const entry = [...store.values()][0]!;
+    expect(entry.renderRevision).toBeGreaterThan(1);
+    const liveRevision = entry.renderRevision;
+
+    // Reject the next transition's primary edit. The screen keeps the live card.
+    failNextEdit = true;
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 10));
+    // The visible revision is UNCHANGED: nothing new was published, so nothing
+    // new may be addressable.
+    expect(entry.renderRevision).toBe(liveRevision);
+    // And the claim still moved — the allocator never reuses a spent number.
+    expect(entry.claimedRevision).toBeGreaterThan(entry.renderRevision);
+
+    // The terminal controls on the card the user is looking at still settle the
+    // request. This is the half the old comment asserted and the old code broke.
+    client.emitButton(click(client, idFor(client, "decline"), "user-A"));
+    expect(await settled).toEqual({ action: "decline", responderId: "user-A" });
+  } finally {
+    await cleanup();
+  }
+});
+
+
+test("the same Start control can be retried after its rerender failed", async () => {
+  // The other half of the same invariant: a TRANSIENT failure must not consume
+  // the control. The user clicks the very same Start button again, and it has to
+  // work — otherwise one failed edit makes the form unstartable.
+  const client = makeFakeClient();
+  const realEdit = client.editMessage.bind(client);
+  // Fail only the FIRST transition's edit, so the wizard never starts the first
+  // time and the opening card stays exactly as it is on screen.
+  let failNextEdit = true;
+  (client as unknown as { editMessage: unknown }).editMessage = async (
+    target: unknown,
+    messageId: string,
+    body: unknown,
+  ) => {
+    if (failNextEdit) {
+      failNextEdit = false;
+      throw new Error("simulated transient discord failure");
+    }
+    return realEdit(target as never, messageId, body as never);
+  };
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "text", key: "note", title: "Note", required: true, maxLength: 4000 },
+    ]);
+    const pending = channel.requestElicitation(req.request);
+    pending.catch(() => {});
+    await new Promise((r) => setTimeout(r, 10));
+    // The opening card, whose Start control is `:start:1`.
+    const startId = idFor(client, "start");
+    client.emitButton(click(client, startId));
+    await new Promise((r) => setTimeout(r, 10));
+    // The transition failed: no interactive card was published.
+    const interactiveEdits = client.edited.filter((e) => (e.body.components ?? []).length > 0);
+    expect(interactiveEdits).toHaveLength(0);
+
+    // The SAME control, again, against a healthy transport.
+    client.emitButton(click(client, startId));
+    await new Promise((r) => setTimeout(r, 10));
+    // The field card is on screen, so the wizard really moved.
+    expect(client.edited.filter((e) => (e.body.components ?? []).length > 0).length).toBeGreaterThan(0);
+
+    // And the request still resolves through the normal path, rather than
+    // having been wedged by the failed attempt.
+    client.emitButton(click(client, idFor(client, "decline"), "user-A"));
+    expect(await pending).toEqual({ action: "decline", responderId: "user-A" });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a replayed Skip cannot delete an answer after a remote-applied update lost its ACK", async () => {
+  // The ambiguity that makes this a state write: `editMessage` throwing does NOT
+  // prove the update did not land. Discord may have applied it and lost the
+  // confirmation, so the number has to be retired against what the app SENT, not
+  // against what it can still see.
+  //
+  //   field card rev=2 with answer "staging"
+  //   -> Review is clicked, claim=3, the remote applies rev=3, the ACK is lost
+  //   -> renderRevision is still 2 (nothing confirmed), claimedRevision is 3
+  //   -> the Skip control from rev=2, replayed
+  //
+  // Skip is a state write — value -> omitted is a real mutation — and it was being
+  // judged against `renderRevision`, so `2 < 2` was false, the handler claimed a
+  // new number, and `markSkipped` deleted the answer while the user was looking
+  // at a card they had already moved past.
+  const client = makeFakeClient();
+  const realEdit = client.editMessage.bind(client);
+  // Apply the edit, THEN throw: this is remote-applied / ACK-lost, not a
+  // rejected write. A throw before applying is a different, uninteresting case.
+  let loseNextAck = false;
+  (client as unknown as { editMessage: unknown }).editMessage = async (
+    target: unknown,
+    messageId: string,
+    body: unknown,
+  ) => {
+    const applied = await realEdit(target as never, messageId, body as never);
+    if (loseNextAck) {
+      loseNextAck = false;
+      throw new Error("simulated ACK loss after the update was applied");
+    }
+    return applied;
+  };
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "text", key: "note", title: "Note", required: false, maxLength: 4000 },
+    ]);
+    const { settled } = await startWizard(client, channel, req.request, "note");
+    // Answer the field, so there is something a replayed Skip could delete.
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { note: "staging" }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 6));
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, {
+        values: Record<string, unknown>;
+        skipped: Set<string>;
+        renderRevision: number;
+        claimedRevision: number;
+      }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.values.note).toBe("staging");
+    // The Skip control on the card the user is actually looking at, saved before
+    // anything else happens.
+    const earlierSkip = idFor(client, "skip", 0);
+
+    // Click Review, and lose its ACK after the remote applies it.
+    loseNextAck = true;
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 10));
+    // The remote DID advance — that is the point — but nothing was confirmed.
+    expect(entry.claimedRevision).toBeGreaterThan(entry.renderRevision);
+
+    // The replayed Skip from the superseded field card.
+    client.emitButton(click(client, earlierSkip));
+    await new Promise((r) => setTimeout(r, 10));
+    // The answer SURVIVES. The Skip is dropped rather than applied.
+    expect(entry.values.note).toBe("staging");
+    expect([...entry.skipped]).not.toContain("note");
+
+    // And the request is still answerable, which is the point of dropping rather
+    // than settling.
+    expect(await Promise.race([settled, new Promise((r) => setTimeout(() => r("pending"), 20))])).toBe("pending");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a live Skip still clears the answer, and a duplicate of it is idempotent", async () => {
+  // The other side: the same change must not make Skip unusable. A Skip naming
+  // the CURRENT claimed revision is the honest way to clear an answer, and
+  // clicking it twice must not do anything the first click did not.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "text", key: "note", title: "Note", required: false, maxLength: 4000 },
+    ]);
+    await startWizard(client, channel, req.request, "note");
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { note: "staging" }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 6));
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { values: Record<string, unknown>; skipped: Set<string> }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.values.note).toBe("staging");
+    const liveSkip = idFor(client, "skip", 0);
+    client.emitButton(click(client, liveSkip));
+    await new Promise((r) => setTimeout(r, 6));
+    expect(entry.values.note).toBeUndefined();
+    expect([...entry.skipped]).toEqual(["note"]);
+    // A duplicate of the same control: still just once, and nothing new is removed.
+    client.emitButton(click(client, liveSkip));
+    await new Promise((r) => setTimeout(r, 6));
+    expect([...entry.skipped]).toEqual(["note"]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a captured terminal decision still settles after the card advances", async () => {
+  // Decline and Cancel are the user's decision about the REQUEST, not about the
+  // wizard's position. The parser deliberately leaves their revision optional on
+  // exactly that basis, but the handler's generic fence ran before the switch and
+  // dropped them anyway: a user who pressed Decline on the review card saw the
+  // request stay live with no visible way to end it.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "single-select", key: "env", title: "Env", required: true, options: [
+        { value: "prod", label: "Prod" },
+        { value: "staging", label: "Staging" },
+      ] },
+    ]);
+    const { settled } = await startWizard(client, channel, req.request, "env");
+    // The review card, and its Decline control, captured before anything moves.
+    client.emitSelect(select(client, selectCustomIdOf(client, "env"), ["prod"]));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 6));
+    const capturedDecline = idFor(client, "decline");
+
+    // Advance the card: Edit back to the field, which publishes a newer revision.
+    client.emitButton(click(client, idFor(client, "edit", 0)));
+    await new Promise((r) => setTimeout(r, 6));
+    // The captured Decline now names a superseded revision.
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, { renderRevision: number }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    const [capturedRevision] = capturedDecline.split(":").slice(-1);
+    expect(Number(capturedRevision)).toBeLessThan(entry.renderRevision);
+
+    // The delayed terminal decision, delivered against the newer card.
+    client.emitButton(click(client, capturedDecline, "user-A"));
+    expect(await settled).toEqual({ action: "decline", responderId: "user-A" });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a captured Cancel still settles after the card advances", async () => {
+  // The other terminal int, and the one that matters most to exempt: Cancel is the
+  // user's way out of a request they no longer want, and a stale fence turned it
+  // into a timeout instead.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "single-select", key: "env", title: "Env", required: true, options: [
+        { value: "prod", label: "Prod" },
+        { value: "staging", label: "Staging" },
+      ] },
+    ]);
+    const { settled } = await startWizard(client, channel, req.request, "env");
+    client.emitSelect(select(client, selectCustomIdOf(client, "env"), ["prod"]));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 6));
+    const capturedCancel = idFor(client, "cancel");
+
+    client.emitButton(click(client, idFor(client, "edit", 0)));
+    await new Promise((r) => setTimeout(r, 6));
+
+    client.emitButton(click(client, capturedCancel, "user-A"));
+    expect(await settled).toEqual({ action: "cancel", responderId: "user-A" });
+  } finally {
+    await cleanup();
+  }
+});
+
+test("a superseded navigation control is still refused, so the exemption is not a blanket bypass", async () => {
+  // The terminal exemption must not become "everything is live". A stale Skip
+  // would still delete an answer, and a stale Edit would move the wizard.
+  const client = makeFakeClient();
+  const { channel, abort } = await startChannel(client);
+  const cleanup = async (): Promise<void> => {
+    abort.abort();
+    await channel.stop().catch(() => {});
+  };
+  try {
+    const req = request([
+      { kind: "text", key: "note", title: "Note", required: false, maxLength: 4000 },
+    ]);
+    await startWizard(client, channel, req.request, "note");
+    // Answer, so a stale Skip would have something to delete.
+    client.emitButton(click(client, idFor(client, "field", 0)));
+    await new Promise((r) => setTimeout(r, 6));
+    client.emitModal(modal(client, client.modals[client.modals.length - 1]!.customId, { note: "ship it" }, "user-A", 0));
+    await new Promise((r) => setTimeout(r, 6));
+    // The Skip control on the card the user is looking at, captured before the
+    // wizard moves on.
+    const staleSkip = idFor(client, "skip", 0);
+    // Advance past it, to the review page and therefore to a newer revision.
+    client.emitButton(click(client, idFor(client, "review")));
+    await new Promise((r) => setTimeout(r, 6));
+    const store = (channel as unknown as {
+      pendingElicitations: Map<string, {
+        values: Record<string, unknown>;
+        visitedReview: boolean;
+        renderRevision: number;
+      }>;
+    }).pendingElicitations;
+    const entry = [...store.values()][0]!;
+    expect(entry.visitedReview).toBe(true);
+    const [capturedRevision] = staleSkip.split(":").slice(-1);
+    expect(Number(capturedRevision)).toBeLessThan(entry.renderRevision);
+
+    // Replay the superseded Skip.
+    client.emitButton(click(client, staleSkip));
+    await new Promise((r) => setTimeout(r, 6));
+    // The answer survives: the exemption is scoped to terminal intent.
+    expect(entry.values.note).toBe("ship it");
+  } finally {
+    await cleanup();
+  }
+});

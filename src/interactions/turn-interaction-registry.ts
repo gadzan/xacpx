@@ -34,6 +34,20 @@ export interface TurnInteractionContext {
   senderName?: string;
   isOwner?: boolean;
   origin: HumanInteractionOrigin;
+  /**
+   * Whether this turn's destination is provably 1:1.
+   *
+   * A TRUSTED INGRESS FACT, propagated from the `ChatRequestMetadata` the channel
+   * itself supplied for this turn — never inferred downstream from the chatKey,
+   * which would be a guess at best.
+   *
+   * Rendering an elicitation form is a privacy decision, not just a UI one: the
+   * form shows the agent's question AND the user's answers, and a group
+   * destination shows both to every member. `undefined` means the channel did not
+   * tell us, which is not the same as "direct", so it must be treated as not
+   * provably private.
+   */
+  chatType?: "direct" | "group";
 }
 
 export interface TurnInteractionRegistry {

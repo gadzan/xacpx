@@ -77,4 +77,29 @@ export interface FeishuMessages {
   completionDone: (displayAlias: string) => string;
   /** Short notice when a backgrounded session fails. */
   completionError: (displayAlias: string) => string;
+
+  // ---- elicitation (ACP form) ----
+  elicitationTitle: string;
+  elicitationFromAgent: (agent: string) => string;
+  elicitationStart: string;
+  elicitationDecline: string;
+  elicitationCancel: string;
+  elicitationSubmit: string;
+  elicitationSkip: string;
+  elicitationYes: string;
+  elicitationNo: string;
+  elicitationReview: string;
+  elicitationEdit: string;
+  elicitationProgress: (answered: number, total: number) => string;
+  elicitationFieldLabel: (index: number, total: number) => string;
+  elicitationOptional: string;
+  elicitationUnsupported: string;
+  elicitationExpired: string;
+  elicitationCancelled: string;
+  elicitationAccepted: string;
+  elicitationDeclined: string;
+  elicitationUnauthorized: string;
+  elicitationAlreadyResolved: string;
+  elicitationAnswerSaved: string;
+  elicitationNoAnswer: string;
 }

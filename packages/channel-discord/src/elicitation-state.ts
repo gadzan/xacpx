@@ -1,0 +1,254 @@
+/**
+ * Server-side pending state for Discord form Elicitation.
+ *
+ * Answer values live HERE and nowhere else. They must never enter a Discord
+ * `custom_id` (a message component id is visible in every interaction payload,
+ * gateway log and webhook trace) nor any persisted or loggable surface, so this
+ * module is deliberately the only holder: the UI layer receives an opaque token
+ * and a routing identity and looks the rest up by token.
+ *
+ * This mirrors `PendingDiscordPermission` (permission-ui.ts) — same
+ * first-terminal-decision rule, same commit-before-ack ordering — but adds
+ * multi-field mutable answer state, because Elicitation collects several values
+ * over a wizard rather than one binary outcome.
+ */
+import type {
+  ChannelElicitationDecision,
+  ChannelElicitationRequest,
+  ChannelElicitationValue,
+} from "xacpx/plugin-api";
+
+export interface PendingDiscordElicitation {
+  /** Opaque correlation handle. Not authorization, never an answer. */
+  token: string;
+  /** Core broker correlation id, for logs only. */
+  requestId: string;
+  /** The platform-authenticated initiator every callback is checked against. */
+  requesterId: string;
+  accountId?: string;
+  target: { channelId: string; guildId?: string };
+  messageId?: string;
+  /** The original request, kept read-only (core froze `fields`). */
+  request: ChannelElicitationRequest;
+  /**
+   * Answers collected so far, keyed by field key. Memory only.
+   *
+   * NULL-PROTOTYPE, not `{}`: core allows `__proto__`, `constructor` and
+   * `toString` as legal field keys, and a plain object would let an inherited
+   * `constructor` read back as an answer to a question nobody answered, while
+   * assigning `__proto__` would mutate this dictionary's own prototype instead
+   * of recording a value. Every read therefore also uses `Object.hasOwn` rather
+   * than comparing against `undefined`.
+   */
+  values: Record<string, ChannelElicitationValue>;
+  /**
+   * Optional fields the user explicitly left blank.
+   *
+   * Separate from `values` because the two mean different things to ACP: a key
+   * in `values` was ANSWERED (including with an empty string), a key in
+   * `skipped` was deliberately NOT. Review-and-modify includes going back to
+   * "no answer", and an empty string cannot express that — it is a real answer.
+   */
+  skipped: Set<string>;
+  /**
+   * Wizard position. Undefined on the opening card; set once the user starts.
+   * Undefined means "the field wizard has not been entered yet", which is a
+   * distinct state from "no fields" — a form the user declined from the first
+   * card is a decline, not an empty submission.
+   */
+  currentField?: string;
+  /**
+   * Message ids of this request's continuation messages — the chunks past the
+   * first, which carry the rest of a long review or opening text. Tracked so
+   * they can be edited in place on the next rerender and deleted when the
+   * request settles; a leaked continuation shows a stale card forever.
+   *
+   * The FIRST message is `messageId` (the one that carries the controls).
+   */
+  continuationMessageIds: string[];
+  /**
+   * Whether the primary's Submit is currently disabled because a multi-message
+   * review is mid-transaction.
+   *
+   * A review whose continuations are being edited in place can be left in a
+   * MIXED state by a failure — the old primary (itself a review card, with a
+   * live Submit) plus new continuations plus the old tail. The old primary's
+   * Submit must therefore be disabled before any continuation is touched, and
+   * only restored once the whole set is consistent.
+   */
+  submitGateClosed: boolean;
+  /**
+   * Which review page the user is on. A form wider than one action row is a
+   * navigable list, so the page is state rather than derived from the field.
+   */
+  reviewPage: number;
+  /**
+   * The revision of the card most recently drawn for this request.
+   *
+   * Discord's render queue serialises UI transitions, but it does NOT serialise
+   * the answer state those transitions write. So a select or modal answer that
+   * arrives after the wizard has moved on would record a value the user is no
+   * longer looking at: `prod -> Review -> Edit -> staging -> Review -> delayed
+   * old select(prod)` left memory holding prod while the Review card on screen
+   * still showed staging, and the next Submit sent what the user never saw.
+   *
+   * Every interactive control carries the revision of the card it was drawn on,
+   * and a state-mutating interaction that names an OLDER revision is dropped
+   * rather than applied. Bumped by each rerender, so the number is a revision of
+   * the card rather than a count of interactions.
+   */
+  renderRevision: number;
+  /**
+   * Highest revision already CLAIMED by a handler, one ahead of what the user can
+   * see.
+   *
+   * Two numbers, because one cannot express both facts. `renderRevision` is what
+   * the card on screen wears — the only revision a control could legitimately
+   * name. `claimedRevision` is what the app has already decided is spent, which
+   * is a strictly larger number while a handler is still awaiting its ACK.
+   *
+   * Keeping them apart is what closes the window. A handler claims synchronously,
+   * so a fast `Edit -> Submit` delivered during the Edit's ACK is refused by
+   * number. But if that same counter were the one compared against, the Edit's
+   * OWN interaction would be refused too: by the time `handleElicitationClick`
+   * runs its fence, the claim has already advanced past the number the Click
+   * legitimately named. The fence therefore compares against `renderRevision`,
+   * which stays put until a card is actually published — and the claim is what
+   * makes every LATER interaction stale.
+   *
+   * Normally differs from `renderRevision` only for the duration of an in-flight
+   * handler; equal again once its rerender publishes.
+   */
+  claimedRevision: number;
+  /**
+   * Whether the wizard has shown the review page. Distinguishes the review
+   * control's two intents (Next forward vs. Edit back) without adding a second
+   * control whose action could be confused with a field action.
+   */
+  visitedReview: boolean;
+  settled: boolean;
+  /**
+   * Terminal UI state for a send that completes after settlement (send race).
+   *
+   * Covers BOTH sources of settlement, because the send race does not care which
+   * one fired: an abort or expiry is `"cancelled"`/`"expired"`, and a USER's own
+   * Decline or Cancel is the word for what they chose. Without the user cases the
+   * terminal render of a decision that lands while the opening is still in flight
+   * was silently dropped — the promise resolved correctly, but the card kept its
+   * live Start/Decline/Cancel controls with nothing left to answer them, which is
+   * the same "a settled card must end visibly inert" invariant every other
+   * terminal path already honours.
+   */
+  terminalState?: "expired" | "cancelled" | "declined" | "accepted";
+  resolve: (decision: ChannelElicitationDecision) => void;
+  reject: (error: Error) => void;
+}
+
+/**
+ * Settle entry atomically. Returns true for the caller that won the race.
+ *
+ * Checking and setting `settled` inside one synchronous function is what makes
+ * "first terminal decision wins" real: a duplicate click, a modal that was in
+ * flight when the request resolved, and a stop-timeout callback all race here,
+ * and only one of them may pass. A check-then-set split across an `await` would
+ * let two callbacks through when both were dispatched before either resumed.
+ */
+export function trySettle(entry: PendingDiscordElicitation): boolean {
+  if (entry.settled) return false;
+  entry.settled = true;
+  return true;
+}
+
+/**
+ * Create the pending answer map.
+ *
+ * `Object.create(null)` is the point: field keys are arbitrary JSON property
+ * names, so `__proto__` must be a data property rather than a prototype write,
+ * and `constructor`/`toString` must not appear to be present when they are not.
+ */
+export function createAnswerMap(): Record<string, ChannelElicitationValue> {
+  return Object.create(null) as Record<string, ChannelElicitationValue>;
+}
+
+/** Whether this field has an answer recorded. Presence, never `!== undefined`. */
+export function hasAnswer(entry: PendingDiscordElicitation, fieldKey: string): boolean {
+  return Object.hasOwn(entry.values, fieldKey);
+}
+
+/** Whether the field's outcome is settled — answered or explicitly skipped. */
+export function isResolved(entry: PendingDiscordElicitation, fieldKey: string): boolean {
+  return Object.hasOwn(entry.values, fieldKey) || entry.skipped.has(fieldKey);
+}
+
+/** Record an answer, clearing any earlier skip for the same field. */
+export function recordAnswer(
+  entry: PendingDiscordElicitation,
+  fieldKey: string,
+  value: ChannelElicitationValue,
+): void {
+  entry.values[fieldKey] = value;
+  entry.skipped.delete(fieldKey);
+}
+
+/**
+ * Mark an optional field explicitly unanswered.
+ *
+ * Deletes any existing answer: ACP's review-and-modify requirement includes
+ * going from a value back to omitted, and a Skip that could not clear an earlier
+ * answer made that transition impossible.
+ */
+export function markSkipped(entry: PendingDiscordElicitation, fieldKey: string): void {
+  delete entry.values[fieldKey];
+  entry.skipped.add(fieldKey);
+}
+
+/** Wizard progression over the frozen field list. */
+export function firstUnansweredKey(entry: PendingDiscordElicitation): string | undefined {
+  return entry.request.fields.find((field) => !Object.hasOwn(entry.values, field.key))?.key;
+}
+
+/** The next field the user has not yet chosen an outcome for, if any. */
+export function nextUnresolvedKey(entry: PendingDiscordElicitation): string | undefined {
+  return entry.request.fields.find((field) => !isResolved(entry, field.key))?.key;
+}
+
+export function nextFieldKey(entry: PendingDiscordElicitation): string | undefined {
+  const keys = entry.request.fields.map((field) => field.key);
+  const index = entry.currentField ? keys.indexOf(entry.currentField) : -1;
+  return keys[index + 1];
+}
+
+export function isFormComplete(entry: PendingDiscordElicitation): boolean {
+  return entry.request.fields.every((field) => Object.hasOwn(entry.values, field.key));
+}
+
+/**
+ * Number of fields still needing an answer, for the progress line.
+ *
+ * Optional fields count as "answered" once the wizard has passed them: an
+ * optional field the user skipped is an answer (absent), not a blocking hole,
+ * and counting it would make the progress line never reach completion.
+ */
+export function remainingFieldCount(entry: PendingDiscordElicitation): number {
+  return entry.request.fields.filter((field) => !Object.hasOwn(entry.values, field.key)).length;
+}
+
+/**
+ * Build the ACP answer object for a reviewed form.
+ *
+ * A dict of OWN properties only, with `null` when nothing was answered. The
+ * null-prototype output matters: core's own validator builds one for exactly the
+ * same reason, and a plain `{}` would let an inherited `toString` be copied into
+ * the answer set.
+ */
+export function buildAnswerContent(
+  entry: PendingDiscordElicitation,
+): Record<string, ChannelElicitationValue> | null {
+  const collected = createAnswerMap();
+  for (const field of entry.request.fields) {
+    if (!Object.hasOwn(entry.values, field.key)) continue;
+    if (entry.skipped.has(field.key)) continue;
+    collected[field.key] = entry.values[field.key]!;
+  }
+  return Object.keys(collected).length === 0 ? null : collected;
+}
