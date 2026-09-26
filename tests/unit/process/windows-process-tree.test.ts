@@ -156,8 +156,9 @@ test("tree worker compares ancestry ordering against the SAME snapshot, never th
   // The child window and the parent window come from ONE CIM snapshot, so the
   // parent side of the ordering check must stay that snapshot value. After
   // OpenVerified succeeds the traversal node holds the kernel FILETIME, and a
-  // CIM-quantized child (1-9 ticks BELOW the kernel value) measured against it
-  // reads as "child predates parent" even when the child was created later.
+  // CIM-quantized child — up to 9 ticks either side of the kernel value, since
+  // the rounding direction is not guaranteed — measured against it can read as
+  // "child predates parent" even when the child was created later.
   // Reading the parent from the traversal node would abort every legitimate
   // parent/child pair created within the same 1µs CIM bucket as
   // rootOutcome: query-failed.

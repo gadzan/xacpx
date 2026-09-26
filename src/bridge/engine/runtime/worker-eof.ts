@@ -188,6 +188,15 @@ export const CREATION_IDENTITY_TOLERANCE_TICKS = 9n;
  * because two different processes of a reused pid both report null when their
  * creation time cannot be read. A null never merges with a timestamped record.
  *
+ * Because of that, the null branch FAILS CLOSED on any positive disagreement in
+ * the snapshot fingerprint: two null records naming the same pid with different
+ * commandLine or executablePath are NOT the same process by this predicate
+ * either. Returning true there would make this helper assert the very identity
+ * `clusterFit` refuses, and it is exported — a caller treating it as the
+ * authoritative comparison would re-introduce an unsafe merge. Absent that
+ * disagreement this is still only the weaker "compatible" relation, so merge
+ * still decides through `clusterFit`, never through this function.
+ *
  * Attribution decides what timestamp equality means:
  *   handle ↔ handle — exact. Both are the kernel value.
  *   cim ↔ cim       — exact. Both rows quantize the same instant identically.
@@ -207,7 +216,17 @@ export const CREATION_IDENTITY_TOLERANCE_TICKS = 9n;
  */
 export function sameProcessIdentity(a: ProcessIdentity, b: ProcessIdentity): boolean {
   if (a.pid !== b.pid) return false;
-  if (a.creationDate === null || b.creationDate === null) return a.creationDate === b.creationDate;
+  if (a.creationDate === null || b.creationDate === null) {
+    // Only one null: no creation-time authority to bridge, and the one timestamped
+    // side's value says nothing about the other. Never the same process.
+    if (a.creationDate === null && b.creationDate === null) {
+      // Both null: compatible only as far as the snapshot fingerprint agrees.
+      // Disagreement on either field is positive evidence of two processes of one
+      // reused pid, so this must return false rather than assert identity.
+      return a.commandLine === b.commandLine && a.executablePath === b.executablePath;
+    }
+    return false;
+  }
   if (a.fingerprintSource === b.fingerprintSource) return a.creationDate === b.creationDate;
   // An unattributed print (explicit "unknown" or an absent field) makes no claim
   // about quantization, so it grants no tolerance.

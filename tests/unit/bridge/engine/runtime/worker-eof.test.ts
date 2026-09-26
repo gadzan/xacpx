@@ -1041,6 +1041,36 @@ test("merge: a pre-formed cluster never joins a cluster its own history contradi
   expect(compatible.outcomes[0]!.outcome).toBe("killed");
 });
 
+test("sameProcessIdentity: two null rows of one pid are NOT the same process when their fingerprints disagree", () => {
+  // `clusterFit` refuses to merge a null observation into a cluster whose row it
+  // is not an exact repeat of. The exported pairwise predicate must agree with
+  // that, or a caller treating it as authoritative would assert the identity the
+  // merge refuses — re-introducing the unsafe rule that a dead incarnation's safe
+  // outcome can resolve a live one's evidence. `null === null` is the ABSENCE of
+  // creation-time authority, not evidence of identity.
+  const p1 = {
+    pid: 5002, creationDate: null,
+    commandLine: "old", executablePath: "C:\\old.exe",
+  };
+  const p2 = {
+    pid: 5002, creationDate: null,
+    commandLine: "new", executablePath: "C:\\new.exe",
+  };
+  expect(sameProcessIdentity(p1, p2)).toBe(false);
+  expect(sameProcessIdentity(p2, p1)).toBe(false);
+
+  // A null never merges with a timestamped record in either direction.
+  const stamped = { pid: 5002, creationDate: "133801632000000010", fingerprintSource: "cim" as const };
+  expect(sameProcessIdentity(p1, stamped)).toBe(false);
+  expect(sameProcessIdentity(stamped, p1)).toBe(false);
+
+  // An EXACT repeat of the same snapshot is still one process: this is what keeps
+  // a failing process's per-round re-report from forking an unbounded set of
+  // clusters.
+  const p1Again = { ...p1 };
+  expect(sameProcessIdentity(p1, p1Again)).toBe(true);
+});
+
 test("evidence identity keeps a reused pid separate", () => {
   // Same pid, creation times far apart: a different process that reused the pid.
   // Both must stay required evidence.
@@ -1132,6 +1162,16 @@ test("merge: a canonicalized row later denied its creation time stays the same i
   // successful handle check) and is LATER reported with a denied creation time is
   // still that same identity: it arrives carrying the print the cluster already
   // holds, which is the pointer that identifies it.
+  //
+  // PROVENANCE OF THIS SHAPE: it is a COMPOSITION / defense-in-depth case, not a
+  // raw worker round. `identityPrints` is internal bookkeeping that a decoder never
+  // produces, and `convergeOrphansBeforeExit` always merges
+  // `a = accumulated` / `b = fresh worker result`, so a fresh `b` carries no such
+  // history. The natural worker sequence for the same process (null one round,
+  // timestamped the next) does NOT reunite today — it forks into two clusters —
+  // exactly as it did on `main`, whose identity key included the creation time
+  // too. This test pins the comparator's behaviour for a caller that DOES compose
+  // evidence; it does not assert a production lifecycle.
   const identified = mergeEvidence(
     { verified: false, outcomes: [], leftover: [] },
     {
