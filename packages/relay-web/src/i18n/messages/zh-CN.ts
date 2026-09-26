@@ -664,6 +664,7 @@ export default {
     },
     run: {
       failed: "运行失败",
+      memberCompleted: "已完成",
       cancelled: "运行已取消",
       indeterminate: "状态不确定",
       indeterminateHint: "因取消或超时，运行结果未确认。服务端就绪时将自动对齐状态。",

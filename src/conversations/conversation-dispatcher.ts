@@ -23,6 +23,11 @@ import type {
 } from "./conversation-turn-runner";
 import { TERMINAL_MEMBER_STATES, type MemberTurnRecord } from "./conversation-types";
 
+/** Public transcript bound for one frozen Group batch. The window is taken
+ *  newest-first immediately before the request boundary, so a Topic longer
+ *  than this still hands members the closest prior context. */
+export const PUBLIC_TRANSCRIPT_MESSAGES = 500;
+
 export interface ConversationDispatcherHooks {
   afterClaim?: (work: ClaimedWork) => Promise<void>;
   beforeRuntimeMaterialize?: (work: ClaimedWork) => Promise<void>;
@@ -630,12 +635,20 @@ export class ConversationDispatcher {
    */
   private frozenGroupTranscript(work: ClaimedWork): string {
     const request = this.store.getMessage(work.run.requestMessageId);
-    const boundary = request?.seq ?? Number.POSITIVE_INFINITY;
-    const transcript = this.store.listMessages({
-      conversationId: work.run.conversationId,
-      topicId: work.run.topicId,
-      limit: 500,
-    }).filter((message) => message.seq < boundary);
+    const boundary = request?.seq;
+    // The window is the newest PUBLIC_TRANSCRIPT_MESSAGES messages strictly
+    // before the request boundary — never the oldest rows in the Topic. On a
+    // Topic longer than the bound, the members closest to the request are the
+    // relevant context; the tail is ahead of the boundary and is excluded
+    // anyway, and the head predates what this batch can react to.
+    const transcript = boundary === undefined
+      ? []
+      : this.store.listMessages({
+        conversationId: work.run.conversationId,
+        topicId: work.run.topicId,
+        beforeSeq: boundary,
+        limit: PUBLIC_TRANSCRIPT_MESSAGES,
+      });
     const lines = transcript.map((message) => {
       if (message.role === "human") {
         return `Human: ${message.content}`;

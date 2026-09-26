@@ -275,6 +275,15 @@ export class ConversationRunService {
       throw new ConversationError("conversation_not_group", `conversation "${input.conversationId}" is not a Group`);
     }
     const parsed = this.parseGroupTarget(input.target, conversation);
+    // Durable idempotency first: a retry of an already-accepted request must
+    // return the original Run even when current live state (membership,
+    // Topic status, deletion) would reject the request. Direct prompt has the
+    // same precedence (`getAcceptedRequest` before live checks) — the Web
+    // relies on it to survive a lost response with `currentDraftRequestId`.
+    const alreadyAccepted = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
+    if (alreadyAccepted) {
+      return alreadyAccepted;
+    }
     for (;;) {
       const probeIds = this.groupMemberCandidates(input.conversationId, parsed);
       const gateSet = new Set(probeIds);

@@ -81,14 +81,37 @@ function turnStateLabel(state: MemberTurnSummaryDto["state"]): string {
 }
 
 function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
-  if (m.runId && groupsStore.completeRunParts[m.runId]?.length) {
-    return groupsStore.completeRunParts[m.runId];
-  }
-  return undefined;
+  if (!m.runId) return undefined;
+  // A durable bot message belongs to exactly one MemberTurn: join through
+  // promptRequestId (sourceTurn.turnId) first, then senderBotId within the
+  // Run. Never read the newest member's trace for every bot row, and never
+  // fall back to a different Run's parts.
+  const runTurns = groupsStore.memberTurns.filter((turn) => turn.runId === m.runId);
+  const byPrompt = m.promptRequestId
+    ? runTurns.find((turn) => turn.promptRequestId === m.promptRequestId)
+    : undefined;
+  const owner = byPrompt
+    ?? (m.senderBotId ? runTurns.find((turn) => turn.botId === m.senderBotId) : undefined);
+  const parts = owner ? partsForMember(owner) : undefined;
+  return parts?.length ? parts : undefined;
 }
 
 function liveForMember(memberTurnId: string): GroupLiveTurn | null {
   return groupsStore.liveTurnForMember(memberTurnId);
+}
+
+function partsForMember(turn: MemberTurnSummaryDto): TurnPartDto[] | undefined {
+  const parts = groupsStore.completeRunParts[turn.id];
+  if (parts?.length) return parts;
+  if (turn.promptRequestId) {
+    const byPrompt = groupsStore.completeRunParts[turn.promptRequestId];
+    if (byPrompt?.length) return byPrompt;
+  }
+  return undefined;
+}
+
+function traceKeyForMessage(m: ConversationMessageDto): string {
+  return `group:${m.conversationId}:run:${m.runId ?? ""}:member:${m.promptRequestId ?? m.senderBotId ?? ""}`;
 }
 
 function toggleMember(memberTurnId: string): void {
@@ -160,7 +183,7 @@ function onScroll(): void {
               <TurnParts
                 :parts="partsForMessage(m)!"
                 :collapse-trace="true"
-                :trace-key="`group:${m.conversationId}:run:${m.runId}`"
+                :trace-key="traceKeyForMessage(m)"
               />
             </div>
             <div v-else class="w-full rounded-2xl border border-border bg-surface/50 px-4 py-3 text-sm leading-relaxed text-fg shadow-sm">
@@ -259,9 +282,9 @@ function onScroll(): void {
                   :streaming="liveForMember(turn.id)!.status === 'streaming'"
                 />
               </div>
-              <div v-else-if="turn.promptRequestId && groupsStore.completeRunParts[run.id]?.length" class="rounded-lg border border-border bg-surface/40 p-2.5">
+              <div v-else-if="partsForMember(turn)?.length" class="rounded-lg border border-border bg-surface/40 p-2.5">
                 <TurnParts
-                  :parts="groupsStore.completeRunParts[run.id]!"
+                  :parts="partsForMember(turn)!"
                   :collapse-trace="true"
                   :trace-key="`group:${turn.conversationId}:run:${run.id}:member:${turn.id}`"
                 />

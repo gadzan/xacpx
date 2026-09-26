@@ -104,6 +104,52 @@ describe("Group Components", () => {
       expect(off.exists()).toBe(true);
       expect(off.attributes("disabled")).toBeDefined();
     });
+
+    it("only commits @everyone on the full token", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      await textarea.setValue("@");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+      await textarea.setValue("@e");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+      await textarea.setValue("@everyon");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+      await textarea.setValue("@everyone");
+      expect(groups.targetSelection).toEqual({ mode: "everyone" });
+    });
+
+    it("resolves @Name only for a unique enabled member", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_b"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      await textarea.setValue("@Tester");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+      // Disabled Sleeper is not routable even though its name is exact.
+      await textarea.setValue("@Sleeper");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+      // Ambiguous duplicate name: never auto-pick the first row.
+      groups.targetSelection = { mode: "members", botIds: [] };
+      const dup = [
+        { ...BOTS[0]!, id: "bot_a", name: "Same" },
+        { ...BOTS[1]!, id: "bot_b", name: "Same" },
+      ];
+      await wrapper.setProps({ bots: dup });
+      await textarea.setValue("@Same");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: [] });
+      // Unique match still routes after the ambiguity is removed.
+      await wrapper.setProps({ bots: [dup[0]!] });
+      await textarea.setValue("@Same");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+    });
   });
 
   describe("GroupTranscript.vue", () => {

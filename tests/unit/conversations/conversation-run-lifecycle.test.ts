@@ -10,7 +10,7 @@ import type { AppConfig } from "../../../src/config/types";
 import { ControlService, conversationKernel } from "../../../src/control/control-service";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
 import { ConversationError } from "../../../src/conversations/conversation-error";
-import { ConversationDispatcher, type ConversationDispatcherHooks } from "../../../src/conversations/conversation-dispatcher";
+import { ConversationDispatcher, PUBLIC_TRANSCRIPT_MESSAGES, type ConversationDispatcherHooks } from "../../../src/conversations/conversation-dispatcher";
 import { ConversationRunService } from "../../../src/conversations/conversation-run-service";
 import {
   canMintHumanPermissionInteraction,
@@ -5943,6 +5943,99 @@ test("PR7 group accept: removed member rejects and targeted member races concurr
   first.store.close();
 });
 
+test("PR7 group accept: requestId retry returns the durable Run after membership shrink, disable, and archive", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const botC = "bot_carol";
+  first.state.bots[botC] = {
+    id: botC, name: "Carol", agent: "codex", workspace: "backend", enabled: true,
+    profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const input = {
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-idempotent",
+    text: "ship",
+    target: { mode: "members" as const, botIds: [TESTER_ID] },
+  };
+  const accepted = await first.service.acceptGroupPrompt(input);
+  expect(accepted.reused).toBe(false);
+  expect(accepted.memberTurns.map((turn) => turn.botId)).toEqual([TESTER_ID]);
+
+  // Settle the Run, then remove the member from the Group. Membership
+  // removal is refused while the member has nonterminal work, so the
+  // durable accept must be terminal before the live membership diverges.
+  await first.service.cancelRun(accepted.run.id);
+  // Lost response: client retries with the same requestId after the member
+  // was removed from the Group. The durable accept must win over live state.
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, botC] });
+  const afterRemoval = await first.service.acceptGroupPrompt(input);
+  expect(afterRemoval.reused).toBe(true);
+  expect(afterRemoval.run.id).toBe(accepted.run.id);
+  expect(afterRemoval.message.id).toBe(accepted.message.id);
+  expect(afterRemoval.memberTurns.map((turn) => turn.id)).toEqual(accepted.memberTurns.map((turn) => turn.id));
+  expect(await first.service.listTopicRuns(group.id, topic.id)).toMatchObject({
+    runs: expect.arrayContaining([expect.objectContaining({ id: accepted.run.id })]),
+  });
+});
+
+test("PR7 group accept: requestId retry survives member disabled after settle", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const input = {
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-idempotent-disabled",
+    text: "ship",
+    target: { mode: "members" as const, botIds: [TESTER_ID] },
+  };
+  const accepted = await first.service.acceptGroupPrompt(input);
+  await first.service.cancelRun(accepted.run.id);
+  expect(first.state.bots[TESTER_ID]?.enabled, "test seed must stay enabled").toBe(true);
+  await first.bots.updateBot(TESTER_ID, { enabled: false });
+  const retried = await first.service.acceptGroupPrompt(input);
+  expect(retried.reused).toBe(true);
+  expect(retried.run.id).toBe(accepted.run.id);
+  expect(retried.memberTurns.map((turn) => turn.id)).toEqual(accepted.memberTurns.map((turn) => turn.id));
+  first.store.close();
+});
+
+test("PR7 group accept: requestId retry survives archived Topic", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const input = {
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-idempotent-archived",
+    text: "ship",
+    target: { mode: "members" as const, botIds: [TESTER_ID] },
+  };
+  const accepted = await first.service.acceptGroupPrompt(input);
+  await first.service.cancelRun(accepted.run.id);
+  await first.service.archiveGroupTopic(group.id, topic.id);
+  await expect(first.service.acceptGroupPrompt({ ...input, requestId: "req-pr7-fresh" }))
+    .rejects.toThrow(/not active/);
+  const retried = await first.service.acceptGroupPrompt(input);
+  expect(retried.reused).toBe(true);
+  expect(retried.run.id).toBe(accepted.run.id);
+  first.store.close();
+});
+
 test("PR7 group accept: everyone retries when membership widens mid-acquire", async () => {
   let parkWiden = true;
   const acceptGate = deferred();
@@ -6132,6 +6225,46 @@ test("PR7 transcript: Group member input excludes Direct and other-Topic history
   expect(input.text).toContain("clean ask");
   expect(input.text).not.toContain("direct secret");
   expect(input.text).not.toContain("other topic secret");
+});
+
+test("PR7 transcript: long Topic hands members the newest window before the request boundary", async () => {
+  const first = await createLifecycle({ autoKick: false });
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "A", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const total = PUBLIC_TRANSCRIPT_MESSAGES + 20;
+  for (let i = 0; i < total; i++) {
+    const requestId = `req-pr7-window-${i}`;
+    const result = await first.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId,
+      text: `line ${i}`,
+      target: { mode: "members", botIds: [BOT_ID] },
+    });
+    await first.service.cancelRun(result.run.id);
+  }
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-window-final",
+    text: "final ask",
+    target: { mode: "members", botIds: [BOT_ID] },
+  });
+  await first.service.activateAfterConsumerLock();
+  await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
+  const input = fakeRunner(first.runner).runs.find((run) => run.runId === accepted.run.id)!;
+  expect(input.text).toContain("final ask");
+  // The window keeps the newest PUBLIC_TRANSCRIPT_MESSAGES rows before the
+  // request, not the Topic's oldest rows.
+  expect(input.text).toContain(`line ${total - 1}`);
+  expect(input.text).toContain(`line ${total - PUBLIC_TRANSCRIPT_MESSAGES}`);
+  expect(input.text).not.toContain(`line ${total - PUBLIC_TRANSCRIPT_MESSAGES - 1} `);
+  expect(input.text).toContain(`\nHuman: line ${total - PUBLIC_TRANSCRIPT_MESSAGES}\n`);
+  expect(input.text).toContain(`\nHuman: line ${total - 1}\n`);
 });
 
 test("PR7 provenance: trusted human Group accept mints human origin, public accept stays orchestration", async () => {

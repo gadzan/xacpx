@@ -86,14 +86,22 @@ function handleInput(e: InputEvent): void {
   const cursor = el.selectionStart ?? value.length;
   const before = value.slice(0, cursor);
   const atMatch = before.match(/@([\w-]*)$/);
-  if (atMatch) {
-    const query = atMatch[1]?.toLowerCase() ?? "";
-    if (query === "everyone" || "everyone".startsWith(query)) {
-      groupsStore.mentionEveryone();
-    } else if (query.length > 0) {
-      const match = props.bots.find((b) => b.name.toLowerCase() === query && b.enabled);
-      if (match) groupsStore.mentionBot(match.id);
-    }
+  if (!atMatch) return;
+  const query = atMatch[1]?.toLowerCase() ?? "";
+  // Authority stays with the structured target, so a partial token must never
+  // commit a selection: `@` or `@e` leaves the target untouched, and only a
+  // complete `@everyone` switches to everyone.
+  if (query === "everyone") {
+    groupsStore.mentionEveryone();
+    return;
+  }
+  if (query.length === 0) return;
+  // Display name only nominates a Bot when it is unambiguous: duplicate names
+  // across members must not silently resolve to the first array row, and a
+  // disabled member is never an executable target.
+  const matches = props.bots.filter((b) => b.enabled && b.name.toLowerCase() === query);
+  if (matches.length === 1 && matches[0]) {
+    groupsStore.mentionBot(matches[0].id);
   }
 }
 
@@ -200,6 +208,7 @@ function onInputResize(): void {
     <div class="relative flex items-end gap-2 rounded-xl border border-border bg-bg p-1.5 transition-colors focus-within:border-accent">
       <textarea
         ref="textareaEl"
+        data-test="group-composer-textarea"
         v-model="promptText"
         :disabled="disabled || groupsStore.promptInFlight || groupsStore.isRunActive || !groupsStore.topicReady"
         :placeholder="$t('group.prompt.placeholder')"

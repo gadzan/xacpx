@@ -389,7 +389,12 @@ export const useGroupsStore = defineStore("groups", () => {
       targetSelection.value = { mode: "members", botIds: [botId] };
       return;
     }
-    if (current.mode === "everyone") return;
+    if (current.mode === "everyone") {
+      // Explicit mention narrows the target back to members: a Group stay in
+      // everyone mode would ignore every later `@Name`.
+      targetSelection.value = { mode: "members", botIds: [botId] };
+      return;
+    }
     if (!current.botIds.includes(botId)) {
       targetSelection.value = { mode: "members", botIds: [...current.botIds, botId] };
     }
@@ -488,16 +493,25 @@ export const useGroupsStore = defineStore("groups", () => {
   }
 
   function pruneIncompleteTraces(): void {
-    const completeFlags = runPartsComplete.value;
-    const truncatedFlags = runPartsTruncated.value;
+    const liveKeys = new Set(Object.keys(liveTurnsByMember.value));
+    const owned = new Set(Object.keys(memberTurnsById.value));
     let prunedParts: Record<string, TurnPartDto[]> | null = null;
-    for (const m of messages.value) {
-      if (m.runId && runParts.value[m.runId]?.length && (!completeFlags[m.runId] || truncatedFlags[m.runId])) {
-        if (!prunedParts) prunedParts = { ...runParts.value };
-        delete prunedParts[m.runId];
-      }
+    for (const key of Object.keys(runParts.value)) {
+      if (liveKeys.has(key) || owned.has(key)) continue;
+      if (!prunedParts) prunedParts = { ...runParts.value };
+      delete prunedParts[key];
     }
     if (prunedParts) runParts.value = prunedParts;
+    const stillOwnedFlags: Record<string, true> = {};
+    for (const key of Object.keys(runPartsComplete.value)) {
+      if (liveKeys.has(key) || owned.has(key)) stillOwnedFlags[key] = true;
+    }
+    runPartsComplete.value = stillOwnedFlags;
+    const stillTruncated: Record<string, true> = {};
+    for (const key of Object.keys(runPartsTruncated.value)) {
+      if (liveKeys.has(key) || owned.has(key)) stillTruncated[key] = true;
+    }
+    runPartsTruncated.value = stillTruncated;
   }
 
   function mergeHistoryPage(
@@ -1610,19 +1624,24 @@ export const useGroupsStore = defineStore("groups", () => {
                 startedAt: new Date(matchingTurns[0]?.startedAt ?? Date.now()).toISOString(),
               };
             }
-            if (matchingTurns[0]) {
+            for (const matchingTurn of matchingTurns) {
+              const corr = matchingTurn.conversation;
+              // Member identity is the trace key: a multi-member Run stores
+              // one entry per memberTurnId, so sibling completions can never
+              // overwrite each other's tool/thought/output parts.
+              const partsKey = corr?.memberTurnId ?? matchingRunId;
               runParts.value = {
                 ...runParts.value,
-                [matchingRunId]: [...matchingTurns[0].parts],
+                [partsKey]: [...matchingTurn.parts],
               };
-              if (runPartsComplete.value[matchingRunId]) {
-                const { [matchingRunId]: _dropped, ...rest } = runPartsComplete.value;
+              if (runPartsComplete.value[partsKey]) {
+                const { [partsKey]: _dropped, ...rest } = runPartsComplete.value;
                 runPartsComplete.value = rest;
               }
-              if (matchingTurns[0].truncated) {
-                runPartsTruncated.value = { ...runPartsTruncated.value, [matchingRunId]: true };
-              } else if (runPartsTruncated.value[matchingRunId]) {
-                const { [matchingRunId]: _dropped, ...rest } = runPartsTruncated.value;
+              if (matchingTurn.truncated) {
+                runPartsTruncated.value = { ...runPartsTruncated.value, [partsKey]: true };
+              } else if (runPartsTruncated.value[partsKey]) {
+                const { [partsKey]: _dropped, ...rest } = runPartsTruncated.value;
                 runPartsTruncated.value = rest;
               }
             }
@@ -1963,12 +1982,15 @@ export const useGroupsStore = defineStore("groups", () => {
         if (current) {
           liveTurnsByMember.value = { ...liveTurnsByMember.value, [key]: { ...current, status: "working" } };
         }
-        if (corr.runId) {
+        // Complete traces are keyed by memberTurnId, never runId: a
+        // multi-member Run writes one entry per member so a sibling's
+        // finish cannot overwrite this member's tool/thought/output parts.
+        if (key) {
           runParts.value = {
             ...runParts.value,
-            [corr.runId]: [...parts],
+            [key]: [...parts],
           };
-          runPartsComplete.value = { ...runPartsComplete.value, [corr.runId]: true };
+          runPartsComplete.value = { ...runPartsComplete.value, [key]: true };
         }
       }
     }
