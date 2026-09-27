@@ -36,8 +36,7 @@ connector 拒绝让弱认证平面成为 xacpx 连接面的旁路。
         "desktop": {
           "enabled": true,
           "port": 5900,
-          "connectTimeoutMs": 3000,
-          "upgradeTimeoutMs": 5000
+          "connectTimeoutMs": 3000
         }
       }
     }
@@ -48,6 +47,8 @@ connector 拒绝让弱认证平面成为 xacpx 连接面的旁路。
 - `enabled=false`（默认）时不声明 `desktop.rfb.v1`，relay-web 不会显示 Desktop 入口。
 - `port` 只能是**本机 loopback**。RFB server 不需要公网可达；connector 主动连
   `127.0.0.1:<port>`。
+- `connectTimeoutMs`（250–10000）同时用于 loopback TCP 连接、banner preflight 与
+  Hub `/desktop/instance` upgrade 三者，不提供单独的 upgrade 超时。
 - 完整 schema 与默认值见 `docs/config-reference.md`。
 
 启用后实例出现 Desktop 入口；不代表 5900 已在监听——真正 open 时才重新 probe。

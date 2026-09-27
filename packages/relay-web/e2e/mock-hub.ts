@@ -214,6 +214,10 @@ export async function startMockHub(opts?: { extraAliases?: string[] }): Promise<
   function send(event: WebServerEvent): void {
     const line = encodeEnvelope(webEventEnvelope(event));
     for (const ws of sockets) {
+      // The desktop binary sockets share the `sockets` array. A relay envelope
+      // is JSON, and noVNC would parse it as RFB bytes and tear the plane down
+      // (a clean "Disconnected" with no error, hours of misattribution).
+      if (desktopBinarySockets.includes(ws)) continue;
       if (ws.readyState === ws.OPEN) ws.send(line);
     }
   }

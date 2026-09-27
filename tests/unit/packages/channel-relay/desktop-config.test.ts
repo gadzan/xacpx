@@ -47,3 +47,14 @@ test("desktop target host is fixed loopback: host keys rejected", () => {
     expect(() => parseRelayChannelConfig({ url: "wss://h", desktop: raw })).toThrow(/127\.0\.0\.1/);
   }
 });
+
+test("desktop rejects unknown option keys instead of ignoring them silently", () => {
+  // A silently-ignored key is a documentation lie with teeth: a user who sets
+  // `upgradeTimeoutMs` believes the hub-upgrade deadline is longer than it is.
+  // Fail at parse time so a typo, or a field removed from the schema, never
+  // reads as "configured".
+  expect(() => parseRelayDesktopConfig({ upgradeTimeoutMs: 5000 })).toThrow(/upgradeTimeoutMs/);
+  expect(() => parseRelayChannelConfig({ url: "wss://h", desktop: { upgradeTimeoutMs: 5000 } })).toThrow(/upgradeTimeoutMs/);
+  // A plausible-but-wrong spelling must not be swallowed either.
+  expect(() => parseRelayDesktopConfig({ timeouts: { connect: 1 } })).toThrow(/timeouts/);
+});

@@ -31,30 +31,55 @@ export const test = base.extend<{ hub: MockHub; page: Page }>({
     });
     // Vite's /ws proxy is not used in E2E: rewrite the browser WebSocket to the
     // mock hub so we control rebase / resize / role without a real connector.
+    //
+    // A Proxy, NOT a subclass: noVNC's Websock.attach() does
+    // `Object.getPrototypeOf(rawChannel)` and requires that prototype to carry
+    // send/close/readyState/binaryType. On a subclass those live one level up
+    // on WebSocket.prototype, so noVNC throws "Raw channel missing property"
+    // and the RFB connect dies before any bytes move. Proxying the native
+    // constructor leaves the instance's own prototype untouched, so both the
+    // app's /ws socket and noVNC's binary plane get a genuine WebSocket.
     await page.addInitScript((port: number) => {
       const Orig = window.WebSocket;
-      class HubWS extends Orig {
-        constructor(url: string | URL, protocols?: string | string[]) {
-          const u = String(url);
-          const parsed = new URL(u, "http://127.0.0.1");
+      const Rewritten = new Proxy(Orig, {
+        construct(target, args: [string | URL, (string | string[])?]) {
+          const parsed = new URL(String(args[0]), "http://127.0.0.1");
+          const protocols = args[1];
+          // Only the hub planes (control /ws and the desktop binary socket);
+          // Vite's HMR and anything else must pass through untouched.
           if (parsed.pathname === "/ws") {
-            super(`ws://127.0.0.1:${port}/ws`, protocols);
-            return;
+            return new target(`ws://127.0.0.1:${port}/ws`, protocols);
           }
-          // Desktop binary plane: rewrite to the mock hub, which pipes it to
-          // the mock RFB server (see mock-hub.setDesktopRfb upstream).
           if (parsed.pathname === "/desktop/observe") {
-            super(`ws://127.0.0.1:${port}${parsed.pathname}${parsed.search}`, protocols);
-            return;
+            // The mock hub pipes this socket to the mock RFB server, so real
+            // noVNC runs its real handshake through the real planner.
+            return new target(`ws://127.0.0.1:${port}${parsed.pathname}${parsed.search}`, protocols);
           }
-          super(url, protocols);
-        }
-      }
-      window.WebSocket = HubWS as unknown as typeof WebSocket;
+          return new target(...(args as [string | URL, (string | string[])?]));
+        },
+      });
+      window.WebSocket = Rewritten as unknown as typeof WebSocket;
     }, hub.port);
     await use(page);
   },
 });
+
+/** Reach the dashboard with the instance sidebar rendered (no session opened). */
+export async function loginAndShowInstances(page: Page): Promise<void> {
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  // /api/me is stubbed as authenticated, so the login page is usually skipped.
+  const token = page.getByTestId("token-input");
+  if (await token.isVisible().catch(() => false)) {
+    await token.fill("e2e-token");
+    await page.getByTestId("signin").click();
+  }
+  const sessionRow = page.getByTestId("session-row").first();
+  if (!(await sessionRow.isVisible().catch(() => false))) {
+    const open = page.getByTestId("open-instances");
+    if (await open.isVisible().catch(() => false)) await open.click();
+  }
+  await expect(sessionRow).toBeVisible({ timeout: 30_000 });
+}
 
 export async function loginAndOpenTerminal(page: Page): Promise<void> {
   await page.goto("/", { waitUntil: "domcontentloaded" });

@@ -53,6 +53,28 @@ interface ActiveTunnel {
   closed: boolean;
 }
 
+/**
+ * A prepare that has been admitted but has not yet published `active`.
+ *
+ * Between the hub's `desktopPrepare` and the moment `active` is set, this
+ * runtime awaits an unbounded sequence of I/O: loopback probe, TCP connect,
+ * banner preflight, hub upgrade. During that window the descriptor holds NO
+ * lifecycle state at all, so `closeAll()` (logout / stop / disconnect) and
+ * `handleCancel()` could not touch it — the prepare kept running and published
+ * an orphan tunnel after the connector had already cleared its runtime. The
+ * generation is bumped on every lifecycle transition so a stale prepare can
+ * detect it and drop out instead of publishing.
+ */
+interface PendingTunnel {
+  streamId: string;
+  ticket: string;
+  generation: number;
+  /** Set once the tunnel publishes `active`, so teardown can find its sockets. */
+  tunnel: ActiveTunnel | null;
+  /** Closes any socket already opened for this attempt (TCP, then hub WS). */
+  abort(): void;
+}
+
 function toBinaryWsUrl(hubUrl: string, ticket: string): string {
   const url = new URL(hubUrl);
   url.protocol = url.protocol === "wss:" ? "wss:" : "ws:";
@@ -64,6 +86,18 @@ function toBinaryWsUrl(hubUrl: string, ticket: string): string {
 
 export class DesktopTunnelRuntime {
   private active: ActiveTunnel | null = null;
+  /**
+   * Prepares admitted but not yet published to `active`. Keyed by streamId so
+   * `handleCancel()` can target one, and iterated wholesale by `closeAll()`.
+   */
+  private pending = new Map<string, PendingTunnel>();
+  /**
+   * Monotonic lifecycle epoch. `closeAll()` bumps it, which instantly
+   * invalidates every in-flight prepare (each records the value it started
+   * with and re-checks after every await). A plain AbortController would not
+   * cover the synchronous run between the last await and `active = tunnel`.
+   */
+  private generation = 0;
 
   constructor(private readonly deps: DesktopTunnelDeps) {}
 
@@ -84,23 +118,68 @@ export class DesktopTunnelRuntime {
       respond(errorPayload("desktop-disabled", "desktop is not enabled on this instance"));
       return true;
     }
+    // `maxStreams: 1` must gate the WHOLE prepare, not only the published
+    // tunnel: without this, a second viewer could slip its own probe/tunnel in
+    // while the first is still dialing (`active` is still null), and both would
+    // fight over the slot at publish time.
     if (this.active && !this.active.closed) {
       respond(errorPayload("desktop-busy", "another desktop viewer is active"));
       return true;
     }
-    const verdict = await probeLoopbackRfb({ port: config.port, connectTimeoutMs: config.connectTimeoutMs });
-    if (!verdict.ok) {
-      const guidance = desktopSetupGuidance(this.deps.platform ?? process.platform, verdict.code);
-      respond(errorPayload(verdict.code, `${verdict.detail}. ${guidance}`));
+    if (this.pending.size > 0) {
+      respond(errorPayload("desktop-busy", "another desktop viewer is being prepared"));
       return true;
     }
+    const generation = this.generation;
+    const sockets: Array<net.Socket | WebSocket> = [];
+    const pending: PendingTunnel = {
+      streamId: input.streamId,
+      ticket: input.ticket,
+      generation,
+      tunnel: null,
+      abort() {
+        // Close in reverse order of opening: the hub plane first (it is the one
+        // whose ticket the hub considers consumed), then the loopback TCP.
+        for (const sock of sockets.splice(0).reverse()) {
+          try { sock.destroy?.(); } catch { /* gone */ }
+        }
+      },
+    };
+    this.pending.set(input.streamId, pending);
+    // `retired` is the ONLY flag that may suppress `respond`: after a lifecycle
+    // event has bumped the generation, or the hub cancelled this streamId,
+    // answering is pointless — the hub's state no longer matches this attempt
+    // and a success there would look like a live tunnel.
+    const retired = (): boolean =>
+      this.generation !== generation || !this.pending.get(input.streamId) ||
+      this.pending.get(input.streamId)?.generation !== generation;
+    let security: DesktopPrepareResult["security"] | null = null;
     try {
-      await this.openTunnel(input.streamId, input.ticket);
+      const verdict = await probeLoopbackRfb({ port: config.port, connectTimeoutMs: config.connectTimeoutMs });
+      // A lifecycle event (logout / stop / disconnect / cancel) landed during
+      // the probe: drop out instead of opening sockets nobody owns.
+      if (retired()) return true;
+      if (!verdict.ok) {
+        const guidance = desktopSetupGuidance(this.deps.platform ?? process.platform, verdict.code);
+        respond(errorPayload(verdict.code, `${verdict.detail}. ${guidance}`));
+        return true;
+      }
+      security = verdict.security;
+      await this.openTunnel(input.streamId, input.ticket, generation, pending, sockets);
+      if (retired()) return true;
     } catch (err) {
-      respond(errorPayload("desktop-stream-timeout", err instanceof Error ? err.message : "desktop tunnel failed"));
+      if (!retired()) {
+        respond(errorPayload("desktop-stream-timeout", err instanceof Error ? err.message : "desktop tunnel failed"));
+      }
+      return true;
+    } finally {
+      if (this.pending.get(input.streamId) === pending) this.pending.delete(input.streamId);
+    }
+    if (!security) {
+      respond(errorPayload("desktop-protocol-error", "desktop probe returned no security verdict"));
       return true;
     }
-    const result: DesktopPrepareResult = { streamId: input.streamId, security: verdict.security };
+    const result: DesktopPrepareResult = { streamId: input.streamId, security };
     respond(result);
     return true;
   }
@@ -110,18 +189,44 @@ export class DesktopTunnelRuntime {
     if (envelope.type !== MSG.desktopCancel) return false;
     const input = parseDesktopEventPayload(MSG.desktopCancel, envelope.payload);
     if (!input) return true;
+    // A cancelled stream can still be mid-dial: `active` is only set after the
+    // whole probe + connect + upgrade chain. Dropping it from `pending` is what
+    // makes the in-flight prepare observe the cancel (via `retired()`), so the
+    // hub must not receive a success for a stream it already cancelled.
+    const pendingTunnel = this.pending.get(input.streamId);
+    if (pendingTunnel) {
+      this.pending.delete(input.streamId);
+      pendingTunnel.abort();
+      return true;
+    }
     if (this.active?.streamId === input.streamId) this.closeActive("cancel");
     return true;
   }
 
   /** Control-socket drop / stop / logout: no tunnel may survive the connector. */
   closeAll(reason = "connector-stop"): void {
+    // Invalidate in-flight prepares FIRST: bumping the generation makes every
+    // already-admitted prepare retire regardless of where it is awaiting, so
+    // none of them can publish an orphan tunnel behind this teardown.
+    this.generation += 1;
+    for (const pendingTunnel of this.pending.values()) pendingTunnel.abort();
+    this.pending.clear();
     this.closeActive(reason);
   }
 
-  private async openTunnel(streamId: string, ticket: string): Promise<void> {
+  private async openTunnel(
+    streamId: string,
+    ticket: string,
+    generation: number,
+    pending: PendingTunnel,
+    /** Sockets opened by this attempt, so teardown can destroy them. */
+    sockets: Array<net.Socket | WebSocket>,
+  ): Promise<void> {
     const config = this.deps.config;
     const tcp = net.createConnection({ host: RFB_LOOPBACK_HOST, port: config.port });
+    // Publish to the pending record the instant the socket exists: an abort
+    // that lands between here and the first await must still close it.
+    sockets.push(tcp);
     // Any throw below must not leak the loopback socket: openHubSocket can
     // reject after the banner was already read (hub down / bad ticket).
     // closeActive only drops this.active, so destroy explicitly on failure.
@@ -150,6 +255,13 @@ export class DesktopTunnelRuntime {
     let serverBanner: Buffer;
     try {
       const banner = await readTunnelBanner(tcp, config.connectTimeoutMs);
+      // The lifecycle can also change during the preflight: closeAll() may have
+      // destroyed this very tcp, in which case readTunnelBanner's timer resolves
+      // null and we must not go on to dial the hub plane for a dead tunnel.
+      if (this.generation !== generation || this.pending.get(streamId) !== pending) {
+        tcp.destroy();
+        throw new Error(`desktop tunnel retired before open (${streamId})`);
+      }
       if (!banner) throw new Error("RFB server banner changed before tunnel start");
       serverBanner = banner;
     } catch (err) {
@@ -180,8 +292,21 @@ export class DesktopTunnelRuntime {
       tcp.destroy();
       throw err;
     }
+    sockets.push(socket);
+    // LAST lifecycle check before publishing. Between the await above and this
+    // line nothing yields, but closeAll()/handleCancel() can have run in an
+    // earlier task and left the attempt retired; publishing then would install
+    // a tunnel whose owner is gone and that nobody will ever close.
+    if (this.generation !== generation || this.pending.get(streamId) !== pending) {
+      // The abort already destroyed these sockets (openHubSocket detaches its
+      // one-shot listeners on settle), so nothing survives this teardown.
+      try { socket.close(); } catch { /* gone */ }
+      try { tcp.destroy(); } catch { /* gone */ }
+      throw new Error(`desktop tunnel retired before open (${streamId})`);
+    }
     const tunnel: ActiveTunnel = { streamId, ticket, socket, tcp, closed: false };
     this.active = tunnel;
+    pending.tunnel = tunnel;
     tcp.removeAllListeners("data");
     tcp.resume();
     // Replay what the banner preflight consumed, IN ORDER, before live

@@ -246,6 +246,16 @@ export function parseRelayDesktopConfig(raw: unknown): RelayDesktopConfig {
   if (o.host !== undefined || o.hostname !== undefined || o.target !== undefined) {
     throw new Error("relay channel options.desktop must not set host/hostname/target (fixed to 127.0.0.1)");
   }
+  // Unknown keys are a configuration lie: the parser would otherwise drop them
+  // and the defaults would silently apply, so `upgradeTimeoutMs` (or a typo)
+  // reads as "configured" while nothing honours it. Reject instead — this
+  // object gates a live graphical-desktop exposure.
+  const known = new Set(["enabled", "backend", "port", "connectTimeoutMs", "maxStreams"]);
+  for (const key of Object.keys(o)) {
+    if (!known.has(key)) {
+      throw new Error(`relay channel options.desktop.${key} is not a supported option`);
+    }
+  }
 
   const enabled = o.enabled === undefined ? DESKTOP_DEFAULTS.enabled : o.enabled === true;
   if (o.enabled !== undefined && typeof o.enabled !== "boolean") {
