@@ -370,11 +370,15 @@ export const useGroupsStore = defineStore("groups", () => {
     target: ConversationTargetDto;
   }
   const uncertainPrompt = ref<UncertainPrompt | null>(null);
-  /** False when the Bot catalog for the selected Group could not be confirmed.
-   *  Eligibility metadata is presentation, so an unconfirmed catalog must fail
-   *  narrow — every eligibility-driven UI action (defaults, the Lead shortcut)
-   *  reads this instead of assuming a Bot list is available. */
-  const botCatalogKnown = ref<boolean>(true);
+  /** False while the Bot catalog for the selected Group is unconfirmed. Derived
+   *  from the Direct store's own botsLoaded rather than a sticky local flag, so a
+   *  successful later refresh (bots-changed, navigating back) converges this back
+   *  to known instead of pinning the composer in fail-narrow mode forever. */
+  const botCatalogKnown = computed<boolean>(() => {
+    const instId = instanceId.value;
+    if (!instId) return true;
+    return directBotsStore.botsLoaded[instId] === true;
+  });
   /** Text of the pending-certainty prompt; drives the Retry affordance. */
   const uncertainPromptText = computed<string | null>(() => uncertainPrompt.value?.text ?? null);
   /** True while a sent prompt has an unknown durable outcome. The composer locks
@@ -1327,7 +1331,6 @@ export const useGroupsStore = defineStore("groups", () => {
         return;
       }
       targetSelection.value = defaultTargetFor(group, catalogBots, catalogKnown);
-      botCatalogKnown.value = catalogKnown;
       const topics = await loadTopics(targetInstanceId, group.id);
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
         return;
@@ -1421,7 +1424,6 @@ export const useGroupsStore = defineStore("groups", () => {
     generalError.value = null;
     generalErrorCode.value = null;
     targetSelection.value = null;
-    botCatalogKnown.value = true;
     persistGroupSelection(null, null);
   }
 

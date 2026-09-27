@@ -5869,6 +5869,51 @@ test("PR7 group accept: an oversized members target is refused before any lifecy
   first.store.close();
 });
 
+test("PR7 group accept: non-member ids are refused before any lifecycle gate is taken", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Each request supplies its own fresh foreign ids: with only a count cap the
+  // gate map would still grow without bound, one mutex per fabricated id.
+  for (let round = 0; round < 3; round++) {
+    const foreign = Array.from({ length: 64 }, (_, i) => `bot_phantom_r${round}_${i}`);
+    await expect(first.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: `req-pr7-foreign-${round}`,
+      text: "nope",
+      target: { mode: "members", botIds: foreign },
+    })).rejects.toMatchObject({ code: "invalid-target" });
+  }
+  // Repeated probing must not add a single lifecycle-gate entry for the
+  // fabricated ids: the pre-check rejects before gates are acquired, so the
+  // process-lifetime lock map stays bounded by real Bots.
+  const gateLocks = (first.bots as unknown as { lifecycleGate?: { locks?: Map<string, unknown> } })
+    .lifecycleGate?.locks;
+  expect(gateLocks).toBeDefined();
+  for (const key of gateLocks!.keys()) {
+    expect(key.startsWith("bot_phantom")).toBe(false);
+  }
+  // And the map holds only the two real members (plus whatever the harness
+  // itself gated), never the 192 fabricated ids across the three rounds.
+  expect(gateLocks!.size).toBeLessThanOrEqual(4);
+  // A legacy single-Bot target with an oversized id is refused the same way.
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-long-botid",
+    text: "nope",
+    target: { botId: "x".repeat(129) },
+  })).rejects.toMatchObject({ code: "invalid-target" });
+  // Nothing durable was created for any refused request.
+  expect(first.store.listRuns(group.id, topic.id)).toHaveLength(0);
+  first.store.close();
+});
+
 test("PR7 group accept: duplicate IDs deduplicate, everyone expands, empty/unknown/disabled reject", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
@@ -5906,7 +5951,7 @@ test("PR7 group accept: duplicate IDs deduplicate, everyone expands, empty/unkno
     requestId: "req-pr7-unknown",
     text: "unknown",
     target: { mode: "members", botIds: ["bot_ghost"] },
-  })).rejects.toThrow(/not a member|not exist/);
+  })).rejects.toThrow(/not a member|not exist|not current members/);
   await first.bots.updateBot(TESTER_ID, { enabled: false });
   await expect(first.service.acceptGroupPrompt({
     conversationId: group.id,
@@ -5964,7 +6009,7 @@ test("PR7 group accept: removed member rejects and targeted member races concurr
     requestId: "req-pr7-removed",
     text: "removed",
     target: { mode: "members", botIds: [botC] },
-  })).rejects.toThrow(/not a member/);
+  })).rejects.toThrow(/not a member|not current members/);
   // Deterministic removal race: park the accept between probe and gate
   // acquisition, commit the removal, then let the accept proceed. Inside
   // the gates it re-reads live membership and must reject the removed
@@ -6001,7 +6046,11 @@ test("PR7 group accept: removed member rejects and targeted member races concurr
   await removerStarted.promise;
   await raced.bots.updateGroup(racedGroup.id, { botIds: [BOT_ID, TESTER_ID] });
   gate.resolve();
-  await expect(racing).rejects.toThrow(/not a member/);
+  // The pre-check rejects non-current members before gates are taken (it
+  // linearizes before the removal commit), so this racing call now fails at the
+  // probe. The in-gate membership revalidation is still the authority for the
+  // non-racing path and is covered by the first assertion above.
+  await expect(racing).rejects.toThrow(/not a member|not current members/);
   raced.store.close();
   first.store.close();
 });

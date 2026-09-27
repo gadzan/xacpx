@@ -98,7 +98,10 @@ describe("Group Components", () => {
 
     it("Lead shortcut stays on the lead Bot when the catalog is unconfirmed", async () => {
       const groups = seedGroupSelection();
-      groups.botCatalogKnown = false;
+      const direct = useDirectBotsStore();
+      // An unconfirmed catalog is the Direct store's own state.
+      direct.botsLoaded["i1"] = false;
+      direct.botsByInstance["i1"] = [];
       groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
       const wrapper = mount(GroupComposer, {
         // The composer sees no Bot rows at all, exactly like a failed
@@ -114,8 +117,71 @@ describe("Group Components", () => {
       expect(wrapper.find('[data-test="group-target-button"]').text()).not.toContain("Select members");
     });
 
+    it("Lead respects a Bot that was disabled after a successful background refresh", async () => {
+      const groups = seedGroupSelection();
+      const direct = useDirectBotsStore();
+      // Catalog is confirmed but the lead Bot has since been disabled.
+      direct.botsLoaded["i1"] = true;
+      direct.botsByInstance["i1"] = BOTS;
+      groups.groupsByInstance["i1"] = [{ ...GROUP, leadBotId: "bot_off", botIds: ["bot_off", "bot_a"] }];
+      groups.groupDetails["i1:conversation_g"] = { ...GROUP, leadBotId: "bot_off", botIds: ["bot_off", "bot_a"], topics: [] } as never;
+      groups.targetSelection = { mode: "members", botIds: ["bot_off"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-target-button"]').trigger("click");
+      await wrapper.find('[data-test="group-target-lead"]').trigger("click");
+      // The disabled lead is not re-selected; an executable member is.
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+    });
+
+    it("Lead converges back to eligibility-aware once the catalog refresh succeeds", async () => {
+      const groups = seedGroupSelection();
+      const direct = useDirectBotsStore();
+      // bots.list failed: the catalog is unknown, so the composer is fail-narrow.
+      direct.botsLoaded["i1"] = false;
+      direct.botsByInstance["i1"] = [];
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: [] },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-target-button"]').trigger("click");
+      await wrapper.find('[data-test="group-target-lead"]').trigger("click");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+      // A background bots-changed succeeds and reveals the lead is now disabled.
+      direct.botsLoaded["i1"] = true;
+      direct.botsByInstance["i1"] = BOTS;
+      await wrapper.setProps({ bots: BOTS });
+      await flushPromises();
+      await wrapper.find('[data-test="group-target-button"]').trigger("click");
+      await wrapper.find('[data-test="group-target-lead"]').trigger("click");
+      // Converged: the stale unknown state did not pin the disabled lead.
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+    });
+
+    it("renders the queue-full refusal as translated text, not the raw code", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      groups.promptError = "topicQueueFull";
+      groups.promptErrorDetail = null;
+      await flushPromises();
+      // The composer must translate structured codes; the raw identifier is a
+      // presentation bug, not a user-facing message.
+      expect(wrapper.text()).toContain("too many queued runs");
+      expect(wrapper.text()).not.toContain("topicQueueFull");
+    });
+
     it("Lead shortcut never selects a disabled Bot", async () => {
       const groups = seedGroupSelection();
+      const direct = useDirectBotsStore();
+      direct.botsLoaded["i1"] = true;
+      direct.botsByInstance["i1"] = BOTS;
       groups.groupsByInstance["i1"] = [{ ...GROUP, leadBotId: "bot_off", botIds: ["bot_off", "bot_a"] }];
       groups.groupDetails["i1:conversation_g"] = { ...GROUP, leadBotId: "bot_off", botIds: ["bot_off", "bot_a"], topics: [] } as never;
       const wrapper = mount(GroupComposer, {
@@ -477,26 +543,37 @@ describe("Group Components", () => {
     // jsdom has no layout engine, so scrollHeight/clientHeight stay 0 and any
     // scroll assertion is trivially true. Give the scroller a fake geometry:
     // 1000px of content, a 100px viewport, so scrollTop has real meaning.
-    function withGeometry(el: HTMLElement): void {
-      let scrollTop = 0;
-      Object.defineProperty(el, "clientHeight", { value: 100, configurable: true });
+    const VIEWPORT = 100;
+
+    interface Geometry {
+      /** Content height, mutable so a prepend or a stream can grow the list. */
+      content: number;
+      scrollTop: number;
+      el: HTMLElement;
+      grow(by: number): void;
+    }
+
+    function withGeometry(el: HTMLElement): Geometry {
+      const g: Geometry = { content: 1000, scrollTop: 0, el, grow: (by) => { g.content += by; } };
+      Object.defineProperty(el, "clientHeight", { get: () => VIEWPORT, configurable: true });
       Object.defineProperty(el, "scrollHeight", {
-        get: () => 1000,
+        get: () => g.content,
         configurable: true,
       });
       Object.defineProperty(el, "scrollTop", {
         // Emulate the browser clamp: scrollTop can never exceed
         // scrollHeight - clientHeight, which is what "at the bottom" means.
-        get: () => Math.min(scrollTop, 1000 - 100),
-        set: (v: number) => { scrollTop = v; },
+        get: () => Math.min(g.scrollTop, g.content - VIEWPORT),
+        set: (v: number) => { g.scrollTop = v; },
         configurable: true,
       });
+      return g;
     }
 
-    function mountTranscript(): ReturnType<typeof mount> {
+    function mountTranscript(): { wrapper: ReturnType<typeof mount>; geo: Geometry } {
       const wrapper = mount(GroupTranscript, { props: { bots: BOTS }, global: { plugins: [i18n] } });
-      withGeometry(wrapper.find('[data-test="group-transcript-scroller"]').element as HTMLElement);
-      return wrapper;
+      const geo = withGeometry(wrapper.find('[data-test="group-transcript-scroller"]').element as HTMLElement);
+      return { wrapper, geo };
     }
 
     function seedMessages(count: number): void {
@@ -525,16 +602,22 @@ describe("Group Components", () => {
       seedGroupSelection();
       const groups = useGroupsStore();
       groups.topicReady = false;
-      const wrapper = mountTranscript();
+      const { wrapper, geo } = mountTranscript();
+      // Content grows as history is loaded.
+      geo.grow(500);
       seedMessages(20);
       await flushPromises();
-      // Bottom means scrollTop === scrollHeight - clientHeight.
-      expect(scrollerOf(wrapper).scrollTop).toBe(900);
+      // Bottom means the reader is at scrollHeight - clientHeight. Asserted
+      // against the live geometry rather than a hard-coded number so the check
+      // stays meaningful when the content height moves.
+      const el = scrollerOf(wrapper);
+      expect(el.scrollTop).toBe(el.scrollHeight - el.clientHeight);
+      expect(el.scrollTop).toBeGreaterThan(1200);
     });
 
     it("follows streaming output while already at the bottom", async () => {
       seedGroupSelection();
-      const wrapper = mountTranscript();
+      const { wrapper, geo } = mountTranscript();
       seedMessages(4);
       await flushPromises();
       const el = scrollerOf(wrapper);
@@ -548,15 +631,17 @@ describe("Group Components", () => {
       };
       groups.liveTurnsByMember = { turn_a: { parts: [], status: "streaming", startedAt: 1, revision: 1 } };
       await flushPromises();
-      // A streaming revision bumps the follow path while the reader is at bottom.
+      // Streaming output grows the transcript: without a follow, the reader is
+      // left 120px short of the new bottom.
+      geo.grow(120);
       groups.liveTurnsByMember = { turn_a: { parts: [], status: "streaming", startedAt: 1, revision: 2 } };
       await flushPromises();
-      expect(el.scrollTop).toBe(900);
+      expect(el.scrollTop).toBe(1020);
     });
 
     it("does not yank a reader who scrolled up during streaming", async () => {
       seedGroupSelection();
-      const wrapper = mountTranscript();
+      const { wrapper, geo } = mountTranscript();
       seedMessages(4);
       await flushPromises();
       const el = scrollerOf(wrapper);
@@ -571,6 +656,9 @@ describe("Group Components", () => {
       // Reader scrolls up mid-transcript and stays there.
       el.scrollTop = 120;
       await wrapper.find('[data-test="group-transcript-scroller"]').trigger("scroll");
+      // Content grows while the reader is reading up-transcript: a follow here
+      // would yank them to 1020.
+      geo.grow(120);
       groups.liveTurnsByMember = { turn_a: { parts: [], status: "streaming", startedAt: 1, revision: 9 } };
       await flushPromises();
       expect(el.scrollTop).toBe(120);
@@ -578,17 +666,18 @@ describe("Group Components", () => {
 
     it("keeps the visible anchor when older history is prepended", async () => {
       seedGroupSelection();
-      const wrapper = mountTranscript();
+      const { wrapper, geo } = mountTranscript();
       seedMessages(10);
       await flushPromises();
       const el = scrollerOf(wrapper);
-      // Reader sits 420px above the bottom of a growing transcript.
+      // Reader sits 520px above the bottom.
       el.scrollTop = 480;
-      const anchor = 1000 - el.scrollTop;
+      const anchor = geo.content - el.scrollTop;
       const loadSpy = vi.spyOn(useGroupsStore(), "loadOlder").mockImplementation(async () => {
         const g = useGroupsStore();
-        // Prepending grows scrollHeight, which is what makes the anchor matter.
-        (el as unknown as { __grown?: boolean }).__grown = true;
+        // Prepending grows the content by 300px, which is what makes restoring
+        // the anchor necessary.
+        geo.grow(300);
         g.messages = [
           { id: "msg_old", conversationId: "conversation_g", topicId: "topic_1", seq: 0, role: "human", content: "old", createdAt: "2026-08-01T00:00:00.000Z" },
           ...g.messages,
@@ -597,8 +686,10 @@ describe("Group Components", () => {
       await wrapper.find('[data-test="group-load-older-button"]').trigger("click");
       await flushPromises();
       await flushPromises();
-      // The restore recomputes scrollTop from the preserved distance-to-bottom.
-      expect(1000 - el.scrollTop).toBeCloseTo(anchor, 0);
+      // The restore recomputes scrollTop from the preserved distance-to-bottom:
+      // the reader is still 520px from the bottom of the now-taller transcript.
+      expect(geo.content - el.scrollTop).toBe(anchor);
+      expect(el.scrollTop).toBe(780);
       loadSpy.mockRestore();
     });
   });

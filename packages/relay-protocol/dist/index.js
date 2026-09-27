@@ -1061,8 +1061,10 @@ var validateGroupTopicsTeardown = (p) => {
 var isConversationTarget = (v) => {
   if (!isObj(v))
     return false;
-  if (isStr(v.botId))
-    return true;
+  if (isStr(v.botId)) {
+    const botId = v.botId;
+    return botId.length > 0 && botId.length <= MAX_BOT_ID_LENGTH;
+  }
   if (v.mode === "members") {
     return Array.isArray(v.botIds) && v.botIds.length > 0 && v.botIds.length <= MAX_GROUP_TARGET_MEMBERS && v.botIds.every((id) => isStr(id) && id.length > 0 && id.length <= MAX_BOT_ID_LENGTH);
   }

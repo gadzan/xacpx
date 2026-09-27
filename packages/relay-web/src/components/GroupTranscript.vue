@@ -140,7 +140,10 @@ function onScroll(): void {
 function scrollToBottom(): void {
   const el = scroller.value;
   if (!el) return;
-  el.scrollTop = el.scrollHeight;
+  // Assigning scrollHeight directly relies on the browser clamping it to
+  // scrollHeight - clientHeight. Be explicit so the intent (and any non-browser
+  // host that does not clamp) still lands exactly at the bottom.
+  el.scrollTop = el.scrollHeight - el.clientHeight;
 }
 
 // History that lands in the store (Topic open, history switch, reconnect) must put

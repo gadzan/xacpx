@@ -15,7 +15,7 @@ import { classifyConversationRoot } from "./conversation-roots";
 import { planDirectConversation, presentDefaultDirectTopic, presentDirectConversation } from "./direct-conversation";
 import { createDirectBindingId, createDirectTopicId, createScopedGroupMemberBindingId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
-import { MAX_GROUP_TARGET_MEMBERS } from "@ganglion/xacpx-relay-protocol";
+import { MAX_BOT_ID_LENGTH, MAX_GROUP_TARGET_MEMBERS } from "@ganglion/xacpx-relay-protocol";
 import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
@@ -745,14 +745,31 @@ export class ConversationRunService {
     parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" },
   ): string[] {
     if (parsed.kind === "members") {
-      // Semantic bound, independent of the wire cap: gate acquisition is
-      // process-lifetime state, so clearly-oversized selections are refused
-      // before any lock is taken rather than expanded and then rejected by the
-      // membership check.
+      // Gate acquisition is process-lifetime state: `runLifecycleAll` creates a
+      // permanent mutex entry per supplied id and never releases them. So the
+      // wire cap bounds growth RATE but cannot bound the map — a caller can send
+      // 64 fresh unknown ids per request forever. Refuse ids that are not
+      // members right now, BEFORE any gate is taken.
+      //
+      // This is a fail-fast, not the authority: `resolveGroupMembers` still
+      // revalidates live membership inside the held gates, so a member added
+      // concurrently is either seen here (and the accept proceeds) or the
+      // pre-check simply linearizes before that commit.
       if (parsed.botIds.length > MAX_GROUP_TARGET_MEMBERS) {
         throw new ConversationError(
           "invalid-target",
           `explicit Group target selects too many members (max ${MAX_GROUP_TARGET_MEMBERS})`,
+        );
+      }
+      const live = this.state.conversations[conversationId];
+      const membership = live?.kind === "group" ? live.botIds : [];
+      const foreign = parsed.botIds.filter(
+        (botId) => botId.length > MAX_BOT_ID_LENGTH || !membership.includes(botId),
+      );
+      if (foreign.length > 0) {
+        throw new ConversationError(
+          "invalid-target",
+          `explicit Group target selects Bots that are not current members of group "${conversationId}"`,
         );
       }
       return [...parsed.botIds];

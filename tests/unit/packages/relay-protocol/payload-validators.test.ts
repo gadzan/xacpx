@@ -240,6 +240,15 @@ test("parseControlPayload validates group RPC shapes and rejects junk isolation"
   expect(parseControlPayload(MSG.conversationPrompt, promptWith(["x".repeat(129)]))).toBeNull();
   expect(parseControlPayload(MSG.conversationPrompt, promptWith(["x".repeat(128)]))).not.toBeNull();
   expect(parseControlPayload(MSG.conversationPrompt, promptWith([""]))).toBeNull();
+  // Legacy single-Bot target: same id-length bound, since the server normalizes
+  // it into a members target and the id would reach gate acquisition.
+  const singleWith = (botId: string) => ({
+    conversationId: "c", topicId: "t", requestId: "r", text: "x",
+    target: { botId },
+  });
+  expect(parseControlPayload(MSG.conversationPrompt, singleWith("x".repeat(128)))).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, singleWith("x".repeat(129)))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, singleWith(""))).toBeNull();
   // Create-time only: worktree-per-member has no provisioning, so a Topic
   // created with it could never execute. Topic responses stay legacy-tolerant.
   expect(parseControlPayload(MSG.groupTopicsCreate, {

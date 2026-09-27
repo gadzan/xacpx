@@ -472,7 +472,13 @@ const validateGroupTopicsTeardown: Validator<GroupTopicsTeardownPayload> = (p) =
 };
 const isConversationTarget = (v: unknown): boolean => {
   if (!isObj(v)) return false;
-  if (isStr(v.botId)) return true;
+  // Same resource bound as the members branch: a legacy-shaped single-Bot target
+  // is normalized into a members target by the server, so an oversized id would
+  // reach gate acquisition unbounded.
+  if (isStr(v.botId)) {
+    const botId = v.botId as string;
+    return botId.length > 0 && botId.length <= MAX_BOT_ID_LENGTH;
+  }
   if (v.mode === "members") {
     return Array.isArray(v.botIds)
       && v.botIds.length > 0
