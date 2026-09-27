@@ -75,6 +75,9 @@ interface PendingTunnel {
   abort(): void;
 }
 
+/** A socket owned by an in-flight prepare, tagged so teardown closes it right. */
+type OpenedSocket = { kind: "tcp"; sock: net.Socket } | { kind: "ws"; sock: WebSocket };
+
 function toBinaryWsUrl(hubUrl: string, ticket: string): string {
   const url = new URL(hubUrl);
   url.protocol = url.protocol === "wss:" ? "wss:" : "ws:";
@@ -131,17 +134,24 @@ export class DesktopTunnelRuntime {
       return true;
     }
     const generation = this.generation;
-    const sockets: Array<net.Socket | WebSocket> = [];
+    // Sockets opened by this attempt, in the order they are opened. Typed as a
+    // tagged pair so teardown can call the right method per kind: net.Socket
+    // has destroy(), ws.WebSocket has close() (and only an optional destroy()).
+    const opened: Array<{ kind: "tcp"; sock: net.Socket } | { kind: "ws"; sock: WebSocket }> = [];
     const pending: PendingTunnel = {
       streamId: input.streamId,
       ticket: input.ticket,
       generation,
       tunnel: null,
       abort() {
-        // Close in reverse order of opening: the hub plane first (it is the one
-        // whose ticket the hub considers consumed), then the loopback TCP.
-        for (const sock of sockets.splice(0).reverse()) {
-          try { sock.destroy?.(); } catch { /* gone */ }
+        // Close in reverse order of opening: the hub plane first (the ticket the
+        // hub considers consumed is the one that matters most), then the
+        // loopback TCP. `splice` empties the array so a second abort is inert.
+        for (const entry of opened.splice(0).reverse()) {
+          try {
+            if (entry.kind === "tcp") entry.sock.destroy();
+            else entry.sock.close();
+          } catch { /* gone */ }
         }
       },
     };
@@ -165,7 +175,7 @@ export class DesktopTunnelRuntime {
         return true;
       }
       security = verdict.security;
-      await this.openTunnel(input.streamId, input.ticket, generation, pending, sockets);
+      await this.openTunnel(input.streamId, input.ticket, generation, pending, opened);
       if (retired()) return true;
     } catch (err) {
       if (!retired()) {
@@ -220,13 +230,13 @@ export class DesktopTunnelRuntime {
     generation: number,
     pending: PendingTunnel,
     /** Sockets opened by this attempt, so teardown can destroy them. */
-    sockets: Array<net.Socket | WebSocket>,
+    sockets: OpenedSocket[],
   ): Promise<void> {
     const config = this.deps.config;
     const tcp = net.createConnection({ host: RFB_LOOPBACK_HOST, port: config.port });
     // Publish to the pending record the instant the socket exists: an abort
     // that lands between here and the first await must still close it.
-    sockets.push(tcp);
+    sockets.push({ kind: "tcp", sock: tcp });
     // Any throw below must not leak the loopback socket: openHubSocket can
     // reject after the banner was already read (hub down / bad ticket).
     // closeActive only drops this.active, so destroy explicitly on failure.
@@ -292,7 +302,7 @@ export class DesktopTunnelRuntime {
       tcp.destroy();
       throw err;
     }
-    sockets.push(socket);
+    sockets.push({ kind: "ws", sock: socket });
     // LAST lifecycle check before publishing. Between the await above and this
     // line nothing yields, but closeAll()/handleCancel() can have run in an
     // earlier task and left the attempt retired; publishing then would install
