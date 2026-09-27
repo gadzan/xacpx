@@ -583,65 +583,6 @@ test("a number field's bound is not inferred from its interval's endpoints", () 
   expect(verdict.reason).toBe("field-text-too-long");
 });
 
-test("a number field with a non-negative minimum reserves the positive widest rendering", () => {
-  // The only sound narrowing, and only by SIGN: the negative spelling is exactly
-  // one character wider than its magnitude, so a declared `minimum >= 0` makes
-  // the negative form unreachable and the positive one is the widest REACHABLE
-  // rendering.
-  //
-  // Two things this asserts, so it cannot pass vacuously. First that the sign rule
-  // actually fires (a field with an all-negative range keeps the longer form).
-  // Second that the reserved value is really the one whose width the gate uses,
-  // which is checked by finding a description sized so the sign difference is what
-  // decides the verdict.
-  const { fields: wide, request: wideReq } = numberBoundFixture();
-  const atNegative = buildElicitationFieldLines(wideReq, wide[0]!, 1, -Number.MAX_VALUE).join("\n\n").length;
-  const atPositive = buildElicitationFieldLines(wideReq, wide[0]!, 1, Number.MAX_VALUE).join("\n\n").length;
-  // The premise: one character decides it.
-  expect(atNegative).toBe(atPositive + 1);
-
-  const nonNegative: ChannelElicitationRequest["fields"] = [{
-    kind: "number",
-    key: "n",
-    title: "N",
-    required: true,
-    minimum: 0,
-    description: "*".repeat(numberBoundSize()),
-  }];
-  const nonNegativeRequest = requestFor(nonNegative);
-  const nonNegativeWidth = buildElicitationFieldLines(
-    nonNegativeRequest,
-    nonNegative[0]!,
-    1,
-    Number.MAX_VALUE,
-  ).join("\n\n").length;
-  // Sized to the POSITIVE rendering: the gate reserves the positive form, so this
-  // field is accepted rather than refused for a rendering it cannot reach.
-  expect(nonNegativeWidth).toBeLessThanOrEqual(1800);
-  expect(checkElicitationRenderability(nonNegative, nonNegativeRequest).renderable).toBe(true);
-});
-
-/**
- * A near-boundary number field and its description size, shared by the two
- * number-bounds tests so their premises cannot drift apart.
- */
-function numberBoundFixture(): { fields: ChannelElicitationRequest["fields"]; request: ChannelElicitationRequest } {
-  const fields: ChannelElicitationRequest["fields"] = [{
-    kind: "number",
-    key: "n",
-    title: "N",
-    required: true,
-    // No declared bounds, so the negative form is reachable and the sign rule
-    // does not narrow.
-    description: "*".repeat(numberBoundSize()),
-  }];
-  return { fields, request: requestFor(fields) };
-}
-
-/** The description size that puts a number field exactly at the echo boundary. */
-function numberBoundSize(): number {
-  return 851;
-}
 test("a multi-select's reserved echo bounds a legal subset, not the all-options sample", () => {
   // The echo is `escape(truncate(displayValue(answer), 200))` — cut to 200 RAW
   // characters and only THEN escaped. That ordering is what makes the
@@ -713,3 +654,97 @@ test("a text field's reserved echo does not exceed its own declared maxLength", 
   // So the gate accepts it, and correctly: the user cannot produce the wider echo.
   expect(checkElicitationRenderability(fields, request).renderable).toBe(true);
 });
+test("a number echo's bound is a width, not one of the extremes", () => {
+  // The longest `String(number)` is NOT at either end of the double range. JS
+  // switches to exponential notation outside a narrow exponent band, so the widest
+  // form is a fixed-notation value near zero:
+  //
+  //   Number.MAX_VALUE                 -> "1.7976931348623157e+308"     23 chars
+  //   0.0000012345678901234567         -> "0.0000012345678901234567"    24 chars
+  //   -Number.MAX_VALUE                -> "-1.7976931348623157e+308"    24 chars
+  //   -0.0000012345678901234567        -> "-0.0000012345678901234567"   25 chars
+  //
+  // Reserving for an extreme understates by one or two characters — enough on its
+  // own to cross the budget on a field sitting on the boundary.
+  const premise = String(-0.0000012345678901234567).length;
+  expect(premise).toBeGreaterThan(String(Number.MAX_VALUE).length);
+  expect(premise).toBeGreaterThan(String(-Number.MAX_VALUE).length);
+
+  const fields: ChannelElicitationRequest["fields"] = [{
+    kind: "number",
+    key: "n",
+    title: "N",
+    required: true,
+    // A declared non-negative floor, because that is exactly the case the old sign
+    // rule narrowed to the shorter positive extreme.
+    minimum: 0,
+    // Plain (non-expanding) characters, so the width is tunable one character at a
+    // time — a description of Markdown metacharacters moves in steps of two and
+    // cannot land on the boundary. Sized so the extreme rendering fits exactly and
+    // the denormal is one character over.
+    description: "a".repeat(1702),
+  }];
+  const request = requestFor(fields);
+  // The premise: the extreme would have passed, the legal answer overflows.
+  const atExtreme = buildElicitationFieldLines(request, fields[0]!, 1, Number.MAX_VALUE).join("\n\n").length;
+  const atDenormal = buildElicitationFieldLines(request, fields[0]!, 1, 0.0000012345678901234567).join("\n\n").length;
+  expect(atExtreme).toBe(1800);
+  expect(atDenormal).toBeGreaterThan(1800);
+
+  const verdict = checkElicitationRenderability(fields, request);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("field-text-too-long");
+});
+
+test("a text echo's bound covers the truncate ellipsis", () => {
+  // `truncate(value, max)` does NOT produce `max` characters for an over-long
+  // value: it emits `value.slice(0, max - 1)` plus `"..."`, which is `max + 2`.
+  //
+  // So a sample of exactly `max` characters measures the NO-CUT path, and a legal
+  // answer one character longer takes the CUT path and renders two characters
+  // wider: `"*".repeat(201)` becomes `199 * + "..."` = 401 escaped characters
+  // where a 200-character sample produced 400.
+  //
+  // The bound therefore deliberately overshoots, so the builder's own truncate
+  // branch fires and the estimate inherits the real overhead from the same
+  // definition that produces it.
+  const premise = truncateShape("*".repeat(201), FIELD_CARD_ANSWER_ECHO_MAX);
+  expect(premise).toBe(FIELD_CARD_ANSWER_ECHO_MAX + 2);
+
+  const fields: ChannelElicitationRequest["fields"] = [{
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    // Above the echo bound, so answers are cut rather than merely capped.
+    maxLength: 4000,
+    // Sized so the no-cut sample lands exactly on the budget and the cut answer
+    // crosses it.
+    description: "*".repeat(653),
+  }];
+  const request = requestFor(fields);
+  const atExact = buildElicitationFieldLines(
+    request,
+    fields[0]!,
+    1,
+    "*".repeat(FIELD_CARD_ANSWER_ECHO_MAX),
+  ).join("\n\n").length;
+  const atCut = buildElicitationFieldLines(
+    request,
+    fields[0]!,
+    1,
+    "*".repeat(FIELD_CARD_ANSWER_ECHO_MAX + 1),
+  ).join("\n\n").length;
+  // The premise: exactly-on-budget versus one over.
+  expect(atExact).toBe(1800);
+  expect(atCut).toBeGreaterThan(1800);
+
+  const verdict = checkElicitationRenderability(fields, request);
+  expect(verdict.renderable).toBe(false);
+  expect(verdict.reason).toBe("field-text-too-long");
+});
+
+/** Raw length of `truncate(value, max)`, i.e. the cut shape the builder applies. */
+function truncateShape(value: string, max: number): number {
+  return value.length <= max ? value.length : max - 1 + "...".length;
+}

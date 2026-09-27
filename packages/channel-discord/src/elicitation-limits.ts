@@ -160,49 +160,86 @@ function boundedAnswerEcho(field: ChannelElicitationField): ChannelElicitationVa
 }
 
 /**
+ * The widest rendering, in characters, that `String(number)` produces for ANY
+ * finite double.
+ *
+ * Derived, not written, and deliberately NOT from the extremes: the longest form
+ * comes from a fixed-notation denormal near zero, not from `Number.MAX_VALUE`.
+ * The exponent ceiling is what makes this derivable — the widest possible form is
+ * a full-precision fixed value, and its width is bounded by the length of the
+ * negative one again.
+ *
+ * Measured by constructing the widest fixed-notation value and adding the sign,
+ * which is also where the longest strings live. If a runtime ever produced
+ * something wider, this would be stale — so it is a `+1` over the widest form
+ * currently observed, and the comment records why the slack is there.
+ */
+const NUMBER_RENDER_WIDTH_BOUND = ((): number => {
+  const widestFixed = String(-0.0000012345678901234567).length;
+  return widestFixed + 1;
+})();
+
+/**
  * 200 raw characters (or the field's own bound, whichever is smaller) of the
- * character the escaper expands the most.
+ * character the escaper expands the most, DELIBERATELY over the bound so the
+ * builder's own truncate branch fires.
+ *
+ * `truncate(value, max)` does not produce `max` characters for an over-long value:
+ * it emits `value.slice(0, max - 1)` plus `"..."`, which is `max + 2`. Returning
+ * exactly `max` characters therefore measures the no-cut path and understates the
+ * cut path — a legal answer of `"*".repeat(201)` renders
+ * `199 * + "..."`, which is 401 escaped characters where the sample produced 400.
+ *
+ * So this returns one character MORE than the bound. The builder then truncates it
+ * exactly as it would a real over-long answer, and the estimate inherits the real
+ * `+2` overhead rather than modelling it separately. That keeps one definition of
+ * the shape (the builder's) instead of two that can drift.
+ *
+ * The field's own `maxLength` clamp is unaffected: when it is at or below the echo
+ * bound the answer can never be cut, so the shorter length is the correct one and
+ * no ellipsis is owed.
  */
 function worstEchoText(field: ChannelElicitationField): string {
   const declared = "maxLength" in field && typeof field.maxLength === "number" ? field.maxLength : undefined;
-  const raw = Math.min(declared ?? FIELD_CARD_ANSWER_ECHO_MAX, FIELD_CARD_ANSWER_ECHO_MAX);
+  // The clamp applies only while it is actually below the bound; above it the
+  // domain's answers can be longer than the echo bound and DO get cut, so the
+  // bound (plus its overshoot) is what must be reserved.
+  const raw = declared !== undefined && declared < FIELD_CARD_ANSWER_ECHO_MAX
+    ? declared
+    : FIELD_CARD_ANSWER_ECHO_MAX + 1;
   return WIDEST_ESCAPE_CHARACTER.repeat(Math.max(0, raw));
 }
 
 /**
  * The number whose rendered form is the widest a legal answer can produce.
  *
- * `String()` of a finite double is at most 24 characters — `Number.MAX_VALUE` —
- * and none of the characters it can emit (digits, `-`, `.`, `e`, `+`) are escaped
- * by `escapeDiscordLiteralText`, so the rendered width equals the character count.
- * That makes 24 the widest any finite number can render to, and every other
- * finite number renders at or under it.
+ * NOT an actual number. This is a sizing input, so it carries a WIDTH rather than a
+ * value: a placeholder string that renders as wide as the widest `String(number)`
+ * the language can produce, which is NOT either extreme.
  *
- * NO INTERVAL CLAMP. A finite interval's longest `String(number)` cannot be
- * inferred from its endpoints: `{minimum: 1, maximum: 2}` admits
- * `1.2345678901234567`, which renders 18 characters from a range whose endpoints
- * render one each. Clamping to the nearest endpoint is therefore not a bound at
- * all — it is a single point, and the interior of the range is wider than both of
- * its ends. That is exactly the failure this function exists to prevent, one level
- * down: the gate passes, the user answers, and the second field render overflows.
+ * The extremes are not the widest forms. `Number.MAX_VALUE` renders 23 characters
+ * and `-Number.MAX_VALUE` 24, but a fixed-notation denormal renders longer:
+ * `0.0000012345678901234567` is 24 and `-0.0000012345678901234567` is 25. JS
+ * switches to exponential notation outside a narrow exponent band, so the longest
+ * string is produced near zero, not at the ends — and reserving for an extreme
+ * understates it by one or two characters, which is enough to cross the 1800
+ * budget on a field sitting on the boundary.
  *
- * The only sound narrowing is by SIGN, and only because the negative form is
- * strictly one character wider than its magnitude. When the schema declares a
- * non-negative lower bound, the negative spelling is unreachable and the widest
- * reachable rendering is the positive one. Every other case keeps the negative
- * form, which subsumes the positive and any interior value.
+ * The placeholder is built from characters the Discord escaper does NOT expand, so
+ * its rendered width equals its character count and the arithmetic stays exact.
+ * Every finite number's `String()` is at most this many characters and is within
+ * the echo bound's raw cap, so the placeholder's own width is what the card carries.
  *
- * The cost of that is ~20 reserved characters on forms already sitting within a
- * few characters of the 1800 budget. Those forms are refused, so this can
- * over-refuse at the extreme boundary. The alternative is a post-answer render
- * failure on a form the gate accepted, which is unrecoverable — and over-refusing
- * a 20-character-near-1800 description is a far smaller harm than answering a
- * question and then being unable to see it again.
+ * No sign rule either, and for the same reason: a `minimum >= 0` field cannot
+ * reach the longest form by being negative, but it reaches one just one shorter by
+ * being a positive denormal — which is close enough that the narrowing saves
+ * nothing and costs a proof.
  */
-function widestNumberEcho(field: Extract<ChannelElicitationField, { kind: "number" }>): number {
-  return field.minimum !== undefined && field.minimum >= 0
-    ? Number.MAX_VALUE
-    : -Number.MAX_VALUE;
+function widestNumberEcho(field: Extract<ChannelElicitationField, { kind: "number" }>): ChannelElicitationValue {
+  // 25 digits, which is the widest `String(number)` any finite double produces
+  // (see above). Not a number — a string of the right width — so nothing can
+  // render it differently than it reads.
+  return "0".repeat(NUMBER_RENDER_WIDTH_BOUND);
 }
 
 /** Cut a rendered string to `max`, appending an ellipsis when it is cut. */
