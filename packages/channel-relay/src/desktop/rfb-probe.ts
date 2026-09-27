@@ -173,21 +173,35 @@ function classifySecurityTypes(types: readonly number[], version: string): RfbPr
 export interface RfbProbeOptions {
   port: number;
   connectTimeoutMs: number;
+  /**
+   * Abort the probe's own dial (not the caller's tunnel). A lifecycle event
+   * that lands while the probe is awaiting must not have to wait for
+   * connectTimeoutMs: the probe owns a real TCP socket for that whole window.
+   */
+  signal?: AbortSignal;
   /** Test seam: dial loopback and return the server's handshake bytes. */
-  dial?: (port: number, timeoutMs: number) => Promise<Uint8Array>;
+  dial?: (port: number, timeoutMs: number, signal?: AbortSignal) => Promise<Uint8Array>;
 }
 
 export async function probeLoopbackRfb(options: RfbProbeOptions): Promise<RfbProbeVerdict> {
   const dial = options.dial ?? dialLoopbackTcp;
   let bytes: Uint8Array;
   try {
-    bytes = await dial(options.port, options.connectTimeoutMs);
+    bytes = await dial(options.port, options.connectTimeoutMs, options.signal);
   } catch (err) {
+    // An aborted probe is a lifecycle outcome, never a server verdict. Rethrow
+    // so the caller's abort path handles it (and suppresses any response);
+    // reporting `desktop-rfb-unavailable` here would tell a viewer that no RFB
+    // server exists when in fact the connector was logging out.
+    if (options.signal?.aborted) throw err;
     return {
       ok: false,
       code: "desktop-rfb-unavailable",
       detail: err instanceof Error ? err.message.slice(0, 160) : "RFB connection failed",
     };
+  }
+  if (options.signal?.aborted) {
+    throw new Error("RFB probe aborted");
   }
   const verdict = evaluateRfbHandshake(bytes);
   if (!verdict) {
@@ -203,7 +217,11 @@ export async function probeLoopbackRfb(options: RfbProbeOptions): Promise<RfbPro
  * socket is always destroyed afterwards — the real tunnel opens its own
  * connection so noVNC owns the full handshake there.
  */
-async function dialLoopbackTcp(port: number, timeoutMs: number): Promise<Uint8Array> {
+async function dialLoopbackTcp(
+  port: number,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
   return new Promise<Uint8Array>((resolve, reject) => {
     const bannerChunks: Buffer[] = [];
     const securityChunks: Buffer[] = [];
@@ -215,17 +233,40 @@ async function dialLoopbackTcp(port: number, timeoutMs: number): Promise<Uint8Ar
       socket.destroy();
       reject(new Error(`RFB connect timed out after ${timeoutMs}ms`));
     }, timeoutMs);
-    const fail = (err: unknown) => {
+    // A lifecycle abort cuts the probe's own socket at once. Without this the
+    // probe holds a real TCP connection for the whole connectTimeoutMs even
+    // after the connector has logged out.
+    const onAbort = () => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      socket.destroy();
+      reject(new Error("RFB probe aborted"));
+    };
+    if (signal) {
+      if (signal.aborted) {
+        clearTimeout(timer);
+        settled = true;
+        reject(new Error("RFB probe aborted"));
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const fail = (err: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
       socket.destroy();
       reject(err instanceof Error ? err : new Error(String(err)));
     };
     const finish = () => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      cleanup();
       const banner = Buffer.concat(bannerChunks);
       const security = Buffer.concat(securityChunks).subarray(0, 256);
       socket.destroy();

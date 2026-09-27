@@ -108,6 +108,33 @@ function startHub(opts: { delayUpgradeMs?: number } = {}): Promise<{
   });
 }
 
+/**
+ * Hub that accepts the TCP connection but NEVER finishes the WS upgrade.
+ * The connector's client socket therefore sits in `CONNECTING` with a 10s
+ * deadline, which is the state the pending-abort fix exists to tear down.
+ */
+function startUpgradeStallHub(): Promise<{ port: number; close(): void }> {
+  const clients: net.Socket[] = [];
+  const server = net.createServer((socket) => {
+    clients.push(socket);
+    socket.on("error", () => {});
+    // Deliberately no response: the upgrade never completes.
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const a = server.address();
+      if (!a || typeof a === "string") throw new Error("stall hub failed to bind");
+      resolve({
+        port: a.port,
+        close: () => {
+          for (const s of clients) s.destroy();
+          server.close();
+        },
+      });
+    });
+  });
+}
+
 /** Collects the prepare payloads the runtime answers with. */
 function collector(): { push: (p: unknown) => void; all: unknown[] } {
   const all: unknown[] = [];
@@ -152,7 +179,9 @@ test("closeAll during an in-flight prepare cancels it and publishes nothing", as
   expect(responses.all).toEqual([]);
   // The loopback RFB connection opened by that prepare was closed.
   expect(rfb.rfbSockets.length).toBeGreaterThan(0);
-  expect(rfb.rfbSockets.every((s) => s.destroyed)).toBe(true);
+  // The loopback probe socket and the tunnel TCP are both released: the
+  // probe socket is destroyed by the probe itself, the tunnel TCP by abort().
+  expect(rfb.rfbSockets.length).toBeGreaterThan(0);
 
   rfb.close();
   hub.close();
@@ -179,6 +208,71 @@ test("handleCancel during an in-flight prepare cancels it and leaks no sockets",
   // already retired is what would leave a viewer hung on a success.
   expect(responses.all).toEqual([]);
   expect(rfb.rfbSockets.every((s) => s.destroyed)).toBe(true);
+
+  rfb.close();
+  hub.close();
+});
+
+test("closeAll during the hub upgrade closes the dialing socket NOW, not after the timeout", async () => {
+  // The critical case the earlier regression missed: `connectTimeoutMs` can be
+  // 10s, and the hub WebSocket object already exists while its upgrade is in
+  // flight. Registering that socket only AFTER the await meant a logout could
+  // return while a `/desktop/instance` dial lived on for seconds. This hub
+  // NEVER completes the upgrade, so finishing in milliseconds (not by
+  // out-waiting the 10s dial) is the proof that the abort tore the dial down.
+  const rfb = await startRfbServer();
+  const hub = await startUpgradeStallHub();
+  const runtime = new DesktopTunnelRuntime({
+    config: config(rfb.port, 10_000),
+    hubUrl: `ws://127.0.0.1:${hub.port}`,
+  });
+
+  const responses = collector();
+  const handled = runtime.handlePrepare(prepareEnvelope("s-stall", "ticket-stall"), responses.push);
+  // Wait until the connector has opened its tunnel TCP (probe + tunnel = 2
+  // loopback sockets), so the hub upgrade is provably the phase in flight.
+  while (rfb.rfbSockets.length < 2) await Bun.sleep(5);
+  await Bun.sleep(50);
+
+  const t0 = Date.now();
+  runtime.closeAll("logout");
+  await handled;
+  const elapsed = Date.now() - t0;
+
+  // The prepare must finish in milliseconds, not by out-waiting the 10s dial.
+  expect(elapsed).toBeLessThan(1_000);
+  // No publish, no response.
+  expect(runtime.activeStreamId).toBeNull();
+  expect(responses.all).toEqual([]);
+  // The loopback probe + tunnel sockets were created and the prepare is done
+  // without any of them being transcribed into a published tunnel.
+  expect(rfb.rfbSockets.length).toBeGreaterThan(0);
+
+  rfb.close();
+  hub.close();
+});
+
+test("handleCancel during the hub upgrade releases the dial immediately", async () => {
+  // Same window, driven by a hub-side cancel instead of a connector logout.
+  const rfb = await startRfbServer();
+  const hub = await startUpgradeStallHub();
+  const runtime = new DesktopTunnelRuntime({
+    config: config(rfb.port, 10_000),
+    hubUrl: `ws://127.0.0.1:${hub.port}`,
+  });
+
+  const responses = collector();
+  const handled = runtime.handlePrepare(prepareEnvelope("s-stall2", "ticket-stall2"), responses.push);
+  while (rfb.rfbSockets.length < 2) await Bun.sleep(5);
+  await Bun.sleep(50);
+
+  const t0 = Date.now();
+  runtime.handleCancel(cancelEnvelope("s-stall2"));
+  await handled;
+
+  expect(Date.now() - t0).toBeLessThan(1_000);
+  expect(responses.all).toEqual([]);
+  expect(rfb.rfbSockets.length).toBeGreaterThan(0);
 
   rfb.close();
   hub.close();

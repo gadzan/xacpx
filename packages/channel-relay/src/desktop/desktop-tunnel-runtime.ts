@@ -64,6 +64,13 @@ interface ActiveTunnel {
  * an orphan tunnel after the connector had already cleared its runtime. The
  * generation is bumped on every lifecycle transition so a stale prepare can
  * detect it and drop out instead of publishing.
+ *
+ * The controller matters as much as the generation: the generation can only
+ * stop the *next step*, while every socket already in flight needs its I/O
+ * torn down now. Without it a `closeAll()` during the hub upgrade returns
+ * while a `/desktop/instance` dial lives on for up to connectTimeoutMs
+ * (10s), which is exactly the "connector already logged out but still holds a
+ * hub socket" window.
  */
 interface PendingTunnel {
   streamId: string;
@@ -71,8 +78,12 @@ interface PendingTunnel {
   generation: number;
   /** Set once the tunnel publishes `active`, so teardown can find its sockets. */
   tunnel: ActiveTunnel | null;
-  /** Closes any socket already opened for this attempt (TCP, then hub WS). */
+  /** Closes every socket already opened for this attempt, in reverse order. */
   abort(): void;
+  /** Signals the in-flight probe/dial to stop as soon as it next checks. */
+  signal: AbortSignal;
+  /** Set by abort(); observed by probe + dial to cut their I/O immediately. */
+  readonly retired: boolean;
 }
 
 /** A socket owned by an in-flight prepare, tagged so teardown closes it right. */
@@ -134,16 +145,25 @@ export class DesktopTunnelRuntime {
       return true;
     }
     const generation = this.generation;
+    // One controller per attempt. It drives three things that the generation
+    // alone cannot: the loopback probe's own dial, the banner preflight read,
+    // and the hub upgrade's in-flight socket.
+    const controller = new AbortController();
     // Sockets opened by this attempt, in the order they are opened. Typed as a
     // tagged pair so teardown can call the right method per kind: net.Socket
     // has destroy(), ws.WebSocket has close() (and only an optional destroy()).
-    const opened: Array<{ kind: "tcp"; sock: net.Socket } | { kind: "ws"; sock: WebSocket }> = [];
+    const opened: OpenedSocket[] = [];
+    let retired = false;
     const pending: PendingTunnel = {
       streamId: input.streamId,
       ticket: input.ticket,
       generation,
       tunnel: null,
+      get signal() { return controller.signal; },
+      get retired() { return retired; },
       abort() {
+        retired = true;
+        controller.abort();
         // Close in reverse order of opening: the hub plane first (the ticket the
         // hub considers consumed is the one that matters most), then the
         // loopback TCP. `splice` empties the array so a second abort is inert.
@@ -160,15 +180,19 @@ export class DesktopTunnelRuntime {
     // event has bumped the generation, or the hub cancelled this streamId,
     // answering is pointless — the hub's state no longer matches this attempt
     // and a success there would look like a live tunnel.
-    const retired = (): boolean =>
+    const isRetired = (): boolean =>
       this.generation !== generation || !this.pending.get(input.streamId) ||
       this.pending.get(input.streamId)?.generation !== generation;
     let security: DesktopPrepareResult["security"] | null = null;
     try {
-      const verdict = await probeLoopbackRfb({ port: config.port, connectTimeoutMs: config.connectTimeoutMs });
+      const verdict = await probeLoopbackRfb({
+        port: config.port,
+        connectTimeoutMs: config.connectTimeoutMs,
+        signal: pending.signal,
+      });
       // A lifecycle event (logout / stop / disconnect / cancel) landed during
       // the probe: drop out instead of opening sockets nobody owns.
-      if (retired()) return true;
+      if (isRetired()) return true;
       if (!verdict.ok) {
         const guidance = desktopSetupGuidance(this.deps.platform ?? process.platform, verdict.code);
         respond(errorPayload(verdict.code, `${verdict.detail}. ${guidance}`));
@@ -176,9 +200,9 @@ export class DesktopTunnelRuntime {
       }
       security = verdict.security;
       await this.openTunnel(input.streamId, input.ticket, generation, pending, opened);
-      if (retired()) return true;
+      if (isRetired()) return true;
     } catch (err) {
-      if (!retired()) {
+      if (!isRetired()) {
         respond(errorPayload("desktop-stream-timeout", err instanceof Error ? err.message : "desktop tunnel failed"));
       }
       return true;
@@ -229,7 +253,6 @@ export class DesktopTunnelRuntime {
     ticket: string,
     generation: number,
     pending: PendingTunnel,
-    /** Sockets opened by this attempt, so teardown can destroy them. */
     sockets: OpenedSocket[],
   ): Promise<void> {
     const config = this.deps.config;
@@ -241,10 +264,17 @@ export class DesktopTunnelRuntime {
     // reject after the banner was already read (hub down / bad ticket).
     // closeActive only drops this.active, so destroy explicitly on failure.
     await new Promise<void>((resolve, reject) => {
+      // An abort that lands mid-connect cuts the dial immediately instead of
+      // leaving the socket alive until connectTimeoutMs fires.
       const timer = setTimeout(() => {
         tcp.destroy();
         reject(new Error(`RFB connect timed out after ${config.connectTimeoutMs}ms`));
       }, config.connectTimeoutMs);
+      pending.signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        tcp.destroy();
+        reject(new Error(`desktop tunnel retired before open (${streamId})`));
+      }, { once: true });
       tcp.once("connect", () => {
         clearTimeout(timer);
         resolve();
@@ -264,15 +294,20 @@ export class DesktopTunnelRuntime {
     tcp.pause();
     let serverBanner: Buffer;
     try {
-      const banner = await readTunnelBanner(tcp, config.connectTimeoutMs);
+      const banner = await readTunnelBanner(tcp, config.connectTimeoutMs, pending.signal);
       // The lifecycle can also change during the preflight: closeAll() may have
-      // destroyed this very tcp, in which case readTunnelBanner's timer resolves
-      // null and we must not go on to dial the hub plane for a dead tunnel.
+      // destroyed this very tcp, in which case readTunnelBanner resolves null
+      // (or rejects on abort) and we must not go on to dial the hub plane.
       if (this.generation !== generation || this.pending.get(streamId) !== pending) {
         tcp.destroy();
         throw new Error(`desktop tunnel retired before open (${streamId})`);
       }
-      if (!banner) throw new Error("RFB server banner changed before tunnel start");
+      if (!banner) {
+        if (pending.signal.aborted) {
+          throw new Error(`desktop tunnel retired before open (${streamId})`);
+        }
+        throw new Error("RFB server banner changed before tunnel start");
+      }
       serverBanner = banner;
     } catch (err) {
       tcp.destroy();
@@ -286,23 +321,36 @@ export class DesktopTunnelRuntime {
       earlyChunks.push(chunk);
     });
     const url = toBinaryWsUrl(this.deps.hubUrl, ticket);
-    // Attach the error swallow SYNCHRONOUSLY with construction: `ws` may emit
-    // 'error' for an upgrade rejection on a later tick, but any gap between
-    // construction and the first listener is still an unhandled throw under
-    // `bun test` (the rejection is attributed to the file, not the await).
-    let socket: WebSocket;
+    // The hub socket is created and IMMEDIATELY published to the pending
+    // record, before awaiting the upgrade. That ordering is the whole point:
+    // while `ws`'s upgrade is in flight (up to connectTimeoutMs = 10s) the
+    // object already exists, and a `closeAll()`/`handleCancel()` landing in
+    // that window must close it now — not wait for the upgrade to settle or
+    // time out. Registering only after the await left precisely that hole.
     const createSocket = this.deps.createSocket
       ?? ((u: string, options: WebSocketConnectOptions) => new WebSocket(u, options));
+    let socket: WebSocket;
+    // Temporary error swallow covering the gap before openHubSocket attaches its
+    // own one-shot 'error' listener. `ws` emits 'error' on a rejected upgrade,
+    // and an emitter 'error' with no listener throws — which `bun test` would
+    // attribute to this file. Detached inside openHubSocket on first settle.
+    const guard = () => {};
     try {
-      socket = await openHubSocket(createSocket, url, config.connectTimeoutMs, {
-        maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES,
-      });
+      socket = createSocket(url, { maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
+      socket.on("error", guard);
+    } catch (err) {
+      tcp.removeAllListeners("data");
+      tcp.destroy();
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+    sockets.push({ kind: "ws", sock: socket });
+    try {
+      await openHubSocket(socket, pending.signal, config.connectTimeoutMs);
     } catch (err) {
       tcp.removeAllListeners("data");
       tcp.destroy();
       throw err;
     }
-    sockets.push({ kind: "ws", sock: socket });
     // LAST lifecycle check before publishing. Between the await above and this
     // line nothing yields, but closeAll()/handleCancel() can have run in an
     // earlier task and left the attempt retired; publishing then would install
@@ -410,7 +458,11 @@ function forwardToWs(socket: WebSocket, tcp: net.Socket, chunk: Buffer): void {
  * the peer is not speaking RFB. Never reads past byte 12: security-type bytes
  * belong to noVNC's handshake, not to this preflight.
  */
-async function readTunnelBanner(tcp: net.Socket, timeoutMs: number): Promise<Buffer | null> {
+async function readTunnelBanner(
+  tcp: net.Socket,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<Buffer | null> {
   return new Promise<Buffer | null>((resolve) => {
     const chunks: Buffer[] = [];
     let done = false;
@@ -418,6 +470,7 @@ async function readTunnelBanner(tcp: net.Socket, timeoutMs: number): Promise<Buf
       if (done) return;
       done = true;
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       tcp.removeListener("data", onData);
       tcp.pause();
       resolve(value);
@@ -429,6 +482,17 @@ async function readTunnelBanner(tcp: net.Socket, timeoutMs: number): Promise<Buf
       if (buffered.length < 12) return;
       finish(parseBanner(new Uint8Array(buffered.subarray(0, 12))) ? buffered.subarray(0, 12) : null);
     };
+    // Abort resolves null (not reject) so the caller's single catch path handles
+    // both "server never spoke" and "we gave up"; the caller checks the signal
+    // to tell them apart.
+    const onAbort = () => finish(null);
+    if (signal) {
+      if (signal.aborted) {
+        finish(null);
+        return;
+      }
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
     // The socket is paused by the caller, but 'data' was attached while
     // flowing semantics still apply to already-buffered kernel data: resume
     // once so the banner arrives, then finish() re-pauses immediately.
@@ -438,42 +502,37 @@ async function readTunnelBanner(tcp: net.Socket, timeoutMs: number): Promise<Buf
   });
 }
 
+/**
+ * Await the upgrade of an ALREADY-CREATED hub socket.
+ *
+ * The socket is owned by the caller's pending record from the moment it is
+ * constructed, so abort closes the socket directly; this helper only has to
+ * stop waiting and detach its one-shot listeners. That split is what lets a
+ * `closeAll()` during the dial tear the hub plane down immediately instead of
+ * leaving it alive for up to `timeoutMs`.
+ */
 async function openHubSocket(
-  createSocket: (url: string, options: WebSocketConnectOptions) => WebSocket,
-  url: string,
+  socket: WebSocket,
+  signal: AbortSignal,
   timeoutMs: number,
-  options: WebSocketConnectOptions,
-): Promise<WebSocket> {
-  // Guard synchronously: if the factory itself throws (or emits 'error' on
-  // the same tick before our once-listeners attach), Node treats an
-  // emitter 'error' with zero listeners as a throw. Wrap construction so a
-  // pre-listener emission can never escape as an unhandled file-level error.
-  let socket: WebSocket;
-  try {
-    socket = createSocket(url, options);
-  } catch (err) {
-    throw err instanceof Error ? err : new Error(String(err));
-  }
-  // A temporary swallow covers the gap between construction and the
-  // once-listeners below; detached on first settle.
-  const guard = () => {};
-  socket.on("error", guard);
-  return new Promise<WebSocket>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      try { socket.close(); } catch { /* gone */ }
-      reject(new Error(`desktop hub socket timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    // One-shot listeners MUST all detach on first settle: the tunnel registers
-    // its own persistent `on("error")`/`on("close")` afterwards. `ws` emits
-    // BOTH error and close for an upgrade rejection, so without detach the
-    // second event re-rejects an already-settled promise (unhandled).
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
     let settled = false;
+    // A temporary swallow covers the gap before the once-listeners below; it is
+    // detached on first settle so the tunnel's own persistent handler is the
+    // only 'error' listener afterwards.
+    const guard = () => {};
+    socket.on("error", guard);
     const detach = () => {
       clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
       socket.removeListener("error", guard);
       socket.removeListener("error", onError as (...args: unknown[]) => void);
       socket.removeListener("close", onClose);
     };
+    // One-shot listeners MUST all detach on first settle: `ws` emits BOTH error
+    // and close for an upgrade rejection, so without detach the second event
+    // re-rejects an already-settled promise (unhandled).
     const onError = (err: unknown) => {
       if (settled) return;
       settled = true;
@@ -486,11 +545,24 @@ async function openHubSocket(
       detach();
       reject(new Error("desktop hub socket closed before open"));
     };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      detach();
+      // The pending abort already closed this socket; this only stops the wait.
+      try { socket.close(); } catch { /* gone */ }
+      reject(new Error("desktop hub socket retired before open"));
+    };
+    const timer = setTimeout(() => {
+      try { socket.close(); } catch { /* gone */ }
+      reject(new Error(`desktop hub socket timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    signal.addEventListener("abort", onAbort, { once: true });
     socket.once("open", () => {
       if (settled) return;
       settled = true;
       detach();
-      resolve(socket);
+      resolve();
     });
     socket.once("error", onError);
     socket.once("close", onClose);

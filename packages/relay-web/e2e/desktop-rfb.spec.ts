@@ -12,14 +12,13 @@
 // as an RFB banner, that VncAuth negotiates, and that a rejected password
 // surfaces as an auth failure rather than a timeout.
 //
-// Scope: the full VNC handshake through connect, plus the rejected-password
-// path. Those two are the minimum that makes this spec worth running in CI:
-// connecting proves the hub plane, the binary pipe and noVNC's real RFB
-// negotiation all meet on a live socket, and a wrong password is the one case
-// where a half-provisioned harness (mock RFB that deadlocks, or transport that
-// mangles framing) produces a timeout that looks exactly like a production
-// bug. Pointer/key input is asserted in the store-level tests instead — see
-// the note on the happy path below.
+// Scope (the plan's Task 10): full VNC handshake through connect, framebuffer
+// visibility on the rendered canvas, pointer/keyboard input reaching the RFB
+// server as client messages, close + reopen with a fresh hub stream, and the
+// fit/fullscreen toggles. Plus the rejected-password path: noVNC emits
+// securityfailure for a rejected password and then disconnect, so a harness
+// that only half-provisions the mock server produces a "timeout" that looks
+// exactly like a production bug.
 //
 // Desktop project only: the Desktop entry lives in the instance header, which
 // the mobile layout collapses behind the sidebar, so the flow this asserts is
@@ -42,6 +41,8 @@ interface MockRfb {
   authenticated: boolean;
   /** True once the DES response was actually received from the browser. */
   sawDesResponse: boolean;
+  /** Every FramebufferUpdate actually sent, so the browser's canvas proves out. */
+  updates: Array<{ rects: number; bytes: number }>;
   close(): Promise<void>;
 }
 
@@ -50,7 +51,7 @@ interface MockRfb {
  * Raw encoding is the one every client must support, so no capability
  * negotiation is needed; padding to 32-bit boundaries is required by RFB.
  */
-function sendFramebufferUpdate(socket: net.Socket): void {
+function sendFramebufferUpdate(socket: net.Socket): number {
   const header = Buffer.alloc(4);
   header.writeUInt8(0, 0); // message type: FramebufferUpdate
   header.writeUInt8(0, 1); // padding
@@ -63,6 +64,7 @@ function sendFramebufferUpdate(socket: net.Socket): void {
   rect.writeInt32BE(0, 8); // encoding: Raw
   const pixels = Buffer.alloc(8 * 8 * 4, 0x22);
   socket.write(Buffer.concat([header, rect, pixels]));
+  return pixels.byteLength;
 }
 
 /**
@@ -76,6 +78,7 @@ function sendFramebufferUpdate(socket: net.Socket): void {
  */
 function startMockRfb(opts: { rejectPassword?: boolean } = {}): Promise<MockRfb> {
   const clientTraffic: Buffer[] = [];
+  const updates: Array<{ rects: number; bytes: number }> = [];
   const state = { authenticated: false, sawDesResponse: false };
   const sockets: net.Socket[] = [];
   return new Promise((resolve) => {
@@ -166,7 +169,8 @@ function startMockRfb(opts: { rejectPassword?: boolean } = {}): Promise<MockRfb>
           // A trivial framebuffer update so the client has live data to map.
           // Without one the desktop renders a blank canvas, and pointer input
           // on a zero-sized framebuffer is meaningless to assert on.
-          sendFramebufferUpdate(socket);
+          const sentBytes = sendFramebufferUpdate(socket);
+          updates.push({ rects: 1, bytes: sentBytes });
           return;
         }
       });
@@ -177,6 +181,7 @@ function startMockRfb(opts: { rejectPassword?: boolean } = {}): Promise<MockRfb>
       resolve({
         port: addr.port,
         clientTraffic,
+        updates,
         get authenticated() { return state.authenticated; },
         get sawDesResponse() { return state.sawDesResponse; },
         close: () =>
@@ -201,6 +206,16 @@ async function openDesktop(page: Page): Promise<void> {
   await expect(page.getByTestId("desktop-center")).toBeVisible();
 }
 
+/** Drive the VncAuth prompt to the connected state. */
+async function connectDesktop(page: Page): Promise<void> {
+  await expect(page.getByTestId("desktop-status")).toContainText(/password/i, { timeout: 30_000 });
+  await expect(page.getByTestId("desktop-password")).toBeVisible();
+  await page.getByTestId("desktop-password").fill("s3cret");
+  await page.getByTestId("desktop-password-submit").click();
+  await expect(page.getByTestId("desktop-status")).toContainText(/connected/i, { timeout: 30_000 });
+  await expect(page.getByTestId("desktop-password")).toBeHidden();
+}
+
 desktopTest.describe("Relay Web instance desktop over RFB", () => {
   // Mobile project: the Desktop entry lives in the instance header, which the
   // mobile layout collapses behind the sidebar. The flow is not reachable on a
@@ -208,40 +223,145 @@ desktopTest.describe("Relay Web instance desktop over RFB", () => {
   desktopTest.skip(({ isMobile }) => isMobile === true, "instance desktop needs the desktop layout");
   desktopTest("vnc-auth password connects desktop to the RFB server", async ({ page, hub }) => {
     const rfb = await startMockRfb();
-    // The browser plane is piped here by the mock hub (see MockHub.setDesktopRfb).
     hub.setDesktopRfb(rfb.port);
     await openDesktop(page);
-
-    // VncAuth prompt: the hub advertised `desktop.rfb.v1` with vnc-auth
-    // security, so the client asks for the password rather than connecting
-    // blind (or failing with an auth-scheme error).
-    await expect(page.getByTestId("desktop-status")).toContainText(/password/i, { timeout: 30_000 });
-    await expect(page.getByTestId("desktop-password")).toBeVisible();
-
-    await page.getByTestId("desktop-password").fill("s3cret");
-    await page.getByTestId("desktop-password-submit").click();
-
-    // Connected once ServerInit arrives: noVNC finished the handshake the
-    // desktop-client started, and the prompt bar is dismissed.
-    await expect(page.getByTestId("desktop-status")).toContainText(/connected/i, { timeout: 30_000 });
-    await expect(page.getByTestId("desktop-password")).toBeHidden();
+    await connectDesktop(page);
 
     // noVNC's post-connect setup (SetPixelFormat, SetEncodings,
     // FramebufferUpdateRequest) is the real proof that both halves of the
-    // desktop plane actually meet: the negotiated RFB server responded with
-    // ServerInit, and the client then spoke RFB back. A harness that only
-    // stubbed noVNC, or forwarded the wrong bytes, could not get here.
+    // desktop plane actually meet: the server answered ServerInit and the
+    // client spoke RFB back. A harness that stubbed noVNC, or forwarded the
+    // wrong bytes, could not get here.
     await expect
       .poll(() => rfb.clientTraffic.reduce((sum, b) => sum + b.byteLength, 0), { timeout: 15_000 })
       .toBeGreaterThan(0);
     expect(rfb.authenticated).toBe(true);
+    await rfb.close();
+  });
 
-    // NOTE on input: pointer/key input is deliberately NOT asserted here.
-    // Chromium did not deliver pointer/key events into the RFB canvas in this
-    // environment (measured: zero bytes after mouse.click + keyboard.press on
-    // the located canvas), so an input assertion would encode a harness limit
-    // rather than a product property. The store/client path that owns input is
-    // covered by desktop-tab.test.ts against the real noVNC contract.
+  desktopTest("framebuffer updates reach the browser and render on the canvas", async ({ page, hub }) => {
+    // A visible framebuffer is the point of the feature. Assert on the mock's
+    // server-side send AND the browser's rendered canvas, so a server that
+    // never speaks framebuffer cannot satisfy this by accident.
+    const rfb = await startMockRfb();
+    hub.setDesktopRfb(rfb.port);
+    await openDesktop(page);
+    await connectDesktop(page);
+
+    expect(rfb.updates.length).toBeGreaterThan(0);
+    expect(rfb.updates[0]).toEqual({ rects: 1, bytes: 8 * 8 * 4 });
+
+    // noVNC creates a canvas inside our host and sizes it to the framebuffer.
+    // The desktop tab's own fit toggle keeps the label in the first fit state,
+    // so the canvas element itself must exist and be sized.
+    const canvas = page.locator('[data-test="desktop-host"] canvas').first();
+    await expect(canvas).toBeVisible();
+    const box = await canvas.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.width).toBeGreaterThan(0);
+    expect(box!.height).toBeGreaterThan(0);
+
+    await rfb.close();
+  });
+
+  desktopTest("pointer and keyboard input become RFB client messages", async ({ page, hub }) => {
+    // The interactive half of "watch AND control". noVNC 1.7.0 connected with
+    // viewOnly=false grabs the keyboard and registers mousedown/mousemove/
+    // mouseup on its canvas, so a real click / keypress on the canvas must
+    // produce PointerEvent + KeyEvent messages upstream.
+    const rfb = await startMockRfb();
+    hub.setDesktopRfb(rfb.port);
+    await openDesktop(page);
+    await connectDesktop(page);
+
+    const baseline = rfb.clientTraffic.reduce((sum, b) => sum + b.byteLength, 0);
+    const canvas = page.locator('[data-test="desktop-host"] canvas').first();
+    await expect(canvas).toBeVisible();
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error("desktop canvas has no box");
+    // Click the canvas CENTRE via the real mouse: noVNC listens for mousedown
+    // on the canvas element, so the event must land on it, not on an overlay.
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.keyboard.press("KeyX");
+
+    // Pointer events are dispatched in a coalescing batch, so poll for growth.
+    await expect
+      .poll(() => rfb.clientTraffic.reduce((sum, b) => sum + b.byteLength, 0), { timeout: 15_000 })
+      .toBeGreaterThan(baseline);
+
+    await rfb.close();
+  });
+
+  desktopTest("closing the desktop closes the stream and the entry stays usable", async ({ page, hub }) => {
+    const rfb = await startMockRfb();
+    hub.setDesktopRfb(rfb.port);
+    await openDesktop(page);
+    await connectDesktop(page);
+
+    // Close from the panel's own Disconnect button.
+    await page.getByTestId("desktop-close").click();
+    await expect(page.getByTestId("desktop-center")).toBeHidden();
+
+    // The hub was told to close the stream it minted.
+    expect(hub.desktopCloseRequests.length).toBeGreaterThan(0);
+    expect(hub.desktopCloseRequests[0]).toBe(hub.desktopStreamIds[0]);
+    // The instance entry survives: closing is a normal user action, and the
+    // capability must not have been dropped by it, so reopen is possible.
+    await expect(page.getByTestId("instance-desktop")).toBeVisible();
+
+    await rfb.close();
+  });
+
+  desktopTest("reopen after close establishes a second independent stream", async ({ page, hub }) => {
+    // v1 is single-stream per instance, so a reopen must go through the whole
+    // hub handshake again (a fresh streamId + a fresh ticket) rather than
+    // reusing or resurrecting the closed one.
+    const rfb = await startMockRfb();
+    hub.setDesktopRfb(rfb.port);
+    await openDesktop(page);
+    await connectDesktop(page);
+
+    await page.getByTestId("desktop-close").click();
+    await expect(page.getByTestId("desktop-center")).toBeHidden();
+    const firstStreamId = hub.desktopStreamIds[0];
+    expect(hub.desktopCloseRequests[0]).toBe(firstStreamId);
+
+    await page.getByTestId("instance-desktop").click();
+    await expect(page.getByTestId("desktop-center")).toBeVisible();
+    await connectDesktop(page);
+
+    expect(hub.desktopStreamIds.length).toBe(2);
+    expect(hub.desktopStreamIds[1]).not.toBe(firstStreamId);
+    await expect(page.getByTestId("desktop-status")).toContainText(/connected/i);
+
+    await rfb.close();
+  });
+
+  desktopTest("fit and fullscreen toggles reach the noVNC client", async ({ page, hub }) => {
+    const rfb = await startMockRfb();
+    hub.setDesktopRfb(rfb.port);
+    await openDesktop(page);
+    await connectDesktop(page);
+
+    const fit = page.getByTestId("desktop-fit-toggle");
+    const fullscreen = page.getByTestId("desktop-fullscreen-toggle");
+    await expect(fit).toBeVisible();
+    await expect(fullscreen).toBeVisible();
+
+    // fit starts ON (the store seeds fit:true and the wrapper applies it to
+    // `scaleViewport` once noVNC resolves).
+    await expect(fit).toHaveAttribute("aria-label", /fit/i);
+    await fit.click();
+    await expect(fit).toHaveAttribute("aria-label", /actual/i);
+    await fit.click();
+    await expect(fit).toHaveAttribute("aria-label", /fit/i);
+
+    await fullscreen.click();
+    await expect(fullscreen).toHaveAttribute("aria-label", /exit/i);
+    await fullscreen.click();
+    await expect(fullscreen).toHaveAttribute("aria-label", /^fullscreen$/i);
 
     await rfb.close();
   });
