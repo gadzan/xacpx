@@ -201,10 +201,14 @@ const NUMBER_RENDER_WIDTH_BOUND = ((): number => {
  */
 function worstEchoText(field: ChannelElicitationField): string {
   const declared = "maxLength" in field && typeof field.maxLength === "number" ? field.maxLength : undefined;
-  // The clamp applies only while it is actually below the bound; above it the
-  // domain's answers can be longer than the echo bound and DO get cut, so the
-  // bound (plus its overshoot) is what must be reserved.
-  const raw = declared !== undefined && declared < FIELD_CARD_ANSWER_ECHO_MAX
+  // The clamp applies only while it is at or below the bound. An answer longer than
+  // the echo bound DOES get cut, so those domains owe the overshoot; a domain
+  // capped at exactly the bound can never be cut, so it must not pay for one.
+  //
+  // The distinction is the strict `<=`, and it is load-bearing: at `maxLength: 200`
+  // the user cannot produce a 201-character answer, so the truncate branch is
+  // unreachable and reserving for it refused a legal boundary form.
+  const raw = declared !== undefined && declared <= FIELD_CARD_ANSWER_ECHO_MAX
     ? declared
     : FIELD_CARD_ANSWER_ECHO_MAX + 1;
   return WIDEST_ESCAPE_CHARACTER.repeat(Math.max(0, raw));

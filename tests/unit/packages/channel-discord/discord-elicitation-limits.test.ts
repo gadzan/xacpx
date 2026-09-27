@@ -748,3 +748,37 @@ test("a text echo's bound covers the truncate ellipsis", () => {
 function truncateShape(value: string, max: number): number {
   return value.length <= max ? value.length : max - 1 + "...".length;
 }
+test("a field capped at exactly the echo bound does not pay for the ellipsis", () => {
+  // The complement of the overshoot above, and the exact boundary between the two.
+  //
+  // `maxLength: 200` means the user CANNOT produce a 201-character answer, so the
+  // builder's truncate branch is unreachable and no `"..."` is owed. Reserving for
+  // a cut that cannot happen refused a legal boundary form — the same fixture that
+  // proves the overshoot, at the one `maxLength` where it stops applying.
+  const fields: ChannelElicitationRequest["fields"] = [{
+    kind: "text",
+    key: "note",
+    title: "Note",
+    required: true,
+    maxLength: 200,
+    // The size that puts the cut answer at 1801 in the unbounded case above.
+    description: "*".repeat(653),
+  }];
+  const request = requestFor(fields);
+  // The premise: the widest answer this field can accept renders to exactly the
+  // budget, so it is legal and must be allowed.
+  const atMaxLegal = buildElicitationFieldLines(
+    request,
+    fields[0]!,
+    1,
+    "*".repeat(FIELD_CARD_ANSWER_ECHO_MAX),
+  ).join("\n\n").length;
+  expect(atMaxLegal).toBe(1800);
+
+  // And the answer that WOULD push it over is unreachable, because the schema caps
+  // the field one character below it.
+  expect(FIELD_CARD_ANSWER_ECHO_MAX).toBe(fields[0]!.maxLength);
+
+  const verdict = checkElicitationRenderability(fields, request);
+  expect(verdict.renderable).toBe(true);
+});
