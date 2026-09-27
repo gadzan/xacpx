@@ -892,6 +892,37 @@ describe("useGroupsStore", () => {
     expect(calls[0]?.[2]).toMatchObject({ target: { mode: "members", botIds: ["bot_b"] } });
   });
 
+  it("releases the uncertain prompt when the Topic queue is full", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.targetSelection = { mode: "members", botIds: ["bot_a"] };
+    // assertAcceptable() rejects BEFORE the accept transaction writes anything.
+    mockRpc.mockResolvedValueOnce({ error: { code: "topic_queue_full", message: "queue full" } });
+    await store.sendPrompt("review");
+    expect(store.hasUncertainPrompt).toBe(false);
+    // The refusal is reported as its own condition, and the user is not locked out.
+    expect(store.promptError).toBe("topicQueueFull");
+    store.targetSelection = { mode: "members", botIds: ["bot_b"] };
+    mockRpc.mockReset();
+    mockRpc.mockResolvedValue({
+      reused: false,
+      conversationId: "conversation_g",
+      topicId: "topic_1",
+      requestId: "req_after_queue",
+      message: { id: "msg_q", conversationId: "conversation_g", topicId: "topic_1", seq: 4, role: "human", content: "review", createdAt: "now" },
+      run: { id: "run_q", conversationId: "conversation_g", topicId: "topic_1", requestMessageId: "msg_q", requestId: "req_after_queue", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" },
+      memberTurn: { id: "turn_q", runId: "run_q", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_b", batch: 1, attempt: 1, origin: "human-explicit", state: "queued", createdAt: "now" },
+    });
+    await store.sendPrompt("review");
+    const calls = mockRpc.mock.calls.filter((c) => c[1] === "control.conversation.prompt");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[2]).toMatchObject({ target: { mode: "members", botIds: ["bot_b"] } });
+  });
+
   it("keeps the uncertain tuple when the failure is only a transport error", async () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";
@@ -986,6 +1017,96 @@ describe("useGroupsStore", () => {
     // the Run carries our requestId, so nothing is outcome-unknown any more.
     expect(store.hasUncertainPrompt).toBe(false);
     expect(store.activeRun?.id).toBe("run_queued");
+  });
+
+  it("clears the uncertain prompt when the Run completed while offline (no active owner)", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.groupsByInstance["inst_1"] = [GROUP];
+    store.uncertainPrompt = {
+      requestId: "req_done",
+      text: "review",
+      target: { mode: "members", botIds: ["bot_a"] },
+    };
+    const completedRun: ConversationRunDto = {
+      id: "run_done", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_done", mode: "explicit", state: "completed",
+      profileRevision: 1, createdAt: "now", finishedAt: "now",
+    };
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [{ id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" }] };
+      }
+      if (type === "control.conversation.history") {
+        // The durable answer is already visible in history.
+        return historyWith([
+          { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "review", createdAt: "now" },
+          { id: "msg_2", conversationId: "conversation_g", topicId: "topic_1", seq: 2, role: "bot", content: "reviewed", senderBotId: "bot_a", runId: "run_done", createdAt: "now" },
+        ]);
+      }
+      // Terminal Run in runs[], and no active owner at all.
+      if (type === "control.runs.list") return { runs: [completedRun], conversationId: "conversation_g", topicId: "topic_1" };
+      if (type === "control.runs.get") return { run: { ...completedRun, memberTurns: [] } };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.reconcileOnReconnect();
+    await flushPromises();
+    // The user can see the answer, so the composer must be usable again.
+    expect(store.messages.some((m) => m.id === "msg_2")).toBe(true);
+    expect(store.hasUncertainPrompt).toBe(false);
+    expect(store.promptError).toBeNull();
+  });
+
+  it("clears its own uncertainty while a foreign Run owns the Topic", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.groupsByInstance["inst_1"] = [GROUP];
+    store.uncertainPrompt = {
+      requestId: "req_mine_done",
+      text: "review",
+      target: { mode: "members", botIds: ["bot_a"] },
+    };
+    const mineDone: ConversationRunDto = {
+      id: "run_mine_done", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_mine_done", mode: "explicit", state: "completed",
+      profileRevision: 1, createdAt: "now", finishedAt: "now",
+    };
+    const foreignRunning: ConversationRunDto = {
+      id: "run_foreign", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_5", requestId: "req_foreign", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now", startedAt: "now",
+    };
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [{ id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" }] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        return { runs: [mineDone, foreignRunning], conversationId: "conversation_g", topicId: "topic_1", activeRunId: foreignRunning.id, activeRun: foreignRunning };
+      }
+      if (type === "control.runs.get") {
+        return { run: { ...foreignRunning, memberTurns: [] } };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.reconcileOnReconnect();
+    await flushPromises();
+    // Our uncertainty is resolved by the durable list...
+    expect(store.hasUncertainPrompt).toBe(false);
+    // ...while the foreign Run still owns the Topic: the owner must not be
+    // clobbered by our own reconciliation.
+    expect(store.activeRun?.id).toBe("run_foreign");
+    expect(store.activeRun?.state).toBe("running");
   });
 
   it("keeps the uncertain prompt when the discovered Run belongs to another request", async () => {

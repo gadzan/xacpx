@@ -42,6 +42,7 @@ export type GroupErrorCode =
   | "ownershipChecking"
   | "topicRecovering"
   | "runInProgress"
+  | "topicQueueFull"
   | "promptPendingConfirmation"
   | "cancelUnknown"
   | "instanceOffline"
@@ -130,7 +131,10 @@ function isDefinitiveRejection(code: string | null): boolean {
     || code === "bot_not_found"
     || code === "no_eligible_members"
     || code === "conversation_target_mismatch"
-    || code === "conversation_mismatch";
+    || code === "conversation_mismatch"
+    // AcceptRequest's own pre-insert guard: assertAcceptable() rejects a full
+    // Topic queue BEFORE the transaction writes any durable row.
+    || code === "topic_queue_full";
 }
 
 function mintRequestId(): string {
@@ -366,6 +370,11 @@ export const useGroupsStore = defineStore("groups", () => {
     target: ConversationTargetDto;
   }
   const uncertainPrompt = ref<UncertainPrompt | null>(null);
+  /** False when the Bot catalog for the selected Group could not be confirmed.
+   *  Eligibility metadata is presentation, so an unconfirmed catalog must fail
+   *  narrow — every eligibility-driven UI action (defaults, the Lead shortcut)
+   *  reads this instead of assuming a Bot list is available. */
+  const botCatalogKnown = ref<boolean>(true);
   /** Text of the pending-certainty prompt; drives the Retry affordance. */
   const uncertainPromptText = computed<string | null>(() => uncertainPrompt.value?.text ?? null);
   /** True while a sent prompt has an unknown durable outcome. The composer locks
@@ -461,6 +470,13 @@ export const useGroupsStore = defineStore("groups", () => {
     }
     const first = [...eligible].sort()[0];
     return first ? { mode: "members", botIds: [first] } : { mode: "everyone" };
+  }
+
+  /** Resolver for UI actions that must respect the unconfirmed-catalog rule.
+   *  Takes the Bot rows the caller can see so it stays correct for both the
+   *  Group-open default and the Lead shortcut. */
+  function eligibleTargetFor(group: GroupSummaryDto | GroupDetailDto, bots: BotSummaryDto[]): GroupTargetSelection {
+    return defaultTargetFor(group, bots, botCatalogKnown.value);
   }
 
   function resolveTarget(): { target: ConversationTargetDto } | { error: "targetRequired" | "targetEmpty" } {
@@ -999,6 +1015,17 @@ export const useGroupsStore = defineStore("groups", () => {
       if (!isCurrentRecovery()) {
         return false;
       }
+      // Uncertain-request reconciliation is independent of who owns the Topic.
+      // runs.list returns every durable Run for the Topic regardless of state, so
+      // our own request may already be terminal (completed while we were
+      // offline) and therefore never appear as the active owner. Matching it
+      // anywhere in the list is what releases the frozen prompt.
+      const ownRequest = listed.runs.find(
+        (run) => uncertainPrompt.value !== null && run.requestId === uncertainPrompt.value.requestId,
+      );
+      if (ownRequest) {
+        resolveUncertainPromptAgainstRun(ownRequest);
+      }
       const candidate = listed.activeRun
         ?? (listed.activeRunId ? listed.runs.find((run) => run.id === listed.activeRunId) : undefined);
       if (!candidate) {
@@ -1300,6 +1327,7 @@ export const useGroupsStore = defineStore("groups", () => {
         return;
       }
       targetSelection.value = defaultTargetFor(group, catalogBots, catalogKnown);
+      botCatalogKnown.value = catalogKnown;
       const topics = await loadTopics(targetInstanceId, group.id);
       if (generation !== currentSelectionGeneration || instanceId.value !== targetInstanceId || selectedGroupId.value !== groupId) {
         return;
@@ -1393,6 +1421,7 @@ export const useGroupsStore = defineStore("groups", () => {
     generalError.value = null;
     generalErrorCode.value = null;
     targetSelection.value = null;
+    botCatalogKnown.value = true;
     persistGroupSelection(null, null);
   }
 
@@ -1634,6 +1663,12 @@ export const useGroupsStore = defineStore("groups", () => {
         ) {
           promptError.value = "topicRecovering";
           promptErrorDetail.value = err instanceof Error ? err.message : String(err);
+        } else if (code === "topic_queue_full") {
+          // A deterministic refusal: no durable accept happened. Report it as its
+          // own condition instead of a raw error so the user understands the
+          // request was never queued.
+          promptError.value = "topicQueueFull";
+          promptErrorDetail.value = null;
         } else if (code === "empty_target" || code === "target_required") {
           promptError.value = "targetEmpty";
           promptErrorDetail.value = err instanceof Error ? err.message : String(err);
@@ -1683,6 +1718,14 @@ export const useGroupsStore = defineStore("groups", () => {
         checkDiscoveryId !== discoverySequence
       ) {
         return false;
+      }
+      // Same rule as recoverActiveRun: our own terminal Run may not be the Topic
+      // owner, so the uncertain prompt must be reconciled against the whole list.
+      const ownRequest = listed.runs.find(
+        (run) => uncertainPrompt.value !== null && run.requestId === uncertainPrompt.value.requestId,
+      );
+      if (ownRequest) {
+        resolveUncertainPromptAgainstRun(ownRequest);
       }
       const candidate = listed.activeRun
         ?? (listed.activeRunId ? listed.runs.find((run) => run.id === listed.activeRunId) : undefined);
@@ -2411,6 +2454,8 @@ export const useGroupsStore = defineStore("groups", () => {
     uncertainPromptText,
     uncertainPromptTarget,
     hasUncertainPrompt,
+    botCatalogKnown,
+    eligibleTargetFor,
     promptInFlight,
     promptError,
     promptErrorDetail,

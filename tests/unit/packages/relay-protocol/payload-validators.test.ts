@@ -228,6 +228,18 @@ test("parseControlPayload validates group RPC shapes and rejects junk isolation"
     conversationId: "conversation_g", title: "Bad",
     target: { workspace: "backend", isolation: "mesh" },
   })).toBeNull();
+  // Structured target resource bounds: gate acquisition is process-lifetime
+  // state, so an oversized array or an absurd id must be refused at the wire.
+  const ids = (count: number): string[] => Array.from({ length: count }, (_, i) => `b${i}`);
+  const promptWith = (botIds: string[]) => ({
+    conversationId: "c", topicId: "t", requestId: "r", text: "x",
+    target: { mode: "members", botIds },
+  });
+  expect(parseControlPayload(MSG.conversationPrompt, promptWith(ids(64)))).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, promptWith(ids(65)))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, promptWith(["x".repeat(129)]))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, promptWith(["x".repeat(128)]))).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, promptWith([""]))).toBeNull();
   // Create-time only: worktree-per-member has no provisioning, so a Topic
   // created with it could never execute. Topic responses stay legacy-tolerant.
   expect(parseControlPayload(MSG.groupTopicsCreate, {

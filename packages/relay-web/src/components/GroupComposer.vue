@@ -39,7 +39,11 @@ const selectionLabel = computed(() => {
   if (isEveryone.value) return t("group.target.everyone");
   if (selectedIds.value.length === 0) return t("group.target.selectMembers");
   if (selectedIds.value.length === 1) {
-    return props.bots.find((b) => b.id === selectedIds.value[0])?.name ?? t("group.target.selectMembers");
+    const onlyId = selectedIds.value[0]!;
+    // The Bot name is presentation; when the catalog row is missing fall back to
+    // the Lead label rather than pretending the selection is empty.
+    return props.bots.find((b) => b.id === onlyId)?.name
+      ?? (groupsStore.currentGroup?.leadBotId === onlyId ? t("group.target.lead") : onlyId);
   }
   return t("group.target.memberCount", { count: selectedIds.value.length });
 });
@@ -69,7 +73,9 @@ function pickEveryone(): void {
 function pickLead(): void {
   const group = groupsStore.currentGroup;
   if (!group) return;
-  const selection = groupsStore.defaultTargetFor(group, props.bots);
+  // eligibleTargetFor applies the store's catalog-known state: an unconfirmed
+  // catalog must widen to Everyone under no circumstances.
+  const selection = groupsStore.eligibleTargetFor(group, props.bots);
   groupsStore.setTarget(selection);
   closeMenu();
 }

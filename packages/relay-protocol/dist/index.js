@@ -47,6 +47,8 @@ function isEnvelopeShape(value) {
 var STATE_SYNC_TEXT_CAP = 256 * 1024;
 var STATE_SYNC_PARTS_CAP = 1000;
 var MAX_TOOL_STEPS = 200;
+var MAX_GROUP_TARGET_MEMBERS = 64;
+var MAX_BOT_ID_LENGTH = 128;
 var REASONING_CAP = 16000;
 var RECOVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 var MAX_TERMINAL_REQUEST_ID_LENGTH = 128;
@@ -1062,7 +1064,7 @@ var isConversationTarget = (v) => {
   if (isStr(v.botId))
     return true;
   if (v.mode === "members") {
-    return Array.isArray(v.botIds) && v.botIds.length > 0 && v.botIds.every(isStr);
+    return Array.isArray(v.botIds) && v.botIds.length > 0 && v.botIds.length <= MAX_GROUP_TARGET_MEMBERS && v.botIds.every((id) => isStr(id) && id.length > 0 && id.length <= MAX_BOT_ID_LENGTH);
   }
   return v.mode === "everyone" || v.mode === "automatic";
 };
@@ -1246,8 +1248,10 @@ function parseTerminalEventPayload(type, payload) {
 }
 export {
   CONTROL_PAYLOAD_VALIDATORS,
+  MAX_BOT_ID_LENGTH,
   MAX_CAPABILITIES,
   MAX_CAPABILITY_LENGTH,
+  MAX_GROUP_TARGET_MEMBERS,
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
   MAX_TERMINAL_COLS,

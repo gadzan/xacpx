@@ -15,6 +15,7 @@ import { classifyConversationRoot } from "./conversation-roots";
 import { planDirectConversation, presentDefaultDirectTopic, presentDirectConversation } from "./direct-conversation";
 import { createDirectBindingId, createDirectTopicId, createScopedGroupMemberBindingId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
+import { MAX_GROUP_TARGET_MEMBERS } from "@ganglion/xacpx-relay-protocol";
 import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
@@ -744,6 +745,16 @@ export class ConversationRunService {
     parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" },
   ): string[] {
     if (parsed.kind === "members") {
+      // Semantic bound, independent of the wire cap: gate acquisition is
+      // process-lifetime state, so clearly-oversized selections are refused
+      // before any lock is taken rather than expanded and then rejected by the
+      // membership check.
+      if (parsed.botIds.length > MAX_GROUP_TARGET_MEMBERS) {
+        throw new ConversationError(
+          "invalid-target",
+          `explicit Group target selects too many members (max ${MAX_GROUP_TARGET_MEMBERS})`,
+        );
+      }
       return [...parsed.botIds];
     }
     const conversation = this.state.conversations[conversationId];

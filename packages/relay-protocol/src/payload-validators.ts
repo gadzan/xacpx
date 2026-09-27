@@ -89,6 +89,8 @@ import {
   type WorkspacesRemovePayload,
 } from "./messages.js";
 import {
+  MAX_BOT_ID_LENGTH,
+  MAX_GROUP_TARGET_MEMBERS,
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
@@ -472,7 +474,10 @@ const isConversationTarget = (v: unknown): boolean => {
   if (!isObj(v)) return false;
   if (isStr(v.botId)) return true;
   if (v.mode === "members") {
-    return Array.isArray(v.botIds) && v.botIds.length > 0 && v.botIds.every(isStr);
+    return Array.isArray(v.botIds)
+      && v.botIds.length > 0
+      && v.botIds.length <= MAX_GROUP_TARGET_MEMBERS
+      && v.botIds.every((id) => isStr(id) && id.length > 0 && id.length <= MAX_BOT_ID_LENGTH);
   }
   return v.mode === "everyone" || v.mode === "automatic";
 };

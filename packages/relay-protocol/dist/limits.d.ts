@@ -2,6 +2,13 @@ export declare const STATE_SYNC_TEXT_CAP: number;
 /** Ordered activity entries retained for one recovered running turn. */
 export declare const STATE_SYNC_PARTS_CAP = 1000;
 export declare const MAX_TOOL_STEPS = 200;
+/** Resource bounds for a structured Group `members` target. A targeted accept
+ *  acquires a per-Bot lifecycle gate for every supplied id BEFORE validating
+ *  membership, and those gate entries live for the process lifetime. Capping the
+ *  array here keeps an oversized/absurd payload from expanding unbounded
+ *  process-local state. */
+export declare const MAX_GROUP_TARGET_MEMBERS = 64;
+export declare const MAX_BOT_ID_LENGTH = 128;
 export declare const REASONING_CAP = 16000;
 /** How long a finished turn may wait for its persistence ack. The CONNECTOR evicts
  *  `pendingFinished` entries older than this (state-mirror), and the hub's maintenance

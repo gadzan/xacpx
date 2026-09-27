@@ -96,6 +96,24 @@ describe("Group Components", () => {
       expect((textarea.element as HTMLTextAreaElement).value).toBe("please review this");
     });
 
+    it("Lead shortcut stays on the lead Bot when the catalog is unconfirmed", async () => {
+      const groups = seedGroupSelection();
+      groups.botCatalogKnown = false;
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        // The composer sees no Bot rows at all, exactly like a failed
+        // bots.list with no cache.
+        props: { bots: [] },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-target-button"]').trigger("click");
+      await wrapper.find('[data-test="group-target-lead"]').trigger("click");
+      // A button labelled Lead must never widen the target to the whole Group.
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+      // And the label must not disguise the real selection as empty.
+      expect(wrapper.find('[data-test="group-target-button"]').text()).not.toContain("Select members");
+    });
+
     it("Lead shortcut never selects a disabled Bot", async () => {
       const groups = seedGroupSelection();
       groups.groupsByInstance["i1"] = [{ ...GROUP, leadBotId: "bot_off", botIds: ["bot_off", "bot_a"] }];
@@ -452,6 +470,136 @@ describe("Group Components", () => {
       await wrapper.find('[data-test="group-stop-run-button"]').trigger("click");
       expect(spy).toHaveBeenCalledTimes(1);
       spy.mockRestore();
+    });
+  });
+
+  describe("GroupTranscript.vue scroll behavior", () => {
+    // jsdom has no layout engine, so scrollHeight/clientHeight stay 0 and any
+    // scroll assertion is trivially true. Give the scroller a fake geometry:
+    // 1000px of content, a 100px viewport, so scrollTop has real meaning.
+    function withGeometry(el: HTMLElement): void {
+      let scrollTop = 0;
+      Object.defineProperty(el, "clientHeight", { value: 100, configurable: true });
+      Object.defineProperty(el, "scrollHeight", {
+        get: () => 1000,
+        configurable: true,
+      });
+      Object.defineProperty(el, "scrollTop", {
+        // Emulate the browser clamp: scrollTop can never exceed
+        // scrollHeight - clientHeight, which is what "at the bottom" means.
+        get: () => Math.min(scrollTop, 1000 - 100),
+        set: (v: number) => { scrollTop = v; },
+        configurable: true,
+      });
+    }
+
+    function mountTranscript(): ReturnType<typeof mount> {
+      const wrapper = mount(GroupTranscript, { props: { bots: BOTS }, global: { plugins: [i18n] } });
+      withGeometry(wrapper.find('[data-test="group-transcript-scroller"]').element as HTMLElement);
+      return wrapper;
+    }
+
+    function seedMessages(count: number): void {
+      const groups = useGroupsStore();
+      groups.messages = Array.from({ length: count }, (_, i) => ({
+        id: `msg_${i}`,
+        conversationId: "conversation_g",
+        topicId: "topic_1",
+        seq: i + 1,
+        role: i % 2 === 0 ? ("human" as const) : ("bot" as const),
+        content: `message ${i}`,
+        createdAt: "2026-09-01T00:00:00.000Z",
+      }));
+      groups.newestSeq = count;
+      groups.oldestSeq = 1;
+      groups.contiguousNewestSeq = count;
+      groups.hasMoreBefore = true;
+      groups.topicReady = true;
+    }
+
+    function scrollerOf(wrapper: ReturnType<typeof mount>): HTMLElement {
+      return wrapper.find('[data-test="group-transcript-scroller"]').element as HTMLElement;
+    }
+
+    it("pins to the newest message when history lands", async () => {
+      seedGroupSelection();
+      const groups = useGroupsStore();
+      groups.topicReady = false;
+      const wrapper = mountTranscript();
+      seedMessages(20);
+      await flushPromises();
+      // Bottom means scrollTop === scrollHeight - clientHeight.
+      expect(scrollerOf(wrapper).scrollTop).toBe(900);
+    });
+
+    it("follows streaming output while already at the bottom", async () => {
+      seedGroupSelection();
+      const wrapper = mountTranscript();
+      seedMessages(4);
+      await flushPromises();
+      const el = scrollerOf(wrapper);
+      // The initial history pin has already left the reader at the bottom.
+      expect(el.scrollTop).toBe(900);
+      const groups = useGroupsStore();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now", startedAt: "now",
+      };
+      groups.liveTurnsByMember = { turn_a: { parts: [], status: "streaming", startedAt: 1, revision: 1 } };
+      await flushPromises();
+      // A streaming revision bumps the follow path while the reader is at bottom.
+      groups.liveTurnsByMember = { turn_a: { parts: [], status: "streaming", startedAt: 1, revision: 2 } };
+      await flushPromises();
+      expect(el.scrollTop).toBe(900);
+    });
+
+    it("does not yank a reader who scrolled up during streaming", async () => {
+      seedGroupSelection();
+      const wrapper = mountTranscript();
+      seedMessages(4);
+      await flushPromises();
+      const el = scrollerOf(wrapper);
+      const groups = useGroupsStore();
+      groups.activeRun = {
+        id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+        profileRevision: 1, createdAt: "now", startedAt: "now",
+      };
+      groups.liveTurnsByMember = { turn_a: { parts: [], status: "streaming", startedAt: 1, revision: 1 } };
+      await flushPromises();
+      // Reader scrolls up mid-transcript and stays there.
+      el.scrollTop = 120;
+      await wrapper.find('[data-test="group-transcript-scroller"]').trigger("scroll");
+      groups.liveTurnsByMember = { turn_a: { parts: [], status: "streaming", startedAt: 1, revision: 9 } };
+      await flushPromises();
+      expect(el.scrollTop).toBe(120);
+    });
+
+    it("keeps the visible anchor when older history is prepended", async () => {
+      seedGroupSelection();
+      const wrapper = mountTranscript();
+      seedMessages(10);
+      await flushPromises();
+      const el = scrollerOf(wrapper);
+      // Reader sits 420px above the bottom of a growing transcript.
+      el.scrollTop = 480;
+      const anchor = 1000 - el.scrollTop;
+      const loadSpy = vi.spyOn(useGroupsStore(), "loadOlder").mockImplementation(async () => {
+        const g = useGroupsStore();
+        // Prepending grows scrollHeight, which is what makes the anchor matter.
+        (el as unknown as { __grown?: boolean }).__grown = true;
+        g.messages = [
+          { id: "msg_old", conversationId: "conversation_g", topicId: "topic_1", seq: 0, role: "human", content: "old", createdAt: "2026-08-01T00:00:00.000Z" },
+          ...g.messages,
+        ];
+      });
+      await wrapper.find('[data-test="group-load-older-button"]').trigger("click");
+      await flushPromises();
+      await flushPromises();
+      // The restore recomputes scrollTop from the preserved distance-to-bottom.
+      expect(1000 - el.scrollTop).toBeCloseTo(anchor, 0);
+      loadSpy.mockRestore();
     });
   });
 

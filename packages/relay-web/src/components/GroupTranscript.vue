@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, nextTick, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import {
   AlertCircle,
@@ -126,12 +126,9 @@ function handleCancel(): void {
   void groupsStore.cancelCurrentRun();
 }
 
-function handleLoadOlder(): void {
-  void groupsStore.loadOlder();
-}
-
 const scroller = ref<HTMLElement | null>(null);
 const atBottom = ref(true);
+const pendingAnchor = ref<number | null>(null);
 const THRESHOLD = 64;
 
 function onScroll(): void {
@@ -139,10 +136,80 @@ function onScroll(): void {
   if (!el) return;
   atBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight <= THRESHOLD;
 }
+
+function scrollToBottom(): void {
+  const el = scroller.value;
+  if (!el) return;
+  el.scrollTop = el.scrollHeight;
+}
+
+// History that lands in the store (Topic open, history switch, reconnect) must put
+// the reader at the newest message: the DOM starts at scrollTop 0, which is the
+// OLDEST of the loaded page rather than the end of the transcript.
+watch(
+  () => groupsStore.topicReady,
+  (ready) => {
+    if (ready) void nextTick(() => scrollToBottom());
+  },
+);
+
+// Message growth also covers the first history page, and restores the reader's
+// exact position when older history was prepended instead.
+watch(
+  () => groupsStore.messages.length,
+  (now, prev) => {
+    if (pendingAnchor.value !== null && now > prev) {
+      const anchor = pendingAnchor.value;
+      pendingAnchor.value = null;
+      void nextTick(() => {
+        const el = scroller.value;
+        if (el) el.scrollTop = el.scrollHeight - anchor;
+      });
+      return;
+    }
+    if (atBottom.value) {
+      void nextTick(() => scrollToBottom());
+    }
+  },
+);
+
+// Streaming output mutates parts in place, so follow the live turn revision —
+// and never yank a reader who scrolled up to review something.
+watch(
+  () => {
+    let max = 0;
+    for (const live of Object.values(groupsStore.liveTurnsByMember)) {
+      if (live.revision > max) max = live.revision;
+    }
+    return max;
+  },
+  () => {
+    if (atBottom.value) void nextTick(() => scrollToBottom());
+  },
+);
+
+onMounted(() => {
+  void nextTick(() => scrollToBottom());
+});
+
+async function handleLoadOlder(): Promise<void> {
+  const el = scroller.value;
+  if (!el || groupsStore.loadingOlder) return;
+  pendingAnchor.value = el.scrollHeight - el.scrollTop;
+  try {
+    await groupsStore.loadOlder();
+  } finally {
+    await nextTick();
+    if (el && pendingAnchor.value !== null) {
+      el.scrollTop = el.scrollHeight - pendingAnchor.value;
+      pendingAnchor.value = null;
+    }
+  }
+}
 </script>
 
 <template>
-  <div ref="scroller" class="thin-scroll relative flex-1 overflow-y-auto px-3 py-4 sm:px-6" @scroll.passive="onScroll">
+  <div ref="scroller" data-test="group-transcript-scroller" class="thin-scroll relative flex-1 overflow-y-auto px-3 py-4 sm:px-6" @scroll.passive="onScroll">
     <div v-if="!groupsStore.loadingHistory && groupsStore.messages.length === 0 && turns.length === 0 && !(run && (run.state === 'failed' || run.state === 'cancelled' || run.state === 'indeterminate'))" class="my-auto flex flex-col items-center justify-center py-12 text-center">
       <div class="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-accent/10 text-accent">
         <Users :size="22" />

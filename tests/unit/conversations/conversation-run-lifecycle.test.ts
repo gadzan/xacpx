@@ -5847,6 +5847,28 @@ test("PR7 group accept: structured members target creates one explicit Run with 
   first.store.close();
 });
 
+test("PR7 group accept: an oversized members target is refused before any lifecycle gate", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const oversized = Array.from({ length: 65 }, (_, i) => `bot_phantom_${i}`);
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-oversized",
+    text: "too many",
+    target: { mode: "members", botIds: oversized },
+  })).rejects.toMatchObject({ code: "invalid-target" });
+  // Nothing durable was created for the refused request.
+  expect(first.store.getRunByRequestId(group.id, topic.id, "req-pr7-oversized")).toBeUndefined();
+  expect(first.store.listRuns(group.id, topic.id)).toHaveLength(0);
+  first.store.close();
+});
+
 test("PR7 group accept: duplicate IDs deduplicate, everyone expands, empty/unknown/disabled reject", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
