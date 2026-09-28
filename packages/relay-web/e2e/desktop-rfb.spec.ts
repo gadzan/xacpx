@@ -99,28 +99,45 @@ const RFB_KEY_EVENT = 4;
 const RFB_POINTER_EVENT = 5;
 
 /**
- * Walk one client buffer and report the message types it starts with. Partial
- * messages (a body that continues in a later TCP segment) are skipped: the
- * next segment re-walks from there, and the tests only need the type bit.
+ * Incremental RFB client-message framer. One instance per RFB socket: it keeps
+ * the unconsumed tail so a message that straddles two TCP segments is decoded
+ * once its body arrives, not re-walked from a mid-message offset (which would
+ * mis-attribute a payload byte as a message type).
+ *
+ * Only decoding is attempted; the buffer is never consumed past a point where
+ * the next message is incomplete, so a truncated tail is carried forward.
  */
-function decodeClientMessageTypes(buf: Buffer): Array<{ type: number; expectedBytes: number }> {
-  const out: Array<{ type: number; expectedBytes: number }> = [];
-  let offset = 0;
-  while (offset < buf.byteLength) {
-    const type = buf[offset];
-    if (type === undefined) break;
-    const expected = CLIENT_MESSAGE_LENGTHS[type] ?? 0;
-    if (expected === 0) break; // unknown message: stop rather than desync
-    out.push({ type, expectedBytes: expected });
-    if (type === 2) {
-      // SetEncodings is variable length: header + 4 bytes per encoding id.
-      const count = buf.readUInt16BE(offset + 2);
-      offset += 4 + count * 4;
-    } else {
-      offset += expected;
+class RfbClientMessageFramer {
+  private tail = Buffer.alloc(0);
+
+  /** Feed one received segment; returns every message that is now complete. */
+  push(chunk: Buffer): Array<{ type: number; expectedBytes: number }> {
+    const buffered = this.tail.length === 0 ? chunk : Buffer.concat([this.tail, chunk]);
+    const out: Array<{ type: number; expectedBytes: number }> = [];
+    let offset = 0;
+    for (;;) {
+      const type = buffered[offset];
+      if (type === undefined) break; // nothing left
+      const expected = CLIENT_MESSAGE_LENGTHS[type] ?? 0;
+      if (expected === 0) break; // unknown message: stop rather than desync
+      if (buffered.length - offset < expected) break; // body not all here yet
+      out.push({ type, expectedBytes: expected });
+      if (type === 2) {
+        // SetEncodings is variable length: header + 4 bytes per encoding id.
+        const count = buffered.readUInt16BE(offset + 2);
+        const total = 4 + count * 4;
+        if (buffered.length - offset < total) {
+          out.pop();
+          break;
+        }
+        offset += total;
+      } else {
+        offset += expected;
+      }
     }
+    this.tail = offset === buffered.length ? Buffer.alloc(0) : buffered.subarray(offset);
+    return out;
   }
-  return out;
 }
 
 /**
@@ -150,6 +167,9 @@ function startMockRfb(opts: { rejectPassword?: boolean } = {}): Promise<MockRfb>
       socket.write(RFB_BANNER);
       let phase: "version" | "choice" | "auth" | "init" | "live" = "version";
       let buffered = Buffer.alloc(0);
+      // Per-socket, not per-server: the framer carries an incomplete tail
+      // between TCP segments, so two sockets must never share one.
+      const framer = new RfbClientMessageFramer();
       socket.on("data", (chunk: Buffer) => {
         buffered = Buffer.concat([buffered, chunk]);
         if (phase === "live") {
@@ -158,7 +178,7 @@ function startMockRfb(opts: { rejectPassword?: boolean } = {}): Promise<MockRfb>
             // Decode the message types now, while the segment boundary is
             // still visible: a client message that straddles two segments is
             // reported when its body completes.
-            for (const msg of decodeClientMessageTypes(buffered)) {
+            for (const msg of framer.push(buffered)) {
               clientMessageTypes.push(msg);
               if (msg.type === RFB_KEY_EVENT) state.sawKeyEvent = true;
               if (msg.type === RFB_POINTER_EVENT) state.sawPointerEvent = true;
@@ -461,5 +481,35 @@ desktopTest.describe("Relay Web instance desktop over RFB", () => {
     expect(rfb.sawDesResponse).toBe(true);
 
     await rfb.close();
+  });
+
+  // The framer is TCP-stream state, so it is the one part of this harness that
+  // needs proof independent of a browser: a message split across two segments
+  // must still decode as ONE message, and its payload bytes must never be
+  // mis-read as a message type.
+  desktopTest("client framer decodes messages split across TCP segments", async () => {
+    const framer = new RfbClientMessageFramer();
+
+    // PointerEvent (type 5, 6 bytes): 05 00 00 00 00 01
+    const pointer = Buffer.from([5, 0, 0, 0, 0, 1]);
+    // KeyEvent (type 4, 8 bytes): 04 01 00 00 00 00 00 58
+    const key = Buffer.from([4, 1, 0, 0, 0, 0, 0, 0x58]);
+
+    // Split the pointer mid-body and split the key off its type byte.
+    expect(framer.push(pointer.subarray(0, 3))).toEqual([]);
+    const afterPointer = framer.push(pointer.subarray(3));
+    expect(afterPointer).toEqual([{ type: 5, expectedBytes: 6 }]);
+    expect(framer.push(key.subarray(0, 1))).toEqual([]);
+    expect(framer.push(key.subarray(1))).toEqual([{ type: 4, expectedBytes: 8 }]);
+
+    // A complete message followed by a truncated one: only the complete one
+    // decodes, and the tail is retained (not lost, not mis-decoded).
+    const combined = Buffer.concat([key, pointer.subarray(0, 2)]);
+    const decoded = framer.push(combined);
+    expect(decoded).toEqual([{ type: 4, expectedBytes: 8 }]);
+    expect(framer.push(pointer.subarray(2))).toEqual([{ type: 5, expectedBytes: 6 }]);
+
+    // An unknown message type stops the walk instead of desynchronising.
+    expect(framer.push(Buffer.from([0xf9, 1, 2, 3]))).toEqual([]);
   });
 });

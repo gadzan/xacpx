@@ -181,6 +181,23 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     onViewerClosed: (viewerId) => {
       for (const [streamId, owner] of [...desktopStreamOwners]) {
         if (owner.viewerId !== viewerId) continue;
+        // Tell the connector BEFORE the local teardown. A clean browser close
+        // goes through web-inbound's desktop-close, which already cancels the
+        // connector-side prepare; this path covers the abnormal cases (tab
+        // closed, network dropped, browser crashed, backpressure eviction)
+        // where only the control /ws disappears. Without this the hub frees
+        // the reservation immediately while the connector is still dialing
+        // loopback RFB and a /desktop/instance upgrade for a stream whose
+        // viewer is already gone — the prepare then runs until its ticket is
+        // rejected or its own connectTimeoutMs (up to 10s) fires.
+        // The plan (Task 5) and design §13.2 both require "control socket close
+        // cancels this viewer's streams" to be visible on both sides.
+        try {
+          gatewayRef?.sendEvent(owner.instanceId, MSG.desktopCancel, { streamId });
+        } catch {
+          // Best effort: the local cleanup below must run regardless, and a
+          // connector that misses the cancel still fails at the ticket check.
+        }
         desktopStreamOwners.delete(streamId);
         desktop.closeStream(streamId, "viewer-disconnected");
       }
