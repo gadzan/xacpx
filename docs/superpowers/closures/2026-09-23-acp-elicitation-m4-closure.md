@@ -158,3 +158,90 @@ M5 Release Hardening can proceed. Its scope should include:
 - the deployment runbook for `cardActions` (public URL, encryptKey/verificationToken, bind host);
 - an operational check that form capability is advertised only where a channel can actually deliver it;
 - the multi-select gap recorded as a known per-channel limitation.
+
+---
+
+# Addendum — post-review fixes (2026-09-28)
+
+Three defects the milestone's own tests did not cover, found by a full re-review of
+the branch. All three were reachable on the landed head; each is now fixed with a
+regression that fails without its fix.
+
+## P1 — the URL-verification handshake was unanswerable
+
+`handleRequest` called `verifyCardRequest()` first, which requires all three
+`x-lark-request-*` signature headers. Only afterward did it look for a
+`url_verification` challenge. The official SDK's webhook adapter does the opposite:
+`autoChallenge` runs `generateChallenge()` BEFORE `dispatcher.invoke()`, which is
+where signature validation lives. The platform's real challenge carries no
+signature headers, so the endpoint could never complete its own configuration —
+it would start, answer clicks, and still fail the console's URL check.
+
+The existing tests passed because the harness fabricated a SHA-1 signature for
+challenge bodies, and one was literally named `"challenge still works, signed"`.
+That asserted a handshake shape this repo invented.
+
+Fixed by recognizing and answering the challenge first, on the only credential it
+actually carries: constant-time equality of the echoed `token` against
+`verificationToken`. An encrypted challenge is decrypted first, matching
+`generateChallenge()`. Real card actions still require their full signature, and
+a challenge is never forwarded to the renderer — so the early branch cannot become
+an action bypass. The two reference tests were deleted rather than re-pinned; they
+tested the invented shape.
+
+## P1 — same-generation race between Edit and Submit
+
+Feishu's HTTP server runs each POST independently on the same pending entry: no
+queue, no claim. `renderCurrentField()` mutates `currentField` and allocates a
+generation, then awaits `updateCard`; `renderGeneration` is committed only once
+that succeeds. During the wait the card on screen still names the OLD number, so
+a Submit from it passed the published-generation fence and
+`confirmReviewed()` accepted the pre-edit answers:
+
+```text
+Save "prod" → Review g=4 → Edit(g=4): currentField moved, g=5 allocated,
+updateCard(g=5) outstanding → Submit(g=4) → renderGeneration still 4 →
+fence passes → accept { note: "prod" }
+```
+
+The old regression did not catch it because it awaited the Edit first, so the
+generation had already advanced.
+
+Fixed with a `claimedGeneration` high-water mark on the entry, mirroring Discord's
+proven `claimedRevision`. The claim is taken synchronously AFTER the stale fence
+and BEFORE the first `await`, so a callback the stale fence drops spends nothing
+(otherwise a redelivered callback retires a number no card can name, and the next
+Submit from the card the user is actually reading gets wedged). Only card-publishing
+actions claim — `submit` claims nothing, because it publishes nothing when it
+succeeds and claiming would make the very next Submit stale against its own number.
+The claim-check itself applies only to `submit`: navigation and field saves are
+non-terminal and must keep working through an ACK window, and Decline/Cancel stay
+exempt as before. The allocator is advanced by the claim too, so a claimed number
+can never be reissued to an unclaimed render.
+
+## P2 — `cardActions.path` accepted unmatchable query/hash values
+
+`config.ts` required a leading `/`; the host strips anything from `?` on before
+comparing. `/webhook/card?tenant=x` therefore parsed, bound a listener, advertised
+form capability, and 404ed every callback, because the host compares
+`/webhook/card` against `/webhook/card?tenant=x`. A `#fragment` is never sent to a
+server at all. The parser now defines the value as a pure pathname and rejects
+`?` / `#` alongside a relative path. The existing relative-path test was widened
+in place to cover all three shapes rather than duplicated.
+
+## Test totals (post-fix)
+
+| File | Tests |
+|---|---|
+| `feishu-card-action-host.test.ts` | 31 (was 29 at review head) |
+| `feishu-elicitation-renderer.test.ts` | 79 (was 78 at review head) |
+| `feishu-config.test.ts` | 26 (was 26 at review head) |
+| **Feishu package** | **488 pass / 0 fail** |
+
+## Mutation-verification (post-fix)
+
+| Mutation | Caught by |
+|---|---|
+| Challenge branch disabled | 4 tests (plaintext, encrypted, token-only, mixed action) |
+| `claimedGeneration` gate removed | in-flight Submit race test |
+| `?` / `#` path rejection removed | path-shapes test |

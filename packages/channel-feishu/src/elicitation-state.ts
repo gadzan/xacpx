@@ -76,6 +76,33 @@ export interface PendingFeishuElicitation {
    */
   renderGeneration: number;
   /**
+   * The generation a claim has been made against, ahead of what the user can see.
+   *
+   * `renderGeneration` is the newest revision known to have reached the platform;
+   * `claimedGeneration` is the highest one a handler has already committed to.
+   * The two differ while a re-render is in flight: the allocator has handed out
+   * a number, the card it names is not on screen yet, and an interaction that
+   * arrives in that window is NOT stale — the user is still looking at the old
+   * card — but it also must not act on state the in-flight render has already
+   * changed.
+   *
+   * That window is where a same-generation race lives. `renderCurrentField()`
+   * mutates `currentField` and allocates a generation before its first `await`,
+   * so during `updateCard` the wizard has already moved while the review card on
+   * screen still names the OLD number. A Submit naming that old number passes a
+   * `renderGeneration`-only fence and accepts answers the user has already
+   * started editing away from — `Save prod -> Review -> Edit(g) -> Submit(g)
+   * during Edit's update` accepted `prod` although the user was on their way to
+   * typing `staging`.
+   *
+   * Claiming synchronously, the way Discord's `claimedRevision` already does,
+   * makes the in-flight number retired without waiting for the platform. The
+   * claiming interaction is exempted by identity (it carries the number it
+   * claimed), exactly as the Discord paths do, so the click that produced the
+   * claim is never refused by it.
+   */
+  claimedGeneration: number;
+  /**
    * The allocation high-water mark for card generations.
    *
    * Separated from `renderGeneration` because the two answer different questions

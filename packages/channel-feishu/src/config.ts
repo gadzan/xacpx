@@ -228,22 +228,21 @@ const DEFAULT_CARD_ACTION_PATH = "/webhook/card";
  * an endpoint that never comes up (because, say, the port was a string) would
  * look exactly like "the feature does not work" at runtime.
  *
- * BOTH SECRETS ARE REQUIRED, because this endpoint has to complete two
- * different handshakes and each one needs its own key:
+ * BOTH SECRETS ARE REQUIRED, because this endpoint has to serve two different
+ * request kinds and each one needs its own key:
  *
  *   - a card ACTION. Every button the renderer emits carries `schema: "2.0"`, so
  *     a real click lands in the new-protocol branch and is verified against
  *     `encryptKey` with SHA-256.
- *   - the URL-VERIFICATION challenge. Feishu delivers that with no `schema` and
- *     no `encrypt` field, which is the legacy branch — verified against
- *     `verificationToken` with SHA-1, and the echoed token is required there.
+ *   - the URL-VERIFICATION challenge. Feishu delivers it with NO signature
+ *     headers at all, so the only credential it carries is the echoed
+ *     `verificationToken` (see `extractUrlVerificationChallenge`). Without one
+ *     the endpoint can never finish being configured — it starts, answers every
+ *     click, and still cannot be put into service.
  *
- * The challenge is read AFTER the signature check (see `handleRequest`), so a
- * config missing either secret cannot merely degrade on that one path: the
- * request is rejected before the challenge is ever looked at. Requiring only
- * `encryptKey` therefore produces a channel that starts, advertises form
- * support, answers every click, and still cannot finish being configured —
- * which is the same dead-configuration failure this gate exists to prevent.
+ * The challenge is recognized BEFORE the signature check runs (see
+ * `handleRequest`), because requiring card-action headers first is a shape the
+ * official SDK's webhook adapter never produces for it.
  */
 function parseCardActions(raw: unknown, path: string): FeishuCardActionConfig | undefined {
   if (raw === undefined) return undefined;
@@ -267,15 +266,25 @@ function parseCardActions(raw: unknown, path: string): FeishuCardActionConfig | 
   }
   const host = stringOptional(raw.host, `${path}.host`) ?? DEFAULT_CARD_ACTION_HOST;
   // The request target is compared with STRICT EQUALITY against this path (see
-  // `CardActionHost.handleRequest`), so a relative path can never match: an HTTP
-  // request line carries `/webhook/card`, and `"webhook/card"` is a different
-  // string. The listener starts, the channel advertises form capability, and every
-  // callback 404s — the exact "starts successfully but the feature does not work"
-  // shape this parser's own design note says must be a hard startup error instead.
+  // `CardActionHost.handleRequest`, which first strips anything from `?` on), so
+  // this value must be a pure pathname. Two classes of configuration are
+  // rejected:
+  //
+  //   - a relative path, because a request line carries `/webhook/card`, and
+  //     `"webhook/card"` is a different string;
+  //   - a path carrying a query or a fragment, because those are NOT part of the
+  //     server-side pathname being compared. Feishu's POST target is the path the
+  //     operator configured in the console, so `/webhook/card?tenant=x` would be
+  //     POSTed as it appears but split to `/webhook/card` before the comparison,
+  //     and a `#fragment` is never sent to a server at all.
+  //
+  // Both leave the listener bound, the channel advertising form capability, and
+  // every callback 404ing — the "starts successfully but the feature does not
+  // work" shape this parser's own design note says must be a hard error instead.
   const configuredPath = stringOptional(raw.path, `${path}.path`) ?? DEFAULT_CARD_ACTION_PATH;
-  if (!configuredPath.startsWith("/")) {
+  if (!configuredPath.startsWith("/") || configuredPath.includes("?") || configuredPath.includes("#")) {
     throw new Error(
-      `${path}.path must be an absolute path starting with "/" (got ${JSON.stringify(configuredPath)}); the request target is matched against it exactly, so a relative path would 404 every callback`,
+      `${path}.path must be an absolute pathname with no query or fragment (got ${JSON.stringify(configuredPath)}); the request target is matched against it exactly, so a relative path or one carrying "?" / "#" would 404 every callback`,
     );
   }
   return {

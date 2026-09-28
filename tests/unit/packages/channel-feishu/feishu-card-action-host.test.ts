@@ -230,27 +230,91 @@ test("a POST to a different path is not handled", async () => {
   expect(seen).toHaveLength(1);
 });
 
-test("Feishu's URL-verification challenge is echoed verbatim", async () => {
+test("the URL-verification challenge is echoed verbatim, as the platform sends it", async () => {
   const h = await harness();
-  // The real challenge carries the verification token, so it must survive the
-  // authenticity check and be recognized as a handshake rather than an action.
+  // The EXACT shape Feishu's open platform posts when an event subscription URL
+  // is configured: a challenge plus the verification token, and NO signature
+  // headers at all. The official Node SDK's webhook adapter answers this in
+  // `autoChallenge`, before `dispatcher.invoke()` — so requiring
+  // `x-lark-request-*` headers first made the handshake unanswerable and the
+  // callback address could never be configured at all.
   const response = await h.post(JSON.stringify({
     challenge: "random-challenge-abc",
     token: CONFIG.verificationToken,
     type: "url_verification",
-  }));
+  }), {});
   expect(response.status).toBe(200);
   expect(response.body).toContain("random-challenge-abc");
+  // A handshake is not a card action, so it must never reach the renderer.
   expect(h.seen).toHaveLength(0);
 });
 
-test("a challenge without the token is refused, not echoed", async () => {
+test("an encrypted challenge is decrypted before it is answered", async () => {
+  // `generateChallenge()` in the SDK decrypts first, when the body is encrypted.
+  // An encryptKey-bearing deployment therefore receives the challenge as an
+  // opaque blob, and answering it requires unwrapping the envelope first.
+  const h = await harness(CONFIG);
+  const response = await h.post(JSON.stringify({
+    encrypt: encryptForTest(JSON.stringify({
+      challenge: "enc-challenge-xyz",
+      token: CONFIG.verificationToken,
+      type: "url_verification",
+    }), CONFIG.encryptKey),
+  }), {});
+  expect(response.status).toBe(200);
+  expect(response.body).toContain("enc-challenge-xyz");
+  expect(h.seen).toHaveLength(0);
+});
+
+test("a challenge is still authenticated by the echoed token", async () => {
+  // Recognizing the handshake early must not become a blanket bypass. A
+  // challenge carries no signature, so its token is the ONLY credential it has,
+  // and an unknown one is refused rather than echoed — otherwise anyone could
+  // probe the endpoint for free.
   const h = await harness();
-  // An unauthenticated challenge is not a handshake we owe an answer to:
-  // echoing it would let anyone probe the endpoint for free.
-  const response = await h.post(JSON.stringify({ challenge: "attacker-challenge" }));
-  expect(response.status).toBe(401);
-  expect(response.body).not.toContain("attacker-challenge");
+  const wrongToken = await h.post(JSON.stringify({ challenge: "attacker-challenge", token: "not-the-token" }), {});
+  expect(wrongToken.status).toBe(401);
+  expect(wrongToken.body).not.toContain("attacker-challenge");
+  const noToken = await h.post(JSON.stringify({ challenge: "attacker-challenge" }), {});
+  expect(noToken.status).toBe(401);
+  expect(noToken.body).not.toContain("attacker-challenge");
+  expect(h.seen).toHaveLength(0);
+});
+
+test("a real card action still needs its signature, with or without a challenge field", async () => {
+  // The handshake branch exists for the URL handshake, not as an action bypass.
+  // A card callback that is not signature-verified must not become a responder.
+  const server = createInjectedHttpServer();
+  const seen: FeishuCardActionCallback[] = [];
+  await startFeishuCardActionHost({
+    config: CONFIG,
+    injectedServer: server,
+    onAction: (callback) => {
+      seen.push(callback);
+      return Promise.resolve({ ok: true });
+    },
+  });
+  // Carries `challenge` AND an action body AND no signature: the challenge is
+  // recognized (its token is the configured one) and echoed, so the request
+  // never reaches `extractCardAction` at all.
+  const mixed = await server.simulate("POST", CONFIG.path, {}, JSON.stringify({
+    challenge: "handshake",
+    token: CONFIG.verificationToken,
+    operator: { open_id: "ou_forged" },
+    action: { tag: "button", value: { token: "abc" } },
+  }));
+  expect(mixed.status).toBe(200);
+  expect(seen).toHaveLength(0);
+
+  // An action body with NO challenge field and no signature is refused.
+  const unsigned = await server.simulate("POST", CONFIG.path, {}, actionBody());
+  expect(unsigned.status).toBe(401);
+  expect(seen).toHaveLength(0);
+
+  // And a correctly signed action still works.
+  const signed = await server.simulate("POST", CONFIG.path, signedHeaders(actionBody(), CONFIG.encryptKey, "sha256"), actionBody());
+  expect(signed.status).toBe(200);
+  expect(seen).toHaveLength(1);
 });
 
 test("form values are forwarded without the host inspecting them", async () => {
@@ -396,10 +460,9 @@ test("config rejects a card endpoint missing either secret", () => {
   })).toThrow(/encryptKey is required/);
 
   // And the mirror image, which the encryptKey-only fix left open: the
-  // URL-verification challenge arrives with no `schema` and no `encrypt`, so it
-  // is verified on the legacy (token + SHA-1) branch. That check runs BEFORE the
-  // challenge is read, so a token-less config can never echo it and the endpoint
-  // can never finish being configured.
+  // URL-verification challenge arrives with NO signature headers at all, so the
+  // echoed token is the only credential it carries. A token-less config can
+  // never echo it, and the endpoint can never finish being configured.
   expect(() => parseFeishuChannelConfig({
     appId: "a", appSecret: "b",
     accounts: { default: { appId: "a", appSecret: "b", cardActions: { port: 9871, encryptKey: "k" } } },

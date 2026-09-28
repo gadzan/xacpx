@@ -392,22 +392,19 @@ describe("feishu card callback authentication", () => {
     expect(actions).toHaveLength(0);
   });
 
-  test("the URL-verification challenge still works, signed", async () => {
+  test("the URL-verification challenge works with no signature headers", async () => {
+    // The handshake the platform actually uses: Feishu's adapter answers the
+    // challenge before any signature validation, and a signature-required
+    // ordering made the callback URL impossible to configure.
     const server = createInjectedHttpServer();
     await startFeishuCardActionHost({
       config: config(),
       injectedServer: server as never,
       onAction: () => Promise.resolve({ ok: true } as const),
     });
-    const payload = { challenge: "ch-abc", token: CARD_ACTIONS.verificationToken };
+    const payload = { challenge: "ch-abc", token: CARD_ACTIONS.verificationToken, type: "url_verification" };
     const body = JSON.stringify(payload);
-    // No `schema`/`encrypt` in a challenge body, so it is the legacy branch:
-    // verificationToken + SHA-1.
-    const result = await post(
-      server,
-      signedHeadersFor(payload, CARD_ACTIONS.verificationToken, "sha1"),
-      body,
-    );
+    const result = await post(server, {}, body);
     expect(result.status).toBe(200);
     expect(result.body).toContain("ch-abc");
   });

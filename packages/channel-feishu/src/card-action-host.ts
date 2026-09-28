@@ -47,6 +47,25 @@
  * (needed to receive Feishu's cloud POST) and must be set deliberately; this
  * module refuses to guess it, because silently listening on a public interface
  * is the failure mode that makes such endpoints dangerous.
+ *
+ * REQUEST ORDER
+ *
+ * Two request kinds arrive on the same route and are NOT verified the same way:
+ *
+ *   1. the URL-VERIFICATION challenge, sent while the request URL is being
+ *      configured. It carries NO signature headers, so it is recognized and
+ *      answered first, on its own `token`-equality check — the only credential
+ *      Feishu gives that handshake. This mirrors the official SDK's webhook
+ *      adapter, which runs `autoChallenge` before `dispatcher.invoke()`.
+ *   2. a card ACTION (a real click). Fully signature-verified before anything is
+ *      extracted from it: `encryptKey`+SHA-256 for the new protocol (which every
+ *      renderer button uses, because each carries `schema: "2.0"`), and
+ *      `verificationToken`+SHA-1 for a legacy push with neither field.
+ *
+ * The two cannot impersonate each other. An action body does not carry
+ * `challenge`, so it can never take the handshake branch; and a challenge is
+ * only ever echoed, never passed to the renderer, so an unsigned request can
+ * never become a card interaction.
  */
 
 import { createServer, type Server } from "node:http";
@@ -207,7 +226,58 @@ async function readBody(req: IncomingMessage): Promise<{ ok: true; text: string 
 }
 
 /**
+ * A URL-verification challenge, recognized from a body that carries one.
+ *
+ * Feishu's open platform documents this POST as part of CONFIGURING an event
+ * subscription: it is sent when the request URL is saved, and the endpoint must
+ * answer it before it will ever receive traffic. It is therefore a handshake
+ * about the URL, not about a card, and it must be answerable for the endpoint to
+ * come into service at all.
+ *
+ * The official Node SDK's webhook adapter treats it the same way: `autoChallenge`
+ * runs `generateChallenge()` — decrypt first, when the body is encrypted — BEFORE
+ * the request goes through `dispatcher.invoke()`, which is where signature
+ * validation lives. Requiring the card-action signature headers first, as this
+ * host used to, meant the challenge could only be completed by a POST carrying
+ * `x-lark-request-timestamp`, `x-lark-request-nonce` and `x-lark-signature` over
+ * a token+SHA-1 body — a shape the SDK itself does not produce, so the address
+ * could never be configured.
+ *
+ * The handshake is still authenticated, by the only credential Feishu gives it:
+ * the echoed `token` must equal the configured `verificationToken` in a
+ * constant-time comparison. A `challenge` with no token, or a wrong one, is
+ * refused rather than echoed, so the endpoint still cannot be probed for free.
+ * When no `verificationToken` is configured the challenge is refused too —
+ * the config parser already makes that credential mandatory for exactly this
+ * reason, so a config reaching this branch without one cannot exist.
+ *
+ * It deliberately does NOT check the signature headers: a challenge is not a
+ * card action, and an action callback must never be able to impersonate one.
+ * The two are distinguished by the field the platform itself puts in the body
+ * (`challenge`), and the branch below only ever echoes it back.
+ */
+function extractUrlVerificationChallenge(
+  config: FeishuCardActionConfig,
+  body: unknown,
+): { ok: true; challenge: string } | { ok: false } {
+  if (typeof body !== "object" || body === null) return { ok: false };
+  const record = body as Record<string, unknown>;
+  if (typeof record.challenge !== "string" || record.challenge.length === 0) return { ok: false };
+  // The echoed token is the ONLY authenticity credential a challenge carries.
+  if (config.verificationToken.length === 0) return { ok: false };
+  const sentToken = record.token;
+  if (typeof sentToken !== "string" || !timingSafeEqual(sentToken, config.verificationToken)) {
+    return { ok: false };
+  }
+  return { ok: true, challenge: record.challenge };
+}
+
+/**
  * Verify a card callback's authenticity.
+ *
+ * Reached only for bodies that are NOT a URL-verification challenge — that
+ * handshake is recognized and answered first (see `handleRequest`), because it
+ * arrives without the headers this function requires.
  *
  * Faithfully mirrors `RequestHandle.checkIsCardEventValidated()` /
  * `checkIsEventValidated()` in the pinned official SDK, because the branching
@@ -548,6 +618,47 @@ async function handleRequest(
     res.end();
     return;
   }
+  const envelope = safeJson(body.text);
+  if (envelope === undefined) {
+    // Unparseable, so it cannot be a handshake or a callback. Refused before any
+    // signature work: there is nothing to compare a digest against either.
+    options.log?.("feishu.card.malformed", "rejected a card callback with no parseable body", {});
+    res.writeHead(400);
+    res.end();
+    return;
+  }
+
+  // URL-VERIFICATION FIRST, exactly as the official SDK's webhook adapter orders
+  // it (`autoChallenge` before `dispatcher.invoke()`). This POST is how the
+  // request URL is CONFIGURED, so it must be answerable for the endpoint to ever
+  // receive traffic, and it arrives with none of the card-action signature
+  // headers.
+  //
+  // An ENCRYPTED challenge is decrypted first, using the same envelope this host
+  // already unwraps for card actions: the SDK's `generateChallenge()` decrypts
+  // before recognizing the challenge. Without that step an encryptKey-bearing
+  // deployment would see a challenge arrive as an opaque blob and be unable to
+  // complete the handshake either.
+  let challengeEnvelope: unknown = envelope;
+  if (envelope !== null && typeof envelope === "object" && "encrypt" in envelope) {
+    const encrypted = envelope.encrypt;
+    if (typeof encrypted === "string") {
+      const plaintext = decryptFeishuEnvelope(encrypted, options.config.encryptKey);
+      // An undecryptable body is not a handshake this endpoint owes an answer
+      // to; it falls through to the action path, which rejects it on its own
+      // signature check rather than echoing a guessed plaintext.
+      challengeEnvelope = plaintext === undefined ? undefined : safeJson(plaintext);
+    }
+  }
+  if (challengeEnvelope !== undefined) {
+    const challenge = extractUrlVerificationChallenge(options.config, challengeEnvelope);
+    if (challenge.ok) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ challenge: challenge.challenge }));
+      return;
+    }
+  }
+
   const verified = verifyCardRequest(options.config, body.text, req.headers as Record<string, string | string[] | undefined>);
   if (!verified.ok) {
     // Log the class, never the body: it may contain a partially-decrypted or
@@ -557,16 +668,6 @@ async function handleRequest(
     });
     res.writeHead(verified.reason === "malformed" ? 400 : 401);
     res.end();
-    return;
-  }
-
-  const challenge = typeof verified.payload === "object" && verified.payload !== null
-    ? (verified.payload as { challenge?: unknown }).challenge
-    : undefined;
-  if (typeof challenge === "string") {
-    // Feishu's URL-verification handshake: echo the challenge verbatim.
-    res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ challenge }));
     return;
   }
 

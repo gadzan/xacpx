@@ -344,6 +344,10 @@ export class FeishuElicitationRenderer {
       // so the first revision is distinguishable from a control that never
       // carried a generation at all.
       renderGeneration: 1,
+      // Equal to `renderGeneration`: nothing is in flight, so nothing is spent.
+      // A handler that claims one moves this forward while the visible card still
+      // names `renderGeneration` — which is the whole point of keeping both.
+      claimedGeneration: 1,
       // The allocator starts at the same value, so the first render is handed 2
       // and 1 remains reserved by the opening card's own generation.
       renderGenerationCounter: 1,
@@ -504,12 +508,47 @@ export class FeishuElicitationRenderer {
     // keeps a card whose update acknowledgement was lost usable, and that is
     // orthogonal to whether the callback is stale.
     const isTerminalIntent = parsed.action === "decline" || parsed.action === "cancel";
+
     if (parsed.renderGeneration !== undefined) {
       if (parsed.renderGeneration < entry.renderGeneration && !isTerminalIntent) {
         this.options.log?.("feishu.elicitation.stale_callback", "dropped a callback from an earlier card render", {
           requestId: entry.requestId,
           callbackGeneration: parsed.renderGeneration,
           currentGeneration: entry.renderGeneration,
+        });
+        return { handled: false, settled: false };
+      }
+      // CLAIMED, NOT PUBLISHED — the in-flight window.
+      //
+      // A re-render mutates state and allocates its generation before its first
+      // `await`, and commits the publication only once `updateCard` succeeds.
+      // Between those two points the card on screen still names the OLD number
+      // while the wizard has already moved on, so a callback naming that number
+      // is not stale in the ordinary sense — it is the card the user is actually
+      // looking at — but honouring it would let it act on state the in-flight
+      // render has already changed.
+      //
+      // `Review(prod,g) -> Edit -> Submit(g) during Edit's update` accepted
+      // `prod` while the user was already heading to retype the field as
+      // `staging`: the Submit passed a fence that only compares the PUBLISHED
+      // generation, and `confirmReviewed()` settled the turn on the pre-edit
+      // answers. Judging the ACK window against the claimed number closes it.
+      //
+      // Applied ONLY to the accept path, and for a different reason from the
+      // fence above: a navigation or field save is not terminal, and the card on
+      // screen still names `renderGeneration`, so those interactions must keep
+      // working through an ACK window. It is the terminal ACCEPT that must not
+      // survive, because it ends the turn on answers the user was in the middle
+      // of changing.
+      //
+      // A boolean "busy" flag cannot close this window instead: two callbacks for
+      // the same pending entry are independent HTTP requests here, and there is
+      // no per-entry queue to serialize them on.
+      if (parsed.action === "submit" && parsed.renderGeneration < entry.claimedGeneration) {
+        this.options.log?.("feishu.elicitation.inflight_superseded", "dropped a Submit that arrived while a newer render was in flight", {
+          requestId: entry.requestId,
+          callbackGeneration: parsed.renderGeneration,
+          claimedGeneration: entry.claimedGeneration,
         });
         return { handled: false, settled: false };
       }
@@ -523,6 +562,43 @@ export class FeishuElicitationRenderer {
       }
     }
 
+    // CLAIM, SYNCHRONOUSLY, AFTER the fences and BEFORE the first `await`.
+    //
+    // A claim retires a generation ahead of the platform: the new card will wear
+    // this number, so taking it now is what stops an interaction delivered while
+    // that render is still in flight from acting on state the render has already
+    // changed.
+    //
+    // AFTER the stale fence, so a callback that fence drops spends nothing. A
+    // claim taken before the drop left the number retired with no card on screen
+    // able to name it — the next Submit from the card the user is actually
+    // looking at then failed the claim check above and the form became
+    // unsubmittable. This is the ordering, not the exemption, that keeps a
+    // replay harmless: the redelivered callback is refused by the FIRST fence and
+    // never reaches this line.
+    //
+    // Which actions qualify mirrors Discord's `claimsRevision` set exactly.
+    // `start`, `field` (Edit), `skip` and `save` all re-render, so each must
+    // retire its number up front. `submit` must NOT: it publishes nothing when it
+    // succeeds, and claiming would make the very next Submit from the card on
+    // screen arrive against its own retired number and be dropped — a complete
+    // form would become unsubmittable. Decline and Cancel are exempt from the
+    // stale fence entirely for the same class of reason, so they claim nothing
+    // either.
+    //
+    // The claim advances the ALLOCATOR's high-water mark as well, not just the
+    // claimed number. A render that publishes without a claim (`submit`'s
+    // required-field and rejected-answer paths) allocates from that allocator, and
+    // two renders sharing a number is the one thing the revision scheme cannot
+    // survive — it is a revision ID.
+    const claimsGeneration = parsed.action === "start"
+      || parsed.action === "field"
+      || parsed.action === "skip"
+      || parsed.action === "save";
+    const claim = claimsGeneration && parsed.renderGeneration !== undefined && !entry.settled
+      ? (entry.claimedGeneration = entry.renderGenerationCounter = Math.max(entry.claimedGeneration, entry.renderGenerationCounter) + 1)
+      : undefined;
+
     switch (parsed.action) {
       case "start": {
         entry.currentField = entry.request.fields[0]?.key;
@@ -531,7 +607,7 @@ export class FeishuElicitationRenderer {
           // keeps `accept` + `content: null` precisely for this, so Start goes
           // straight to the review page where Submit is the only way to accept.
           this.markPendingRender(entry);
-          await this.renderReview(entry);
+          await this.renderReview(entry, claim);
           return { handled: true, settled: false };
         }
         // The card is already on screen — Feishu delivered it before `sendCard`
@@ -540,7 +616,7 @@ export class FeishuElicitationRenderer {
         // `requestElicitation` replay it the moment the id exists, instead of
         // acknowledging the click and leaving the user on the opening card.
         this.markPendingRender(entry);
-        await this.renderCurrentField(entry);
+        await this.renderCurrentField(entry, claim);
         return { handled: true, settled: false };
       }
       case "field": {
@@ -548,7 +624,7 @@ export class FeishuElicitationRenderer {
         // schema key is not a valid routing id.
         if (parsed.fieldIndex !== undefined && entry.request.fields[parsed.fieldIndex]) {
           entry.currentField = entry.request.fields[parsed.fieldIndex]!.key;
-          await this.renderCurrentField(entry);
+          await this.renderCurrentField(entry, claim);
         }
         return { handled: true, settled: false };
       }
@@ -579,10 +655,10 @@ export class FeishuElicitationRenderer {
         const next = nextUnresolvedFieldKey(entry);
         if (next) {
           entry.currentField = next;
-          await this.renderCurrentField(entry);
+          await this.renderCurrentField(entry, claim);
           return { handled: true, settled: false };
         }
-        await this.renderReview(entry);
+        await this.renderReview(entry, claim);
         return { handled: true, settled: false };
       }
       // Field page "save" and review page "submit" are DIFFERENT ACTIONS. They
@@ -593,7 +669,7 @@ export class FeishuElicitationRenderer {
       // second delivery and accepted the form without any click on the review
       // page. Feishu retries callbacks, and a user double-taps.
       case "save": {
-        return this.submit(entry, action.formValues);
+        return this.submit(entry, action.formValues, claim);
       }
       case "submit": {
         return this.confirmReviewed(entry);
@@ -645,6 +721,8 @@ export class FeishuElicitationRenderer {
   private async submit(
     entry: PendingFeishuElicitation,
     formValues: Record<string, string>,
+    /** The generation this interaction claimed before its first await. */
+    claim?: number,
   ): Promise<{ handled: true; settled: false }> {
     if (entry.currentField !== undefined) {
       const field = entry.request.fields.find((f) => f.key === entry.currentField);
@@ -662,12 +740,12 @@ export class FeishuElicitationRenderer {
     const next = nextUnresolvedFieldKey(entry);
     if (next) {
       entry.currentField = next;
-      await this.renderCurrentField(entry);
+      await this.renderCurrentField(entry, claim);
       return { handled: true, settled: false };
     }
     // Everything has an outcome (answered or explicitly skipped): show the
     // review page, which is the only path to accept.
-    await this.renderReview(entry);
+    await this.renderReview(entry, claim);
     return { handled: true, settled: false };
   }
 
@@ -744,7 +822,7 @@ export class FeishuElicitationRenderer {
   }
 
   /** Re-render the card for the current field, in place. */
-  private async renderCurrentField(entry: PendingFeishuElicitation): Promise<void> {
+  private async renderCurrentField(entry: PendingFeishuElicitation, claim?: number): Promise<void> {
     if (!entry.cardId || entry.settled) return;
     const key = entry.currentField;
     if (key === undefined) return;
@@ -761,7 +839,13 @@ export class FeishuElicitationRenderer {
     // this whole scheme has to survive. A failed render therefore leaves a gap,
     // which costs nothing, instead of reissuing a revision that a live card may
     // already own.
-    const generation = nextGeneration(entry);
+    //
+    // The CLAIM, when the interaction that triggered this render made one, is the
+    // number this card wears. Spending the claim rather than a fresh allocation is
+    // what makes the claiming interaction's own controls legal: it named this
+    // number in the fence's claim exemption, and a card wearing a different one
+    // would leave that number spent with nothing on screen able to name it.
+    const generation = claim ?? nextGeneration(entry);
     const card = buildElicitationFieldCard(
       entry.request,
       entry.token,
@@ -860,11 +944,13 @@ export class FeishuElicitationRenderer {
    * Replace the card with the review page: every label with its current value,
    * plus one Edit per field and the Submit that confirms what is being sent.
    */
-  private async renderReview(entry: PendingFeishuElicitation): Promise<void> {
+  private async renderReview(entry: PendingFeishuElicitation, claim?: number): Promise<void> {
     if (!entry.cardId || entry.settled) return;
     // Allocated from the same monotonic allocator, for the same reason: a revision
-    // is never reissued, so two reviews can never share one.
-    const generation = nextGeneration(entry);
+    // is never reissued, so two reviews can never share one. The claim, when the
+    // triggering interaction made one, is spent in its place — see
+    // `renderCurrentField` for why a claimed number has to be the one worn.
+    const generation = claim ?? nextGeneration(entry);
     // Built WITH the generation it was allocated, so every control on this review
     // names the revision of the review the user is looking at. That is what lets
     // the fence recognise a Submit from an EARLIER review and drop it, instead of

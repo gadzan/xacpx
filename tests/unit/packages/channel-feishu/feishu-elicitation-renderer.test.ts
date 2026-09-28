@@ -1827,6 +1827,84 @@ test("a Submit from an earlier review card cannot accept the pre-edit answers", 
   });
 });
 
+test("a Submit delivered during Edit's card update cannot accept the pre-edit answers", async () => {
+  // The same-generation window that Discord's `claimedRevision` closes, reached
+  // here because Feishu delivers each callback as its own HTTP request: there is
+  // no queue, so a Submit can arrive while the Edit's `card.update` it triggered
+  // is still outstanding.
+  //
+  // `renderCurrentField()` allocates a generation, mutates `currentField`, and
+  // only commits `renderGeneration` once the update succeeds. During that wait
+  // the card on screen still names the OLD number, so a Submit naming it passes a
+  // fence that compares only the published generation — and `confirmReviewed()`
+  // accepts the answers as they were BEFORE the edit the user just asked for.
+  //
+  // The claim is taken synchronously, before the handler's first await, so the
+  // number is spent while the card is still being replaced. Advancing
+  // `renderGeneration` early instead would re-fence the visible card whenever the
+  // update fails, which is the defect the monotonic-commit test below pins.
+  const rec = makeRenderer();
+  const fields: ChannelElicitationRequest["fields"] = [
+    { kind: "text", key: "note", title: "Note", required: true, maxLength: 100 },
+  ];
+  const promise = rec.renderer.requestElicitation(request(fields), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  const onScreen = (): number => [...rec.pending.values()][0]!.renderGeneration;
+
+  // Answer `prod`, which lands the wizard on the review page.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "start" }, formValues: {} });
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreen() }, formValues: { f0: "prod" } });
+  const review = reviewTokens(rec);
+
+  // Hold the NEXT card update — the one Edit's own render issues. The Edit click
+  // is not awaited: what is being exercised is what happens while its update is
+  // outstanding, not after it.
+  const held: Array<() => void> = [];
+  let holding = false;
+  const realUpdate = rec.transport.updateCard.bind(rec.transport);
+  (rec.transport as { updateCard: unknown }).updateCard = async (input: never) => {
+    if (holding) {
+      await new Promise<void>((resolve) => { held.push(resolve); });
+    }
+    return realUpdate(input);
+  };
+  holding = true;
+  const editClick = rec.renderer.handleAction({ openId: "ou_initiator", value: review.field, formValues: {} });
+  await new Promise((resolve) => { setTimeout(resolve, 5); });
+  expect(held).toHaveLength(1);
+  // Precondition: the wizard has already moved, and the publication has not.
+  const entry = [...rec.pending.values()][0] as unknown as {
+    renderGeneration: number; claimedGeneration: number; currentField: string | undefined;
+  };
+  expect(entry.currentField).toBe("note");
+  expect(entry.claimedGeneration).toBeGreaterThan(entry.renderGeneration);
+
+  // The Submit from the review card the user was reading when they pressed Edit.
+  // Under a published-generation fence alone this is the card on screen, so it is
+  // honoured and the turn ends on `prod`.
+  const raced = await rec.renderer.handleAction({ openId: "ou_initiator", value: review.submit, formValues: {} });
+  expect(raced.handled).toBe(false);
+  expect(raced.settled).toBe(false);
+  // Still live, so the user can finish the edit they started.
+  expect(rec.pending.size).toBe(1);
+
+  // Release Edit's update, then carry the edit through to the real answer.
+  held.shift()!();
+  await editClick;
+  holding = false;
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "save", g: onScreen() }, formValues: { f0: "staging" } });
+  const settled = await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit", g: onScreen() }, formValues: {} });
+  expect(settled.settled).toBe(true);
+  expect(await promise).toEqual({
+    action: "accept",
+    responderId: "ou_initiator",
+    content: { note: "staging" },
+  });
+});
+
 /**
  * The routing payloads of the review card most recently drawn.
  *

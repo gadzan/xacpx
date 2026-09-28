@@ -320,10 +320,9 @@ test("parseFeishuChannelConfig rejects a card endpoint missing either secret", (
 
   // The mirror image, and the one the previous fix left open: encryptKey-only
   // serves every click but cannot complete the URL-verification challenge,
-  // which Feishu delivers with no `schema` and no `encrypt` — the legacy branch,
-  // verified against the token. The challenge is read AFTER the signature
-  // check, so a missing token rejects that handshake before the challenge is
-  // ever echoed, and the endpoint can never finish being configured.
+  // which Feishu delivers with NO signature headers. The echo token
+  // (`verificationToken`) is then the only credential the handshake carries, so
+  // a config without one can never finish being configured.
   expect(() => parseFeishuChannelConfig({
     appId: "x",
     appSecret: "y",
@@ -371,15 +370,23 @@ function feishuOptions(cardActions: unknown): unknown {
   };
 }
 
-test("parseCardActions rejects a relative path the host can never match", () => {
-  // The HTTP host compares the request target against this path with STRICT
-  // EQUALITY, so a relative path can never match: a request line carries
-  // `/webhook/card`, which is a different string. Left unvalidated the listener
-  // starts, the channel advertises form capability, and every callback 404s — the
-  // shape this parser's own design note says must be a hard startup error.
-  expect(() => parseFeishuChannelConfig(
-    feishuOptions({ ...cardActionSecrets, path: "webhook/card" }),
-  )).toThrow(/absolute path/);
+test("parseCardActions rejects a path the host can never match", async () => {
+  // The HTTP host compares the request target's PATH against this value with
+  // STRICT EQUALITY (it first strips anything from `?` on), so a path that is
+  // not a pure pathname can never match. Left unvalidated the listener starts,
+  // the channel advertises form capability, and every callback 404s — the shape
+  // this parser's own design note says must be a hard startup error.
+  //
+  // Three shapes, one class:
+  //   - relative: a request line carries `/webhook/card`, a different string;
+  //   - with a query: `/webhook/card?tenant=x` is POSTed as written, but the
+  //     host compares `/webhook/card` and the configured value keeps the query;
+  //   - with a fragment: never sent to a server in the request target at all.
+  for (const bad of ["webhook/card", "/webhook/card?tenant=x", "/webhook/card#frag"]) {
+    expect(() => parseFeishuChannelConfig(
+      feishuOptions({ ...cardActionSecrets, path: bad }),
+    )).toThrow(/no query or fragment/);
+  }
 });
 
 test("parseCardActions accepts an absolute custom path", () => {
@@ -401,5 +408,5 @@ test("cardActions is parsed per account, so the path check runs on each", () => 
       good: { cardActions: { ...cardActionSecrets, path: "/ok" } },
       broken: { cardActions: { ...cardActionSecrets, path: "relative" } },
     },
-  })).toThrow(/absolute path/);
+  })).toThrow(/no query or fragment/);
 });
