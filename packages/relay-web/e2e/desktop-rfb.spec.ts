@@ -43,6 +43,16 @@ interface MockRfb {
   sawDesResponse: boolean;
   /** Every FramebufferUpdate actually sent, so the browser's canvas proves out. */
   updates: Array<{ rects: number; bytes: number }>;
+  /**
+   * Client message TYPES decoded from the live RFB stream, in arrival order.
+   * A growing byte total can be produced by a FramebufferUpdateRequest alone,
+   * so input assertions read these instead: 4 = KeyEvent, 5 = PointerEvent.
+   */
+  clientMessageTypes: Array<{ type: number; expectedBytes: number }>;
+  /** True once a KeyEvent (type 4) has been decoded. */
+  sawKeyEvent: boolean;
+  /** True once a PointerEvent (type 5) has been decoded. */
+  sawPointerEvent: boolean;
   close(): Promise<void>;
 }
 
@@ -68,6 +78,52 @@ function sendFramebufferUpdate(socket: net.Socket): number {
 }
 
 /**
+ * Client message type -> total message length, per RFB §7.5.
+ *
+ * Input messages have fixed sizes (KeyEvent 8, PointerEvent 6), but so does the
+ * FramebufferUpdateRequest (10) that a connected client sends unprompted. A
+ * byte total therefore cannot attribute growth to input; decoding the type
+ * bits is what makes an input assertion meaningful.
+ */
+const CLIENT_MESSAGE_LENGTHS: Record<number, number> = {
+  0: 20, // SetPixelFormat: type + 3 pad + pixel format
+  2: 4,  // SetEncodings header (type + pad + u16 count), string below
+  3: 10, // FramebufferUpdateRequest: type + pad + x + y + w + h
+  4: 8,  // KeyEvent: type + pad + u32 key
+  5: 6,  // PointerEvent: type + pad + u16 x + u16 y
+  6: 8,  // ClientCutText: type + 3 pad + u32 length (string follows)
+};
+
+/** RFB message-type numbers the tests assert on. */
+const RFB_KEY_EVENT = 4;
+const RFB_POINTER_EVENT = 5;
+
+/**
+ * Walk one client buffer and report the message types it starts with. Partial
+ * messages (a body that continues in a later TCP segment) are skipped: the
+ * next segment re-walks from there, and the tests only need the type bit.
+ */
+function decodeClientMessageTypes(buf: Buffer): Array<{ type: number; expectedBytes: number }> {
+  const out: Array<{ type: number; expectedBytes: number }> = [];
+  let offset = 0;
+  while (offset < buf.byteLength) {
+    const type = buf[offset];
+    if (type === undefined) break;
+    const expected = CLIENT_MESSAGE_LENGTHS[type] ?? 0;
+    if (expected === 0) break; // unknown message: stop rather than desync
+    out.push({ type, expectedBytes: expected });
+    if (type === 2) {
+      // SetEncodings is variable length: header + 4 bytes per encoding id.
+      const count = buf.readUInt16BE(offset + 2);
+      offset += 4 + count * 4;
+    } else {
+      offset += expected;
+    }
+  }
+  return out;
+}
+
+/**
  * RFB 003.008 server with VncAuth. The handshake is phase-per-frame rather
  * than "wait for 17 bytes": noVNC sends its 16-byte DES response as soon as
  * the password is submitted and then WAITS for SecurityResult before it sends
@@ -79,7 +135,8 @@ function sendFramebufferUpdate(socket: net.Socket): number {
 function startMockRfb(opts: { rejectPassword?: boolean } = {}): Promise<MockRfb> {
   const clientTraffic: Buffer[] = [];
   const updates: Array<{ rects: number; bytes: number }> = [];
-  const state = { authenticated: false, sawDesResponse: false };
+  const clientMessageTypes: Array<{ type: number; expectedBytes: number }> = [];
+  const state = { authenticated: false, sawDesResponse: false, sawKeyEvent: false, sawPointerEvent: false };
   const sockets: net.Socket[] = [];
   return new Promise((resolve) => {
     let server: Server;
@@ -98,6 +155,14 @@ function startMockRfb(opts: { rejectPassword?: boolean } = {}): Promise<MockRfb>
         if (phase === "live") {
           if (buffered.length > 0) {
             clientTraffic.push(Buffer.from(buffered));
+            // Decode the message types now, while the segment boundary is
+            // still visible: a client message that straddles two segments is
+            // reported when its body completes.
+            for (const msg of decodeClientMessageTypes(buffered)) {
+              clientMessageTypes.push(msg);
+              if (msg.type === RFB_KEY_EVENT) state.sawKeyEvent = true;
+              if (msg.type === RFB_POINTER_EVENT) state.sawPointerEvent = true;
+            }
             buffered = Buffer.alloc(0);
           }
           return;
@@ -182,8 +247,11 @@ function startMockRfb(opts: { rejectPassword?: boolean } = {}): Promise<MockRfb>
         port: addr.port,
         clientTraffic,
         updates,
+        clientMessageTypes,
         get authenticated() { return state.authenticated; },
         get sawDesResponse() { return state.sawDesResponse; },
+        get sawKeyEvent() { return state.sawKeyEvent; },
+        get sawPointerEvent() { return state.sawPointerEvent; },
         close: () =>
           new Promise((r) => {
             // server.close() waits for every live connection: the browser holds
@@ -274,7 +342,10 @@ desktopTest.describe("Relay Web instance desktop over RFB", () => {
     await openDesktop(page);
     await connectDesktop(page);
 
-    const baseline = rfb.clientTraffic.reduce((sum, b) => sum + b.byteLength, 0);
+    // A connected client already emits setup traffic (SetPixelFormat,
+    // SetEncodings, FramebufferUpdateRequest), so the baseline is the decoded
+    // message count BEFORE the input actions.
+    const baselineMessages = rfb.clientMessageTypes.length;
     const canvas = page.locator('[data-test="desktop-host"] canvas').first();
     await expect(canvas).toBeVisible();
     const box = await canvas.boundingBox();
@@ -286,10 +357,12 @@ desktopTest.describe("Relay Web instance desktop over RFB", () => {
     await page.mouse.up();
     await page.keyboard.press("KeyX");
 
-    // Pointer events are dispatched in a coalescing batch, so poll for growth.
-    await expect
-      .poll(() => rfb.clientTraffic.reduce((sum, b) => sum + b.byteLength, 0), { timeout: 15_000 })
-      .toBeGreaterThan(baseline);
+    // noVNC dispatches PointerEvents in coalescing batches, so poll for the
+    // decoded count to settle rather than expecting one message per event.
+    await expect.poll(() => rfb.clientMessageTypes.length, { timeout: 15_000 })
+      .toBeGreaterThan(baselineMessages);
+    expect(rfb.sawPointerEvent).toBe(true);
+    expect(rfb.sawKeyEvent).toBe(true);
 
     await rfb.close();
   });
