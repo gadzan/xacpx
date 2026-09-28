@@ -126,25 +126,32 @@ test("desktop-open fails closed without capability, offline, busy, or bad prepar
   });
   const busyInstance = desktopDeps({ reserve: busyStub("instance") });
   const busyAccount = desktopDeps({ reserve: busyStub("account") });
-  const cases: Array<{ setup: { deps: WebClientDeps; socket: FakeSocket; sent: SentEvent[] }; code: string; message: string }> = [
-    { setup: desktopDeps({ capabilities: [] }), code: "desktop-disabled", message: "desktop is not enabled on this instance" },
-    { setup: desktopDeps({ online: false }), code: "desktop-instance-offline", message: "instance is offline" },
-    { setup: busyInstance, code: "desktop-busy", message: "another desktop viewer is active" },
-    { setup: busyAccount, code: "desktop-busy", message: "too many active desktop viewers on this account" },
-    { setup: desktopDeps({ prepareResult: { error: { code: "desktop-rfb-unavailable", message: "no VNC" } } }), code: "desktop-rfb-unavailable", message: "no VNC" },
-    { setup: desktopDeps({ prepareResult: { streamId: "s-1", security: "ard" } }), code: "desktop-auth-unsupported", message: "Apple Remote Desktop auth needs Phase B" },
-    { setup: desktopDeps({ prepareResult: { streamId: "wrong", security: "vnc-auth" } }), code: "desktop-protocol-error", message: "malformed prepare result" },
-    { setup: desktopDeps({ prepareError: new Error("timeout") }), code: "desktop-stream-timeout", message: "desktop prepare timed out" },
+  const cases: Array<{ setup: { deps: WebClientDeps; socket: FakeSocket; sent: SentEvent[]; events: Array<{ type: string; payload: unknown }> }; code: string; message: string; reserveHappened: boolean }> = [
+    { setup: desktopDeps({ capabilities: [] }), code: "desktop-disabled", message: "desktop is not enabled on this instance", reserveHappened: false },
+    { setup: desktopDeps({ online: false }), code: "desktop-instance-offline", message: "instance is offline", reserveHappened: false },
+    { setup: busyInstance, code: "desktop-busy", message: "another desktop viewer is active", reserveHappened: false },
+    { setup: busyAccount, code: "desktop-busy", message: "too many active desktop viewers on this account", reserveHappened: false },
+    { setup: desktopDeps({ prepareResult: { error: { code: "desktop-rfb-unavailable", message: "no VNC" } } }), code: "desktop-rfb-unavailable", message: "no VNC", reserveHappened: true },
+    { setup: desktopDeps({ prepareResult: { streamId: "s-1", security: "ard" } }), code: "desktop-auth-unsupported", message: "Apple Remote Desktop auth needs Phase B", reserveHappened: true },
+    { setup: desktopDeps({ prepareResult: { streamId: "wrong", security: "vnc-auth" } }), code: "desktop-protocol-error", message: "malformed prepare result", reserveHappened: true },
+    { setup: desktopDeps({ prepareError: new Error("timeout") }), code: "desktop-stream-timeout", message: "desktop prepare timed out", reserveHappened: true },
   ];
   for (const { setup } of cases) sendDesktop(setup.deps, "a1", setup.socket, "desktop-open");
   for (let i = 0; i < 10; i++) await Promise.resolve();
-  for (const { setup, code, message } of cases) {
+  for (const { setup, code, message, reserveHappened } of cases) {
     expect(setup.sent.length).toBe(1);
     const event = setup.sent[0]?.event as Record<string, unknown>;
     expect(event.kind).toBe("desktop-request-failed");
     expect(event.code).toBe(code);
     expect(event.message).toBe(message);
     expect(parseWebServerEvent(webEventEnvelope(event as never))).not.toBeNull();
+    // Once the stream exists the connector owns a live prepare attempt, so the
+    // hub must tell it to stop — the local reservation teardown alone leaves a
+    // pending dial running until the connector's own stage timeouts. Cases that
+    // fail BEFORE reserve have no stream to name and must send nothing.
+    expect(setup.events).toEqual(reserveHappened
+      ? [{ type: MSG.desktopCancel, payload: { streamId: "s-1" } }]
+      : []);
   }
 });
 

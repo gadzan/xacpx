@@ -24,6 +24,7 @@ import { TurnSlotAnchorStore, canonicalRecoveryId } from "./stores/turn-slot-anc
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
 import { DesktopStreamGateway } from "./gateway/desktop-stream-gateway.js";
+import { cancelViewerDesktopStreams, type DesktopStreamOwner } from "./gateway/desktop-viewer-cancel.js";
 import { PushNotifier, vapidFromEnv, validateVapidConfig, type VapidConfig } from "./push.js";
 import { PushSubscriptionStore } from "./stores/push-subscriptions.js";
 import { handleConnectorTerminalEvent, handleWebClientMessage } from "./gateway/web-inbound.js";
@@ -163,7 +164,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   // whole lifetime (pending prepare AND the paired binary session): a
   // control-socket close cancels its streams, and desktop-close from any other
   // viewer is rejected. Ownership is hub-stamped, never browser-supplied.
-  const desktopStreamOwners = new Map<string, { viewerId: string; accountId: string; instanceId: string }>();
+  const desktopStreamOwners = new Map<string, DesktopStreamOwner>();
   const desktop = new DesktopStreamGateway({
     logger,
     onStreamClosed: (streamId) => {
@@ -178,29 +179,14 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         viewerId: info.viewerId,
       });
     },
+    // A clean browser close goes through web-inbound's desktop-close, which
+    // already cancels the connector-side prepare. This arm covers the abnormal
+    // cases — tab closed, network dropped, browser crashed, backpressure
+    // eviction — where only the control /ws disappears. Plan Task 5 and design
+    // §13.2 both require the viewer's streams to be cancelled on the connector
+    // side too, not just in hub state.
     onViewerClosed: (viewerId) => {
-      for (const [streamId, owner] of [...desktopStreamOwners]) {
-        if (owner.viewerId !== viewerId) continue;
-        // Tell the connector BEFORE the local teardown. A clean browser close
-        // goes through web-inbound's desktop-close, which already cancels the
-        // connector-side prepare; this path covers the abnormal cases (tab
-        // closed, network dropped, browser crashed, backpressure eviction)
-        // where only the control /ws disappears. Without this the hub frees
-        // the reservation immediately while the connector is still dialing
-        // loopback RFB and a /desktop/instance upgrade for a stream whose
-        // viewer is already gone — the prepare then runs until its ticket is
-        // rejected or its own connectTimeoutMs (up to 10s) fires.
-        // The plan (Task 5) and design §13.2 both require "control socket close
-        // cancels this viewer's streams" to be visible on both sides.
-        try {
-          gatewayRef?.sendEvent(owner.instanceId, MSG.desktopCancel, { streamId });
-        } catch {
-          // Best effort: the local cleanup below must run regardless, and a
-          // connector that misses the cancel still fails at the ticket check.
-        }
-        desktopStreamOwners.delete(streamId);
-        desktop.closeStream(streamId, "viewer-disconnected");
-      }
+      cancelViewerDesktopStreams(gatewayRef, desktop, desktopStreamOwners, viewerId);
     },
   });
   const pushSubscriptions = new PushSubscriptionStore(db);

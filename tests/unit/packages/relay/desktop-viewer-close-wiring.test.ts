@@ -8,11 +8,12 @@
 // Plan Task 5 and design §13.2 both require "control socket close cancels this
 // viewer's streams" to hold on the connector side too, not just in hub state.
 //
-// Unlike the desktop-open-flow tests — which call `deps.desktop.cancel()` by
-// hand and therefore only prove the handler works IF something wires it — this
-// drives the real WebGateway socket lifecycle. It fails if the wiring is removed
-// again. The `onViewerClosed` body is copied verbatim from server.ts, so a
-// future wiring change has to be mirrored here rather than silently diverging.
+// Two deliberate differences from the desktop-open-flow tests:
+//   1. it drives the REAL WebGateway socket lifecycle rather than hand-calling
+//      `deps.desktop.cancel()`, so it fails if the wiring is removed;
+//   2. it calls the PRODUCTION helper `cancelViewerDesktopStreams`, not a copy,
+//      so `server.ts` and this test cannot drift apart (a copy would let
+//      server.ts regress to local-only teardown and stay green).
 
 import { expect, test } from "bun:test";
 import { WebSocket, WebSocketServer } from "ws";
@@ -24,6 +25,10 @@ import { InstanceStore } from "../../../../packages/relay/src/stores/instances";
 import { InstanceGateway } from "../../../../packages/relay/src/gateway/instance-gateway";
 import { DesktopStreamGateway } from "../../../../packages/relay/src/gateway/desktop-stream-gateway";
 import { WebGateway } from "../../../../packages/relay/src/gateway/web-gateway";
+import {
+  cancelViewerDesktopStreams,
+  type DesktopStreamOwner,
+} from "../../../../packages/relay/src/gateway/desktop-viewer-cancel";
 import { handleWebClientMessage, type WebClientDeps } from "../../../../packages/relay/src/gateway/web-inbound";
 
 /** Minimal web-socket stand-in; only `close()` needs real behaviour (fires "close"). */
@@ -42,13 +47,23 @@ class BrowserSocket {
   }
 }
 
-async function testConnector(): Promise<{ gateway: InstanceGateway; instanceId: string; url: string; close: () => Promise<void> }> {
+/** A live connector socket, so `sendEvent` delivers onto a real wire. */
+async function testConnector(): Promise<{ gateway: InstanceGateway; instanceId: string; wire: RelayEnvelope[]; close: () => Promise<void> }> {
   const db = await createSqlDriver(":memory:");
   initSchema(db);
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
   accounts.createAccount("alice");
   const accountId = accounts.findByUsername("alice")!.id;
+
+  // Everything the instance gateway actually hands to this connector, observed
+  // on the wire (not a mock of it): the assertion below must fail when the
+  // cancel is never delivered, not merely when it is never computed.
+  const wire: RelayEnvelope[] = [];
+  const realSend = (value: string): void => {
+    const decoded = decodeEnvelope(value);
+    if (decoded.ok) wire.push(decoded.envelope);
+  };
 
   const gateway = new InstanceGateway({
     accounts,
@@ -58,7 +73,14 @@ async function testConnector(): Promise<{ gateway: InstanceGateway; instanceId: 
   });
   const wss = new WebSocketServer({ port: 0 });
   await new Promise<void>((r) => { wss.on("listening", () => r()); });
-  wss.on("connection", (socket) => { gateway.handleConnection(socket as never); });
+  wss.on("connection", (socket) => {
+    const original = socket.send.bind(socket);
+    socket.send = ((data: unknown, ...rest: unknown[]) => {
+      realSend(String(data));
+      return (original as (...a: unknown[]) => unknown)(data, ...rest);
+    }) as typeof socket.send;
+    gateway.handleConnection(socket as never);
+  });
 
   // Redeem first so the test knows the real instanceId, then auth with it: the
   // connector's instanceId is what the hub stamps into the ownership map.
@@ -72,7 +94,7 @@ async function testConnector(): Promise<{ gateway: InstanceGateway; instanceId: 
   const socket = new WebSocket(url);
   await new Promise<void>((r, j) => { socket.on("open", () => r()); socket.on("error", j); });
 
-  const registered = new Promise<void>((resolve, reject) => {
+  const authenticated = new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("connector never authenticated")), 4000);
     socket.once("message", (data) => {
       const decoded = decodeEnvelope(String(data));
@@ -84,12 +106,12 @@ async function testConnector(): Promise<{ gateway: InstanceGateway; instanceId: 
     type: MSG.instanceAuth,
     payload: { instanceId, credential: redeemed.credential, coreVersion: "1.0.0" },
   }));
-  await registered;
+  await authenticated;
 
   return {
     gateway,
     instanceId,
-    url,
+    wire,
     close: () => new Promise((r) => { socket.close(); wss.close(() => r()); }),
   };
 }
@@ -97,7 +119,7 @@ async function testConnector(): Promise<{ gateway: InstanceGateway; instanceId: 
 test("abnormal control-socket close during a pending prepare cancels the connector", async () => {
   const connector = await testConnector();
 
-  const owners = new Map<string, { viewerId: string; accountId: string; instanceId: string }>();
+  const owners = new Map<string, DesktopStreamOwner>();
   const hubClosed: string[] = [];
   const desktop = new DesktopStreamGateway({
     onStreamClosed: (streamId) => {
@@ -106,35 +128,12 @@ test("abnormal control-socket close during a pending prepare cancels the connect
     },
   });
 
-  // --- copied verbatim from packages/relay/src/server.ts (onViewerClosed) ---
-  let gatewayRef: InstanceGateway | null = null;
+  // The production wiring: exactly what server.ts passes to WebGateway.
   const webGateway = new WebGateway({
     onViewerClosed: (viewerId) => {
-      for (const [streamId, owner] of [...owners]) {
-        if (owner.viewerId !== viewerId) continue;
-        try {
-          gatewayRef?.sendEvent(owner.instanceId, MSG.desktopCancel, { streamId });
-        } catch {
-          // best effort: the local cleanup below must run regardless
-        }
-        owners.delete(streamId);
-        desktop.closeStream(streamId, "viewer-disconnected");
-      }
+      cancelViewerDesktopStreams(connector.gateway, desktop, owners, viewerId);
     },
   });
-  gatewayRef = connector.gateway;
-  // --- end copy ---
-
-  // Record every event the hub actually hands to this connector, by wrapping
-  // the real sendEvent. This is the wire, not a mock of it: the assertion below
-  // fails if the cancel is never delivered, not just never computed.
-  const sentToConnector: RelayEnvelope[] = [];
-  const realSendEvent = connector.gateway.sendEvent.bind(connector.gateway);
-  (connector.gateway as unknown as { sendEvent: (id: string, type: string, payload: unknown) => boolean }).sendEvent =
-    (id: string, type: string, payload: unknown) => {
-      sentToConnector.push({ protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type, payload } as RelayEnvelope);
-      return realSendEvent(id, type, payload);
-    };
 
   const pendingPrepare = new Promise<unknown>(() => {
     // Never settles: the connector is mid-prepare, which is the window the bug lived in.
@@ -150,11 +149,7 @@ test("abnormal control-socket close during a pending prepare cancels the connect
       listByAccount: () => [{ id: instanceId }],
     },
     gateway: {
-      sendEvent: (id, type, payload) => {
-        // Record what the hub would deliver to the connector.
-        sentToConnector.push({ protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type, payload } as RelayEnvelope);
-        return connector.gateway.sendEvent(id, type, payload);
-      },
+      sendEvent: (id, type, payload) => connector.gateway.sendEvent(id, type, payload),
       sendRequest: () => pendingPrepare,
       isOnline: () => true,
     },
@@ -171,18 +166,18 @@ test("abnormal control-socket close during a pending prepare cancels the connect
       getAttachmentBinding: () => undefined,
     },
     stateSnapshot: () => ({ turns: [], usage: [], commands: [], finishedOffline: [] }) as never,
+    // Mirrors packages/relay/src/server.ts:1331-1350 exactly, so the hub map is
+    // the same one the viewer-close helper iterates.
     desktop: {
-      // Mirrors packages/relay/src/server.ts:1331-1350 exactly, so the hub map
-      // is the same one the copied onViewerClosed iterates.
-      reserve: (reserveAccountId, instanceId) => {
-        const reserved = desktop.reserve({ accountId: reserveAccountId, instanceId, ttlMs: 60_000 });
+      reserve: (reserveAccountId, reserveInstanceId) => {
+        const reserved = desktop.reserve({ accountId: reserveAccountId, instanceId: reserveInstanceId, ttlMs: 60_000 });
         if (!reserved.ok) return reserved;
         return { ok: true as const, streamId: reserved.record.streamId };
       },
-      mintConnectorTicket: (streamId, ticketAccountId, instanceId) =>
-        desktop.ticketStore.mintTicket({ streamId, accountId: ticketAccountId, instanceId, side: "connector" }),
-      mintBrowserTicket: (streamId, ticketAccountId, instanceId) =>
-        desktop.mintBrowserTicket({ streamId, accountId: ticketAccountId, instanceId }),
+      mintConnectorTicket: (streamId, ticketAccountId, ticketInstanceId) =>
+        desktop.ticketStore.mintTicket({ streamId, accountId: ticketAccountId, instanceId: ticketInstanceId, side: "connector" }),
+      mintBrowserTicket: (streamId, ticketAccountId, ticketInstanceId) =>
+        desktop.mintBrowserTicket({ streamId, accountId: ticketAccountId, instanceId: ticketInstanceId }),
       markReady: (streamId, security) => desktop.reportConnectorReady(streamId, security),
       cancel: (streamId, reason) => {
         owners.delete(streamId);
@@ -199,7 +194,10 @@ test("abnormal control-socket close during a pending prepare cancels the connect
     deps,
     "acc-1",
     browser as never,
-    JSON.stringify({ protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: "web.client", payload: { kind: "desktop-open", requestId: "r1", instanceId } }),
+    JSON.stringify({
+      protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: "web.client",
+      payload: { kind: "desktop-open", requestId: "r1", instanceId },
+    }),
   );
   await Promise.resolve();
   await Promise.resolve();
@@ -208,20 +206,34 @@ test("abnormal control-socket close during a pending prepare cancels the connect
   const streamId = [...owners.keys()][0];
   expect(streamId).toBeDefined();
   expect(owners.get(streamId)?.viewerId).toBe(viewerId);
+  expect(connector.wire.filter((e) => e.kind === "req").length).toBe(0);
+
+  // Hostile segmentation for the framer: nothing about the wire changes below,
+  // the value of this test is that the cancel arrives on the REAL socket.
+  const before = new Set(connector.wire.map((e) => e.type));
 
   // The abnormal case: only the control socket disappears. No desktop-close.
   browser.close();
 
-  // 1. The connector was actually told to cancel, on the wire.
-  const cancel = sentToConnector.find((e) => e.type === MSG.desktopCancel);
-  expect(cancel).toBeDefined();
+  // Wait for the event to actually land on the connector socket (async ws send).
+  const deadline = Date.now() + 5_000;
+  while (!connector.wire.some((e) => e.type === MSG.desktopCancel)) {
+    if (Date.now() > deadline) throw new Error("connector never received the desktopCancel");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+
+  // 1. The connector received an explicit desktopCancel naming THIS stream.
+  const cancel = connector.wire.filter((e) => e.type === MSG.desktopCancel).at(-1);
   expect((cancel as { payload?: unknown }).payload).toEqual({ streamId });
 
-  // 2. Hub-side cleanup still ran unconditionally.
+  // 2. No unrelated traffic was invented: the cancel is the only new message.
+  expect([...connector.wire.map((e) => e.type)].filter((t) => !before.has(t)).filter((t) => t !== MSG.desktopCancel)).toEqual([]);
+
+  // 3. Hub-side cleanup still ran unconditionally.
   expect(hubClosed).toEqual([streamId]);
   expect(owners.size).toBe(0);
 
-  // 3. No browser ticket was minted while the prepare was still pending, so a
+  // 4. No browser ticket was minted while the prepare was still pending, so a
   //    late prepare resolution cannot resurrect a dead viewer.
   expect(browser.sent.filter((s) => s.includes("desktop-opened"))).toEqual([]);
 

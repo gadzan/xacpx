@@ -24,7 +24,7 @@
 // the mobile layout collapses behind the sidebar, so the flow this asserts is
 // not reachable on a phone-sized viewport (by design, not by defect).
 import { expect, test as desktopTest, loginAndShowInstances } from "./fixtures";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { createServer, type Server } from "node:net";
 
 const RFB_BANNER = Buffer.from("RFB 003.008\n", "ascii");
@@ -97,6 +97,46 @@ const CLIENT_MESSAGE_LENGTHS: Record<number, number> = {
 /** RFB message-type numbers the tests assert on. */
 const RFB_KEY_EVENT = 4;
 const RFB_POINTER_EVENT = 5;
+/** Client → server: "send me the framebuffer for this rect". */
+const RFB_FRAMEBUFFER_UPDATE_REQUEST = 3;
+
+/**
+ * Read the noVNC canvas's top-left 8x8 pixels and summarise what actually
+ * painted. Polls because noVNC decodes a FramebufferUpdate after the frame
+ * lands, so a single read taken immediately after the server write races the
+ * renderer. Returns the counts from the first read that shows painted pixels,
+ * so the caller still observes a concrete image rather than "eventually
+ * something".
+ */
+async function pollCanvasPixels(canvas: Locator): Promise<{ nonBlack: number; onColour: number; total: number }> {
+  const deadline = Date.now() + 15_000;
+  let last: { nonBlack: number; onColour: number; total: number } | null = null;
+  while (Date.now() < deadline) {
+    const read = await canvas.evaluate((el) => {
+      const c = el as HTMLCanvasElement;
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      if (!ctx || c.width === 0 || c.height === 0) return null;
+      const { data } = ctx.getImageData(0, 0, Math.min(c.width, 8), Math.min(c.height, 8));
+      let nonBlack = 0;
+      let onColour = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] === 0) continue;
+        if (data[i] !== 0 || data[i + 1] !== 0 || data[i + 2] !== 0) nonBlack++;
+        // The mock fills the rectangle with 0x22 on every channel.
+        if (data[i] === 0x22 && data[i + 1] === 0x22 && data[i + 2] === 0x22 && data[i + 3] === 0xff) onColour++;
+      }
+      return { nonBlack, onColour, total: data.length / 4 };
+    });
+    if (read) {
+      last = read;
+      if (read.nonBlack > 0) return read;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  // Nothing ever painted: report the last observation so the failure names the
+  // actual pixels instead of only "expected non-zero".
+  return last ?? { nonBlack: 0, onColour: 0, total: 0 };
+}
 
 /**
  * Incremental RFB client-message framer. One instance per RFB socket: it keeps
@@ -182,6 +222,13 @@ function startMockRfb(opts: { rejectPassword?: boolean } = {}): Promise<MockRfb>
               clientMessageTypes.push(msg);
               if (msg.type === RFB_KEY_EVENT) state.sawKeyEvent = true;
               if (msg.type === RFB_POINTER_EVENT) state.sawPointerEvent = true;
+              // A FramebufferUpdateRequest is the client asking for pixels:
+              // answer it, so the browser has live data to map and the canvas
+              // actually paints.
+              if (msg.type === RFB_FRAMEBUFFER_UPDATE_REQUEST) {
+                const sentBytes = sendFramebufferUpdate(socket);
+                updates.push({ rects: 1, bytes: sentBytes });
+              }
             }
             buffered = Buffer.alloc(0);
           }
@@ -251,11 +298,12 @@ function startMockRfb(opts: { rejectPassword?: boolean } = {}): Promise<MockRfb>
             clientTraffic.push(Buffer.from(buffered));
             buffered = Buffer.alloc(0);
           }
-          // A trivial framebuffer update so the client has live data to map.
-          // Without one the desktop renders a blank canvas, and pointer input
-          // on a zero-sized framebuffer is meaningless to assert on.
-          const sentBytes = sendFramebufferUpdate(socket);
-          updates.push({ rects: 1, bytes: sentBytes });
+          // NOTE: no framebuffer update here. noVNC only paints a
+          // FramebufferUpdate it actually asked for, so pushing one straight
+          // after ServerInit is dropped on the floor — the client then has to
+          // request one before the server may send. The first update is written
+          // from the `live` phase when the client's FramebufferUpdateRequest
+          // (type 3) arrives.
           return;
         }
       });
@@ -348,6 +396,19 @@ desktopTest.describe("Relay Web instance desktop over RFB", () => {
     expect(box).not.toBeNull();
     expect(box!.width).toBeGreaterThan(0);
     expect(box!.height).toBeGreaterThan(0);
+
+    // A sized canvas is not enough on its own: noVNC sizes it from the
+    // ServerInit geometry, so a server that drops every FramebufferUpdate
+    // still produces a correctly sized element. Read the actual pixels — the
+    // mock paints a Raw rectangle of 0x22 bytes, which must show up as non-black
+    // and equal to the sent colour, proving the update traversed the whole
+    // path instead of only sizing the element. noVNC decodes asynchronously
+    // after the frame arrives, so poll until it has painted.
+    const painted = await pollCanvasPixels(canvas);
+    expect(painted.total).toBeGreaterThan(0);
+    expect(painted.nonBlack).toBeGreaterThan(0);
+    // The mock fills the 8x8 rectangle with 0x22 on every channel.
+    expect(painted.onColour).toBeGreaterThan(0);
 
     await rfb.close();
   });

@@ -18,6 +18,7 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 import { type WebGateway, type WebSocketLike } from "./web-gateway.js";
 import { TERMINAL_REQUEST_TIMEOUT_MS } from "./instance-gateway.js";
+import { sendDesktopCancel } from "./desktop-viewer-cancel.js";
 
 export interface WebClientDeps {
   instances: {
@@ -413,8 +414,22 @@ async function handleDesktopOpen(
   // async connector RPC: a close during prepare must cancel this exact
   // stream, never a successor that reused the instance slot.
   deps.desktop.trackOwner(streamId, { viewerId: ownerViewerId, accountId, instanceId: msg.instanceId });
+  // The connector is dialing loopback RFB and upgrading /desktop/instance for
+  // this stream from the moment it receives `desktopPrepare`, so EVERY exit
+  // after `reserve` must tell it to stop — not just the local teardown.
+  // Otherwise the hub frees the reservation immediately while the connector
+  // keeps a pending attempt alive until its own stage timeouts or the ticket
+  // rejection reaches it. Covers the hub's prepare deadline
+  // (DESKTOP_HUB_REQUEST_TIMEOUT_MS), a connector error, a malformed result,
+  // unsupported auth, the viewer disappearing mid-RPC, markReady failure, and
+  // the send-failure path. `handleCancel` is a no-op for an unknown streamId,
+  // so a late duplicate is harmless.
+  const cancelStream = (reason: string): void => {
+    sendDesktopCancel(deps.gateway as Parameters<typeof sendDesktopCancel>[0], msg.instanceId, streamId);
+    deps.desktop?.cancel(streamId, reason);
+  };
   const failWith = (code: string, message: string): void => {
-    deps.desktop?.cancel(streamId, code);
+    cancelStream(code);
     failDesktop(deps, socket, msg.requestId, msg.instanceId, code, message);
   };
   const connectorTicket = deps.desktop.mintConnectorTicket(streamId, accountId, msg.instanceId);
@@ -484,7 +499,7 @@ function handleDesktopClose(
   // reserve through the paired binary session. A stale/forged close from
   // another tab must not kill someone's viewer.
   if (!deps.desktop.ownsStream(msg.streamId, deps.webGateway.getViewerId(socket) ?? "")) return;
-  deps.gateway.sendEvent(msg.instanceId, MSG.desktopCancel, { streamId: msg.streamId });
+  sendDesktopCancel(deps.gateway as Parameters<typeof sendDesktopCancel>[0], msg.instanceId, msg.streamId);
   deps.desktop.cancel(msg.streamId, "browser-close");
 }
 
