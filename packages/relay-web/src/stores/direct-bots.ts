@@ -2198,9 +2198,20 @@ export const useDirectBotsStore = defineStore("directBots", () => {
    * through `interaction-closed` instead. Collapsing the two would report a
    * decision the user did not make.
    *
-   * The submit is one RPC whose result carries the outcome; a transport failure
-   * sets a bounded error code and leaves the form open, because the interaction
-   * may still be answerable and the user should be able to retry.
+   * The frame goes out on `interactionRespond`, the ANSWER direction. The OPEN
+   * direction is `interactionRequest` and belongs to the connector: a browser
+   * sending on it would be asking to open a second interaction whose form it
+   * invented, and the hub would validate it as an open and find no matching
+   * pending interaction to answer.
+   *
+   * The payload carries NO identity. The hub stamps the responder from its own
+   * authenticated session, so anything a browser asserted would be overwritten —
+   * and asserting it at all is a protocol violation the validator rejects.
+   *
+   * The submit is one RPC whose result is an ack; a transport failure sets a
+   * bounded error code and leaves the form open, because the interaction may
+   * still be answerable and the user should be able to retry. The form's
+   * resolution arrives separately, on `interaction-closed`.
    */
   async function submitInteraction(
     action: "accept" | "decline" | "cancel",
@@ -2222,10 +2233,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const requestId = current.request.requestId;
     const generation = currentSelectionGeneration;
     try {
-      const result = unwrapRpc(
-        await api.rpc<{ responded: boolean; reason?: string; response?: unknown }>(
+      await unwrapRpc(
+        await api.rpc<{ ok?: boolean }>(
           current.instanceId,
-          MSG.interactionRequest,
+          MSG.interactionRespond,
           {
             requestId,
             kind: "elicitation",
@@ -2234,28 +2245,20 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           },
         ),
       );
-      // Guard against a late reply to a superseded or closed form.
-      if (generation !== currentSelectionGeneration) return;
-      if (!result.responded) {
-        const code = result.reason === "timeout"
-          ? "interactionGone"
-          : result.reason === "unsupported"
-            ? "connectorOutdated"
-            : "submitFailed";
-        pendingInteraction.value = { ...current, submitting: false, errorCode: code };
-        return;
-      }
-      const outcome = action === "accept"
-        ? "accepted"
-        : action === "decline"
-          ? "declined"
-          : "cancelled";
-      pendingInteraction.value = { ...current, submitting: false, outcome };
+      // The ack is not the resolution: the interaction's decision is delivered to
+      // the connector by the same hub call, and every browser learns the form is
+      // closed from `interaction-closed`. Leaving the form on "submitting"
+      // until that arrives is what keeps a double-click from sending two answers.
+      pendingInteraction.value = { ...current, submitting: true, errorCode: null };
     } catch (error) {
       if (generation !== currentSelectionGeneration) return;
+      // A gone interaction is a normal ending, not an error to retry forever.
+      const gone = error instanceof DirectBotRpcError && error.code === "interaction-gone";
       const code = error instanceof DirectBotRpcError && error.code === "unknown-type"
         ? "connectorOutdated"
-        : "submitFailed";
+        : gone
+          ? "interactionGone"
+          : "submitFailed";
       pendingInteraction.value = { ...current, submitting: false, errorCode: code };
     }
   }

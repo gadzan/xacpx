@@ -110,16 +110,22 @@ test("a non-form mode is rejected", () => {
   expect(parsed).toBeNull();
 });
 
-test("a request with zero fields is rejected", () => {
-  // A zero-field form has nothing to ask; the honest response is unsupported, not
-  // an empty card.
+test("a zero-field form is ACCEPTED", () => {
+  // An all-optional schema with nothing to ask is a legal ACP form: it opens,
+  // renders a confirmation, and accepts with `content: null`. Rejecting it would
+  // strand a legal interaction the core broker already approved.
+  //
+  // This test used to assert the opposite ("core would not emit one"), which was
+  // true until M1 landed zero-field semantics; the assumption was removed, not
+  // reworded, because the old expectation is now the bug.
   const parsed = parseControlPayload(MSG.interactionRequest, {
     requestId: "req-1",
     kind: "elicitation",
     expiresAt: 1_800_000_000_000,
     elicitation: { mode: "form", message: "", fields: [] },
   });
-  expect(parsed).toBeNull();
+  expect(parsed).not.toBeNull();
+  expect(parsed?.elicitation?.fields).toEqual([]);
 });
 
 test("a non-select kind carrying options is rejected", () => {
@@ -295,15 +301,38 @@ test("an opened interaction reaches web through the control-event envelope", () 
   expect(parsed).not.toBeNull();
 });
 
-test("an opened interaction whose form fails validation is dropped before web", () => {
+test("an opened interaction whose form fails validation is dropped before web", async () => {
   // The last guard before the renderer: an invalid form must not reach a browser.
+  //
+  // The invalid shape is an OUT-OF-UNION field kind, not an empty field list —
+  // a zero-field form is legal (see the analogous request test), so it is not
+  // what a web-side drop is for.
+  const parsed = parseWebServerEvent(controlEventEnvelope({
+    type: "interaction-opened",
+    chatKey: "bot:c1:t1",
+    sessionAlias: "brt_hidden",
+    interaction: {
+      ...VALID_FORM,
+      elicitation: {
+        mode: "form",
+        message: "x",
+        fields: [{ kind: "unrenderable", key: "k", title: "K", required: true }],
+      },
+    },
+  }));
+  expect(parsed).toBeNull();
+});
+
+test("a zero-field opened interaction reaches web", () => {
+  // The browser must be able to render the confirmation state for a legal
+  // all-optional form; dropping it here would strand the interaction.
   const parsed = parseWebServerEvent(controlEventEnvelope({
     type: "interaction-opened",
     chatKey: "bot:c1:t1",
     sessionAlias: "brt_hidden",
     interaction: { ...VALID_FORM, elicitation: { mode: "form", message: "x", fields: [] } },
   }));
-  expect(parsed).toBeNull();
+  expect(parsed).not.toBeNull();
 });
 
 test("a closed interaction reaches web", () => {

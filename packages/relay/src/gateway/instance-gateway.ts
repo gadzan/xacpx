@@ -9,6 +9,7 @@ import {
   type AgentMessageCompletionPayload,
   type AgentMessageDeliverPayload,
   type AgentMessageRoutePayload,
+  type ControlEventDto,
   type InstanceAgentEndpointsSyncPayload,
   type InstanceAuthPayload,
   type InstanceRegisterPayload,
@@ -19,6 +20,7 @@ import {
 import type { AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 import type { PendingCompletionRouteRow } from "../stores/pending-completion-routes.js";
+import type { InteractionRegistry } from "../interaction-registry.js";
 import { createNoopRelayLogger, type RelayLogger } from "../logging.js";
 import { startHeartbeat } from "./heartbeat.js";
 
@@ -89,6 +91,17 @@ export interface InstanceGatewayDeps {
     accountId: string,
     endpoints: WebAgentDirectoryEndpointDto[],
   ) => void;
+  /**
+   * Hub-owned pending interactions (optional: interactions are simply absent
+   * without it, and the hub responds "interaction-unavailable").
+   */
+  interactions?: InteractionRegistry;
+  /**
+   * Push a control event to every browser connected for an account, for the
+   * interaction lifecycle events. Injected by `server.ts` so the connector
+   * gateway never imports the web gateway.
+   */
+  broadcastControlEvent?: (accountId: string, event: ControlEventDto) => void;
   logger?: RelayLogger;
 }
 
@@ -314,6 +327,28 @@ export class InstanceGateway {
         clearTimeout(p.timer);
         this.pending.delete(id);
         p.reject(new Error("instance-offline"));
+      }
+    }
+    // Interactions this connector opened are no longer answerable: the turn that
+    // was waiting for a decision went away with the socket, so the browser must
+    // stop showing the form and the pending open must close as withdrawn. Leaving
+    // them would strand a form on screen pointing at a turn that no longer exists.
+    //
+    // The entries are collected BEFORE closing, because a closed entry is
+    // removed from the registry — reading it back afterwards would yield null
+    // and broadcast a `chatKey` of "" to the wrong account.
+    const interactions = this.deps.interactions;
+    if (interactions) {
+      const toWithdraw = interactions.listForInstance(instanceId);
+      for (const entry of toWithdraw) {
+        interactions.close(entry.requestId, "withdrawn");
+        this.deps.broadcastControlEvent?.(entry.accountId, {
+          type: "interaction-closed",
+          chatKey: entry.chatKey,
+          sessionAlias: entry.sessionAlias,
+          requestId: entry.requestId,
+          reason: "withdrawn",
+        });
       }
     }
     this.deps.onStatusChange?.(instanceId, accountId, false);

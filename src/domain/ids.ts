@@ -148,3 +148,19 @@ export function ownedDirectSessionAlias(bindingId: string): string {
 export function ownedGroupMemberSessionAlias(bindingId: string): string {
   return `brt_group_${bindingId}`;
 }
+
+/**
+ * Whether an alias is a Direct Conversation product session alias.
+ *
+ * Kept beside the minter so the two cannot drift: a prefix that this predicate
+ * accepts but the minter would not produce (or the reverse) would silently break
+ * the join between a Conversation binding and its session.
+ *
+ * Deliberately NOT exported as "is this a hidden alias": the product may add
+ * other hidden alias shapes later, and the callers here need to know precisely
+ * one thing — "is this alias already in its final internal form", which is a
+ * question about naming, not about visibility.
+ */
+export function isProductOwnedSessionAlias(alias: string): boolean {
+  return alias.startsWith("brt_") && alias.length > "brt_".length;
+}

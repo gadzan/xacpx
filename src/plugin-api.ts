@@ -82,6 +82,12 @@ export { resolveTurnLane } from "./runtime/turn-lane.js";
 export { createActiveTurnRegistry } from "./sessions/active-turn-registry.js";
 export type { ActiveTurnRegistry } from "./sessions/active-turn-registry.js";
 export { toDisplaySessionAlias } from "./channels/channel-scope.js";
+// Direct Conversation product key parsing. A channel that renders for a
+// `bot:` turn must identify the conversation/topic it belongs to rather than
+// treating the chatKey as an opaque string, and must use the project's own
+// strict parser: a prefix match would let `bot:garbage` satisfy a route it
+// cannot scope.
+export { isDirectConversationChatKey, parseDirectConversationChatKey } from "./domain/ids.js";
 export type { SessionService } from "./sessions/session-service.js";
 export type { BackgroundResult } from "./state/types.js";
 export type { ChatRequestMetadata } from "./weixin/agent/interface.js";

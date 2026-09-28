@@ -562,6 +562,11 @@ function validConversationMessage(value: unknown): boolean {
     && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId);
 }
 
+/** An optional product id: absent, or a non-empty string (mirrors `optProductId`). */
+function optInteractionProductId(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && value.length > 0);
+}
+
 /**
  * Local mirror of `validateInteractionRequest` (payload-validators.ts).
  *
@@ -579,8 +584,14 @@ function validInteractionRequest(value: unknown): boolean {
   if (c.conversation !== undefined) {
     if (typeof c.conversation !== "object" || c.conversation === null) return false;
     const conv = c.conversation as Record<string, unknown>;
-    if (!optStr(conv.conversationId) || !optStr(conv.topicId) || !optStr(conv.runId)) return false;
-    if (!optStr(conv.memberTurnId) || !optStr(conv.promptRequestId)) return false;
+    if (typeof conv.conversationId !== "string" || conv.conversationId.length === 0) return false;
+    if (typeof conv.topicId !== "string" || conv.topicId.length === 0) return false;
+    // Mirror of the hub validator: the row ids are optional, but a present value
+    // must be a real id rather than "".
+    if (!optInteractionProductId(conv.botId)) return false;
+    if (!optInteractionProductId(conv.runId)) return false;
+    if (!optInteractionProductId(conv.memberTurnId)) return false;
+    if (!optInteractionProductId(conv.promptRequestId)) return false;
     // No hidden runtime alias may travel as a product routing key.
     for (const item of Object.values(conv)) {
       if (typeof item === "string" && item.startsWith("brt_")) return false;
@@ -594,8 +605,10 @@ function validInteractionRequest(value: unknown): boolean {
     if (!optStr(elicitation.message)) return false;
     if (typeof elicitation.message === "string" && elicitation.message.length > 8000) return false;
     if (!optStr(elicitation.schemaTitle)) return false;
-    if (!Array.isArray(elicitation.fields) || elicitation.fields.length === 0) return false;
+    if (!Array.isArray(elicitation.fields)) return false;
     if (elicitation.fields.length > 100) return false;
+    // Zero fields is legal (mirrors core/relay-protocol): an all-optional
+    // form opens, renders a confirmation state, and accepts with null content.
     return elicitation.fields.every(validInteractionField)
       && c.permission === undefined;
   }

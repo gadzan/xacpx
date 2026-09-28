@@ -209,6 +209,7 @@ var RELAY_CAPABILITIES = {
   terminalMultiViewV1: "terminal.multi-view.v1",
   interactionElicitationFormV1: "interaction.elicitation.form.v1"
 };
+var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
 var TERMINAL_ERROR_CODES = [
   "terminal-disabled",
   "terminal-rmux-unavailable",
@@ -241,11 +242,11 @@ function decodeCanonicalBase64(encoded) {
     const binary = globalThis.atob(encoded);
     if (globalThis.btoa(binary) !== encoded)
       return null;
-    const decoded2 = new Uint8Array(binary.length);
+    const decoded = new Uint8Array(binary.length);
     for (let i = 0;i < binary.length; i++) {
-      decoded2[i] = binary.charCodeAt(i) & 255;
+      decoded[i] = binary.charCodeAt(i) & 255;
     }
-    return decoded2;
+    return decoded;
   }
   const BufferCtor = globalThis.Buffer;
   if (!BufferCtor)
@@ -539,6 +540,9 @@ function validConversationMessage(value) {
   const c = value;
   return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.seq === "number" && (c.role === "human" || c.role === "bot" || c.role === "system") && typeof c.content === "string" && typeof c.createdAt === "string" && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId);
 }
+function optInteractionProductId(value) {
+  return value === undefined || typeof value === "string" && value.length > 0;
+}
 function validInteractionRequest(value) {
   if (typeof value !== "object" || value === null)
     return false;
@@ -553,9 +557,17 @@ function validInteractionRequest(value) {
     if (typeof c.conversation !== "object" || c.conversation === null)
       return false;
     const conv = c.conversation;
-    if (!optStr(conv.conversationId) || !optStr(conv.topicId) || !optStr(conv.runId))
+    if (typeof conv.conversationId !== "string" || conv.conversationId.length === 0)
       return false;
-    if (!optStr(conv.memberTurnId) || !optStr(conv.promptRequestId))
+    if (typeof conv.topicId !== "string" || conv.topicId.length === 0)
+      return false;
+    if (!optInteractionProductId(conv.botId))
+      return false;
+    if (!optInteractionProductId(conv.runId))
+      return false;
+    if (!optInteractionProductId(conv.memberTurnId))
+      return false;
+    if (!optInteractionProductId(conv.promptRequestId))
       return false;
     for (const item of Object.values(conv)) {
       if (typeof item === "string" && item.startsWith("brt_"))
@@ -575,7 +587,7 @@ function validInteractionRequest(value) {
       return false;
     if (!optStr(elicitation.schemaTitle))
       return false;
-    if (!Array.isArray(elicitation.fields) || elicitation.fields.length === 0)
+    if (!Array.isArray(elicitation.fields))
       return false;
     if (elicitation.fields.length > 100)
       return false;
@@ -874,6 +886,7 @@ var optArr = (v) => v === undefined || Array.isArray(v);
 var isStrArr = (v) => Array.isArray(v) && v.every(isStr);
 var optStrOrNull = (v) => v === undefined || v === null || typeof v === "string";
 var optBoolOrNull = (v) => v === undefined || v === null || typeof v === "boolean";
+var optProductId = (v) => v === undefined || typeof v === "string" && v.length > 0 && v.length <= 128;
 var validateSessionsList = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && optNum(o.offset) && optNum(o.limit) && optBool(o.includeArchived) && optBool(o.archivedOnly) && optStr(o.workspace) && optStr(o.agent) ? o : null;
@@ -1265,15 +1278,17 @@ var validateInteractionRequest = (p) => {
     return null;
   if (o.conversation !== undefined) {
     const c = o.conversation;
-    if (!optStrOrNull(c.conversationId))
+    if (!isBoundedStr(c.conversationId, 128) || c.conversationId === "")
       return null;
-    if (!optStrOrNull(c.topicId))
+    if (!isBoundedStr(c.topicId, 128) || c.topicId === "")
       return null;
-    if (!optStrOrNull(c.runId))
+    if (!optProductId(c.botId))
       return null;
-    if (!optStrOrNull(c.memberTurnId))
+    if (!optProductId(c.runId))
       return null;
-    if (!optStrOrNull(c.promptRequestId))
+    if (!optProductId(c.memberTurnId))
+      return null;
+    if (!optProductId(c.promptRequestId))
       return null;
     for (const value of Object.values(c)) {
       if (typeof value === "string" && value.startsWith("brt_"))
@@ -1294,7 +1309,7 @@ var validateInteractionRequest = (p) => {
     if (!optStrOrNull(elicitation.schemaTitle))
       return null;
     const fieldsValue = elicitation.fields;
-    if (!Array.isArray(fieldsValue) || fieldsValue.length === 0)
+    if (!Array.isArray(fieldsValue))
       return null;
     if (fieldsValue.length > 100)
       return null;
@@ -1525,6 +1540,7 @@ export {
   REASONING_CAP,
   RECOVERY_RETENTION_MS,
   RELAY_CAPABILITIES,
+  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
   RELAY_PROTOCOL_VERSION,
   STATE_SYNC_PARTS_CAP,
   STATE_SYNC_TEXT_CAP,
@@ -1559,6 +1575,7 @@ export {
   parseWebServerEvent,
   validControlEvent,
   validInstanceStateSync,
+  validateInteractionResponse,
   webClientEnvelope,
   webEventEnvelope
 };

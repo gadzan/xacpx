@@ -132,18 +132,35 @@ describe("useDirectBotsStore interactions", () => {
 
   it("accept sends the collected answers", async () => {
     const store = useDirectBotsStore();
-    mockRpc.mockResolvedValue({ responded: true, response: { requestId: "req-1", kind: "elicitation", action: "accept" } });
+    mockRpc.mockResolvedValue({ ok: true });
     store.applyEvent(openedEvent(formRequest()));
     store.setInteractionAnswer("env", "staging");
     store.setInteractionAnswer("note", "go");
     await store.submitInteraction("accept");
-    expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.interaction.request", {
+    expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.interaction.respond", {
       requestId: "req-1",
       kind: "elicitation",
       action: "accept",
       content: { env: "staging", note: "go" },
     });
+    // Still submitting: the RPC is an ack, and the form's terminal state arrives
+    // on `interaction-closed`. Declaring an outcome here would pre-empt the hub.
+    expect(store.pendingInteraction!.outcome).toBeNull();
+    expect(store.pendingInteraction!.submitting).toBe(true);
+    expect(store.pendingInteraction!.errorCode).toBeNull();
+  });
+
+  it("interaction-closed is what resolves the form", async () => {
+    // The browser does not learn its own decision from the submit's result — the
+    // hub resolves the interaction for every tab, including this one.
+    const store = useDirectBotsStore();
+    mockRpc.mockResolvedValue({ ok: true });
+    store.applyEvent(openedEvent(formRequest()));
+    store.setInteractionAnswer("env", "staging");
+    await store.submitInteraction("accept");
+    store.applyEvent(closedEvent("req-1", "resolved"));
     expect(store.pendingInteraction!.outcome).toBe("accepted");
+    expect(store.pendingInteraction!.submitting).toBe(false);
   });
 
   it("accept with no answers at all sends a null content, not an empty object", async () => {
@@ -185,25 +202,47 @@ describe("useDirectBotsStore interactions", () => {
 
   it("decline sends no content and is a distinct action from cancel", async () => {
     const store = useDirectBotsStore();
-    mockRpc.mockResolvedValue({ responded: true, response: { requestId: "req-1", kind: "elicitation", action: "decline" } });
+    mockRpc.mockResolvedValue({ ok: true });
     store.applyEvent(openedEvent(formRequest()));
     store.setInteractionAnswer("env", "prod");
     await store.declineInteraction();
-    expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.interaction.request", {
+    expect(mockRpc).toHaveBeenCalledWith("inst_1", "control.interaction.respond", {
       requestId: "req-1",
       kind: "elicitation",
       action: "decline",
     });
-    expect(store.pendingInteraction!.outcome).toBe("declined");
+    // What the browser concludes is the close, not the click: a resolved
+    // interaction is closed by the decision that answered it, and the frame
+    // carries no action. Recording "declined" here would put a claim about what
+    // the human meant into a client-side guess.
+    store.applyEvent(closedEvent("req-1", "resolved"));
+    expect(store.pendingInteraction!.outcome).toBe("accepted");
   });
 
   it("cancel is reported as its own outcome", async () => {
     const store = useDirectBotsStore();
-    mockRpc.mockResolvedValue({ responded: true, response: { requestId: "req-1", kind: "elicitation", action: "cancel" } });
+    mockRpc.mockResolvedValue({ ok: true });
     store.applyEvent(openedEvent(formRequest()));
     await store.cancelInteraction();
     const payload = mockRpc.mock.calls[0]![2] as { action: string };
     expect(payload.action).toBe("cancel");
+    store.applyEvent(closedEvent("req-1", "resolved"));
+    expect(store.pendingInteraction!.outcome).toBe("accepted");
+  });
+
+  it("a withdrawn interaction is never reported as a user decline", async () => {
+    // The turn went away or the window closed: the user did not refuse anything,
+    // and collapsing this into `declined` would misreport who decided what.
+    const store = useDirectBotsStore();
+    store.applyEvent(openedEvent(formRequest()));
+    store.applyEvent(closedEvent("req-1", "withdrawn"));
+    expect(store.pendingInteraction!.outcome).toBe("withdrawn");
+  });
+
+  it("an expired interaction is reported as cancelled, not as a user action", async () => {
+    const store = useDirectBotsStore();
+    store.applyEvent(openedEvent(formRequest()));
+    store.applyEvent(closedEvent("req-1", "expired"));
     expect(store.pendingInteraction!.outcome).toBe("cancelled");
   });
 
@@ -215,6 +254,20 @@ describe("useDirectBotsStore interactions", () => {
     await store.submitInteraction("accept");
     // Retryable: the interaction may still be answerable, so the form stays up.
     expect(store.pendingInteraction!.errorCode).toBe("submitFailed");
+    expect(store.pendingInteraction!.outcome).toBeNull();
+  });
+
+  it("a gone interaction is reported as gone, not as a retryable failure", async () => {
+    // The window closed between the click and the answer: there is nothing to
+    // retry, and the form must say so instead of staying up forever. The hub
+    // reports this as an error payload, which the transport surfaces as a
+    // rejected RPC — the same shape any transport failure produces.
+    const store = useDirectBotsStore();
+    mockRpc.mockResolvedValue({ error: { code: "interaction-gone", message: "gone" } });
+    store.applyEvent(openedEvent(formRequest()));
+    store.setInteractionAnswer("env", "prod");
+    await store.submitInteraction("accept");
+    expect(store.pendingInteraction!.errorCode).toBe("interactionGone");
     expect(store.pendingInteraction!.outcome).toBeNull();
   });
 

@@ -26,6 +26,7 @@ import { createApp } from "./http/app.js";
 import { createRelayUpdateChecker, readRelayVersion } from "./version.js";
 import { startMaintenanceLoop } from "./maintenance.js";
 import { createNoopRelayLogger, type RelayLogger } from "./logging.js";
+import { InteractionRegistry } from "./interaction-registry.js";
 
 const MAX_MESSAGES_PER_SESSION = 2000;
 const WEB_CLIENT_MAX_PAYLOAD_BYTES = 256 * 1024;
@@ -379,12 +380,19 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   };
 
   const pendingCompletionRoutes = new PendingCompletionRouteStore(db);
+  const interactions = new InteractionRegistry({
+    debug: (event, message, fields) => logger.debug(event, message, fields),
+  });
   const gateway = new InstanceGateway({
     instances,
     accounts,
     requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
     logger,
     pendingCompletionRoutes,
+    interactions,
+    broadcastControlEvent: (accountId, event) => {
+      webGateway.broadcast(accountId, { kind: "control-event", instanceId: "", event });
+    },
     onDirectoryChange: (accountId, endpoints) => {
       webGateway.broadcast(accountId, { kind: "agent-directory", endpoints });
     },
@@ -1079,6 +1087,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),
     vapidPublicKey: vapid ? () => vapid.publicKey : undefined,
     pushSubscriptions,
+    interactions,
     onWebPromptCreated: ({ promptRequestId, instanceId, sessionAlias }) => {
       recordPendingWebPrompt(promptRequestId, instanceId, sessionAlias);
     },

@@ -7,7 +7,10 @@ import {
   isErrorPayload,
   MSG,
   parseControlPayload,
+  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
+  type ControlEventDto,
   type InteractionRequestDto,
+  type InteractionResponseDto,
   type LiveTurnSnapshotDto,
   type PublishedAgentEndpointDto,
   type SessionCommandsSnapshotDto,
@@ -19,6 +22,7 @@ import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 import type { MessageStore } from "../stores/messages.js";
 import type { TurnSlotAnchorStore } from "../stores/turn-slot-anchors.js";
+import type { InteractionCloseReason, InteractionRegistry } from "../interaction-registry.js";
 import type { PushSubscriptionStore } from "../stores/push-subscriptions.js";
 import { isAllowedPushEndpoint } from "../push.js";
 import type { RelayLogger } from "../logging.js";
@@ -36,6 +40,16 @@ export interface GatewayForApp {
   ): Promise<unknown>;
   getPublishedEndpoints(accountId: string): PublishedAgentEndpointDto[];
   getWebPublishedEndpoints?(accountId: string): WebAgentDirectoryEndpointDto[];
+  /**
+   * Push a control event to every browser connected for this account.
+   *
+   * Interaction lifecycle needs it: a form must appear in a tab that did not ask
+   * for it, and must disappear from a tab that did not close it. Optional so a
+   * gateway that predates interactions still satisfies this interface — an old
+   * hub then simply never emits them, and the web store keeps its own default
+   * (no form) instead of hanging on a form that will never be resolved.
+   */
+  broadcastControlEvent?(accountId: string, event: ControlEventDto): void;
 }
 
 export interface AppDeps {
@@ -76,6 +90,13 @@ export interface AppDeps {
   onWebPromptQueueCancelled?: (instanceId: string, queueItemId: string) => void;
   /** Web push / provenance: called when a session is archived or removed, clearing pending queues. */
   onWebPromptSessionCleared?: (instanceId: string, sessionAlias: string) => void;
+  /**
+   * Hub-owned pending interactions. Omitted = no interaction transport, so both
+   * the open and answer paths report unavailable rather than pretending. Injected
+   * by `server.ts` so the connector socket teardown path (which is not visible
+   * here) can withdraw interactions opened over that socket.
+   */
+  interactions?: InteractionRegistry;
 }
 const SESSION_COOKIE = "xrelay_session";
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
@@ -127,25 +148,48 @@ function safePreviewUrl(v: unknown): string | undefined {
 const RPC_MAX_BODY_BYTES = 16 * 1024 * 1024;
 
 /**
- * Extra time an interaction RPC is allowed beyond the human window.
+ * Validate the connector's request to OPEN an interaction.
  *
- * The window closes when `expiresAt` passes, but the decision that DID arrive in
- * time still has to travel back. Without a reserve the RPC would be cut at the
- * same moment the answer becomes valid, losing a decision the user made in time.
- */
-const INTERACTION_RESPONSE_RESERVE_MS = 5_000;
-
-/**
- * Validate the browser's request-to-open an interaction.
- *
- * The BROWSER only supplies the product identity and the kind; the form itself
- * arrives from the connector. So there is nothing for a browser to forge here
- * beyond which run it is asking about, which is a display concern, not an
- * authority one — and the connector re-validates whatever the hub forwards.
+ * The connector builds this frame from core's OWN normalized request (core owns
+ * what may be asked, and froze the form before it reached the channel), so the
+ * hub's job here is only the boundary check: is this a well-formed interaction,
+ * and does its `expiresAt` leave room to answer. Nothing is interpreted, and
+ * nothing is inferred from the frame — least of all identity, which the hub adds
+ * itself, later.
  */
 function validateInteractionRequestPayload(payload: unknown): InteractionRequestDto | null {
   const parsed = parseControlPayload(MSG.interactionRequest, payload);
   return parsed ?? null;
+}
+
+/**
+ * The two ways a hub-side interaction call can end.
+ *
+ * `closed` is deliberately NOT a failure: the window timing out and the turn
+ * being withdrawn are normal endings, and the browser/caller must be able to say
+ * "the human never decided" without implying anything broke.
+ */
+type InteractionOutcome =
+  | { kind: "answered"; decision: InteractionResponseDto }
+  | { kind: "closed"; reason: InteractionCloseReason };
+
+/** How a no-decision close reads to the connector's caller. */
+function closedReasonToWire(reason: InteractionCloseReason): "timeout" | "withdrawn" {
+  return reason === "expired" ? "timeout" : "withdrawn";
+}
+
+/**
+ * Validate the browser's ANSWER frame.
+ *
+ * Reaches the same validator the connector uses, so both ends of the answer agree
+ * on what is legal — including its refusal to accept a client-asserted
+ * `responderId`/`senderId`/`userId`. The hub does not add an identity here; it
+ * adds the hub's own authenticated one at the point the decision is handed back.
+ */
+function validateInteractionResponsePayload(payload: unknown): InteractionResponseDto | null {
+  const parsed = parseControlPayload(MSG.interactionRespond, payload);
+  if (!parsed) return null;
+  return parsed as InteractionResponseDto;
 }
 
 /**
@@ -154,9 +198,9 @@ function validateInteractionRequestPayload(payload: unknown): InteractionRequest
  * This is the ONLY place a responder identity is added, and it comes from the
  * hub's own session authentication — never from the frame. Two consequences:
  *
- *   - A browser cannot assert an identity: the field is overwritten here rather
- *     than read from the payload, so a connector or a tampered client that sets
- *     one has no effect.
+ *   - A browser cannot assert an identity: the field is stamped over whatever the
+ *     frame carried, so a connector or tampered client that sets one has no
+ *     effect.
  *   - The identity is the one the hub already trusts for this RPC, which is the
  *     same account identity the trusted conversation prompt path stamps
  *     (`relay:<accountId>` / `senderId: account.id`).
@@ -687,29 +731,106 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       };
     }
     if (body.type === MSG.interactionRequest) {
+      // Connector -> hub: OPEN an interaction for this account's human. The
+      // frame's own `expiresAt` is the window, and the RPC stays open until the
+      // human answers or the window ends — the hub does not forward to a
+      // separate downlink that would need its own reconciliation.
       const interaction = validateInteractionRequestPayload(payload);
       if (!interaction) return c.json({ error: "invalid-payload" }, 400);
-      // A human interaction window is minutes, so the connector RPC must outlive
-      // the generic request timeout or it would be killed mid-question. The bound
-      // is the interaction's OWN deadline plus a response reserve, so the
-      // connector still has room to report a decision after the window closes.
-      const windowMs = Math.max(1, interaction.expiresAt - Date.now());
-      const timeoutMs = windowMs + INTERACTION_RESPONSE_RESERVE_MS;
-      try {
-        const result = await deps.gateway.sendRequest(
-          instance.id,
-          MSG.interactionRequest,
-          interaction,
-          { timeoutMs },
-        );
-        // The browser gets the outcome with the responder identity stamped from
-        // its own authenticated session.
-        return c.json(interactionResultForBrowser(result, account.id));
-      } catch {
-        // A transport failure closes the interaction rather than hanging the
-        // browser's RPC. The browser shows the form as withdrawn.
-        return c.json({ responded: false as const, reason: "aborted" as const });
+      const registry = deps.interactions;
+      if (!registry) return c.json({ error: "interaction-unavailable" }, 503);
+      if (interaction.expiresAt <= Date.now()) {
+        // A window that closed before the frame even arrived: opening it would
+        // put a form on screen that no answer could legally reach.
+        return c.json({ responded: false as const, reason: "timeout" as const });
       }
+      if (interaction.kind !== "elicitation") {
+        // The wire carries the permission kind so the transport is shared, but
+        // nothing renders it yet. Refusing up front beats leaving a turn waiting
+        // for an answer that can never arrive.
+        return c.json({ responded: false as const, reason: "unsupported" as const });
+      }
+      // The connector's ceiling, sent so the connector's own timer cannot fire
+      // before the hub decides the window ended.
+      const timeoutMs = Math.max(1, interaction.expiresAt - Date.now())
+        + RELAY_INTERACTION_RESPONSE_RESERVE_MS;
+      const chatKey = `relay:${account.id}`;
+      try {
+        const outcome = await new Promise<InteractionOutcome>((resolve) => {
+          registry.open({
+            requestId: interaction.requestId,
+            instanceId: instance.id,
+            accountId: account.id,
+            kind: interaction.kind,
+            expiresAt: interaction.expiresAt,
+            chatKey,
+            sessionAlias: "",
+            ...(interaction.conversation !== undefined ? { conversation: interaction.conversation } : {}),
+            timeoutMs,
+            resolve: (decision) => resolve({ kind: "answered", decision }),
+            reject: (reason) => resolve({ kind: "closed", reason }),
+          });
+          // Publish AFTER registering: a browser that receives the event must
+          // find a pending interaction to answer, or its answer would be
+          // rejected as gone.
+          deps.gateway.broadcastControlEvent?.(account.id, {
+            type: "interaction-opened",
+            chatKey,
+            sessionAlias: "",
+            interaction,
+          });
+        });
+        if (outcome.kind === "closed") {
+          // No user decision. Mapped so the browser's own form shows the same
+          // terminal state the connector-side caller sees.
+          return c.json({ responded: false, reason: closedReasonToWire(outcome.reason) });
+        }
+        // The identity is THIS authenticated session — the one that opened the
+        // interaction. Never read from the browser frame, which carries no
+        // identity field at all.
+        return c.json(interactionResultForBrowser(
+          { responded: true, response: outcome.decision },
+          account.id,
+        ));
+      } catch (error) {
+        // The opening itself failed (socket gone, transport rejected). Withdraw
+        // the registration so a late answer cannot resolve a dead call.
+        registry.close(interaction.requestId, "withdrawn");
+        deps.logger?.info("relay.interaction.open_failed", "interaction open failed", {
+          instanceId: instance.id,
+          error: String(error),
+        });
+        return c.json({ responded: false, reason: "aborted" });
+      }
+    }
+    if (body.type === MSG.interactionRespond) {
+      // Browser -> hub: ANSWER an interaction that is currently open.
+      const answer = validateInteractionResponsePayload(payload);
+      if (!answer) return c.json({ error: "invalid-payload" }, 400);
+      const registry = deps.interactions;
+      if (!registry) return c.json({ error: "interaction-unavailable" }, 503);
+      const pending = registry.get(answer.requestId);
+      // An interaction this account did not open is indistinguishable from one
+      // that already closed, and answering across accounts is a protocol
+      // violation — both are "gone".
+      if (!pending || pending.accountId !== account.id) {
+        return c.json({ error: "interaction-gone" }, 409);
+      }
+      const closed = registry.answer(answer.requestId, answer);
+      if (!closed) {
+        // Lost the race against expiry between the lookup and the answer. The
+        // window is over; the answer is not a late win.
+        return c.json({ error: "interaction-gone" }, 409);
+      }
+      // The form is done everywhere, not just in the tab that answered it.
+      deps.gateway.broadcastControlEvent?.(account.id, {
+        type: "interaction-closed",
+        chatKey: closed.chatKey,
+        sessionAlias: closed.sessionAlias,
+        requestId: closed.requestId,
+        reason: "resolved",
+      });
+      return c.json({ ok: true });
     }
     const releaseSessionRpcLocks: Array<() => void> = [];
     let persistedPromptId: number | undefined;

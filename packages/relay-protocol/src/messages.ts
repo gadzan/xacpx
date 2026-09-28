@@ -152,12 +152,12 @@ export const MSG = {
   runsList: "control.runs.list",
   runsCancel: "control.runs.cancel",
   /**
-   * Hub -> connector: ask the human for a structured answer. ONE round trip: the
-   * answer arrives as this call's RPC result, so there is no separate downlink
-   * queue and no hub-side pending map to reconcile. This is the shared transport
-   * for both decision kinds (`kind`), mirroring core's split where
-   * `TurnInteractionRegistry` is shared but the permission and elicitation
-   * brokers are not.
+   * Connector -> hub: OPEN one interaction. Core's broker is the only production
+   * caller (`RelayChannel.requestElicitation`), so the direction is dial-out:
+   * the connector that owns the agent turn asks the hub to put the form in front
+   * of its authenticated human. The hub validates, creates the pending
+   * interaction, broadcasts `interaction-opened`, and resolves THIS call with
+   * the human's decision — so there is no second downlink queue to reconcile.
    *
    * Long-lived by nature: a human interaction window is measured in minutes, so
    * this type is exempt from the connector's 60s RPC default and bounded by the
@@ -165,8 +165,11 @@ export const MSG = {
    */
   interactionRequest: "control.interaction.request",
   /**
-   * Connector -> hub: the human's decision for an opened interaction. The
-   * authoritative responder identity is STAMPED BY THE HUB from the
+   * Browser -> hub: ANSWER an interaction that this hub already opened. The
+   * same frame is forwarded to the still-pending `interactionRequest` call, so
+   * the answer is that call's RPC result.
+   *
+   * The authoritative responder identity is STAMPED BY THE HUB from the
    * authenticated session before the frame reaches the connector — the browser
    * payload carries no identity field at all, so there is nothing to forge.
    */
@@ -1047,6 +1050,17 @@ export const RELAY_CAPABILITIES = {
    *  implemented yet. Declaring it would advertise a capability that cannot
    *  deliver, so it is deliberately absent from the map until one lands. */
 } as const;
+
+/**
+ * Grace an interaction RPC gets beyond its own `expiresAt`.
+ *
+ * The window closes at `expiresAt`, but a decision made just inside it still has
+ * to reach the connector. Shared by the hub and the connector so both ends bound
+ * the same RPC identically: if they disagreed, one side would consider the call
+ * alive while the other had already abandoned it, and the answer would be lost
+ * with neither treating it as a failure.
+ */
+export const RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5_000;
 
 export type RelayCapability =
   (typeof RELAY_CAPABILITIES)[keyof typeof RELAY_CAPABILITIES];

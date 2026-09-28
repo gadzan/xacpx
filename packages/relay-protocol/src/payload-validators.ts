@@ -128,6 +128,17 @@ const isStrArr = (v: unknown): boolean => Array.isArray(v) && v.every(isStr);
 const optStrOrNull = (v: unknown): boolean => v === undefined || v === null || typeof v === "string";
 const optBoolOrNull = (v: unknown): boolean => v === undefined || v === null || typeof v === "boolean";
 
+/**
+ * An optional product id: absent, or a non-empty bounded string.
+ *
+ * Product correlation ids are optional (the opener may know them or not), but an
+ * EMPTY string is not the same as absent — "" would compare equal to another
+ * "" and silently satisfy a join that should not match. So a present value must
+ * be a real id.
+ */
+const optProductId = (v: unknown): boolean =>
+  v === undefined || (typeof v === "string" && v.length > 0 && v.length <= 128);
+
 // --- session / agent / workspace ---
 const validateSessionsList: Validator<SessionsListPayload> = (p) => {
   const o = fields(p);
@@ -590,11 +601,15 @@ const validateInteractionRequest: Validator<InteractionRequestPayload> = (p) => 
   if (o.conversation !== undefined) {
     const c = o.conversation as Record<string, unknown>;
     // Product identity only. A hidden `brt_*` alias must never appear here.
-    if (!optStrOrNull(c.conversationId)) return null;
-    if (!optStrOrNull(c.topicId)) return null;
-    if (!optStrOrNull(c.runId)) return null;
-    if (!optStrOrNull(c.memberTurnId)) return null;
-    if (!optStrOrNull(c.promptRequestId)) return null;
+    if (!isBoundedStr(c.conversationId, 128) || c.conversationId === "") return null;
+    if (!isBoundedStr(c.topicId, 128) || c.topicId === "") return null;
+    // The opener may know these or not: a hub-sourced frame does, a
+    // connector-opened turn does not. Present-but-empty is a fabrication, so a
+    // value that IS present must be a real id.
+    if (!optProductId(c.botId)) return null;
+    if (!optProductId(c.runId)) return null;
+    if (!optProductId(c.memberTurnId)) return null;
+    if (!optProductId(c.promptRequestId)) return null;
     for (const value of Object.values(c)) {
       if (typeof value === "string" && value.startsWith("brt_")) return null;
     }
@@ -609,10 +624,11 @@ const validateInteractionRequest: Validator<InteractionRequestPayload> = (p) => 
     if (typeof elicitation.message === "string" && elicitation.message.length > 8000) return null;
     if (!optStrOrNull(elicitation.schemaTitle)) return null;
     const fieldsValue = elicitation.fields;
-    // At least one field: a zero-field form is not renderable, and core would not
-    // emit one. Both boundaries agree, so a frame cannot be valid hub-side and
-    // dropped web-side (or the reverse).
-    if (!Array.isArray(fieldsValue) || fieldsValue.length === 0) return null;
+    // Zero fields is a LEGAL form (M1 core semantics): an all-optional schema
+    // with nothing to ask accepts with `content: null`, so the web side must be
+    // able to open it and confirm an empty answer. Rejecting here would strand a
+    // legal interaction rather than refuse an unsupported one.
+    if (!Array.isArray(fieldsValue)) return null;
     if (fieldsValue.length > 100) return null;
     if (!fieldsValue.every(validInteractionField)) return null;
     if (o.permission !== undefined) return null;
@@ -638,8 +654,13 @@ const validateInteractionRequest: Validator<InteractionRequestPayload> = (p) => 
  * in is rejected rather than having the field silently dropped: an explicit
  * rejection surfaces the protocol violation, whereas dropping would let a
  * client believe it asserted an identity that was ignored.
+ *
+ * EXPORTED because the connector re-validates every answer it is handed against
+ * it. A second, weaker local check would let a hub/connector pair drift on what
+ * counts as an answer — including on the identity rule, which is the one part
+ * that must not drift.
  */
-const validateInteractionResponse: Validator<InteractionResponsePayload> = (p) => {
+export const validateInteractionResponse: Validator<InteractionResponsePayload> = (p) => {
   const o = fields(p);
   if (!o) return null;
   if (!isBoundedStr(o.requestId, 128)) return null;

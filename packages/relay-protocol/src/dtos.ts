@@ -258,9 +258,18 @@ export interface QueueItemDto {
 export interface ConversationTurnCorrelationDto {
   conversationId: string;
   topicId: string;
-  botId: string;
-  runId: string;
-  memberTurnId: string;
+  /**
+   * Product row ids, present when the opener HAS them.
+   *
+   * A hub-sourced frame (conversation prompt) knows all three; a connector that
+   * opens an interaction from a turn knows only the product keys the turn's own
+   * route carried, and manufacturing ids would put fabricated joins in front of
+   * the UI. So they are optional and a consumer that needs one MUST handle its
+   * absence rather than treat "" as "none".
+   */
+  botId?: string;
+  runId?: string;
+  memberTurnId?: string;
   /**
    * Hub-issued id for the prompt row that started this turn, when it was
    * pre-written. Present on the correlation so a consumer can join a turn to its

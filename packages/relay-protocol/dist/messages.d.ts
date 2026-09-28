@@ -100,12 +100,12 @@ export declare const MSG: {
     readonly runsList: "control.runs.list";
     readonly runsCancel: "control.runs.cancel";
     /**
-     * Hub -> connector: ask the human for a structured answer. ONE round trip: the
-     * answer arrives as this call's RPC result, so there is no separate downlink
-     * queue and no hub-side pending map to reconcile. This is the shared transport
-     * for both decision kinds (`kind`), mirroring core's split where
-     * `TurnInteractionRegistry` is shared but the permission and elicitation
-     * brokers are not.
+     * Connector -> hub: OPEN one interaction. Core's broker is the only production
+     * caller (`RelayChannel.requestElicitation`), so the direction is dial-out:
+     * the connector that owns the agent turn asks the hub to put the form in front
+     * of its authenticated human. The hub validates, creates the pending
+     * interaction, broadcasts `interaction-opened`, and resolves THIS call with
+     * the human's decision — so there is no second downlink queue to reconcile.
      *
      * Long-lived by nature: a human interaction window is measured in minutes, so
      * this type is exempt from the connector's 60s RPC default and bounded by the
@@ -113,8 +113,11 @@ export declare const MSG: {
      */
     readonly interactionRequest: "control.interaction.request";
     /**
-     * Connector -> hub: the human's decision for an opened interaction. The
-     * authoritative responder identity is STAMPED BY THE HUB from the
+     * Browser -> hub: ANSWER an interaction that this hub already opened. The
+     * same frame is forwarded to the still-pending `interactionRequest` call, so
+     * the answer is that call's RPC result.
+     *
+     * The authoritative responder identity is STAMPED BY THE HUB from the
      * authenticated session before the frame reaches the connector — the browser
      * payload carries no identity field at all, so there is nothing to forge.
      */
@@ -905,6 +908,16 @@ export declare const RELAY_CAPABILITIES: {
      *  frame the web cannot interpret. */
     readonly interactionElicitationFormV1: "interaction.elicitation.form.v1";
 };
+/**
+ * Grace an interaction RPC gets beyond its own `expiresAt`.
+ *
+ * The window closes at `expiresAt`, but a decision made just inside it still has
+ * to reach the connector. Shared by the hub and the connector so both ends bound
+ * the same RPC identically: if they disagreed, one side would consider the call
+ * alive while the other had already abandoned it, and the answer would be lost
+ * with neither treating it as a failure.
+ */
+export declare const RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
 export type RelayCapability = (typeof RELAY_CAPABILITIES)[keyof typeof RELAY_CAPABILITIES];
 /** Stable browser-facing terminal error codes (i18n by code, not message text). */
 export declare const TERMINAL_ERROR_CODES: readonly ["terminal-disabled", "terminal-rmux-unavailable", "terminal-session-not-found", "terminal-session-archived", "terminal-capacity-exceeded", "terminal-viewer-capacity-exceeded", "terminal-terminating", "terminal-attachment-not-found", "terminal-generation-mismatch", "terminal-not-controller", "terminal-recovery-too-large", "terminal-protocol-error", "terminal-timeout", "instance-offline"];

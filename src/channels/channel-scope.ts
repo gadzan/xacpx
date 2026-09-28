@@ -1,3 +1,5 @@
+import { isProductOwnedSessionAlias } from "../domain/ids.js";
+
 const KNOWN_CHANNEL_IDS = new Set(["weixin"]);
 
 export function registerKnownChannelId(channelId: string): void {
@@ -83,6 +85,23 @@ export function resolveSessionAliasForInput(
   for (const alias of existingAliases) {
     if (alias === scopedAlias) return scopedAlias;
   }
+  // A Direct Conversation product alias is stored UNscoped, so the channel-
+  // scoped form can never match and the fallback below must look for the bare
+  // alias instead of returning a key no record has.
+  //
+  // This is not a convenience for one caller: the alias is how a Conversation
+  // binding addresses its session, and the chatKey of that turn maps to the
+  // relay channel. Scoping it produces `relay:brt_…`, and every prompt on the
+  // turn then fails with `session "brt_…" does not exist` — the bot turn can
+  // never run, so the elicitation path behind it is unreachable.
+  if (isProductOwnedSessionAlias(normalized)) {
+    for (const alias of existingAliases) {
+      if (alias === normalized) return alias;
+    }
+    // No record yet: the bare alias is still the right key, because that is
+    // where the record will be created.
+    return normalized;
+  }
   if (channelId === "weixin") {
     for (const alias of existingAliases) {
       if (alias === normalized) return alias;
@@ -103,7 +122,21 @@ export function scopeDisplayAliasToInternal(channelId: string, displayAlias: str
   if (normalized.length === 0) {
     throw new Error("display session alias must be non-empty");
   }
-  return channelId === "weixin" ? normalized : toInternalSessionAlias(channelId, normalized);
+  if (channelId === "weixin") return normalized;
+  // A Direct Conversation product alias (`brt_<bindingId>`) is ALREADY the internal
+  // alias and must never be re-prefixed.
+  //
+  // It is not a channel-scoped display alias: the product mints it unscoped
+  // (`ownedDirectSessionAlias`), and the session record is stored under exactly
+  // that key. Scoping it with the chatKey's channel id — which for a Direct Bot
+  // turn is `relay` — produces `relay:brt_…`, a key that no record ever had, so
+  // every prompt on that turn fails with `session "brt_…" does not exist`.
+  //
+  // This is not a naming coincidence to be tidied later: the alias is a durable
+  // join key between a Conversation binding and its session, and the product's
+  // own naming is the only one that matches the stored record.
+  if (isProductOwnedSessionAlias(normalized)) return normalized;
+  return toInternalSessionAlias(channelId, normalized);
 }
 
 export function buildDefaultTransportSession(channelId: string, displayAlias: string): string {
