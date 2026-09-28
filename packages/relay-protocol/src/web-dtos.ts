@@ -933,7 +933,16 @@ export type WebClientMessage =
   | { kind: "terminal-terminate"; requestId: string; instanceId: string; terminalId: string; generation: string }
   | { kind: "terminal-detach"; instanceId: string; attachmentId: string }
   | { kind: "desktop-open"; requestId: string; instanceId: string }
-  | { kind: "desktop-close"; instanceId: string; streamId: string }
+  | {
+      kind: "desktop-close";
+      instanceId: string;
+      /**
+       * Exactly one target. `streamId` closes a live/paired stream the browser
+       * already learned about; `requestId` aborts an open that never answered
+       * (fast close-then-reopen), which is the only handle the browser has on a
+       * still-pending prepare.
+       */
+    } & ({ streamId: string } | { requestId: string })
   | { kind: "subscribe"; instanceIds: string[] };
 
 export function webClientEnvelope(msg: WebClientMessage): RelayEnvelope {
@@ -1058,7 +1067,10 @@ export function parseWebClientMessage(envelope: RelayEnvelope): WebClientMessage
         : null;
     case "desktop-close":
       return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
-        && isBoundedStr(c.streamId, MAX_DESKTOP_STREAM_ID_LENGTH)
+        // Exactly one target: a live stream, or a pending prepare the viewer
+        // learned nothing about yet. Both, or neither, is malformed.
+        && ((isBoundedStr(c.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && c.requestId === undefined)
+          || (isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && c.streamId === undefined))
         ? (p as WebClientMessage)
         : null;
     default:

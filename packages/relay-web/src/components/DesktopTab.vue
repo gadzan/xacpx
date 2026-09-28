@@ -103,8 +103,11 @@ onMounted(() => {
   void open();
   document.addEventListener("fullscreenchange", onFullscreenChange);
 });
-watch(() => props.instanceId, () => {
-  desktops.close(props.instanceId);
+// The callback's `props.instanceId` is already the NEW value, so closing it
+// would tear down the instance we are about to open and leak the old one's RFB
+// connection + hub stream. Take the previous value from the watch args.
+watch(() => props.instanceId, (_next, prev) => {
+  if (prev) desktops.close(prev);
   void open();
 });
 onBeforeUnmount(() => {

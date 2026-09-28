@@ -26,14 +26,14 @@ function desktopDeps(overrides: Partial<{
   reserve: WebClientDeps["desktop"];
   prepareResult: unknown;
   prepareError: unknown;
-}> = {}): { deps: WebClientDeps; socket: FakeSocket; sent: SentEvent[]; requests: Array<{ type: string; payload: unknown }>; events: Array<{ type: string; payload: unknown }>; owners: Map<string, { viewerId: string; accountId: string; instanceId: string }>; cancelled: string[] } {
+}> = {}): { deps: WebClientDeps; socket: FakeSocket; sent: SentEvent[]; requests: Array<{ type: string; payload: unknown }>; events: Array<{ type: string; payload: unknown }>; owners: Map<string, { viewerId: string; accountId: string; instanceId: string; requestId?: string }>; cancelled: string[] } {
   const socket = new FakeSocket();
   socket.viewerId = "viewer-1";
   const sent: SentEvent[] = [];
   const requests: Array<{ type: string; payload: unknown }> = [];
   const events: Array<{ type: string; payload: unknown }> = [];
   const capabilities = overrides.capabilities ?? ["desktop.rfb.v1"];
-  const owners = new Map<string, { viewerId: string; accountId: string; instanceId: string }>();
+  const owners = new Map<string, { viewerId: string; accountId: string; instanceId: string; requestId?: string }>();
   const cancelled: string[] = [];
   const desktop = overrides.reserve ?? {
     reserve: () => ({ ok: true as const, streamId: "s-1" }),
@@ -45,7 +45,17 @@ function desktopDeps(overrides: Partial<{
       cancelled.push(streamId);
     },
     ownsStream: (streamId: string, viewerId: string) => owners.get(streamId)?.viewerId === viewerId,
-    trackOwner: (streamId: string, owner: { viewerId: string; accountId: string; instanceId: string }) => {
+    cancelPendingByRequest: (requestId: string, viewerId: string, reason: string) => {
+      for (const [streamId, owner] of [...owners]) {
+        if (owner.requestId !== requestId || owner.viewerId !== viewerId) continue;
+        owners.delete(streamId);
+        cancelled.push(streamId);
+        events.push({ type: MSG.desktopCancel, payload: { streamId } });
+        return true;
+      }
+      return false;
+    },
+    trackOwner: (streamId: string, owner: { viewerId: string; accountId: string; instanceId: string; requestId?: string }) => {
       owners.set(streamId, owner);
     },
   };
@@ -89,6 +99,13 @@ function sendDesktop(deps: WebClientDeps, accountId: string, socket: FakeSocket,
   const msg = kind === "desktop-open"
     ? { kind, requestId: "r1", instanceId: "i1" }
     : { kind, instanceId: "i1", streamId: "s-1" };
+  expect(parseWebClientMessage(webClientEnvelope(msg as never))).not.toBeNull();
+  handleWebClientMessage(deps, accountId, socket as never, JSON.stringify(webClientEnvelope(msg as never)));
+}
+
+/** Close by requestId instead of streamId: the stream never reported back yet. */
+function sendDesktopCloseRequest(deps: WebClientDeps, accountId: string, socket: FakeSocket, requestId: string) {
+  const msg = { kind: "desktop-close", instanceId: "i1", requestId };
   expect(parseWebClientMessage(webClientEnvelope(msg as never))).not.toBeNull();
   handleWebClientMessage(deps, accountId, socket as never, JSON.stringify(webClientEnvelope(msg as never)));
 }
@@ -184,6 +201,42 @@ test("desktop-close from another viewer is rejected", () => {
   owners.set("s-1", { viewerId: "viewer-other", accountId: "a1", instanceId: "i1" });
   sendDesktop(deps, "a1", socket, "desktop-close");
   expect(events).toEqual([]);
+});
+
+// P2 regression: close an open that is still preparing, then reopen. The
+// browser has no streamId yet, so it must close by requestId and the hub must
+// release the reservation. Otherwise the immediate reopen hits desktop-busy.
+test("desktop-close by requestId releases a pending prepare so reopen is not busy", async () => {
+  // The prepare never resolves on its own: the reservation is held exactly as
+  // long as a real slow prepare would hold it.
+  const gate = new Promise<unknown>(() => {});
+  const { deps, socket, sent, requests, owners, cancelled, events } = desktopDeps({ prepareResult: gate });
+
+  sendDesktop(deps, "a1", socket, "desktop-open");
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(owners.get("s-1")?.requestId).toBe("r1");
+
+  // The close arrives before the prepare answered: requestId is the only handle
+  // the browser has on the reservation.
+  sendDesktopCloseRequest(deps, "a1", socket, "r1");
+  expect(cancelled).toEqual(["s-1"]);
+  expect(owners.size).toBe(0);
+  // The connector is told symmetrically with the streamId path.
+  expect(events).toEqual([{ type: MSG.desktopCancel, payload: { streamId: "s-1" } }]);
+  // Nothing was reported to the browser, but the prepare was still issued.
+  expect(requests.length).toBe(1);
+  expect(sent.length).toBe(0);
+});
+
+test("desktop-close by an unknown requestId is a no-op, not a foreign stream kill", () => {
+  const { deps, socket, owners, cancelled } = desktopDeps();
+  owners.set("s-1", { viewerId: "viewer-1", accountId: "a1", instanceId: "i1", requestId: "other-open" });
+  // A close naming a requestId that does not match must not resolve to this
+  // stream: it would kill another viewer's prepare.
+  sendDesktopCloseRequest(deps, "a1", socket, "not-mine");
+  expect(cancelled).toEqual([]);
+  expect(owners.size).toBe(1);
 });
 
 test("socket close during prepare cancels the exact stream", async () => {

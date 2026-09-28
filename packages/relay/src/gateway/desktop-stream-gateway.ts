@@ -175,6 +175,17 @@ export class DesktopStreamGateway {
     return this.pair(record, "connector", socket);
   }
 
+  /**
+   * Current lifecycle state of a stream, or undefined if unknown/closed.
+   * Exists so the server can tell a stream still `preparing` (cancellable by a
+   * viewer that only knows its requestId) from one that already paired (only
+   * cancellable by streamId).
+   */
+  streamState(streamId: string): string | undefined {
+    const record = this.streams.get(streamId);
+    return record?.state;
+  }
+
   /** Connector reported its RFB probe outcome; only `vnc-auth` streams go live. */
   reportConnectorReady(streamId: string, security: DesktopSecurityKind): boolean {
     const record = this.streams.get(streamId);

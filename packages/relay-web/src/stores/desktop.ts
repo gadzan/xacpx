@@ -74,6 +74,11 @@ export const useDesktopStore = defineStore("desktop", () => {
   // close during prepare leaves the panel gone while the RPC continues, and
   // `desktop-opened` later resurrects the session on an unmounted target.
   const pending = new Map<string, AbortController>();
+  // The requestId of each in-flight `desktop-open`, so a close that lands before
+  // `desktop-opened` (no streamId known yet) can still tell the hub to release
+  // the reservation. Without it a fast close→reopen hits `desktop-busy` for as
+  // long as the abandoned prepare keeps the single-viewer slot.
+  const pendingRequestId = new Map<string, string>();
   // Monotonic attempt counter per instance. Every patch/delete of a session row
   // is tagged with the generation that owns it, so a superseded attempt (A
   // aborted by close, B opened and already wrote its own row) can never mutate
@@ -126,14 +131,23 @@ export const useDesktopStore = defineStore("desktop", () => {
     generation.set(instanceId, attempt);
     const controller = new AbortController();
     pending.set(instanceId, controller);
+    // Remember the requestId of the in-flight open. A close that happens before
+    // `desktop-opened` returns has no streamId to name, so it needs this to
+    // release the hub reservation instead of waiting out the prepare.
+    const requestId = nextDesktopRequestId();
+    pendingRequestId.set(instanceId, requestId);
     patch(instanceId, { status: "opening", lastErrorCode: undefined, lastErrorMessage: undefined });
     let opened;
     try {
       opened = await requestDesktop(
-        { kind: "desktop-open", requestId: nextDesktopRequestId(), instanceId },
+        { kind: "desktop-open", requestId, instanceId },
         { timeoutMs: DESKTOP_RPC_TIMEOUT_MS },
       );
     } catch (err) {
+      // The prepare is over (failed or abandoned): the requestId can no longer
+      // be used to release anything, so it must not linger and let a later
+      // close match a stream that never existed.
+      if (pendingRequestId.get(instanceId) === requestId) pendingRequestId.delete(instanceId);
       if (controller.signal.aborted || opts.signal?.aborted || !owns(instanceId, attempt)) {
         // Abandoned or superseded: a newer attempt owns the row now. Patching
         // (even to "error") would clobber its status, and the hub already
@@ -153,6 +167,7 @@ export const useDesktopStore = defineStore("desktop", () => {
       // still in flight). Deleting unconditionally would orphan B's controller
       // so a later close() could not abort it.
       if (pending.get(instanceId) === controller) pending.delete(instanceId);
+      if (pendingRequestId.get(instanceId) === requestId) pendingRequestId.delete(instanceId);
     }
     if (controller.signal.aborted || opts.signal?.aborted || !owns(instanceId, attempt)) {
       // Abandoned or superseded mid-prepare. The hub already minted a stream +
@@ -165,6 +180,9 @@ export const useDesktopStore = defineStore("desktop", () => {
       dropRow(instanceId, attempt);
       return;
     }
+    // The hub now knows the streamId (and cleared its requestId binding at
+    // markReady), so this instance is addressable by streamId from here on.
+    if (pendingRequestId.get(instanceId) === requestId) pendingRequestId.delete(instanceId);
     patch(instanceId, {
       status: opened.security === "ard" ? "error" : "connecting",
       streamId: opened.streamId,
@@ -273,6 +291,18 @@ export const useDesktopStore = defineStore("desktop", () => {
       try {
         sendWebClientMessage({ kind: "desktop-close", instanceId, streamId: view.streamId });
       } catch { /* offline: hub times the stream out */ }
+      pendingRequestId.delete(instanceId);
+    } else {
+      // No streamId yet: the open is still preparing. Name it by requestId so
+      // the hub releases the single-viewer reservation NOW instead of at the
+      // prepare's own timeout — otherwise an immediate reopen fails busy.
+      const pendingRequest = pendingRequestId.get(instanceId);
+      if (pendingRequest) {
+        try {
+          sendWebClientMessage({ kind: "desktop-close", instanceId, requestId: pendingRequest });
+        } catch { /* offline: hub times the stream out */ }
+        pendingRequestId.delete(instanceId);
+      }
     }
     // Deliberately keep the bumped generation: it must outlive this close so
     // the NEXT open() cannot reuse a number an in-flight attempt still holds.

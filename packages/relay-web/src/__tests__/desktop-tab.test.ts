@@ -405,6 +405,26 @@ describe("DesktopTab error i18n", () => {
     });
   }
 
+  it("switching instances closes the PREVIOUS instance, not the new one", async () => {
+    const wrapper = mount(DesktopTab, { props: { instanceId: "A" } });
+    await flushPromises();
+    const { sendWebClientMessage } = await import("../api/events");
+    (sendWebClientMessage as unknown as { mockClear: () => void }).mockClear();
+
+    // A → B. The watch callback runs with props already pointing at B, so
+    // closing props.instanceId would tear down the instance being opened and
+    // leak A's RFB connection + hub stream.
+    await wrapper.setProps({ instanceId: "B" });
+    await flushPromises();
+
+    // A is torn down (its stream is closed on the wire); B is not.
+    const closed = (sendWebClientMessage as unknown as { mock: { calls: unknown[][] } }).mock.calls
+      .map((c) => (c[0] as { kind?: string; instanceId?: string }).instanceId);
+    expect(closed).toContain("A");
+    expect(closed).not.toContain("B");
+    wrapper.unmount();
+  });
+
   it("keeps both locales free of raw codes for every desktop error code", async () => {
     const { i18n } = await import("../i18n");
     const locales = ["en", "zh-CN"] as const;

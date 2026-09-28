@@ -47,6 +47,9 @@ connector 拒绝让弱认证平面成为 xacpx 连接面的旁路。
 - `enabled=false`（默认）时不声明 `desktop.rfb.v1`，relay-web 不会显示 Desktop 入口。
 - `port` 只能是**本机 loopback**。RFB server 不需要公网可达；connector 主动连
   `127.0.0.1:<port>`。
+  这是**单向约束**：它固定了 connector 去连哪里，但没有限制 RFB server 监听在
+  哪个地址。所以「不暴露 5900」还需要 RFB server 自己只监听 loopback
+  （见 §3/§4 的具体开关与验证命令）。两侧都得是 loopback，边界才成立。
 - `connectTimeoutMs`（250–10000）同时用于 loopback TCP 连接、banner preflight 与
   Hub `/desktop/instance` upgrade 三者，不提供单独的 upgrade 超时。
 - 完整 schema 与默认值见 `docs/config-reference.md`。
@@ -64,7 +67,10 @@ connector 拒绝让弱认证平面成为 xacpx 连接面的旁路。
    ` TightVNC Server: Configuration → Server → Authentication` 选
    `VNC password, Windows logon...` 之外**纯 VNC password** 那一项，设置密码。
 4. **监听 loopback**：`Access Control → Loopback connections` 选
-   `Allow loopback connections`。不需要允许 LAN/远程。
+   `Allow loopback connections`。不需要允许 LAN/远程。注意这一项是**访问控制**
+   （是否接受来自 loopback 的连接），不是**监听地址**：TightVNC 仍可能绑定
+   0.0.0.0。请按 §4 末尾的 `ss`/`netstat` 检查确认只监听 `127.0.0.1:5900`；
+   TightVNC 配置里的 `LoopbackConnectionsOnly` / 对应项应设为仅允许 loopback。
 5. 确认 outer security 列表里有 **type 2（VNC Auth）**。仅提供 Tight（outer type 16）
    的端点会被拒绝（见 §6）。
 
@@ -82,16 +88,26 @@ RDP/远程管理能力。
 
 ## 4. Linux（TigerVNC / x11vnc）
 
-标准 VncAuth，无额外选项：
+标准 VncAuth，**且必须只监听 loopback**：
 
 ```bash
 # x11vnc：镜像当前 X11 桌面
-x11vnc -display :0 -rfbport 5900 -passwdfile ~/.vnc/passwd
+# -localhost 隐含 -listen localhost：把监听地址限制到本机。没有它 x11vnc 默认
+# 监听所有接口，5900 会暴露到 LAN/公网—— connector 固定拨 127.0.0.1 只约束
+# 「它连哪」，不约束「谁在听」，所以这一项不能省。
+x11vnc -display :0 -rfbport 5900 -localhost -passwdfile ~/.vnc/passwd
 ```
 
 ```bash
 # TigerVNC：新建一个虚拟桌面（需要连 DISPLAY 时）
 tigervncserver :1 -geometry 1920x1080 -localhost
+```
+
+启动后必须验证监听面，否则文档承诺的「不对外暴露 5900」不成立：
+
+```bash
+# 期望：只出现 127.0.0.1:5900，不出现 0.0.0.0:5900 / [::]:5900
+ss -ltnp | grep 5900
 ```
 
 ### WayVNC 仅 legacy 模式

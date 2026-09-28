@@ -808,7 +808,7 @@ function parseWebClientMessage(envelope) {
     case "desktop-open":
       return isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && c.streamId === undefined && c.wsPath === undefined ? p : null;
     case "desktop-close":
-      return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) ? p : null;
+      return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && (isBoundedStr(c.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && c.requestId === undefined || isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && c.streamId === undefined) ? p : null;
     default:
       return null;
   }

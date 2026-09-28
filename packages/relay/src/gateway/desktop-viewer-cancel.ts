@@ -19,6 +19,14 @@ export interface DesktopStreamOwner {
   viewerId: string;
   accountId: string;
   instanceId: string;
+  /**
+   * The browser's `desktop-open` requestId, carried so a later
+   * `desktop-close` that knows only the requestId (the prepare had not
+   * reported back yet) can still find and release this reservation.
+   * Cleared once the stream leaves `preparing`: after that the close names the
+   * streamId, and a stale requestId must not match a paired session.
+   */
+  requestId?: string;
 }
 
 /**

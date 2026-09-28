@@ -116,8 +116,23 @@ test("parseWebClientMessage round-trips desktop open/close", () => {
   const msgs: WebClientMessage[] = [
     { kind: "desktop-open", requestId: "r1", instanceId: "i1" },
     { kind: "desktop-close", instanceId: "i1", streamId: "s1" },
+    { kind: "desktop-close", instanceId: "i1", requestId: "r1" },
   ];
   for (const m of msgs) expect(parseWebClientMessage(webClientEnvelope(m))).toEqual(m);
+});
+
+test("desktop-close takes exactly one target: streamId XOR requestId", () => {
+  // Both is ambiguous (which reservation should die?), neither is a no-op.
+  expect(parseWebClientMessage(webClientEnvelope({
+    kind: "desktop-close", instanceId: "i1", streamId: "s1", requestId: "r1",
+  } as never))).toBeNull();
+  expect(parseWebClientMessage(webClientEnvelope({
+    kind: "desktop-close", instanceId: "i1",
+  } as never))).toBeNull();
+  // An oversized requestId cannot smuggle a second (long) reservation name.
+  expect(parseWebClientMessage(webClientEnvelope({
+    kind: "desktop-close", instanceId: "i1", requestId: "r".repeat(129),
+  } as never))).toBeNull();
 });
 
 test("parseWebClientMessage rejects desktop forgeries and oversized ids", () => {

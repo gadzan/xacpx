@@ -341,8 +341,11 @@ export type WebClientMessage = {
 } | {
     kind: "desktop-close";
     instanceId: string;
+} & ({
     streamId: string;
 } | {
+    requestId: string;
+}) | {
     kind: "subscribe";
     instanceIds: string[];
 };

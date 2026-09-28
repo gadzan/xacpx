@@ -177,10 +177,37 @@ describe("desktop store", () => {
     expect(store.sessions.has("i1")).toBe(false);
   });
 
+  it("closing an open that is still preparing releases the hub reservation by requestId", async () => {
+    // The race: the user closes the panel before the prepare answers, so the
+    // browser has no streamId to name. It must close by requestId, otherwise the
+    // single-viewer reservation survives the close and the next open fails busy.
+    const store = useDesktopStore();
+    const { requestDesktop, sendWebClientMessage } = await import("../api/events");
+    let resolveOpen!: (value: unknown) => void;
+    (requestDesktop as unknown as { mockImplementation: (fn: () => Promise<unknown>) => void })
+      .mockImplementation(() => new Promise((resolve) => { resolveOpen = resolve; }));
+
+    const openA = store.open("i1", {});
+    await Promise.resolve();
+    store.close("i1"); // no streamId is known yet
+
+    const closeCalls = (sendWebClientMessage as unknown as { mock: { calls: Array<[Record<string, unknown>]> } }).mock.calls.map((c) => c[0]);
+    expect(closeCalls).toHaveLength(1);
+    expect(closeCalls[0]).toMatchObject({ kind: "desktop-close", instanceId: "i1" });
+    // The close MUST name a requestId, and must NOT claim a streamId it never
+    // learned (which the hub would reject as unknown).
+    expect(typeof closeCalls[0]?.requestId).toBe("string");
+    expect(closeCalls[0]?.streamId).toBeUndefined();
+    expect(resolveOpen).toBeDefined();
+    resolveOpen({ requestId: "r1", instanceId: "i1", streamId: "sA", wsPath: "/desktop/observe?ticket=t", expiresAt: 1, security: "vnc-auth" });
+    await openA;
+    expect(store.sessions.has("i1")).toBe(false);
+  });
+
   it("a superseded attempt cannot delete the newer attempt's session row", async () => {
-    // Generation race: A prepare pending → close A → B opened. The hub still
-    // holds A's single-viewer slot, so B fails fast with desktop-busy and writes
-    // its own error row. A then succeeds; its abandoned-cleanup must NOT delete
+    // Generation race: A prepare pending → close A → B opened. Here B still
+    // fails (the hub had already granted A its slot when the close raced it), and
+    // writes its own error row. A then succeeds; its abandoned-cleanup must NOT delete
     // B's row, otherwise DesktopTab's lazy viewFor() turns a clear Busy/Error
     // state back into a bare idle row with no reconnect affordance.
     const store = useDesktopStore();
@@ -198,8 +225,7 @@ describe("desktop store", () => {
     const openA = store.open("i1", {});
     store.close("i1"); // aborts A and bumps the generation
     const openB = store.open("i1", {});
-    // The hub still holds A's single-viewer slot, so B fails fast with
-    // desktop-busy before A's prepare ever settles.
+    // B fails with desktop-busy before A's prepare ever settles.
     let thrownB: unknown;
     expect(rejectB).toBeDefined();
     rejectB(new DesktopRequestError("desktop-busy", "instance already has a desktop stream"));

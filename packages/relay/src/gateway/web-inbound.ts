@@ -18,7 +18,7 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 import { type WebGateway, type WebSocketLike } from "./web-gateway.js";
 import { TERMINAL_REQUEST_TIMEOUT_MS } from "./instance-gateway.js";
-import { sendDesktopCancel } from "./desktop-viewer-cancel.js";
+import { sendDesktopCancel, type DesktopStreamOwner } from "./desktop-viewer-cancel.js";
 
 export interface WebClientDeps {
   instances: {
@@ -54,10 +54,17 @@ export interface WebClientDeps {
     mintBrowserTicket(streamId: string, accountId: string, instanceId: string): { ticket: string; expiresAt: number };
     markReady(streamId: string, security: "vnc-auth" | "ard"): boolean;
     cancel(streamId: string, reason: string): void;
+    /**
+     * Release a reservation the viewer can only name by requestId - the
+     * close-then-reopen-race case, where the browser aborts before
+     * `desktop-opened` ever told it the streamId. Viewer-scoped: a prepare
+     * still in flight from ANOTHER viewer is never matched.
+     */
+    cancelPendingByRequest(requestId: string, ownerViewerId: string, reason: string): boolean;
     /** Lifetime owner check: pending AND paired streams stay bound to the requesting viewer. */
     ownsStream(streamId: string, ownerViewerId: string): boolean;
     /** Bind a fresh reservation to its requesting viewer before the async prepare. */
-    trackOwner(streamId: string, owner: { viewerId: string; accountId: string; instanceId: string }): void;
+    trackOwner(streamId: string, owner: DesktopStreamOwner): void;
   };
 }
 
@@ -413,7 +420,7 @@ async function handleDesktopOpen(
   // Bind the pending prepare to the requesting control socket BEFORE the
   // async connector RPC: a close during prepare must cancel this exact
   // stream, never a successor that reused the instance slot.
-  deps.desktop.trackOwner(streamId, { viewerId: ownerViewerId, accountId, instanceId: msg.instanceId });
+  deps.desktop.trackOwner(streamId, { viewerId: ownerViewerId, accountId, instanceId: msg.instanceId, requestId: msg.requestId });
   // The connector is dialing loopback RFB and upgrading /desktop/instance for
   // this stream from the moment it receives `desktopPrepare`, so EVERY exit
   // after `reserve` must tell it to stop — not just the local teardown.
@@ -492,15 +499,25 @@ function handleDesktopClose(
   deps: WebClientDeps,
   accountId: string,
   socket: WebSocketLike,
-  msg: { instanceId: string; streamId: string },
+  msg: { instanceId: string; streamId?: string; requestId?: string },
 ): void {
   if (!deps.desktop) return;
+  const viewerId = deps.webGateway.getViewerId(socket) ?? "";
   // Lifetime ownership gate: the requesting viewer owns the stream from
   // reserve through the paired binary session. A stale/forged close from
   // another tab must not kill someone's viewer.
-  if (!deps.desktop.ownsStream(msg.streamId, deps.webGateway.getViewerId(socket) ?? "")) return;
-  sendDesktopCancel(deps.gateway as Parameters<typeof sendDesktopCancel>[0], msg.instanceId, msg.streamId);
-  deps.desktop.cancel(msg.streamId, "browser-close");
+  if (msg.streamId !== undefined) {
+    if (!deps.desktop.ownsStream(msg.streamId, viewerId)) return;
+    sendDesktopCancel(deps.gateway as Parameters<typeof sendDesktopCancel>[0], msg.instanceId, msg.streamId);
+    deps.desktop.cancel(msg.streamId, "browser-close");
+    return;
+  }
+  if (msg.requestId === undefined) return;
+  // Close-then-reopen while the first open is still preparing: the browser
+  // never received a `desktop-opened`, so it has no streamId to name. The
+  // reservation stays single-viewer-locked until this requestId is matched and
+  // released, otherwise the immediate reopen fails `desktop-busy`.
+  if (!deps.desktop.cancelPendingByRequest(msg.requestId, viewerId, "browser-close")) return;
 }
 
 function detachConnectorAttachment(
