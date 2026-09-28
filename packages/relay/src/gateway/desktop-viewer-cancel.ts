@@ -24,11 +24,15 @@ export interface DesktopStreamOwner {
    * `desktop-close` that knows only the requestId (the prepare had not
    * reported back yet) can still find and release this reservation.
    *
-   * It survives until the browser binary side attaches: `reportConnectorReady`
-   * usually only reaches `waiting-browser`, and the frames that decide the race
-   * (close-by-requestId + reopen) are still in flight across sockets at that
-   * point. Clear it at the browser attach, not at the connector's readiness
-   * report, or that reopen fails `desktop-busy` against a stream the viewer is
+   * It is NOT cleared on attach. The safety boundary is the state gate inside
+   * `cancelViewerDesktopStreamByRequest`, which refuses anything other than
+   * `preparing` / `waiting-browser` — so a stale requestId on an `active`
+   * owner is simply inert. Do not add attach-time clearing: the requestId has
+   * to outlive the connector's `markReady` (which usually only reaches
+   * `waiting-browser`) because the frames that settle the race — the
+   * close-by-requestId and the reopen after it — are still in flight across
+   * sockets at that point. Clearing there re-created the boundary bug where a
+   * close-then-reopen failed `desktop-busy` against a stream the viewer was
    * walking away from.
    */
   requestId?: string;
