@@ -789,7 +789,20 @@ export class ConversationRunService {
     const residue = Object.values(this.state.conversation_topics)
       .filter((topic) => topic.conversationId === conversationId && topic.status === "active")
       .flatMap((topic) => this.groupTopicMemberBotIds(conversationId, topic.id));
-    return [...new Set([...membership, ...residue])];
+    const candidates = [...new Set([...membership, ...residue])];
+    // Enforce the mutual-exclusion budget on the set that is about to be
+    // acquired, not on the eligible set computed later inside the gates: by then
+    // runLifecycleAll has already pinned every candidate's mutex, and those
+    // entries are process-lifetime. Checking here also covers the widen race —
+    // a probe that grows past the budget during acquisition is retried, and the
+    // next probe is refused before any further gate is taken.
+    if (candidates.length > MAX_GROUP_TARGET_MEMBERS) {
+      throw new ConversationError(
+        "target_too_large",
+        `explicit Group target selects more than ${MAX_GROUP_TARGET_MEMBERS} members`,
+      );
+    }
+    return candidates;
   }
 
   /** Resolve the durable member list inside held gates. Everyone expands to
@@ -808,8 +821,9 @@ export class ConversationRunService {
       if (eligible.length === 0) {
         throw new ConversationError("empty_target", "explicit Group target selects no members");
       }
-      // Same mutual-exclusion budget as an explicit members target, so a Group is
-      // never addressable one way but not the other.
+      // Defensive invariant: the probe branch already enforced this budget on the
+      // set actually gated, so this can only fire if a member was added between
+      // the probe and the gate acquisition and was already enabled.
       if (eligible.length > MAX_GROUP_TARGET_MEMBERS) {
         throw new ConversationError(
           "target_too_large",

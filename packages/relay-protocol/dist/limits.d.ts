@@ -9,7 +9,8 @@ export declare const MAX_TOOL_STEPS = 200;
  *  whole live membership — must respect the same ceiling or a 65-member Group
  *  would be addressable as `everyone` but not as an explicit `members` list.
  *  Group membership itself stays unbounded here; a Group larger than this is
- *  still fully usable via `everyone` plus sequential smaller targets. */
+ *  usable through sequential explicit member subsets, while `everyone` is refused
+ *  with `target_too_large` once its probe set exceeds the budget. */
 export declare const MAX_GROUP_TARGET_MEMBERS = 64;
 export declare const MAX_BOT_ID_LENGTH = 128;
 export declare const REASONING_CAP = 16000;

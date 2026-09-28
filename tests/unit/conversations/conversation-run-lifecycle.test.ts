@@ -5929,8 +5929,9 @@ test("PR7 group accept: members and everyone share one mutual-exclusion budget",
     workspace: "backend",
     isolation: "shared-single-writer",
   });
-  const everyone = { mode: "members" as const, botIds: [] };
-  void everyone;
+  const gateLocks = (first.bots as unknown as { lifecycleGate?: { locks?: Map<string, unknown> } })
+    .lifecycleGate?.locks;
+  const keysBefore = new Set(gateLocks?.keys() ?? []);
   // `everyone` expands to 71 eligible members, which exceeds the shared budget.
   await expect(first.service.acceptGroupPrompt({
     conversationId: group.id,
@@ -5939,6 +5940,13 @@ test("PR7 group accept: members and everyone share one mutual-exclusion budget",
     text: "all",
     target: { mode: "everyone" },
   })).rejects.toMatchObject({ code: "target_too_large" });
+  // The budget is enforced on the set actually gated, NOT on the eligible set
+  // computed later: no member's mutex may be pinned by a refused request.
+  const addedKeys = [...(gateLocks?.keys() ?? [])].filter((k) => !keysBefore.has(k));
+  for (const id of big) {
+    expect(addedKeys).not.toContain(id);
+  }
+  expect(addedKeys).toEqual([]);
   // An explicit members list beyond the same budget is refused identically, so
   // the Group is never addressable one way but not the other.
   await expect(first.service.acceptGroupPrompt({
