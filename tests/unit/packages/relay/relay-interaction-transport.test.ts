@@ -381,3 +381,110 @@ describe("relay hub interaction transport (production direction)", () => {
     expect(body.response.content).not.toEqual({});
   });
 });
+
+describe("the hub's answerability fence and close notification", () => {
+  /**
+   * The registry, on its own, is the right level for these two: the fence is
+   * about what the registry accepts, and the notification is about what it emits.
+   * Both are timer races that an HTTP-level test can only observe after the fact.
+   */
+  function makeRegistry(now: () => number = () => Date.now()) {
+    const registry = new InteractionRegistry({
+      debug: () => {},
+    });
+    return { registry, now };
+  }
+
+  function seed(registry: InteractionRegistry, overrides: {
+    requestId: string;
+    expiresAt: number;
+  }) {
+    let settled: { reason: string } | undefined;
+    let resolved = false;
+    registry.open({
+      requestId: overrides.requestId,
+      instanceId: "inst-1",
+      accountId: "acct-1",
+      kind: "elicitation",
+      expiresAt: overrides.expiresAt,
+      chatKey: "relay:acct-1",
+      sessionAlias: "",
+      // Wide enough that the timer could not have fired yet: the fence under
+      // test is the wall-clock check inside `answer`, not the expiry timer.
+      answerWindowMs: 60_000,
+      timeoutMs: 60_000,
+      resolve: () => {
+        resolved = true;
+      },
+      reject: (reason) => {
+        settled = { reason };
+      },
+    });
+    return {
+      wasResolved: () => resolved,
+      wasRejectedWith: () => settled?.reason,
+    };
+  }
+
+  const answerFrame = {
+    requestId: "req-fence",
+    kind: "elicitation" as const,
+    action: "accept" as const,
+    content: { region: "us-east" },
+  };
+
+  it("refuses an answer whose window is already over, however it arrives", () => {
+    // The expiry timer is coarse; a real answer can land a millisecond after
+    // `expiresAt` without it having fired. The wall-clock fence is what closes
+    // that hole, and it must close it BEFORE the decision is handed out.
+    const { registry, now } = makeRegistry(() => Date.parse("2026-09-30T00:00:00.000Z"));
+    const probe = seed(registry, { requestId: "req-fence", expiresAt: now() + 10 });
+    // The window, elapsed — with the timer still far in the future.
+    const lateNow = now() + 11;
+    Date.now = () => lateNow;
+
+    try {
+      expect(registry.answer("req-fence", answerFrame)).toBeNull();
+    } finally {
+      registry.close("req-fence", "expired");
+    }
+
+    expect(probe.wasResolved()).toBe(false);
+    expect(probe.wasRejectedWith()).toBe("expired");
+  });
+
+  it("still answers inside the window", () => {
+    const { registry } = makeRegistry();
+    const probe = seed(registry, { requestId: "req-fence", expiresAt: Date.now() + 10_000 });
+    expect(registry.answer("req-fence", answerFrame)).not.toBeNull();
+    expect(probe.wasResolved()).toBe(true);
+  });
+
+  it("notifies a listener for every closer, so a browser never guesses a close", () => {
+    // The four lifecycle endings that were being emitted from different places:
+    // the handler that resolved, the socket handler that withdrew, and the paths
+    // that closed because the window or the account was gone. A single listener
+    // over the registry sees all of them, which is what makes the browser's state
+    // a property of the registry rather than of an HTTP call.
+    const { registry } = makeRegistry();
+    const seen: Array<{ requestId: string; reason: string }> = [];
+    registry.onClose((closed) => seen.push({ requestId: closed.requestId, reason: closed.reason }));
+
+    const closers = ["resolved", "withdrawn", "expired"] as const;
+    for (const reason of closers) {
+      const requestId = `req-${reason}`;
+      seed(registry, { requestId, expiresAt: Date.now() + 60_000 });
+      if (reason === "resolved") {
+        registry.answer(requestId, { ...answerFrame, requestId });
+      } else {
+        registry.close(requestId, reason);
+      }
+    }
+
+    expect(seen).toEqual([
+      { requestId: "req-resolved", reason: "resolved" },
+      { requestId: "req-withdrawn", reason: "withdrawn" },
+      { requestId: "req-expired", reason: "expired" },
+    ]);
+  });
+});

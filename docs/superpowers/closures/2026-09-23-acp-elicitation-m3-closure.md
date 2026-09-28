@@ -98,17 +98,84 @@ Three assertions carry the weight:
 3. A window that closed before the frame arrived yields a cancel, and no form is
    ever shown for it.
 
+## The identity chain, and the tautology that had to be broken
+
+The invariant is three steps long, and only the first has the hub in it:
+
+```
+hub authenticates responder
+  -> channel reports THAT responder
+  -> core compares responder == turn initiator
+```
+
+For the comparison to mean anything, the value the channel reports must come from
+the hub. An earlier revision of `requestElicitation` returned
+`request.requester.senderId` on every decision, which collapsed the three steps
+into `initiator == initiator` -- a comparison that passes for a decision made by
+any authenticated account, or by none at all. The chain tests stayed green through
+that, because the harness's initiator happened to be the same account the hub
+stamped.
+
+Breaking the tautology requires a test where the two differ, so the harness now
+reads `hubAccountId` off the store the hub authenticates against rather than
+naming an id, and `the responder is the hub's stamp, never the request's
+initiator` opens with an initiator that is NOT the hub's account and asserts the
+decision carries the hub's. Restoring the echo turns three tests red.
+
+## Withdrawal, and why aborting locally was not enough
+
+Core's `request.signal` firing means "stop collecting input". Until now the
+channel treated it as "stop waiting": it rejected its own promise, and the hub's
+pending interaction -- and therefore the form on the human's screen -- stayed
+alive until the window ended, still accepting answers for a turn that no longer
+existed.
+
+The wire grew `control.interaction.withdraw`, whose contract is idempotent by
+design so a withdrawal racing the human's answer is a no-op rather than an
+error. The abort path sends it before settling locally, and the transport-failure
+path sends it too, because a failure can arrive after the hub already opened the
+interaction. On the hub, `close(..., "withdrawn")` removes the pending entry,
+broadcasts to every browser, and turns a later `interactionRespond` into 409.
+
+The regression asserts all four links -- pending entry gone, browser told,
+channel reports cancel, late answer refused -- because a test that only watched
+`requestElicitation()` settle would be satisfied by the local rejection alone.
+Disabling either withdrawal call turns it red.
+
+## One clock for answering, another for the trip home
+
+`expiresAt` and the transport ceiling were the same number. Their gap is the
+reserve a decision made in time needs to reach the connector, so conflating them
+stretched the human's answer window by the reserve: an answer arriving at
+`expiresAt + 5s` was accepted, reported to the human as answered, and delivered
+to a turn that had already expired.
+
+They are now two fields on the entry. The registry's expiry timer runs on
+`answerWindowMs` (the window, without the reserve); `timeoutMs` stays the RPC
+ceiling and is no longer used for the timer. `answer()` additionally re-checks
+`Date.now() >= expiresAt` -- a timer is coarse, so a real answer can slip past
+`expiresAt` before it fires, and that hole was open.
+
+## Close notification is the registry's job, not the handler's
+
+`interaction-closed` used to be emitted from whichever handler triggered the
+close, which left the natural expiry path silent: a browser that outlived its
+window was never told. The registry now notifies a registered listener on every
+closer -- resolved, withdrawn, expired, hub close -- and `createApp` wires that
+listener to the account-scoped broadcast. The handler that answers no longer
+emits its own event, so the browser sees exactly one close per interaction.
+
 ## Layers
 
 | Layer | Change |
 |---|---|
-| `relay-protocol` | message pair, DTOs, validators, `web-dtos` exhaustiveness, capability constant, shared reserve constant, exported `validateInteractionResponse`, optional product correlation ids |
+| `relay-protocol` | message pair + the `withdraw` message, DTOs, validators, `web-dtos` exhaustiveness, capability constant, shared reserve constant, exported `validateInteractionResponse`, optional product correlation ids |
 | core | **B2 blocker removed**: `bot:` keys now route, and a Direct Bot turn gets an elicitation route |
-| `channel-relay` | `requestElicitation` opens the interaction on the hub through the real client |
-| `relay` hub | stamps the responder identity, owns the pending-interaction registry, emits `interaction-opened` / `interaction-closed`, bounds the window by the interaction's own `expiresAt` |
+| `channel-relay` | `requestElicitation` opens the interaction on the hub through the real client, reports the HUB's stamped responder, and withdraws the hub interaction when the request signal aborts or the transport fails |
+| `relay` hub | stamps the responder identity, owns the pending-interaction registry, emits `interaction-opened`, notifies `interaction-closed` for every closer from one listener, adds `control.interaction.withdraw`, and keeps the answer window at `expiresAt` while the RPC ceiling stays `expiresAt + reserve` |
 | `relay-web` store | pending-interaction state, submit/decline/cancel on the answer direction, reconnect re-proof |
 | `relay-web` UI | form renderer in the turn banner, all five field kinds |
-| tests | 12 mutation-verified regressions, including the production-shaped hub round trip and the full chain end to end |
+| tests | 15 mutation-verified regressions, including the production-shaped hub round trip, the full chain end to end, the identity mismatch, the remote withdrawal, and the two-clock boundary |
 
 ## The B2 blocker
 

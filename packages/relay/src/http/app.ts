@@ -11,6 +11,7 @@ import {
   type ControlEventDto,
   type InteractionRequestDto,
   type InteractionResponseDto,
+  type InteractionWithdrawDto,
   type LiveTurnSnapshotDto,
   type PublishedAgentEndpointDto,
   type SessionCommandsSnapshotDto,
@@ -190,6 +191,22 @@ function validateInteractionResponsePayload(payload: unknown): InteractionRespon
   const parsed = parseControlPayload(MSG.interactionRespond, payload);
   if (!parsed) return null;
   return parsed as InteractionResponseDto;
+}
+
+/**
+ * Validate the connector's WITHDRAW frame.
+ *
+ * The narrowest shape that carries the meaning: which interaction, and nothing
+ * else. No reason, no requester identity — the withdrawal IS the request, and
+ * it is idempotent so a withdrawal racing a resolve cannot error.
+ */
+function validateInteractionWithdrawPayload(payload: unknown): InteractionWithdrawDto | null {
+  const parsed = parseControlPayload(MSG.interactionWithdraw, payload);
+  if (!parsed) return null;
+  const candidate = parsed as Partial<InteractionWithdrawDto>;
+  return typeof candidate.requestId === "string"
+    ? { requestId: candidate.requestId }
+    : null;
 }
 
 /**
@@ -383,6 +400,28 @@ export function createApp(deps: AppDeps): Hono<Vars> {
   const now = deps.now ?? (() => new Date());
   const acquireSessionLifecycleRpcLock = createKeyedRpcLock();
   const sessionTurnRpcLock = createKeyedRwLock();
+
+  // ONE broadcast per interaction close, for every closer.
+  //
+  // Whether the window expired, the connector withdrew the call, the human
+  // answered, or the account was revoked, the browser has to be told the form is
+  // gone. Emitting this from the registry — rather than from whichever handler
+  // happened to trigger the close — is what makes the browser's state
+  // independent of which path ran, and is why `interaction-closed` is not
+  // emitted at each of the call sites.
+  deps.interactions?.onClose((closed) => {
+    // Only the account that owns the connector may hear about the close: an
+    // account-scoped broadcast otherwise leaks that an interaction existed.
+    const owner = deps.instances.getOwned(closed.instanceId, closed.accountId);
+    if (owner === null) return;
+    deps.gateway.broadcastControlEvent?.(closed.accountId, {
+      type: "interaction-closed",
+      chatKey: `relay:${closed.accountId}`,
+      sessionAlias: "",
+      requestId: closed.requestId,
+      reason: closed.reason,
+    });
+  });
 
   // Per-IP failure tracking
   const loginFailures = new Map<string, { count: number; windowStart: number }>();
@@ -752,8 +791,14 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       }
       // The connector's ceiling, sent so the connector's own timer cannot fire
       // before the hub decides the window ended.
+      //
+      // `timeoutMs` is when the CALL stops waiting — the window plus a reserve a
+      // decision made in time needs to travel home. It is NOT when answering
+      // stops being legal: `expiresAt` is. Keeping them distinct is what bounds
+      // the human's answer window instead of quietly stretching it by the reserve.
       const timeoutMs = Math.max(1, interaction.expiresAt - Date.now())
         + RELAY_INTERACTION_RESPONSE_RESERVE_MS;
+      const answerWindowMs = Math.max(0, interaction.expiresAt - Date.now());
       const chatKey = `relay:${account.id}`;
       try {
         const outcome = await new Promise<InteractionOutcome>((resolve) => {
@@ -767,6 +812,7 @@ export function createApp(deps: AppDeps): Hono<Vars> {
             sessionAlias: "",
             ...(interaction.conversation !== undefined ? { conversation: interaction.conversation } : {}),
             timeoutMs,
+            answerWindowMs,
             resolve: (decision) => resolve({ kind: "answered", decision }),
             reject: (reason) => resolve({ kind: "closed", reason }),
           });
@@ -822,14 +868,27 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         // window is over; the answer is not a late win.
         return c.json({ error: "interaction-gone" }, 409);
       }
-      // The form is done everywhere, not just in the tab that answered it.
-      deps.gateway.broadcastControlEvent?.(account.id, {
-        type: "interaction-closed",
-        chatKey: closed.chatKey,
-        sessionAlias: closed.sessionAlias,
-        requestId: closed.requestId,
-        reason: "resolved",
-      });
+      // `interaction-closed: resolved` is broadcast by the registry's own
+      // close listener, so this path emits exactly what every other closer
+      // emits. Adding a second one here would double the browser's close.
+      return c.json({ ok: true });
+    }
+    if (body.type === MSG.interactionWithdraw) {
+      // Connector -> hub: WITHDRAW an open interaction.
+      //
+      // This is what makes an abort stop collecting input. The core
+      // `request.signal` firing means the agent withdrew the elicitation or the
+      // turn was disposed; without this the most the connector could do is stop
+      // waiting locally, which would leave a form on the human's screen
+      // accepting answers for a turn that no longer exists.
+      const withdrawal = validateInteractionWithdrawPayload(payload);
+      if (!withdrawal) return c.json({ error: "invalid-payload" }, 400);
+      const registry = deps.interactions;
+      if (!registry) return c.json({ error: "interaction-unavailable" }, 503);
+      // Idempotent: the requestId may already have been resolved, expired, or
+      // withdrawn by a racing path. A withdrawal of an interaction that ended on
+      // its own is not an error — it already achieved the state being asked for.
+      registry.close(withdrawal.requestId, "withdrawn");
       return c.json({ ok: true });
     }
     const releaseSessionRpcLocks: Array<() => void> = [];

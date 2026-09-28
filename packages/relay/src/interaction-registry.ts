@@ -55,6 +55,15 @@ export interface PendingInteraction {
    * to travel back.
    */
   timeoutMs: number;
+  /**
+   * How long the interaction stays answerable — the window, without the reserve.
+   *
+   * Deliberately not spelled `expiresAt - now` at the timer so the two clocks
+   * cannot drift: `expiresAt` is the authority and is re-checked on every answer,
+   * while this only decides when the hub stops waiting. Sharing `timeoutMs` here
+   * would extend the answer window by the reserve.
+   */
+  answerWindowMs: number;
   /** Settles the opening call with the human's decision. */
   resolve: (decision: InteractionResponseDto) => void;
   /** Rejects with the close reason, so a connector that is still waiting learns
@@ -68,10 +77,41 @@ export interface InteractionRegistryLogger {
   debug(event: string, message: string, fields?: Record<string, unknown>): void;
 }
 
+/**
+ * Notified whenever an interaction leaves the open set, from ANY closer.
+ *
+ * The broadcast exists so the browser never has to infer a closure: a form must
+ * stop being interactive the moment the interaction is no longer answerable,
+ * whether that was a resolve, an expiry, or a withdrawal. Reasoning that this
+ * belongs to the HTTP handler instead is what led to the gap this closes — the
+ * handler only saw the paths it triggered itself.
+ */
+export interface InteractionClosedListener {
+  (closed: {
+    requestId: string;
+    instanceId: string;
+    accountId: string;
+    kind: "permission" | "elicitation";
+    reason: InteractionCloseReason;
+  }): void;
+}
+
 export class InteractionRegistry {
   private readonly pending = new Map<string, PendingInteraction>();
+  private readonly closedListeners = new Set<InteractionClosedListener>();
 
   constructor(private readonly logger: InteractionRegistryLogger) {}
+
+  /**
+   * Subscribe to every close. Used by the hub to broadcast `interaction-closed`
+   * so the browser stops showing a form nobody may answer.
+   */
+  onClose(listener: InteractionClosedListener): () => void {
+    this.closedListeners.add(listener);
+    return () => {
+      this.closedListeners.delete(listener);
+    };
+  }
 
   /** Open count, for diagnostics. */
   get size(): number {
@@ -87,11 +127,9 @@ export class InteractionRegistry {
    */
   open(entry: Omit<PendingInteraction, "closed" | "timer">): void {
     const withTimer: PendingInteraction = { ...entry, closed: false };
-    // The transport ceiling, not the window: a decision that arrived inside the
-    // window still needs its trip home.
     withTimer.timer = setTimeout(() => {
       this.close(entry.requestId, "expired");
-    }, Math.max(0, entry.timeoutMs));
+    }, Math.max(0, entry.answerWindowMs));
     if (typeof withTimer.timer.unref === "function") withTimer.timer.unref();
     this.pending.set(entry.requestId, withTimer);
     this.logger.debug("relay.interaction.opened", "interaction opened", {
@@ -113,6 +151,18 @@ export class InteractionRegistry {
   answer(requestId: string, decision: InteractionResponseDto): PendingInteraction | null {
     const entry = this.pending.get(requestId);
     if (!entry || entry.closed) return null;
+    // The window's own fence, re-checked here even though a timer exists.
+    //
+    // `expiresAt` is when answering STOPS being legal; `timeoutMs` is only when
+    // the CALL stops waiting. They differ by the transport reserve, so an answer
+    // can arrive after `expiresAt` while the timer is still armed. Timer
+    // granularity makes that a real race, not a theoretical one: accepting it
+    // would tell the human "answered" for a window that already closed, and would
+    // deliver a late decision to a turn that already expired.
+    if (Date.now() >= entry.expiresAt) {
+      this.close(requestId, "expired");
+      return null;
+    }
     this.finish(entry, "resolved");
     entry.resolve(decision);
     return entry;
@@ -165,5 +215,25 @@ export class InteractionRegistry {
       instanceId: entry.instanceId,
       reason,
     });
+    // Every closer, so the browser's form is retired on the actual close rather
+    // than on the reader's guess about which path closed it.
+    for (const listener of this.closedListeners) {
+      try {
+        listener({
+          requestId: entry.requestId,
+          instanceId: entry.instanceId,
+          accountId: entry.accountId,
+          kind: entry.kind,
+          reason,
+        });
+      } catch (error) {
+        // A listener failure is not a reason to leave an interaction half closed:
+        // the entry is already gone and the opener already settled.
+        this.logger.debug("relay.interaction.close_listener_failed", "interaction close listener threw", {
+          requestId: entry.requestId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 }

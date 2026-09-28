@@ -1,4 +1,4 @@
-import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotSummaryDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, TopicSummaryDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, InteractionWithdrawDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotSummaryDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, TopicSummaryDto } from "./dtos.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
     readonly instanceAuth: "instance.auth";
@@ -122,6 +122,21 @@ export declare const MSG: {
      * payload carries no identity field at all, so there is nothing to forge.
      */
     readonly interactionRespond: "control.interaction.respond";
+    /**
+     * Connector -> hub: WITHDRAW an interaction that is still open.
+     *
+     * This is what makes an abort actually stop collecting input. The core
+     * `request.signal` fires when the agent withdraws the elicitation or the turn
+     * is disposed; without this message the connector could only stop waiting
+     * locally, and the hub would keep the pending interaction alive — leaving a
+     * form on the human's screen that accepts answers for a turn that no longer
+     * exists.
+     *
+     * Idempotent: withdrawing a requestId that is already closed is a success, so
+     * a withdrawal racing the human's own answer cannot produce an error the
+     * connector would have to interpret.
+     */
+    readonly interactionWithdraw: "control.interaction.withdraw";
 };
 export type MessageType = (typeof MSG)[keyof typeof MSG];
 export interface ErrorPayload {
@@ -509,6 +524,7 @@ export interface UploadResult {
  */
 export type InteractionRequestPayload = InteractionRequestDto;
 export type InteractionResponsePayload = InteractionResponseDto;
+export type InteractionWithdrawPayload = InteractionWithdrawDto;
 /**
  * The RPC result of an opened interaction.
  *

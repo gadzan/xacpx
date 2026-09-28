@@ -383,6 +383,13 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   const interactions = new InteractionRegistry({
     debug: (event, message, fields) => logger.debug(event, message, fields),
   });
+  // ONE broadcast per interaction close, for every closer.
+  //
+  // Emitted from the registry itself (see `createApp`) rather than from each
+  // closer, so the browser's state is independent of which path ran.
+  const broadcastControlEvent = (accountId: string, event: ControlEventDto): void => {
+    webGateway.broadcast(accountId, { kind: "control-event", instanceId: "", event });
+  };
   const gateway = new InstanceGateway({
     instances,
     accounts,
@@ -390,9 +397,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     logger,
     pendingCompletionRoutes,
     interactions,
-    broadcastControlEvent: (accountId, event) => {
-      webGateway.broadcast(accountId, { kind: "control-event", instanceId: "", event });
-    },
+    broadcastControlEvent,
     onDirectoryChange: (accountId, endpoints) => {
       webGateway.broadcast(accountId, { kind: "agent-directory", endpoints });
     },

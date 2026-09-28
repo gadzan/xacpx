@@ -520,12 +520,16 @@ export class RelayChannel implements MessageChannelRuntime {
       // channel (terminal disabled) would bail on a logger that was never set.
       return { action: "cancel", responderId: "" };
     }
-    // The initiator identity, echoed back verbatim on a terminal decision so core
-    // can re-verify it. A missing one means the turn was never attributable, and
-    // opening an interaction that could not be matched back to a live turn would
-    // leave the form answerable by nobody.
-    const responderId = request.requester?.senderId ?? "";
-    if (!responderId) {
+    // The turn's own initiator, used for ONE purpose: refusing to open an
+    // interaction for a turn that has no attributable human. It is deliberately
+    // NOT the identity reported back on a decision.
+    //
+    // The reported responder is the one the HUB stamped from its authenticated
+    // session — see the mapping below. Echoing the initiator instead would turn
+    // core's re-verification into `initiator == initiator`, which is a tautology
+    // and would let a decision by anybody pass as the turn's initiator.
+    const initiatorId = request.requester?.senderId ?? "";
+    if (!initiatorId) {
       return { action: "cancel", responderId: "" };
     }
     const fields = relayFieldsFrom(request.fields);
@@ -536,7 +540,7 @@ export class RelayChannel implements MessageChannelRuntime {
       await this.startLogger?.warn("relay.elicitation.rejected", "core/wire field model drift", {
         requestId,
       });
-      return { action: "cancel", responderId };
+      return { action: "cancel", responderId: initiatorId };
     }
     const correlation = this.conversationCorrelation(request);
     const interaction: InteractionRequestDto = {
@@ -560,14 +564,23 @@ export class RelayChannel implements MessageChannelRuntime {
       const outcome = parseRelayInteractionOutcome(relayResult);
       if (!outcome.responded) {
         // Not a user action: the hub closed the window (timeout, unsupported,
-        // withdrawn). The agent sees an abort, never a fake decline.
+        // withdrawn). The agent sees an abort, never a fake decline. There is no
+        // responder to report, because no authenticated human decided anything.
         await this.startLogger?.warn("relay.elicitation.closed", "relay interaction closed without a user decision", {
           requestId,
           reason: outcome.reason,
         });
-        return { action: "cancel", responderId };
+        return { action: "cancel", responderId: initiatorId };
       }
       const decision = outcome.response;
+      // THE LOAD-BEARING LINE: the responder is the one the HUB stamped from its
+      // own authenticated session — never the initiator this channel started
+      // with, and never anything derived here.
+      //
+      // Reporting the initiator would make core's re-verification compare it with
+      // itself, which is a tautology: it would pass for a decision made by ANY
+      // authenticated account, or by none at all.
+      const responderId = decision.responderId;
       // Narrowed to the elicitation action set. A permission action
       // (`allow_once` and friends) on an elicitation is a protocol surprise, not
       // a decision to pass to core — core would reject it, so refuse here with
@@ -586,11 +599,17 @@ export class RelayChannel implements MessageChannelRuntime {
       // Transport failure, or the request signal fired while the RPC was still
       // in flight. Either way there is no decision to report and the interaction
       // is abandoned — core's own fence settles the abort.
+      //
+      // The withdrawal is also emitted here, not only on the signal path: a
+      // transport failure can happen after the hub already opened the
+      // interaction, and leaving it open would collect answers for a turn whose
+      // outcome is already settled. Idempotent, so nothing double-closes.
+      this.withdrawInteraction(requestId);
       await this.startLogger?.warn("relay.elicitation.failed", "relay elicitation transport failed", {
         requestId,
         message: error instanceof Error ? error.message : String(error),
       });
-      return { action: "cancel", responderId };
+      return { action: "cancel", responderId: initiatorId };
     }
   }
 
@@ -600,13 +619,19 @@ export class RelayChannel implements MessageChannelRuntime {
    * Abort is propagated in BOTH directions, because a request that is abandoned
    * mid-flight must not leave a live form on someone's screen:
    *
-   *   outbound — core aborts (turn disposal, agent `$/cancel_request`, timeout)
-   *     and we reject the RPC immediately. The hub's `sendRequest` promise is
-   *     left to time out on its own ceiling; its `interaction-closed` broadcast
-   *     then tells the browser to drop the form.
+   *   outbound — core aborts (turn disposal, agent `$/cancel_request`, timeout).
+   *     Rejecting this promise locally is NOT enough on its own: the hub would
+   *     keep the interaction open and keep collecting answers for a turn that no
+   *     longer exists. So the abort also sends `control.interaction.withdraw`,
+   *     which closes the hub's pending entry, broadcasts `interaction-closed:
+   *     withdrawn` to every browser, and makes a later answer `409 gone`.
    *   inbound — if the transport rejects because the socket went away, we
    *     surface it as a rejection rather than a hang, and the caller's catch
    *     closes the interaction.
+   *
+   * The withdrawal is fire-and-forget: the local promise is already settled, and
+   * the hub's `close` is idempotent, so a withdrawal that loses a race against
+   * the human's own answer is a no-op rather than an error.
    */
   private sendInteractionRequest(
     interaction: InteractionRequestDto,
@@ -624,6 +649,9 @@ export class RelayChannel implements MessageChannelRuntime {
     if (!signal) return inFlight;
     return new Promise((resolve, reject) => {
       const onAbort = (): void => {
+        // Withdraw on the hub BEFORE settling locally, so the form disappears for
+        // the human in the same tick the agent stops waiting for it.
+        this.withdrawInteraction(interaction.requestId);
         reject(new Error("elicitation interaction aborted"));
       };
       signal.addEventListener("abort", onAbort, { once: true });
@@ -632,6 +660,30 @@ export class RelayChannel implements MessageChannelRuntime {
         (error: unknown) => reject(error),
       ).finally(() => signal.removeEventListener("abort", onAbort));
     });
+  }
+
+  /**
+   * Tell the hub to close an interaction that is still open.
+   *
+   * Deliberately not awaited by the abort path: the caller's promise is already
+   * settled, and a withdrawal must never delay or block the local outcome. The
+   * hub's registry treats a withdrawal of an already-closed interaction as
+   * success, so this cannot be observed as a failure.
+   */
+  private withdrawInteraction(requestId: string): void {
+    const client = this.client;
+    if (!client || typeof client.sendRequest !== "function") return;
+    try {
+      void Promise.resolve(
+        client.sendRequest(MSG.interactionWithdraw, { requestId }, { timeoutMs: 5_000 }),
+      ).catch(() => {
+        // The socket went away with the interaction. Nothing to withdraw: the hub
+        // drops every interaction a disconnected connector opened.
+      });
+    } catch {
+      // Same as above for a synchronous throw — the hub already withdrew on
+      // disconnect, so there is no state left to clean up.
+    }
   }
 
   /**

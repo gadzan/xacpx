@@ -814,3 +814,9 @@ export interface InteractionResponseDto {
   /** Elicitation `accept` only. `null` is a valid all-optional accept. */
   content?: Record<string, InteractionValueDto> | null;
 }
+
+/** Connector -> hub: WITHDRAW an still-open interaction. */
+export interface InteractionWithdrawDto {
+  /** The interaction to withdraw. Idempotent for ids that already closed. */
+  requestId: string;
+}

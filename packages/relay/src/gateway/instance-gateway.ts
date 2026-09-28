@@ -333,22 +333,13 @@ export class InstanceGateway {
     // was waiting for a decision went away with the socket, so the browser must
     // stop showing the form and the pending open must close as withdrawn. Leaving
     // them would strand a form on screen pointing at a turn that no longer exists.
-    //
-    // The entries are collected BEFORE closing, because a closed entry is
-    // removed from the registry — reading it back afterwards would yield null
-    // and broadcast a `chatKey` of "" to the wrong account.
     const interactions = this.deps.interactions;
     if (interactions) {
-      const toWithdraw = interactions.listForInstance(instanceId);
-      for (const entry of toWithdraw) {
+      for (const entry of interactions.listForInstance(instanceId)) {
+        // The broadcast is NOT issued here: the registry's own close listener
+        // broadcasts `interaction-closed` for every closer, including this one.
+        // Emitting it here as well would double the browser's close event.
         interactions.close(entry.requestId, "withdrawn");
-        this.deps.broadcastControlEvent?.(entry.accountId, {
-          type: "interaction-closed",
-          chatKey: entry.chatKey,
-          sessionAlias: entry.sessionAlias,
-          requestId: entry.requestId,
-          reason: "withdrawn",
-        });
       }
     }
     this.deps.onStatusChange?.(instanceId, accountId, false);

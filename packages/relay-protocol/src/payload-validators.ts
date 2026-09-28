@@ -48,6 +48,7 @@ import {
   type GitWorktreeCreatePayload,
   type InteractionRequestPayload,
   type InteractionResponsePayload,
+  type InteractionWithdrawPayload,
   type OrchestrationCancelPayload,
   type OrchestrationGetPayload,
   type PromptCancelPayload,
@@ -687,6 +688,19 @@ export const validateInteractionResponse: Validator<InteractionResponsePayload> 
   if (o.content !== undefined && o.content !== null) return null;
   return o as unknown as InteractionResponsePayload;
 };
+/**
+ * Connector -> hub WITHDRAW: which interaction, and nothing else.
+ *
+ * No reason and no identity — the withdrawal IS the request, and the hub's
+ * registry treats withdrawing an already-closed interaction as success, so a
+ * withdrawal racing a resolve cannot be observed as an error.
+ */
+export const validateInteractionWithdraw: Validator<InteractionWithdrawPayload> = (p) => {
+  const o = fields(p);
+  if (!o) return null;
+  if (!isBoundedStr(o.requestId, 128)) return null;
+  return o as unknown as InteractionWithdrawPayload;
+};
 /** The control-RPC message types that carry a client-supplied payload to validate.
  *  Excludes: handshake (instanceRegister/instanceAuth — validated in instance-gateway),
  *  event-direction (instanceEvent/instanceNotice — boundary B via validControlEvent),
@@ -722,7 +736,8 @@ export type ControlRpcType =
   | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown
   | typeof MSG.conversationPrompt | typeof MSG.conversationHistory
   | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel
-  | typeof MSG.interactionRequest | typeof MSG.interactionRespond;
+  | typeof MSG.interactionRequest | typeof MSG.interactionRespond
+  | typeof MSG.interactionWithdraw;
 
 /** Registry: control-RPC type → shape validator. `satisfies` locks both directions —
  *  a ControlRpcType with no validator, or a validator whose key isn't a ControlRpcType,
@@ -803,6 +818,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.runsCancel]: validateRunsCancel,
   [MSG.interactionRequest]: validateInteractionRequest,
   [MSG.interactionRespond]: validateInteractionResponse,
+  [MSG.interactionWithdraw]: validateInteractionWithdraw,
 } satisfies Record<ControlRpcType, Validator<unknown>>;
 
 /** The payload type bound to a control-RPC message, derived from its validator's return. */

@@ -173,7 +173,8 @@ var MSG = {
   runsList: "control.runs.list",
   runsCancel: "control.runs.cancel",
   interactionRequest: "control.interaction.request",
-  interactionRespond: "control.interaction.respond"
+  interactionRespond: "control.interaction.respond",
+  interactionWithdraw: "control.interaction.withdraw"
 };
 function errorPayload(code, message) {
   return { error: { code, message } };
@@ -1369,6 +1370,14 @@ var validateInteractionResponse = (p) => {
     return null;
   return o;
 };
+var validateInteractionWithdraw = (p) => {
+  const o = fields(p);
+  if (!o)
+    return null;
+  if (!isBoundedStr(o.requestId, 128))
+    return null;
+  return o;
+};
 var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.sessionsList]: validateSessionsList,
   [MSG.sessionsCreate]: validateSessionsCreate,
@@ -1444,7 +1453,8 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel,
   [MSG.interactionRequest]: validateInteractionRequest,
-  [MSG.interactionRespond]: validateInteractionResponse
+  [MSG.interactionRespond]: validateInteractionResponse,
+  [MSG.interactionWithdraw]: validateInteractionWithdraw
 };
 function parseControlPayload(type, payload) {
   const validate = CONTROL_PAYLOAD_VALIDATORS[type];
@@ -1576,6 +1586,7 @@ export {
   validControlEvent,
   validInstanceStateSync,
   validateInteractionResponse,
+  validateInteractionWithdraw,
   webClientEnvelope,
   webEventEnvelope
 };
