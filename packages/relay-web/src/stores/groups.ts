@@ -1022,18 +1022,24 @@ export const useGroupsStore = defineStore("groups", () => {
   }
 
   /** A durable `runs.list` that reports NO active owner is the authority on
-   *  Topic ownership. A locally cached nonterminal owner is then stale: the Run
-   *  finished (or was cancelled) while this client was away, and no later
-   *  `runs.get` may decide whether the composer unlocks. Concretely, one failing
-   *  detail RPC after a correct list previously left `isRunActive` true forever.
+   *  Topic ownership, so it must never be overruled by a detail RPC: `runs.get`
+   *  may not decide whether the composer unlocks. Concretely, one failing detail
+   *  RPC after a correct list previously left `isRunActive` true forever.
    *
    *  If the stale run appears in the list, its terminal summary is merged so the
    *  card renders the real outcome rather than vanishing. Either way the local
-   *  ownership is released. */
-  function reconcileNoActiveOwner(instId: string, runs: ConversationRunDto[]): void {
+   *  ownership is released — that is what unlocks the composer.
+   *
+   *  Returns the id of the Run that is tracked afterwards so callers can enrich
+   *  its member rows best-effort: `runs.list` summaries carry none, and that
+   *  display data must never be able to re-gate the composer. */
+  function reconcileNoActiveOwner(
+    instId: string,
+    runs: ConversationRunDto[],
+  ): { settledRunId: string | null } {
     const current = activeRun.value;
     if (!current || isTerminalRunState(current.state)) {
-      return;
+      return { settledRunId: null };
     }
     const runId = current.id;
     const summary = runs.find((run) => run.id === runId);
@@ -1045,7 +1051,7 @@ export const useGroupsStore = defineStore("groups", () => {
       } else {
         // Still nonterminal by the list's own summary: keep the ownership, the
         // list may simply lag behind a Run that started a moment ago.
-        return;
+        return { settledRunId: null };
       }
     } else {
       // The list no longer mentions our run at all (rolled off / foreign client):
@@ -1059,6 +1065,7 @@ export const useGroupsStore = defineStore("groups", () => {
     cancelError.value = null;
     ownershipUncertain.value = false;
     void instId;
+    return { settledRunId: activeRun.value?.id ?? null };
   }
 
   async function recoverActiveRun(
@@ -1100,7 +1107,10 @@ export const useGroupsStore = defineStore("groups", () => {
       const candidate = listed.activeRun
         ?? (listed.activeRunId ? listed.runs.find((run) => run.id === listed.activeRunId) : undefined);
       if (!candidate) {
-        reconcileNoActiveOwner(iId, listed.runs);
+        const { settledRunId } = reconcileNoActiveOwner(iId, listed.runs);
+        if (settledRunId) {
+          await enrichRunDetail(iId, settledRunId, ownedDiscoveryId);
+        }
         return true;
       }
       if (activeRun.value && activeRun.value.id !== candidate.id && !isTerminalRunState(activeRun.value.state)) {
@@ -1873,10 +1883,16 @@ export const useGroupsStore = defineStore("groups", () => {
         // Same durable-owner rule as recoverActiveRun: a list with no owner
         // releases a locally cached nonterminal Run, so one detail failure
         // cannot strand the composer.
-        reconcileNoActiveOwner(targetInstId, listed.runs);
+        const { settledRunId } = reconcileNoActiveOwner(targetInstId, listed.runs);
+        // Settle the authority first: the composer must be unlocked before any
+        // display-only enrichment is attempted, so a failing `runs.get` can
+        // never leave the Topic looking owned by a finished Run.
         ownershipUncertain.value = false;
         cancelError.value = null;
         topicReady.value = true;
+        if (settledRunId) {
+          await enrichRunDetail(targetInstId, settledRunId, checkDiscoveryId);
+        }
         return true;
       }
       if (activeRun.value && activeRun.value.id !== candidate.id && !isTerminalRunState(activeRun.value.state)) {

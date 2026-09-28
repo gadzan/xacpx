@@ -67,9 +67,13 @@ function clearSentDraft(): void {
 
 // A Group/Topic switch drops the draft text, so the derived suppression must
 // drop with it (otherwise the first mention in the next draft is ignored).
+// A Group/Topic switch drops the draft text, so the derived suppression must
+// drop with it (otherwise the first mention in the next draft is ignored).
+// `sync` is load-bearing: a pre-flush watcher would run AFTER the user has
+// already started typing in the new Topic and would delete that newer draft.
 watch(() => groupsStore.activeTopicId, () => {
   clearSentDraft();
-});
+}, { flush: "sync" });
 
 function toggleMenu(): void {
   if (props.disabled) return;
@@ -253,11 +257,17 @@ async function handleSend(): Promise<void> {
     // Textbook semantics: after a send the text no longer carries a mention, so
     // the derived state must reset or the next draft would inherit suppression.
     const outcome = await props.sendOutcome();
-    // Only a definitive refusal keeps the draft — the accept never happened, so
-    // the typed text is the only remaining copy. `accepted`/`uncertain`/`orphaned`
-    // all clear it: the first two are durably represented, and an orphaned send
-    // belongs to a Topic the user has left, so this draft is a different message.
-    if (outcome !== "rejected") {
+    // Only `accepted` and `uncertain` own this draft: their prompt is durably
+    // represented (transcript, or replayable via Retry), so the text can go.
+    //
+    // `orphaned` must NOT touch the composer. The Topic watcher already dropped
+    // this draft when the user switched Topics; whatever is in the textarea now
+    // is a NEW draft typed against the new Topic, and clobbering it from a late
+    // completion of another Topic's send loses real user input.
+    //
+    // `rejected` keeps the same draft: no durable accept exists, so the typed
+    // text is the only remaining copy.
+    if (outcome === "accepted" || outcome === "uncertain") {
       clearSentDraft();
     }
     return;

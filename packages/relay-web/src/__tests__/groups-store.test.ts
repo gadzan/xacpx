@@ -1290,13 +1290,16 @@ describe("useGroupsStore", () => {
       profileRevision: 1, createdAt: "now", startedAt: "now",
     };
     store.activeRun = staleRunning;
-    // The detail RPC rejects: enrichment is display-only and must not be able
-    // to hold the composer hostage.
+    // Real wire shape: `listTopicRuns` only names `activeRunId` for
+    // running/waiting-human (else queued). A terminal Run is therefore never the
+    // owner, so the list reports no candidate and the no-owner path must run.
     mockRpc.mockImplementation(async (inst: string, type: string) => {
       if (type === "control.runs.list") {
-        return { runs: [{
-          ...staleRunning, state: "completed",
-        }], conversationId: "conversation_g", topicId: "topic_1" };
+        return {
+          runs: [{ ...staleRunning, state: "completed" }],
+          conversationId: "conversation_g",
+          topicId: "topic_1",
+        };
       }
       if (type === "control.runs.get") throw new Error("detail unavailable");
       throw new Error(`unexpected ${type}`);
@@ -1308,7 +1311,7 @@ describe("useGroupsStore", () => {
     expect(store.activeRun?.state).toBe("completed");
   });
 
-  it("recovers terminal member rows when the list summary is the only proof", async () => {
+  it("recovers terminal member rows from the no-owner path when runs.get succeeds", async () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";
     store.selectedGroupId = "conversation_g";
@@ -1321,16 +1324,20 @@ describe("useGroupsStore", () => {
       profileRevision: 1, createdAt: "now", startedAt: "now",
     };
     store.activeRun = staleRunning;
-    const detailRun: ConversationRunDto = {
-      ...staleRunning, state: "completed",
-    };
+    const detailRun: ConversationRunDto = { ...staleRunning, state: "completed" };
+    let getCalls = 0;
     mockRpc.mockImplementation(async (inst: string, type: string, payload?: unknown) => {
       if (type === "control.runs.list") {
-        return { runs: [{ ...detailRun }], activeRunId: "run_term2", conversationId: "conversation_g", topicId: "topic_1" };
+        return {
+          runs: [{ ...detailRun }],
+          conversationId: "conversation_g",
+          topicId: "topic_1",
+        };
       }
       // The list summary is authoritative for the terminal state; the detail
       // carries the per-member rows it cannot.
       if (type === "control.runs.get") {
+        getCalls += 1;
         expect((payload as { runId: string }).runId).toBe("run_term2");
         return { run: { ...detailRun, memberTurns: [
           { id: "turn_a", runId: "run_term2", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_a", batch: 1, attempt: 1, origin: "human-explicit", state: "completed", createdAt: "now" },
@@ -1346,6 +1353,7 @@ describe("useGroupsStore", () => {
     expect(store.isRunActive).toBe(false);
     expect(store.topicReady).toBe(true);
     expect(store.memberTurns.map((m) => m.state)).toEqual(["completed", "failed"]);
+    expect(getCalls).toBe(1);
   });
 
   it("does not let a stale Topic refresh overwrite a newly opened Group", async () => {

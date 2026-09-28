@@ -180,17 +180,24 @@ describe("Group Components", () => {
     it("discards the draft when the Topic switches under a pending send", async () => {
       const groups = seedGroupSelection();
       const gate = Promise.withResolvers<GroupSendOutcome>();
+      // Seeded before mount: the outcome provider must hold the send from the
+      // moment the composer can call it, so there is no window in which the
+      // composer reads the store's real (immediately-settling) promise.
+      vi.spyOn(groups, "sendPromptOutcomePromise", "get").mockReturnValue(gate.promise);
       const wrapper = mount(GroupPane, {
         global: { plugins: [i18n] },
       });
       await flushPromises();
       const textarea = wrapper.find('[data-test="group-composer-textarea"]');
       await textarea.setValue("deploy");
-      // Send on topic_1: hold the outcome promise so the RPC is "in flight"
-      // until the test releases it.
-      vi.spyOn(groups, "sendPromptOutcomePromise", "get").mockReturnValue(gate.promise);
+      await flushPromises();
+      // A resolvable target is what enables the send button.
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      await flushPromises();
+      expect(groups.targetResolvable).toBe(true);
       await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
       await flushPromises();
+      // The draft survives while the outcome is pending.
       expect((textarea.element as HTMLTextAreaElement).value).toBe("deploy");
       // Switch to a second Topic while it is still in flight.
       groups.topicsByConversation["i1:conversation_g"] = [
@@ -201,11 +208,24 @@ describe("Group Components", () => {
       await flushPromises();
       // The draft must not follow the user into the new Topic.
       expect((textarea.element as HTMLTextAreaElement).value).toBe("");
-      // The topic_1 response arrives: it may have been durably accepted, but
-      // this draft belongs to topic_2 and is not a replay of it.
+      // The new Topic becomes ready (its history finished loading) and the user
+      // starts typing there while the old send is still outstanding.
+      groups.topicReady = true;
+      await flushPromises();
+      const liveTextarea = wrapper.find('[data-test="group-composer-textarea"]');
+      expect((liveTextarea.element as HTMLTextAreaElement).disabled).toBe(false);
+      await liveTextarea.setValue("do not deploy");
+      await flushPromises();
+      const draftNow = wrapper.findComponent(GroupComposer).vm as unknown as { promptText: string };
+      expect(draftNow.promptText).toBe("do not deploy");
+      // The topic_1 response lands now: it may have been durably accepted, but
+      // its completion cannot mutate a draft that belongs to topic_2.
       gate.resolve("orphaned");
       await flushPromises();
-      expect((textarea.element as HTMLTextAreaElement).value).toBe("");
+      const composerVm = wrapper.findComponent(GroupComposer).vm as unknown as { promptText: string };
+      expect(composerVm.promptText).toBe("do not deploy");
+      // And the pending target from the old Topic is not projected either.
+      expect(groups.promptInFlight).toBe(false);
     });
 
     it("re-derives a mention in the FIRST draft after an accepted send", async () => {
