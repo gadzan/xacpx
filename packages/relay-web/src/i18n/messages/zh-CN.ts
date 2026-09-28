@@ -682,6 +682,7 @@ export default {
       botDisabled: "Bot 已被禁用。请启用后再发送消息。",
       runInProgress: "已有运行正在进行。请等待完成或取消后再试。",
       topicQueueFull: "该话题排队中的运行过多。请等待其中一个完成或取消后再试。",
+      targetTooLarge: "所选成员数量超过单个运行可处理的上限。请选择更小的成员子集。",
       promptPendingConfirmation: "上一条消息尚未确认。请重试该消息或等待其结束后再发送新消息。",
       cancelUnknown: "取消结果未知。正在等待实例状态...",
       instanceOffline: "实例已离线",

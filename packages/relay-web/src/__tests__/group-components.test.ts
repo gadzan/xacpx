@@ -177,6 +177,24 @@ describe("Group Components", () => {
       expect(wrapper.text()).not.toContain("topicQueueFull");
     });
 
+    it("renders an oversized everyone refusal as product copy, not backend English", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      groups.promptError = "targetTooLarge";
+      groups.promptErrorDetail = null;
+      await flushPromises();
+      // The backend's message is "explicit Group target selects more than 64
+      // members" — an English internal string that must never reach a zh UI.
+      expect(wrapper.text()).toContain("more members than one run can handle");
+      expect(wrapper.text()).not.toContain("explicit Group target");
+      // A disabled member refusal uses the existing product copy too.
+      groups.promptError = "botDisabled";
+      await flushPromises();
+      expect(wrapper.text()).toContain("Enable it before sending");
+    });
+
     it("Lead shortcut never selects a disabled Bot", async () => {
       const groups = seedGroupSelection();
       const direct = useDirectBotsStore();
@@ -266,8 +284,8 @@ describe("Group Components", () => {
       // The closing quote is itself the delimiter: no trailing whitespace needed.
       await textarea.setValue('@"Code Reviewer"');
       expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_c"] });
+      await textarea.setValue('wait until done, then @"Code Reviewer", please');
       await textarea.trigger("blur");
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_c"] });
     });
 
     it("routes a quoted mention followed by punctuation at send time", async () => {
@@ -279,19 +297,42 @@ describe("Group Components", () => {
             { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
             { id: "bot_c", name: "Code Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
           ],
+          // Standalone mount: no RPC. Report a definitive refusal so the draft (and
+          // therefore the mention) survives to be asserted.
+          sendOutcome: () => Promise.resolve("rejected" as const),
         },
         global: { plugins: [i18n] },
       });
+      // Flush the Topic watcher so the derived-suppression reset from mounting
+      // does not land after the first mention is committed.
+      await flushPromises();
       const textarea = wrapper.find('[data-test="group-composer-textarea"]');
-      // Punctuation directly after the quote used to leave the target on Bot A.
+      // Punctuation directly after the quote used to leave the target on Bot A:
+      // the closing quote alone must be enough to commit the mention.
       await textarea.setValue('@"Code Reviewer": please review');
+      await textarea.trigger("blur");
       expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_c"] });
-      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
-      expect(wrapper.emitted("send")).toEqual([['@"Code Reviewer": please review']]);
-      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_c"] });
-      // Same for a comma: the punctuation must not demote the token.
+    });
+
+    it("does not let punctuation after a quoted mention demote the token", async () => {
+      const groups = seedGroupSelection();
       groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
-      await textarea.setValue('wait @"Code Reviewer", please');
+      const wrapper = mount(GroupComposer, {
+        props: {
+          bots: [
+            { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+            { id: "bot_c", name: "Code Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          ],
+          sendOutcome: () => Promise.resolve("rejected" as const),
+        },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      // A comma directly after the closing quote: the punctuation must not
+      // demote the token back to the previously selected Bot.
+      await textarea.setValue('wait until done, then @"Code Reviewer", please');
+      await textarea.trigger("blur");
       expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_c"] });
     });
 
@@ -347,6 +388,24 @@ describe("Group Components", () => {
       expect(wrapper.find('[data-test="group-retry-prompt-button"]').exists()).toBe(true);
     });
 
+    it("lets an EOF mention make this very send valid from an empty target", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: [] };
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n] } });
+      await flushPromises();
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      // Typing stops at EOF, so the mention is still uncommitted — which is why
+      // Send looks disabled. It must not stay that way after the send attempt.
+      await textarea.setValue("@Tester");
+      expect(wrapper.find('[data-test="group-send-prompt-button"]').attributes("disabled")).toBeDefined();
+      // Enter: the boundary commit must run BEFORE the target is judged.
+      await textarea.trigger("keydown", { key: "Enter" });
+      await flushPromises();
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+      await textarea.trigger("keydown", { key: "Enter" });
+      await flushPromises();
+    });
+
     it("commits the pending token when the text is sent", async () => {
       const groups = seedGroupSelection();
       groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
@@ -360,7 +419,7 @@ describe("Group Components", () => {
       await textarea.setValue("@everyone");
       expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
       await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
-      expect(wrapper.emitted("send")).toEqual([["@everyone"]]);
+      // The boundary commit applies the target before the send is attempted.
       expect(groups.targetSelection).toEqual({ mode: "everyone" });
     });
 

@@ -685,6 +685,7 @@ export default {
       botDisabled: "Bot is disabled. Enable it before sending messages.",
       runInProgress: "A run is already in progress. Wait for it to finish or cancel it.",
       topicQueueFull: "This topic has too many queued runs. Wait for one to finish or cancel it.",
+      targetTooLarge: "This would select more members than one run can handle. Pick a smaller subset.",
       promptPendingConfirmation: "Previous message is still unconfirmed. Retry it or wait for it to settle before sending a new one.",
       cancelUnknown: "Cancellation outcome unknown. Waiting for instance state...",
       instanceOffline: "Instance is offline",

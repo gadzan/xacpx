@@ -1143,6 +1143,79 @@ describe("useGroupsStore", () => {
     expect(store.uncertainPrompt?.requestId).toBe("req_mine");
   });
 
+  it("releases a stale running owner when runs.list proves there is none and runs.get fails", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.groupsByInstance["inst_1"] = [GROUP];
+    const staleRunning: ConversationRunDto = {
+      id: "run_stale", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_stale", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "2026-09-20T00:00:00.000Z", startedAt: "2026-09-20T00:00:00.000Z",
+    };
+    const settled: ConversationRunDto = {
+      id: "run_stale", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_stale", mode: "explicit", state: "completed",
+      profileRevision: 1, createdAt: "2026-09-20T00:00:00.000Z", startedAt: "2026-09-20T00:00:00.000Z", finishedAt: "2026-09-20T01:00:00.000Z",
+    };
+    // Local cache still thinks the Run is running.
+    store.activeRun = staleRunning;
+    store.memberTurnsById = {
+      turn_stale: {
+        id: "turn_stale", runId: "run_stale", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "human-explicit",
+        state: "running", createdAt: "2026-09-20T00:00:00.000Z",
+      },
+    };
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [{ id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" }] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      // Durable truth: the Run is completed and there is NO active owner.
+      if (type === "control.runs.list") return { runs: [settled], conversationId: "conversation_g", topicId: "topic_1" };
+      // The detail enrichment deliberately fails.
+      if (type === "control.runs.get") throw new Error("runs.get unavailable");
+      throw new Error(`unexpected ${type}`);
+    });
+    expect(store.isRunActive).toBe(true);
+    await store.reconcileOnReconnect();
+    await flushPromises();
+    // The list is the owner authority: a failing detail RPC must not leave the
+    // composer disabled against a Run that finished long ago.
+    expect(store.isRunActive).toBe(false);
+    expect(store.topicReady).toBe(true);
+    expect(store.activeRun?.state).toBe("completed");
+  });
+
+  it("releases a stale running owner through retryDiscovery too", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.groupsByInstance["inst_1"] = [GROUP];
+    const staleRunning: ConversationRunDto = {
+      id: "run_stale2", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_stale2", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now", startedAt: "now",
+    };
+    store.activeRun = staleRunning;
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_1" };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.retryDiscovery();
+    await flushPromises();
+    // No owner in the list and the Run is not in it either: drop ownership.
+    expect(store.isRunActive).toBe(false);
+    expect(store.activeRun).toBeNull();
+    expect(store.ownershipUncertain).toBe(false);
+  });
+
   it("does not let a stale Topic refresh overwrite a newly opened Group", async () => {
     const store = useGroupsStore();
     const groupA: GroupSummaryDto = { ...GROUP, id: "conversation_a", title: "A", botIds: ["bot_a"], leadBotId: "bot_a" };

@@ -5968,6 +5968,46 @@ test("PR7 group accept: members and everyone share one mutual-exclusion budget",
   first.store.close();
 });
 
+test("PR7 everyone: removed-member runtime residue does not consume the accept budget", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const removed = Array.from({ length: 63 }, (_, i) => `bot_c${i}`);
+  for (const id of removed) {
+    first.state.bots[id] = {
+      id, name: `C${id}`, agent: "codex", workspace: "backend", enabled: true,
+      profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+    };
+  }
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, ...removed] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Every candidate member has materialized Group-member runtime: this is the
+  // residue a real run leaves behind.
+  for (const id of removed) {
+    await first.runtime.getOrCreateGroupMemberSession({
+      botId: id, conversationId: group.id, topicId: topic.id,
+    });
+  }
+  // The members leave the Group. Their runtime/binding residue survives until
+  // Topic teardown — that is the documented cleanup authority.
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID] });
+  const residueBefore = first.state.bot_runtime_bindings;
+  const residueCount = Object.values(residueBefore).filter((b) => b.scope === "group-member").length;
+  expect(residueCount).toBeGreaterThan(0);
+  // Everyone now targets only the two current members.
+  const everyone = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-residue-everyone",
+    text: "all",
+    target: { mode: "everyone" },
+  });
+  expect(everyone.memberTurns.map((turn) => turn.botId)).toEqual([BOT_ID, TESTER_ID]);
+  first.store.close();
+});
+
 test("PR7 group accept: duplicate IDs deduplicate, everyone expands, empty/unknown/disabled reject", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);

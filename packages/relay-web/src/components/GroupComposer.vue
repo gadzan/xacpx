@@ -3,13 +3,19 @@ import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { AtSign, Check, ChevronDown, Users, X } from "lucide-vue-next";
 import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
-import { useGroupsStore } from "../stores/groups";
+import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import AgentIcon from "./AgentIcon.vue";
 
 const props = defineProps<{
   bots: BotSummaryDto[];
   disabled?: boolean;
   instanceId?: string | null;
+  /** Resolves when the parent's send attempt finishes. "rejected" means a
+   *  definitive refusal with no durable accept, so the draft must be kept;
+   *  "accepted" and "uncertain" are both safely recoverable (transcript / Retry).
+   *  Optional: without a provider the draft is dropped, matching the previous
+   *  behaviour for standalone use. */
+  sendOutcome?: () => Promise<GroupSendOutcome>;
 }>();
 
 const emit = defineEmits<{
@@ -198,18 +204,24 @@ function commitMentionAtBoundary(): void {
   groupsStore.setTarget(derived);
 }
 
-const canSend = computed(() => !props.disabled
+/** Target-independent send guards. Checked first so the boundary mention can be
+ *  committed before the target is re-evaluated — a mention is what makes an empty
+ *  target valid for this very send. */
+const baseCanSend = computed(() => !props.disabled
   && !groupsStore.promptInFlight
   && !groupsStore.isRunActive
   && groupsStore.topicReady
   // A fresh send is refused while a previous prompt's outcome is unknown: the
   // only way forward is replaying that prompt's frozen tuple.
-  && !groupsStore.hasUncertainPrompt
+  && !groupsStore.hasUncertainPrompt);
+
+/** Final send guard: evaluated after any pending mention has been committed. */
+const canSend = computed(() => baseCanSend.value
   && groupsStore.targetResolvable
   && promptText.value.trim().length > 0);
 
-function handleSend(): void {
-  if (!canSend.value) {
+async function handleSend(): Promise<void> {
+  if (!baseCanSend.value) {
     // Refuse before touching the draft: the store reports why (targetRequired /
     // targetEmpty), and clearing the textarea would throw the typed message away
     // with no recoverable request id and no Retry content.
@@ -217,10 +229,22 @@ function handleSend(): void {
     return;
   }
   const text = promptText.value.trim();
+  if (!text) return;
   // The token under the caret is now final, so the structured target must
   // reflect it before the store resolves the send target.
   commitMentionAtBoundary();
+  // The parent resolves the send against the store and reports the outcome, so
+  // the draft decision uses the real result: an accepted prompt is in the
+  // transcript, an uncertain one is replayable via Retry, but a definitive
+  // refusal has neither and must leave the typed text in place.
   emit("send", text);
+  if (props.sendOutcome) {
+    const outcome = await props.sendOutcome();
+    if (outcome !== "rejected") {
+      promptText.value = "";
+    }
+    return;
+  }
   promptText.value = "";
   // Textbook semantics: after a send the text no longer carries a mention, so
   // the derived state must reset or the next draft would inherit suppression.

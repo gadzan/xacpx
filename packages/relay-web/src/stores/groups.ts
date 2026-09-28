@@ -24,6 +24,14 @@ import {
 import { api } from "../api/client";
 import { useDirectBotsStore } from "./direct-bots";
 
+/** Result of one send attempt.
+ *  - `accepted`: the server durably took the prompt; the composer may drop the draft.
+ *  - `uncertain`: transport/outcome-unknown; the frozen tuple replays the text, so
+ *    the draft can be replaced by the Retry affordance.
+ *  - `rejected`: a definitive refusal with no durable accept; nothing can replay
+ *    the text, so the composer must KEEP the draft. */
+export type GroupSendOutcome = "accepted" | "uncertain" | "rejected";
+
 export interface GroupLiveTurn {
   parts: TurnPartDto[];
   status: "working" | "streaming";
@@ -43,6 +51,7 @@ export type GroupErrorCode =
   | "topicRecovering"
   | "runInProgress"
   | "topicQueueFull"
+  | "targetTooLarge"
   | "promptPendingConfirmation"
   | "cancelUnknown"
   | "instanceOffline"
@@ -371,6 +380,9 @@ export const useGroupsStore = defineStore("groups", () => {
     target: ConversationTargetDto;
   }
   const uncertainPrompt = ref<UncertainPrompt | null>(null);
+  /** Promise of the in-flight send attempt; the composer awaits it to learn
+   *  whether the draft still needs to be kept. */
+  const inFlightSend = ref<Promise<GroupSendOutcome> | null>(null);
   /** False while the Bot catalog for the selected Group is unconfirmed. Derived
    *  from the Direct store's own botsLoaded rather than a sticky local flag, so a
    *  successful later refresh (bots-changed, navigating back) converges this back
@@ -483,6 +495,10 @@ export const useGroupsStore = defineStore("groups", () => {
   function eligibleTargetFor(group: GroupSummaryDto | GroupDetailDto, bots: BotSummaryDto[]): GroupTargetSelection {
     return defaultTargetFor(group, bots, botCatalogKnown.value);
   }
+
+  const sendPromptOutcomePromise = computed<Promise<GroupSendOutcome>>(
+    () => inFlightSend.value ?? Promise.resolve("accepted" as GroupSendOutcome),
+  );
 
   function resolveTarget(): { target: ConversationTargetDto } | { error: "targetRequired" | "targetEmpty" } {
     const selection = targetSelection.value;
@@ -995,6 +1011,46 @@ export const useGroupsStore = defineStore("groups", () => {
     }
   }
 
+  /** A durable `runs.list` that reports NO active owner is the authority on
+   *  Topic ownership. A locally cached nonterminal owner is then stale: the Run
+   *  finished (or was cancelled) while this client was away, and no later
+   *  `runs.get` may decide whether the composer unlocks. Concretely, one failing
+   *  detail RPC after a correct list previously left `isRunActive` true forever.
+   *
+   *  If the stale run appears in the list, its terminal summary is merged so the
+   *  card renders the real outcome rather than vanishing. Either way the local
+   *  ownership is released. */
+  function reconcileNoActiveOwner(instId: string, runs: ConversationRunDto[]): void {
+    const current = activeRun.value;
+    if (!current || isTerminalRunState(current.state)) {
+      return;
+    }
+    const runId = current.id;
+    const summary = runs.find((run) => run.id === runId);
+    const settled = summary ? mergeRun(current, summary) : null;
+    if (settled) {
+      activeRun.value = settled;
+      if (isTerminalRunState(settled.state)) {
+        liveTurnsByMember.value = {};
+      } else {
+        // Still nonterminal by the list's own summary: keep the ownership, the
+        // list may simply lag behind a Run that started a moment ago.
+        return;
+      }
+    } else {
+      // The list no longer mentions our run at all (rolled off / foreign client):
+      // drop the ownership instead of pinning the composer to a phantom Run.
+      activeRun.value = null;
+      liveTurnsByMember.value = {};
+    }
+    memberTurnsById.value = {};
+    resolveCancelUncertainty(runId);
+    cancellingRunId.value = null;
+    cancelError.value = null;
+    ownershipUncertain.value = false;
+    void instId;
+  }
+
   async function recoverActiveRun(
     iId: string,
     cId: string,
@@ -1034,6 +1090,7 @@ export const useGroupsStore = defineStore("groups", () => {
       const candidate = listed.activeRun
         ?? (listed.activeRunId ? listed.runs.find((run) => run.id === listed.activeRunId) : undefined);
       if (!candidate) {
+        reconcileNoActiveOwner(iId, listed.runs);
         return true;
       }
       if (activeRun.value && activeRun.value.id !== candidate.id && !isTerminalRunState(activeRun.value.state)) {
@@ -1473,10 +1530,16 @@ export const useGroupsStore = defineStore("groups", () => {
     if (cancelError.value === "ownershipChecking") cancelError.value = null;
   }
 
-  async function sendPrompt(text: string, forcedTarget?: ConversationTargetDto): Promise<void> {
+  async function sendPrompt(text: string, forcedTarget?: ConversationTargetDto): Promise<GroupSendOutcome> {
+    const outcome = sendPromptInner(text, forcedTarget);
+    inFlightSend.value = outcome;
+    return await outcome;
+  }
+
+  async function sendPromptInner(text: string, forcedTarget?: ConversationTargetDto): Promise<GroupSendOutcome> {
     const trimmed = text.trim();
     if (!trimmed || !instanceId.value || !selectedGroupId.value || !activeConversationId.value || !activeTopicId.value) {
-      return;
+      return "rejected";
     }
     if (forcedTarget) {
       // Frozen-tuple replay, ranked ABOVE every other guard. It carries the exact
@@ -1487,18 +1550,17 @@ export const useGroupsStore = defineStore("groups", () => {
       // Run is active — otherwise Retry is unreachable for the entire duration of
       // a long-running Run, leaving the user stranded on their own lost response.
       const reqId = preparePromptRequestId(trimmed, forcedTarget);
-      await runPromptSend(trimmed, forcedTarget, reqId);
-      return;
+      return await runPromptSend(trimmed, forcedTarget, reqId);
     }
     if (!topicReady.value) {
       promptError.value = "topicRecovering";
       promptErrorDetail.value = null;
-      return;
+      return "uncertain";
     }
     if (isRunActive.value) {
       promptError.value = "runInProgress";
       promptErrorDetail.value = null;
-      return;
+      return "uncertain";
     }
     // Invariant: an uncertain prompt may only be resolved by replaying its own
     // tuple (or by durable reconciliation discovering it). Minting a fresh
@@ -1509,16 +1571,16 @@ export const useGroupsStore = defineStore("groups", () => {
     if (uncertainPrompt.value) {
       promptError.value = "promptPendingConfirmation";
       promptErrorDetail.value = null;
-      return;
+      return "uncertain";
     }
     const resolved = resolveTarget();
     if ("error" in resolved) {
       promptError.value = resolved.error === "targetRequired" ? "targetRequired" : "targetEmpty";
       promptErrorDetail.value = null;
-      return;
+      return "rejected";
     }
     const reqId = preparePromptRequestId(trimmed, resolved.target);
-    await runPromptSend(trimmed, resolved.target, reqId);
+    return await runPromptSend(trimmed, resolved.target, reqId);
   }
 
   /** Transport half of a send: all fences, the RPC, and the projection. Kept
@@ -1527,7 +1589,7 @@ export const useGroupsStore = defineStore("groups", () => {
     runText: string,
     target: ConversationTargetDto,
     reqId: string,
-  ): Promise<void> {
+  ): Promise<GroupSendOutcome> {
     // The caller's guards already proved these non-null; restate them here so
     // this shared path stays directly callable from the frozen-tuple retry.
     const targetInstId = instanceId.value ?? "";
@@ -1535,7 +1597,7 @@ export const useGroupsStore = defineStore("groups", () => {
     const targetConvId = activeConversationId.value ?? "";
     const targetTopicId = activeTopicId.value ?? "";
     if (!targetInstId || !targetConvId || !targetTopicId) {
-      return;
+      return "rejected";
     }
     const generation = currentSelectionGeneration;
     const isCurrent = (): boolean =>
@@ -1560,7 +1622,7 @@ export const useGroupsStore = defineStore("groups", () => {
         }),
       );
       if (!isCurrent()) {
-        return;
+        return "rejected";
       }
       // The accept is confirmed: drop the uncertain tuple so a later send with
       // the same text gets a fresh durable identity.
@@ -1604,7 +1666,7 @@ export const useGroupsStore = defineStore("groups", () => {
       }
       const adoptedRun = activeRun.value;
       if (!adoptedRun) {
-        return;
+        return "accepted";
       }
       const ownerAdoptedFromPrompt = !!promptOwner && promptOwner.id !== res.run.id;
       const terminalOwnerProven = ownerProvesAccepted;
@@ -1647,7 +1709,9 @@ export const useGroupsStore = defineStore("groups", () => {
         ownershipUncertain.value = true;
         cancelError.value = "ownershipChecking";
       }
+      return "accepted";
     } catch (err: unknown) {
+      let outcome: GroupSendOutcome = "uncertain";
       if (isCurrent() && uncertainPrompt.value?.requestId === reqId) {
         const code = err instanceof GroupRpcError ? err.code : null;
         // A definitive rejection proves the durable accept never happened, so
@@ -1656,6 +1720,9 @@ export const useGroupsStore = defineStore("groups", () => {
         // (transport loss, timeout, internal error) keep the tuple.
         if (isDefinitiveRejection(code)) {
           uncertainPrompt.value = null;
+          outcome = "rejected";
+        } else {
+          outcome = "uncertain";
         }
         if (code === "unknown-type") {
           promptError.value = "connectorOutdated";
@@ -1677,6 +1744,14 @@ export const useGroupsStore = defineStore("groups", () => {
         } else if (code === "empty_target" || code === "target_required") {
           promptError.value = "targetEmpty";
           promptErrorDetail.value = err instanceof Error ? err.message : String(err);
+        } else if (code === "bot_disabled") {
+          promptError.value = "botDisabled";
+          promptErrorDetail.value = null;
+        } else if (code === "target_too_large") {
+          // A deliberately user-visible refusal: the budget was exceeded, so it
+          // must read as product copy rather than the backend's English message.
+          promptError.value = "targetTooLarge";
+          promptErrorDetail.value = null;
         } else if (
           code === "group_member_not_member" ||
           code === "bot_not_found" ||
@@ -1692,6 +1767,7 @@ export const useGroupsStore = defineStore("groups", () => {
         promptError.value = null;
         promptErrorDetail.value = null;
       }
+      return outcome;
     } finally {
       if (isCurrent()) {
         promptInFlight.value = false;
@@ -1735,6 +1811,10 @@ export const useGroupsStore = defineStore("groups", () => {
       const candidate = listed.activeRun
         ?? (listed.activeRunId ? listed.runs.find((run) => run.id === listed.activeRunId) : undefined);
       if (!candidate) {
+        // Same durable-owner rule as recoverActiveRun: a list with no owner
+        // releases a locally cached nonterminal Run, so one detail failure
+        // cannot strand the composer.
+        reconcileNoActiveOwner(targetInstId, listed.runs);
         ownershipUncertain.value = false;
         cancelError.value = null;
         topicReady.value = true;
@@ -2456,6 +2536,7 @@ export const useGroupsStore = defineStore("groups", () => {
     runParts,
     completeRunParts,
     uncertainPrompt,
+    sendPromptOutcomePromise,
     uncertainPromptText,
     uncertainPromptTarget,
     hasUncertainPrompt,

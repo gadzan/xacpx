@@ -784,12 +784,18 @@ export class ConversationRunService {
       }
       return [...parsed.botIds];
     }
+    // ACCEPT admission uses live membership only. `groupTopicMemberBotIds` is the
+    // TEARDOWN sweep union (membership + member bindings + session owners), and a
+    // removed member's runtime can legitimately outlive its membership until the
+    // Topic is torn down. Charging that historical cleanup residue against this
+    // Run's budget would refuse an Everyone whose actual target set is tiny.
+    // Admission stays correct for widening without the residue: accept re-derives
+    // the live selection inside the held gates and retries when the probed set
+    // does not cover it, and updateGroup holds old ∪ new gates so it cannot
+    // commit between the probe and the durable write.
     const conversation = this.state.conversations[conversationId];
     const membership = conversation?.kind === "group" ? conversation.botIds : [];
-    const residue = Object.values(this.state.conversation_topics)
-      .filter((topic) => topic.conversationId === conversationId && topic.status === "active")
-      .flatMap((topic) => this.groupTopicMemberBotIds(conversationId, topic.id));
-    const candidates = [...new Set([...membership, ...residue])];
+    const candidates = [...new Set(membership)];
     // Enforce the mutual-exclusion budget on the set that is about to be
     // acquired, not on the eligible set computed later inside the gates: by then
     // runLifecycleAll has already pinned every candidate's mutex, and those

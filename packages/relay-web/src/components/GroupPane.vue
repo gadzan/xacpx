@@ -3,7 +3,7 @@ import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { Archive, MessageSquare, Plus, Users, X } from "lucide-vue-next";
 import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
-import { useGroupsStore } from "../stores/groups";
+import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useInstancesStore } from "../stores/instances";
 import GroupTranscript from "./GroupTranscript.vue";
@@ -27,6 +27,14 @@ const memberBots = computed<BotSummaryDto[]>(() => {
   const ids = new Set(group.value?.botIds ?? []);
   return bots.value.filter((b) => ids.has(b.id));
 });
+
+/** Resolves the send against the store so the composer can decide whether to drop
+ *  the draft. A definitive refusal returns "rejected" and the text stays put. */
+/** Resolves once the current send attempt finishes, so the composer can keep the
+ *  draft when the refusal was definitive. */
+function sendPromptOutcome(): Promise<GroupSendOutcome> {
+  return groupsStore.sendPromptOutcomePromise;
+}
 
 function handleSend(text: string): void {
   void groupsStore.sendPrompt(text);
@@ -104,6 +112,7 @@ const isActiveTopic = computed(() => groupsStore.currentTopic?.status === "activ
       :bots="memberBots"
       :disabled="!groupsStore.activeTopicId || !groupsStore.topicReady || !isActiveTopic"
       :instance-id="groupsStore.instanceId"
+      :send-outcome="sendPromptOutcome"
       @send="handleSend"
       @cancel="handleCancel"
     />
