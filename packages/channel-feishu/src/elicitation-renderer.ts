@@ -140,15 +140,22 @@ export function parseElicitationAction(
   const positional = typeof fieldIndex === "number" && Number.isInteger(fieldIndex) && fieldIndex >= 0 ? fieldIndex : undefined;
   // The card generation the control was rendered on.
   //
-  // REQUIRED on the actions that mutate field state. The builder always stamps a
-  // generation onto Save and Skip, so a callback without one cannot have come from
-  // a card this renderer drew — and honouring it would let a payload bypass the
-  // revision fence entirely. Rejecting at the parser keeps the fence an invariant
-  // of the protocol instead of a property of the situation.
+  // REQUIRED on every action except the two terminal ones. The builder stamps a
+  // generation onto Start, Save, Skip, the review page's field/submit, and the
+  // field card, so a callback without one cannot have come from a card this
+  // renderer drew — and honouring it would let a payload bypass the revision
+  // fence entirely. Rejecting at the parser keeps the fence an invariant of the
+  // protocol instead of a property of the situation.
   //
-  // Terminal decisions (decline/cancel) and navigation (start/field/submit)
-  // carry no generation by design: a replayed Decline is still a Decline, and the
-  // review page is not versioned.
+  // Start is in this set for the same reason as the rest: the opening card IS a
+  // revision. A versionless Start could be replayed after the user has left the
+  // opening — `Opening -> Start -> field A -> Save A -> field B -> replayed
+  // Start` moved the wizard back to field A and republished its card — and the
+  // fence would have had no number to refuse it on.
+  //
+  // Terminal decisions (decline/cancel) deliberately carry no generation: a
+  // replayed Decline is still the user's Decline, and fencing one made the
+  // request unendable short of the timeout.
   const generation = record.g;
   const renderGeneration = typeof generation === "number" && Number.isInteger(generation) && generation >= 0
     ? generation
@@ -158,19 +165,20 @@ export function parseElicitationAction(
   // button that produced the callback, so a positionless Skip is rejected
   // outright rather than silently reinterpreted.
   if (action === "skip" && positional === undefined) return null;
-  // `save` and `skip` both write to recorded field state, so both MUST be
-  // versioned. See above.
-  if ((action === "save" || action === "skip") && renderGeneration === undefined) return null;
-  // `field` and `submit` are the review page's state machine, and both must be
-  // versioned for the same reason — one more reason, in fact.
-  //
-  // A Submit from an EARLIER review card reaches `confirmReviewed()` with the
-  // answers that were current when THAT review was drawn. It only checks that
-  // those answers satisfy their field constraints, so `Save prod -> Review ->
-  // Edit -> field card -> delayed old Review Submit` used to accept `prod` while
-  // the user was still typing `staging`. The generation is what makes that old
-  // Submit recognisable, so a versionless one is refused rather than honoured.
-  if ((action === "field" || action === "submit") && renderGeneration === undefined) return null;
+  // Every state-writing and navigating control must be versioned — `save` and
+  // `skip` because they write recorded field state, `field` and `submit` because
+  // they are the review page's state machine, and `start` because it moves the
+  // wizard. See above.
+  if (
+    (action === "start"
+      || action === "save"
+      || action === "skip"
+      || action === "field"
+      || action === "submit")
+    && renderGeneration === undefined
+  ) {
+    return null;
+  }
   return {
     token,
     action,

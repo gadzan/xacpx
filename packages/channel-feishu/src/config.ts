@@ -55,7 +55,7 @@ export interface FeishuResolvedAccountConfig {
 
 /**
  * Opt-in card-callback (webhook) listener for one account.
-/**
+ *
  * `encryptKey` is REQUIRED, and so is `verificationToken`. `verifyCardRequest`
  * picks the signing secret by protocol: a new-protocol callback (one carrying
  * `encrypt` or `schema`) is verified with SHA-256 over the encrypt key, and a
@@ -64,10 +64,11 @@ export interface FeishuResolvedAccountConfig {
  * Every button the renderer emits carries `schema: "2.0"`, so every real click
  * is new-protocol — which is why the key is mandatory. The URL-verification
  * challenge Feishu POSTs when the endpoint is first configured carries NEITHER
- * marker, so it lands in the legacy branch, which is why the token is mandatory
- * too: the challenge is read after the signature check, so an endpoint missing
- * either secret rejects that handshake before it can echo the challenge and the
- * channel can never finish being configured.
+ * marker AND no signature headers at all, so it is recognized and echoed BEFORE
+ * the signature check runs (see `handleRequest`), which is why the token is
+ * mandatory too: the echoed token is the only credential that handshake has, and
+ * an endpoint missing it would start, serve every click, and still fail the
+ * handshake that puts it into service.
  */
 export interface FeishuCardActionConfig {
   /**
@@ -80,10 +81,10 @@ export interface FeishuCardActionConfig {
    * The legacy (no `schema`, no `encrypt`) signing secret, and the token Feishu
    * echoes on every callback for the host to cross-check.
    *
-   * REQUIRED, not optional: the URL-verification challenge arrives on the
-   * legacy path, and it is read only after the signature verifies — so a
-   * config without this token starts, serves every click, and still fails the
-   * handshake that puts the endpoint into service.
+   * REQUIRED, not optional: the URL-verification challenge arrives with no
+   * signature headers, so the echoed token is that handshake's only credential.
+   * A config without this token starts, serves every click, and still never
+   * finishes being configured.
    */
   verificationToken: string;
   /** Loopback interface to bind. Defaults to 127.0.0.1 — a private surface. */
@@ -257,7 +258,7 @@ function parseCardActions(raw: unknown, path: string): FeishuCardActionConfig | 
   const verificationToken = stringOptional(raw.verificationToken, `${path}.verificationToken`);
   if (verificationToken === undefined) {
     throw new Error(
-      `${path}.verificationToken is required: the URL-verification challenge arrives on the legacy (token + SHA-1) path, so without it the endpoint cannot finish being configured`,
+      `${path}.verificationToken is required: the URL-verification challenge arrives with no signature headers, so the echoed token is that handshake's only credential — without it the endpoint can never finish being configured`,
     );
   }
   const port = raw.port;

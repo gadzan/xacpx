@@ -229,19 +229,76 @@ server at all. The parser now defines the value as a pure pathname and rejects
 `?` / `#` alongside a relative path. The existing relative-path test was widened
 in place to cover all three shapes rather than duplicated.
 
-## Test totals (post-fix)
+## P2 — the opening card's Start was not versioned, so a replay could move the wizard
+
+The one defect left after the previous round. The builder drew the opening Start
+as `routingValue(token, "start")` — no `g` — and `parseElicitationAction()` only
+mandated a generation for `save`/`skip`/`field`/`submit`. The handler's stale
+fence therefore had nothing to compare for a Start, and a delayed redelivery of
+the first click was accepted after the user had left the opening:
+
+```text
+Opening -> Start -> field A -> Save A -> field B -> replayed Start
+  -> currentField reset to A, field A's card republished
+```
+
+Not a silent wrong-answer path, hence P2, but a stale callback changing live
+wizard position contradicts the invariant the revision scheme exists to hold —
+and the premise ("Feishu retries, users double-tap") is what every other control
+already designs against. Discord had already stamped its opening Start as
+revision 1.
+
+Fixed on both halves, matching Discord's precedent and the reviewer's
+recommendation:
+
+1. `buildElicitationOpeningCard()` stamps `OPENING_GENERATION` (1) on Start, the
+   revision the entry's `renderGeneration` already starts at, so the first
+   field/review card takes 2.
+2. `parseElicitationAction()` requires a generation for `start` as well, so a
+   versionless Start — which this renderer no longer draws — is refused rather
+   than honoured. Decline and Cancel stay unversioned by design.
+
+The claim set already included `start`, so no change there; it now actually takes
+effect, and a normal Start claims the next generation (a gap when the opening
+send is unacknowledged, which the allocator already tolerates by design).
+
+The 28 existing tests that drove `a: "start"` were rewritten against
+`openingStart(rec)`, which reads the payload off the card that was actually sent.
+Hand-written versionless Starts would have been driving a shape the renderer no
+longer emits. Two `a: "start"` fixtures in the host/channel tests are opaque
+transport-level payloads whose token resolves to no entry, so they never reach
+the parser and were left alone.
+
+## Test totals (final)
 
 | File | Tests |
 |---|---|
-| `feishu-card-action-host.test.ts` | 31 (was 29 at review head) |
-| `feishu-elicitation-renderer.test.ts` | 79 (was 78 at review head) |
-| `feishu-config.test.ts` | 26 (was 26 at review head) |
-| **Feishu package** | **488 pass / 0 fail** |
+| `feishu-card-action-host.test.ts` | 31 |
+| `feishu-elicitation-renderer.test.ts` | 80 (was 78 at review head) |
+| `feishu-config.test.ts` | 26 |
+| **Feishu package** | **489 pass / 0 fail** |
 
-## Mutation-verification (post-fix)
+## Mutation-verification (final)
 
 | Mutation | Caught by |
 |---|---|
 | Challenge branch disabled | 4 tests (plaintext, encrypted, token-only, mixed action) |
 | `claimedGeneration` gate removed | in-flight Submit race test |
 | `?` / `#` path rejection removed | path-shapes test |
+| Opening Start generation removed | replayed-opening-Start test |
+
+## Comment corrections (the three non-blocking nits)
+
+- `config.ts` no longer claims the URL-verification challenge "arrives on the
+  legacy (token + SHA-1) path" or is "read after the signature check" — both the
+  interface docblock and the required-token error message, plus a stray duplicated
+  `/**` line in that interface's docblock.
+- The number-sizing comment stays as-is: it is inaccurate about the mechanism (the
+  bound is measured over 24 max-expansion characters, not `String(number)`'s
+  longest output) but not about the conclusion, and it is far above any real
+  number, so no budget changes.
+- Not fixed: the degraded-readiness log branch. When one form channel fails while
+  another stays live, the listener returns early on `formCapable === true` and
+  `auditCapability()`'s degraded message never fires. The capability itself stays
+  truthful — this costs one observability line, not correctness. Left alone
+  because removing the early return would make every ready signal run the audit.

@@ -205,6 +205,16 @@ function inertCard(title: string, lines: readonly string[]): Record<string, unkn
   };
 }
 
+/**
+ * The card generation the opening card carries.
+ *
+ * The entry's `renderGeneration` is initialized to 1, so the opening card owns
+ * that revision and the first field or review card is handed 2. Keeping the two
+ * in step is what makes the opening's Start control addressable by the same
+ * stale fence every other control uses.
+ */
+const OPENING_GENERATION = 1;
+
 /** Opening card: agent identity, the agent's message, and the three entry actions. */
 export function buildElicitationOpeningCard(
   request: ChannelElicitationRequest,
@@ -236,7 +246,19 @@ export function buildElicitationOpeningCard(
           columns: [{
             tag: "column",
             elements: [
-              button(messages.elicitationStart, routingValue(token, "start"), "primary", true),
+              // Generation 1: the opening card IS a card revision, so its Start
+              // must name one. Without it a delayed redelivery of this callback
+              // is versionless, the parser accepts it, and the stale fence has
+              // nothing to compare — `Opening -> Start -> field A -> Save A ->
+              // field B -> replayed Start` moved the wizard BACK to field A and
+              // republished its card, after the user had already left it.
+              //
+              // 1 rather than 0: `renderGeneration` starts at 1 on the entry
+              // (generation 0 is what a payload with NO generation decodes to),
+              // so the opening's own control names the revision the entry is
+              // already at and the first field/review card takes 2. Discord
+              // stamps its opening Start the same way.
+              button(messages.elicitationStart, routingValue(token, "start", undefined, OPENING_GENERATION), "primary", true),
               button(messages.elicitationDecline, routingValue(token, "decline"), "default", true),
               button(messages.elicitationCancel, routingValue(token, "cancel"), "default", true),
             ],
