@@ -2,43 +2,55 @@ import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WebSocket, WebSocketServer } from "ws";
 
-import { MSG, RELAY_INTERACTION_RESPONSE_RESERVE_MS } from "../../../../packages/relay-protocol/src/index";
+import {
+  MSG,
+  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
+} from "../../../../packages/relay-protocol/src/index";
+import type { RelayEnvelope } from "../../../../packages/relay-protocol/src/index";
 import { createSqlDriver, initSchema } from "../../../../packages/relay/src/db";
 import { AccountStore } from "../../../../packages/relay/src/stores/accounts";
 import { InstanceStore } from "../../../../packages/relay/src/stores/instances";
 import { MessageStore } from "../../../../packages/relay/src/stores/messages";
 import { createApp } from "../../../../packages/relay/src/http/app";
+import {
+  InstanceGateway,
+} from "../../../../packages/relay/src/gateway/instance-gateway";
 import { InteractionRegistry } from "../../../../packages/relay/src/interaction-registry";
 import { RelayChannel } from "../../../../packages/channel-relay/src/channel";
+import { RelayClient } from "../../../../packages/channel-relay/src/relay-client";
 import type { ChannelElicitationRequest } from "../../../src/interactions/elicitation-types";
 import type { RelayCredential } from "../../../../packages/channel-relay/src/credential-store";
 
 /**
- * The M3 chain, production-shaped, in one test.
+ * The M3 chain over the PRODUCTION transport, with no seam stubbed out.
  *
- * Every hop is real code; the ONLY thing faked is the WebSocket between the
- * connector and the hub, which is the network edge and nothing else:
+ * Every hop is the real production code:
  *
- *   core's broker      → RelayChannel.requestElicitation   (real, via a real channel)
- *   connector          → hub HTTP RPC                      (real Hono app, real stores)
- *   hub                → registers + broadcasts            (real InteractionRegistry)
- *   browser            → hub HTTP RPC                      (real authenticated session)
- *   hub                → stamps its identity               (real session account)
- *   connector          → maps the answer                   (real relay-interaction)
- *   the decision       → what core would re-verify         (asserted, not stripped)
+ *   core's broker      → RelayChannel.requestElicitation   (the real method)
+ *   connector          → RelayClient.sendRequest           (the REAL client)
+ *                        — real allowlist, real envelope encode,
+ *                          real pending-request bookkeeping
+ *   network            → a real ws:// WebSocket             (the only fake is
+ *                        the loopback socket, which is what a real one is)
+ *   hub                → InstanceGateway.handleMessage     (the REAL ingress,
+ *                        including the authenticated connector socket's own
+ *                        identity)
+ *   hub                → real InteractionRegistry
+ *   browser            → hub HTTP RPC                      (real authenticated
+ *                        session)
+ *   hub                → stamps ITS identity               (real)
+ *   hub                → sends the WS response frame       (real gateway code)
+ *   connector          → RelayClient's pending promise     (real decode)
+ *   the decision       → what core would re-verify
  *
- * The two "fakes" worth naming, because they are the ones that would otherwise
- * hide a wiring gap:
- *
- *   - the channel's `createClient` seam returns a client whose `sendRequest`
- *     performs the hub's HTTP call. That is exactly what the real WebSocket
- *     does, so the frame the channel builds is the frame the hub validates.
- *   - the "browser" is a test caller on the hub's authenticated HTTP API, which
- *     is exactly what a browser is in production.
- *
- * There is no injected renderer anywhere. `requestElicitation` is the real
- * method, and it is the only way the form appears.
+ * A previous revision of this test stubbed the channel's `createClient` seam and
+ * posted the connector's frame straight into the browser HTTP RPC endpoint. That
+ * was not a "network fake" — it bypassed the connector's real RelayClient AND the
+ * hub's real WebSocket request dispatcher, which is precisely the pair of seam
+ * that had to be proven. The mutations below are the regression: disabling either
+ * end must turn this red.
  */
 
 class MemoryCredentialStore {
@@ -57,16 +69,21 @@ interface HubHarness {
    * it cannot tell whether the stamp came from the hub or from the request.
    */
   hubAccountId: string;
-  /** Start the channel and install its client; resolves once the channel can dial. */
+  /** Start the channel and connect the client; resolves once it is AUTHED. */
   startAndOpen: () => Promise<void>;
   /** The browser's answer, on the answer direction. False when the hub refused it. */
   answer: (payload: unknown) => Promise<boolean>;
-  /** Raw RPC, for frames the `answer` helper is too narrow to express. */
-  rpc: (type: string, payload: unknown) => Promise<Response>;
+  /**
+   * The browser's RPC surface, raw. Exists so a test can ATTEMPT a
+   * connector-only control (open/withdraw) from the browser side and observe it
+   * refused — which is the only way to prove the boundary held.
+   */
+  rpcAsBrowser: (type: string, payload: unknown) => Promise<Response>;
+  /** Browser-facing events the hub actually broadcast. */
+  events: Array<{ type: string; chatKey: string; requestId?: string; reason?: string }>;
   /** Request ids the hub currently has open. */
   pendingIds: () => string[];
-  /** The browser-facing events the hub actually produced. */
-  events: Array<{ type: string; chatKey: string; requestId?: string; reason?: string }>;
+  close: () => Promise<void>;
 }
 
 async function makeHub(): Promise<HubHarness> {
@@ -76,11 +93,36 @@ async function makeHub(): Promise<HubHarness> {
   const accounts = new AccountStore(db);
   const instances = new InstanceStore(db);
   const admin = accounts.createAccount("admin");
-  const { token } = accounts.createLoginToken(admin.id, "test");
-  const created = instances.registerInstanceForAccount(admin.id, "home-pc");
-
-  const events: Array<{ type: string; chatKey: string; requestId?: string }> = [];
   const interactions = new InteractionRegistry({ debug: () => {} });
+
+  const events: Array<{ type: string; chatKey: string; requestId?: string; reason?: string }> = [];
+  const broadcastControlEvent = (accountId: string, event: { type: string }): void => {
+    events.push({
+      type: event.type,
+      chatKey: (event as { chatKey?: string }).chatKey ?? "",
+      requestId: (event as { requestId?: string }).requestId,
+      reason: (event as { reason?: string }).reason,
+    });
+  };
+
+  // The hub's REAL WebSocket ingress. `interactionRequest` and
+  // `interactionWithdraw` are handled here, on the authenticated connector
+  // socket — which is the only place their identity can come from.
+  const gateway = new InstanceGateway({
+    instances,
+    accounts,
+    requestTimeoutMs: 60_000,
+    logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
+    interactions,
+    broadcastControlEvent,
+  });
+
+  const wss = new WebSocketServer({ port: 0 });
+  await new Promise<void>((resolve) => wss.on("listening", () => resolve()));
+  wss.on("connection", (socket) => gateway.handleConnection(socket));
+  const port = (wss.address() as { port: number }).port;
+  const hubUrl = `ws://127.0.0.1:${port}`;
+
   const app = createApp({
     accounts,
     instances,
@@ -88,25 +130,34 @@ async function makeHub(): Promise<HubHarness> {
     interactions,
     logger: { debug: () => {}, info: () => {}, warn: () => {}, error: () => {} },
     gateway: {
-      isOnline: () => true,
+      isOnline: (instanceId: string) => gateway.isOnline(instanceId),
       sendRequest: async () => ({}),
-      broadcastControlEvent: (_accountId, event) => {
-        events.push({
-          type: event.type,
-          chatKey: (event as { chatKey?: string }).chatKey ?? "",
-          requestId: (event as { requestId?: string }).requestId,
-          reason: (event as { reason?: string }).reason,
-        });
-      },
+      broadcastControlEvent,
     },
   });
 
+  // A real browser session cookie, from a real login token.
+  const { token } = accounts.createLoginToken(admin.id, "test");
   const loginRes = await app.request("/api/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ token }),
   });
   const cookie = loginRes.headers.get("set-cookie")?.split(";")[0] ?? "";
+  const adminInstance = instances.registerInstanceForAccount(admin.id, "home-pc");
+
+  const rpc = (type: string, payload: unknown): Promise<Response> =>
+    app.request(`/api/instances/${adminInstance.instanceId}/rpc`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/json" },
+      body: JSON.stringify({ type, payload }),
+    });
+
+  const answer = async (payload: unknown): Promise<boolean> => {
+    const res = await rpc(MSG.interactionRespond, payload);
+    expect([200, 400, 409]).toContain(res.status);
+    return res.status === 200;
+  };
 
   const agentRequest: ChannelElicitationRequest = {
     requestId: "req-chain-1",
@@ -123,26 +174,32 @@ async function makeHub(): Promise<HubHarness> {
     signal: new AbortController().signal,
   } as ChannelElicitationRequest;
 
+  const pairingToken = instances.issuePairingToken(admin.id, "chain-pc", 600_000).token;
+  const credentialStore = new MemoryCredentialStore();
+  // The real RelayClient — the production connector object, constructed the way
+  // `RelayChannel` constructs it. Everything below is real: its allowlist, its
+  // envelope encode/decode, its pending-request bookkeeping, its handshake.
+  const client = new RelayClient({
+    url: hubUrl,
+    credentialStore,
+    pairingToken,
+    instanceName: "chain-pc",
+    coreVersion: "0.11.0",
+    onRequest: () => {},
+    // No reconnect in a test: each attempt would re-handshake and re-stamp the
+    // store, and the loopback socket never needs to be re-established.
+    reconnectDelaysMs: [],
+  });
+
   let clientSeen = false;
-  const channel = new RelayChannel({ url: "ws://h:1", pairingToken: "t" }, {
-    credentialStore: new MemoryCredentialStore(),
+  const channel = new RelayChannel({ url: hubUrl, pairingToken }, {
+    credentialStore,
+    // The real client — returned to the channel rather than a stub, so the
+    // channel's `client.sendRequest` IS the allowlist-checked,
+    // envelope-encoding method under test.
     createClient: () => {
       clientSeen = true;
-      return {
-        start: () => {},
-        stop: () => {},
-        sendEvent: () => {},
-        isReady: () => true,
-        sendRequest: async (type: string, payload: unknown) => {
-          // The connector's real dial: this client method IS the WebSocket send.
-          const res = await app.request(`/api/instances/${created.instanceId}/rpc`, {
-            method: "POST",
-            headers: { cookie, "content-type": "application/json" },
-            body: JSON.stringify({ type, payload }),
-          });
-          return await res.json();
-        },
-      } as never;
+      return client as unknown as ChannelClient;
     },
   });
 
@@ -150,9 +207,8 @@ async function makeHub(): Promise<HubHarness> {
    * Start the channel so it can dial the hub.
    *
    * `start()` parks on the channel's lifetime abort signal by design, so
-   * awaiting it would hang every test. What matters is that it installed its
-   * client — which is the observable the channel needs in order to dial, and the
-   * only thing this waits for.
+   * awaiting it would hang every test. What matters is that the client is
+   * AUTHED — the state `sendRequest` requires — and that is what this waits for.
    */
   const startAndOpen = async (): Promise<void> => {
     const controller = new AbortController();
@@ -167,22 +223,7 @@ async function makeHub(): Promise<HubHarness> {
       },
       coreVersion: "0.11.0",
     } as never);
-    await waitFor(() => clientSeen, "channel client");
-  };
-
-  const rpc = (type: string, payload: unknown): Promise<Response> =>
-    app.request(`/api/instances/${created.instanceId}/rpc`, {
-      method: "POST",
-      headers: { cookie, "content-type": "application/json" },
-      body: JSON.stringify({ type, payload }),
-    });
-
-  /** The browser's answer, on the answer direction. Returns false when the hub
-   *  refused it (an identity-asserting frame is rejected, not ignored). */
-  const answer = async (payload: unknown): Promise<boolean> => {
-    const res = await rpc(MSG.interactionRespond, payload);
-    expect([200, 400, 409]).toContain(res.status);
-    return res.status === 200;
+    await waitFor(() => clientSeen && client.isReady(), "authenticated relay client");
   };
 
   return {
@@ -191,27 +232,39 @@ async function makeHub(): Promise<HubHarness> {
     hubAccountId: admin.id,
     startAndOpen,
     answer,
-    rpc,
-    pendingIds: () => interactions.listForInstance(created.instanceId).map((e) => e.requestId),
+    rpcAsBrowser: rpc,
     events,
+    pendingIds: () =>
+      interactions.listForAccount(admin.id).map((e) => e.requestId),
+    close: async () => {
+      client.stop();
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
+    },
   };
 }
 
-test("the full M3 chain: agent form → hub → browser → hub identity → connector → decision", async () => {
+interface ChannelClient {
+  start(abortSignal: AbortSignal): void;
+  stop(): void;
+  sendEvent(type: string, payload: unknown): void;
+  sendRequest(type: string, payload: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
+  isReady(): boolean;
+}
+
+test("the full M3 chain over the real WebSocket transport", async () => {
+  // Nothing about the socket is faked: the connector's frame leaves through
+  // RelayClient's real allowlist and encode, lands on InstanceGateway's real
+  // `req` dispatcher, and the answer comes back as a real WS response frame.
   const hub = await makeHub();
   await hub.startAndOpen();
 
-  // 1. Core's broker calls the channel. Nothing is injected; this is the entry.
   const settled = hub.channel.requestElicitation(hub.agentRequest);
 
-  // 2. The hub opened the interaction and told the browsers. Both events are
-  //    produced by real hub code, not by a store fixture.
   await waitFor(() => hub.events.some((e) => e.type === "interaction-opened"), "interaction-opened");
   const opened = hub.events.find((e) => e.type === "interaction-opened")!;
-  expect(opened.requestId).toBeUndefined(); // the OPEN event names no decision
   expect(opened.chatKey).toMatch(/^relay:/);
+  expect(hub.pendingIds()).toEqual(["req-chain-1"]);
 
-  // 3. The browser answers, on the ANSWER direction, with no identity of its own.
   await hub.answer({
     requestId: "req-chain-1",
     kind: "elicitation",
@@ -219,55 +272,22 @@ test("the full M3 chain: agent form → hub → browser → hub identity → con
     content: { region: "us-east" },
   });
 
-  // 4. The hub resolves the close, and the connector's request settles.
   await waitFor(() => hub.events.some((e) => e.type === "interaction-closed"), "interaction-closed");
   const closed = hub.events.find((e) => e.type === "interaction-closed")!;
   expect(closed.requestId).toBe("req-chain-1");
+  expect(closed.reason).toBe("resolved");
 
-  // 5. The decision core receives: the answer, and the responder identity the
-  //    HUB stamped from its own authenticated session. The initiator named in
-  //    `agentRequest` happens to be the same account, which is what makes this
-  //    the happy path — but the value arriving here is the stamp, not the echo.
+  // The decision core receives: the answer, and the responder identity the HUB
+  // stamped from its own authenticated session. The initiator named in
+  // `agentRequest` happens to be the same account, which is what makes this the
+  // happy path — but the value arriving here is the stamp, not the echo.
   expect(await settled).toEqual({
     action: "accept",
     responderId: hub.hubAccountId,
     content: { region: "us-east" },
   });
-});
 
-test("a browser cannot assert the responder identity end to end", async () => {
-  // The chain-level form of the identity rule: whatever the browser puts in the
-  // frame must not survive into the decision core sees.
-  const hub = await makeHub();
-  await hub.startAndOpen();
-  const settled = hub.channel.requestElicitation(hub.agentRequest);
-  await waitFor(() => hub.events.some((e) => e.type === "interaction-opened"), "interaction-opened");
-
-  // A forged identity makes the answer invalid at the validator, not merely
-  // ignored — the hub refuses it, so the frame never becomes a decision at all.
-  const accepted = await hub.answer({
-    requestId: "req-chain-1",
-    kind: "elicitation",
-    action: "accept",
-    content: { region: "us-east" },
-    responderId: "attacker",
-  });
-  expect(accepted).toBe(false);
-  // Nothing resolved: the form is still open, and the browser can still answer.
-  await waitForTick();
-  expect(hub.events.filter((e) => e.type === "interaction-closed")).toHaveLength(0);
-
-  await hub.answer({
-    requestId: "req-chain-1",
-    kind: "elicitation",
-    action: "accept",
-    content: { region: "ap-south" },
-  });
-  await waitFor(() => hub.events.some((e) => e.type === "interaction-closed"), "interaction-closed");
-
-  const decision = await settled;
-  expect(decision.action).toBe("accept");
-  expect(decision.action === "accept" && decision.responderId).toBe(hub.hubAccountId);
+  await hub.close();
 });
 
 test("the responder is the hub's stamp, never the request's initiator", async () => {
@@ -283,12 +303,13 @@ test("the responder is the hub's stamp, never the request's initiator", async ()
   await hub.startAndOpen();
   const settled = hub.channel.requestElicitation({
     ...hub.agentRequest,
+    requestId: "req-chain-2",
     requester: { senderId: "relay:some-other-account", isOwner: true },
   });
   await waitFor(() => hub.events.some((e) => e.type === "interaction-opened"), "interaction-opened");
 
   await hub.answer({
-    requestId: "req-chain-1",
+    requestId: "req-chain-2",
     kind: "elicitation",
     action: "accept",
     content: { region: "eu-west" },
@@ -299,30 +320,14 @@ test("the responder is the hub's stamp, never the request's initiator", async ()
   expect(decision.action).toBe("accept");
   expect(decision.action === "accept" && decision.responderId).toBe(hub.hubAccountId);
   expect(decision.action === "accept" && decision.responderId).not.toBe("relay:some-other-account");
-});
 
-test("a hub close is a cancel, never a decision the human did not make", async () => {
-  // The window closes with no answer: the agent must see an abort, not a decline.
-  const hub = await makeHub();
-  await hub.startAndOpen();
-  const decision = await hub.channel.requestElicitation({
-    ...hub.agentRequest,
-    requestId: "req-timeout",
-    // Already past: the hub refuses to open it, and the connector reports a close.
-    expiresAt: Date.now() - 1,
-  });
-  expect(decision).toEqual({ action: "cancel", responderId: "relay:relay-acct" });
-  // And no form was ever shown.
-  expect(hub.events.filter((e) => e.type === "interaction-opened")).toHaveLength(0);
+  await hub.close();
 });
 
 test("an abort withdraws the hub interaction, not just the local promise", async () => {
-  // The request.signal contract, asserted through the chain.
-  //
-  // Core's abort means "stop collecting input". Rejecting the channel's promise
-  // only stops the CONNECTOR waiting — the hub would keep the pending entry and
-  // the browser would keep a form that accepts answers for a turn that no longer
-  // exists. So the abort must also tell the hub.
+  // The request.signal contract, asserted through the REAL transport: the
+  // withdrawal is a frame the connector's client actually puts on the wire and
+  // the hub's real dispatcher actually handles.
   const hub = await makeHub();
   await hub.startAndOpen();
 
@@ -347,13 +352,44 @@ test("an abort withdraws the hub interaction, not just the local promise", async
   expect(await settled).toEqual({ action: "cancel", responderId: "relay:relay-acct" });
   // 4. A late answer for the withdrawn interaction is refused, so nothing the
   //    human types afterwards can reach the turn.
-  const late = await hub.answer({
+  expect(await hub.answer({
     requestId: "req-withdraw",
     kind: "elicitation",
     action: "accept",
     content: { region: "us-central" },
+  })).toBe(false);
+
+  await hub.close();
+});
+
+test("the connector's transport refuses a browser-asserted close", async () => {
+  // The trust boundary that motivated moving these off the browser RPC. The
+  // browser surface answers; it cannot open or withdraw. A browser that tries to
+  // withdraw by requestId alone gets the generic rejection, not a close.
+  const hub = await makeHub();
+  await hub.startAndOpen();
+  const settled = hub.channel.requestElicitation({
+    ...hub.agentRequest,
+    requestId: "req-browser-close",
   });
-  expect(late).toBe(false);
+  await waitFor(() => hub.events.some((e) => e.type === "interaction-opened"), "interaction-opened");
+
+  // A browser attempting the connector-only control on the browser RPC surface.
+  const res = await hub.rpcAsBrowser(MSG.interactionWithdraw, { requestId: "req-browser-close" });
+  expect([400, 403]).toContain(res.status);
+  // The interaction is still open and still answerable.
+  expect(hub.pendingIds()).toEqual(["req-browser-close"]);
+  expect(hub.events.some((e) => e.type === "interaction-closed")).toBe(false);
+
+  await hub.answer({
+    requestId: "req-browser-close",
+    kind: "elicitation",
+    action: "decline",
+  });
+  await waitFor(() => hub.events.some((e) => e.type === "interaction-closed"), "interaction-closed");
+  expect((await settled).action).toBe("decline");
+
+  await hub.close();
 });
 
 test("an answer after the window closed is refused, even inside the transport reserve", async () => {
@@ -382,22 +418,23 @@ test("an answer after the window closed is refused, even inside the transport re
     "window to expire",
   );
   // The point of the whole test: the two clocks really are apart right now. If
-  // the expiry timer had been bound to the transport ceiling this would be false
-  // and the answer below would have been accepted.
+  // the expiry timer had been bound to the transport ceiling, the wait above
+  // would not have completed this quickly and the answer below would have been
+  // accepted.
   expect(Date.now() - windowOpenedAt).toBeLessThan(RELAY_INTERACTION_RESPONSE_RESERVE_MS);
 
   // Answering now is NOT a late win: the window is over.
-  const late = await hub.answer({
+  expect(await hub.answer({
     requestId: "req-expired",
     kind: "elicitation",
     action: "accept",
     content: { region: "us-west" },
-  });
-  expect(late).toBe(false);
-  // The browser is told it expired, not that it was answered.
+  })).toBe(false);
   expect(hub.events.find((e) => e.type === "interaction-closed" && e.requestId === "req-expired")?.reason)
     .toBe("expired");
   expect(await settled).toEqual({ action: "cancel", responderId: "relay:relay-acct" });
+
+  await hub.close();
 });
 
 async function waitFor(predicate: () => boolean, label: string): Promise<void> {
@@ -406,8 +443,4 @@ async function waitFor(predicate: () => boolean, label: string): Promise<void> {
     if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
-}
-
-async function waitForTick(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 0));
 }

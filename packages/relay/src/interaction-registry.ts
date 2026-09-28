@@ -31,7 +31,11 @@
  * applied to a turn that already moved on.
  */
 
-import type { InteractionRequestDto, InteractionResponseDto } from "@ganglion/xacpx-relay-protocol";
+import type {
+  InteractionRequestDto,
+  InteractionResponseDto,
+  InteractionResult,
+} from "@ganglion/xacpx-relay-protocol";
 
 /** Why an interaction is no longer answerable. */
 export type InteractionCloseReason = "resolved" | "withdrawn" | "expired";
@@ -94,6 +98,59 @@ export interface InteractionClosedListener {
     kind: "permission" | "elicitation";
     reason: InteractionCloseReason;
   }): void;
+}
+
+/**
+ * Shape an interaction's outcome for the connector, stamping the responder
+ * identity.
+ *
+ * This is the ONLY place a responder identity is added, and it comes from the
+ * hub's own authenticated session — never from the frame. Two consequences:
+ *
+ *   - A browser cannot assert an identity: the field is stamped over whatever the
+ *     frame carried, so a connector or tampered client that sets one has no
+ *     effect.
+ *   - The identity is the one the hub already trusts for this RPC, which is the
+ *     same account identity the trusted conversation prompt path stamps
+ *     (`relay:<accountId>` / `senderId: account.id`).
+ *
+ * `responded: false` keeps its reason intact: the connector must distinguish "the
+ * human never answered" from "the human chose cancel", and collapsing the two
+ * would show a user's own dismissal as an infrastructure error.
+ *
+ * Lives beside the registry — the one component both the connector-facing
+ * (WebSocket) and browser-facing (HTTP) transports share — so the stamp is
+ * applied identically no matter which surface delivered the answer. Two copies
+ * of a security-critical stamp is how the two drifts apart.
+ */
+export function interactionResultForBrowser(result: unknown, accountId: string): InteractionResult {
+  if (typeof result !== "object" || result === null) {
+    return { responded: false, reason: "aborted" };
+  }
+  const outcome = result as { responded?: unknown; reason?: unknown; response?: unknown };
+  if (outcome.responded !== true) {
+    const reason = typeof outcome.reason === "string" ? outcome.reason : "aborted";
+    // The wire's closed reasons, plus the transport failures that can reach an
+    // opening. Anything unrecognized reads as `aborted` rather than leaking a
+    // hub-internal reason string to the connector.
+    return {
+      responded: false,
+      reason: reason === "timeout" || reason === "aborted" || reason === "shutdown"
+        || reason === "unsupported" || reason === "channel-missing"
+        ? reason
+        : "aborted",
+    };
+  }
+  const response = outcome.response;
+  if (typeof response !== "object" || response === null) {
+    return { responded: false, reason: "aborted" };
+  }
+  const decision = response as Partial<InteractionResponseDto>;
+  // Stamp OVER anything the frame carried: the hub's session is the authority.
+  return {
+    responded: true,
+    response: { ...decision, responderId: accountId } as InteractionResponseDto,
+  };
 }
 
 export class InteractionRegistry {

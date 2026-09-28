@@ -1585,6 +1585,7 @@ export {
   parseWebServerEvent,
   validControlEvent,
   validInstanceStateSync,
+  validateInteractionRequest,
   validateInteractionResponse,
   validateInteractionWithdraw,
   webClientEnvelope,

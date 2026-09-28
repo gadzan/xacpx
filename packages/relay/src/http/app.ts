@@ -7,11 +7,8 @@ import {
   isErrorPayload,
   MSG,
   parseControlPayload,
-  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
   type ControlEventDto,
-  type InteractionRequestDto,
   type InteractionResponseDto,
-  type InteractionWithdrawDto,
   type LiveTurnSnapshotDto,
   type PublishedAgentEndpointDto,
   type SessionCommandsSnapshotDto,
@@ -23,7 +20,7 @@ import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 import type { MessageStore } from "../stores/messages.js";
 import type { TurnSlotAnchorStore } from "../stores/turn-slot-anchors.js";
-import type { InteractionCloseReason, InteractionRegistry } from "../interaction-registry.js";
+import type { InteractionRegistry } from "../interaction-registry.js";
 import type { PushSubscriptionStore } from "../stores/push-subscriptions.js";
 import { isAllowedPushEndpoint } from "../push.js";
 import type { RelayLogger } from "../logging.js";
@@ -149,37 +146,6 @@ function safePreviewUrl(v: unknown): string | undefined {
 const RPC_MAX_BODY_BYTES = 16 * 1024 * 1024;
 
 /**
- * Validate the connector's request to OPEN an interaction.
- *
- * The connector builds this frame from core's OWN normalized request (core owns
- * what may be asked, and froze the form before it reached the channel), so the
- * hub's job here is only the boundary check: is this a well-formed interaction,
- * and does its `expiresAt` leave room to answer. Nothing is interpreted, and
- * nothing is inferred from the frame — least of all identity, which the hub adds
- * itself, later.
- */
-function validateInteractionRequestPayload(payload: unknown): InteractionRequestDto | null {
-  const parsed = parseControlPayload(MSG.interactionRequest, payload);
-  return parsed ?? null;
-}
-
-/**
- * The two ways a hub-side interaction call can end.
- *
- * `closed` is deliberately NOT a failure: the window timing out and the turn
- * being withdrawn are normal endings, and the browser/caller must be able to say
- * "the human never decided" without implying anything broke.
- */
-type InteractionOutcome =
-  | { kind: "answered"; decision: InteractionResponseDto }
-  | { kind: "closed"; reason: InteractionCloseReason };
-
-/** How a no-decision close reads to the connector's caller. */
-function closedReasonToWire(reason: InteractionCloseReason): "timeout" | "withdrawn" {
-  return reason === "expired" ? "timeout" : "withdrawn";
-}
-
-/**
  * Validate the browser's ANSWER frame.
  *
  * Reaches the same validator the connector uses, so both ends of the answer agree
@@ -194,62 +160,15 @@ function validateInteractionResponsePayload(payload: unknown): InteractionRespon
 }
 
 /**
- * Validate the connector's WITHDRAW frame.
+ * Shape the connector's outcome for the browser, stamping the responder
+ * identity.
  *
- * The narrowest shape that carries the meaning: which interaction, and nothing
- * else. No reason, no requester identity — the withdrawal IS the request, and
- * it is idempotent so a withdrawal racing a resolve cannot error.
+ * Re-exported from the registry module, where it lives beside the one component
+ * both the connector-facing (WebSocket) and browser-facing (HTTP) transports
+ * share, so the stamp is applied identically on either surface. Two copies of a
+ * security-critical stamp is how the two drift apart.
  */
-function validateInteractionWithdrawPayload(payload: unknown): InteractionWithdrawDto | null {
-  const parsed = parseControlPayload(MSG.interactionWithdraw, payload);
-  if (!parsed) return null;
-  const candidate = parsed as Partial<InteractionWithdrawDto>;
-  return typeof candidate.requestId === "string"
-    ? { requestId: candidate.requestId }
-    : null;
-}
-
-/**
- * Shape the connector's outcome for the browser, stamping the responder identity.
- *
- * This is the ONLY place a responder identity is added, and it comes from the
- * hub's own session authentication — never from the frame. Two consequences:
- *
- *   - A browser cannot assert an identity: the field is stamped over whatever the
- *     frame carried, so a connector or tampered client that sets one has no
- *     effect.
- *   - The identity is the one the hub already trusts for this RPC, which is the
- *     same account identity the trusted conversation prompt path stamps
- *     (`relay:<accountId>` / `senderId: account.id`).
- *
- * `responded: false` keeps its reason intact: the browser must distinguish "the
- * human never answered" from "the human chose cancel", and collapsing the two
- * would show a user's own dismissal as an infrastructure error.
- *
- * Exported for the test that pins the stamping: an unexported helper on the
- * security-critical path is a path with no coverage, and the failure mode (an
- * identity a client chose being reported to core) is silent.
- */
-export function interactionResultForBrowser(result: unknown, accountId: string): unknown {
-  if (typeof result !== "object" || result === null) {
-    return { responded: false as const, reason: "aborted" as const };
-  }
-  const outcome = result as { responded?: unknown; reason?: unknown; response?: unknown };
-  if (outcome.responded !== true) {
-    const reason = typeof outcome.reason === "string" ? outcome.reason : "aborted";
-    return { responded: false as const, reason };
-  }
-  const response = outcome.response;
-  if (typeof response !== "object" || response === null) {
-    return { responded: false as const, reason: "aborted" as const };
-  }
-  const decision = response as Record<string, unknown>;
-  // Stamp OVER anything the frame carried: the hub's session is the authority.
-  return {
-    responded: true as const,
-    response: { ...decision, responderId: accountId },
-  };
-}
+export { interactionResultForBrowser } from "../interaction-registry.js";
 
 // Design spec caps attachments at ≤5 per message; bound persisted string fields too
 // so arbitrarily long filename/mimeType can't bloat storage.
@@ -769,86 +688,20 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         },
       };
     }
-    if (body.type === MSG.interactionRequest) {
-      // Connector -> hub: OPEN an interaction for this account's human. The
-      // frame's own `expiresAt` is the window, and the RPC stays open until the
-      // human answers or the window ends — the hub does not forward to a
-      // separate downlink that would need its own reconciliation.
-      const interaction = validateInteractionRequestPayload(payload);
-      if (!interaction) return c.json({ error: "invalid-payload" }, 400);
-      const registry = deps.interactions;
-      if (!registry) return c.json({ error: "interaction-unavailable" }, 503);
-      if (interaction.expiresAt <= Date.now()) {
-        // A window that closed before the frame even arrived: opening it would
-        // put a form on screen that no answer could legally reach.
-        return c.json({ responded: false as const, reason: "timeout" as const });
-      }
-      if (interaction.kind !== "elicitation") {
-        // The wire carries the permission kind so the transport is shared, but
-        // nothing renders it yet. Refusing up front beats leaving a turn waiting
-        // for an answer that can never arrive.
-        return c.json({ responded: false as const, reason: "unsupported" as const });
-      }
-      // The connector's ceiling, sent so the connector's own timer cannot fire
-      // before the hub decides the window ended.
-      //
-      // `timeoutMs` is when the CALL stops waiting — the window plus a reserve a
-      // decision made in time needs to travel home. It is NOT when answering
-      // stops being legal: `expiresAt` is. Keeping them distinct is what bounds
-      // the human's answer window instead of quietly stretching it by the reserve.
-      const timeoutMs = Math.max(1, interaction.expiresAt - Date.now())
-        + RELAY_INTERACTION_RESPONSE_RESERVE_MS;
-      const answerWindowMs = Math.max(0, interaction.expiresAt - Date.now());
-      const chatKey = `relay:${account.id}`;
-      try {
-        const outcome = await new Promise<InteractionOutcome>((resolve) => {
-          registry.open({
-            requestId: interaction.requestId,
-            instanceId: instance.id,
-            accountId: account.id,
-            kind: interaction.kind,
-            expiresAt: interaction.expiresAt,
-            chatKey,
-            sessionAlias: "",
-            ...(interaction.conversation !== undefined ? { conversation: interaction.conversation } : {}),
-            timeoutMs,
-            answerWindowMs,
-            resolve: (decision) => resolve({ kind: "answered", decision }),
-            reject: (reason) => resolve({ kind: "closed", reason }),
-          });
-          // Publish AFTER registering: a browser that receives the event must
-          // find a pending interaction to answer, or its answer would be
-          // rejected as gone.
-          deps.gateway.broadcastControlEvent?.(account.id, {
-            type: "interaction-opened",
-            chatKey,
-            sessionAlias: "",
-            interaction,
-          });
-        });
-        if (outcome.kind === "closed") {
-          // No user decision. Mapped so the browser's own form shows the same
-          // terminal state the connector-side caller sees.
-          return c.json({ responded: false, reason: closedReasonToWire(outcome.reason) });
-        }
-        // The identity is THIS authenticated session — the one that opened the
-        // interaction. Never read from the browser frame, which carries no
-        // identity field at all.
-        return c.json(interactionResultForBrowser(
-          { responded: true, response: outcome.decision },
-          account.id,
-        ));
-      } catch (error) {
-        // The opening itself failed (socket gone, transport rejected). Withdraw
-        // the registration so a late answer cannot resolve a dead call.
-        registry.close(interaction.requestId, "withdrawn");
-        deps.logger?.info("relay.interaction.open_failed", "interaction open failed", {
-          instanceId: instance.id,
-          error: String(error),
-        });
-        return c.json({ responded: false, reason: "aborted" });
-      }
-    }
+    // NOTE: `interactionRequest` and `interactionWithdraw` are deliberately
+    // ABSENT from this surface.
+    //
+    // This endpoint is the AUTHENTICATED BROWSER's RPC into the hub. Opening and
+    // withdrawing an interaction are the CONNECTOR's acts: the turn that owns the
+    // agent is what asks the question and what goes away, and those belong to the
+    // authenticated connector socket (see `instance-gateway.ts`), where identity
+    // is the socket's own rather than anything a frame asserts.
+    //
+    // Accepting a withdrawal here would let any authenticated browser close any
+    // pending interaction by name — closing by bare requestId alone — which is a
+    // connector-only control turned into a browser RPC. Leaving them out of this
+    // dispatcher is the fix, and a request for them falls through to the generic
+    // handler below.
     if (body.type === MSG.interactionRespond) {
       // Browser -> hub: ANSWER an interaction that is currently open.
       const answer = validateInteractionResponsePayload(payload);
@@ -873,23 +726,16 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       // emits. Adding a second one here would double the browser's close.
       return c.json({ ok: true });
     }
-    if (body.type === MSG.interactionWithdraw) {
-      // Connector -> hub: WITHDRAW an open interaction.
-      //
-      // This is what makes an abort stop collecting input. The core
-      // `request.signal` firing means the agent withdrew the elicitation or the
-      // turn was disposed; without this the most the connector could do is stop
-      // waiting locally, which would leave a form on the human's screen
-      // accepting answers for a turn that no longer exists.
-      const withdrawal = validateInteractionWithdrawPayload(payload);
-      if (!withdrawal) return c.json({ error: "invalid-payload" }, 400);
-      const registry = deps.interactions;
-      if (!registry) return c.json({ error: "interaction-unavailable" }, 503);
-      // Idempotent: the requestId may already have been resolved, expired, or
-      // withdrawn by a racing path. A withdrawal of an interaction that ended on
-      // its own is not an error — it already achieved the state being asked for.
-      registry.close(withdrawal.requestId, "withdrawn");
-      return c.json({ ok: true });
+    // An explicit REFUSAL, not merely an absence.
+    //
+    // Leaving these two out of the dispatcher above is not enough on its own:
+    // the generic forward at the end of this handler would pass them on to the
+    // connector, which is a connector-only control routed through a browser
+    // session — and, for a withdrawal, one that closes by requestId alone with
+    // no ownership check. Refusing here names the boundary at the one place that
+    // owns it.
+    if (body.type === MSG.interactionRequest || body.type === MSG.interactionWithdraw) {
+      return c.json({ error: "connector-only" }, 403);
     }
     const releaseSessionRpcLocks: Array<() => void> = [];
     let persistedPromptId: number | undefined;

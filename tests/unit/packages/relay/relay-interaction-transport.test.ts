@@ -2,10 +2,14 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { WebSocket, WebSocketServer } from "ws";
 
 import {
   MSG,
   RELAY_CAPABILITIES,
+  RELAY_PROTOCOL_VERSION,
+  decodeEnvelope,
+  encodeEnvelope,
   type ControlEventDto,
 } from "../../../../packages/relay-protocol/src/index";
 import { createSqlDriver, initSchema } from "../../../../packages/relay/src/db";
@@ -13,6 +17,7 @@ import { AccountStore } from "../../../../packages/relay/src/stores/accounts";
 import { InstanceStore } from "../../../../packages/relay/src/stores/instances";
 import { MessageStore } from "../../../../packages/relay/src/stores/messages";
 import { createApp } from "../../../../packages/relay/src/http/app";
+import { InstanceGateway } from "../../../../packages/relay/src/gateway/instance-gateway";
 import { InteractionRegistry } from "../../../../packages/relay/src/interaction-registry";
 import type { InteractionRequestDto } from "../../../../packages/relay-protocol/src/dtos";
 
@@ -87,10 +92,18 @@ interface Harness {
   instanceId: string;
   accountId: string;
   cookie: string;
-  open: (frame: InteractionRequestDto) => Deferred<{ status: number; body: unknown }>;
+  /** Open via the REAL connector transport: a live authed WS socket. */
+  open: (frame: InteractionRequestDto) => Promise<{ status: number; body: unknown }>;
   respond: (payload: unknown) => Promise<{ status: number; body: unknown }>;
+  /**
+   * Send a raw frame on the authenticated connector socket, for the frames that
+   * are not `interactionRequest` (a withdrawal, say).
+   */
+  raw: (type: string, payload: unknown) => Promise<{ status: number; body: unknown }>;
   broadcasts: ControlEventDto[];
   waitForEvents: (type: ControlEventDto["type"], count: number) => Promise<void>;
+  pendingIds: () => string[];
+  close: () => Promise<void>;
 }
 
 async function makeHarness(): Promise<Harness> {
@@ -101,17 +114,28 @@ async function makeHarness(): Promise<Harness> {
   const instances = new InstanceStore(db);
   const admin = accounts.createAccount("admin");
   const { token: loginToken } = accounts.createLoginToken(admin.id, "test");
-  const created = instances.registerInstanceForAccount(admin.id, "home-pc");
 
   const broadcasts: ControlEventDto[] = [];
   const logger = silentLogger();
-  const interactions = new InteractionRegistry({
-    debug: (event) => {
-      // The opened/closed lifecycle is produced by the registry regardless of the
-      // HTTP path; capture the browser-facing ones only.
-      void event;
+  const interactions = new InteractionRegistry({ debug: () => {} });
+  // The hub's real WebSocket ingress, which is where a connector's
+  // `interactionRequest` and `interactionWithdraw` are handled.
+  const gateway = new InstanceGateway({
+    instances,
+    accounts,
+    requestTimeoutMs: 60_000,
+    logger,
+    interactions,
+    broadcastControlEvent: (_accountId, event) => {
+      broadcasts.push(event);
     },
   });
+
+  const wss = new WebSocketServer({ port: 0 });
+  await new Promise<void>((resolve) => wss.on("listening", () => resolve()));
+  wss.on("connection", (socket) => gateway.handleConnection(socket));
+  const port = (wss.address() as { port: number }).port;
+
   const app = createApp({
     accounts,
     instances,
@@ -119,7 +143,7 @@ async function makeHarness(): Promise<Harness> {
     interactions,
     logger,
     gateway: {
-      isOnline: () => true,
+      isOnline: (instanceId: string) => gateway.isOnline(instanceId),
       sendRequest: async () => ({}),
       broadcastControlEvent: (_accountId, event) => {
         broadcasts.push(event);
@@ -133,8 +157,27 @@ async function makeHarness(): Promise<Harness> {
     body: JSON.stringify({ token: loginToken }),
   });
   const cookie = loginRes.headers.get("set-cookie")?.split(";")[0] ?? "";
+  const created = instances.registerInstanceForAccount(admin.id, "home-pc");
 
-  const rpc = async (type: string, payload: unknown): Promise<{ status: number; body: unknown }> => {
+  /**
+   * The CONNECTOR's half: a real authenticated socket.
+   *
+   * The connector handshakes with a pairing token exactly the way
+   * `RelayClient.sendHandshake` does, so the socket identity the gateway enforces
+   * is one the connector really established.
+   */
+  const connectorSocket = await connectSocket(port);
+  const pairingToken = instances.issuePairingToken(admin.id, "connector", 600_000).token;
+  const handshake = await socketRequest(connectorSocket, MSG.instanceRegister, {
+    pairingToken,
+    coreVersion: "0.11.0",
+  });
+  if (typeof (handshake.body as { instanceId?: unknown }).instanceId !== "string") {
+    throw new Error("connector handshake did not produce an instance id");
+  }
+  const connectorInstanceId = handshake.instanceId;
+
+  const rpcAsBrowser = async (type: string, payload: unknown): Promise<{ status: number; body: unknown }> => {
     const res = await app.request(`/api/instances/${created.instanceId}/rpc`, {
       method: "POST",
       headers: { cookie, "content-type": "application/json" },
@@ -165,18 +208,56 @@ async function makeHarness(): Promise<Harness> {
   };
 
   return {
-    instanceId: created.instanceId,
+    instanceId: connectorInstanceId,
     accountId: admin.id,
     cookie,
     broadcasts,
     waitForEvents,
-    open: (frame) => {
-      const settled = deferred<{ status: number; body: unknown }>();
-      void rpc(MSG.interactionRequest, frame).then((result) => settled.resolve(result));
-      return settled;
+    pendingIds: () => interactions.listForAccount(admin.id).map((e) => e.requestId),
+    open: (frame) => socketRequest(connectorSocket, MSG.interactionRequest, frame),
+    raw: (type, payload) => socketRequest(connectorSocket, type, payload),
+    respond: (payload) => rpcAsBrowser(MSG.interactionRespond, payload),
+    close: async () => {
+      connectorSocket.close();
+      await new Promise<void>((resolve) => wss.close(() => resolve()));
     },
-    respond: (payload) => rpc(MSG.interactionRespond, payload),
   };
+}
+
+/** A WebSocket to the hub, ready once the socket is open. */
+async function connectSocket(port: number): Promise<WebSocket> {
+  const socket = new WebSocket(`ws://127.0.0.1:${port}`);
+  await new Promise<void>((resolve, reject) => {
+    socket.on("open", () => resolve());
+    socket.on("error", reject);
+  });
+  return socket;
+}
+
+/** A req/res round trip over an authenticated connector socket. */
+async function socketRequest(
+  socket: WebSocket,
+  type: string,
+  payload: unknown,
+): Promise<{ status: number; body: unknown }> {
+  const id = `t-${Math.random().toString(36).slice(2)}`;
+  return await new Promise((resolve) => {
+    const onMessage = (data: unknown): void => {
+      const decoded = decodeEnvelope(String(data));
+      if (!decoded.ok || decoded.envelope.id !== id) return;
+      socket.off("message", onMessage);
+      resolve({ status: 200, body: decoded.envelope.payload });
+    };
+    socket.on("message", onMessage);
+    socket.send(encodeEnvelope({
+      protocolVersion: RELAY_PROTOCOL_VERSION, kind: "req", id, type, payload,
+    }));
+    // Bounded so a dropped frame is a failure, not a hang.
+    setTimeout(() => {
+      socket.off("message", onMessage);
+      resolve({ status: 0, body: { error: "timeout" } });
+    }, 10_000);
+  });
 }
 
 describe("relay hub interaction transport (production direction)", () => {
@@ -208,7 +289,7 @@ describe("relay hub interaction transport (production direction)", () => {
     expect(answered.status).toBe(200);
 
     // The opening RPC resolves with the decision, with the hub's own identity.
-    const result = await opening.promise;
+    const result = await opening;
     expect(result.body).toEqual({
       responded: true,
       response: {
@@ -257,7 +338,7 @@ describe("relay hub interaction transport (production direction)", () => {
     });
     expect(clean.status).toBe(200);
 
-    const result = await opening.promise;
+    const result = await opening;
     const body = result.body as { response: Record<string, unknown> };
     expect(body.response.responderId).toBe(h.accountId);
     expect(body.response.responderId).not.toBe("someone-else");
@@ -284,7 +365,7 @@ describe("relay hub interaction transport (production direction)", () => {
       action: "decline",
     });
     expect(clean.status).toBe(200);
-    const result = await opening.promise;
+    const result = await opening;
     const body = result.body as { response: Record<string, unknown> };
     expect(body.response.action).toBe("decline");
     expect(body.response.responderId).toBe(h.accountId);
@@ -306,7 +387,7 @@ describe("relay hub interaction transport (production direction)", () => {
     expect(tooLate.status).toBe(409);
 
     const opening = h.open(frame);
-    const result = await opening.promise;
+    const result = await opening;
     expect(result.body).toEqual({ responded: false, reason: "timeout" });
     // No form was ever published for a window that could not be answered.
     expect(h.broadcasts.filter((e) => e.type === "interaction-opened")).toHaveLength(0);
@@ -334,7 +415,7 @@ describe("relay hub interaction transport (production direction)", () => {
       expiresAt: Date.now() + 60_000,
       permission: { availableOutcomes: ["allow_once"] },
     });
-    const result = await opening.promise;
+    const result = await opening;
     expect(result.body).toEqual({ responded: false, reason: "unsupported" });
     expect(h.broadcasts.filter((e) => e.type === "interaction-opened")).toHaveLength(0);
   });
@@ -374,7 +455,7 @@ describe("relay hub interaction transport (production direction)", () => {
     });
     expect(answered.status).toBe(200);
 
-    const result = await opening.promise;
+    const result = await opening;
     const body = result.body as { response: Record<string, unknown> };
     expect(body.response.action).toBe("accept");
     expect(body.response.content).toBeNull();

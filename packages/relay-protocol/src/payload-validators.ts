@@ -591,7 +591,7 @@ function validInteractionField(v: unknown): boolean {
  * `elicitation` block, or a `permission` request with no `permission` block, is
  * rejected rather than forwarded to a renderer that has nothing to render.
  */
-const validateInteractionRequest: Validator<InteractionRequestPayload> = (p) => {
+export const validateInteractionRequest: Validator<InteractionRequestPayload> = (p) => {
   const o = fields(p);
   if (!o) return null;
   if (!isBoundedStr(o.requestId, 128)) return null;

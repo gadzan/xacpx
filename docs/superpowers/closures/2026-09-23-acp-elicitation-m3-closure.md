@@ -67,27 +67,68 @@ human and the answer returns to the same turn, through production transport".
 exactly that, and every hop is real code:
 
 ```
-core's broker      RelayChannel.requestElicitation(request)   real, real deps
-                                                                         channel.ts
-connector          HTTP RPC control.interaction.request        real Hono app, real
-                                                                         app.ts
-                   InteractionRegistry                        real stores, real SQLite
-                                                                         interaction-registry.ts
-hub                broadcasts control-event "interaction-opened"   real
-browser            HTTP RPC control.interaction.respond         authenticated session
+core's broker      RelayChannel.requestElicitation(request)   real
+connector          RelayClient.sendRequest                    REAL: its upward
+                                                                        allowlist,
+                                                                        its envelope
+                                                                        encode, its
+                                                                        pending-request
+                                                                        bookkeeping
+network            a real ws:// socket                        the only fake is the
+                                                                loopback, which is
+                                                                what a real one is
+hub                InstanceGateway.handleMessage               REAL authenticated
+                                                                        connector ingress
+                    InteractionRegistry                        real stores
+browser            hub HTTP RPC interactionRespond             real authenticated
+                                                                        session
 hub                stamps responderId from ITS session          real
-                                                                         app.ts
-connector          maps the answer to a decision               real
-                                                                         relay-interaction.ts
+hub                sends the WS response frame                 real
+connector          RelayClient's pending promise               real decode
 core               re-verifies responderId + answers           asserted, not stripped
 ```
 
-The only faked edge is the WebSocket between connector and hub, replaced by a
-client seam whose `sendRequest` performs the hub's real HTTP call. That is the
-network boundary and nothing else. There is no injected renderer, no synthetic
-`interaction-opened` event, and no hand-built frame standing in for a
-protocol-produced one — the opening frame is the one the channel actually builds,
-and it is validated by the hub's own validator before anything else happens.
+The only faked edge is the loopback socket. **Not** `RelayClient.sendRequest`, and
+**not** `InstanceGateway`'s request dispatcher — an earlier revision stubbed both
+by handing the connector's frame straight to the browser HTTP RPC endpoint, which
+was not a network fake but a bypass of precisely the pair of seams that had to be
+proven. `relay-interaction-transport.test.ts` covers the hub half the same way: it
+drives the connector through a real authenticated WebSocket rather than through the
+browser surface, so the transport is exercised from the end that owns it.
+
+Both are mutation-pinned: removing either interaction type from the client's
+upward allowlist, or removing the handler from the gateway dispatcher, turns every
+chain test red.
+
+## The transport boundary that moved
+
+Opening and withdrawing an interaction are the CONNECTOR's acts: the turn that owns
+the agent is what asks the question and what goes away. Both used to live on
+`POST /api/instances/:id/rpc`, which is the AUTHENTICATED BROWSER's surface — so a
+connector-only control had become a browser RPC, and `withdraw` closed by bare
+`requestId` with no ownership check at all.
+
+They now live on the authenticated connector socket in `InstanceGateway`, where the
+identity is the socket's own rather than anything a frame asserts:
+
+```
+open      → registry.open + broadcast interaction-opened
+withdraw  → ownership check (instance AND account) → close("withdrawn")
+             → registry's listener broadcasts to every browser
+             → a later interactionRespond is 409 gone
+```
+
+The browser surface keeps `interactionRespond` and answers only. `interactionRequest`
+and `interactionWithdraw` are not merely absent from it — they are explicitly
+refused with `connector-only`, because leaving them out alone would let the generic
+forward at the end of the handler pass them on anyway. The `permission` kind's
+`unsupported` refusal sits on the gateway path too, since the kind is the
+connector's to state.
+
+`interactionResultForBrowser` moved beside the registry, the one component both
+the connector-facing and browser-facing transports share, so the security-critical
+identity stamp is applied identically on either surface. Two copies of a stamp is
+how the two drift apart.
 
 Three assertions carry the weight:
 
@@ -171,8 +212,9 @@ emits its own event, so the browser sees exactly one close per interaction.
 |---|---|
 | `relay-protocol` | message pair + the `withdraw` message, DTOs, validators, `web-dtos` exhaustiveness, capability constant, shared reserve constant, exported `validateInteractionResponse`, optional product correlation ids |
 | core | **B2 blocker removed**: `bot:` keys now route, and a Direct Bot turn gets an elicitation route |
-| `channel-relay` | `requestElicitation` opens the interaction on the hub through the real client, reports the HUB's stamped responder, and withdraws the hub interaction when the request signal aborts or the transport fails |
-| `relay` hub | stamps the responder identity, owns the pending-interaction registry, emits `interaction-opened`, notifies `interaction-closed` for every closer from one listener, adds `control.interaction.withdraw`, and keeps the answer window at `expiresAt` while the RPC ceiling stays `expiresAt + reserve` |
+| `channel-relay` | real `RelayClient` (upward allowlist now carries `interactionRequest`/`interactionWithdraw`), `requestElicitation` opens on the hub and reports the HUB's stamped responder, withdraws the hub interaction on abort or transport failure |
+| `relay` hub | connector-socket `interactionRequest`/`interactionWithdraw` on the real gateway dispatcher, ownership-checked withdrawal, stamps the responder identity, owns the pending-interaction registry, notifies `interaction-closed` for every closer, and keeps the answer window at `expiresAt` while the RPC ceiling stays `expiresAt + reserve` |
+| `relay` HTTP surface | answers only (`interactionRespond`); open and withdraw are explicitly refused as `connector-only` rather than forwarded |
 | `relay-web` store | pending-interaction state, submit/decline/cancel on the answer direction, reconnect re-proof |
 | `relay-web` UI | form renderer in the turn banner, all five field kinds |
 | tests | 15 mutation-verified regressions, including the production-shaped hub round trip, the full chain end to end, the identity mismatch, the remote withdrawal, and the two-clock boundary |
