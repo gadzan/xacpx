@@ -5887,7 +5887,7 @@ test("PR7 group accept: non-member ids are refused before any lifecycle gate is 
       requestId: `req-pr7-foreign-${round}`,
       text: "nope",
       target: { mode: "members", botIds: foreign },
-    })).rejects.toMatchObject({ code: "invalid-target" });
+    })).rejects.toMatchObject({ code: "group_member_not_member" });
   }
   // Repeated probing must not add a single lifecycle-gate entry for the
   // fabricated ids: the pre-check rejects before gates are acquired, so the
@@ -5901,16 +5901,62 @@ test("PR7 group accept: non-member ids are refused before any lifecycle gate is 
   // And the map holds only the two real members (plus whatever the harness
   // itself gated), never the 192 fabricated ids across the three rounds.
   expect(gateLocks!.size).toBeLessThanOrEqual(4);
-  // A legacy single-Bot target with an oversized id is refused the same way.
+  // An oversized id is malformed input, so it keeps its own code.
   await expect(first.service.acceptGroupPrompt({
     conversationId: group.id,
     topicId: topic.id,
     requestId: "req-pr7-long-botid",
     text: "nope",
-    target: { botId: "x".repeat(129) },
+    target: { mode: "members", botIds: [BOT_ID, "x".repeat(129)] },
   })).rejects.toMatchObject({ code: "invalid-target" });
   // Nothing durable was created for any refused request.
   expect(first.store.listRuns(group.id, topic.id)).toHaveLength(0);
+  first.store.close();
+});
+
+test("PR7 group accept: members and everyone share one mutual-exclusion budget", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const big = Array.from({ length: 70 }, (_, i) => `bot_m${i}`);
+  for (const id of big) {
+    first.state.bots[id] = {
+      id, name: `M${id}`, agent: "codex", workspace: "backend", enabled: true,
+      profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+    };
+  }
+  const group = await first.bots.createGroup({ title: "Big", botIds: [BOT_ID, ...big] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const everyone = { mode: "members" as const, botIds: [] };
+  void everyone;
+  // `everyone` expands to 71 eligible members, which exceeds the shared budget.
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-big-everyone",
+    text: "all",
+    target: { mode: "everyone" },
+  })).rejects.toMatchObject({ code: "target_too_large" });
+  // An explicit members list beyond the same budget is refused identically, so
+  // the Group is never addressable one way but not the other.
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-big-members",
+    text: "all",
+    target: { mode: "members", botIds: [BOT_ID, ...big] },
+  })).rejects.toMatchObject({ code: "invalid-target" });
+  // A subset within budget still works.
+  const subset = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-big-subset",
+    text: "all",
+    target: { mode: "members", botIds: big.slice(0, 30) },
+  });
+  expect(subset.memberTurns).toHaveLength(30);
   first.store.close();
 });
 
@@ -5951,7 +5997,7 @@ test("PR7 group accept: duplicate IDs deduplicate, everyone expands, empty/unkno
     requestId: "req-pr7-unknown",
     text: "unknown",
     target: { mode: "members", botIds: ["bot_ghost"] },
-  })).rejects.toThrow(/not a member|not exist|not current members/);
+  })).rejects.toMatchObject({ code: "group_member_not_member" });
   await first.bots.updateBot(TESTER_ID, { enabled: false });
   await expect(first.service.acceptGroupPrompt({
     conversationId: group.id,
@@ -6009,7 +6055,7 @@ test("PR7 group accept: removed member rejects and targeted member races concurr
     requestId: "req-pr7-removed",
     text: "removed",
     target: { mode: "members", botIds: [botC] },
-  })).rejects.toThrow(/not a member|not current members/);
+  })).rejects.toMatchObject({ code: "group_member_not_member" });
   // Deterministic removal race: park the accept between probe and gate
   // acquisition, commit the removal, then let the accept proceed. Inside
   // the gates it re-reads live membership and must reject the removed
@@ -6046,11 +6092,9 @@ test("PR7 group accept: removed member rejects and targeted member races concurr
   await removerStarted.promise;
   await raced.bots.updateGroup(racedGroup.id, { botIds: [BOT_ID, TESTER_ID] });
   gate.resolve();
-  // The pre-check rejects non-current members before gates are taken (it
-  // linearizes before the removal commit), so this racing call now fails at the
-  // probe. The in-gate membership revalidation is still the authority for the
-  // non-racing path and is covered by the first assertion above.
-  await expect(racing).rejects.toThrow(/not a member|not current members/);
+  // Same canonical code as the in-gate path: the pre-check linearizes before the
+  // removal commit, but the API contract does not change with the ordering.
+  await expect(racing).rejects.toMatchObject({ code: "group_member_not_member" });
   raced.store.close();
   first.store.close();
 });

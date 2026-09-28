@@ -128,6 +128,7 @@ function isDefinitiveRejection(code: string | null): boolean {
     || code === "empty_target"
     || code === "group_member_not_member"
     || code === "bot_disabled"
+    || code === "target_too_large"
     || code === "bot_not_found"
     || code === "no_eligible_members"
     || code === "conversation_target_mismatch"
@@ -1316,13 +1317,15 @@ export const useGroupsStore = defineStore("groups", () => {
       }
       activeConversationId.value = group.id;
       // The default target prefers an executable member, which needs the Bot
-      // catalog's enabled flags. A listing failure (with no cache) must not
-      // widen routing, so it falls back to the lead / first member and lets the
-      // server be authoritative about disabled Bots.
+      // catalog's enabled flags. Freshness has exactly one authority — the Direct
+      // store's botsLoaded, set by the newest loadBots() outcome. A NON-EMPTY
+      // cached list is not evidence of freshness: loadBots() keeps the previous
+      // rows when a later refresh fails, so treating a stale cache as confirmed
+      // would let a failed read-only listing widen routing from the lead Bot to
+      // the whole Group.
       const bots = await directBotsStore.loadBots(targetInstanceId).catch(() => null);
       const cachedBots = directBotsStore.botsByInstance[targetInstanceId];
-      const catalogKnown = Array.isArray(bots) && bots.length > 0
-        || Array.isArray(cachedBots) && cachedBots.length > 0;
+      const catalogKnown = botCatalogKnown.value;
       const catalogBots = bots ?? cachedBots ?? [];
       // Fence BEFORE the write, not after: the slower Group's loadBots can
       // settle after the user has already opened another Group, and writing

@@ -763,13 +763,23 @@ export class ConversationRunService {
       }
       const live = this.state.conversations[conversationId];
       const membership = live?.kind === "group" ? live.botIds : [];
-      const foreign = parsed.botIds.filter(
-        (botId) => botId.length > MAX_BOT_ID_LENGTH || !membership.includes(botId),
-      );
-      if (foreign.length > 0) {
+      // Keep the canonical codes distinct: an oversized id is malformed input
+      // (`invalid-target`), while a well-formed id that simply is not a current
+      // member keeps `group_member_not_member` so existing API and Web
+      // classification semantics do not drift. Both are refused here, before any
+      // gate is taken, so the resource bound is unaffected by the split.
+      const malformed = parsed.botIds.filter((botId) => botId.length > MAX_BOT_ID_LENGTH);
+      if (malformed.length > 0) {
         throw new ConversationError(
           "invalid-target",
-          `explicit Group target selects Bots that are not current members of group "${conversationId}"`,
+          `explicit Group target member exceeds the maximum id length (max ${MAX_BOT_ID_LENGTH})`,
+        );
+      }
+      const nonMember = parsed.botIds.filter((botId) => !membership.includes(botId));
+      if (nonMember.length > 0) {
+        throw new BotError(
+          "group_member_not_member",
+          `bot "${nonMember[0]}" is not a member of group "${conversationId}"`,
         );
       }
       return [...parsed.botIds];
@@ -797,6 +807,14 @@ export class ConversationRunService {
       const eligible = membership.filter((botId) => this.bots.getBot(botId).enabled);
       if (eligible.length === 0) {
         throw new ConversationError("empty_target", "explicit Group target selects no members");
+      }
+      // Same mutual-exclusion budget as an explicit members target, so a Group is
+      // never addressable one way but not the other.
+      if (eligible.length > MAX_GROUP_TARGET_MEMBERS) {
+        throw new ConversationError(
+          "target_too_large",
+          `explicit Group target selects more than ${MAX_GROUP_TARGET_MEMBERS} members`,
+        );
       }
       return eligible;
     }

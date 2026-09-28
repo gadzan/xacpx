@@ -8,11 +8,14 @@ export const STATE_SYNC_TEXT_CAP = 256 * 1024;
 export const STATE_SYNC_PARTS_CAP = 1_000;
 export const MAX_TOOL_STEPS = 200;
 
-/** Resource bounds for a structured Group `members` target. A targeted accept
- *  acquires a per-Bot lifecycle gate for every supplied id BEFORE validating
- *  membership, and those gate entries live for the process lifetime. Capping the
- *  array here keeps an oversized/absurd payload from expanding unbounded
- *  process-local state. */
+/** Upper bound on a single structured Group `members` target.
+ *
+ *  This is a mutual-exclusion budget, not a Group-size limit: one Run may not
+ *  pin more than this many Bots at once, so `everyone` — which expands to the
+ *  whole live membership — must respect the same ceiling or a 65-member Group
+ *  would be addressable as `everyone` but not as an explicit `members` list.
+ *  Group membership itself stays unbounded here; a Group larger than this is
+ *  still fully usable via `everyone` plus sequential smaller targets. */
 export const MAX_GROUP_TARGET_MEMBERS = 64;
 export const MAX_BOT_ID_LENGTH = 128;
 export const REASONING_CAP = 16000;

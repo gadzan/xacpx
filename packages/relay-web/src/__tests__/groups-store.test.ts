@@ -24,6 +24,7 @@ vi.mock("../api/client", () => ({
 }));
 
 import { useGroupsStore } from "../stores/groups";
+import { useDirectBotsStore } from "../stores/direct-bots";
 
 const GROUP: GroupSummaryDto = {
   id: "conversation_g",
@@ -1462,6 +1463,36 @@ describe("useGroupsStore", () => {
     // Exactly two list requests: the aborted stale attempt issued no third
     // request, so the cache survives on ordering, not on a retry.
     expect(listRequests).toBe(2);
+  });
+
+  it("does not derive eligibility from a stale cache after a failed refresh", async () => {
+    const store = useGroupsStore();
+    const direct = useDirectBotsStore();
+    // A previous catalog refresh succeeded and cached every member as disabled.
+    direct.botsLoaded["inst_1"] = true;
+    direct.botsByInstance["inst_1"] = [
+      { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: false, updatedAt: "now" },
+      { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: false, updatedAt: "now" },
+    ];
+    // Now bots.list fails AND the newest refresh marks the catalog unconfirmed,
+    // while the stale rows remain cached. A non-empty cache is not evidence of
+    // freshness.
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [{ id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" }] };
+      }
+      if (type === "control.bots.list") throw new Error("bots.list unavailable");
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_1" };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.selectGroup("inst_1", "conversation_g");
+    // Stale all-disabled cache must NOT be treated as confirmed eligibility:
+    // the default stays a single member and never widens to everyone.
+    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+    // The composer's own authority agrees.
+    expect(store.botCatalogKnown).toBe(false);
   });
 
   it("never widens the default target to everyone when the bot catalog is unconfirmed", async () => {
