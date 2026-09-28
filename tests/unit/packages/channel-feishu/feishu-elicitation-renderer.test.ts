@@ -689,6 +689,27 @@ test("an all-optional form submitted with no answers yields a null content", asy
   expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: null });
 });
 
+test("a zero-field form's Start goes to the review page, where Submit is the only accept", async () => {
+  // No field to ask about, so the wizard has nothing to walk. M1 keeps
+  // `accept` + `content: null` for exactly this, and Start goes straight to the
+  // review page — Decline/Cancel alone would have left a legal form with no way
+  // to confirm, turning it into a timeout.
+  const rec = makeRenderer();
+  const promise = rec.renderer.requestElicitation(request([]), "oc_chat").then(
+    (d) => d,
+    (e: Error) => e,
+  );
+  const { token } = await pendingEntry(rec);
+  const updatesBefore = rec.transport.updates.length;
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: openingStart(rec), formValues: {} });
+  // A review card was published in place of the opening, with no field card.
+  expect(rec.transport.updates.length).toBe(updatesBefore + 1);
+
+  // Submit is reachable and is the only way to accept.
+  await rec.renderer.handleAction({ openId: "ou_initiator", value: { t: token, a: "submit", g: onScreenGeneration(token, rec) }, formValues: {} });
+  expect(await promise).toEqual({ action: "accept", responderId: "ou_initiator", content: null });
+});
+
 test("a token the renderer never issued is ignored", async () => {
   const rec = makeRenderer();
   const promise = rec.renderer.requestElicitation(request(ENV_FIELD), "oc_chat").then(
