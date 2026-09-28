@@ -58,6 +58,67 @@ describe("useGroupsStore", () => {
     localStorage.clear();
   });
 
+  it("discards a prompt still in flight when the Topic switches underneath it", async () => {
+    const store = useGroupsStore();
+    const aGate = Promise.withResolvers<void>();
+    mockRpc.mockImplementation(async (inst: string, type: string, payload?: unknown) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        const conversationId = (payload as { conversationId: string }).conversationId;
+        return { topics: [
+          { id: "topic_1", conversationId, title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" },
+          { id: "topic_2", conversationId, title: "Post", status: "active", createdAt: "now", updatedAt: "now" },
+        ] };
+      }
+      if (type === "control.bots.list") {
+        return { bots: [
+          { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        ] };
+      }
+      if (type === "control.conversation.history") {
+        return historyWith([
+          { id: "msg_1", conversationId: "conversation_g", topicId: "topic_1", seq: 1, role: "human", content: "hi", createdAt: "now" },
+        ]);
+      }
+      if (type === "control.runs.list") return { runs: [] };
+      if (type === "control.conversation.prompt") {
+        await aGate.promise;
+        return {
+          reused: false, conversationId: "conversation_g", topicId: "topic_1",
+          requestId: "req_1",
+          message: { id: "msg_2", conversationId: "conversation_g", topicId: "topic_1", seq: 2, role: "human", content: "deploy", createdAt: "now" },
+          run: { id: "run_1", conversationId: "conversation_g", topicId: "topic_1", requestMessageId: "msg_2", requestId: "req_1", mode: "explicit", state: "queued", profileRevision: 1, createdAt: "now" },
+          memberTurns: [],
+        };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.selectGroup("inst_1", "conversation_g");
+    expect(store.activeTopicId).toBe("topic_1");
+
+    // The prompt RPC is issued but never settles.
+    const send = store.sendPrompt("deploy");
+    await flushPromises();
+    expect(store.promptInFlight).toBe(true);
+
+    // The user switches to another Topic while it is still in flight.
+    await store.switchTopic("topic_2");
+    expect(store.activeTopicId).toBe("topic_2");
+    // The old prompt must not pin the new Topic's composer.
+    expect(store.promptInFlight).toBe(false);
+
+    // The Topic A response lands now: it may well have been durably accepted,
+    // but it must project nothing and leave the new Topic usable.
+    aGate.resolve();
+    expect(await send).toBe("orphaned");
+    await flushPromises();
+    expect(store.activeRun).toBeNull();
+    expect(store.promptInFlight).toBe(false);
+    expect(store.isRunActive).toBe(false);
+    expect(store.topicReady).toBe(true);
+  });
+
   it("loads groups for an instance", async () => {
     const store = useGroupsStore();
     mockRpc.mockResolvedValueOnce({ groups: [GROUP] });
@@ -1214,6 +1275,77 @@ describe("useGroupsStore", () => {
     expect(store.isRunActive).toBe(false);
     expect(store.activeRun).toBeNull();
     expect(store.ownershipUncertain).toBe(false);
+  });
+
+  it("unlocks the composer on a terminal list summary even when runs.get fails", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.groupsByInstance["inst_1"] = [GROUP];
+    const staleRunning: ConversationRunDto = {
+      id: "run_term", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_term", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now", startedAt: "now",
+    };
+    store.activeRun = staleRunning;
+    // The detail RPC rejects: enrichment is display-only and must not be able
+    // to hold the composer hostage.
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.runs.list") {
+        return { runs: [{
+          ...staleRunning, state: "completed",
+        }], conversationId: "conversation_g", topicId: "topic_1" };
+      }
+      if (type === "control.runs.get") throw new Error("detail unavailable");
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.retryDiscovery();
+    await flushPromises();
+    expect(store.isRunActive).toBe(false);
+    expect(store.topicReady).toBe(true);
+    expect(store.activeRun?.state).toBe("completed");
+  });
+
+  it("recovers terminal member rows when the list summary is the only proof", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.groupsByInstance["inst_1"] = [GROUP];
+    const staleRunning: ConversationRunDto = {
+      id: "run_term2", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_term2", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now", startedAt: "now",
+    };
+    store.activeRun = staleRunning;
+    const detailRun: ConversationRunDto = {
+      ...staleRunning, state: "completed",
+    };
+    mockRpc.mockImplementation(async (inst: string, type: string, payload?: unknown) => {
+      if (type === "control.runs.list") {
+        return { runs: [{ ...detailRun }], activeRunId: "run_term2", conversationId: "conversation_g", topicId: "topic_1" };
+      }
+      // The list summary is authoritative for the terminal state; the detail
+      // carries the per-member rows it cannot.
+      if (type === "control.runs.get") {
+        expect((payload as { runId: string }).runId).toBe("run_term2");
+        return { run: { ...detailRun, memberTurns: [
+          { id: "turn_a", runId: "run_term2", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_a", batch: 1, attempt: 1, origin: "human-explicit", state: "completed", createdAt: "now" },
+          { id: "turn_b", runId: "run_term2", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_b", batch: 1, attempt: 1, origin: "human-explicit", state: "failed", createdAt: "now" },
+        ] } };
+      }
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.retryDiscovery();
+    await flushPromises();
+    // Terminal ownership decided by the list; member rows restored by the detail.
+    expect(store.activeRun?.state).toBe("completed");
+    expect(store.isRunActive).toBe(false);
+    expect(store.topicReady).toBe(true);
+    expect(store.memberTurns.map((m) => m.state)).toEqual(["completed", "failed"]);
   });
 
   it("does not let a stale Topic refresh overwrite a newly opened Group", async () => {

@@ -737,9 +737,12 @@ export class ConversationRunService {
   }
 
   /** Gate-set probe for accept linearization. Targeted mode probes selected
-   *  IDs; everyone mode probes the whole live membership plus runtime residue
-   *  (same union as archive), so any membership change — or a Bot flipping
-   *  between disabled/enabled, which changes the eligible set — retries. */
+   *  IDs; everyone mode probes the live membership — deliberately NOT the
+   *  teardown-residue union, which also contains bindings for Bots already
+   *  removed from the Group. Their runtime correctly outlives removal until
+   *  Topic teardown, so charging it against the accept budget would refuse
+   *  `everyone` for a Group that used to be large. Membership changes and
+   *  enabled-flips still retry: both alter the live set. */
   private groupMemberCandidates(
     conversationId: string,
     parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" },

@@ -54,10 +54,21 @@ const selectionLabel = computed(() => {
   return t("group.target.memberCount", { count: selectedIds.value.length });
 });
 
+/** Drop everything tied to a draft that is no longer editable: the text, the
+ *  derived-mention suppression, the autogrow height and the picker menu.
+ *  Called when a send reaches an Accepted or Uncertain outcome, and when the
+ *  Topic changes underneath the composer. */
+function clearSentDraft(): void {
+  promptText.value = "";
+  lastDerivedTarget.value = null;
+  if (textareaEl.value) textareaEl.value.style.height = "auto";
+  closeMenu();
+}
+
 // A Group/Topic switch drops the draft text, so the derived suppression must
 // drop with it (otherwise the first mention in the next draft is ignored).
 watch(() => groupsStore.activeTopicId, () => {
-  lastDerivedTarget.value = null;
+  clearSentDraft();
 });
 
 function toggleMenu(): void {
@@ -239,18 +250,19 @@ async function handleSend(): Promise<void> {
   // refusal has neither and must leave the typed text in place.
   emit("send", text);
   if (props.sendOutcome) {
+    // Textbook semantics: after a send the text no longer carries a mention, so
+    // the derived state must reset or the next draft would inherit suppression.
     const outcome = await props.sendOutcome();
+    // Only a definitive refusal keeps the draft — the accept never happened, so
+    // the typed text is the only remaining copy. `accepted`/`uncertain`/`orphaned`
+    // all clear it: the first two are durably represented, and an orphaned send
+    // belongs to a Topic the user has left, so this draft is a different message.
     if (outcome !== "rejected") {
-      promptText.value = "";
+      clearSentDraft();
     }
     return;
   }
-  promptText.value = "";
-  // Textbook semantics: after a send the text no longer carries a mention, so
-  // the derived state must reset or the next draft would inherit suppression.
-  lastDerivedTarget.value = null;
-  if (textareaEl.value) textareaEl.value.style.height = "auto";
-  closeMenu();
+  clearSentDraft();
 }
 
 function handleCancel(): void {

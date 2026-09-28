@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import type { BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
 import { useDirectBotsStore } from "../stores/direct-bots";
-import { useGroupsStore } from "../stores/groups";
+import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
 import GroupPane from "../components/GroupPane.vue";
 import GroupComposer from "../components/GroupComposer.vue";
@@ -175,6 +175,68 @@ describe("Group Components", () => {
       // presentation bug, not a user-facing message.
       expect(wrapper.text()).toContain("too many queued runs");
       expect(wrapper.text()).not.toContain("topicQueueFull");
+    });
+
+    it("discards the draft when the Topic switches under a pending send", async () => {
+      const groups = seedGroupSelection();
+      const gate = Promise.withResolvers<GroupSendOutcome>();
+      const wrapper = mount(GroupPane, {
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      await textarea.setValue("deploy");
+      // Send on topic_1: hold the outcome promise so the RPC is "in flight"
+      // until the test releases it.
+      vi.spyOn(groups, "sendPromptOutcomePromise", "get").mockReturnValue(gate.promise);
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      await flushPromises();
+      expect((textarea.element as HTMLTextAreaElement).value).toBe("deploy");
+      // Switch to a second Topic while it is still in flight.
+      groups.topicsByConversation["i1:conversation_g"] = [
+        { id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" },
+        { id: "topic_2", conversationId: "conversation_g", title: "Post", status: "active", createdAt: "now", updatedAt: "now" },
+      ];
+      await groups.switchTopic("topic_2");
+      await flushPromises();
+      // The draft must not follow the user into the new Topic.
+      expect((textarea.element as HTMLTextAreaElement).value).toBe("");
+      // The topic_1 response arrives: it may have been durably accepted, but
+      // this draft belongs to topic_2 and is not a replay of it.
+      gate.resolve("orphaned");
+      await flushPromises();
+      expect((textarea.element as HTMLTextAreaElement).value).toBe("");
+    });
+
+    it("re-derives a mention in the FIRST draft after an accepted send", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const gate = Promise.withResolvers<GroupSendOutcome>();
+      const wrapper = mount(GroupComposer, {
+        props: {
+          bots: [
+            { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+            { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+          ],
+          sendOutcome: () => gate.promise,
+        },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      await textarea.setValue("@Tester ");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+      // Accepted send: the draft is finished and its text is gone.
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      gate.resolve("accepted");
+      await flushPromises();
+      expect((textarea.element as HTMLTextAreaElement).value).toBe("");
+      // The user now picks a different Bot for the next message.
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      // The SAME mention in a NEW draft must re-derive, not inherit the
+      // suppression from the sent draft and silently route to Bot A.
+      await textarea.setValue("@Tester ");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
     });
 
     it("renders an oversized everyone refusal as product copy, not backend English", async () => {

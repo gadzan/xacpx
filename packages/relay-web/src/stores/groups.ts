@@ -30,7 +30,17 @@ import { useDirectBotsStore } from "./direct-bots";
  *    the draft can be replaced by the Retry affordance.
  *  - `rejected`: a definitive refusal with no durable accept; nothing can replay
  *    the text, so the composer must KEEP the draft. */
-export type GroupSendOutcome = "accepted" | "uncertain" | "rejected";
+export type GroupSendOutcome =
+  /** The accept is confirmed: the text is in the transcript and the Run is projected. */
+  | "accepted"
+  /** Transport/ownership state is still unresolved: the frozen tuple replays the exact prompt. */
+  | "uncertain"
+  /** A definitive refusal: no durable accept exists, so the typed draft stays editable. */
+  | "rejected"
+  /** The send is no longer attributable to the current selection (Topic switched while
+   *  it was in flight). Nothing may be projected, and the draft the user sees is not
+   *  this prompt's. */
+  | "orphaned";
 
 export interface GroupLiveTurn {
   parts: TurnPartDto[];
@@ -1416,6 +1426,11 @@ export const useGroupsStore = defineStore("groups", () => {
 
   async function switchTopic(topicId: string): Promise<void> {
     if (activeTopicId.value === topicId) return;
+    // A Topic switch is a selection change: any prompt still in flight was sent
+    // to the old Topic, and the composer enumerates Topic changes by bumping the
+    // selection generation, so a background prompt cannot be credited to this
+    // Topic. The old draft must be discarded here — the composer owns prose, the
+    // store owns ownership, and the draft has no Topic identity.
     const generation = ++currentSelectionGeneration;
     historyRequestSequence += 1;
     discoverySequence += 1;
@@ -1530,6 +1545,42 @@ export const useGroupsStore = defineStore("groups", () => {
     if (cancelError.value === "ownershipChecking") cancelError.value = null;
   }
 
+  /** Best-effort detail enrichment. `runs.list` summaries carry no memberTurns,
+   *  so a terminal Run reconciled from a list has a card with no per-member rows
+   *  until a successful `runs.get` restores them. This call never decides
+   *  ownership, `topicReady`, or `isRunActive` — a failure leaves the Run
+   *  terminal-but-thin, which is strictly better than a stranded composer. */
+  async function enrichRunDetail(
+    iId: string,
+    runId: string,
+    discoveryId?: number | null,
+  ): Promise<void> {
+    const generation = currentSelectionGeneration;
+    try {
+      const res = unwrapRpc(
+        await api.rpc<{ run: ConversationRunDetailDto }>(iId, MSG.runsGet, { runId }),
+      );
+      if (
+        generation !== currentSelectionGeneration ||
+        instanceId.value !== iId ||
+        activeRun.value?.id !== runId
+      ) {
+        return;
+      }
+      if (discoveryId !== undefined && discoveryId !== null && discoveryId !== discoverySequence) {
+        return;
+      }
+      const incomingRun = res.run;
+      activeRun.value = mergeRun(activeRun.value, incomingRun);
+      if (incomingRun.memberTurns?.length) {
+        memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, incomingRun.memberTurns);
+      }
+      resolveUncertainPromptAgainstRun(incomingRun);
+    } catch {
+      // Display-only degradation: the list already settled ownership.
+    }
+  }
+
   async function sendPrompt(text: string, forcedTarget?: ConversationTargetDto): Promise<GroupSendOutcome> {
     const outcome = sendPromptInner(text, forcedTarget);
     inFlightSend.value = outcome;
@@ -1622,7 +1673,10 @@ export const useGroupsStore = defineStore("groups", () => {
         }),
       );
       if (!isCurrent()) {
-        return "rejected";
+        // The RPC landed on a Topic the user has since left. Report an orphan so
+        // the composer clears its (new) draft instead of misreading this as its
+        // own prompt being refused.
+        return "orphaned";
       }
       // The accept is confirmed: drop the uncertain tuple so a later send with
       // the same text gets a fresh durable identity.
@@ -1767,6 +1821,11 @@ export const useGroupsStore = defineStore("groups", () => {
         promptError.value = null;
         promptErrorDetail.value = null;
       }
+      if (!isCurrent()) {
+        // The selection moved (or the Topic was deleted) while the RPC was in
+        // flight: the outcome belongs to a Topic the user has left.
+        return "orphaned";
+      }
       return outcome;
     } finally {
       if (isCurrent()) {
@@ -1835,6 +1894,9 @@ export const useGroupsStore = defineStore("groups", () => {
         liveTurnsByMember.value = {};
         ownershipUncertain.value = false;
         cancelError.value = null;
+        // Terminal ownership still needs member rows back: the list summary
+        // carries none, so enrich best-effort before returning.
+        await enrichRunDetail(targetInstId, activeRun.value.id, checkDiscoveryId);
         return true;
       }
       try {
@@ -2014,7 +2076,11 @@ export const useGroupsStore = defineStore("groups", () => {
         console.warn("reconcileOnReconnect error:", err);
       }
     }
-    if (rId && activeRun.value?.id === rId && isActiveRunState(activeRun.value.state)) {
+    if (rId && activeRun.value?.id === rId) {
+      // Enrichment only: the list already decided who owns the Topic, and this
+      // call must never change `topicReady`/`isRunActive`. A terminal Run still
+      // needs its member rows back, which `runs.list` summaries cannot carry.
+      const wasTerminal = isTerminalRunState(activeRun.value.state);
       try {
         const res = unwrapRpc(
           await api.rpc<{ run: ConversationRunDetailDto }>(iId, MSG.runsGet, {
@@ -2036,7 +2102,7 @@ export const useGroupsStore = defineStore("groups", () => {
           memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, incomingRun.memberTurns);
         }
         resolveUncertainPromptAgainstRun(incomingRun);
-        if (isTerminalRunState(activeRun.value.state)) {
+        if (!wasTerminal && isTerminalRunState(activeRun.value.state)) {
           liveTurnsByMember.value = {};
           if (cId && tId) {
             await loadHistory(iId, cId, tId);
