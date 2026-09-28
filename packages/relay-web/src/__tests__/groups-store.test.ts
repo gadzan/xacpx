@@ -5,8 +5,10 @@ import type {
   BotSummaryDto,
   ConversationHistoryResponseDto,
   ConversationPromptResponseDto,
+  ConversationRunDetailDto,
   ConversationRunDto,
   GroupSummaryDto,
+  MemberTurnSummaryDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
 import GroupTranscript from "../components/GroupTranscript.vue";
@@ -1324,7 +1326,11 @@ describe("useGroupsStore", () => {
       profileRevision: 1, createdAt: "now", startedAt: "now",
     };
     store.activeRun = staleRunning;
-    const detailRun: ConversationRunDto = { ...staleRunning, state: "completed" };
+    const detailTurns: MemberTurnSummaryDto[] = [
+      { id: "turn_a", runId: "run_term2", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_a", batch: 1, attempt: 1, origin: "human-explicit", state: "completed", createdAt: "now" },
+      { id: "turn_b", runId: "run_term2", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_b", batch: 1, attempt: 1, origin: "human-explicit", state: "failed", createdAt: "now" },
+    ];
+    const detailRun: ConversationRunDetailDto = { ...staleRunning, state: "completed", memberTurns: detailTurns };
     let getCalls = 0;
     mockRpc.mockImplementation(async (inst: string, type: string, payload?: unknown) => {
       if (type === "control.runs.list") {
@@ -1339,10 +1345,7 @@ describe("useGroupsStore", () => {
       if (type === "control.runs.get") {
         getCalls += 1;
         expect((payload as { runId: string }).runId).toBe("run_term2");
-        return { run: { ...detailRun, memberTurns: [
-          { id: "turn_a", runId: "run_term2", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_a", batch: 1, attempt: 1, origin: "human-explicit", state: "completed", createdAt: "now" },
-          { id: "turn_b", runId: "run_term2", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_b", batch: 1, attempt: 1, origin: "human-explicit", state: "failed", createdAt: "now" },
-        ] } };
+        return { run: detailRun };
       }
       throw new Error(`unexpected ${type}`);
     });
@@ -1354,6 +1357,53 @@ describe("useGroupsStore", () => {
     expect(store.topicReady).toBe(true);
     expect(store.memberTurns.map((m) => m.state)).toEqual(["completed", "failed"]);
     expect(getCalls).toBe(1);
+  });
+
+  it("does not let a pending runs.get hold the composer after loadHistory settles", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.groupsByInstance["inst_1"] = [GROUP];
+    const staleRunning: ConversationRunDto = {
+      id: "run_term3", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_term3", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now", startedAt: "now",
+    };
+    // Local cache still thinks the Run is running.
+    store.activeRun = staleRunning;
+    // The detail hangs: a slow or stuck transport must not gate the composer.
+    const detailGate = Promise.withResolvers<{ run: ConversationRunDto }>();
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.conversation.history") return historyWith([]);
+      // Durable truth: the Run is completed and there is NO active owner.
+      if (type === "control.runs.list") {
+        return {
+          runs: [{ ...staleRunning, state: "completed" }],
+          conversationId: "conversation_g",
+          topicId: "topic_1",
+        };
+      }
+      if (type === "control.runs.get") return await detailGate.promise;
+      throw new Error(`unexpected ${type}`);
+    });
+    const history = store.loadHistory("inst_1", "conversation_g", "topic_1");
+    await flushPromises();
+    // The key assertion: the composer is usable while the detail is STILL
+    // pending. Ownership came from the list; the detail is display-only.
+    expect(store.activeRun?.state).toBe("completed");
+    expect(store.isRunActive).toBe(false);
+    expect(store.topicReady).toBe(true);
+    // Resolving the parked detail still enriches the card afterwards.
+    const detailRun: ConversationRunDetailDto = { ...staleRunning, state: "completed", memberTurns: [
+      { id: "turn_a3", runId: "run_term3", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_a", batch: 1, attempt: 1, origin: "human-explicit", state: "completed", createdAt: "now" },
+    ] };
+    detailGate.resolve({ run: detailRun });
+    await history;
+    await flushPromises();
+    expect(store.memberTurns.map((m) => m.id)).toEqual(["turn_a3"]);
+    expect(store.topicReady).toBe(true);
   });
 
   it("does not let a stale Topic refresh overwrite a newly opened Group", async () => {

@@ -1107,9 +1107,12 @@ export const useGroupsStore = defineStore("groups", () => {
       const candidate = listed.activeRun
         ?? (listed.activeRunId ? listed.runs.find((run) => run.id === listed.activeRunId) : undefined);
       if (!candidate) {
+        // The list is authoritative: the composer must be usable as soon as this
+        // returns. Enrichment may hang until the transport times out, so it must
+        // never gate the unlock — it fires and forgets behind its own fences.
         const { settledRunId } = reconcileNoActiveOwner(iId, listed.runs);
         if (settledRunId) {
-          await enrichRunDetail(iId, settledRunId, ownedDiscoveryId);
+          void enrichRunDetail(iId, settledRunId, ownedDiscoveryId);
         }
         return true;
       }

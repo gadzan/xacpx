@@ -67,13 +67,11 @@ function clearSentDraft(): void {
 
 // A Group/Topic switch drops the draft text, so the derived suppression must
 // drop with it (otherwise the first mention in the next draft is ignored).
-// A Group/Topic switch drops the draft text, so the derived suppression must
-// drop with it (otherwise the first mention in the next draft is ignored).
-// `sync` is load-bearing: a pre-flush watcher would run AFTER the user has
-// already started typing in the new Topic and would delete that newer draft.
+// `pre` is deliberate: `switchTopic()` sets `topicReady=false` at the same time,
+// which disables the textarea, so the user cannot type into it before this runs.
 watch(() => groupsStore.activeTopicId, () => {
   clearSentDraft();
-}, { flush: "sync" });
+});
 
 function toggleMenu(): void {
   if (props.disabled) return;
