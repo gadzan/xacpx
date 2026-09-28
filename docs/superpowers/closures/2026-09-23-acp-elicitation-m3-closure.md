@@ -59,6 +59,45 @@ pending-interaction registry so an opened interaction can be answered by a
 browser, and emits the real `interaction-opened` / `interaction-closed`
 control-events it always documented but never produced.
 
+## The production chain, and how it is proven
+
+The requirement was not "tests pass" but "a Direct Bot ACP form request reaches a
+human and the answer returns to the same turn, through production transport".
+`tests/unit/packages/channel-relay/relay-elicitation-full-chain.test.ts` drives
+exactly that, and every hop is real code:
+
+```
+core's broker      RelayChannel.requestElicitation(request)   real, real deps
+                                                                         channel.ts
+connector          HTTP RPC control.interaction.request        real Hono app, real
+                                                                         app.ts
+                   InteractionRegistry                        real stores, real SQLite
+                                                                         interaction-registry.ts
+hub                broadcasts control-event "interaction-opened"   real
+browser            HTTP RPC control.interaction.respond         authenticated session
+hub                stamps responderId from ITS session          real
+                                                                         app.ts
+connector          maps the answer to a decision               real
+                                                                         relay-interaction.ts
+core               re-verifies responderId + answers           asserted, not stripped
+```
+
+The only faked edge is the WebSocket between connector and hub, replaced by a
+client seam whose `sendRequest` performs the hub's real HTTP call. That is the
+network boundary and nothing else. There is no injected renderer, no synthetic
+`interaction-opened` event, and no hand-built frame standing in for a
+protocol-produced one — the opening frame is the one the channel actually builds,
+and it is validated by the hub's own validator before anything else happens.
+
+Three assertions carry the weight:
+
+1. The decision that reaches the caller carries the hub's identity, not the
+   browser's (which carried none).
+2. A browser that asserts an identity gets the frame REJECTED, the interaction
+   stays open, and it can still be answered honestly.
+3. A window that closed before the frame arrived yields a cancel, and no form is
+   ever shown for it.
+
 ## Layers
 
 | Layer | Change |
@@ -69,7 +108,7 @@ control-events it always documented but never produced.
 | `relay` hub | stamps the responder identity, owns the pending-interaction registry, emits `interaction-opened` / `interaction-closed`, bounds the window by the interaction's own `expiresAt` |
 | `relay-web` store | pending-interaction state, submit/decline/cancel on the answer direction, reconnect re-proof |
 | `relay-web` UI | form renderer in the turn banner, all five field kinds |
-| tests | 9 mutation-verified regressions, including the production-shaped hub round trip |
+| tests | 12 mutation-verified regressions, including the production-shaped hub round trip and the full chain end to end |
 
 ## The B2 blocker
 
