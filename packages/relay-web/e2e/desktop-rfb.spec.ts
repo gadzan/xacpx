@@ -384,7 +384,12 @@ desktopTest.describe("Relay Web instance desktop over RFB", () => {
     await openDesktop(page);
     await connectDesktop(page);
 
-    expect(rfb.updates.length).toBeGreaterThan(0);
+    // The update is now written when the client ASKS for one
+    // (FramebufferUpdateRequest), and noVNC's post-connect setup is async, so
+    // wait for the request instead of assuming it already arrived.
+    await expect
+      .poll(() => rfb.updates.length, { timeout: 15_000 })
+      .toBeGreaterThan(0);
     expect(rfb.updates[0]).toEqual({ rects: 1, bytes: 8 * 8 * 4 });
 
     // noVNC creates a canvas inside our host and sizes it to the framebuffer.
@@ -423,6 +428,15 @@ desktopTest.describe("Relay Web instance desktop over RFB", () => {
     await openDesktop(page);
     await connectDesktop(page);
 
+    // noVNC's post-connect setup is async, and a keypress delivered while the
+    // socket is still in the handshake would be consumed as handshake bytes
+    // (or arrive before the client installs its keyboard handler). Wait for the
+    // client to actually ask for framebuffer data — proof it is past the
+    // handshake — before driving input.
+    await expect
+      .poll(() => rfb.clientMessageTypes.some((m) => m.type === RFB_FRAMEBUFFER_UPDATE_REQUEST), { timeout: 15_000 })
+      .toBe(true);
+
     // A connected client already emits setup traffic (SetPixelFormat,
     // SetEncodings, FramebufferUpdateRequest), so the baseline is the decoded
     // message count BEFORE the input actions.
@@ -438,12 +452,14 @@ desktopTest.describe("Relay Web instance desktop over RFB", () => {
     await page.mouse.up();
     await page.keyboard.press("KeyX");
 
-    // noVNC dispatches PointerEvents in coalescing batches, so poll for the
-    // decoded count to settle rather than expecting one message per event.
-    await expect.poll(() => rfb.clientMessageTypes.length, { timeout: 15_000 })
+    // noVNC dispatches PointerEvents in coalescing batches and the keyboard
+    // events are logged before the optional key-timer flush, so settle both
+    // rather than expecting one message per DOM event.
+    await expect
+      .poll(() => rfb.clientMessageTypes.length, { timeout: 15_000 })
       .toBeGreaterThan(baselineMessages);
-    expect(rfb.sawPointerEvent).toBe(true);
-    expect(rfb.sawKeyEvent).toBe(true);
+    await expect.poll(() => rfb.sawPointerEvent, { timeout: 15_000 }).toBe(true);
+    await expect.poll(() => rfb.sawKeyEvent, { timeout: 15_000 }).toBe(true);
 
     await rfb.close();
   });
