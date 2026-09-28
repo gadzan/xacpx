@@ -23,8 +23,13 @@ export interface DesktopStreamOwner {
    * The browser's `desktop-open` requestId, carried so a later
    * `desktop-close` that knows only the requestId (the prepare had not
    * reported back yet) can still find and release this reservation.
-   * Cleared once the stream leaves `preparing`: after that the close names the
-   * streamId, and a stale requestId must not match a paired session.
+   *
+   * It survives until the browser binary side attaches: `reportConnectorReady`
+   * usually only reaches `waiting-browser`, and the frames that decide the race
+   * (close-by-requestId + reopen) are still in flight across sockets at that
+   * point. Clear it at the browser attach, not at the connector's readiness
+   * report, or that reopen fails `desktop-busy` against a stream the viewer is
+   * walking away from.
    */
   requestId?: string;
 }
@@ -49,6 +54,41 @@ export function sendDesktopCancel(
   } catch {
     // Deliberately swallowed: see the doc comment.
   }
+}
+
+/**
+ * Release a desktop reservation the viewer can only name by requestId — an open
+ * whose `desktop-opened` has not reached the browser yet, so there is no
+ * streamId to name. Viewer-scoped: only a stream this viewer owns and has not
+ * paired is matchable.
+ *
+ * "Not paired" is deliberately wider than "not preparing". `reportConnectorReady`
+ * usually only reaches `waiting-browser` (connector attached, browser not), and
+ * the frames that settle the race — the close by requestId and the reopen after
+ * it — are still in flight across sockets at that point. Narrowing this to
+ * `preparing` is what let a close-then-reopen fail `desktop-busy` against a
+ * stream the viewer was walking away from.
+ *
+ * Returns true when a reservation was actually released.
+ */
+export function cancelViewerDesktopStreamByRequest(
+  gateway: InstanceGateway | null,
+  desktop: DesktopStreamGateway,
+  owners: Map<string, DesktopStreamOwner>,
+  requestId: string,
+  viewerId: string,
+  reason = "viewer-disconnected",
+): boolean {
+  for (const [streamId, owner] of [...owners]) {
+    if (owner.requestId !== requestId || owner.viewerId !== viewerId) continue;
+    const state = desktop.streamState(streamId);
+    if (state !== "preparing" && state !== "waiting-browser") continue;
+    sendDesktopCancel(gateway, owner.instanceId, streamId);
+    owners.delete(streamId);
+    desktop.closeStream(streamId, reason);
+    return true;
+  }
+  return false;
 }
 
 /**

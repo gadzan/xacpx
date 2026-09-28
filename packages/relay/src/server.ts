@@ -24,7 +24,7 @@ import { TurnSlotAnchorStore, canonicalRecoveryId } from "./stores/turn-slot-anc
 import { DEFAULT_REQUEST_TIMEOUT_MS, InstanceGateway } from "./gateway/instance-gateway.js";
 import { WebGateway } from "./gateway/web-gateway.js";
 import { DesktopStreamGateway } from "./gateway/desktop-stream-gateway.js";
-import { cancelViewerDesktopStreams, sendDesktopCancel, type DesktopStreamOwner } from "./gateway/desktop-viewer-cancel.js";
+import { cancelViewerDesktopStreams, cancelViewerDesktopStreamByRequest, sendDesktopCancel, type DesktopStreamOwner } from "./gateway/desktop-viewer-cancel.js";
 import { PushNotifier, vapidFromEnv, validateVapidConfig, type VapidConfig } from "./push.js";
 import { PushSubscriptionStore } from "./stores/push-subscriptions.js";
 import { handleConnectorTerminalEvent, handleWebClientMessage } from "./gateway/web-inbound.js";
@@ -1327,38 +1327,20 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
               runtime.desktop.ticketStore.mintTicket({ streamId, accountId: ticketAccountId, instanceId, side: "connector" }),
             mintBrowserTicket: (streamId, ticketAccountId, instanceId) =>
               runtime.desktop.mintBrowserTicket({ streamId, accountId: ticketAccountId, instanceId }),
-            markReady: (streamId, security) => {
-              const ok = runtime.desktop.reportConnectorReady(streamId, security);
-              if (ok) {
-                // The stream is no longer addressable by requestId: it now has
-                // a streamId the browser was told, and clearing this keeps a
-                // replayed old requestId from matching a paired session.
-                const owner = runtime.desktopStreamOwners.get(streamId);
-                if (owner && owner.requestId !== undefined) {
-                  runtime.desktopStreamOwners.set(streamId, { ...owner, requestId: undefined });
-                }
-              }
-              return ok;
-            },
+            markReady: (streamId, security) => runtime.desktop.reportConnectorReady(streamId, security),
             cancel: (streamId, reason) => {
               runtime.desktopStreamOwners.delete(streamId);
               runtime.desktop.closeStream(streamId, reason);
             },
-            cancelPendingByRequest: (requestId, ownerViewerId, reason) => {
-              // Viewer-scoped: only a prepare STILL PENDING from the same
-              // viewer is matchable, so a close for one requestId cannot
-              // release a stream that already paired or belongs to someone else.
-              for (const [streamId, owner] of [...runtime.desktopStreamOwners]) {
-                if (owner.requestId !== requestId || owner.viewerId !== ownerViewerId) continue;
-                const record = runtime.desktop.streamState(streamId);
-                if (record !== "preparing") continue;
-                sendDesktopCancel(runtime.gateway, owner.instanceId, streamId);
-                runtime.desktopStreamOwners.delete(streamId);
-                runtime.desktop.closeStream(streamId, reason);
-                return true;
-              }
-              return false;
-            },
+            cancelPendingByRequest: (requestId, ownerViewerId, reason) =>
+              cancelViewerDesktopStreamByRequest(
+                runtime.gateway,
+                runtime.desktop,
+                runtime.desktopStreamOwners,
+                requestId,
+                ownerViewerId,
+                reason,
+              ),
             ownsStream: (streamId, ownerViewerId) => runtime.desktopStreamOwners.get(streamId)?.viewerId === ownerViewerId,
             trackOwner: (streamId, owner) => {
               runtime.desktopStreamOwners.set(streamId, owner);
