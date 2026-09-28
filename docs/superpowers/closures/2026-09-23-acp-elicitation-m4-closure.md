@@ -1,0 +1,304 @@
+# ACP Elicitation M4 - Feishu Renderer Closure Report
+
+```text
+Milestone: M4 Feishu Renderer
+Base: main @ e8e17e5d ("feat(elicitation): ACP Elicitation M1 core foundation (#355)")
+Head: c55e2b88 (feat/discord-elicit-form)
+Stages: Stage 1 webhook channel (b586e1a7) + Stage 2 form renderer (c55e2b88)
+```
+
+## Summary
+
+Feishu is the second production renderer for ACP form Elicitation. It required
+building the callback channel first, because the plugin's only inbound
+transport — a WebSocket long connection — cannot carry card interactions at all.
+
+## Why this needed two stages
+
+M4 plan §2 makes authenticated responder identity a hard gate: implement only
+if the callback path provides a platform-authenticated operator identity, and
+otherwise leave form mode unsupported rather than weakening the broker.
+
+Research (independently verified by reading the SDK README myself) found:
+
+| Fact | Source |
+|---|---|
+| Long-connection mode "only supports event subscriptions and **does not support callback subscriptions**" | `node_modules/@larksuiteoapi/node-sdk/README.md:550` |
+| Card interactions are callbacks, hosted via `CardActionHandler` + an HTTP server | README:599-620 |
+| The plugin registers exactly one WS handler, `im.message.receive_v1` | `packages/channel-feishu/src/channel.ts` (start()) |
+| No `card.action` / `CardActionHandler` / `onSelect` anywhere in the package | repo-wide grep |
+
+So a card click could not reach the plugin over any existing transport. Stage 1
+built the missing channel; Stage 2 built the renderer on top of it.
+
+## Stage 1 — the card-callback channel (`b586e1a7`)
+
+`packages/channel-feishu/src/card-action-host.ts`, opt-in via
+`channel.options.accounts.<id>.cardActions`:
+
+- **encryptKey path**: AES-256-CBC, key = `SHA-256(encryptKey)`, IV prepended,
+  NUL padding. A successful decrypt IS the authenticity proof. Implemented
+  rather than stubbed — the first draft declared the parameter but never checked
+  it. The same key also signs a new-protocol push (SHA-256), which is the branch
+  every renderer button lands in, because each one carries `schema: "2.0"`.
+- **verificationToken path**: SHA-1 signature over the token, plus a
+  constant-time compare of the echoed token. This is the branch a push with no
+  `schema` and no `encrypt` takes — which includes the URL-verification
+  challenge.
+- **Both are REQUIRED.** Each handshake the endpoint has to complete needs its
+  own secret: without `encryptKey` every click 401s, and without
+  `verificationToken` the endpoint can never finish being configured, because the
+  challenge is read only AFTER the signature verifies. `parseCardActions` refuses
+  a config missing either one.
+- Default bind `127.0.0.1`; a public interface is an explicit operator decision.
+
+Also: the URL-verification challenge is echoed only when it carries a valid
+token (echoing an unauthenticated one would let anyone probe the endpoint), and
+the handler returns its promise so a request's completion is awaitable rather
+than inferred from timing.
+
+## Stage 2 — the form renderer (`c55e2b88`)
+
+Cards are Card JSON 2.0 created through `cardkit.v1.card.create` and replaced
+with `cardkit.v1.card.update` (monotonic `sequence`), the same production
+pattern `card/streaming-card-controller.ts` already uses. `streaming_mode` is
+false, because a streaming card cannot be updated from an interaction callback.
+
+Three platform facts changed the design:
+
+1. **Answers are name-keyed only inside a `form` container.** Outside one, an
+   input reports at `action.input_value` with no name. So each field card IS a
+   form, and the component `name` is the sanitized field key — never an answer.
+2. **There is no multi-select component.** The SDK's union is exactly
+   `'select_static' | 'select_person'` (`types/index.d.ts:293022`). A research
+   agent claimed a `multi_select_static` exists; I could not corroborate it in
+   the SDK or the docs and went with the SDK, so `multi-select` fails the
+   renderability gate and the whole request cancels.
+3. **The routing token lives in `behaviors[].value`**, documented opaque data
+   echoed at `action.value` — distinct from `form_value`, where answers arrive.
+
+Feishu's flow therefore differs from Discord's: one card per field, each card a
+form whose Submit both records the field and advances; a review card then shows
+everything with one Edit per field. There is no wizard "position" on the
+platform side, so a stale callback cannot move a user to a field the request no
+longer has.
+
+## Bugs found by these tests
+
+1. **Option labels were emitted unescaped.** Feishu's `plain_text` renders
+   `<at>` tags despite its name, so an agent-controlled option label could fire
+   a real `@everyone` mention. Fixed by escaping in `plainText()` by default
+   with an explicit `literal` opt-out for the plugin's own copy.
+2. **The escaper was incomplete**: missing `|` (pipe tables) and line-leading
+   `#`/`>`.
+3. **An inverted condition** — `if (trySettle(entry))` read as "aborted" on the
+   happy path, because `trySettle` returns true when it *succeeds*. Every
+   renderer test caught it.
+4. **`FeishuMessageClient` in `send.ts` understated the SDK.** Widening it to
+   declare `cardkit` and the `interactive` message variants let the casts go
+   away, and removing them then surfaced a real `undefined` hazard (the account
+   may not be started), now an explicit fail-closed throw.
+
+## Trust model — stated honestly
+
+Same layering as Stage 1, with the same limitation:
+
+- A token/encrypt check proves **Feishu sent this request**.
+- `operator.open_id` inside a verified body is **platform-asserted**: only
+  Feishu can produce a body that passes (1) and knows the real acting user.
+- This is weaker than Discord, where the framework parses identity out of the
+  Gateway interaction object itself. It is materially stronger than reading an
+  id out of an unauthenticated body.
+- Authorization is still re-checked per control against the recorded initiator,
+  so a leaked routing token cannot answer on the initiator's behalf.
+
+## Test totals
+
+| File | Tests |
+|---|---|
+| `feishu-card-action-host.test.ts` | 27 |
+| `feishu-channel-card-actions.test.ts` | 8 |
+| `feishu-elicitation-limits.test.ts` | 13 |
+| `feishu-elicitation-renderer.test.ts` | 29 |
+| **Total** | **77** |
+
+## Verification
+
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit` (root) | 0 errors |
+| `npx tsc -p packages/channel-feishu/tsconfig.json --noEmit` | 0 errors |
+| Feishu package | 394 pass / 0 fail (was 335 before M4) |
+| Core capability probe (`channel-elicitation-capability.test.ts`) | passes unchanged — the Feishu declaration integrates with M1 rather than standing alone |
+| Full unit suite | 3680 pass / 67 fail |
+
+## Mutation-verification table
+
+| Mutation | Caught by |
+|---|---|
+| Authorization check disabled | non-initiator submit test |
+| Escaper neutralized | 3 tests (mention, bold/spoiler, option label) |
+| Multi-select gate disabled | 4 tests (one hangs — what a missing gate actually causes) |
+| Logout cleanup skipped | listener-start test |
+
+## Honest gaps in this milestone
+
+| Gap | Status |
+|---|---|
+| Real Feishu platform handshake | **not exercised.** The renderer is proven against an injected transport; a live round trip needs a public HTTPS URL for Feishu's POST, which this deployment does not have (dev machine behind NAT, no public domain, hub has no HTTP-forwarding path to instances). The channel is opt-in and configured for exactly that moment. |
+| Multi-select fields | Refused by design. Feishu cards have no multi-select component; the request cancels rather than being reshaped. |
+| Review-before-submit | **closed** (this branch). Feishu's form model cannot re-open a card for editing AFTER a form submit, which is why the field page and the review page use two DIFFERENT actions: the field card's `save` records that field and advances, and only the review page's `submit` settles. Sharing one action made the review depend on mutable `visitedReview` state, so a redelivered or double-tapped `save` reached the commit branch on its second delivery and accepted the form with no click on the review page at all. |
+| WeChat / Yuanbao | Out of scope; form mode remains unsupported there. |
+
+## Next-milestone readiness
+
+**READY** (with the deployment caveat above).
+
+M5 Release Hardening can proceed. Its scope should include:
+- the deployment runbook for `cardActions` (public URL, encryptKey/verificationToken, bind host);
+- an operational check that form capability is advertised only where a channel can actually deliver it;
+- the multi-select gap recorded as a known per-channel limitation.
+
+---
+
+# Addendum — post-review fixes (2026-09-28)
+
+Three defects the milestone's own tests did not cover, found by a full re-review of
+the branch. All three were reachable on the landed head; each is now fixed with a
+regression that fails without its fix.
+
+## P1 — the URL-verification handshake was unanswerable
+
+`handleRequest` called `verifyCardRequest()` first, which requires all three
+`x-lark-request-*` signature headers. Only afterward did it look for a
+`url_verification` challenge. The official SDK's webhook adapter does the opposite:
+`autoChallenge` runs `generateChallenge()` BEFORE `dispatcher.invoke()`, which is
+where signature validation lives. The platform's real challenge carries no
+signature headers, so the endpoint could never complete its own configuration —
+it would start, answer clicks, and still fail the console's URL check.
+
+The existing tests passed because the harness fabricated a SHA-1 signature for
+challenge bodies, and one was literally named `"challenge still works, signed"`.
+That asserted a handshake shape this repo invented.
+
+Fixed by recognizing and answering the challenge first, on the only credential it
+actually carries: constant-time equality of the echoed `token` against
+`verificationToken`. An encrypted challenge is decrypted first, matching
+`generateChallenge()`. Real card actions still require their full signature, and
+a challenge is never forwarded to the renderer — so the early branch cannot become
+an action bypass. The two reference tests were deleted rather than re-pinned; they
+tested the invented shape.
+
+## P1 — same-generation race between Edit and Submit
+
+Feishu's HTTP server runs each POST independently on the same pending entry: no
+queue, no claim. `renderCurrentField()` mutates `currentField` and allocates a
+generation, then awaits `updateCard`; `renderGeneration` is committed only once
+that succeeds. During the wait the card on screen still names the OLD number, so
+a Submit from it passed the published-generation fence and
+`confirmReviewed()` accepted the pre-edit answers:
+
+```text
+Save "prod" → Review g=4 → Edit(g=4): currentField moved, g=5 allocated,
+updateCard(g=5) outstanding → Submit(g=4) → renderGeneration still 4 →
+fence passes → accept { note: "prod" }
+```
+
+The old regression did not catch it because it awaited the Edit first, so the
+generation had already advanced.
+
+Fixed with a `claimedGeneration` high-water mark on the entry, mirroring Discord's
+proven `claimedRevision`. The claim is taken synchronously AFTER the stale fence
+and BEFORE the first `await`, so a callback the stale fence drops spends nothing
+(otherwise a redelivered callback retires a number no card can name, and the next
+Submit from the card the user is actually reading gets wedged). Only card-publishing
+actions claim — `submit` claims nothing, because it publishes nothing when it
+succeeds and claiming would make the very next Submit stale against its own number.
+The claim-check itself applies only to `submit`: navigation and field saves are
+non-terminal and must keep working through an ACK window, and Decline/Cancel stay
+exempt as before. The allocator is advanced by the claim too, so a claimed number
+can never be reissued to an unclaimed render.
+
+## P2 — `cardActions.path` accepted unmatchable query/hash values
+
+`config.ts` required a leading `/`; the host strips anything from `?` on before
+comparing. `/webhook/card?tenant=x` therefore parsed, bound a listener, advertised
+form capability, and 404ed every callback, because the host compares
+`/webhook/card` against `/webhook/card?tenant=x`. A `#fragment` is never sent to a
+server at all. The parser now defines the value as a pure pathname and rejects
+`?` / `#` alongside a relative path. The existing relative-path test was widened
+in place to cover all three shapes rather than duplicated.
+
+## P2 — the opening card's Start was not versioned, so a replay could move the wizard
+
+The one defect left after the previous round. The builder drew the opening Start
+as `routingValue(token, "start")` — no `g` — and `parseElicitationAction()` only
+mandated a generation for `save`/`skip`/`field`/`submit`. The handler's stale
+fence therefore had nothing to compare for a Start, and a delayed redelivery of
+the first click was accepted after the user had left the opening:
+
+```text
+Opening -> Start -> field A -> Save A -> field B -> replayed Start
+  -> currentField reset to A, field A's card republished
+```
+
+Not a silent wrong-answer path, hence P2, but a stale callback changing live
+wizard position contradicts the invariant the revision scheme exists to hold —
+and the premise ("Feishu retries, users double-tap") is what every other control
+already designs against. Discord had already stamped its opening Start as
+revision 1.
+
+Fixed on both halves, matching Discord's precedent and the reviewer's
+recommendation:
+
+1. `buildElicitationOpeningCard()` stamps `OPENING_GENERATION` (1) on Start, the
+   revision the entry's `renderGeneration` already starts at, so the first
+   field/review card takes 2.
+2. `parseElicitationAction()` requires a generation for `start` as well, so a
+   versionless Start — which this renderer no longer draws — is refused rather
+   than honoured. Decline and Cancel stay unversioned by design.
+
+The claim set already included `start`, so no change there; it now actually takes
+effect, and a normal Start claims the next generation (a gap when the opening
+send is unacknowledged, which the allocator already tolerates by design).
+
+The 28 existing tests that drove `a: "start"` were rewritten against
+`openingStart(rec)`, which reads the payload off the card that was actually sent.
+Hand-written versionless Starts would have been driving a shape the renderer no
+longer emits. Two `a: "start"` fixtures in the host/channel tests are opaque
+transport-level payloads whose token resolves to no entry, so they never reach
+the parser and were left alone.
+
+## Test totals (final)
+
+| File | Tests |
+|---|---|
+| `feishu-card-action-host.test.ts` | 31 |
+| `feishu-elicitation-renderer.test.ts` | 80 (was 78 at review head) |
+| `feishu-config.test.ts` | 26 |
+| **Feishu package** | **489 pass / 0 fail** |
+
+## Mutation-verification (final)
+
+| Mutation | Caught by |
+|---|---|
+| Challenge branch disabled | 4 tests (plaintext, encrypted, token-only, mixed action) |
+| `claimedGeneration` gate removed | in-flight Submit race test |
+| `?` / `#` path rejection removed | path-shapes test |
+| Opening Start generation removed | replayed-opening-Start test |
+
+## Comment corrections (the three non-blocking nits)
+
+- `config.ts` no longer claims the URL-verification challenge "arrives on the
+  legacy (token + SHA-1) path" or is "read after the signature check" — both the
+  interface docblock and the required-token error message, plus a stray duplicated
+  `/**` line in that interface's docblock.
+- The number-sizing comment stays as-is: it is inaccurate about the mechanism (the
+  bound is measured over 24 max-expansion characters, not `String(number)`'s
+  longest output) but not about the conclusion, and it is far above any real
+  number, so no budget changes.
+- Not fixed: the degraded-readiness log branch. When one form channel fails while
+  another stays live, the listener returns early on `formCapable === true` and
+  `auditCapability()`'s degraded message never fires. The capability itself stays
+  truthful — this costs one observability line, not correctness. Left alone
+  because removing the early return would make every ready signal run the audit.

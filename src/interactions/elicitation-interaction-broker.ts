@@ -316,6 +316,10 @@ export class ElicitationInteractionBroker {
         chatKey: route.chatKey,
         ...(route.accountId !== undefined ? { accountId: route.accountId } : {}),
         ...(route.replyContextToken !== undefined ? { replyContextToken: route.replyContextToken } : {}),
+        // The ingress-reported route privacy, forwarded untouched: the renderer
+        // needs it to decide whether a form may be shown at all, and it must come
+        // from the channel rather than being inferred here.
+        ...(route.chatType !== undefined ? { chatType: route.chatType } : {}),
         requester: {
           senderId: route.senderId,
           ...(route.senderName !== undefined ? { senderName: route.senderName } : {}),

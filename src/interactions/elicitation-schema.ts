@@ -1018,6 +1018,32 @@ function civilFromDays(z: number): [number, number, number] {
   return [year, mm, dd];
 }
 
+/**
+ * Would core accept `value` for this string `format`?
+ *
+ * EXPORTED because the renderers need the same answer for the same input. Both
+ * gates use it to reject a form whose offered options cannot pass core's own
+ * validation, so a hand-rolled approximation — earlier rounds shipped several,
+ * and each was wrong somewhere: a shape-only date regex accepted "2026-99-99",
+ * and a simplified email regex disagreed with ajv-formats on Unicode — would
+ * re-open the dead-option hole through the side door.
+ *
+ * Deterministic and dependency-light: it is the SAME code core runs at submit
+ * time, not a second implementation of it.
+ */
+export function satisfiesElicitationFormat(format: string | undefined, value: string): boolean {
+  switch (format) {
+    case "email": return isEmail(value);
+    case "uri": return isUri(value);
+    case "date": return isDate(value);
+    case "date-time": return isDateTime(value);
+    default:
+      // An unknown format is not this package's to reject: the ACP RFD requires
+      // clients preserve unknown formats for the renderer to interpret.
+      return true;
+  }
+}
+
 function isEmail(value: string): boolean {
   return formatValidator.email(value);
 }

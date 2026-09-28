@@ -140,3 +140,10 @@ export type {
 // Core home directory (~/.xacpx or env override). Channel plugins that persist
 // their own runtime credentials (weixin precedent) anchor their state files here.
 export { coreHomeDir } from "./runtime/core-home.js";
+// Deterministic string-format check shared with the channel renderability
+// gates. They need to answer "would core accept this exact value?" about
+// options they are about to show the user, and a hand-rolled approximation — an
+// earlier round's date regex accepted "2026-99-99" — would re-open the
+// dead-option hole. Exporting the same predicate core runs at submit time
+// keeps one implementation instead of two that drift.
+export { satisfiesElicitationFormat } from "./interactions/elicitation-schema.js";
