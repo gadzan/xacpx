@@ -481,6 +481,62 @@ describe("useGroupsStore", () => {
     expect(store.memberTurnsById["turn_z"]).toBeUndefined();
   });
 
+  it("keeps terminal member evidence when a stale running row arrives late", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const run: ConversationRunDto = {
+      id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now",
+    };
+    store.activeRun = run;
+    // The terminal row arrives first (live event): failed WITH its evidence.
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: {
+        type: "member-turn-finished",
+        run: { ...run, state: "failed" },
+        memberTurn: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, attempt: 1, origin: "human-explicit", state: "failed",
+          promptRequestId: "sturn_a", failureReason: "timeout", createdAt: "now",
+        },
+      },
+    } as never);
+    expect(store.memberTurnsById["turn_a"]?.state).toBe("failed");
+    expect(store.memberTurnsById["turn_a"]?.failureReason).toBe("timeout");
+    expect(store.memberTurnsById["turn_a"]?.promptRequestId).toBe("sturn_a");
+    // A delayed runs.get / recovery snapshot then delivers the OLDER running
+    // row for the same turn. The event run it carries is `failed` (matching
+    // the stored run) so the started-event path reaches the merge; only the
+    // MEMBER row regresses, which is exactly the reported defect — the merge
+    // must not let the older member row erase the newer terminal evidence.
+    // (Verified red-first: with the old `{...incoming}` base this loses
+    // failureReason/promptRequestId; the started-event path does merge here
+    // because the stored activeRun id matches the event run id.)
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: {
+        type: "member-turn-started",
+        run: { ...run, state: "running" },
+        memberTurn: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, attempt: 1, origin: "human-explicit", state: "running",
+          createdAt: "now", startedAt: "then",
+        },
+      },
+    } as never);
+    const kept = store.memberTurnsById["turn_a"];
+    expect(kept?.state).toBe("failed");
+    expect(kept?.failureReason).toBe("timeout");
+    expect(kept?.promptRequestId).toBe("sturn_a");
+  });
+
   it("stops the exact active run by runId", async () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";

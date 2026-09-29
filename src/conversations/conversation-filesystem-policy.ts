@@ -6,10 +6,10 @@ import type { MemberTurnEffect, WorkspaceIsolationPolicy } from "./conversation-
  * same Topic, given the Topic's effective isolation policy.
  *
  * Rules (plan §9.6 / §16):
- * - `shared`: parallel execution is allowed only for operations proven
- *   non-mutating by enforced capability/tool policy. Anything else is treated
- *   as potentially mutating — but `shared` itself does not serialize; the
- *   caller (PR7+ scheduler) decides based on this classification.
+ * - `shared`: the tree itself never serializes — requested parallelism
+ *   passes straight through, whatever the declared effect. (A future
+ *   enforced capability/tool policy may refuse unsafe work at accept; the
+ *   scheduler does not second-guess it here.)
  * - `shared-single-writer`: side-effect-capable turns serialize. Only an
  *   enforceably `read-only` turn may run alongside another in-flight turn.
  * - `worktree-per-member`: no provisioning exists yet (PR10); treat like
@@ -26,11 +26,12 @@ export function isEffectConcurrencySafe(
   if (otherInFlight <= 0) {
     return true;
   }
-  // `shared` parallel execution is safe only for turns proven non-mutating by
-  // enforced capability/tool policy. Anything else is treated as potentially
-  // mutating, including `mutating` and `unknown` (unproven). The `shared`
-  // tree itself never serializes here; the PR7+ scheduler still routes
-  // through this classification when deciding what may run alongside.
+  // `shared` never serializes: requested parallelism passes through
+  // regardless of declared effect. Every other tree serializes unproven
+  // work — only an explicit `read-only` runs alongside.
+  if (isolation === "shared") {
+    return true;
+  }
   return effect === "read-only";
 }
 

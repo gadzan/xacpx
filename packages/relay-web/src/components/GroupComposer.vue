@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { AtSign, Check, ChevronDown, Users, X } from "lucide-vue-next";
+import { AtSign, Bot, Check, ChevronDown, Users, X } from "lucide-vue-next";
 import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
+import { useInstancesStore } from "../stores/instances";
 import AgentIcon from "./AgentIcon.vue";
-
 const props = defineProps<{
   bots: BotSummaryDto[];
   disabled?: boolean;
@@ -25,7 +25,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 const groupsStore = useGroupsStore();
-
+const instancesStore = useInstancesStore();
 const promptText = ref("");
 const menuOpen = ref(false);
 const textareaEl = ref<HTMLTextAreaElement | null>(null);
@@ -103,8 +103,18 @@ function toggleMember(botId: string): void {
   groupsStore.toggleTargetMember(botId);
 }
 
+/** Agent driver for the picker's per-member icon. Same resolution as the
+ *  transcript rows: instance agent catalog by agent name. Undefined (unknown
+ *  agent, missing instance) renders the generic Bot glyph — identical to the
+ *  transcript's `v-else` fallback. */
+/** Agent driver for the picker's per-member icon. Same resolution as the
+ *  transcript rows: instance agent catalog by agent name. Undefined (unknown
+ *  agent, missing instance) renders the generic Bot glyph — identical to the
+ *  transcript's `v-else` fallback. */
 function driverFor(bot: BotSummaryDto): string | undefined {
-  return undefined;
+  const instId = props.instanceId ?? groupsStore.instanceId;
+  if (!instId) return undefined;
+  return instancesStore.byId(instId)?.agents.find((a) => a.name === bot.agent)?.driver;
 }
 
 function onKeydown(e: KeyboardEvent): void {
@@ -352,13 +362,13 @@ function onInputResize(): void {
             <button
               v-for="b in props.bots"
               :key="b.id"
-              type="button"
               :data-test="`group-target-member-${b.id}`"
               :disabled="!b.enabled"
               class="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-xs hover:bg-raised disabled:opacity-50"
               @click="toggleMember(b.id)"
             >
               <AgentIcon v-if="driverFor(b)" :driver="driverFor(b)!" :title="b.agent" :size="14" :class="!b.enabled ? 'opacity-50' : ''" />
+              <Bot v-else :size="14" :class="!b.enabled ? 'opacity-50' : ''" />
               <span class="min-w-0 flex-1 truncate" :class="!b.enabled ? 'text-fg-muted' : 'text-fg'">{{ b.name }}</span>
               <span v-if="!b.enabled" class="shrink-0 text-[10px] text-fg-muted">{{ $t("bot.status.disabled") }}</span>
               <Check v-else-if="selectedIds.includes(b.id)" :size="13" class="shrink-0 text-accent" />

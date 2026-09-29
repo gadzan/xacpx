@@ -40,6 +40,7 @@ import type {
   ConversationRun,
   ConversationRunState,
   HumanIngressContext,
+  MemberTurnEffect,
   MemberTurnOrigin,
   MemberTurnRecord,
   MemberTurnState,
@@ -123,6 +124,9 @@ interface MemberTurnRow {
   started_at: string | null;
   finished_at: string | null;
   failure_reason: string | null;
+  // Absent on pre-effect databases (added by ensureMemberTurnAssignmentColumns).
+  effect?: string | null;
+  effect_provenance?: string | null;
   assignment_id: string | null;
   task: string | null;
   expected_output: string | null;
@@ -458,6 +462,13 @@ function parseMemberSnapshot(json: string | null | undefined): BotProfileSnapsho
   return decodeSnapshot(parsed);
 }
 
+/** Effect values outside the vocabulary read as unproven. Writers only
+ *  persist the vocabulary (or the "unknown" default); a damaged row must not
+ *  launder an arbitrary string into scheduling trust. */
+function isMemberTurnEffect(value: unknown): value is MemberTurnEffect {
+  return value === "unknown" || value === "read-only" || value === "mutating";
+}
+
 function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
   const dependsOn = parseDependsOn(row.depends_on_json);
   const snapshot = parseMemberSnapshot(row.profile_snapshot_json);
@@ -481,6 +492,8 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
     ...(optionalString(row.started_at) ? { startedAt: row.started_at as string } : {}),
     ...(optionalString(row.finished_at) ? { finishedAt: row.finished_at as string } : {}),
     ...(optionalString(row.failure_reason) ? { failureReason: row.failure_reason as string } : {}),
+    ...(isMemberTurnEffect(row.effect) && row.effect !== "unknown" ? { effect: row.effect } : {}),
+    ...(optionalString(row.effect_provenance) ? { effectProvenance: row.effect_provenance as MemberTurnRecord["effectProvenance"] } : {}),
     ...(optionalString(row.assignment_id) ? { assignmentId: row.assignment_id as string } : {}),
     ...(optionalString(row.task) ? { task: row.task as string } : {}),
     ...(optionalString(row.expected_output) ? { expectedOutput: row.expected_output as string } : {}),
@@ -1554,6 +1567,12 @@ export class SqliteConversationStore implements ConversationStore {
     if (!names.has("member_index")) {
       this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN member_index INTEGER NOT NULL DEFAULT 0");
     }
+    if (!names.has("effect")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN effect TEXT NOT NULL DEFAULT 'unknown'");
+    }
+    if (!names.has("effect_provenance")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN effect_provenance TEXT");
+    }
   }
 
   private ensureMemberTurnSnapshotColumn(): void {
@@ -1807,8 +1826,8 @@ export class SqliteConversationStore implements ConversationStore {
            id, run_id, conversation_id, topic_id, bot_id, session_alias, logical_session_id, source_turn_id,
            queue_item_id, batch, member_index, attempt, origin, state, trigger_message_ids_json, profile_snapshot_json,
            created_at, started_at, finished_at,
-           assignment_id, task, expected_output, depends_on_json
-         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, ?, 1, ?, 'queued', ?, ?, ?, NULL, NULL, ?, ?, ?, ?)`,
+           effect, effect_provenance, assignment_id, task, expected_output, depends_on_json
+         ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, 1, ?, 1, ?, 'queued', ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)`,
         [
           memberTurnId,
           runId,
@@ -1820,6 +1839,8 @@ export class SqliteConversationStore implements ConversationStore {
           JSON.stringify([messageId]),
           JSON.stringify(member.profileSnapshot),
           input.now,
+          member.effect ?? "unknown",
+          member.effectProvenance ?? null,
           member.assignmentId ?? null,
           member.task ?? null,
           member.expectedOutput ?? null,

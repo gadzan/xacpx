@@ -21,7 +21,7 @@ import type {
   ConversationTurnRunResult,
   ConversationTurnRunner,
 } from "./conversation-turn-runner";
-import { TERMINAL_MEMBER_STATES, type MemberTurnRecord } from "./conversation-types";
+import { TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES, type MemberTurnRecord } from "./conversation-types";
 
 /** Public transcript bound for one frozen Group batch. The window is taken
  *  newest-first immediately before the request boundary, so a Topic longer
@@ -66,6 +66,15 @@ export class ConversationDispatcher {
   private readonly onProductEvent?: ConversationProductEventSink;
   private closed = false;
   private drainTask: Promise<void> | undefined;
+  /** Executions currently holding provider turns. Keyed by dispatch id: while
+   *  an execution is in flight its claim stays `claimed` (not requeueable) and
+   *  its sibling-visibility comes from the durable member state, which
+   *  `markExecutionStarted` sets to `running` before the provider turn begins.
+   *  The drain loop awaits the SET, not each execution, so a second member can
+   *  be claimed and started while the first is still running — subject to the
+   *  Topic isolation policy, not to drain sequencing. Entries are removed in a
+   *  `finally` so a throw can never strand the set (and with it the drain). */
+  private readonly inFlightExecutions = new Map<string, Promise<void>>();
 
   constructor(
     private readonly store: ConversationStore,
@@ -134,17 +143,54 @@ export class ConversationDispatcher {
           }
           // PR7 filesystem scheduling: a claimed Group sibling that must
           // take the Topic single-writer slot waits while another member of
-          // the same Run is already executing. The claim is released back to
-          // pending (same generation fence) and the Topic deferred for this
-          // pass so the sibling finishes first; a later wake (the sibling's
-          // completion persists + kicks via accept/autoKick path) starts a
-          // fresh pass with the deferred set cleared. The Run card still
-          // presents one multi-member batch.
+          // the same Run is already executing. The claim is parked WITHOUT
+          // touching durable provenance (see holdClaimForWriterSlot) and the
+          // Topic deferred for this pass so the sibling finishes first. The
+          // sibling's completion persist re-wakes the drain (every terminal
+          // persistResult kicks), which starts a fresh pass with the deferred
+          // set cleared. The Run card still presents one multi-member batch.
           if (this.mustDeferForWriterSlot(claimed)) {
-            this.deferClaimForWriterSlot(claimed);
+            this.holdClaimForWriterSlot(claimed);
+            break;
+          }
+          // Executions run concurrently: the drain launches each claimed
+          // member and keeps draining. Sibling overlap is decided by the
+          // isolation policy above, never by drain ordering — a read-only
+          // sibling is claimed and started while the first still runs.
+          // The loop awaits the SET (below), so kick() still settles only
+          // after every launched execution finishes.
+          const execution = this.execute(claimed);
+          this.inFlightExecutions.set(claimed.dispatch.id, execution);
+          void execution.finally(() => {
+            if (this.inFlightExecutions.get(claimed.dispatch.id) === execution) {
+              this.inFlightExecutions.delete(claimed.dispatch.id);
+            }
+          });
+        }
+        // Wait for launched executions before deciding the pass is over,
+        // then re-check held writer-slot claims: a held sibling becomes
+        // runnable the moment its sibling's provider turn settles, and the
+        // drain executes the SAME held claim object (still ours, still
+        // human) in this pass — no re-claim, no provenance rewrite — so a
+        // two-member Run under shared-single-writer completes without an
+        // extra wake.
+        if (this.inFlightExecutions.size > 0) {
+          await Promise.allSettled(this.inFlightExecutions.values());
+          // The deferred set belongs to the pass that just ended: per-pass
+          // deferrals must not leak into the recheck, or a held claim can
+          // never become runnable inside this drain.
+          this.deferredTopicIds.clear();
+          const held = this.recheckHeldClaims();
+          if (held) {
+            const execution = this.execute(held);
+            this.inFlightExecutions.set(held.dispatch.id, execution);
+            void execution.finally(() => {
+              if (this.inFlightExecutions.get(held.dispatch.id) === execution) {
+                this.inFlightExecutions.delete(held.dispatch.id);
+              }
+            });
             continue;
           }
-          await this.execute(claimed);
         }
       }
     } finally {
@@ -176,31 +222,33 @@ export class ConversationDispatcher {
     // rethrow so the barrier stays and retry covers only the unsettled rest.
     const fulfilled: Array<{ member: MemberTurnRecord; result: ConversationTurnCancelResult }> = [];
     let firstError: unknown;
-    for (const active of outcome.activeMembers) {
+    const cancels = outcome.activeMembers.map(async (active) => {
       const current = this.store.getMemberTurn(active.id);
       if (!current) {
-        continue;
+        return;
       }
       try {
-        fulfilled.push({
-          member: current,
-          result: await this.runner.cancel({
-            conversationId: outcome.run.conversationId,
-            topicId: outcome.run.topicId,
-            sessionAlias: current.sessionAlias ?? "",
-            queueItemId: current.queueItemId,
-            promptRequestId: current.sourceTurnId ?? "",
-          }),
+        const result = await this.runner.cancel({
+          conversationId: outcome.run.conversationId,
+          topicId: outcome.run.topicId,
+          sessionAlias: current.sessionAlias ?? "",
+          queueItemId: current.queueItemId,
+          promptRequestId: current.sourceTurnId ?? "",
         });
+        fulfilled.push({ member: current, result });
       } catch (error) {
         firstError ??= error;
       }
-    }
+    });
+    // Concurrent fan-out (one runner.cancel per active member): each cancel
+    // resolves only after its own provider turn settles, so awaiting them one
+    // by one would serialize independent transports. allSettled-style via the
+    // per-callback try/catch above — Promise.all here never rejects.
+    await Promise.all(cancels);
     // Two-phase settlement: persist ALL observed outcomes as member evidence
     // in one transaction first, then aggregate the Run once — even when a
     // sibling cancel threw. A sibling's unknown can never erase another
     // member's proven completion/failure: A=indeterminate + B=completed
-    // yields B=completed with evidence and Run=indeterminate.
     // Evidence-only when partial: with a throw pending, settle member rows
     // but skip Run aggregation/release so retry re-derives the outcome from
     // complete evidence instead of a half-persisted aggregate.
@@ -246,6 +294,14 @@ export class ConversationDispatcher {
    * the Topic single-writer slot. While another member of the same Run is
    * already executing, a newly claimed sibling defers instead of running
    * concurrently. Direct Runs are unaffected.
+   *
+   * Isolation is read from the Topic's durable ExecutionTarget: `shared`
+   * allows the overlap (nothing here serializes it), `shared-single-writer`
+   * and `worktree-per-member` (unprovisioned in PR7) allow a second member
+   * only when it is enforceably read-only — and since PR7 carries no proven
+   * capability, every PR7 member defers. `MemberTurnEffect` attaches to the
+   * assignment when callers can prove read-only; until then the effect is
+   * `undefined` (unproven), which never counts as safe.
    */
   private mustDeferForWriterSlot(work: ClaimedWork): boolean {
     if (this.runtime.conversationKind(work.run.conversationId) !== "group") {
@@ -257,21 +313,50 @@ export class ConversationDispatcher {
     if (otherExecuting.length === 0) {
       return false;
     }
-    return !isEffectConcurrencySafe(undefined, "shared-single-writer", otherExecuting.length);
+    const isolation = this.runtime.groupTopicIsolation(work.run.conversationId, work.run.topicId);
+    return !isEffectConcurrencySafe(work.memberTurn.effect, isolation, otherExecuting.length);
   }
 
-  private deferClaimForWriterSlot(work: ClaimedWork): void {
-    try {
-      this.store.releaseClaimToPending({
-        dispatchId: work.dispatch.id,
-        owner: this.ownerId,
-        generation: work.dispatch.generation,
-        now: this.now().toISOString(),
-      });
-    } catch {
-      return;
-    }
+  /** Writer-slot-held claims, keyed by dispatch id. The drain KEEPS the
+   *  ClaimedWork object across passes: the claim stays `claimed` under this
+   *  owner (durable provenance untouched), and the next pass executes the
+   *  SAME object — no re-claim, no generation bump, no provenance rewrite.
+   *  Entries are removed when executed, when the Run goes terminal, or when
+   *  the dispatch stops being ours. A sibling that never finishes leaves its
+   *  held claim parked until a later kick reaps it through the normal
+   *  pre-start fences in execute(). */
+  private readonly heldWriterSlotClaims = new Map<string, ClaimedWork>();
+
+  private holdClaimForWriterSlot(work: ClaimedWork): void {
+    this.heldWriterSlotClaims.set(work.dispatch.id, work);
     this.deferredTopicIds.add(work.run.topicId);
+  }
+
+  /** Re-check held claims whose Topic is no longer deferred and whose Run
+   *  still needs them. A held claim whose sibling finished is executed
+   *  inline (same claim, same generation); a held claim whose Run went
+   *  terminal or whose dispatch is no longer ours is dropped. Returns the
+   *  claim to execute, if any. */
+  private recheckHeldClaims(): ClaimedWork | undefined {
+    for (const [dispatchId, work] of this.heldWriterSlotClaims) {
+      if (this.deferredTopicIds.has(work.run.topicId)) {
+        continue;
+      }
+      const live = this.store.getDispatchForMemberTurn(work.memberTurn.id);
+      const run = this.store.getRun(work.run.id);
+      if (!run || (TERMINAL_RUN_STATES as readonly string[]).includes(run.state)
+        || !live || live.id !== dispatchId || live.state !== "claimed" || live.owner !== this.ownerId) {
+        this.heldWriterSlotClaims.delete(dispatchId);
+        continue;
+      }
+      if (this.mustDeferForWriterSlot({ ...work, dispatch: live })) {
+        this.deferredTopicIds.add(work.run.topicId);
+        continue;
+      }
+      this.heldWriterSlotClaims.delete(dispatchId);
+      return { ...work, dispatch: live };
+    }
+    return undefined;
   }
 
 

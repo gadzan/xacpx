@@ -337,6 +337,10 @@ export class ConversationRunService {
         if (!firstId || !firstSnapshot) {
           throw new ConversationError("empty_target", "explicit Group target selects no members");
         }
+        // Effect is always `unknown` here: no read-only capability is
+        // enforceably proven in PR7, so the scheduler must serialize under
+        // shared-single-writer. Persisted explicitly (not omitted) so a later
+        // caller that CAN prove read-only has a visible seam to extend.
         const created = this.store.acceptRequest({
           conversationId: input.conversationId,
           topicId: input.topicId,
@@ -344,11 +348,13 @@ export class ConversationRunService {
           botId: firstId,
           content: input.text,
           profileSnapshot: firstSnapshot,
+          primaryMember: { effect: "unknown" },
           ...(restIds.length > 0
             ? {
               members: restIds.map((botId, index) => ({
                 botId,
                 profileSnapshot: restSnapshots[index]!,
+                effect: "unknown" as const,
               })),
             }
             : {}),

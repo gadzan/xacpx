@@ -3,6 +3,8 @@ import type {
   ConversationMessage,
   ConversationRun,
   HumanIngressContext,
+  MemberTurnEffect,
+  MemberTurnEffectProvenance,
   MemberTurnOrigin,
   MemberTurnRecord,
   PendingDispatch,
@@ -20,6 +22,12 @@ export interface ListMessagesQuery {
 export interface AcceptMemberInput {
   botId: string;
   profileSnapshot: BotProfileSnapshot;
+  /** Declared side-effect capability. Only an explicitly proven `read-only`
+   *  (effect + effectProvenance "declared-enforced") counts as safe for
+   *  concurrent execution; everything else persists as `unknown`. Absent ⇒
+   *  `unknown` (PR7: no enforceable read-only proof exists yet). */
+  effect?: MemberTurnEffect;
+  effectProvenance?: MemberTurnEffectProvenance;
   /** Durable provenance for this member. Defaults to human-explicit on
    *  human-ingress accepts, orchestration-fresh "followup" otherwise;
    *  PR7/PR8 pass router/handoff explicitly. Never inferred from names. */

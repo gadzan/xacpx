@@ -221,12 +221,22 @@ function mergeMemberTurn(current: MemberTurnSummaryDto | null, incoming: MemberT
     return incoming;
   }
   if (!shouldUpdateMemberTurnState(current.state, incoming.state)) {
-    return {
-      ...incoming,
-      state: current.state,
-      startedAt: current.startedAt ?? incoming.startedAt,
-      finishedAt: current.finishedAt ?? incoming.finishedAt,
-    };
+    // The stored row is newer than the incoming one (typically a terminal row
+    // reconciled from a live event, followed by a stale `runs.get` or
+    // recovery snapshot carrying an older non-terminal row). Keep the stored
+    // row as the base — especially terminal evidence (failureReason,
+    // promptRequestId) — and only fill fields the stored row is missing.
+    // Spreading `incoming` first would let the older row's absent evidence
+    // erase the newer row's proven terminal fields.
+    const merged: MemberTurnSummaryDto = { ...current };
+    if (merged.startedAt === undefined) merged.startedAt = incoming.startedAt;
+    if (merged.finishedAt === undefined) merged.finishedAt = incoming.finishedAt;
+    if (merged.promptRequestId === undefined) merged.promptRequestId = incoming.promptRequestId;
+    if (merged.assignmentId === undefined) merged.assignmentId = incoming.assignmentId;
+    if (merged.task === undefined) merged.task = incoming.task;
+    if (merged.expectedOutput === undefined) merged.expectedOutput = incoming.expectedOutput;
+    if (merged.dependsOn === undefined) merged.dependsOn = incoming.dependsOn;
+    return merged;
   }
   return incoming;
 }

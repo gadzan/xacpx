@@ -154,12 +154,18 @@ function mergeMemberTurn(current: MemberTurnSummaryDto | null, incoming: MemberT
     return incoming;
   }
   if (!shouldUpdateMemberTurnState(current.state, incoming.state)) {
-    return {
-      ...incoming,
-      state: current.state,
-      startedAt: current.startedAt ?? incoming.startedAt,
-      finishedAt: current.finishedAt ?? incoming.finishedAt,
-    };
+    // Same rule as the Group store: the stored row is newer, so it stays the
+    // base and the older incoming row may only fill fields the stored row is
+    // missing — never erase proven terminal evidence.
+    const merged: MemberTurnSummaryDto = { ...current };
+    if (merged.startedAt === undefined) merged.startedAt = incoming.startedAt;
+    if (merged.finishedAt === undefined) merged.finishedAt = incoming.finishedAt;
+    if (merged.promptRequestId === undefined) merged.promptRequestId = incoming.promptRequestId;
+    if (merged.assignmentId === undefined) merged.assignmentId = incoming.assignmentId;
+    if (merged.task === undefined) merged.task = incoming.task;
+    if (merged.expectedOutput === undefined) merged.expectedOutput = incoming.expectedOutput;
+    if (merged.dependsOn === undefined) merged.dependsOn = incoming.dependsOn;
+    return merged;
   }
   return incoming;
 }

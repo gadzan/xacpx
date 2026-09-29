@@ -277,6 +277,26 @@ describe("Group Components", () => {
       expect(wrapper.text()).toContain("Enable it before sending");
     });
 
+    it("shows the agent icon for members whose agent is in the catalog", async () => {
+      seedGroupSelection();
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-target-button"]').trigger("click");
+      // `codex` is in the seeded instance's agent catalog with driver `codex`,
+      // so every member row renders its agent icon (not the generic glyph).
+      const icons = wrapper.findAllComponents({ name: "AgentIcon" });
+      expect(icons.length).toBeGreaterThan(0);
+      // An unknown agent falls back to the generic Bot glyph instead.
+      const wrapper2 = mount(GroupComposer, {
+        props: { bots: [{ ...BOTS[0]!, agent: "mystery" }] },
+        global: { plugins: [i18n] },
+      });
+      await wrapper2.find('[data-test="group-target-button"]').trigger("click");
+      expect(wrapper2.findAllComponents({ name: "AgentIcon" })).toHaveLength(0);
+    });
+
     it("Lead shortcut never selects a disabled Bot", async () => {
       const groups = seedGroupSelection();
       const direct = useDirectBotsStore();

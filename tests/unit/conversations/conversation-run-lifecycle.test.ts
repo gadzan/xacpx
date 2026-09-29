@@ -380,6 +380,7 @@ test("crash after execution start and before result persistence is indeterminate
   });
   const drain = first.dispatcher.kick();
   await started.promise;
+
   expect(first.store.getMemberTurn(accepted.memberTurn.id)?.state).toBe("running");
   expect(first.store.getMemberTurn(accepted.memberTurn.id)?.sourceTurnId).toBeDefined();
 
@@ -503,10 +504,16 @@ test("cancel running Run uses the exact session and does not touch another Topic
   });
   const drain = first.dispatcher.kick();
   await started.promise;
-  await waitUntil(() => runner.runs.length === 1);
+  // The drain launches every claimable dispatch concurrently (direct members
+  // never defer), so BOTH Topics' provider turns are in flight here — the old
+  // serial drain left only the first running. FakeRunner.run() captures the
+  // hang gate per call, so clearing it now lets the already-started
+  // non-target turn settle on its own while the target turn (already past
+  // its gate check) stays hung and therefore still cancellable: cancelCalls
+  // must name exactly the target session and the other Run must complete.
+  runner.hang = undefined;
   await first.service.cancelRun(running.run.id);
   await drain;
-  expect(first.store.getRun(running.run.id)?.state).toBe("cancelled");
   await first.dispatcher.kick();
   expect(first.store.getRun(other.run.id)?.state).toBe("completed");
   expect(runner.cancelCalls).toHaveLength(1);
@@ -6348,6 +6355,87 @@ test("PR7 group accept: everyone retries when membership widens mid-acquire", as
   const accepted = await accepting;
   expect(accepted.memberTurns.map((turn) => turn.botId)).toEqual([BOT_ID, TESTER_ID, botC]);
   first.store.close();
+});
+
+test("PR7 scheduler: shared isolation overlaps siblings while shared-single-writer serializes", async () => {
+  // Two members, `shared` Topic: B must START while A is still running.
+  {
+    const first = await createLifecycle({ autoKick: false });
+    await first.service.activateAfterConsumerLock();
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "Shared", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "S", {
+      workspace: "backend",
+      isolation: "shared",
+    });
+    const hang = deferred<void>();
+    fakeRunner(first.runner).hang = hang;
+    const accepted = await first.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: "req-shared-overlap",
+      text: "together",
+      target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    });
+    void first.dispatcher.kick();
+    // A started while its provider turn hangs: B must still be claimed and
+    // started — overlap, not drain sequencing, decides. The drain itself is
+    // still awaiting the hung provider turns, so observe overlap WITHOUT
+    // awaiting the drain: the runner log is the assertion surface.
+    await waitUntil(() => fakeRunner(first.runner).runs.length === 2, 4000);
+    const states = new Map(first.store.listMemberTurns(accepted.run.id).map((m) => [m.botId, m.state]));
+    expect(states.get(BOT_ID)).toBe("running");
+    expect(states.get(TESTER_ID)).toBe("running");
+    hang.resolve();
+    await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
+    first.store.close();
+  }
+});
+
+test("PR7 scheduler: shared-single-writer serializes unknown-effect siblings", async () => {
+  // Two members, `shared-single-writer` Topic: B must NOT start while A runs.
+  {
+    const second = await createLifecycle({ autoKick: false });
+    await second.service.activateAfterConsumerLock();
+    seedTesterBot(second.state);
+    const group = await second.bots.createGroup({ title: "Serial", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await second.service.createGroupTopic(group.id, "S", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    const hang = deferred<void>();
+    fakeRunner(second.runner).hang = hang;
+    const accepted = await second.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: "req-serial-order",
+      text: "ordered",
+      target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+      humanIngress: HUMAN_INGRESS,
+    });
+    void second.dispatcher.kick();
+    await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+    // B's dispatch stays parked (claimed, human provenance intact) while A
+    // holds the provider turn: no second runner.run until A settles. The
+    // pre-fix code called releaseClaimToPending() here, which NULLed the
+    // dispatch's authority_epoch/human_ingress and rewrote the member origin
+    // to `recovery` — a scheduling wait masquerading as crash recovery.
+    await tick();
+    await tick();
+    expect(fakeRunner(second.runner).runs).toHaveLength(1);
+    const testerTurn = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+    expect(testerTurn.state).toBe("dispatched");
+    expect(testerTurn.origin).toBe("human-explicit");
+    const testerDispatch = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+    expect(testerDispatch.state).toBe("claimed");
+    expect(testerDispatch.humanIngress).toBeDefined();
+    hang.resolve();
+    // A settles, the held sibling runs in the same drain, and the Run
+    // completes without any extra kick.
+    await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
+    expect(fakeRunner(second.runner).runs).toHaveLength(2);
+    second.store.close();
+  }
 });
 
 test("PR7 dispatcher: Group dispatch materializes Group member sessions with frozen transcript and serial writers", async () => {

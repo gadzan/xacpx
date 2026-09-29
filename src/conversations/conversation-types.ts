@@ -46,12 +46,20 @@ export type MemberTurnState =
 
 export type PendingDispatchState = "pending" | "claimed" | "completed";
 
-/** Declared side-effect capability of one MemberTurn. PR6 input only: no
- *  dispatcher in this PR schedules on it yet. PR7 explicit routing attaches
- *  this to each assignment; the scheduler (§9.6) serializes turns that are
- *  not enforceably read-only under shared-single-writer. Never inferred from
- *  Bot name/description — the caller must prove read-only capability. */
+/** Declared side-effect capability of one MemberTurn. Durably attached at
+ *  accept (PR7 persists `unknown` for every explicit member: no read-only
+ *  capability is enforceably proven yet); the scheduler (§9.6) serializes
+ *  turns that are not enforceably read-only under shared-single-writer.
+ *  Never inferred from Bot name/description — the caller must prove
+ *  read-only capability. */
 export type MemberTurnEffect = "unknown" | "read-only" | "mutating";
+
+/** Declared effect provenance for one MemberTurn. Set only when the caller
+ *  proves read-only capability through an enforced capability/tool policy —
+ *  PR7 callers never set this, so every PR7 accept persists `unknown` and the
+ *  scheduler treats it as side-effect-capable. Never inferred from Bot
+ *  name/description/prompt. */
+export type MemberTurnEffectProvenance = "declared-enforced";
 
 export interface ConversationRecord {
   id: string;
@@ -160,6 +168,15 @@ export interface MemberTurnRecord {
    *  evidence: preserved per-member so a sibling's unknown/cancel can never
    *  erase which member failed and why. */
   failureReason?: string;
+  /** Declared side-effect capability for scheduling. Persisted at durable
+   *  accept from AcceptMemberInput.effect; absent (pre-effect rows) reads as
+   *  `unknown`. PR7 always persists `unknown`: no read-only capability is
+   *  enforceably proven yet, so the scheduler serializes under
+   *  shared-single-writer. */
+  effect?: MemberTurnEffect;
+  /** How `effect` was established. Present exactly when `effect` was
+   *  explicitly declared; absent means unproven (`unknown`). */
+  effectProvenance?: MemberTurnEffectProvenance;
 }
 
 /** Server-derived authenticated human ingress. Clients cannot mint this. */

@@ -12,7 +12,7 @@ import {
 } from "./bot-service";
 import { sessionMatchesExecution, type BotProfile, type BotProfileExecution, type BotRuntimeBinding } from "./bot-types";
 import { planDirectConversation } from "../conversations/direct-conversation";
-import type { ConversationTopic } from "../conversations/conversation-types";
+import type { ConversationTopic, WorkspaceIsolationPolicy } from "../conversations/conversation-types";
 import {
   createDirectBindingId,
   createDirectConversationId,
@@ -77,6 +77,16 @@ export class BotRuntimeManager {
    *  so legacy rows keep the Direct materialization path. */
   conversationKind(conversationId: string): "bot" | "group" | undefined {
     return this.state.conversations[conversationId]?.kind;
+  }
+
+  /** Effective Topic isolation for Group scheduling. Absent durable target
+   *  (pre-Group rows) reads as the conservative `shared-single-writer`,
+   *  never as a default `shared` policy. */
+  groupTopicIsolation(conversationId: string, topicId: string): WorkspaceIsolationPolicy {
+    const topic = this.state.conversation_topics[topicId];
+    return topic?.conversationId === conversationId
+      ? topic?.executionTarget?.isolation ?? "shared-single-writer"
+      : "shared-single-writer";
   }
 
   async getOrCreateDirectSession(input: {

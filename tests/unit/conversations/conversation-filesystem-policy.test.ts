@@ -13,11 +13,14 @@ test("shared-single-writer serializes unknown and mutating turns, allows proven 
   expect(isEffectConcurrencySafe("mutating", "shared-single-writer", 0)).toBe(true);
 });
 
-test("shared allows only proven read-only alongside in-flight turns; worktree defers to single-writer", () => {
+test("shared passes requested parallelism through; worktree defers to single-writer", () => {
+  // `shared` never serializes: requested parallelism passes through whatever
+  // the declared effect is. Safety there belongs to an enforced capability
+  // policy at accept, not to the scheduler.
   expect(isEffectConcurrencySafe("read-only", "shared", 2)).toBe(true);
-  expect(isEffectConcurrencySafe("mutating", "shared", 2)).toBe(false);
-  expect(isEffectConcurrencySafe("unknown", "shared", 2)).toBe(false);
-  expect(isEffectConcurrencySafe(undefined, "shared", 1)).toBe(false);
+  expect(isEffectConcurrencySafe("mutating", "shared", 2)).toBe(true);
+  expect(isEffectConcurrencySafe("unknown", "shared", 2)).toBe(true);
+  expect(isEffectConcurrencySafe(undefined, "shared", 1)).toBe(true);
   expect(isEffectConcurrencySafe("mutating", "shared", 0)).toBe(true);
   expect(isEffectConcurrencySafe("unknown", "worktree-per-member", 1)).toBe(false);
   expect(isEffectConcurrencySafe("read-only", "worktree-per-member", 1)).toBe(true);
