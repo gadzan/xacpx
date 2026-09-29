@@ -35,6 +35,19 @@ function wireCloseReason(reason: string): string {
   return "stream-closed";
 }
 
+/**
+ * WS close code for a teardown reason, per design §15.
+ *
+ * Backpressure eviction is NOT a normal closure: design §15 mandates 1013 plus
+ * an explicit reason when the destination has exceeded the hard cap, and
+ * noVNC/browser retry semantics depend on the difference — a 1000 there reads
+ * as "you closed it on purpose" and invites an immediate reconnect loop against
+ * a peer that is still saturated. Everything else is an orderly stop.
+ */
+function wireCloseCode(reason: string): number {
+  return reason === "backpressure" ? 1013 : 1000;
+}
+
 interface PairedSockets {
   browser?: DesktopBinarySocket;
   connector?: DesktopBinarySocket;
@@ -200,10 +213,10 @@ export class DesktopStreamGateway {
     const record = this.streams.get(streamId);
     if (!record || record.state === "closed") return;
     this.streams.setState(streamId, "active");
-    this.flushPreAttach(streamId);
-    // The lifecycle event the operator actually cares about: both sides are
-    // attached, so the framebuffer is flowing. `stream_closed` alone cannot
-    // pair a session up after the fact.
+    // Flush BEFORE announcing. A send that fails here closes the stream as
+    // `send-failed`, and the log must not then claim it active — the registry
+    // would say closed while the log says the framebuffer is flowing.
+    if (!this.flushPreAttach(streamId)) return;
     this.logger.info("relay.desktop.stream_active", "desktop stream active", { streamId, security });
   }
 
@@ -241,8 +254,9 @@ export class DesktopStreamGateway {
     // to trust — the full value goes to the log, a bounded token to the wire.
     this.logger.info("relay.desktop.stream_closed", "desktop stream closed", { streamId, reason });
     const wireReason = wireCloseReason(reason);
-    try { pair?.browser?.close(1000, wireReason); } catch { /* already gone */ }
-    try { pair?.connector?.close(1000, wireReason); } catch { /* already gone */ }
+    const wireCode = wireCloseCode(reason);
+    try { pair?.browser?.close(wireCode, wireReason); } catch { /* already gone */ }
+    try { pair?.connector?.close(wireCode, wireReason); } catch { /* already gone */ }
     this.onStreamClosed?.(streamId);
   }
   closeForInstance(instanceId: string, reason = "instance-offline"): void {
@@ -350,20 +364,27 @@ export class DesktopStreamGateway {
     this.preAttach.set(streamId, entry);
   }
 
-  private flushPreAttach(streamId: string): void {
+  /**
+   * Flush bytes buffered before the browser attached. Returns false when a send
+   * threw and the stream was closed as `send-failed`: the caller must not then
+   * log the arrival it was about to announce, or the log would claim a stream is
+   * active that the registry already closed.
+   */
+  private flushPreAttach(streamId: string): boolean {
     const entry = this.preAttach.get(streamId);
-    if (!entry) return;
+    if (!entry) return true;
     this.preAttach.delete(streamId);
     const pair = this.paired.get(streamId);
     const peer = pair?.browser;
-    if (!peer || pair?.connector === undefined) return;
+    if (!peer || pair?.connector === undefined) return true;
     for (const chunk of entry.chunks) {
       try {
         peer.send(chunk);
       } catch {
         this.closeStream(streamId, "send-failed");
-        return;
+        return false;
       }
     }
+    return true;
   }
 }

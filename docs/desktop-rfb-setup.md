@@ -139,18 +139,25 @@ ss -ltnp | grep 5900
 ### WayVNC 仅 legacy 模式
 
 Wayland 下的 WayVNC 默认开启安全加密，connector 不接 VeNCrypt，所以默认配置会被
-判 `desktop-auth-unsupported`。必须显式以降级模式运行：
+判 `desktop-auth-unsupported`。必须显式以降级模式运行。
+
+**需要 WayVNC 0.10.0 或更新**：legacy DES（VNC auth）是 0.10.0 才实现的，更早的
+版本即使关掉加密也没有 vnc-auth 可协商。
 
 ```
-wayvnc 0.6+:
 # ~/.config/wayvnc/config
-security_type=vnc-auth
+enable_auth=true
+password=YOUR_VNC_PASSWORD
 relax_encryption=true
 allow_broken_crypto=true
 ```
 
-或旧版按各自配置文件用相同语义的键。**这是弱安全过渡**：只用 loopback 时风险有限，
-但不要把这些开关复制到非 loopback 部署。
+**`enable_pam` 必须保持关闭**：PAM 一旦启用会覆盖上面的 password 认证，connector
+看到的就是非 outer VncAuth 的认证面并被 fail closed。
+
+注意官方配置关键字是 `enable_auth` / `password`，没有 `security_type` 这一项——旧文
+档写的版本不可用。**这是弱安全过渡**：只用 loopback 时风险有限，但不要把这些开关
+复制到非 loopback 部署。
 
 ### GNOME 远程桌面（内置共享）
 

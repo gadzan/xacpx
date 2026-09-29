@@ -281,7 +281,30 @@ WebClientMessage 新增：
 ~~~ts
 { kind: "desktop-open"; requestId: string; instanceId: string }
 { kind: "desktop-close"; instanceId: string; streamId: string }
+{ kind: "desktop-close"; instanceId: string; requestId: string }
 ~~~
+
+`desktop-close` 有**两个变体**，校验要求二者恰选其一（`streamId` XOR `requestId`）：
+
+- `streamId`：关闭一个已经 `desktop-opened` 返回过 streamId 的流，包括已配对的
+  binary session。这是常规关闭路径。
+- `requestId`：关闭一个**还没回报**的 open。浏览器只有在拿到 `streamId` 之前
+  才知道 `requestId`，所以 pending prepare（`preparing`）与 connector 已就绪但
+  browser binary 尚未 attach（`waiting-browser`）的取消只能按 requestId 寻址。
+
+requestId 变体覆盖三个真实竞态，缺一个就会把 single-viewer reservation 泄漏成
+`desktop-busy`：
+
+1. **显式关闭**：用户在 prepare 未返回时点 Close。此刻 `streamId` 还不存在，
+   close 只能按 requestId 发。
+2. **跨 socket 竞速**：control `/ws` 上的 close + reopen 与出站 `desktop-opened`
+   同时在飞。Hub 侧的 gate 匹配 `requestId + viewerId`，并只接受
+   `preparing | waiting-browser`（已配对即 active 的流不再允许按 requestId 关闭）。
+3. **浏览器本地超时**：browser 15s RPC timer 先于迟到回复触发，本地放弃后必须
+   释放 Hub 已 prepare 的流，否则 reconnect 撞上残留 stream。
+
+拿到 `streamId` 之后一律改用 streamId 变体；requestId 只是 binary attach 前的
+过渡寻址方式。
 
 WebServerEvent 新增：
 
