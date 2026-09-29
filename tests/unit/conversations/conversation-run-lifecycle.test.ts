@@ -43,6 +43,7 @@ import type { ChatRequest, ChatResponse } from "../../../src/weixin/agent/interf
 const NOW = "2026-09-15T12:00:00.000Z";
 const BOT_ID = "bot_reviewer";
 const TESTER_ID = "bot_tester";
+const EXTRA_ID = "bot_extra";
 
 function seedTesterBot(state: AppState): void {
   state.bots[TESTER_ID] = {
@@ -5965,6 +5966,74 @@ test("PR7 group accept: members and everyone share one mutual-exclusion budget",
     target: { mode: "members", botIds: big.slice(0, 30) },
   });
   expect(subset.memberTurns).toHaveLength(30);
+  first.store.close();
+});
+
+test("PR7 everyone: disabled members do not consume the mutual-exclusion budget", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  // 70 current members, but only two are enabled: the actual Run targets two
+  // Bots, so it must not be refused by the 64-member budget.
+  const extra = Array.from({ length: 69 }, (_, i) => `bot_d${i}`);
+  for (const id of extra) {
+    first.state.bots[id] = {
+      id, name: `D${id}`, agent: "codex", workspace: "backend", enabled: false,
+      profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+    };
+  }
+  const group = await first.bots.createGroup({ title: "Mostly Off", botIds: [BOT_ID, ...extra] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-disabled-budget",
+    text: "all",
+    target: { mode: "everyone" },
+  });
+  // TESTER_ID is enabled but not a member; BOT_ID is the only eligible member.
+  expect(accepted.memberTurns.map((turn) => turn.botId)).toEqual([BOT_ID]);
+  first.store.close();
+});
+
+test("PR7 everyone: a member enabled mid-accept retries and joins the Run", async () => {
+  const first = await createLifecycle({
+    // Runs after the eligible probe but before gate acquisition: enable the
+    // third member, exactly the commit order that leaves the probed set
+    // uncovered. Enable and accept both run under the same lifecycle mutex, so
+    // the accept must retry against the new eligible set rather than lose C.
+    beforeGroupAcceptGatesAcquired: (() => {
+      // One-shot: only the FIRST accept's probe should observe the disabled
+      // state. Re-enabling on every loop iteration would also be caught by the
+      // uncovered retry, but arming once keeps the interleaving deterministic.
+      let armed = true;
+      return () => {
+        if (!armed) return Promise.resolve();
+        armed = false;
+        return first.bots.updateBot(EXTRA_ID, { enabled: true }).then(() => {});
+      };
+    })(),
+  });
+  seedTesterBot(first.state);
+  first.state.bots[EXTRA_ID] = {
+    id: EXTRA_ID, name: "Extra", agent: "codex", workspace: "backend", enabled: false,
+    profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Flipping", botIds: [BOT_ID, TESTER_ID, EXTRA_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-flip",
+    text: "all",
+    target: { mode: "everyone" },
+  });
+  expect(accepted.memberTurns.map((turn) => turn.botId).sort()).toEqual([BOT_ID, EXTRA_ID, TESTER_ID].sort());
   first.store.close();
 });
 

@@ -6,11 +6,14 @@ export declare const MAX_TOOL_STEPS = 200;
  *
  *  This is a mutual-exclusion budget, not a Group-size limit: one Run may not
  *  pin more than this many Bots at once, so `everyone` — which expands to the
- *  whole live membership — must respect the same ceiling or a 65-member Group
+ *  ELIGIBLE membership (live Group membership filtered by the Bot being
+ *  enabled) — must respect the same ceiling or a Group with 65 enabled members
  *  would be addressable as `everyone` but not as an explicit `members` list.
- *  Group membership itself stays unbounded here; a Group larger than this is
- *  usable through sequential explicit member subsets, while `everyone` is refused
- *  with `target_too_large` once its probe set exceeds the budget. */
+ *  Group membership itself stays unbounded here, and disabled members never
+ *  count toward the budget because they never get a MemberTurn: a Group larger
+ *  than this is usable through sequential explicit member subsets when many
+ *  members are enabled, while `everyone` is refused with `target_too_large`
+ *  once its eligible probe set exceeds the budget. */
 export declare const MAX_GROUP_TARGET_MEMBERS = 64;
 export declare const MAX_BOT_ID_LENGTH = 128;
 export declare const REASONING_CAP = 16000;

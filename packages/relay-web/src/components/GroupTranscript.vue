@@ -128,8 +128,19 @@ function handleCancel(): void {
 
 const scroller = ref<HTMLElement | null>(null);
 const atBottom = ref(true);
-const pendingAnchor = ref<number | null>(null);
 const THRESHOLD = 64;
+
+/** What the reader was looking at when older history started loading.
+ *  Identity-based, not distance-based: a live message appended below the
+ *  viewport while the request is pending must not move the reader, and only a
+ *  prepend above the anchor may shift `scrollTop`. */
+interface ScrollAnchor {
+  /** The first message at least partly visible when the load started. */
+  messageId: string;
+  /** Its top edge relative to the viewport at capture time. */
+  offsetTop: number;
+}
+const pendingAnchor = ref<ScrollAnchor | null>(null);
 
 function onScroll(): void {
   const el = scroller.value;
@@ -157,16 +168,23 @@ watch(
 );
 
 // Message growth also covers the first history page, and restores the reader's
-// exact position when older history was prepended instead.
+// exact position when older history was prepended instead. A length growth with
+// a parked anchor is not automatically a prepend: a live message may have been
+// appended below the viewport while `loadOlder()` was in flight. Only a prepend
+// above the anchored message legitimately moves its viewport position, so the
+// restore compares element tops rather than trusting any length delta.
 watch(
   () => groupsStore.messages.length,
   (now, prev) => {
     if (pendingAnchor.value !== null && now > prev) {
       const anchor = pendingAnchor.value;
       pendingAnchor.value = null;
+      // Deferred one tick so the prepended rows are mounted before the
+      // anchored row is measured. Consuming the anchor HERE (not in the
+      // tick) is what makes a concurrent tail append safe: its own length
+      // growth finds no parked anchor and can only take the follow branch.
       void nextTick(() => {
-        const el = scroller.value;
-        if (el) el.scrollTop = el.scrollHeight - anchor;
+        restoreAnchor(anchor);
       });
       return;
     }
@@ -195,16 +213,52 @@ onMounted(() => {
   void nextTick(() => scrollToBottom());
 });
 
+/** First message at least partly visible in the current viewport. Walks the
+ *  rendered rows in transcript order and takes the first whose bottom edge is
+ *  below the viewport top. Falls back to the newest message when no row is
+ *  measurable (e.g. empty transcript), which keeps `atBottom` callers sane. */
+function captureAnchor(): ScrollAnchor | null {
+  const el = scroller.value;
+  if (!el) return null;
+  const rows = el.querySelectorAll<HTMLElement>("[data-message-id]");
+  const viewportTop = el.getBoundingClientRect().top;
+  for (const row of rows) {
+    const rect = row.getBoundingClientRect();
+    if (rect.bottom > viewportTop) {
+      return { messageId: row.dataset["messageId"] ?? "", offsetTop: rect.top - viewportTop };
+    }
+  }
+  const last = groupsStore.messages[groupsStore.messages.length - 1];
+  return last ? { messageId: last.id, offsetTop: el.clientHeight } : null;
+}
+
+/** Put the anchored message back where it was. Only content inserted ABOVE the
+ *  anchor (older history) moves its top edge; a tail append below the viewport
+ *  leaves it untouched, so the reader is not shoved when live traffic arrives
+ *  mid-load. A missing row means the anchored message is gone (deleted or
+ *  re-rendered away) — better to hold still than to jump somewhere arbitrary. */
+function restoreAnchor(anchor: ScrollAnchor): void {
+  const el = scroller.value;
+  if (!el) return;
+  const row = el.querySelector<HTMLElement>(`[data-message-id="${anchor.messageId}"]`);
+  if (!row) {
+    return;
+  }
+  const viewportTop = el.getBoundingClientRect().top;
+  const nowTop = row.getBoundingClientRect().top;
+  const shift = nowTop - viewportTop - anchor.offsetTop;
+  el.scrollTop += shift;
+}
 async function handleLoadOlder(): Promise<void> {
   const el = scroller.value;
   if (!el || groupsStore.loadingOlder) return;
-  pendingAnchor.value = el.scrollHeight - el.scrollTop;
+  pendingAnchor.value = captureAnchor();
   try {
     await groupsStore.loadOlder();
   } finally {
     await nextTick();
     if (el && pendingAnchor.value !== null) {
-      el.scrollTop = el.scrollHeight - pendingAnchor.value;
+      restoreAnchor(pendingAnchor.value);
       pendingAnchor.value = null;
     }
   }
@@ -225,6 +279,7 @@ async function handleLoadOlder(): Promise<void> {
       <div
         v-for="m in groupsStore.messages"
         :key="m.id"
+        :data-message-id="m.id"
         class="group flex flex-col"
         :class="m.role === 'human' ? 'items-end' : 'items-start'"
       >

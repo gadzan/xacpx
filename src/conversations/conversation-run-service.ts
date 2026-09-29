@@ -737,12 +737,15 @@ export class ConversationRunService {
   }
 
   /** Gate-set probe for accept linearization. Targeted mode probes selected
-   *  IDs; everyone mode probes the live membership — deliberately NOT the
-   *  teardown-residue union, which also contains bindings for Bots already
-   *  removed from the Group. Their runtime correctly outlives removal until
-   *  Topic teardown, so charging it against the accept budget would refuse
-   *  `everyone` for a Group that used to be large. Membership changes and
-   *  enabled-flips still retry: both alter the live set. */
+   *  IDs; everyone mode probes the ELIGIBLE membership — live membership
+   *  filtered by the Bot being enabled — because that is exactly what this Run
+   *  will acquire and execute. Probing the whole membership instead would
+   *  refuse a Group whose disabled members push it past the budget even though
+   *  the Run itself targets two enabled Bots. Deliberately NOT the
+   *  teardown-residue union either: that also contains bindings for Bots already
+   *  removed from the Group, and their runtime correctly outlives removal until
+   *  Topic teardown, so charging it against the accept budget would refuse an
+   *  Everyone whose actual target set is tiny. */
   private groupMemberCandidates(
     conversationId: string,
     parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" },
@@ -787,7 +790,7 @@ export class ConversationRunService {
       }
       return [...parsed.botIds];
     }
-    // ACCEPT admission uses live membership only. `groupTopicMemberBotIds` is the
+    // ACCEPT admission uses eligible membership only. `groupTopicMemberBotIds` is the
     // TEARDOWN sweep union (membership + member bindings + session owners), and a
     // removed member's runtime can legitimately outlive its membership until the
     // Topic is torn down. Charging that historical cleanup residue against this
@@ -798,7 +801,13 @@ export class ConversationRunService {
     // commit between the probe and the durable write.
     const conversation = this.state.conversations[conversationId];
     const membership = conversation?.kind === "group" ? conversation.botIds : [];
-    const candidates = [...new Set(membership)];
+    // The budget counts what this Run will actually gate and execute: only
+    // enabled members. A disabled Bot never gets a MemberTurn, so charging it
+    // would refuse an Everyone whose real target is small. Enable/disable runs
+    // under the same lifecycle mutex, so a flip that commits before the inner
+    // resolve leaves the probed set uncovered and retries against the new
+    // eligible set; a flip that commits after simply linearizes after us.
+    const candidates = [...new Set(membership.filter((botId) => this.bots.getBot(botId).enabled))];
     // Enforce the mutual-exclusion budget on the set that is about to be
     // acquired, not on the eligible set computed later inside the gates: by then
     // runLifecycleAll has already pinned every candidate's mutex, and those
@@ -831,8 +840,9 @@ export class ConversationRunService {
         throw new ConversationError("empty_target", "explicit Group target selects no members");
       }
       // Defensive invariant: the probe branch already enforced this budget on the
-      // set actually gated, so this can only fire if a member was added between
-      // the probe and the gate acquisition and was already enabled.
+      // eligible set, so this can only fire if a disabled member was enabled, or
+      // an enabled member was added, between the probe and the gate acquisition —
+      // both retry against the new eligible set.
       if (eligible.length > MAX_GROUP_TARGET_MEMBERS) {
         throw new ConversationError(
           "target_too_large",

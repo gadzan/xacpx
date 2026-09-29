@@ -694,6 +694,54 @@ describe("Group Components", () => {
       grow(by: number): void;
     }
 
+    /** Rows for the anchor functions. Each rendered message row pretends to be
+     *  ROW_H tall, stacked without gaps, starting at the scroller's content top.
+     *  `getBoundingClientRect` is geometry, not pixels: the scroller reads its
+     *  own viewport origin and each row reads its list index, so prepends shift
+     *  every row's top by exactly the inserted height while a tail append leaves
+     *  the rows above it untouched.
+     *
+     *  jsdom returns zero rects for every element by default, so the stub must
+     *  cover the exact call surface the component uses. Most importantly, the
+     *  scroll-container getter MUST differ from the row getter: rows are
+     *  positioned by list index, while the scroller itself just reports a fixed
+     *  viewport origin. */
+    const ROW_H = 60;
+    function withRowGeometry(scrollerEl: HTMLElement, getScrollTop: () => number): void {
+      const rowsOf = (): HTMLElement[] =>
+        Array.from(scrollerEl.querySelectorAll<HTMLElement>("[data-message-id]"));
+      scrollerEl.getBoundingClientRect = () => (
+        { top: 100, bottom: 200, left: 0, right: 0, width: 0, height: VIEWPORT, x: 0, y: 100, toJSON: () => ({}) } as DOMRect
+      );
+      const patchRow = (row: HTMLElement): void => {
+        row.getBoundingClientRect = () => {
+          const index = rowsOf().indexOf(row);
+          const top = 100 + index * ROW_H - getScrollTop();
+          return { top, bottom: top + ROW_H, left: 0, right: 0, width: 0, height: ROW_H, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+        };
+      };
+      // Patch rows as they render: the component queries them at capture and
+      // restore time, so patching lazily on query keeps the indices live.
+      // querySelectorAll covers captureAnchor; querySelector covers restoreAnchor.
+      const originalQueryAll = scrollerEl.querySelectorAll.bind(scrollerEl);
+      scrollerEl.querySelectorAll = ((selector: string, ...rest: unknown[]) => {
+        const found = (originalQueryAll as (...a: unknown[]) => NodeListOf<HTMLElement>)(selector, ...rest);
+        if (selector === "[data-message-id]") found.forEach(patchRow);
+        return found;
+      }) as typeof scrollerEl.querySelectorAll;
+      const originalQueryOne = scrollerEl.querySelector.bind(scrollerEl);
+      scrollerEl.querySelector = ((selector: string, ...rest: unknown[]) => {
+        const found = (originalQueryOne as (...a: unknown[]) => HTMLElement | null)(selector, ...rest);
+        if (found && selector.startsWith("[data-message-id")) patchRow(found);
+        return found;
+      }) as typeof scrollerEl.querySelector;
+      // The container itself must never be treated as a row: guard the two
+      // entry points against a selector that would match the scroller.
+      if (scrollerEl.hasAttribute("data-message-id")) {
+        throw new Error("test harness: scroller must not carry data-message-id");
+      }
+    }
+
     function withGeometry(el: HTMLElement): Geometry {
       const g: Geometry = { content: 1000, scrollTop: 0, el, grow: (by) => { g.content += by; } };
       Object.defineProperty(el, "clientHeight", { get: () => VIEWPORT, configurable: true });
@@ -708,6 +756,7 @@ describe("Group Components", () => {
         set: (v: number) => { g.scrollTop = v; },
         configurable: true,
       });
+      withRowGeometry(el, () => g.scrollTop);
       return g;
     }
 
@@ -811,26 +860,102 @@ describe("Group Components", () => {
       seedMessages(10);
       await flushPromises();
       const el = scrollerOf(wrapper);
-      // Reader sits 520px above the bottom.
+      // Reader sits 520px above the bottom. The first visible row is msg_8:
+      // rows are 60px tall and 10 of them start at scrollTop 480.
       el.scrollTop = 480;
-      const anchor = geo.content - el.scrollTop;
       const loadSpy = vi.spyOn(useGroupsStore(), "loadOlder").mockImplementation(async () => {
         const g = useGroupsStore();
-        // Prepending grows the content by 300px, which is what makes restoring
-        // the anchor necessary.
+        // Prepending 5 rows grows the content by 300px, which is what makes
+        // restoring the anchor necessary.
         geo.grow(300);
         g.messages = [
-          { id: "msg_old", conversationId: "conversation_g", topicId: "topic_1", seq: 0, role: "human", content: "old", createdAt: "2026-08-01T00:00:00.000Z" },
+          ...Array.from({ length: 5 }, (_, i) => ({
+            id: `msg_old_${i}`, conversationId: "conversation_g", topicId: "topic_1", seq: -4 + i,
+            role: "human" as const, content: "old", createdAt: "2026-08-01T00:00:00.000Z",
+          })),
           ...g.messages,
         ];
       });
       await wrapper.find('[data-test="group-load-older-button"]').trigger("click");
       await flushPromises();
       await flushPromises();
-      // The restore recomputes scrollTop from the preserved distance-to-bottom:
-      // the reader is still 520px from the bottom of the now-taller transcript.
-      expect(geo.content - el.scrollTop).toBe(anchor);
+      // The restore shifts scrollTop by exactly the prepended height, so the
+      // anchored message keeps its viewport position.
       expect(el.scrollTop).toBe(780);
+      loadSpy.mockRestore();
+    });
+
+    // REGRESSION (red-first): a live message appended below the viewport
+    // while Load Older is parked must not consume the pending anchor.
+    //
+    // The stubbed geometry reports row tops from list index minus the harness
+    // scroll log, so the test tracks scrollTop writes: exactly one restore
+    // (+300) for the prepend, and none at all for the tail append.
+    it("does not move the reader when a live message lands during a parked Load Older", async () => {
+      seedGroupSelection();
+      const { wrapper, geo } = mountTranscript();
+      seedMessages(10);
+      await flushPromises();
+      const el = scrollerOf(wrapper);
+      // Count every scrollTop write the component performs.
+      const writes: number[] = [];
+      const scrollTopDesc = Object.getOwnPropertyDescriptor(el, "scrollTop");
+      const origSet = scrollTopDesc?.set;
+      const origGet = scrollTopDesc?.get;
+      Object.defineProperty(el, "scrollTop", {
+        get: origGet,
+        set: (v: number) => { writes.push(v); origSet?.call(el, v); },
+        configurable: true,
+      });
+      // Reader sits 520px above the bottom: scrollTop 480 shows rows 8..9 of
+      // the 10 seeded rows (60px each), so the anchor must be msg_8. The write
+      // below is harness setup, not component behavior. Record the reader's
+      // real position first: without a scroll event the component still thinks
+      // it is at the bottom, and a tail append would legitimately follow it.
+      el.scrollTop = 480;
+      await wrapper.find('[data-test="group-transcript-scroller"]').trigger("scroll");
+      expect(writes).toEqual([480]);
+      writes.length = 0;
+      expect((wrapper.find('[data-test="group-load-older-button"]').element as HTMLButtonElement).disabled).toBe(false);
+      // Park the older-page RPC AFTER it prepends its page: prepend 5 rows
+      // (+300px) at the top, then wait for the release gate.
+      const releaseLoad = Promise.withResolvers<void>();
+      const loadSpy = vi.spyOn(useGroupsStore(), "loadOlder").mockImplementation(async () => {
+        const g = useGroupsStore();
+        g.messages = [
+          ...Array.from({ length: 5 }, (_, i) => ({
+            id: `msg_old_${i}`, conversationId: "conversation_g", topicId: "topic_1", seq: -4 + i,
+            role: "human" as const, content: "old", createdAt: "2026-08-01T00:00:00.000Z",
+          })),
+          ...g.messages,
+        ];
+        geo.grow(300);
+        await releaseLoad.promise;
+      });
+      await wrapper.find('[data-test="group-load-older-button"]').trigger("click");
+      await flushPromises();
+      // The older page is prepended and the anchor consumed: exactly one
+      // scrollTop write, the +300 restore (480 -> 780).
+      expect(writes).toEqual([780]);
+      // A live message appends below the viewport while the request is still
+      // parked. The geometry grows, but the anchored row does not move, and
+      // there is no parked anchor left to consume — so no write may happen.
+      geo.grow(60);
+      {
+        const g = useGroupsStore();
+        g.messages = [
+          ...g.messages,
+          { id: "msg_live", conversationId: "conversation_g", topicId: "topic_1", seq: 11, role: "bot", content: "live", createdAt: "2026-09-02T00:00:00.000Z" },
+        ];
+      }
+      await flushPromises();
+      await flushPromises();
+      // Release the parked page: its finally finds no anchor and holds still.
+      releaseLoad.resolve();
+      await flushPromises();
+      await flushPromises();
+      expect(writes).toEqual([780]);
+      expect(geo.content).toBe(1360);
       loadSpy.mockRestore();
     });
   });
