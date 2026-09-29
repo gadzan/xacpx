@@ -516,3 +516,87 @@ channel-discord and channel-feishu typechecks clean; affected suites 1648 pass /
 permissions, rmux version probes, exclusive-writer locks, a CLI path regex, and
 the completion-route restart test) — all Windows-environmental or load-flakes that
 pass in isolation.
+
+## Post-review defects: browser delivery, route collapse, single-slot state, renderer
+
+A full re-review after the transport was closed found four P1s and two P2s. The
+narrow re-review of the transport itself stood; these are all in layers that the
+chain test did not reach.
+
+### A subscribed browser never received the form
+
+Two independent breaks, and the chain test was green through both because it
+captured the raw control event instead of letting it cross the web gateway's
+subscription fence:
+
+- `server.ts` wrapped interaction events with `instanceId: ""`, and
+  `WebGateway.broadcast` fences control-events on each socket's instance
+  subscription — which the dashboard fills with its real instance ids on connect.
+  Every form was dropped.
+- `InstanceGateway` had no public `broadcastControlEvent`; it exists only as a
+  dependency callback, so the app's registry close listener called it on the real
+  class and got `undefined`. Resolved, withdrawn and expired closes were never
+  broadcast at all.
+
+Both surfaces now stamp the connector's instance, the wrapper forwards the
+event's own id, and the method is public. The regression puts a real
+`WebGateway` and a real subscribed browser socket in the path and wires the
+app's listener through the gateway's own method, the way production does — so
+blanking the id, or suppressing `interaction-closed`, turns it red.
+
+### The Direct Bot route collapsed, so correlation was lost
+
+A real Direct Bot turn carries `permissionChatKey: relay:<account>`, so
+`resolvePermissionTurnRoute` SUCCEEDS on it. The elicitation resolver was gated on
+permission finding nothing, so it never ran, and the route collapsed to the
+account-wide `relay:` address — one address for every topic. `conversationId`
+and `topicId` never reached the hub, so the form could not be placed.
+
+The resolver now runs unconditionally and is narrower by construction: it refuses
+every non-`bot:` isolation key, so an ordinary channel turn still yields
+`undefined`. It also stops forwarding `permissionChatKey` into the shared
+resolver, which had been overriding the product key; the ingress key rides
+`replyContextToken` instead. `replyContextToken` is no longer coerced into
+`promptRequestId` either — it is the trusted ingress chat key, a different
+concept, and the coercion produced a correlation that joined on nothing.
+
+### The store had one slot
+
+`pendingInteraction` was a single ref, which lost forms three ways: an event for
+another topic was dropped permanently (the hub still held it, so switching back
+found nothing); a form opened on topic A rendered into topic B's banner after a
+switch; and a second `interaction-opened` superseded the first, though M1's
+cancellation is request-scoped and the same turn can hold several pending
+requests.
+
+State is now keyed by requestId with a computed accessor scoped to the topic being
+viewed — open first, then terminal. Forms for other topics are stored but not
+displayed.
+
+### The form could not complete a legal ACP form
+
+Only two typed controls existed. `number` and `multi-select` fell through to a
+text input and reached core as `string` where core expects `number` / `string[]`.
+Because the transport is terminal — the hub resolves on submit and core validates
+afterwards — an ordinary typo closed the form and cancelled the request with no
+way to retry.
+
+All five kinds now render, values are coerced to their wire types, and the
+field's own bounds are checked locally so Submit can be blocked with a reason.
+Defaults are displayed but never submitted without an edit. `format` was written
+by `relayFieldsFrom` but absent from `InteractionFieldDto`, so the wire had no
+type for it; eleven component regressions cover each of these.
+
+### Close reads as "accepted" in every other tab
+
+`interaction-closed` carried no action, so the store mapped every resolve to
+`accepted`. It now carries the action the human chose, and the store reports
+`declined` / `cancelled` accordingly. A tab that did not click no longer guesses.
+
+### A missed push was permanent
+
+`interaction-opened` is a one-shot broadcast, so a socket that connected after it
+— a page load, a brief disconnect — missed the form forever while the hub still
+held it and the agent still waited. The subscribe path now replays the
+interactions that are genuinely still open, from the same registry, and only
+those.
