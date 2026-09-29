@@ -29,7 +29,17 @@ export interface DesktopTunnelDeps {
   /** Hub base URL (ws:// or wss://), reused to dial `/desktop/instance`. */
   hubUrl: string;
   createSocket?: (url: string, options: WebSocketConnectOptions) => WebSocket;
-  logger?: { error(event: string, message: string, context?: Record<string, unknown>): void };
+  /**
+   * Channel logger. `info`/`warn` are opt-in here: the caller (ChannelStartInput)
+   * always provides them, but a caller that only implements `error` — as test
+   * doubles do — must still typecheck. Call sites guard on the method, so a
+   * partial logger cannot crash the runtime.
+   */
+  logger?: {
+    info?(event: string, message: string, context?: Record<string, unknown>): void;
+    warn?(event: string, message: string, context?: Record<string, unknown>): void;
+    error(event: string, message: string, context?: Record<string, unknown>): void;
+  };
   platform?: NodeJS.Platform;
 }
 
@@ -205,7 +215,10 @@ export class DesktopTunnelRuntime {
         respond(errorPayload(verdict.code, `${verdict.detail}. ${guidance}`));
         return true;
       }
-      this.deps.logger?.error("relay.desktop.probe_ok", "loopback RFB probe accepted", {
+      // `info` is optional in the dep type (see DesktopTunnelDeps.logger), so a
+      // test double that only implements `error` still typechecks and just omits
+      // this. The channel always supplies it.
+      this.deps.logger?.info?.("relay.desktop.probe_ok", "loopback RFB probe accepted", {
         streamId: input.streamId,
         security: verdict.security,
       });

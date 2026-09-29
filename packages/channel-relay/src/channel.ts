@@ -184,6 +184,11 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     const control = input.control;
     this.control = control;
+    // Capture it for EVERY subsystem here, not inside each bootstrap: desktop is
+    // config-only and does not go through the terminal path, so a terminal-disabled
+    // + desktop-enabled channel would otherwise leave the tunnel runtime with no
+    // logger at all and its probe/tunnel events silently dropped.
+    this.startLogger = input.logger;
 
     const capabilities = await this.bootstrapTerminal(input);
     if (this.bootstrapDesktop()) capabilities.push(RELAY_CAPABILITIES.desktopRfbV1);
@@ -529,7 +534,7 @@ export class RelayChannel implements MessageChannelRuntime {
         "relay terminal.enabled requires ChannelStartInput.sessionResources (xacpx with SessionResourceCatalog)",
       );
     }
-    this.startLogger = input.logger;
+    // `startLogger` is captured once in start(), before either bootstrap runs.
 
     const registry = new TerminalRegistryStore({
       dir: registryDir,
@@ -651,6 +656,12 @@ export class RelayChannel implements MessageChannelRuntime {
   /** Test seam */
   getTerminalRuntimeForTests(): RelayTerminalRuntime | null {
     return this.terminal;
+  }
+
+  /** Test seam: the runtime built by bootstrapDesktop, so tests can assert it
+   *  received the channel's logger in a desktop-only (terminal-disabled) start. */
+  getDesktopRuntimeForTests(): DesktopTunnelRuntime | null {
+    return this.desktop;
   }
 
   /** Desktop is config-only: enabled → runtime + `desktop.rfb.v1` capability. */

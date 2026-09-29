@@ -186,6 +186,27 @@ export class DesktopStreamGateway {
     return record?.state;
   }
 
+  /**
+   * The one transition to `active`, shared by both callers so they cannot drift.
+   *
+   * Production order is connector attach -> `reportConnectorReady`
+   * (`waiting-browser`) -> browser attach inside `pair()` -> here. The
+   * `reportConnectorReady` branch exists only for a server that re-reports after
+   * the browser already attached; tests use it, live traffic does not. Putting
+   * the transition in one place is what makes the `stream_active` log reflect
+   * real sessions rather than whichever caller happened to arrive last.
+   */
+  private goActive(streamId: string, security: DesktopSecurityKind): void {
+    const record = this.streams.get(streamId);
+    if (!record || record.state === "closed") return;
+    this.streams.setState(streamId, "active");
+    this.flushPreAttach(streamId);
+    // The lifecycle event the operator actually cares about: both sides are
+    // attached, so the framebuffer is flowing. `stream_closed` alone cannot
+    // pair a session up after the fact.
+    this.logger.info("relay.desktop.stream_active", "desktop stream active", { streamId, security });
+  }
+
   /** Connector reported its RFB probe outcome; only `vnc-auth` streams go live. */
   reportConnectorReady(streamId: string, security: DesktopSecurityKind): boolean {
     const record = this.streams.get(streamId);
@@ -194,16 +215,8 @@ export class DesktopStreamGateway {
     const pair = this.paired.get(streamId) ?? {};
     pair.security = security;
     this.paired.set(streamId, pair);
-    if (pair.browser && pair.connector) {
-      this.streams.setState(streamId, "active");
-      this.flushPreAttach(streamId);
-      // The lifecycle event the operator actually cares about: both sides are
-      // attached, so the framebuffer is flowing. `stream_closed` alone cannot
-      // pair a session up after the fact.
-      this.logger.info("relay.desktop.stream_active", "desktop stream active", { streamId, security });
-    } else {
-      this.streams.setState(streamId, "waiting-browser");
-    }
+    if (pair.browser && pair.connector) this.goActive(streamId, security);
+    else this.streams.setState(streamId, "waiting-browser");
     return true;
   }
   closeStream(streamId: string, reason = "closed"): void {
@@ -263,8 +276,7 @@ export class DesktopStreamGateway {
     socket.on("message", (data, isBinary) => this.onFrame(streamId, side, socket, data, isBinary));
     socket.on("close", () => this.closeStream(streamId, `${side}-close`));
     if (pair.browser && pair.connector && pair.security) {
-      this.streams.setState(streamId, "active");
-      this.flushPreAttach(streamId);
+      this.goActive(streamId, pair.security);
     }
     return { ok: true, streamId };
   }
