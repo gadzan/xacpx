@@ -885,12 +885,12 @@ describe("Group Components", () => {
       loadSpy.mockRestore();
     });
 
-    // REGRESSION (red-first): a live message appended below the viewport
-    // while Load Older is parked must not consume the pending anchor.
+    // REGRESSION (red-first): a live tail message that lands BEFORE the
+    // parked older page returns must not consume the pending anchor.
     //
     // The stubbed geometry reports row tops from list index minus the harness
-    // scroll log, so the test tracks scrollTop writes: exactly one restore
-    // (+300) for the prepend, and none at all for the tail append.
+    // scroll log, so the test tracks scrollTop writes: none at all for the
+    // tail append, exactly one restore (+300) for the real prepend.
     it("does not move the reader when a live message lands during a parked Load Older", async () => {
       seedGroupSelection();
       const { wrapper, geo } = mountTranscript();
@@ -917,11 +917,14 @@ describe("Group Components", () => {
       expect(writes).toEqual([480]);
       writes.length = 0;
       expect((wrapper.find('[data-test="group-load-older-button"]').element as HTMLButtonElement).disabled).toBe(false);
-      // Park the older-page RPC AFTER it prepends its page: prepend 5 rows
-      // (+300px) at the top, then wait for the release gate.
+      // Park the older-page RPC BEFORE it projects anything: the store only
+      // merges the older rows into `messages` after the network returns, so a
+      // live message can (and here does) land first.
       const releaseLoad = Promise.withResolvers<void>();
       const loadSpy = vi.spyOn(useGroupsStore(), "loadOlder").mockImplementation(async () => {
+        await releaseLoad.promise;
         const g = useGroupsStore();
+        // The older page finally arrives: 5 rows (+300px) at the TOP.
         g.messages = [
           ...Array.from({ length: 5 }, (_, i) => ({
             id: `msg_old_${i}`, conversationId: "conversation_g", topicId: "topic_1", seq: -4 + i,
@@ -930,16 +933,12 @@ describe("Group Components", () => {
           ...g.messages,
         ];
         geo.grow(300);
-        await releaseLoad.promise;
       });
       await wrapper.find('[data-test="group-load-older-button"]').trigger("click");
       await flushPromises();
-      // The older page is prepended and the anchor consumed: exactly one
-      // scrollTop write, the +300 restore (480 -> 780).
-      expect(writes).toEqual([780]);
-      // A live message appends below the viewport while the request is still
-      // parked. The geometry grows, but the anchored row does not move, and
-      // there is no parked anchor left to consume — so no write may happen.
+      // A live message appends below the viewport while the older page is
+      // still parked. The geometry grows, but the anchored row does not move —
+      // and the parked anchor must survive this growth, so no write may happen.
       geo.grow(60);
       {
         const g = useGroupsStore();
@@ -950,7 +949,9 @@ describe("Group Components", () => {
       }
       await flushPromises();
       await flushPromises();
-      // Release the parked page: its finally finds no anchor and holds still.
+      expect(writes).toEqual([]);
+      // Release the parked page: the only legitimate shift is the 300px the
+      // prepend added above the anchored row.
       releaseLoad.resolve();
       await flushPromises();
       await flushPromises();

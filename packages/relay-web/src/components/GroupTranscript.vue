@@ -167,25 +167,15 @@ watch(
   },
 );
 
-// Message growth also covers the first history page, and restores the reader's
-// exact position when older history was prepended instead. A length growth with
-// a parked anchor is not automatically a prepend: a live message may have been
-// appended below the viewport while `loadOlder()` was in flight. Only a prepend
-// above the anchored message legitimately moves its viewport position, so the
-// restore compares element tops rather than trusting any length delta.
+// While an older page is loading, any length growth — a live tail append or
+// the eventual prepend — must not move the reader on its own. `handleLoadOlder`
+// owns the single restore authority: it compares the anchored row's element
+// top before and after, so a tail append (which leaves that top untouched) is
+// naturally a no-op while a real prepend produces exactly its inserted shift.
 watch(
   () => groupsStore.messages.length,
-  (now, prev) => {
-    if (pendingAnchor.value !== null && now > prev) {
-      const anchor = pendingAnchor.value;
-      pendingAnchor.value = null;
-      // Deferred one tick so the prepended rows are mounted before the
-      // anchored row is measured. Consuming the anchor HERE (not in the
-      // tick) is what makes a concurrent tail append safe: its own length
-      // growth finds no parked anchor and can only take the follow branch.
-      void nextTick(() => {
-        restoreAnchor(anchor);
-      });
+  () => {
+    if (pendingAnchor.value !== null) {
       return;
     }
     if (atBottom.value) {
@@ -245,9 +235,13 @@ function restoreAnchor(anchor: ScrollAnchor): void {
     return;
   }
   const viewportTop = el.getBoundingClientRect().top;
-  const nowTop = row.getBoundingClientRect().top;
-  const shift = nowTop - viewportTop - anchor.offsetTop;
-  el.scrollTop += shift;
+  const shift = row.getBoundingClientRect().top - viewportTop - anchor.offsetTop;
+  // A zero shift is a no-op by construction (the anchored row did not move),
+  // but skipping the write keeps scroll-write logs — and any real browser
+  // that fires scroll events on programmatic sets — quiet.
+  if (shift !== 0) {
+    el.scrollTop += shift;
+  }
 }
 async function handleLoadOlder(): Promise<void> {
   const el = scroller.value;
