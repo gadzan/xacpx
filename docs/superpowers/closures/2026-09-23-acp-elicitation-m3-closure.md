@@ -487,8 +487,20 @@ against it after restart. That is a design of its own, not a flag.
 |---|---|
 | PR #360 (M2 + M4, Discord + Feishu renderers) | **merged** as `e3b5b764` (squash) |
 | PR #361 (this milestone) | rebased onto post-#360 `main`; head is M3's 12 commits plus the post-review fixes — #360's own 50 commits are no longer duplicated |
-| Head | `1f0e8d9c`, `MERGEABLE` |
-| CI | full run on that SHA (`test`, `Test (macOS)`, `Relay Web terminal E2E`, `terminal-*`; `rmux-bridge` skips) |
+| Head | `e17a3cb9` — M3's own commits plus the post-review fixes |
+| CI | full run on that SHA |
+
+The first CI run on the rebased head failed one test on both Linux and macOS.
+`channel-terminal-dialect.test.ts` asserted `capturedCaps` equals `[]`, but the
+value was `["interaction.elicitation.form.v1"]`. That failure was **correct and the
+assertion was wrong**: a failed terminal dialect preflight makes
+`bootstrapTerminal` return `[]`, so the array was exactly the interaction
+capability — which is orthogonal to the terminal and does keep working when the
+gate closes it. What the test must guard is that no *terminal* capability
+survives, and it now asserts the two terminal names are absent. Verified
+load-bearing by forcing the platform (the test is `skipIf(win32)`, so it
+otherwise passes silently on a Windows checkout) and breaking the gate: red, then
+green again.
 
 The rebase absorbed the group-foundations work that landed alongside #360, which
 renamed part of the control surface `channel-relay` compiles against. That
