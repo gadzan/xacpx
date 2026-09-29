@@ -1231,6 +1231,10 @@ function validInteractionField2(v) {
     return false;
   if (!optNum(v.minLength) || !optNum(v.maxLength))
     return false;
+  if (v.format !== undefined && !isBoundedStr(v.format, 64))
+    return false;
+  if (v.pattern !== undefined && !isBoundedStr(v.pattern, 2000))
+    return false;
   if (!optBoolOrNull(v.integer))
     return false;
   if (!optNum(v.minimum) || !optNum(v.maximum))

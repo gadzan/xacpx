@@ -122,6 +122,17 @@ function fieldProblems(field: InteractionFieldDto, answer: InteractionValueDto |
     const text = String(answer);
     if (field.minLength !== undefined && text.length < field.minLength) problems.push("minLength");
     if (field.maxLength !== undefined && text.length > field.maxLength) problems.push("maxLength");
+    if (field.pattern !== undefined) {
+      // Compiled only here, from the hub-validated field, and a malformed
+      // pattern is IGNORED rather than surfaced: core still validates, and
+      // treating a bad pattern as a failed answer would block a form the user
+      // filled correctly.
+      try {
+        if (!new RegExp(field.pattern).test(text)) problems.push("pattern");
+      } catch {
+        // Unusable pattern: core is the authority.
+      }
+    }
   }
   if (field.kind === "number") {
     const value = Number(answer);

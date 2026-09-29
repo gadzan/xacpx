@@ -789,10 +789,25 @@ export interface InteractionFieldDto {
    *
    * Present because the transport is terminal: a value core rejects arrives
    * after the interaction has already resolved, so the renderer has to be able
-   * to catch an unparseable `date`/`email` while the form is still open. A
-   * renderer that cannot check it simply ignores it and core still validates.
+   * to catch an unparseable value while the form is still open. A renderer that
+   * cannot check it simply ignores it and core still validates.
+   *
+   * OPEN string, not an enum: core's schema is the authority on which names
+   * exist and it declares `format?: string`, so an enum here would need updating
+   * per new format and would reject a legal one. Bounded by the field validator.
+   * The values the renderer knows are `date` and `email`; anything else it
+   * ignores.
    */
-  format?: "text" | "date" | "email";
+  format?: string;
+  /**
+   * A regex the answer must match, as source text.
+   *
+   * Carried because the renderer cannot otherwise express a format core knows
+   * about, and the transport is terminal. Bounded and accepted as TEXT only: it
+   * is never compiled with an unsanitised pattern, and a renderer that supports
+   * it compiles it in a guarded branch with a fallback of ignoring it.
+   */
+  pattern?: string;
   /** Integer-ness for `number` fields; ACP has no separate integer kind. */
   integer?: boolean;
   minimum?: number;

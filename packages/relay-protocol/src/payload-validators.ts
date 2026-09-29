@@ -553,11 +553,12 @@ function validInteractionField(v: unknown): boolean {
   if (!optStrOrNull(v.description)) return false;
   if (!optNum(v.minItems) || !optNum(v.maxItems)) return false;
   if (!optNum(v.minLength) || !optNum(v.maxLength)) return false;
-  if (v.format !== undefined
-    && (typeof v.format !== "string"
-      || !(["text", "date", "email"] as readonly string[]).includes(v.format))) {
-    return false;
-  }
+  // An open string, bounded. Not an enum: core is the authority on which format
+  // names exist, and a renderer ignores the ones it does not know.
+  if (v.format !== undefined && !isBoundedStr(v.format, 64)) return false;
+  // A regex is accepted only as bounded text. Never compiled here: an unbounded or
+  // pathological pattern would turn validation into the attacker's work.
+  if (v.pattern !== undefined && !isBoundedStr(v.pattern, 2000)) return false;
   if (!optBoolOrNull(v.integer)) return false;
   if (!optNum(v.minimum) || !optNum(v.maximum)) return false;
   const isSelect = kind === "single-select" || kind === "multi-select";
