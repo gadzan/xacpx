@@ -26,6 +26,7 @@ import type {
   MarkExecutionStartedInput,
   RecoveredClaim,
   ReleaseClaimToPendingInput,
+  RenewHeldClaimInput,
   SettleCancelBatchInput,
   SettleCancelBatchResult,
   SettledCancelMember,
@@ -963,6 +964,25 @@ export class SqliteConversationStore implements ConversationStore {
        WHERE state IN ('queued', 'running', 'waiting-human')`,
     );
     return rows.map((row) => ({ conversationId: row.conversation_id, topicId: row.topic_id }));
+  }
+  renewHeldClaim(input: RenewHeldClaimInput): PendingDispatch {
+    return this.sqlite.transaction(() => {
+      // Held-claim fence: everything EXCEPT lease expiry. The renewing drain
+      // is alive and holds this claim, so an expired lease means "sibling
+      // ran long", never "owner died". All real races still reject.
+      const dispatch = this.requireHeldClaim({
+        dispatchId: input.dispatchId,
+        owner: input.owner,
+        generation: input.generation,
+      });
+      this.sqlite.run(
+        `UPDATE pending_dispatches
+         SET lease_expires_at = ?
+         WHERE id = ?`,
+        [input.leaseExpiresAt, dispatch.id],
+      );
+      return this.requireDispatch(dispatch.id);
+    });
   }
 
   releaseClaimToPending(input: ReleaseClaimToPendingInput): PendingDispatch {
@@ -1963,6 +1983,36 @@ export class SqliteConversationStore implements ConversationStore {
       || (dispatch.lease_expires_at !== null && dispatch.lease_expires_at <= input.now)
     ) {
       throw new ConversationError("stale_claim", `dispatch "${input.dispatchId}" is not the live claim`);
+    }
+    const member = this.requireMemberTurn(dispatch.member_turn_id);
+    if (member.startedAt) {
+      throw new ConversationError("stale_claim", `member turn "${member.id}" already started`);
+    }
+    return dispatch;
+  }
+
+  /** Same fence minus the lease-expiry check, for writer-slot-held claims
+   *  ONLY. A held claim's owner drain is alive by construction (it holds the
+   *  ClaimedWork object in memory and renews every pass), so expiry cannot
+   *  mean owner death — it only means the sibling ran long. Every OTHER check
+   *  still applies: wrong owner, bumped generation, recovered-to-pending,
+   *  started member, or terminal Run all reject. Never use this for normal
+   *  claims; the lease is the dead-owner detector there. */
+  private requireHeldClaim(input: {
+    dispatchId: string;
+    owner: string;
+    generation: number;
+    memberTurnId?: string;
+  }): DispatchRow {
+    const dispatch = this.sqlite.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE id = ?", [input.dispatchId]);
+    if (
+      !dispatch
+      || dispatch.state !== "claimed"
+      || dispatch.owner !== input.owner
+      || Number(dispatch.generation) !== Number(input.generation)
+      || (input.memberTurnId !== undefined && dispatch.member_turn_id !== input.memberTurnId)
+    ) {
+      throw new ConversationError("stale_claim", `dispatch "${input.dispatchId}" is not the live held claim`);
     }
     const member = this.requireMemberTurn(dispatch.member_turn_id);
     if (member.startedAt) {

@@ -21,7 +21,7 @@ import type {
   ConversationTurnRunResult,
   ConversationTurnRunner,
 } from "./conversation-turn-runner";
-import { TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES, type MemberTurnRecord } from "./conversation-types";
+import { TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES, type MemberTurnRecord, type PendingDispatch } from "./conversation-types";
 
 /** Public transcript bound for one frozen Group batch. The window is taken
  *  newest-first immediately before the request boundary, so a Topic longer
@@ -132,6 +132,13 @@ export class ConversationDispatcher {
         }
         seen = this.wakeGeneration;
         this.deferredTopicIds.clear();
+        // The drain itself is alive and owns every held claim: renew them
+        // BEFORE recoverExpiredClaims() runs, so a scheduling wait that
+        // outlasts one lease is never mistaken for a dead owner. Renewal
+        // keeps owner/generation/provenance; only the expiry moves. A hold
+        // that lost its race (stale owner, bumped generation, recovered
+        // elsewhere) fails the fence and is dropped from the hold set.
+        this.renewHeldClaims();
         for (;;) {
           if (this.closed) {
             return;
@@ -326,9 +333,49 @@ export class ConversationDispatcher {
    *  held claim parked until a later kick reaps it through the normal
    *  pre-start fences in execute(). */
   private readonly heldWriterSlotClaims = new Map<string, ClaimedWork>();
+  /** Extend every live held claim's lease. Called once per drain pass,
+   *  BEFORE recoverExpiredClaims(): while this drain is alive and holds the
+   *  claim object, the owner is by definition not dead, so expiry must not
+   *  trigger crash recovery. Holds that fail the fence (lost race, recovered
+   *  elsewhere, Run terminal) are dropped; the normal paths reap them. */
+  private renewHeldClaims(): void {
+    const now = this.now().toISOString();
+    const leaseExpiresAt = new Date(this.now().getTime() + this.leaseMs).toISOString();
+    for (const [dispatchId, work] of this.heldWriterSlotClaims) {
+      try {
+        const renewed = this.store.renewHeldClaim({
+          dispatchId,
+          owner: this.ownerId,
+          generation: work.dispatch.generation,
+          now,
+          leaseExpiresAt,
+        });
+        this.heldWriterSlotClaims.set(dispatchId, { ...work, dispatch: renewed });
+      } catch {
+        this.heldWriterSlotClaims.delete(dispatchId);
+      }
+    }
+  }
 
   private holdClaimForWriterSlot(work: ClaimedWork): void {
-    this.heldWriterSlotClaims.set(work.dispatch.id, work);
+    // Renew at hold time: the wait that follows may outlast the original
+    // lease (LLM sibling turns routinely exceed 30s). Without this, the next
+    // recoverExpiredClaims() treats the scheduling wait as crash recovery.
+    // A renewal failure here means the claim is already gone (lost race,
+    // cancelled Run): do not hold what we cannot renew; execute()'s fences
+    // still guard the stale object if it is somehow re-read.
+    try {
+      const renewed = this.store.renewHeldClaim({
+        dispatchId: work.dispatch.id,
+        owner: this.ownerId,
+        generation: work.dispatch.generation,
+        now: this.now().toISOString(),
+        leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString(),
+      });
+      this.heldWriterSlotClaims.set(work.dispatch.id, { ...work, dispatch: renewed });
+    } catch {
+      return;
+    }
     this.deferredTopicIds.add(work.run.topicId);
   }
 
@@ -336,8 +383,18 @@ export class ConversationDispatcher {
    *  still needs them. A held claim whose sibling finished is executed
    *  inline (same claim, same generation); a held claim whose Run went
    *  terminal or whose dispatch is no longer ours is dropped. Returns the
-   *  claim to execute, if any. */
+   *  claim to execute, if any.
+   *
+   *  Lease protection: every live held claim gets its lease extended here,
+   *  before the expiry check below. A serialized sibling may legitimately
+   *  wait longer than one lease (LLM turns routinely exceed 30s); without
+   *  renewal the next recoverExpiredClaims() would treat the scheduling wait
+   *  as crash recovery — clearing authorityEpoch/humanIngress, rewriting
+   *  origin to `recovery`, bumping attempt — and the member would execute
+   *  without its original human permission route. Renewal keeps the SAME
+   *  owner/generation/provenance; only the expiry moves. */
   private recheckHeldClaims(): ClaimedWork | undefined {
+    const now = this.now().toISOString();
     for (const [dispatchId, work] of this.heldWriterSlotClaims) {
       if (this.deferredTopicIds.has(work.run.topicId)) {
         continue;
@@ -349,12 +406,29 @@ export class ConversationDispatcher {
         this.heldWriterSlotClaims.delete(dispatchId);
         continue;
       }
-      if (this.mustDeferForWriterSlot({ ...work, dispatch: live })) {
+      // Renew first: an already-expired held claim must NOT execute — its
+      // lease lapsed while we were not watching, so recovery owns it now.
+      // renewHeldClaim's fence rejects it (stale_claim) and we drop the hold;
+      // the normal recovery path requeues it with fresh provenance rules.
+      let renewed: PendingDispatch;
+      try {
+        renewed = this.store.renewHeldClaim({
+          dispatchId,
+          owner: this.ownerId,
+          generation: live.generation,
+          now,
+          leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString(),
+        });
+      } catch {
+        this.heldWriterSlotClaims.delete(dispatchId);
+        continue;
+      }
+      if (this.mustDeferForWriterSlot({ ...work, dispatch: renewed })) {
         this.deferredTopicIds.add(work.run.topicId);
         continue;
       }
       this.heldWriterSlotClaims.delete(dispatchId);
-      return { ...work, dispatch: live };
+      return { ...work, dispatch: renewed };
     }
     return undefined;
   }

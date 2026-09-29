@@ -6438,6 +6438,58 @@ test("PR7 scheduler: shared-single-writer serializes unknown-effect siblings", a
   }
 });
 
+test("PR7 scheduler: held writer-slot claim survives a lease boundary with provenance intact", async () => {
+  // Short lease so the test clock can cross it: B is held behind a hung A,
+  // the clock jumps past B's original expiry, then A settles. B must execute
+  // with the SAME claim/generation — humanIngress, human-explicit origin and
+  // attempt untouched — never via recovery requeue.
+  const second = await createLifecycle({ autoKick: false, leaseMs: 100 });
+  await second.service.activateAfterConsumerLock();
+  seedTesterBot(second.state);
+  const group = await second.bots.createGroup({ title: "Lease", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await second.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(second.runner).hang = hang;
+  const accepted = await second.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-lease-hold",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  void second.dispatcher.kick();
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+  const testerTurn = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  const heldBefore = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  const generationBefore = heldBefore.generation;
+  const attemptBefore = testerTurn.attempt;
+  // Cross B's lease while A still hangs: without renewal the next drain's
+  // recoverExpiredClaims() would requeue B as `recovery` and strip its human
+  // route. Advance well past the 100ms lease.
+  second.jump(10_000);
+  await tick();
+  await tick();
+  // Force a fresh drain pass while A still hangs: its pass-top recovery is
+  // what would requeue the expired held claim as `recovery` if renewal did
+  // not protect it. (In production this is any kick arriving mid-wait.)
+  await second.dispatcher.kick();
+  hang.resolve();
+  await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
+  expect(fakeRunner(second.runner).runs).toHaveLength(2);
+  const testerAfter = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerAfter.origin).toBe("human-explicit");
+  expect(testerAfter.attempt).toBe(attemptBefore);
+  const dispatchAfter = second.store.getDispatchForMemberTurn(testerAfter.id)!;
+  expect(dispatchAfter.generation).toBe(generationBefore);
+  expect(dispatchAfter.humanIngress).toEqual(HUMAN_INGRESS);
+  second.store.close();
+});
+
+
 test("PR7 scheduler: bare read-only without proof stays serialized, proven read-only overlaps", async () => {
   // Store boundary first: a bare `read-only` with no/invalid proof normalizes
   // to `unknown` at durable write, so no future reader can schedule on it.

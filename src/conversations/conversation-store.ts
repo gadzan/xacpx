@@ -199,6 +199,10 @@ export interface SettleCancelBatchResult {
 
 export interface ReleaseClaimToPendingInput extends ClaimFenceInput {}
 
+export interface RenewHeldClaimInput extends ClaimFenceInput {
+  leaseExpiresAt: string;
+}
+
 export interface FailClaimBeforeStartInput extends ClaimFenceInput, FailExecutionInput {}
 
 export interface AssertLiveDispatchForMaterializeInput extends ClaimFenceInput {
@@ -267,6 +271,13 @@ export interface ConversationStore {
    *  metadata delete against orphaning history the Group row is needed to
    *  interpret. */
   hasDurableGroupWork(conversationId: string): boolean;
+  /** Extend the lease on a writer-slot-held claim WITHOUT touching anything
+   *  else: same owner, same generation, same authorityEpoch/humanIngress. The
+   *  fence rejects anything that is not our live unstarted claim (stale owner,
+   *  wrong generation, already started, or already recovered) with
+   *  `stale_claim`, so a lost race can never extend a lease it no longer owns.
+   *  Scheduling waits must never look like crash recovery. */
+  renewHeldClaim(input: RenewHeldClaimInput): PendingDispatch;
   releaseClaimToPending(input: ReleaseClaimToPendingInput): PendingDispatch;
   markExecutionStarted(input: MarkExecutionStartedInput): MemberTurnRecord;
   assertLiveDispatchForMaterialize(input: AssertLiveDispatchForMaterializeInput): void;
