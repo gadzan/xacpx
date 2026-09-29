@@ -6438,6 +6438,95 @@ test("PR7 scheduler: shared-single-writer serializes unknown-effect siblings", a
   }
 });
 
+test("PR7 scheduler: bare read-only without proof stays serialized, proven read-only overlaps", async () => {
+  // Store boundary first: a bare `read-only` with no/invalid proof normalizes
+  // to `unknown` at durable write, so no future reader can schedule on it.
+  {
+    const first = await createLifecycle();
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "Norm", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "S", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+    const botA = first.bots.getBot(BOT_ID);
+    const botB = first.bots.getBot(TESTER_ID);
+    const bare = first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: "req-bare",
+      botId: botA.id,
+      content: "bare",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW), effect: "read-only" }],
+      now: NOW,
+    });
+    const bareTurn = bare.memberTurns.find((m) => m.botId === TESTER_ID)!;
+    expect(bareTurn.effect).toBeUndefined();
+    const proven = first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: "req-proven",
+      botId: botA.id,
+      content: "proven",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      members: [{
+        botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW),
+        effect: "read-only", effectProvenance: "declared-enforced",
+      }],
+      now: NOW,
+    });
+    expect(proven.memberTurns.find((m) => m.botId === TESTER_ID)?.effect).toBe("read-only");
+    first.store.close();
+  }
+  // Scheduler second: under shared-single-writer, proven read-only overlaps a
+  // hung sibling while bare read-only (normalized to unknown) still serializes.
+  // Proven overlap:
+  {
+    const first = await createLifecycle({ autoKick: false });
+    await first.service.activateAfterConsumerLock();
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "Overlap", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "S", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    // Hand-accept with a proven read-only second member: PR7's own accept
+    // never writes this (always unknown), so the store boundary is the only
+    // way to construct it.
+    const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+    const botA = first.bots.getBot(BOT_ID);
+    const botB = first.bots.getBot(TESTER_ID);
+    const accepted = first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: "req-overlap",
+      botId: botA.id,
+      content: "overlap",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      members: [{
+        botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW),
+        effect: "read-only", effectProvenance: "declared-enforced",
+      }],
+      now: NOW,
+      authorityEpoch: first.dispatcher.authorityEpoch,
+      humanIngress: HUMAN_INGRESS,
+    });
+    const hang = deferred<void>();
+    fakeRunner(first.runner).hang = hang;
+    void first.dispatcher.kick();
+    await waitUntil(() => fakeRunner(first.runner).runs.length === 2, 4000);
+    const states = new Map(first.store.listMemberTurns(accepted.run.id).map((m) => [m.botId, m.state]));
+    expect(states.get(BOT_ID)).toBe("running");
+    expect(states.get(TESTER_ID)).toBe("running");
+    hang.resolve();
+    await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
+    first.store.close();
+  }
+});
+
+
 test("PR7 dispatcher: Group dispatch materializes Group member sessions with frozen transcript and serial writers", async () => {
   const first = await createLifecycle({ autoKick: true });
   await first.service.activateAfterConsumerLock();

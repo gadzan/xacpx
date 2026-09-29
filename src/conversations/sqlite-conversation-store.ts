@@ -41,6 +41,7 @@ import type {
   ConversationRunState,
   HumanIngressContext,
   MemberTurnEffect,
+  MemberTurnEffectProvenance,
   MemberTurnOrigin,
   MemberTurnRecord,
   MemberTurnState,
@@ -1839,8 +1840,13 @@ export class SqliteConversationStore implements ConversationStore {
           JSON.stringify([messageId]),
           JSON.stringify(member.profileSnapshot),
           input.now,
-          member.effect ?? "unknown",
-          member.effectProvenance ?? null,
+          // Normalize at the durable boundary: only `read-only` backed by the
+          // exact `declared-enforced` proof persists as proven. A bare
+          // `read-only` (missing/invalid provenance) or any other combination
+          // persists as `unknown` with no proof — fail-closed for scheduling.
+          ...(member.effect === "read-only" && member.effectProvenance === "declared-enforced"
+            ? ["read-only", "declared-enforced"]
+            : ["unknown", null]),
           member.assignmentId ?? null,
           member.task ?? null,
           member.expectedOutput ?? null,

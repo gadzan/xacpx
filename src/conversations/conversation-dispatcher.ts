@@ -314,7 +314,7 @@ export class ConversationDispatcher {
       return false;
     }
     const isolation = this.runtime.groupTopicIsolation(work.run.conversationId, work.run.topicId);
-    return !isEffectConcurrencySafe(work.memberTurn.effect, isolation, otherExecuting.length);
+    return !isEffectConcurrencySafe(work.memberTurn.effect, isolation, otherExecuting.length, work.memberTurn.effectProvenance);
   }
 
   /** Writer-slot-held claims, keyed by dispatch id. The drain KEEPS the
