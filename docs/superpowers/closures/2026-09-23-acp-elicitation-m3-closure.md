@@ -487,7 +487,7 @@ against it after restart. That is a design of its own, not a flag.
 |---|---|
 | PR #360 (M2 + M4, Discord + Feishu renderers) | **merged** as `e3b5b764` (squash) |
 | PR #361 (this milestone) | rebased onto post-#360 `main`; head is M3's 12 commits plus the post-review fixes — #360's own 50 commits are no longer duplicated |
-| Head | `506620d6` — M3's own commits plus the post-review fixes |
+| Head | `301831a6` — M3's own commits plus the post-review fixes |
 | CI | full run on that SHA |
 
 The first CI run on the rebased head failed one test on both Linux and macOS.
@@ -600,3 +600,20 @@ type for it; eleven component regressions cover each of these.
 held it and the agent still waited. The subscribe path now replays the
 interactions that are genuinely still open, from the same registry, and only
 those.
+
+A doc-only move of the head invalidated the green CI run, and the rebuild exposed
+one drift the Windows unit run could not see on its own: `channel-relay`'s
+`relayFieldsFrom` writes `pattern` and `format` onto every text/select field, but
+`InteractionFieldDto` had neither, so the package typecheck failed on a clean
+checkout. Both fields existed in core's schema, which was never mirrored.
+
+`pattern` is now on the wire, accepted only as bounded text and never compiled on
+the hub. `format` stays an open bounded string rather than the enum first written:
+core is the authority on which names exist and declares `format?: string`, so an
+enum would need updating per new format and would reject a legal one.
+
+The lesson worth recording is about coverage, not about the field: the local unit
+run does not exercise the package build, so a typecheck-only drift between
+`channel-relay` and the wire surfaces only in the CI `Build (all packages)` step.
+Any change to `relay-protocol` should be verified with that step, not only with
+`tsc -p packages/<p>/tsconfig.json`.
