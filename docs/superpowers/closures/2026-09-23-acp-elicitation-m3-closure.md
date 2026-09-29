@@ -208,8 +208,7 @@ emits its own event, so the browser sees exactly one close per interaction.
 
 ## Layers
 
-| Layer | Change |
-|---|---|
+| Layer | Change ||---|---|
 | `relay-protocol` | message pair + the `withdraw` message, DTOs, validators, `web-dtos` exhaustiveness, capability constant, shared reserve constant, exported `validateInteractionResponse`, optional product correlation ids |
 | core | **B2 blocker removed**: `bot:` keys now route, and a Direct Bot turn gets an elicitation route |
 | `channel-relay` | real `RelayClient` (upward allowlist now carries `interactionRequest`/`interactionWithdraw`), `requestElicitation` opens on the hub and reports the HUB's stamped responder, withdraws the hub interaction on abort or transport failure |
@@ -481,3 +480,27 @@ against it after restart. That is a design of its own, not a flag.
 - the multi-select gap recorded as a per-channel limitation;
 - the `authorityEpoch` restart behaviour documented as a known cancel path
   rather than left as a surprise.
+
+## Landing status
+
+| Step | State |
+|---|---|
+| PR #360 (M2 + M4, Discord + Feishu renderers) | **merged** as `e3b5b764` (squash) |
+| PR #361 (this milestone) | rebased onto post-#360 `main`; head is M3's 12 commits plus the post-review fixes — #360's own 50 commits are no longer duplicated |
+| Head | `1f0e8d9c`, `MERGEABLE` |
+| CI | full run on that SHA (`test`, `Test (macOS)`, `Relay Web terminal E2E`, `terminal-*`; `rmux-bridge` skips) |
+
+The rebase absorbed the group-foundations work that landed alongside #360, which
+renamed part of the control surface `channel-relay` compiles against. That
+surfaced one build-discipline fact worth restating: the workspace path map sends
+`xacpx/plugin-api` to `dist/plugin-api.d.ts`, so a rebase that changes `src/`
+requires `bun run build` before any package typecheck is meaningful. The stale
+`dist` produced a dozen `createGroup`/`updateGroup` "property does not exist"
+errors in code that was in fact correct; a clean rebuild cleared them all.
+
+Local verification on this head: root, relay-protocol, relay, channel-relay,
+channel-discord and channel-feishu typechecks clean; affected suites 1648 pass /
+14 fail, with the failing set byte-identical to the pre-rebase baseline (file
+permissions, rmux version probes, exclusive-writer locks, a CLI path regex, and
+the completion-route restart test) — all Windows-environmental or load-flakes that
+pass in isolation.
