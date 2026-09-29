@@ -874,6 +874,7 @@ function validDesktopServerEvent(candidate: Record<string, unknown>): boolean {
         && validDesktopSecurity(candidate.security);
     case "desktop-request-failed":
       return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH)
+        && isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
         && isBoundedStr(candidate.code, 128)
         && typeof candidate.message === "string"
         && candidate.message.length <= MAX_DESKTOP_ERROR_MESSAGE_LENGTH;

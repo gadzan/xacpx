@@ -52,6 +52,9 @@ connector 拒绝让弱认证平面成为 xacpx 连接面的旁路。
   （见 §3/§4 的具体开关与验证命令）。两侧都得是 loopback，边界才成立。
 - `connectTimeoutMs`（250–10000）同时用于 loopback TCP 连接、banner preflight 与
   Hub `/desktop/instance` upgrade 三者，不提供单独的 upgrade 超时。
+  唯一例外：真正建立 tunnel 时读取 12 字节 RFB banner 有**独立的 2 秒硬上限**
+  （`Math.min(timeoutMs, 2000)`）。两者都是“越慢越早失败”的保守设定——一个已经接受
+  了 TCP 连接的 loopback server 没有理由把 12 个字节压着不发。
 - 完整 schema 与默认值见 `docs/config-reference.md`。
 
 启用后实例出现 Desktop 入口；不代表 5900 已在监听——真正 open 时才重新 probe。
@@ -66,11 +69,32 @@ connector 拒绝让弱认证平面成为 xacpx 连接面的旁路。
 3. **开启 VNC authentication**：
    ` TightVNC Server: Configuration → Server → Authentication` 选
    `VNC password, Windows logon...` 之外**纯 VNC password** 那一项，设置密码。
-4. **监听 loopback**：`Access Control → Loopback connections` 选
-   `Allow loopback connections`。不需要允许 LAN/远程。注意这一项是**访问控制**
-   （是否接受来自 loopback 的连接），不是**监听地址**：TightVNC 仍可能绑定
-   0.0.0.0。请按 §4 末尾的 `ss`/`netstat` 检查确认只监听 `127.0.0.1:5900`；
-   TightVNC 配置里的 `LoopbackConnectionsOnly` / 对应项应设为仅允许 loopback。
+4. **拒绝非 loopback 连接**：`Access Control → Loopback connections` 选
+   `Allow loopback connections`。不需要允许 LAN/远程。
+
+   这里要说清一个常常被混淆的语义：TightVNC 可验证的配置项
+   （`LoopbackOnly` / 注册表 `SET_LOOPBACKONLY`、`VALUE_OF_LOOPBACKONLY=1`）描述都是
+   "allow only loopback connections"，属于**访问控制**——它让外部连接被拒绝，但
+   **不保证 socket 的 bind address 是 127.0.0.1**。也就是说 TightVNC 很可能仍然绑定
+   `0.0.0.0:5900`，只是不接受来自外部的连接。
+
+   因此本文档对 Windows 的安全承诺是「**外部连接被拒绝**」，而不是「只 bind
+   loopback」。达到它需要两项同时成立：
+
+   - TightVNC 侧设为仅允许 loopback；
+   - Windows Firewall 侧阻止外部访问该端口。
+
+   验证（在实例机器上执行）：
+
+   ```bash
+   netstat -ano | findstr :5900
+   ```
+
+   只期望看到 `127.0.0.1:5900` 条目。**如果看到 `0.0.0.0:5900`，那说明监听面没有被
+   限制**，此时该桌面是安全的唯一依赖是 loopback-only 设置 + 防火墙，而不是端口本身
+   不可达。TightVNC 是否有可验证的 bind-address-only 配置项尚未确认，需要 §14 的
+   Windows 真机项给出结论；在确认之前，不要把这条指令理解为「5900 必然只在 loopback
+   上监听」。
 5. 确认 outer security 列表里有 **type 2（VNC Auth）**。仅提供 Tight（outer type 16）
    的端点会被拒绝（见 §6）。
 
@@ -100,7 +124,9 @@ x11vnc -display :0 -rfbport 5900 -localhost -passwdfile ~/.vnc/passwd
 
 ```bash
 # TigerVNC：新建一个虚拟桌面（需要连 DISPLAY 时）
-tigervncserver :1 -geometry 1920x1080 -localhost
+# Xvnc 默认 RFB 端口是 5900 + display number，所以 :1 会监听 5901。
+# 用 -rfbport 显式固定成下面配置示例里的 5900。
+tigervncserver :1 -geometry 1920x1080 -localhost -rfbport 5900
 ```
 
 启动后必须验证监听面，否则文档承诺的「不对外暴露 5900」不成立：
@@ -165,8 +191,12 @@ Open 失败时错误码与含义：
 
 ### 诊断信息在哪
 
-- **Hub 日志**：stream 生命周期 `relay.desktop.stream.*`（开/关/close reason）。
-- **connector 日志**：probe verdict（含 server 拒绝原因原文）、tunnel 出错原因。
+- **Hub 日志**：stream 生命周期 `relay.desktop.stream.*`——`stream_active`（两侧 attach
+  成功，framebuffer 开始流动）与 `stream_closed`（含 close reason），以及
+  `text_frame` / `oversize_frame` / `backpressure_close` / `preattach_overflow`
+  这些拒绝与驱逐事件。
+- **connector 日志**：`relay.desktop.probe_rejected`（含 RFB server 拒绝原因原文
+  `detail`）、`probe_ok`、`tunnel_failed`。
 - **relay-web 面板**：错误横幅展示 code + 详情；VNC 密码输错会在密码框提示
   认证失败，而不是笼统超时。
 

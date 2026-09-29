@@ -711,7 +711,7 @@ function validDesktopServerEvent(candidate) {
     case "desktop-opened":
       return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(candidate.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && isBoundedStr(candidate.wsPath, MAX_DESKTOP_WS_PATH_LENGTH) && candidate.wsPath.startsWith("/desktop/observe?ticket=") && isNonNegInt(candidate.expiresAt) && validDesktopSecurity(candidate.security);
     case "desktop-request-failed":
-      return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && isBoundedStr(candidate.code, 128) && typeof candidate.message === "string" && candidate.message.length <= MAX_DESKTOP_ERROR_MESSAGE_LENGTH;
+      return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(candidate.code, 128) && typeof candidate.message === "string" && candidate.message.length <= MAX_DESKTOP_ERROR_MESSAGE_LENGTH;
     default:
       return false;
   }

@@ -197,6 +197,10 @@ export class DesktopStreamGateway {
     if (pair.browser && pair.connector) {
       this.streams.setState(streamId, "active");
       this.flushPreAttach(streamId);
+      // The lifecycle event the operator actually cares about: both sides are
+      // attached, so the framebuffer is flowing. `stream_closed` alone cannot
+      // pair a session up after the fact.
+      this.logger.info("relay.desktop.stream_active", "desktop stream active", { streamId, security });
     } else {
       this.streams.setState(streamId, "waiting-browser");
     }

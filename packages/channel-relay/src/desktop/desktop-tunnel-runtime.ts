@@ -195,14 +195,29 @@ export class DesktopTunnelRuntime {
       if (isRetired()) return true;
       if (!verdict.ok) {
         const guidance = desktopSetupGuidance(this.deps.platform ?? process.platform, verdict.code);
+        // The server's own words matter here: an operator reading the log needs
+        // to see what the RFB server said, not just that the connector refused it.
+        this.deps.logger?.error("relay.desktop.probe_rejected", "loopback RFB probe failed", {
+          streamId: input.streamId,
+          code: verdict.code,
+          detail: verdict.detail,
+        });
         respond(errorPayload(verdict.code, `${verdict.detail}. ${guidance}`));
         return true;
       }
+      this.deps.logger?.error("relay.desktop.probe_ok", "loopback RFB probe accepted", {
+        streamId: input.streamId,
+        security: verdict.security,
+      });
       security = verdict.security;
       await this.openTunnel(input.streamId, input.ticket, generation, pending, opened);
       if (isRetired()) return true;
     } catch (err) {
       if (!isRetired()) {
+        this.deps.logger?.error("relay.desktop.tunnel_failed", "desktop tunnel failed", {
+          streamId: input.streamId,
+          detail: err instanceof Error ? err.message : String(err),
+        });
         respond(errorPayload("desktop-stream-timeout", err instanceof Error ? err.message : "desktop tunnel failed"));
       }
       return true;
@@ -457,6 +472,12 @@ function forwardToWs(socket: WebSocket, tcp: net.Socket, chunk: Buffer): void {
  * Returns the banner bytes (kept for verbatim replay to noVNC) or null when
  * the peer is not speaking RFB. Never reads past byte 12: security-type bytes
  * belong to noVNC's handshake, not to this preflight.
+ *
+ * The 2s cap is an independent hard bound, not the configured timeout: a
+ * loopback server that has accepted the TCP connection has no reason to sit on
+ * 12 banner bytes, and a stalled one must not hold the whole prepare open for
+ * the full connectTimeoutMs. So a configured 5000ms buys the probe a full 5s but
+ * buys this read 2s at most — that asymmetry is part of the documented contract.
  */
 async function readTunnelBanner(
   tcp: net.Socket,

@@ -144,9 +144,19 @@ export const useDesktopStore = defineStore("desktop", () => {
         { timeoutMs: DESKTOP_RPC_TIMEOUT_MS },
       );
     } catch (err) {
-      // The prepare is over (failed or abandoned): the requestId can no longer
-      // be used to release anything, so it must not linger and let a later
-      // close match a stream that never existed.
+      // Release the reservation the hub granted for this request before we
+      // forget the requestId. Reaching here means the browser gave up locally
+      // (its own RPC timer, or a send failure) while the hub may still have a
+      // live `waiting-browser` stream: a `desktop-opened` that arrives after the
+      // timer fires cannot settle a pending entry that no longer exists, and a
+      // later reconnect would then reserve into an orphan stream and fail
+      // `desktop-busy`. Best-effort: the hub's state gate makes a late cancel
+      // for a stream that already paired a harmless no-op.
+      if (pendingRequestId.get(instanceId) === requestId) {
+        try {
+          sendWebClientMessage({ kind: "desktop-close", instanceId, requestId });
+        } catch { /* offline: hub reaps the stream on its TTL sweep */ }
+      }
       if (pendingRequestId.get(instanceId) === requestId) pendingRequestId.delete(instanceId);
       if (controller.signal.aborted || opts.signal?.aborted || !owns(instanceId, attempt)) {
         // Abandoned or superseded: a newer attempt owns the row now. Patching
@@ -180,8 +190,9 @@ export const useDesktopStore = defineStore("desktop", () => {
       dropRow(instanceId, attempt);
       return;
     }
-    // The hub now knows the streamId (and cleared its requestId binding at
-    // markReady), so this instance is addressable by streamId from here on.
+    // The hub keeps honouring a requestId-based close from here until the
+    // browser's binary side attaches, so clearing the local entry is what stops
+    // a later close from naming a stream the hub already knows by streamId.
     if (pendingRequestId.get(instanceId) === requestId) pendingRequestId.delete(instanceId);
     patch(instanceId, {
       status: opened.security === "ard" ? "error" : "connecting",

@@ -160,6 +160,22 @@ test("parseWebClientMessage rejects desktop forgeries and oversized ids", () => 
   }))).toBeNull();
 });
 
+test("desktop server events reject unbounded instanceIds", () => {
+  // parseWebServerEvent's outer gate already requires an instanceId string;
+  // this pins the BOUNDED check on the failure event, so an oversized id cannot
+  // ride through on a requestId match alone.
+  const failed = {
+    kind: "desktop-request-failed",
+    requestId: "r1",
+    instanceId: "i1",
+    code: "desktop-busy",
+    message: "another desktop viewer is active",
+  };
+  expect(parseWebServerEvent(webEventEnvelope(failed as never))).not.toBeNull();
+  expect(parseWebServerEvent(webEventEnvelope({ ...failed, instanceId: "" } as never))).toBeNull();
+  expect(parseWebServerEvent(webEventEnvelope({ ...failed, instanceId: "i".repeat(200) } as never))).toBeNull();
+});
+
 test("desktop server events round-trip", () => {
   const events: WebServerEvent[] = [
     {

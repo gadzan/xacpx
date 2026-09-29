@@ -177,6 +177,42 @@ describe("desktop store", () => {
     expect(store.sessions.has("i1")).toBe(false);
   });
 
+  it("a local RPC timeout releases the reservation so a later reconnect is not busy", async () => {
+    // The hub prepared the stream and answered, but the reply had not reached
+    // the browser when its own timer fired. Without a cancel the reservation
+    // survives with nobody driving it, and the next open lands on desktop-busy.
+    const store = useDesktopStore();
+    const { requestDesktop, sendWebClientMessage } = await import("../api/events");
+    let settleLate!: (value: unknown) => void;
+    (requestDesktop as unknown as { mockImplementation: (fn: () => Promise<unknown>) => void })
+      .mockImplementation(() => new Promise((_resolve, reject) => {
+        // The browser's own RPC timer is what rejects here (15s > the hub's 10s
+        // prepare deadline, so the hub already answered and left a live stream).
+        reject(new DesktopRequestError("desktop-stream-timeout", "desktop request timed out"));
+      }));
+
+    const opening = store.open("i1", {});
+    const failure = await opening.catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(DesktopRequestError);
+    expect((failure as DesktopRequestError).code).toBe("desktop-stream-timeout");
+
+    // The reservation must have been released BY REQUEST on the way out.
+    const closeCalls = (sendWebClientMessage as unknown as { mock: { calls: Array<[Record<string, unknown>]> } }).mock.calls.map((c) => c[0]);
+    expect(closeCalls).toHaveLength(1);
+    expect(closeCalls[0]).toMatchObject({ kind: "desktop-close", instanceId: "i1" });
+    expect(typeof closeCalls[0]?.requestId).toBe("string");
+    expect(closeCalls[0]?.streamId).toBeUndefined();
+
+    // A hub reply that lands after the give-up must not resurrect the session:
+    // the row is the local failure's row (a timeout is retryable, so it reads
+    // "closed" with the code attached for the reconnect affordance), not a
+    // connected desktop.
+    expect(store.viewFor("i1").status).toBe("closed");
+    expect(store.viewFor("i1").lastErrorCode).toBe("desktop-stream-timeout");
+    expect(store.viewFor("i1").streamId).toBeUndefined();
+    void settleLate;
+  });
+
   it("closing an open that is still preparing releases the hub reservation by requestId", async () => {
     // The race: the user closes the panel before the prepare answers, so the
     // browser has no streamId to name. It must close by requestId, otherwise the

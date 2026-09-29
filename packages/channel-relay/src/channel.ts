@@ -659,7 +659,11 @@ export class RelayChannel implements MessageChannelRuntime {
       this.desktop = null;
       return false;
     }
-    this.desktop = new DesktopTunnelRuntime({ config: this.config.desktop, hubUrl: this.config.url });
+    this.desktop = new DesktopTunnelRuntime({
+      config: this.config.desktop,
+      hubUrl: this.config.url,
+      ...(this.startLogger ? { logger: this.startLogger } : {}),
+    });
     return true;
   }
 
