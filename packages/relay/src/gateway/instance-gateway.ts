@@ -1,5 +1,6 @@
 import {
   MSG,
+  RELAY_CAPABILITIES,
   RELAY_PROTOCOL_VERSION,
   TERMINAL_HUB_REQUEST_TIMEOUT_MS,
   decodeEnvelope,
@@ -15,7 +16,7 @@ import {
   type InstanceAgentEndpointsSyncPayload,
   type InstanceAuthPayload,
   type InstanceRegisterPayload,
-  type InteractionRequestPayload,
+  type InteractionRequestDto,
   type InteractionWithdrawPayload,
   type PublishedAgentEndpointDto,
   type RelayEnvelope,
@@ -281,6 +282,26 @@ export class InstanceGateway {
 
   isOnline(instanceId: string): boolean {
     return this.connections.has(instanceId);
+  }
+
+  /**
+   * Push a control event to every browser connected for an account.
+   *
+   * PUBLIC, not just a dep: interaction lifecycle events have to reach the
+   * browser from paths that hold the gateway but not its wiring — the HTTP app
+   * owns the registry's close listener, and the socket that opened an
+   * interaction may be long gone by the time it closes. With this as a
+   * dependency-only callback, `deps.gateway.broadcastControlEvent` was undefined
+   * on the real class, so every resolved / withdrawn / expired close was
+   * silently dropped in production while tests — which inject a capturing stub —
+   * stayed green.
+   *
+   * `instanceId` on the event is the connector's own: the dashboard subscribes to
+   * its instances and the web gateway fences on that set, so an interaction
+   * opened by one connector is delivered to the sockets watching that connector.
+   */
+  broadcastControlEvent(accountId: string, event: ControlEventDto): void {
+    this.deps.broadcastControlEvent?.(accountId, event);
   }
 
   handleConnection(socket: GatewaySocket): void {
@@ -897,7 +918,7 @@ export class InstanceGateway {
       if (envelope.type === MSG.interactionRequest) {
         // Validate against the SAME validator the browser surface uses, so both
         // ends of the transport agree on what is legal.
-        const parsed: InteractionRequestPayload | null = validateInteractionRequest(envelope.payload);
+        const parsed: InteractionRequestDto | null = validateInteractionRequest(envelope.payload);
         if (!parsed) {
           respond(errorPayload("invalid-payload", `${MSG.interactionRequest}: malformed payload`));
           return;
@@ -946,16 +967,26 @@ export class InstanceGateway {
           answerWindowMs,
           timeoutMs: answerWindowMs + REQUEST_RESPONSE_RESERVE_MS,
           ...(parsed.conversation !== undefined ? { conversation: parsed.conversation } : {}),
+          ...(parsed.elicitation !== undefined ? { elicitation: parsed.elicitation } : {}),
+          ...(parsed.permission !== undefined ? { permission: parsed.permission } : {}),
           resolve: (decision) => respond(interactionResultForBrowser({ responded: true, response: decision }, accountId)),
           reject: (reason) =>
             respond({ responded: false, reason: reason === "expired" ? "timeout" : "withdrawn" }),
         });
         // Published AFTER registering, so a browser that receives the event
         // finds a pending interaction to answer.
+        //
+        // `instanceId` is the AUTHENTICATED connector's — the same socket
+        // identity that opened it, never anything the frame claimed. The
+        // dashboard subscribes to its instances and the web gateway fences
+        // control-events on that set: publishing "" here drops the form in every
+        // socket that has subscribed, and leaves the store with nothing to route
+        // an answer back to.
         this.deps.broadcastControlEvent?.(accountId, {
           type: "interaction-opened",
           chatKey,
           sessionAlias: "",
+          instanceId,
           interaction: parsed,
         });
         return;

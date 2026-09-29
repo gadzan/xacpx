@@ -73,15 +73,23 @@ export function resolveElicitationTurnRoute(
   const base = resolveTurnInteractionRoute({
     isolationChatKey: input.isolationChatKey,
     ...(input.origin !== undefined ? { origin: input.origin } : {}),
-    // A Direct Conversation turn carries no `permissionChatKey`: the ingress key
-    // is intentionally NOT used as the route, because it is an account-wide
-    // address rather than this exact turn's isolation key.
+    // `permissionChatKey` is stripped on purpose. The shared resolver prefers it
+    // over the isolation key, which is correct for permission — but an
+    // elicitation route must stay the PRODUCT isolation key, because that is what
+    // TurnQueue, the conversation kernel, and `RelayChannel`'s correlation all
+    // read. Forwarding the account-wide ingress key here collapses the route to
+    // `relay:<account>`, which is the same address for every topic and loses the
+    // `bot:<conversation>:<topic>` split the form has to be placed on.
+    // It remains available to a renderer that needs a user-facing address,
+    // carried as `replyContextToken` below.
     metadata: {
-      ...(input.metadata ?? {}),
+      ...Object.fromEntries(
+        Object.entries(input.metadata ?? {}).filter(([k]) => k !== "permissionChatKey"),
+      ),
       ...(input.senderId !== undefined ? { senderId: input.senderId } : {}),
       ...(input.senderName !== undefined ? { senderName: input.senderName } : {}),
       ...(input.isOwner !== undefined ? { isOwner: input.isOwner } : {}),
-    },
+    } as ChatRequestMetadata,
     ...(input.accountId !== undefined ? { accountId: input.accountId } : {}),
     // Direct Conversation keys are exactly what this resolver is FOR.
     acceptDirectConversationKeys: true,
@@ -92,8 +100,16 @@ export function resolveElicitationTurnRoute(
     // would cancel anyway, so fail here with a clearer reason.
     return undefined;
   }
+  // The trusted ingress address, carried out of the metadata that was stripped
+  // above. A caller may also supply it directly; an explicit argument wins, since
+  // the caller knows what it read off the dispatch row.
+  const ingressFromMetadata = input.metadata?.permissionChatKey;
+  const ingressChatKey = input.ingressChatKey
+    ?? (typeof ingressFromMetadata === "string" && ingressFromMetadata !== ""
+      ? ingressFromMetadata
+      : undefined);
   return {
     ...base,
-    ...(input.ingressChatKey !== undefined ? { replyContextToken: input.ingressChatKey } : {}),
+    ...(ingressChatKey !== undefined ? { replyContextToken: ingressChatKey } : {}),
   };
 }

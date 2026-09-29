@@ -118,6 +118,15 @@ export interface RelayRuntime {
   gateway: InstanceGateway;
   webGateway: WebGateway;
   stateSnapshot(instanceId: string): InstanceStateSnapshotDto;
+  /**
+   * The hub's pending-interaction registry.
+   *
+   * Exposed so the web subscribe path can replay the interactions that are still
+   * open to a socket that connected after the form was announced
+   * (`interaction-opened` is a one-shot push). Optional so a runtime built
+   * without a registry still satisfies this interface.
+   */
+  interactions?: InteractionRegistry;
   app: ReturnType<typeof createApp>;
   pendingWebPromptsCount?(): number;
   close(): void;
@@ -387,8 +396,19 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   //
   // Emitted from the registry itself (see `createApp`) rather than from each
   // closer, so the browser's state is independent of which path ran.
+  //
+  // The instance id is FORWARDED FROM THE EVENT, not blanked. The web gateway
+  // fences control-events on each socket's instance subscription, and the
+  // dashboard subscribes to its real instances on connect — so an event wrapped
+  // with instanceId "" is dropped by every subscribed socket. Every interaction
+  // event now names the connector that owns it, and the wrapper must carry that
+  // through or the fence silently discards it.
   const broadcastControlEvent = (accountId: string, event: ControlEventDto): void => {
-    webGateway.broadcast(accountId, { kind: "control-event", instanceId: "", event });
+    webGateway.broadcast(accountId, {
+      kind: "control-event",
+      instanceId: (event as { instanceId?: string }).instanceId ?? "",
+      event,
+    });
   };
   const gateway = new InstanceGateway({
     instances,
@@ -1127,6 +1147,9 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     gateway,
     webGateway,
     stateSnapshot,
+    // Pending interactions, so the web subscribe path can replay what is still
+    // open to a socket that connected after the form was announced.
+    interactions,
     pendingWebPromptsCount: () => pendingWebPrompts.size,
     app,
     close: () => {
@@ -1225,6 +1248,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
           gateway: runtime.gateway,
           webGateway: runtime.webGateway,
           stateSnapshot: runtime.stateSnapshot,
+          interactions: runtime.interactions,
         }, account.id, ws, String(data)));
       });
       return;

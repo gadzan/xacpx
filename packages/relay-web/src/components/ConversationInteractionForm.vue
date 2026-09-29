@@ -67,10 +67,106 @@ function controlName(field: InteractionFieldDto): string {
   return `f${field.key.replace(/[^A-Za-z0-9_]/g, '').slice(0, 16)}`;
 }
 
+/**
+ * Typed coercion for the field the user is editing.
+ *
+ * Each field kind has a wire type core will validate against, so the renderer
+ * MUST emit that type: a number field answered as a string reaches core as a
+ * string and is rejected, and the transport is terminal — the hub has already
+ * resolved the interaction by then, so the user cannot correct it. Coercing here
+ * is what makes an invalid edit visible while the form is still open.
+ */
+function coerce(
+  field: InteractionFieldDto,
+  raw: string,
+): { ok: true; value: InteractionValueDto } | { ok: false } {
+  const trimmed = raw.trim();
+  if (field.kind === "number") {
+    if (trimmed === "") return { ok: true, value: undefined as never };
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) return { ok: false };
+    // integer constraint is the field's own, and it is enforced here rather than
+    // deferred: a fractional answer to an integer field is rejected later, after
+    // the form has already closed.
+    if (field.integer === true && !Number.isInteger(parsed)) return { ok: false };
+    return { ok: true, value: parsed };
+  }
+  if (field.kind === "text") {
+    if (field.format === "date" && trimmed !== "" && Number.isNaN(Date.parse(trimmed))) {
+      return { ok: false };
+    }
+    if (field.format === "email" && trimmed !== "" && !/^[^@\s]+@[^@\s]+$/.test(trimmed)) {
+      return { ok: false };
+    }
+    return { ok: true, value: raw };
+  }
+  return { ok: true, value: raw };
+}
+
+/**
+ * Per-field problems the renderer can detect BEFORE Submit.
+ *
+ * Terminal transport is why this exists locally. A hub that validated shape only
+ * resolved the interaction; core then rejected the answer set, and the form was
+ * already gone — an ordinary typo became an unrecoverable failure. Checking the
+ * field's own bounds turns it into a message the user can act on.
+ */
+function fieldProblems(field: InteractionFieldDto, answer: InteractionValueDto | undefined): string[] {
+  const problems: string[] = [];
+  const present = answer !== undefined && !(typeof answer === "string" && answer === "");
+  if (!present) {
+    if (field.required) problems.push("required");
+    return problems;
+  }
+  if (field.kind === "text") {
+    const text = String(answer);
+    if (field.minLength !== undefined && text.length < field.minLength) problems.push("minLength");
+    if (field.maxLength !== undefined && text.length > field.maxLength) problems.push("maxLength");
+  }
+  if (field.kind === "number") {
+    const value = Number(answer);
+    if (field.minimum !== undefined && value < field.minimum) problems.push("minimum");
+    if (field.maximum !== undefined && value > field.maximum) problems.push("maximum");
+    if (field.integer === true && !Number.isInteger(value)) problems.push("integer");
+  }
+  if (field.kind === "multi-select") {
+    const values = Array.isArray(answer) ? answer : [];
+    if (field.minItems !== undefined && values.length < field.minItems) problems.push("minItems");
+    if (field.maxItems !== undefined && values.length > field.maxItems) problems.push("maxItems");
+  }
+  return problems;
+}
+
+/** Every field that would be rejected, so Submit can be blocked with a reason. */
+const invalidFields = computed<readonly { field: InteractionFieldDto; problems: string[] }[]>(() =>
+  fields.value
+    .map((field) => ({ field, problems: fieldProblems(field, props.answers[field.key]) }))
+    .filter((entry) => entry.problems.length > 0),
+);
+
+const canSubmit = computed<boolean>(() => invalidFields.value.length === 0);
+
+/** Multi-select selections are a set, so toggling an option adds or removes it. */
+function onMultiToggle(field: InteractionFieldDto, optionValue: string): void {
+  const current = props.answers[field.key];
+  const selected = Array.isArray(current) ? current : [];
+  emit('answer', field.key, selected.includes(optionValue)
+    ? selected.filter((v) => v !== optionValue)
+    : [...selected, optionValue]);
+}
+
+function onNumberInput(field: InteractionFieldDto, event: Event): void {
+  const target = event.target as HTMLInputElement | null;
+  if (!target) return;
+  const result = coerce(field, target.value);
+  if (result.ok) emit('answer', field.key, result.value);
+}
+
 function onTextInput(field: InteractionFieldDto, event: Event): void {
   const target = event.target as HTMLInputElement | HTMLTextAreaElement | null;
   if (!target) return;
-  emit('answer', field.key, target.value);
+  const result = coerce(field, target.value);
+  if (result.ok) emit('answer', field.key, result.value);
 }
 
 function onSelect(field: InteractionFieldDto, event: Event): void {
@@ -173,6 +269,40 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
           </option>
         </select>
 
+        <!-- Multi-select: the answer is a string[] of option VALUES, so the
+          renderer must produce an array. A single value here would be rejected by
+          core after the form had already closed. -->
+        <div v-else-if="field.kind === 'multi-select'" class="space-y-1">
+          <button
+            v-for="option in field.options ?? []"
+            :key="option.value"
+            type="button"
+            :data-test="`interaction-multi-${option.value}`"
+            class="mr-1 mb-1 rounded border px-2 py-1 text-xs transition-colors"
+            :class="(Array.isArray(answers[field.key]) ? answers[field.key] as string[] : []).includes(option.value)
+              ? 'border-accent bg-accent/10 text-accent'
+              : 'border-border text-fg hover:bg-surface'"
+            @click="onMultiToggle(field, option.value)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+
+        <!-- Number: `inputmode` and `type=number` so a numeric keyboard appears,
+          but the value is COERCED in the handler — `type=number` alone still hands
+          back a string on some platforms. -->
+        <input
+          v-else-if="field.kind === 'number'"
+          :id="controlName(field)"
+          :data-test="`interaction-input-${field.key}`"
+          type="number"
+          inputmode="decimal"
+          class="w-full rounded border border-border bg-surface px-2 py-1.5 text-xs text-fg"
+          :placeholder="field.title"
+          :value="String(answers[field.key] ?? field.defaultValue ?? '')"
+          @input="onNumberInput(field, $event)"
+        />
+
         <!-- Everything else is free text; the answer is sent verbatim for core to
           validate, because the renderer is not the authority on schema rules. -->
         <input
@@ -182,9 +312,21 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
           type="text"
           class="w-full rounded border border-border bg-surface px-2 py-1.5 text-xs text-fg"
           :placeholder="field.title"
-          :value="String(answers[field.key] ?? '')"
+          :value="String(answers[field.key] ?? field.defaultValue ?? '')"
           @input="onTextInput(field, $event)"
         />
+      </div>
+
+      <!-- Field-level problems the renderer can see. Surfaced BEFORE Submit, while
+        the form is still open: the interaction resolves on submit, so an answer
+        core rejects afterwards is one the user cannot correct. -->
+      <div v-if="invalidFields.length > 0" data-test="interaction-invalid" class="text-[11px] text-danger">
+        <div v-for="entry in invalidFields" :key="entry.field.key">
+          {{ t('bot.interaction.fieldInvalid', {
+            title: entry.field.title,
+            problem: entry.problems.join(', '),
+          }) }}
+        </div>
       </div>
 
       <div v-if="requiredMissing.length > 0" class="text-[11px] text-warning">
@@ -202,7 +344,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
           type="button"
           data-test="interaction-submit"
           class="flex items-center gap-1 rounded bg-accent px-3 py-1.5 text-xs font-semibold text-accent-fg transition-opacity disabled:opacity-50"
-          :disabled="submitting || requiredMissing.length > 0"
+          :disabled="submitting || requiredMissing.length > 0 || !canSubmit"
           @click="emit('submit')"
         >
           <Loader2 v-if="submitting" :size="12" class="animate-spin" />

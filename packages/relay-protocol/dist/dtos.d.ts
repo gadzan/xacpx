@@ -597,6 +597,15 @@ export type ControlEventDto = {
     type: "interaction-opened";
     chatKey: string;
     sessionAlias: string;
+    /**
+     * The connector instance that opened this interaction.
+     *
+     * NOT optional and never "": the web gateway fences control-events on each
+     * socket's instance subscription and the dashboard subscribes to its real
+     * instances on connect, so a blank id is dropped by every subscribed
+     * socket. It is also the instance the store routes an answer back to.
+     */
+    instanceId: string;
     interaction: InteractionRequestDto;
 }
 /** An interaction ended without a browser-supplied decision (resolved,
@@ -606,8 +615,16 @@ export type ControlEventDto = {
     type: "interaction-closed";
     chatKey: string;
     sessionAlias: string;
+    /** See `interaction-opened.instanceId` — the same connector that opened it. */
+    instanceId: string;
     requestId: string;
     reason: "resolved" | "withdrawn" | "expired";
+    /**
+     * The action a resolve actually carried, so a tab that did NOT click knows
+     * what happened. Without it every resolve reads as "accepted", which is
+     * why a Decline from one tab shows as Accepted in all the others.
+     */
+    action?: "accept" | "decline" | "cancel";
 };
 export interface TerminalAttachRequest {
     terminalId: string;

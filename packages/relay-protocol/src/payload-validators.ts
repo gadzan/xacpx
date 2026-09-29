@@ -553,6 +553,11 @@ function validInteractionField(v: unknown): boolean {
   if (!optStrOrNull(v.description)) return false;
   if (!optNum(v.minItems) || !optNum(v.maxItems)) return false;
   if (!optNum(v.minLength) || !optNum(v.maxLength)) return false;
+  if (v.format !== undefined
+    && (typeof v.format !== "string"
+      || !(["text", "date", "email"] as readonly string[]).includes(v.format))) {
+    return false;
+  }
   if (!optBoolOrNull(v.integer)) return false;
   if (!optNum(v.minimum) || !optNum(v.maximum)) return false;
   const isSelect = kind === "single-select" || kind === "multi-select";

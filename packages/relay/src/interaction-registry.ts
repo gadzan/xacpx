@@ -53,6 +53,17 @@ export interface PendingInteraction {
   /** Product correlation for the browser's surface, if the turn had one. */
   conversation?: InteractionRequestDto["conversation"];
   /**
+   * The wire payload as the connector built it, kept verbatim.
+   *
+   * Needed to REPLAY an open interaction to a socket that subscribed after it
+   * opened: `interaction-opened` is a one-shot push, so a reconnect would
+   * otherwise have no way to reconstruct the form. Storing the validated frame
+   * rather than re-deriving fields from the entry is what keeps the replay
+   * byte-identical to the original event instead of a close approximation.
+   */
+  elicitation?: InteractionRequestDto["elicitation"];
+  permission?: InteractionRequestDto["permission"];
+  /**
    * How long the opening RPC is allowed to stay open. The window at `expiresAt`
    * is when answering STOPS being legal; this is when the call stops being
    * answerable-in-transit. The gap is the reserve a decision made in time needs
@@ -97,6 +108,8 @@ export interface InteractionClosedListener {
     accountId: string;
     kind: "permission" | "elicitation";
     reason: InteractionCloseReason;
+    /** The action a resolve carried. Absent for withdrawn/expired, which had none. */
+    action?: InteractionResponseDto["action"];
   }): void;
 }
 
@@ -220,7 +233,7 @@ export class InteractionRegistry {
       this.close(requestId, "expired");
       return null;
     }
-    this.finish(entry, "resolved");
+    this.finish(entry, "resolved", decision.action);
     entry.resolve(decision);
     return entry;
   }
@@ -260,7 +273,11 @@ export class InteractionRegistry {
     return entry && !entry.closed ? entry : null;
   }
 
-  private finish(entry: PendingInteraction, reason: InteractionCloseReason): void {
+  private finish(
+    entry: PendingInteraction,
+    reason: InteractionCloseReason,
+    action?: InteractionResponseDto["action"],
+  ): void {
     entry.closed = true;
     if (entry.timer !== undefined) {
       clearTimeout(entry.timer);
@@ -271,6 +288,7 @@ export class InteractionRegistry {
       requestId: entry.requestId,
       instanceId: entry.instanceId,
       reason,
+      ...(action !== undefined ? { action } : {}),
     });
     // Every closer, so the browser's form is retired on the actual close rather
     // than on the reader's guess about which path closed it.
@@ -282,6 +300,7 @@ export class InteractionRegistry {
           accountId: entry.accountId,
           kind: entry.kind,
           reason,
+          ...(action !== undefined ? { action } : {}),
         });
       } catch (error) {
         // A listener failure is not a reason to leave an interaction half closed:

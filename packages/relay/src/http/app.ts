@@ -337,8 +337,21 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       type: "interaction-closed",
       chatKey: `relay:${closed.accountId}`,
       sessionAlias: "",
+      // `owner.id`, NOT "" — the dashboard subscribes to its instances and the
+      // web gateway fences control-events on that set, so an event carrying ""
+      // is dropped by every socket that has subscribed. Publishing the owner's
+      // instance is also what lets the store submit: it routes the answer to the
+      // instance the form came from.
+      instanceId: owner.id,
       requestId: closed.requestId,
       reason: closed.reason,
+      // Present only for a resolve. A tab that did not click then learns the
+      // human actually declined or cancelled, instead of every close reading as
+      // an acceptance.
+      ...(closed.action !== undefined && (closed.action === "accept"
+        || closed.action === "decline" || closed.action === "cancel")
+        ? { action: closed.action }
+        : {}),
     });
   });
 

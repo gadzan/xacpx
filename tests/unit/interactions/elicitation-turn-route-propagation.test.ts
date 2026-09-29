@@ -58,12 +58,14 @@ describe("exact-turn route: Direct Bot elicitation (M3) + chatType privacy (#360
       metadata,
     });
     expect(route).toBeDefined();
-    // The route the turn is addressable on is the trusted ingress key, not the
-    // `bot:` product key: the shared resolver prefers `permissionChatKey`, and
-    // `resolveElicitationTurnRoute` shares it deliberately so the two kinds
-    // cannot drift on which metadata they read. The isolation key is carried in
-    // `replyContextToken` for a renderer that needs the product identity.
-    expect(route!.chatKey).toBe("relay:acct-42");
+    // The route the turn is addressable on is the PRODUCT isolation key, not the
+    // account-wide ingress. That distinction is the whole point: `relay:<account>`
+    // is one address for every topic, so a route collapsed to it places the form
+    // on no topic in particular. The trusted ingress is still carried, as
+    // `replyContextToken`, for a renderer that needs a user-facing address.
+    expect(route!.chatKey).toBe("bot:conv-1:topic-1");
+    // The trusted ingress address the caller supplied, carried for addressing.
+    expect(route!.replyContextToken).toBe("relay:acct-42");
     // The trusted responder identity, without which the broker refuses anyway.
     expect(route!.senderId).toBe("relay:acct-42");
 
@@ -108,10 +110,10 @@ describe("exact-turn route: Direct Bot elicitation (M3) + chatType privacy (#360
   });
 
   test("the elicitation route is not permission permission-but-looser", () => {
-    // Both kinds resolve on the same turn to the same address. The difference is
-    // ONLY whether a `bot:` isolation key with no ingress address is acceptable,
-    // which is what makes the elicitation resolver genuinely additional rather
-    // than a permission route with a different name.
+    // The two kinds resolve on the same turn to DIFFERENT addresses, and that is
+    // the difference that matters: permission stays on the trusted ingress key
+    // it has always used, while elicitation keeps the product isolation key so
+    // the form lands on the right topic.
     const metadata = botMetadata();
     const chatKey = "bot:conv-1:topic-1";
     expect(resolvePermissionTurnRoute({ isolationChatKey: chatKey, origin: "human", metadata }))
@@ -197,10 +199,12 @@ describe("exact-turn route: Direct Bot elicitation (M3) + chatType privacy (#360
     expect(route).toBeDefined();
   });
 
-  test("the permission and elicitation resolvers read the same metadata", () => {
+  test("the permission and elicitation resolvers read the same identity metadata", () => {
     // The shared resolver is what keeps the two kinds from drifting on which
-    // metadata fields matter. Both must return the SAME identity fields for the
-    // same turn — only the `bot:`-isolation acceptance differs.
+    // identity fields matter. Both must agree on WHO is being asked — only the
+    // address they route to differs, and it differs deliberately: permission
+    // returns the trusted ingress key, elicitation returns the product isolation
+    // key so the form lands on the right topic.
     const metadata = botMetadata({ chatType: "direct" });
     const perm = resolvePermissionTurnRoute({
       isolationChatKey: "bot:conv-1:topic-1",
@@ -214,9 +218,13 @@ describe("exact-turn route: Direct Bot elicitation (M3) + chatType privacy (#360
     });
     expect(perm).toBeDefined();
     expect(elic).toBeDefined();
-    expect(elic!.chatKey).toBe(perm!.chatKey);
+    // Same trusted human, from the same metadata, through the same shared code.
     expect(elic!.senderId).toBe(perm!.senderId);
     expect(elic!.accountId).toBe(perm!.accountId);
     expect(elic!.isOwner).toBe(perm!.isOwner);
+    // Different addresses, on purpose. Permission's is account-wide; elicitation's
+    // is this exact turn.
+    expect(perm!.chatKey).toBe("relay:acct-42");
+    expect(elic!.chatKey).toBe("bot:conv-1:topic-1");
   });
 });

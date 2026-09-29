@@ -696,11 +696,17 @@ export class RelayChannel implements MessageChannelRuntime {
    * the turn is an ordinary channel turn with no product row, and fabricating one
    * would make the browser open the form on a conversation that does not own it.
    *
-   * Only the product keys and the turn's own `promptRequestId` are carried. The
-   * durable row ids (`botId`/`runId`/`memberTurnId`) are left absent because the
-   * connector has no way to know them, and an empty string would compare equal to
-   * any other empty string and satisfy a join it should not. Never a hidden
-   * `brt_*` alias — that is runtime plumbing, and the wire validator rejects it.
+   * Only the product keys are carried. The durable row ids
+   * (`botId`/`runId`/`memberTurnId`) are left absent because the connector has no
+   * way to know them, and an empty string would compare equal to any other empty
+   * string and satisfy a join it should not. Never a hidden `brt_*` alias — that
+   * is runtime plumbing, and the wire validator rejects it.
+   *
+   * `replyContextToken` is deliberately NOT mapped to `promptRequestId`. It is
+   * the trusted INGRESS chat key (`relay:<accountId>`) that carries the human's
+   * return address, which is a different concept from the prompt request id the
+   * web correlate uses. Coercing one into the other produced a correlation that
+   * looked populated but joined on nothing.
    */
   private conversationCorrelation(
     request: ChannelElicitationRequest,
@@ -710,7 +716,6 @@ export class RelayChannel implements MessageChannelRuntime {
     return {
       conversationId: parsed.conversationId,
       topicId: parsed.topicId,
-      ...(request.replyContextToken !== undefined ? { promptRequestId: request.replyContextToken } : {}),
     };
   }
 

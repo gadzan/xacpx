@@ -631,6 +631,15 @@ export type ControlEventDto =
       type: "interaction-opened";
       chatKey: string;
       sessionAlias: string;
+      /**
+       * The connector instance that opened this interaction.
+       *
+       * NOT optional and never "": the web gateway fences control-events on each
+       * socket's instance subscription and the dashboard subscribes to its real
+       * instances on connect, so a blank id is dropped by every subscribed
+       * socket. It is also the instance the store routes an answer back to.
+       */
+      instanceId: string;
       interaction: InteractionRequestDto;
     }
   /** An interaction ended without a browser-supplied decision (resolved,
@@ -640,8 +649,16 @@ export type ControlEventDto =
       type: "interaction-closed";
       chatKey: string;
       sessionAlias: string;
+      /** See `interaction-opened.instanceId` — the same connector that opened it. */
+      instanceId: string;
       requestId: string;
       reason: "resolved" | "withdrawn" | "expired";
+      /**
+       * The action a resolve actually carried, so a tab that did NOT click knows
+       * what happened. Without it every resolve reads as "accepted", which is
+       * why a Decline from one tab shows as Accepted in all the others.
+       */
+      action?: "accept" | "decline" | "cancel";
     };
 
 export interface TerminalAttachRequest {
@@ -767,6 +784,15 @@ export interface InteractionFieldDto {
   maxItems?: number;
   minLength?: number;
   maxLength?: number;
+  /**
+   * A named format the renderer can check locally. Text-only.
+   *
+   * Present because the transport is terminal: a value core rejects arrives
+   * after the interaction has already resolved, so the renderer has to be able
+   * to catch an unparseable `date`/`email` while the form is still open. A
+   * renderer that cannot check it simply ignores it and core still validates.
+   */
+  format?: "text" | "date" | "email";
   /** Integer-ness for `number` fields; ACP has no separate integer kind. */
   integer?: boolean;
   minimum?: number;

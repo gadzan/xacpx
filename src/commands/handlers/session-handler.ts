@@ -1070,21 +1070,36 @@ async function promptWithSession(
     // resolved there, or a Direct Bot turn could never receive any interaction
     // at all: no route means no interactionId, and the broker cancels.
     //
-    // This widens ONLY the elicitation path. The permission route above is
-    // unchanged, and the daemon's trust decision is unchanged: the caller's
-    // `resolvedOrigin` still has to be an explicit "human", and the broker still
-    // re-verifies the responder against the exact turn initiator.
-    const elicitationRoute = permissionRoute ? undefined : resolveElicitationTurnRoute({
+    // This is NOT gated on `permissionRoute` being absent. A real Direct Bot turn
+    // carries `permissionChatKey: relay:<account>`, so permission resolution
+    // SUCCEEDS on it (the shared resolver prefers that trusted ingress key over
+    // the `bot:` isolation key, which permission accepts because it is not a
+    // product key) — and gating here on "permission found nothing" meant this
+    // resolver never ran, the route collapsed to `relay:<account>`, and the
+    // correlation the relay channel needs to place the form on the right
+    // conversation was silently dropped.
+    //
+    // Running it unconditionally is safe and narrower than the old condition:
+    // `resolveElicitationTurnRoute` refuses every non-`bot:` isolation key, so an
+    // ordinary channel turn yields `undefined` here exactly as before.
+    //
+    // The two routes are NOT collapsed into one address. Permission keeps its
+    // trusted ingress route; elicitation keeps the product isolation key. The
+    // selection below is by turn kind, not "whichever matched first".
+    const elicitationRoute = resolveElicitationTurnRoute({
       isolationChatKey: chatKey,
       ...(resolvedOrigin !== undefined ? { origin: resolvedOrigin } : {}),
-      metadata,
-      ...(accountId !== undefined ? { accountId } : {}),
-      ...(replyContextToken !== undefined ? { ingressChatKey: replyContextToken } : {}),
       ...(metadata?.senderId !== undefined ? { senderId: metadata.senderId } : {}),
       ...(metadata?.senderName !== undefined ? { senderName: metadata.senderName } : {}),
       ...(metadata?.isOwner !== undefined ? { isOwner: metadata.isOwner } : {}),
+      ...(accountId !== undefined ? { accountId } : {}),
+      ...(replyContextToken !== undefined ? { ingressChatKey: replyContextToken } : {}),
     });
-    const route = permissionRoute ?? elicitationRoute;
+    // Permission wins on its own turns, because its route is the one the daemon
+    // trusts for a human permission decision. An elicitation route, when present,
+    // belongs to a Direct Conversation turn — which has no permission route —
+    // so the two never compete for the same turn.
+    const route = elicitationRoute ?? permissionRoute;
     const interactionId = route
       ? PermissionInteractionBroker.createInteractionId()
       : undefined;

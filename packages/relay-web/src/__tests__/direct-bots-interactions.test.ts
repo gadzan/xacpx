@@ -70,21 +70,32 @@ describe("useDirectBotsStore interactions", () => {
         type: "interaction-opened",
         chatKey: "bot:c1:t1",
         sessionAlias: "brt_hidden",
+        // On the EVENT, not only the envelope: the hub stamps the opening
+        // connector's instance on the control event, and the store reads that to
+        // route the answer back. The envelope's is the broadcast's own.
+        instanceId,
         interaction: request,
       },
     } as unknown as WebServerEvent;
   }
 
-  function closedEvent(requestId: string, reason: "resolved" | "withdrawn" | "expired"): WebServerEvent {
+  function closedEvent(
+    requestId: string,
+    reason: "resolved" | "withdrawn" | "expired",
+    instanceId = "inst_1",
+    action?: "accept" | "decline" | "cancel",
+  ): WebServerEvent {
     return {
       kind: "control-event",
-      instanceId: "inst_1",
+      instanceId,
       event: {
         type: "interaction-closed",
         chatKey: "bot:c1:t1",
-        sessionAlias: "brt_hidden",
+        instanceId,
         requestId,
         reason,
+        // The action a resolve carried, so a tab that did not click knows.
+        ...(action !== undefined ? { action } : {}),
       },
     } as unknown as WebServerEvent;
   }
@@ -211,12 +222,11 @@ describe("useDirectBotsStore interactions", () => {
       kind: "elicitation",
       action: "decline",
     });
-    // What the browser concludes is the close, not the click: a resolved
-    // interaction is closed by the decision that answered it, and the frame
-    // carries no action. Recording "declined" here would put a claim about what
-    // the human meant into a client-side guess.
-    store.applyEvent(closedEvent("req-1", "resolved"));
-    expect(store.pendingInteraction!.outcome).toBe("accepted");
+    // What the browser concludes is the close, but the hub's frame now carries
+    // the action the human actually chose — so a tab that did not click still
+    // reports "declined" rather than guessing "accepted".
+    store.applyEvent(closedEvent("req-1", "resolved", "inst_1", "decline"));
+    expect(store.pendingInteraction!.outcome).toBe("declined");
   });
 
   it("cancel is reported as its own outcome", async () => {
@@ -226,8 +236,8 @@ describe("useDirectBotsStore interactions", () => {
     await store.cancelInteraction();
     const payload = mockRpc.mock.calls[0]![2] as { action: string };
     expect(payload.action).toBe("cancel");
-    store.applyEvent(closedEvent("req-1", "resolved"));
-    expect(store.pendingInteraction!.outcome).toBe("accepted");
+    store.applyEvent(closedEvent("req-1", "resolved", "inst_1", "cancel"));
+    expect(store.pendingInteraction!.outcome).toBe("cancelled");
   });
 
   it("a withdrawn interaction is never reported as a user decline", async () => {
@@ -300,11 +310,40 @@ describe("useDirectBotsStore interactions", () => {
     expect(store.pendingInteraction!.outcome).toBeNull();
   });
 
-  it("a second opened form supersedes the first rather than stacking", () => {
+  it("a second opened form does not drop the first", () => {
+    // M1's cancellation is request-scoped, so the same turn can hold more than
+    // one pending interaction. Dropping the first here used to leave it with no
+    // UI while the hub and core still considered it open — an agent waiting on an
+    // answer the user has no way to give, until it timed out.
     const store = useDirectBotsStore();
     store.applyEvent(openedEvent(formRequest()));
     store.applyEvent(openedEvent(formRequest({ requestId: "req-2" })));
+    // The newest is what is shown, which is deterministic and matches the order
+    // the hub emitted.
     expect(store.pendingInteraction!.request.requestId).toBe("req-2");
+    // But the first is NOT gone: closing the visible one reveals it rather than
+    // leaving the slot empty.
+    store.applyEvent(closedEvent("req-2", "resolved"));
+    expect(store.pendingInteraction!.request.requestId).toBe("req-1");
+  });
+
+  it("an open form on another topic is stored but not displayed", () => {
+    // The two halves that used to be conflated. Dropping the event entirely was
+    // permanent — the form was unreachable for the rest of its window. Rendering
+    // it everywhere was worse: the user answered a question belonging to a
+    // different conversation. So it is kept, and scoped on visibility.
+    const store = useDirectBotsStore();
+    store.activeConversationId = "c1";
+    store.activeTopicId = "t1";
+    store.applyEvent(openedEvent(formRequest({ conversation: { conversationId: "c2", topicId: "t2" } })));
+    // Stored: the switch below finds it.
+    store.activeConversationId = "c2";
+    store.activeTopicId = "t2";
+    expect(store.pendingInteraction!.request.requestId).toBe("req-1");
+    // And not displayed while viewing the other topic's context.
+    store.activeConversationId = "c1";
+    store.activeTopicId = "t1";
+    expect(store.pendingInteraction).toBeNull();
   });
 
   it("a submit after the window closed is refused rather than sent", async () => {

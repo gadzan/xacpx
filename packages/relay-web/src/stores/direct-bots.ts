@@ -418,12 +418,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   const cancellingRunId = ref<string | null>(null);
 
   /**
-   * Open interaction awaiting this browser's answer.
+   * Open interactions awaiting this browser's answer, keyed by requestId.
    *
-   * One at a time by design: an elicitation belongs to one exact agent turn, and
-   * the hub opens only one per turn. If a second arrives the first is superseded
-   * rather than stacked — a stale form left on screen can be answered by mistake
-   * long after its turn moved on.
+   * KEYED, not single-slot, and not stackable-in-one-slot: M1's cancellation is
+   * request-scoped, so the same turn can legitimately hold more than one pending
+   * request at once, and a second `interaction-opened` must not silently drop the
+   * first — the hub would still be holding it, and the user would have no UI for
+   * a form the agent is still waiting on.
    *
    * `expiresAt` is the HUB's deadline (ms epoch), rendered as a client-side
    * countdown so the user sees the window closing rather than a form that
@@ -431,7 +432,45 @@ export const useDirectBotsStore = defineStore("directBots", () => {
    * anything other than an explicit edit would let a default be submitted
    * without the user reviewing it.
    */
-  const pendingInteraction = ref<PendingInteractionState | null>(null);
+  const pendingInteractions = ref<Map<string, PendingInteractionState>>(new Map());
+  // Interactions that have reached a terminal state but are still displayed, so
+  // the user sees WHY the form went away. Terminals live beside the open ones and
+  // are matched by requestId.
+  const terminalInteractions = ref<Map<string, PendingInteractionState>>(new Map());
+
+  /**
+   * The interaction the user should see right now: the open one for the topic they
+   * are actually viewing, if any.
+   *
+   * Scoped TO THE SELECTED TOPIC, and open-first. A form belonging to another
+   * topic is not the viewer's business and must not be rendered into their turn
+   * banner — answering it would silently answer a different conversation. When
+   * nothing is open for this topic, the terminal shown is also the one for THIS
+   * topic, so a closed form reads as the outcome of what the user just saw.
+   *
+   * With several open forms on one topic (request-scoped cancellation permits it),
+   * the newest wins, which is deterministic and matches the ordering the hub
+   * emitted.
+   */
+  const pendingInteraction = computed<PendingInteractionState | null>(() => {
+    const visibleTopic =
+      activeConversationId.value && activeTopicId.value
+        ? { conversationId: activeConversationId.value, topicId: activeTopicId.value }
+        : undefined;
+    const inScope = (state: PendingInteractionState): boolean => {
+      if (visibleTopic === undefined) return true;
+      const correlation = state.request.conversation;
+      // An interaction with no correlation belongs to an ordinary channel turn,
+      // which has no topic to scope it to.
+      return correlation === undefined
+        || (correlation.conversationId === visibleTopic.conversationId
+          && correlation.topicId === visibleTopic.topicId);
+    };
+    const open = [...pendingInteractions.value.values()].filter(inScope);
+    if (open.length > 0) return open[open.length - 1]!;
+    const terminal = [...terminalInteractions.value.values()].filter(inScope);
+    return terminal.length > 0 ? terminal[terminal.length - 1]! : null;
+  });
 
   // Accumulated trace parts retained per runId so completed assistant messages keep their rich cards
   const runParts = ref<Record<string, TurnPartDto[]>>({});
@@ -2173,11 +2212,47 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     if (!current) return;
     const known = current.request.elicitation?.fields.some((field) => field.key === key);
     if (!known) return;
-    pendingInteraction.value = {
-      ...current,
+    patchInteraction(current.request.requestId, {
       answers: { ...current.answers, [key]: value },
       errorCode: null,
-    };
+    });
+  }
+
+  /** Replace one pending entry. Missing keys are left alone, not created. */
+  function patchInteraction(
+    requestId: string,
+    patch: Partial<PendingInteractionState>,
+  ): void {
+    const current = pendingInteractions.value.get(requestId);
+    if (!current) return;
+    nextPending((map) => {
+      const next = map.get(requestId);
+      if (next) map.set(requestId, { ...next, ...patch });
+    });
+  }
+
+  /** Rebuild the open map from a mutation, so Vue sees a new reference. */
+  function nextPending(mutate: (map: Map<string, PendingInteractionState>) => void): void {
+    const next = new Map(pendingInteractions.value);
+    mutate(next);
+    pendingInteractions.value = next;
+  }
+
+  /** Move an interaction from the open set to the terminal set, still displayed. */
+  function retireInteraction(
+    requestId: string,
+    outcome: PendingInteractionState["outcome"],
+  ): void {
+    const existing = pendingInteractions.value.get(requestId);
+    if (!existing) return;
+    nextPending((map) => {
+      map.delete(requestId);
+    });
+    terminalInteractions.value = new Map(terminalInteractions.value).set(requestId, {
+      ...existing,
+      outcome,
+      submitting: false,
+    });
   }
 
   /** Dismiss a form without answering. Records the user's own dismissal. */
@@ -2222,14 +2297,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // closed, not "you left a field blank" — the incomplete-answer message would
     // send a user looking for a field they can no longer usefully fill.
     if (current.request.expiresAt <= Date.now()) {
-      pendingInteraction.value = { ...current, errorCode: "interactionGone" };
+      patchInteraction(current.request.requestId, { errorCode: "interactionGone" });
       return;
     }
     if (action === "accept" && !isInteractionAnswerable(current)) {
-      pendingInteraction.value = { ...current, errorCode: "submitFailed" };
+      patchInteraction(current.request.requestId, { errorCode: "submitFailed" });
       return;
     }
-    pendingInteraction.value = { ...current, submitting: true, errorCode: null };
+    patchInteraction(current.request.requestId, { submitting: true, errorCode: null });
     const requestId = current.request.requestId;
     const generation = currentSelectionGeneration;
     try {
@@ -2249,7 +2324,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // the connector by the same hub call, and every browser learns the form is
       // closed from `interaction-closed`. Leaving the form on "submitting"
       // until that arrives is what keeps a double-click from sending two answers.
-      pendingInteraction.value = { ...current, submitting: true, errorCode: null };
+      patchInteraction(requestId, { submitting: true, errorCode: null });
     } catch (error) {
       if (generation !== currentSelectionGeneration) return;
       // A gone interaction is a normal ending, not an error to retry forever.
@@ -2259,13 +2334,18 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         : gone
           ? "interactionGone"
           : "submitFailed";
-      pendingInteraction.value = { ...current, submitting: false, errorCode: code };
+      patchInteraction(requestId, { submitting: false, errorCode: code });
     }
   }
 
   /** Dismiss a form that already reached a terminal outcome. */
   function dismissResolvedInteraction(): void {
-    pendingInteraction.value = null;
+    const current = pendingInteraction.value;
+    if (!current) return;
+    const requestId = current.request.requestId;
+    const nextTerminals = new Map(terminalInteractions.value);
+    nextTerminals.delete(requestId);
+    terminalInteractions.value = nextTerminals;
   }
 
   async function cancelCurrentRun(): Promise<void> {
@@ -2485,20 +2565,24 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // one was disconnected is already closed, and keeping it here would let the
     // user submit an answer after its own deadline. So the local copy is checked
     // against the live turn before the form is kept.
-    if (pendingInteraction.value && generation === currentSelectionGeneration) {
-      const interaction = pendingInteraction.value;
+    // An open interaction is re-proven after a reconnect rather than assumed.
+    //
+    // The hub holds the real state: a form answered from another tab while this
+    // one was disconnected is already closed, and keeping it here would let the
+    // user submit an answer after its own deadline. So each local copy is checked
+    // against the live turn before the form is kept.
+    //
+    // Iterates ALL of them, not one slot: several can be open at once, and the
+    // ones that survive stay answerable.
+    for (const [requestId, interaction] of pendingInteractions.value) {
+      if (generation !== currentSelectionGeneration) break;
       const alreadyExpired = interaction.request.expiresAt <= Date.now();
       const runGone = !activeRun.value || !isActiveRunState(activeRun.value.state);
-      if (alreadyExpired || runGone) {
-        // The turn the form belonged to is gone or the window closed: a form with
-        // no live turn is unanswerable, and leaving it up invites a submit that
-        // cannot land.
-        pendingInteraction.value = {
-          ...interaction,
-          outcome: alreadyExpired ? "cancelled" : "withdrawn",
-          submitting: false,
-        };
-      }
+      if (!alreadyExpired && !runGone) continue;
+      // The turn the form belonged to is gone or the window closed: a form with
+      // no live turn is unanswerable, and leaving it up invites a submit that
+      // cannot land.
+      retireInteraction(requestId, alreadyExpired ? "cancelled" : "withdrawn");
     }
   }
 
@@ -2668,54 +2752,59 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // conversation that is no longer displayed and its answer is unreachable.
     if (e.type === "interaction-opened") {
       const interaction = e.interaction;
-      // Only form elicitation has a renderer. A permission interaction arriving
-      // here is a protocol surprise (the capability is deliberately unclaimed),
-      // so it is ignored rather than shown as an unrenderable form.
       if (interaction.kind !== "elicitation") return;
       if (!interaction.elicitation) return;
-      const correlation = interaction.conversation;
-      // Selection-scoped when the interaction carries product identity: a form
-      // for another topic must not surface over the one being viewed.
-      if (
-        correlation
-        && (
-          correlation.conversationId !== activeConversationId.value
-          || correlation.topicId !== activeTopicId.value
-        )
-      ) {
-        return;
-      }
       if (interaction.expiresAt <= Date.now()) {
         // Already closed while in flight: showing it would invite an answer
         // that cannot be accepted.
         return;
       }
-      pendingInteraction.value = {
-        instanceId: event.instanceId,
+      // Stored regardless of which topic is on screen. Dropping it here used to
+      // be permanent: the hub still holds the interaction, so the user could
+      // switch back to its topic and find nothing — and then watch the agent
+      // time out. Visibility is decided by `pendingInteraction`, not by arrival.
+      const next = new Map(pendingInteractions.value);
+      next.set(interaction.requestId, {
+        // The connector instance that opened it, which is also the instance the
+        // answer routes back to. Never "".
+        instanceId: e.instanceId,
         request: interaction,
         kind: interaction.kind,
         answers: {},
         outcome: null,
         submitting: false,
         errorCode: null,
-      };
+      });
+      pendingInteractions.value = next;
       return;
     }
     if (e.type === "interaction-closed") {
       // Close only the interaction this event names. A close for a different
       // requestId belongs to someone else's turn (or a stale frame) and must not
-      // dismiss the form the user is currently answering.
-      if (pendingInteraction.value?.request.requestId !== e.requestId) return;
-      const reasonToOutcome = e.reason === "resolved"
-        ? "accepted"
+      // dismiss the form the user is currently answering. Keying by requestId is
+      // what makes a second form survivable: the first one's close no longer
+      // takes the second one down with it.
+      const open = pendingInteractions.value.get(e.requestId);
+      if (!open) return;
+      // The action the human actually chose, carried by the hub. A tab that did
+      // not click must not show "accepted" because it did not see the click.
+      const outcome = e.reason === "resolved"
+        ? (e.action === "decline"
+          ? "declined"
+          : e.action === "cancel"
+            ? "cancelled"
+            : "accepted")
         : e.reason === "withdrawn"
           ? "withdrawn"
           : "cancelled";
-      pendingInteraction.value = {
-        ...pendingInteraction.value,
-        outcome: reasonToOutcome,
+      const nextOpen = new Map(pendingInteractions.value);
+      nextOpen.delete(e.requestId);
+      pendingInteractions.value = nextOpen;
+      terminalInteractions.value = new Map(terminalInteractions.value).set(e.requestId, {
+        ...open,
+        outcome,
         submitting: false,
-      };
+      });
       return;
     }
 

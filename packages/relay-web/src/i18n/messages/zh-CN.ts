@@ -686,6 +686,7 @@ export default {
       cancelled: "已取消。",
       withdrawn: "在收到答案前已关闭。",
       requiredMissing: "还需填写：{fields}",
+      fieldInvalid: "{title}：{problem}",
       errorGone: "提问窗口已关闭。",
       errorOutdated: "该功能需要更新的连接器——请重建并重连该实例的中继通道。",
       errorFailed: "提交失败，请重试。",
