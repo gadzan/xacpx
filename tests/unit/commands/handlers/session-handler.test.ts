@@ -675,7 +675,7 @@ test("handlePromptWithSession binds BOTH brokers on a Direct Bot turn and carrie
   // Both are asserted against the turn context that actually reaches the brokers,
   // so neither half can be dropped without a red test.
   const { setGlobalElicitationBroker, resetGlobalElicitationBrokerForTests } = await import("../../../../src/interactions/elicitation-interaction-broker.js");
-  const { resetGlobalPermissionBrokerForTests } = await import("../../../../src/permissions/permission-interaction-broker.js");
+  const { resetGlobalPermissionBrokerForTests, setGlobalPermissionBroker } = await import("../../../../src/permissions/permission-interaction-broker.js");
   resetGlobalPermissionBrokerForTests();
   resetGlobalElicitationBrokerForTests();
 
@@ -686,9 +686,12 @@ test("handlePromptWithSession binds BOTH brokers on a Direct Bot turn and carrie
       return () => {};
     },
   };
-  // Install the elicitation broker the way the daemon does, so the seam's
-  // `getGlobalElicitationBroker()` call reaches a real object rather than null.
+  // Install BOTH brokers the way the daemon does, so the seam's
+  // `getGlobalElicitationBroker()` / `getGlobalPermissionBroker()` calls reach
+  // real objects rather than null. Installing only one is what let the two
+  // routes be collapsed invisibly: there was nothing to compare the addresses.
   setGlobalElicitationBroker(fakeBroker as never);
+  setGlobalPermissionBroker(fakeBroker as never);
 
   const session = {
     alias: "review",
@@ -738,7 +741,28 @@ test("handlePromptWithSession binds BOTH brokers on a Direct Bot turn and carrie
   // responder against the exact turn initiator.
   expect(turnContext.senderId).toBe("relay:acct-42");
 
+  // The two brokers receive THEIR OWN addresses, not one collapsed route.
+  //
+  // This turn has both a `permissionChatKey` ("relay:acct-42") and a Direct Bot
+  // product key ("bot:conv-1:topic-1"), so BOTH resolvers return a route. Binding
+  // both brokers to whichever resolved first meant the permission broker was
+  // registered on the elicitation route, i.e. a human permission request would be
+  // delivered on the product isolation key rather than on the trusted ingress
+  // address the daemon actually verified.
+  //
+  // Note the count: both brokers are installed here, so two binds are expected —
+  // and they must NOT carry the same chatKey.
+  expect(bound.length).toBe(2);
+  const routeAddresses = bound.map((ctx) => ctx.chatKey);
+  expect(new Set(routeAddresses).size).toBe(routeAddresses.length);
+  expect(routeAddresses).toContain("relay:acct-42");
+  expect(routeAddresses).toContain("bot:conv-1:topic-1");
+  // One identity minted for the turn, shared: answering either kind resolves the
+  // SAME turn, which is what keeps the two kinds from double-minting.
+  expect(new Set(bound.map((ctx) => ctx.interactionId)).size).toBe(1);
+
   resetGlobalElicitationBrokerForTests();
+  resetGlobalPermissionBrokerForTests();
 });
 
 test("handlePromptWithSession refuses a malformed bot isolation key", async () => {

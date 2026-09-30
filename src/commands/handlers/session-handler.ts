@@ -25,6 +25,7 @@ import { queueOverflowTipText } from "./session-recovery-handler";
 import { PermissionInteractionBroker, getGlobalPermissionBroker } from "../../permissions/permission-interaction-broker.js";
 import { resolvePermissionTurnRoute } from "../../permissions/permission-turn-route.js";
 import { resolveElicitationTurnRoute } from "../../interactions/elicitation-turn-route.js";
+import type { TurnInteractionContext } from "../../interactions/turn-interaction-registry";
 import { getGlobalElicitationBroker } from "../../interactions/elicitation-interaction-broker.js";
 import { isHiddenProductSessionOwner } from "../../state/types";
 
@@ -1105,35 +1106,67 @@ async function promptWithSession(
       : undefined;
     let disposeInteraction: (() => void) | undefined;
     if (interactionId && route) {
-      // One exact-turn binding serves BOTH brokers: they share the route
-      // registry (turn identity/abort) but never share terminal semantics.
-      const turnContext = {
+      // Each broker gets the route ITS OWN resolver produced, never a collapsed
+      // pick.
+      //
+      // The previous code bound both brokers to `route` =
+      // `elicitationRoute ?? permissionRoute`, and its comment justified sharing
+      // with "a Direct Bot turn has NO permission route by policy". That
+      // invariant is false. `resolvePermissionTurnRoute` resolves
+      // `metadata.permissionChatKey ?? isolationChatKey`, so a Direct Bot turn
+      // carrying a `permissionChatKey` DOES produce a permission route — the
+      // account-wide ingress address — while `resolveElicitationTurnRoute`
+      // deliberately strips `permissionChatKey` and keeps the product isolation
+      // key `bot:<conversation>:<topic>`.
+      //
+      // Consequence, which is what makes this a P2 and not a nit: the
+      // elicitation route is not a superset of the permission route, it is a
+      // DIFFERENT address for a different purpose. Collapsing the two meant the
+      // permission broker was registered on the elicitation route, i.e. a human
+      // permission request would be answered on `bot:<...>` rather than on the
+      // trusted ingress key the daemon actually verified — a permission decision
+      // delivered to a route nobody authenticated.
+      //
+      // Both routes are still bound (so both kinds work), but each with its own
+      // address, so neither can be answered on the other's route.
+      // Shared, per-turn fields from the route that owns this turn: the
+      // elicitation route when one exists (a Direct Bot turn), else the
+      // permission route. The only field that DIFFERS between the two brokers is
+      // `chatKey`, which is the whole point of keeping them separate.
+      const shared = {
         interactionId,
-        chatKey: route.chatKey,
         origin: "human" as const,
         ...(route.accountId !== undefined ? { accountId: route.accountId } : {}),
         ...(replyContextToken !== undefined ? { replyContextToken } : {}),
         ...(route.senderId !== undefined ? { senderId: route.senderId } : {}),
         ...(route.senderName !== undefined ? { senderName: route.senderName } : {}),
         ...(route.isOwner !== undefined ? { isOwner: route.isOwner } : {}),
-        // The channel's OWN report of this turn's route privacy, taken straight
-        // from `ChatRequestMetadata`. Renderers need it to decide whether a form
-        // may be shown at all — a form puts the agent's question and the user's
-        // answers into the chat, and a group destination shows both to everyone.
-        //
-        // Absent stays absent on purpose: a channel that does not report it has
-        // not established a private destination, and treating that as "direct"
-        // would be exactly the fail-open this contract forbids.
-        //
-        // Reads off `route`, not `permissionRoute`: `route` is
-        // `permissionRoute ?? elicitationRoute`, and a Direct Bot turn has NO
-        // permission route by policy — the elicitation route is the only one.
-        ...(metadata?.chatType !== undefined ? { chatType: metadata.chatType } : {}),
+      };
+      // The channel's OWN report of this turn's route privacy, from
+      // `ChatRequestMetadata`. Renderers need it to decide whether a form may be
+      // shown at all: a form puts the agent's question and the user's answers
+      // into the chat, and a group destination shows both to everyone.
+      //
+      // Absent stays absent on purpose — a channel that does not report it has
+      // not established a private destination, and reading that as "direct" is
+      // the fail-open the contract forbids. Attached to both contexts because it
+      // describes the ingress, not either address.
+      const chatType =
+        metadata?.chatType !== undefined ? { chatType: metadata.chatType } : {};
+      const permissionTurnContext: TurnInteractionContext = {
+        ...shared,
+        chatKey: permissionRoute?.chatKey ?? route.chatKey,
+        ...chatType,
+      };
+      const elicitationTurnContext: TurnInteractionContext = {
+        ...shared,
+        chatKey: elicitationRoute?.chatKey ?? route.chatKey,
+        ...chatType,
       };
       let disposePermission: (() => void) | undefined;
       let disposeElicitation: (() => void) | undefined;
       try {
-        disposePermission = getGlobalPermissionBroker()?.bindTurn(turnContext, abortSignal);
+        disposePermission = getGlobalPermissionBroker()?.bindTurn(permissionTurnContext, abortSignal);
       } catch {
         disposePermission = undefined;
       }
@@ -1142,7 +1175,7 @@ async function promptWithSession(
         // registry in tests. A duplicate-id bind (shared registry in
         // production) throws and is simply skipped — the route already
         // exists for both.
-        disposeElicitation = getGlobalElicitationBroker()?.bindTurn(turnContext, abortSignal);
+        disposeElicitation = getGlobalElicitationBroker()?.bindTurn(elicitationTurnContext, abortSignal);
       } catch {
         disposeElicitation = undefined;
       }

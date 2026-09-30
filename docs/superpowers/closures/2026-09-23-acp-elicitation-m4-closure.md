@@ -413,3 +413,26 @@ provably direct.
   `single-select`, and `multi-select` defaults are not surfaced, so "defaults are
   displayed" is true for two of five kinds — recorded here rather than left
   implied by the earlier wording.
+
+### P2 - both brokers bound one collapsed route when a turn had two (FIXED)
+
+The comment in session-handler justified binding both brokers to
+`elicitationRoute ?? permissionRoute` with "a Direct Bot turn has NO permission
+route by policy". That invariant is false. `resolvePermissionTurnRoute` resolves
+`metadata.permissionChatKey ?? isolationChatKey`, so a Direct Bot turn carrying a
+`permissionChatKey` DOES produce a permission route — the account-wide ingress
+address — while `resolveElicitationTurnRoute` deliberately strips
+`permissionChatKey` and keeps the product isolation key `bot:<conversation>:<topic>`.
+
+The two are not a subset relation, they are different addresses for different
+purposes. Collapsing them meant the permission broker was registered on the
+elicitation route, i.e. a human permission request would be answered on
+`bot:<...>` rather than on the trusted ingress key the daemon verified. Fail-closed
+today only because the relay permission renderer is not open yet, which is
+exactly why it had to be split BEFORE that renderer ships.
+
+Each broker now receives its own route, sharing one minted `interactionId`, the
+per-turn identity fields, and the channel's `chatType` report. The test installs
+BOTH brokers and asserts the two binds carry different chatKeys, one shared
+`interactionId`, and both addresses present. Reverting the permission route back
+to the collapsed one turns it red.
