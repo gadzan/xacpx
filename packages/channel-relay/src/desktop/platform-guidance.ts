@@ -12,12 +12,16 @@ export function desktopSetupGuidance(
 ): string {
   if (code === "desktop-rfb-unavailable") {
     if (platform === "win32") {
-      return "Start TightVNC in the logged-in user session with VNC authentication on 127.0.0.1:5900 (service sessions show the wrong desktop).";
+      // Corrected: the guidance used to say "on 127.0.0.1:5900", but docs/desktop-rfb-setup.md
+      // is explicit that loopback-only is a ONE-WAY constraint on the connector's dial, not on
+      // the TightVNC bind. The accepted Windows deployment is 0.0.0.0 + LoopbackOnly +
+      // firewall, so the old text sent operators chasing a non-existent requirement.
+      return "Start TightVNC in the logged-in user session with VNC authentication, and make it accept loopback connections on port 5900 (service sessions show the wrong desktop). Restrict access with TightVNC LoopbackOnly plus the Windows Firewall; binding to 127.0.0.1 is not required.";
     }
     if (platform === "darwin") {
-      return "Enable Screen Sharing with a VNC-compatible password, or start a standard VncAuth RFB server on 127.0.0.1:5900.";
+      return "Enable Screen Sharing with a VNC-compatible password, or start a standard VncAuth RFB server reachable on 127.0.0.1:5900.";
     }
-    return "Start TigerVNC/x11vnc with VNC authentication on 127.0.0.1:5900. WayVNC needs legacy VncAuth mode (relax_encryption + allow_broken_crypto); default secure WayVNC is rejected.";
+    return "Start TigerVNC/x11vnc with VNC authentication so it is reachable on 127.0.0.1:5900. WayVNC needs legacy VncAuth mode (relax_encryption + allow_broken_crypto); default secure WayVNC is rejected.";
   }
   if (code === "desktop-not-rfb") {
     return "The desktop port answered but is not an RFB/VNC server; point options.desktop.port at the loopback VNC server.";

@@ -218,12 +218,103 @@ test("desktop hard-gate: probe verdict plus hub binary pipe on an independent co
     trackSocket(sockets, controlWs);
     controlWs.send(encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: [] })));
 
-    const serverBytes = Uint8Array.from([82, 70, 66, 32, 48, 48, 51, 46, 48, 48, 56, 10, 0, 0, 0, 2]);
-    const browserGot = nextBinary(browserWs);
-    connectorWs.send(Buffer.from(serverBytes));
-    expect(await browserGot).toEqual(Buffer.from(serverBytes));
+    // Hard gate (plan Task 5 / spec section 14): a REAL framebuffer-sized flood
+    // must not degrade the control plane. The old version of this test pushed a
+    // single 16-byte frame each way and declared victory; that stays green even
+    // if someone routes desktop bytes back through the control connection or
+    // handling becomes synchronous. So: push several MiB of standalone frames
+    // (a realistic 4K framebuffer is ~8 MiB raw / a few hundred KB as Tight
+    // rectangles) AND assert a control-plane round trip completes inside a
+    // generous-but-real deadline while the flood is in flight.
+    //
+    // The flood uses a distinct width per frame so the assertion cannot pass on
+    // a single repeated buffer, and each frame lands as one complete binary
+    // message (hub frames, it does not re-chunk).
+    const frame = (width: number): Buffer => Buffer.alloc(width, 0x5a);
+    const floodFrameCount = 512;
+    const floodFrameBytes = 8 * 1024; // 4 MiB total
+    const floodCalls = Promise.withResolvers<void>();
+    let floodSent = 0;
+    let floodError: unknown;
+    // Fire-and-forget flood: intentionally NOT awaited, because its whole point
+    // is that it is saturating the pipe while we measure the control request.
+    void (async () => {
+      try {
+        for (let i = 0; i < floodFrameCount && !floodError; i += 1) {
+          connectorWs.send(frame(floodFrameBytes + i));
+          floodSent += 1;
+          // A drain tick: keeps writes bounded so the hub sees backpressure and
+          // has to apply its bufferedAmount cap, which is exactly the behaviour
+          // under test. Without the tick we would buffer 4 MiB in-process.
+          if (connectorWs.bufferedAmount > 0) {
+            await new Promise((r) => setTimeout(r, 0));
+          }
+        }
+        floodCalls.resolve();
+      } catch (err) {
+        floodError = err;
+        floodCalls.resolve();
+      }
+    })();
 
+    // Control plane used to be checked with one 16-byte frame each way, which
+    // stays green even if framebuffer traffic is later re-routed onto the control
+    // connection or the handler becomes synchronous. So measure a control round
+    // trip DURING a real multi-MiB flood, then drain the flood, then resume the
+    // banner handshake (its first frame must be the banner, not flood residue).
+    const controlRoundTripMs = 20_000;
+    const controlAt = Date.now();
+    controlWs.send(encodeEnvelope(
+      webClientEnvelope({ kind: "subscribe", instanceIds: ["i-flood-probe"] }),
+    ));
+    const controlOk = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), controlRoundTripMs);
+      const onMessage = (raw: Buffer) => {
+        try {
+          const ev = JSON.parse(raw.toString());
+          if (ev && typeof ev === "object") {
+            clearTimeout(timer);
+            controlWs.off("message", onMessage);
+            resolve(true);
+          }
+        } catch { /* non-JSON frame: not a control ack */ }
+      };
+      controlWs.on("message", onMessage);
+      controlWs.once("close", () => { clearTimeout(timer); resolve(false); });
+    });
+    const controlElapsedMs = Date.now() - controlAt;
+    expect(controlWs.readyState).toBe(WebSocket.OPEN);
+    expect(controlOk).toBe(true);
+    // Generous cap: not a latency benchmark, but a "no HOL blocking" gate. A
+    // shared connection or synchronous handler blows past this by orders of
+    // magnitude; an unblocked independent one finishes in a few ms.
+    expect(controlElapsedMs).toBeLessThan(controlRoundTripMs);
+
+    // Drain the flood, then verify its volume. The flood was deliberately not
+    // awaited above: its job was to saturate the pipe while the deadline ran.
+    await floodCalls.promise;
+    expect(floodError).toBeUndefined();
+    expect(floodSent).toBe(floodFrameCount);
+
+    const serverBytes = Uint8Array.from([82, 70, 66, 32, 48, 48, 51, 46, 48, 48, 56, 10, 0, 0, 0, 2]);
     const clientBytes = Uint8Array.from([5, 1, 0, 3]);
+    // The flood keeps draining on the hub side after the sender finished, so the
+    // browser's next frames may still be flood residue. Skip past those and
+    // require the banner to be the first non-flood frame — that both proves the
+    // replay works and keeps every flood frame's distinct width observable.
+    const isFloodFrame = (got: Buffer): boolean =>
+      got.length >= floodFrameBytes && got.length < floodFrameBytes + floodFrameCount;
+    const nextDesktopFrame = async (): Promise<Buffer> => {
+      for (let guard = 0; guard < 256; guard += 1) {
+        const got = await nextBinary(browserWs);
+        if (!isFloodFrame(got)) return got; // first non-flood frame = the banner
+      }
+      throw new Error("flood residue never drained after 256 frames");
+    };
+    const bannerFrame = nextDesktopFrame();
+    connectorWs.send(Buffer.from(serverBytes));
+    expect(await bannerFrame).toEqual(Buffer.from(serverBytes));
+
     const connectorGot = nextBinary(connectorWs);
     browserWs.send(Buffer.from(clientBytes));
     expect(await connectorGot).toEqual(Buffer.from(clientBytes));

@@ -133,6 +133,19 @@ function evaluateSecurityTypes(
   if (bytes.length < offset + 4) return null;
   const securityType = ((bytes[offset] ?? 0) << 24) | ((bytes[offset + 1] ?? 0) << 16)
     | ((bytes[offset + 2] ?? 0) << 8) | (bytes[offset + 3] ?? 0);
+  // Type 0 is a FAILURE, not an "unknown type": RFC 6143 says the server sent a
+  // u32 reason length followed by the reason string. Treating it as an invalid
+  // type discarded the server's own explanation, which is the single most useful
+  // thing to log when a 3.3 server refuses the connection.
+  if (securityType === RFB_SECURITY_INVALID) {
+    if (bytes.length < offset + 8) return null;
+    const reasonLen = ((bytes[offset + 4] ?? 0) << 24) | ((bytes[offset + 5] ?? 0) << 16)
+      | ((bytes[offset + 6] ?? 0) << 8) | (bytes[offset + 7] ?? 0);
+    if (reasonLen > 1024) return fail("desktop-not-rfb", "RFB security failure reason too long");
+    if (bytes.length < offset + 8 + reasonLen) return null;
+    const reason = asciiToString(bytes, offset + 8, offset + 8 + reasonLen).slice(0, 128);
+    return fail("desktop-rfb-unavailable", reason || "RFB server refused the connection");
+  }
   return classifySecurityTypes([securityType], banner.version);
 }
 

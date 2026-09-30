@@ -120,6 +120,33 @@ test("a long server-refusal reason survives the live dial", async () => {
   }
 });
 
+test("an RFB 3.3 refusal reason is surfaced, not reported as an invalid type", async () => {
+  // RFC 6143: for RFB 3.3 a security-type value of 0 means the connection failed
+  // and the server then sends u32 reason-length + reason. Reporting type 0 as an
+  // \"invalid security type\" threw away the only diagnostic text a 3.3 server gives.
+  // 3.7/3.8 already parsed its zero-count reason; this covers the 3.3 leg.
+  const banner = Buffer.from("RFB 003.003\n", "ascii");
+  const reason = "Too many connections";
+  const server = net.createServer((socket) => {
+    socket.on("error", () => {});
+    socket.write(banner);
+    socket.on("data", () => {
+      const block = Buffer.alloc(8);
+      block.writeUInt32BE(0, 0); // security type 0 = failure
+      block.writeUInt32BE(Buffer.byteLength(reason, "ascii"), 4);
+      socket.write(Buffer.concat([block, Buffer.from(reason, "ascii")]));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const verdict = await probeLoopbackRfb({ port, connectTimeoutMs: 1000 });
+    expect(verdict).toMatchObject({ ok: false, code: "desktop-rfb-unavailable", detail: reason });
+  } finally {
+    server.close();
+  }
+});
+
 test("a live non-RFB service reports desktop-not-rfb, not rfb-unavailable", async () => {
   // The evaluator is pure and therefore already correct for a non-RFB greeting,
   // which is why the direct unit test above passes while production did not:
@@ -218,6 +245,14 @@ test("dial failures map to desktop-rfb-unavailable", async () => {
 
 test("platform guidance names the right server per OS", () => {
   expect(desktopSetupGuidance("win32", "desktop-rfb-unavailable")).toContain("TightVNC");
+  // The runtime guidance reaches the user inside a real failed-open message, so
+  // it must not re-assert a bind-loopback requirement the docs never made: the
+  // constraint is one-way (the connector dials loopback), and the accepted
+  // Windows deployment is 0.0.0.0 + LoopbackOnly + firewall.
+  const win = desktopSetupGuidance("win32", "desktop-rfb-unavailable");
+  expect(win).not.toMatch(/on 127\.0\.0\.1:5900/);
+  expect(win.toLowerCase()).toContain("loopback");
+  expect(win).toContain("LoopbackOnly");
   expect(desktopSetupGuidance("linux", "desktop-rfb-unavailable")).toContain("TigerVNC");
   expect(desktopSetupGuidance("linux", "desktop-rfb-unavailable")).toContain("relax_encryption");
   expect(desktopSetupGuidance("darwin", "desktop-auth-unsupported")).toContain("Phase B");

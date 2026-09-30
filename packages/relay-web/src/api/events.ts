@@ -114,11 +114,50 @@ const pending = new Map<string, PendingEntry>();
 const desktopPending = new Map<string, Extract<PendingEntry, { expect: "desktop-opened" }>>();
 
 let requestSeq = 0;
-let reconnectHandler: (() => void) | null = null;
+/**
+ * Callbacks invoked after the /ws socket re-opens following a drop.
+ *
+ * A SET, not a slot: terminal and desktop both need to react (terminal replays
+ * its attachments, desktop re-opens its streams), and the second registrar must
+ * not silently displace the first. Fn-identity is the unsubscribe key.
+ */
+const reconnectHandlers = new Set<() => void>();
 
-/** Register a callback invoked after the /ws socket re-opens following a drop. */
+/**
+ * Subscribe to /ws re-open. Returns an unsubscribe function; the same function
+ * passed twice is only registered once.
+ */
+export function onEventsReconnect(handler: () => void): () => void {
+  reconnectHandlers.add(handler);
+  return () => { reconnectHandlers.delete(handler); };
+}
+
+/**
+ * Register a callback invoked after the /ws socket re-opens following a drop.
+ * Retained for callers that pass `null` to clear; delegates to the set.
+ */
 export function setEventsReconnectHandler(handler: (() => void) | null): void {
-  reconnectHandler = handler;
+  if (handler === null) {
+    reconnectHandlers.clear();
+    return;
+  }
+  reconnectHandlers.add(handler);
+}
+
+/** A reconnect happened; every subscriber gets a turn, second ones still run. */
+function fireEventsReconnect(): void {
+  for (const handler of [...reconnectHandlers]) {
+    try { handler(); } catch { /* one bad subscriber must not block the others */ }
+  }
+}
+
+/**
+ * Test seam: fire the reconnect notification without standing up a socket.
+ * Deliberately routes through `fireEventsReconnect` rather than calling a
+ * store method, so a regression in the subscription wiring fails the test.
+ */
+export function _fireEventsReconnectForTests(): void {
+  fireEventsReconnect();
 }
 
 /** Stable-enough requestId for terminal RPCs (unique per page lifetime). */
@@ -365,7 +404,7 @@ export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus
       const reconnected = wasReconnect;
       retry = 0;
       onStatus?.(true);
-      if (reconnected) reconnectHandler?.();
+      if (reconnected) fireEventsReconnect();
     };
     socket.onclose = () => {
       onStatus?.(false);
@@ -381,7 +420,7 @@ export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus
   return () => {
     closed = true;
     if (timer) { clearTimeout(timer); timer = null; }
-    reconnectHandler = null;
+    reconnectHandlers.clear();
     rejectAllPending("events-offline", "events socket disposed");
     socket?.close();
   };
@@ -392,6 +431,6 @@ export function _resetTerminalRequestStateForTests(): void {
   rejectAllPending("instance-offline", "test reset");
   desktopPending.clear();
   requestSeq = 0;
-  reconnectHandler = null;
+  reconnectHandlers.clear();
   webEventSubscribers.clear();
 }

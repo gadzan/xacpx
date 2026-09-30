@@ -45,6 +45,11 @@ async function lastConnectInput(): Promise<{ target?: HTMLElement; fit?: boolean
 describe("desktop store", () => {
   beforeEach(async () => {
     setActivePinia(createPinia());
+    // The reconnect subscription set lives at module scope in events.ts and
+    // outlives an individual store, so a fresh store per test would otherwise
+    // accumulate the handlers of every discarded store and re-open N times.
+    const { _resetTerminalRequestStateForTests } = await import("../api/events");
+    _resetTerminalRequestStateForTests();
     // clearAllMocks() also wipes implementations, so re-seed the default
     // requestDesktop AFTER clearing — otherwise the next open() awaits
     // `undefined` and times out.
@@ -177,6 +182,53 @@ describe("desktop store", () => {
     expect(store.sessions.has("i1")).toBe(false);
   });
 
+  it("reopening after a control-socket drop re-opens with a fresh request", async () => {
+    // The hub binds desktop ownership to the control socket's viewerId, so a
+    // /ws drop tears the binary stream down server-side. Design section 16 and
+    // plan Task 8 both require the browser to re-send desktop-open, never to
+    // reuse the revoked ticket/streamId; previously only a manual Reconnect did
+    // anything, so the panel stayed dead after a network blip.
+    const { requestDesktop, sendWebClientMessage } = await import("../api/events");
+    const opens: Array<Record<string, unknown>> = [];
+    (requestDesktop as unknown as { mockImplementation: (fn: (m: unknown) => Promise<unknown>) => void })
+      .mockImplementation(async (msg: unknown) => {
+        opens.push(msg as Record<string, unknown>);
+        return {
+          requestId: "r", instanceId: "i1",
+          streamId: `s-${opens.length}`,
+          wsPath: "/desktop/observe?ticket=t", expiresAt: 1, security: "vnc-auth",
+        };
+      });
+
+    const store = useDesktopStore();
+    store.open("i1", {});
+    await vi.waitFor(() => expect(store.viewFor("i1").status).toBe("connecting"));
+    expect(opens).toHaveLength(1);
+    const first = opens[0] as { requestId: string };
+    expect(typeof first.requestId).toBe("string");
+
+    // Fire the reconnect notification through the real events.ts pipeline, so
+    // the desktop store's own subscription is what re-opens. Calling the store
+    // method directly would bypass the wiring this change is about.
+    const { _fireEventsReconnectForTests } = await import("../api/events");
+    _fireEventsReconnectForTests();
+    await vi.waitFor(() => expect(opens).toHaveLength(2));
+
+    // A SECOND open went out, and it is fresh: a new requestId, and a new
+    // streamId (the hub had revoked the old one along with its ticket).
+    const second = opens[1] as { requestId: string };
+    expect(second.requestId).not.toBe(first.requestId);
+    // The reopened stream is a genuinely new one: the hub revoked the old id
+    // with its ticket, so a reused id would be a protocol violation.
+    expect(store.viewFor("i1").streamId).toBe("s-2");
+    expect(store.viewFor("i1").streamId).not.toBe(first.streamId);
+    // The stale session was torn down first: the old stream is closed, not
+    // silently left to be revoked by the hub much later.
+    const closeCalls = (sendWebClientMessage as unknown as { mock: { calls: Array<[Record<string, unknown>]> } }).mock.calls
+      .map((c) => c[0])
+      .filter((c) => c.kind === "desktop-close");
+    expect(closeCalls.length).toBeGreaterThan(0);
+  });
   it("a local RPC timeout releases the reservation so a later reconnect is not busy", async () => {
     // The hub prepared the stream and answered, but the reply had not reached
     // the browser when its own timer fired. Without a cancel the reservation

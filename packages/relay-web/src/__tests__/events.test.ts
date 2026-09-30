@@ -6,6 +6,7 @@ import {
   sendSubscribe,
   sendWebClientMessage,
   setEventsReconnectHandler,
+  onEventsReconnect,
   settleTerminalRequest,
   TerminalRequestError,
   _resetTerminalRequestStateForTests,
@@ -211,6 +212,26 @@ describe("connectEvents", () => {
     await vi.runOnlyPendingTimersAsync();
     FakeWS.instances[1]?.onopen?.();
     expect(onReconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconnect supports several subscribers, not just the first registrar", async () => {
+    // Terminal and desktop both re-open on /ws recovery. A single-slot handler
+    // meant whichever store registered second silently displaced the first, so
+    // the desktop panel stayed dead until a manual Reconnect.
+    _resetTerminalRequestStateForTests();
+    const first = vi.fn();
+    const second = vi.fn();
+    setEventsReconnectHandler(first);
+    onEventsReconnect(second);
+
+    connectEvents(() => {});
+    FakeWS.instances[0].onopen?.();
+    FakeWS.instances[0].onclose?.();
+    await vi.runOnlyPendingTimersAsync();
+    FakeWS.instances[1]?.onopen?.();
+
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
   });
 
   it("settleTerminalRequest is idempotent for unknown requestIds", () => {

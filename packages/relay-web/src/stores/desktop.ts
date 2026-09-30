@@ -14,6 +14,7 @@ import {
   nextDesktopRequestId,
   requestDesktop,
   sendWebClientMessage,
+  onEventsReconnect,
 } from "../api/events";
 import { connectDesktopRfb, type DesktopRfbConnection, type DesktopRfbHooks } from "../lib/desktop-client";
 import { supportsDesktop } from "./instances";
@@ -147,6 +148,7 @@ export const useDesktopStore = defineStore("desktop", () => {
   ): Promise<void> {
     const existing = connections.get(instanceId);
     if (existing) return;
+    ensureReconnectHook();
     // A superseding open must RELEASE the previous reservation, not merely stop
     // caring about it: the hub still holds the single-viewer slot until its
     // request is cancelled, and without the cancel the successor opens straight
@@ -341,7 +343,49 @@ export const useDesktopStore = defineStore("desktop", () => {
     }
   }
 
-  return { sessions, viewFor, canOpen, open, sendCredentials, setFit, close, applyEvent };
+  /** Guarded so repeated opens do not stack duplicate reopen subscriptions. */
+  let reconnectUnsub: (() => void) | null = null;
+
+  /**
+   * Subscribe this store's reopen to /ws re-open. Idempotent per STORE: the
+   * subscription set in events.ts is module-scoped (one per page, shared by
+   * every store), so a per-store guard alone would let each new store instance
+   * add another closure and multiply re-opens after a single reconnect. The
+   * unsubscribe is therefore captured on the store and re-registered only once.
+   */
+  function ensureReconnectHook(): void {
+    if (reconnectUnsub) return;
+    reconnectUnsub = onEventsReconnect(() => { reopenAfterWsReconnect(); });
+  }
+
+  /**
+   * Re-open every desktop the user still has open after the control /ws drops.
+   *
+   * The hub binds desktop lifetime ownership to the control socket's viewerId,
+   * so a /ws drop tears the binary stream down server-side (see
+   * `cancelViewerDesktopStreams`). Without this the panel stays dead until the
+   * user notices and clicks Reconnect, even though design §16 specifies
+   * "old stream closed -> store cleanup -> browser re-sends desktop-open" and
+   * plan Task 8 requires "reconnect -> re-open desktop, never reuse a ticket".
+   *
+   * Fresh open only: the hub revoked the old stream and its ticket, so reusing
+   * anything from the closed session would be rejected. `close()` first so no
+   * stale local state (generation, abandoned requestId) survives into the new
+   * attempt.
+   */
+  function reopenAfterWsReconnect(): void {
+    const live = [...sessions.value.entries()].filter(
+      ([, view]) => view.status !== "closed" || view.streamId !== undefined,
+    );
+    for (const [instanceId, view] of live) {
+      const hooks: DesktopRfbHooks = {};
+      close(instanceId);
+      void open(instanceId, hooks);
+      void view;
+    }
+  }
+
+  return { sessions, viewFor, canOpen, open, sendCredentials, setFit, close, applyEvent, reopenAfterWsReconnect, ensureReconnectHook };
 });
 
 export function desktopBinaryUrl(wsPath: string): string {
