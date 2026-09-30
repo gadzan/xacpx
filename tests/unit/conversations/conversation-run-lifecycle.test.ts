@@ -6977,6 +6977,64 @@ test("PR7 scheduler: activation executes a retired previous-owner claim with no 
 
 
 
+test("PR7 scheduler: activation converges foreign started claims with no lease wait", async () => {
+  // Crash-after-start fast restart: the old dispatcher crashes AFTER
+  // markExecutionStarted with the 30s lease still live. The replacement
+  // acquires the exclusive consumer lock (death proof) and activates WITHOUT
+  // advancing the clock: the foreign started claim must converge to
+  // indeterminate on that first activation — never re-executed, never left
+  // running behind a live lease.
+  const started = deferred();
+  const resume = deferred();
+  const first = await createLifecycle({
+    autoKick: false,
+    ownerId: "dispatcher-old",
+    hooks: {
+      afterExecutionStart: async () => {
+        started.resolve();
+        await resume.promise;
+      },
+    },
+  });
+  await first.service.activateAfterConsumerLock();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-started-fast-restart",
+    content: "hello",
+  });
+  void first.dispatcher.kick();
+  await started.promise;
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.state).toBe("running");
+  expect(first.store.getDispatchForMemberTurn(accepted.memberTurn.id)?.state).toBe("claimed");
+  // Crash with the lease live: close WITHOUT shutdown, no clock jump. Never
+  // resolve resume: the old drain stays parked past execution start and
+  // performs no further sqlite access.
+  first.store.close();
+  const reopenedStore = await SqliteConversationStore.open(first.path);
+  const reopenedRunner = new FakeRunner();
+  const reopenedDispatcher = new ConversationDispatcher(
+    reopenedStore, first.runtime, reopenedRunner, first.sessions, {
+      now: first.nowFn,
+      ownerId: "dispatcher-new",
+      leaseMs: 30_000,
+    },
+  );
+  const reopenedService = new ConversationRunService(
+    reopenedStore, first.bots, first.runtime, reopenedDispatcher, first.sessions, first.state, first.stateStore, {
+      now: first.nowFn,
+      releaseOwnedSession: createStrictOwnedSessionRelease({ sessions: first.sessions, transport: first.physical }),
+    },
+  );
+  await reopenedService.activateAfterConsumerLock();
+  expect(reopenedStore.getMemberTurn(accepted.memberTurn.id)?.state).toBe("indeterminate");
+  const run = reopenedStore.getRun(accepted.run.id)!;
+  expect(run.state).toBe("indeterminate");
+  expect(run.completionReason).toBe("started_result_unknown");
+  expect(reopenedStore.getDispatchForMemberTurn(accepted.memberTurn.id)?.state).toBe("completed");
+  expect(reopenedRunner.runs).toHaveLength(0);
+  reopenedStore.close();
+});
+
 test("PR7 scheduler: stale renewHeldClaim drops the hold and routes through recovery", async () => {
   // The contrast case: stale_claim IS swallowed. The hold drops, the drain
   // settles normally, and the member flows through ordinary lease recovery

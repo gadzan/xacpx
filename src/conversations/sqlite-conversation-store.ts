@@ -777,6 +777,69 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
+  convergePreviousOwnerClaims(owner: string, now: string): RecoveredClaim[] {
+    return this.sqlite.transaction(() => {
+      const orphaned = this.sqlite.all<DispatchRow>(
+        `SELECT * FROM pending_dispatches
+         WHERE state = 'claimed'
+           AND owner IS NOT NULL
+           AND owner <> ?`,
+        [owner],
+      );
+      const converged: RecoveredClaim[] = [];
+      for (const row of orphaned) {
+        const member = this.requireMemberTurn(row.member_turn_id);
+        const run = this.requireRun(row.run_id);
+        if (TERMINAL_RUN_STATES.includes(run.state)) {
+          // Already finished business: finish the dispatch identically to
+          // the normal recovery path (no entry — nothing converged).
+          this.finishDispatch(row.id, now);
+          continue;
+        }
+        if (member.startedAt) {
+          // Crash-after-start under the consumer lock: the previous owner is
+          // proven gone, so seal immediately through the same started branch
+          // as lease recovery — never wait out the old lease, never
+          // re-execute. Statement-for-statement identical to
+          // recoverExpiredClaims() above.
+          const alreadyCounted = Boolean(member.finishedAt);
+          this.sqlite.run(
+            `UPDATE member_turns SET state = 'indeterminate', finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+            [now, member.id],
+          );
+          if (!alreadyCounted) {
+            this.sqlite.run(
+              `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+              [run.id],
+            );
+          }
+          this.finishDispatchForMemberTurn(member.id, now);
+          const settled = this.aggregateRunAfterMemberTerminal(run.id, member.id, now, "started_result_unknown");
+          converged.push({
+            dispatch: this.requireDispatch(row.id),
+            run: settled,
+            memberTurn: this.requireMemberTurn(member.id),
+            outcome: "indeterminate",
+          });
+          continue;
+        }
+        this.sqlite.run(
+          `UPDATE pending_dispatches
+           SET state = 'pending', owner = NULL, claimed_at = NULL, lease_expires_at = NULL
+           WHERE id = ?`,
+          [row.id],
+        );
+        converged.push({
+          dispatch: this.requireDispatch(row.id),
+          run: this.requireRun(row.run_id),
+          memberTurn: this.requireMemberTurn(row.member_turn_id),
+          outcome: "requeued",
+        });
+      }
+      return converged;
+    });
+  }
+
   retirePreviousOwnerClaims(owner: string): string[] {
     return this.sqlite.transaction(() => {
       const orphaned = this.sqlite.all<DispatchRow>(
@@ -796,8 +859,8 @@ export class SqliteConversationStore implements ConversationStore {
           continue;
         }
         if (member.startedAt) {
-          // Crash-after-start is indeterminate territory: leave it for the
-          // existing recovery path, which seals evidence correctly.
+          // Crash-after-start is indeterminate territory: converge seals it;
+          // this unstarted-only seam leaves it untouched.
           continue;
         }
         this.sqlite.run(

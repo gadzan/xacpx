@@ -132,12 +132,15 @@ export class ConversationDispatcher {
       await Promise.allSettled(this.inFlightExecutions.values());
     }
     // Retire unstarted writer-slot holds: a held claim is durably `claimed`
-    // by a dispatcher that is going away. Without this, a fast restart
-    // observes a live (unexpired) `claimed` row it can neither recover
+    // by a dispatcher that is going away. Graceful retire is an optimization
+    // (activation's convergePreviousOwnerClaims is the correctness backstop),
+    // but without this a fast restart would fall back to lease-driven
+    // recovery: a live (unexpired) `claimed` row it can neither recover
     // (recoverExpiredClaims only sees expired leases) nor claim (claimOne
-    // only returns `pending`) — the Run stalls until an unrelated wake, past
-    // its lease and into provenance-stripping recovery. Retire returns each
-    // hold to `pending` with owner cleared and a fresh lease window, keeping
+    // only returns `pending`) — unstarted rows into provenance-stripping
+    // recovery, started rows stalled behind the old lease instead of sealing
+    // immediately at handoff. Retire returns each hold to `pending` with
+    // owner cleared and a fresh lease window, keeping
     // generation/authorityEpoch/humanIngress/origin/attempt verbatim, so the
     // next consumer claims it as ordinary pending work on its first kick.
     // Only stale_claim is swallowed per hold (already gone elsewhere); other

@@ -163,12 +163,16 @@ export class ConversationRunService {
       this.assertNoAmbiguousGroupMemberSessions();
       this.assertNonterminalWorkHasAuthority();
       // The exclusive consumer lock proves any previous dispatcher is gone:
-      // retire its surviving unstarted `claimed` rows NOW (orderly handoff,
-      // provenance intact) instead of waiting for their old leases to expire
-      // into provenance-stripping recovery. Graceful shutdown already retires
-      // its own holds; survivors are crash orphans or failed-retire
-      // leftovers, and neither may stall the first drain.
-      this.store.retirePreviousOwnerClaims(this.dispatcher.ownerId);
+      // converge its surviving `claimed` rows NOW instead of waiting for
+      // their old leases to expire into lease-driven recovery. Graceful
+      // shutdown already retires its own holds; survivors are crash orphans
+      // or failed-retire leftovers, and neither may stall the first drain.
+      // Unstarted rows return to `pending` with provenance verbatim (orderly
+      // handoff); started rows seal to `indeterminate` with
+      // `started_result_unknown` in the same transaction (unproven side
+      // effects — never re-executed); terminal-run rows finish their
+      // dispatch. The lock is stronger death evidence than lease expiry.
+      this.store.convergePreviousOwnerClaims(this.dispatcher.ownerId, this.now().toISOString());
       await this.dispatcher.kick();
     } catch (error) {
       this.activation = "unavailable";

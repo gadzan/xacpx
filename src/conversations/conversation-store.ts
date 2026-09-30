@@ -264,17 +264,29 @@ export interface ConversationStore {
   getDispatchForMemberTurn(memberTurnId: string): PendingDispatch | undefined;
   listDispatchesForRun(runId: string): PendingDispatch[];
   recoverExpiredClaims(now: string): RecoveredClaim[];
-  /** Retire `claimed` dispatches whose owner can no longer be alive, WITHOUT
-   *  touching provenance — the startup counterpart of retireHeldClaim.
-   *  Called once after acquiring the exclusive consumer lock, before the
-   *  first drain: any `claimed` row whose owner differs from the live
+  /** Converge `claimed` dispatches whose owner can no longer be alive: the
+   *  startup handoff after acquiring the exclusive consumer lock, before the
+   *  first drain. Any `claimed` row whose owner differs from the live
    *  dispatcher's owner id belongs to a previous process (graceful shutdown
    *  retires its own holds, so survivors are crash orphans or failed-retire
-   *  leftovers). Each is returned to `pending` with owner cleared, keeping
-   *  generation/authorityEpoch/humanIngress/origin/attempt verbatim — an
-   *  orderly handoff, never the recovery rewrite. Started members are
-   *  skipped (crash-after-start is indeterminate territory, owned by the
-   *  existing recovery path). Returns the retired dispatch ids. */
+   *  leftovers) — the lock is stronger death evidence than lease expiry, so
+   *  foreign rows converge immediately instead of waiting out their old lease:
+   *  unstarted members return to `pending` with owner cleared, keeping
+   *  generation/authorityEpoch/humanIngress/origin/attempt verbatim (an
+   *  orderly handoff, never the recovery rewrite); started members seal to
+   *  `indeterminate` with `started_result_unknown` and the aggregate
+   *  converges in the same transaction (unproven side effects — never
+   *  re-executed); members of terminal Runs finish their dispatch (already
+   *  finished business, identical to the normal recovery path). Returns one
+   *  entry per converged row. */
+  convergePreviousOwnerClaims(owner: string, now: string): RecoveredClaim[];
+  /** Retire `claimed` dispatches whose owner can no longer be alive, WITHOUT
+   *  touching provenance — the unstarted-only seam of
+   *  convergePreviousOwnerClaims, kept for direct unit coverage of the
+   *  orderly-handoff branch. Started members are skipped (converged to
+   *  indeterminate by convergePreviousOwnerClaims); members of terminal Runs
+   *  are skipped identically (finished by convergePreviousOwnerClaims).
+   *  Returns the retired dispatch ids. */
   retirePreviousOwnerClaims(owner: string): string[];
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined;
   hasDurableBotWork(botId: string): boolean;

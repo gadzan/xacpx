@@ -35,16 +35,20 @@ accept transaction commits request + pending dispatch
 → completion transaction records result + terminal MemberTurn/Run
 ```
 
-Claims use `owner`, `generation`, and `leaseExpiresAt`. Recovery is **lease-driven**. A different owner is not proof that the previous owner is dead; without explicit process-death evidence, a live claim is left until its lease expires.
+  Claims use `owner`, `generation`, and `leaseExpiresAt`. Steady-state recovery is **lease-driven**: without explicit process-death evidence, a live claim is left until its lease expires.
 
-Restart / reclaim after lease expiry:
+  Startup handoff after the exclusive consumer lock: the lock IS explicit process-death evidence — the previous dispatcher is proven gone — so `activateAfterConsumerLock()` converges foreign `claimed` rows immediately via `convergePreviousOwnerClaims()` instead of waiting out their old lease:
 
-- claimed, **never started** → requeue (`pending`, generation++); safe to dispatch again
-- claimed, **started**, completion unproven → `indeterminate` (MemberTurn and Run); **never** blindly replayed
+  - claimed, **never started** → `pending` with owner cleared, provenance verbatim (orderly handoff, never the recovery rewrite)
+  - claimed, **started**, completion unproven → `indeterminate` (MemberTurn and Run, `started_result_unknown`); **never** blindly replayed
+  - members of terminal Runs → dispatch finished (already finished business)
 
-Every pre-start mutation by a claimed worker is a transactional CAS on `dispatchId + owner + generation` (and a still-valid lease): `markExecutionStarted`, `releaseClaimToPending`, and `failClaimBeforeStart`. A stale generation is `stale_claim` / a no-op; it must not clear or terminalize a newer claim.
+  Lease-expiry reclaim (no lock held, e.g. mid-process drain):
 
-Execution start is that same fence plus run/member still runnable. A stale worker whose claim was recovered must not call the underlying runner.
+  - claimed, **never started** → requeue (`pending`, generation++); safe to dispatch again
+  - claimed, **started**, completion unproven → `indeterminate` (MemberTurn and Run); **never** blindly replayed
+
+  Execution start is that same fence plus run/member still runnable. A stale worker whose claim was recovered must not call the underlying runner.
 
 Do not treat “dispatcher process disappeared” as “task never ran” when `startedAt` / `sourceTurnId` exist.
 
