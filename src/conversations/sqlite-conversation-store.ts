@@ -16,6 +16,7 @@ import type {
   CancelMemberOutcome,
   CancelRunResult,
   ClaimedWork,
+  ClaimFenceInput,
   ClaimNextDispatchInput,
   CompleteExecutionInput,
   CompleteExecutionResult,
@@ -980,6 +981,26 @@ export class SqliteConversationStore implements ConversationStore {
          SET lease_expires_at = ?
          WHERE id = ?`,
         [input.leaseExpiresAt, dispatch.id],
+      );
+      return this.requireDispatch(dispatch.id);
+    });
+  }
+
+  retireHeldClaim(input: ClaimFenceInput): PendingDispatch {
+    return this.sqlite.transaction(() => {
+      // Same held-claim fence as renewal: everything EXCEPT lease expiry.
+      // Shutdown is orderly, so an unexpired-or-expired live hold retires
+      // identically — provenance preserved either way.
+      const dispatch = this.requireHeldClaim({
+        dispatchId: input.dispatchId,
+        owner: input.owner,
+        generation: input.generation,
+      });
+      this.sqlite.run(
+        `UPDATE pending_dispatches
+         SET state = 'pending', owner = NULL, claimed_at = NULL, lease_expires_at = NULL
+         WHERE id = ?`,
+        [dispatch.id],
       );
       return this.requireDispatch(dispatch.id);
     });

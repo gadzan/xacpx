@@ -278,6 +278,15 @@ export interface ConversationStore {
    *  `stale_claim`, so a lost race can never extend a lease it no longer owns.
    *  Scheduling waits must never look like crash recovery. */
   renewHeldClaim(input: RenewHeldClaimInput): PendingDispatch;
+  /** Retire one unstarted held claim at graceful shutdown WITHOUT touching
+   *  provenance: the dispatch returns to `pending` with owner cleared and a
+   *  FRESH lease window, but authorityEpoch/humanIngress, generation, member
+   *  origin and attempt are preserved verbatim. Unlike lease recovery (which
+   *  rewrites origin to `recovery` and bumps attempt) this is an orderly
+   *  handoff: the next consumer claims it as ordinary pending work and the
+   *  member executes on its original human route. Fenced like renewal — only
+   *  our live unstarted claim retires; anything else rejects `stale_claim`. */
+  retireHeldClaim(input: ClaimFenceInput): PendingDispatch;
   releaseClaimToPending(input: ReleaseClaimToPendingInput): PendingDispatch;
   markExecutionStarted(input: MarkExecutionStartedInput): MemberTurnRecord;
   assertLiveDispatchForMaterialize(input: AssertLiveDispatchForMaterializeInput): void;

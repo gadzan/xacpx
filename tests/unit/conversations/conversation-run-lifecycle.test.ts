@@ -6491,6 +6491,103 @@ test("PR7 scheduler: held writer-slot claim survives a lease boundary with prove
   second.store.close();
 });
 
+
+test("PR7 scheduler: shutdown retires held claims so a fast restart executes without recovery rewrite", async () => {
+  // B is held behind A; the hold-time renewal fails so the drain rejects with
+  // B registered-but-unrenewed. Resolve A, let it settle, then shut down with
+  // B still held and its lease still live. Shutdown must retire B to pending
+  // WITHOUT the recovery rewrite (no origin=recovery, no attempt bump, ingress
+  // kept in the row); a reopen before the old lease expiry then claims and
+  // executes B on its first kick — no external wake, no lease wait.
+  //
+  // Authority note: the reopened dispatcher mints a fresh authorityEpoch, so
+  // per the durable epoch contract the execution itself runs as orchestration
+  // (a new process never inherits live human permission authority). What
+  // retire preserves is the ROW: no recovery rewrite at rest, ingress kept
+  // for audit, attempt un-bumped — versus lease recovery which NULLs ingress,
+  // rewrites origin, and bumps attempt after a 30s stall.
+  const second = await createLifecycle({ autoKick: false, leaseMs: 30_000 });
+  await second.service.activateAfterConsumerLock();
+  seedTesterBot(second.state);
+  const group = await second.bots.createGroup({ title: "Restart", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await second.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(second.runner).hang = hang;
+  const accepted = await second.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-restart-hold",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  // Fail B's very first hold renewal: B registers as held, the drain rejects.
+  const realRenew = second.store.renewHeldClaim.bind(second.store);
+  let calls = 0;
+  second.store.renewHeldClaim = ((input: unknown) => {
+    calls += 1;
+    if (calls === 1) {
+      throw new Error("injected hold-time store failure");
+    }
+    return realRenew(input as never);
+  }) as typeof second.store.renewHeldClaim;
+  const drain = second.dispatcher.kick();
+  const rejection = drain.then(
+    () => "resolved",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  );
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+  expect(await rejection).toBe("injected hold-time store failure");
+  const testerTurn = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  const heldBefore = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(heldBefore.state).toBe("claimed");
+  const attemptBefore = testerTurn.attempt;
+  // Shut down while A still hangs: shutdown awaits A's in-flight turn.
+  // Resolve the hang as part of teardown so the wait can complete — but the
+  // failed drain already settled (rejected), so no new drain picks B up in
+  // between; and persistResult's kick is refused (closed=true). B stays HELD
+  // (claimed, unstarted) until shutdown's retire loop returns it to pending.
+  const shutting = second.dispatcher.shutdown();
+  await tick();
+  hang.resolve();
+  await shutting;
+  const retired = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(retired.state).toBe("pending");
+  expect(retired.owner).toBeUndefined();
+  expect(retired.generation).toBe(heldBefore.generation);
+  // No recovery rewrite at rest: ingress kept, origin and attempt verbatim.
+  expect(retired.humanIngress).toEqual(HUMAN_INGRESS);
+  expect(second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.origin).toBe("human-explicit");
+  expect(second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.attempt).toBe(attemptBefore);
+  // Reopen on the SAME sqlite file before the old lease could have expired:
+  // the new consumer's first kick claims B immediately (no lease wait, no
+  // external wake) and executes it to completion with the row intact.
+  second.store.close();
+  const reopenedStore = await SqliteConversationStore.open(second.path);
+  const reopenedRunner = new FakeRunner();
+  const reopenedDispatcher = new ConversationDispatcher(
+    reopenedStore, second.runtime, reopenedRunner, second.sessions, {
+      now: second.nowFn,
+      ownerId: "dispatcher-b",
+      leaseMs: 30_000,
+    },
+  );
+  await reopenedDispatcher.kick();
+  await waitUntil(() => reopenedRunner.runs.length === 1, 4000);
+  expect(reopenedRunner.runs[0]?.botId).toBe(TESTER_ID);
+  await waitUntil(() => reopenedStore.getRun(accepted.run.id)?.state === "completed");
+  const testerDone = reopenedStore.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerDone.origin).toBe("human-explicit");
+  expect(testerDone.attempt).toBe(attemptBefore);
+  reopenedStore.close();
+});
+
+
+
+
 test("PR7 scheduler: hold-time renewHeldClaim failure keeps the hold for the next kick", async () => {
   // Fail B's VERY FIRST hold renewal (before it ever enters the held map).
   // The drain must reject visibly, but the next kick's per-pass

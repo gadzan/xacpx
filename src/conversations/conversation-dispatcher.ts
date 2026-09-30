@@ -129,6 +129,33 @@ export class ConversationDispatcher {
     if (this.inFlightExecutions.size > 0) {
       await Promise.allSettled(this.inFlightExecutions.values());
     }
+    // Retire unstarted writer-slot holds: a held claim is durably `claimed`
+    // by a dispatcher that is going away. Without this, a fast restart
+    // observes a live (unexpired) `claimed` row it can neither recover
+    // (recoverExpiredClaims only sees expired leases) nor claim (claimOne
+    // only returns `pending`) — the Run stalls until an unrelated wake, past
+    // its lease and into provenance-stripping recovery. Retire returns each
+    // hold to `pending` with owner cleared and a fresh lease window, keeping
+    // generation/authorityEpoch/humanIngress/origin/attempt verbatim, so the
+    // next consumer claims it as ordinary pending work on its first kick.
+    // Only stale_claim is swallowed per hold (already gone elsewhere); other
+    // store errors propagate — a failed retire must be visible, not silent.
+    for (const [dispatchId, work] of this.heldWriterSlotClaims) {
+      try {
+        this.store.retireHeldClaim({
+          dispatchId,
+          owner: this.ownerId,
+          generation: work.dispatch.generation,
+          now: this.now().toISOString(),
+        });
+      } catch (error) {
+        if (!(error instanceof ConversationError) || error.code !== "stale_claim") {
+          throw error;
+        }
+      } finally {
+        this.heldWriterSlotClaims.delete(dispatchId);
+      }
+    }
   }
 
   private async runDrain(): Promise<void> {
