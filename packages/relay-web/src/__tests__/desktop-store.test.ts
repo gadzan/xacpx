@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
-import { effectScope } from "vue";
 
 import { supportsDesktop } from "../stores/instances";
 import { useDesktopStore } from "../stores/desktop";
@@ -77,11 +76,11 @@ describe("desktop store", () => {
 
   it("a disposed store's reconnect closure stops firing (no global reset)", async () => {
     // The subscription set in events.ts is module-scoped, so a store torn down
-    // without unsubscribing (HMR, $dispose, an embedded re-create) leaves its
-    // closure registered and every later reconnect drives a desktop-open for a
-    // viewer nobody is showing. This must hold on the store's own dispose path
-    // and deliberately avoids the global handler reset, which is precisely what
-    // would mask the leak.
+    // without unsubscribing (HMR, explicit $dispose, an embedded re-create)
+    // leaves its closure registered and every later reconnect drives a
+    // desktop-open for a viewer nobody is showing. This must hold on the store's
+    // OWN dispose path, and deliberately avoids the global handler reset, which
+    // is precisely what would mask the leak.
     const events = await import("../api/events");
     const fire = (events as unknown as { _fireEventsReconnectForTests: () => void })._fireEventsReconnectForTests;
 
@@ -97,15 +96,13 @@ describe("desktop store", () => {
       security: "vnc-auth",
     }));
 
-    // Store A opened inside a real scope, then disposed.
-    const scopeA = effectScope();
-    await scopeA.run(async () => {
-      const store = useDesktopStore();
-      await store.open("i-disposed", {}, { target: null });
-      await vi.waitFor(() => expect(store.viewFor("i-disposed").status).toBe("connecting"));
-    });
+    // No wrapping effectScope: the cleanup must be registered by the store's own
+    // setup scope, so $dispose() alone has to release the subscription.
+    const storeA = useDesktopStore();
+    await storeA.open("i-disposed", {}, { target: null });
+    await vi.waitFor(() => expect(storeA.viewFor("i-disposed").status).toBe("connecting"));
     expect(vi.mocked(events.requestDesktop).mock.calls.length).toBe(1);
-    scopeA.stop();
+    storeA.$dispose();
 
     // A leaked handler would open another stream for i-disposed right here.
     fire();
@@ -287,6 +284,59 @@ describe("desktop store", () => {
       .filter((c) => c.kind === "desktop-close");
     expect(closeCalls.length).toBeGreaterThan(0);
   });
+
+  it("reopens a desktop whose prepare was still in flight when the socket dropped", async () => {
+    // The hub revokes desktop ownership with the control socket's viewerId, so a
+    // /ws drop while `desktop-open` is still pending rejects the RPC with
+    // `events-offline`. That row ends up `closed` with no streamId, and the
+    // reconnect sweep used to skip it on exactly that shape, leaving the panel
+    // dead until the user noticed and clicked Reconnect.
+    const { requestDesktop } = await import("../api/events");
+    const opens: Array<Record<string, unknown>> = [];
+    let release!: () => void;
+    (requestDesktop as unknown as { mockImplementation: (fn: (m: unknown) => Promise<unknown>) => void })
+      .mockImplementation((msg: unknown) => {
+        opens.push(msg as Record<string, unknown>);
+        // First call hangs (the socket drops before the hub answers), so it
+        // never reaches connectDesktopRfb: only the reopened open connects.
+        if (opens.length === 1) {
+          return new Promise((_r, reject) => {
+            release = () => reject(new DesktopRequestError("events-offline", "events socket closed"));
+          });
+        }
+        return Promise.resolve({
+          requestId: "r", instanceId: "i-pending",
+          streamId: `s-${opens.length}`,
+          wsPath: "/desktop/observe?ticket=t", expiresAt: 1, security: "vnc-auth",
+        });
+      });
+
+    const host = document.createElement("div");
+    const store = useDesktopStore();
+    const first = store.open("i-pending", {}, { target: host }).catch(() => undefined);
+    await vi.waitFor(() => expect(opens).toHaveLength(1));
+
+    // The socket drops: the in-flight prepare rejects with events-offline.
+    release();
+    await first;
+    expect(store.viewFor("i-pending").status).toBe("closed");
+    expect(store.viewFor("i-pending").lastErrorCode).toBe("events-offline");
+    // No streamId yet — exactly the shape the sweep used to skip.
+    expect(store.viewFor("i-pending").streamId).toBeUndefined();
+
+    // The socket comes back; the reopen must fire a SECOND fresh desktop-open.
+    const { _fireEventsReconnectForTests } = await import("../api/events");
+    _fireEventsReconnectForTests();
+    await vi.waitFor(() => expect(opens).toHaveLength(2));
+    await vi.waitFor(() => expect(store.viewFor("i-pending").streamId).toBe("s-2"));
+    // Only ONE connect: the hung first prepare never reached it. What matters is
+    // that this one reuses the mounted host, so the recovered panel repaints
+    // into the visible element rather than a detached div.
+    expect(vi.mocked(connectDesktopRfb).mock.calls).toHaveLength(1);
+    const only = vi.mocked(connectDesktopRfb).mock.calls[0]?.[0] as { target?: HTMLElement | null };
+    expect(only.target).toBe(host);
+  });
+
   it("a local RPC timeout releases the reservation so a later reconnect is not busy", async () => {
     // The hub prepared the stream and answered, but the reply had not reached
     // the browser when its own timer fired. Without a cancel the reservation

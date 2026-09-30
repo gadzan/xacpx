@@ -85,6 +85,15 @@ export const useDesktopStore = defineStore("desktop", () => {
   // aborted by close, B opened and already wrote its own row) can never mutate
   // or delete B's row when A's prepare finally settles.
   const generation = new Map<string, number>();
+  // Unsubscribe handle for the /ws reconnect subscription. Released when THIS
+  // store is disposed, so it is held at the setup scope's top level rather than
+  // set inside an action: registering from inside an action would bind the
+  // cleanup to whichever effect scope happened to be active when open() ran.
+  let reconnectUnsub: (() => void) | null = null;
+  onScopeDispose(() => {
+    reconnectUnsub?.();
+    reconnectUnsub = null;
+  });
 
   function viewFor(instanceId: string): DesktopSessionView {
     let view = sessions.value.get(instanceId);
@@ -164,6 +173,15 @@ export const useDesktopStore = defineStore("desktop", () => {
     const requestId = nextDesktopRequestId();
     pendingRequestId.set(instanceId, requestId);
     patch(instanceId, { status: "opening", lastErrorCode: undefined, lastErrorMessage: undefined });
+    // Reconnect context is recorded BEFORE the prepare, not only once it
+    // succeeds: a /ws drop while `desktop-open` is still in flight rejects the
+    // RPC with `events-offline`, and that failure must still be recognisable as
+    // a viewer the user left open. Losing it here means the reconnect sweep
+    // skips the row entirely and the panel goes dead until a manual Reconnect.
+    // The target is also needed verbatim, or the reopen paints into a detached
+    // div and reports success on a black panel. Recorded even when the target is
+    // null (unmounted host), because the reopen still has to happen.
+    reconnectContext.set(instanceId, { hooks, target: opts.target ?? null });
     let opened;
     try {
       opened = await requestDesktop(
@@ -221,12 +239,6 @@ export const useDesktopStore = defineStore("desktop", () => {
     // browser's binary side attaches, so clearing the local entry is what stops
     // a later close from naming a stream the hub already knows by streamId.
     if (pendingRequestId.get(instanceId) === requestId) pendingRequestId.delete(instanceId);
-    // Reconnect rebuilds this viewer from the same render target: losing it
-    // sends the new framebuffer into a detached div and the panel stays black
-    // while everything else reports success. Recorded even when the target is
-    // null (unmounted host), because the reopen still has to happen — only the
-    // repaint destination is absent.
-    reconnectContext.set(instanceId, { hooks, target: opts.target ?? null });
     patch(instanceId, {
       status: opened.security === "ard" ? "error" : "connecting",
       streamId: opened.streamId,
@@ -350,38 +362,26 @@ export const useDesktopStore = defineStore("desktop", () => {
     }
   }
 
-  /** Guarded so repeated opens do not stack duplicate reopen subscriptions. */
-  let reconnectUnsub: (() => void) | null = null;
-
   /**
    * Per-instance context needed to rebuild a viewer after a control-socket
    * drop. `target` is load-bearing: DesktopTab mounts a `[data-test=desktop-host]`
    * div and passes it as noVNC's render target, and without it the client falls
    * back to a detached div, so the reconnect "succeeds" and paints nothing.
+   *
+   * Recorded BEFORE the prepare resolves, not only on success: a /ws drop while
+   * `desktop-open` is still in flight rejects the RPC with `events-offline`,
+   * which leave a `closed` row with no streamId, and the reconnect sweep must
+   * still recognise it as a viewer the user left open.
    */
   const reconnectContext = new Map<string, { hooks: DesktopRfbHooks; target: HTMLElement | null }>();
 
-  /**
-   * Subscribe this store's reopen to /ws re-open. Idempotent per STORE: the
-   * subscription set in events.ts is module-scoped (one per page, shared by
-   * every store), so a per-store guard alone would let each new store instance
-   * add another closure and multiply re-opens after a single reconnect. The
-   * unsubscribe is therefore captured on the store and re-registered only once,
-   * and it is released on scope dispose so an HMR'd or re-created store cannot
-   * leave its closure behind to fire against a dead instance.
-   */
   function ensureReconnectHook(): void {
     if (reconnectUnsub) return;
-    const handler = () => { reopenAfterWsReconnect(); };
-    reconnectUnsub = onEventsReconnect(handler);
-    // Release it when the store's scope dies (HMR / $dispose / re-create): the
-    // subscription set in events.ts is module-scoped, so without this a dead
-    // store's closure stays registered and fires on every later reconnect.
-    // Bound to any active component/effect scope; a store living at the app
-    // root therefore keeps its subscription for the whole page lifetime.
-    onScopeDispose(() => {
-      if (reconnectUnsub) { reconnectUnsub(); reconnectUnsub = null; }
-    });
+    // The subscription set in events.ts is module-scoped, so without a matching
+    // dispose an HMR'd or re-created store leaves its closure registered and
+    // fires on every later reconnect. Cleanup itself is registered at the setup
+    // scope's top level (above) and therefore belongs to this store.
+    reconnectUnsub = onEventsReconnect(() => { reopenAfterWsReconnect(); });
   }
 
   /**
@@ -402,9 +402,15 @@ export const useDesktopStore = defineStore("desktop", () => {
    * div and the tab stays black while reporting success.
    */
   function reopenAfterWsReconnect(): void {
-    const live = [...sessions.value.entries()].filter(
-      ([, view]) => view.status !== "closed" || view.streamId !== undefined,
-    );
+    const live = [...sessions.value.entries()].filter(([, view]) => {
+      // A prepare interrupted by the SAME drop (`events-offline`) leaves a
+      // `closed` row with no streamId. That is not an abandoned viewer: the user
+      // never clicked Close, so it must be reopened too, or the panel goes dead
+      // until a manual Reconnect.
+      if (view.streamId !== undefined) return true;
+      if (view.status !== "closed") return true;
+      return view.lastErrorCode === "events-offline";
+    });
     for (const [instanceId] of live) {
       const context = reconnectContext.get(instanceId);
       close(instanceId);
