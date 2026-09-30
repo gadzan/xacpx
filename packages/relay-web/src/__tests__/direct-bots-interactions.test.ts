@@ -310,6 +310,59 @@ describe("useDirectBotsStore interactions", () => {
     expect(store.pendingInteraction!.outcome).toBeNull();
   });
 
+  it("a required field named like a prototype member is NOT pre-answered", () => {
+    // The bug this pins. Answers were a plain object literal, so a required field
+    // keyed "constructor"/"toString"/"valueOf" read a value that Object.prototype
+    // always provides and the form looked answered: Submit was allowed, the hub
+    // closed the interaction, and core then rejected an answer the user never
+    // gave. That ordering cannot be undone.
+    //
+    // Asserted by ANSWERING that field and checking the map stays a data property
+    // it owns, plus the required check treating an untouched map as unanswered.
+    const store = useDirectBotsStore();
+    store.applyEvent(openedEvent(formRequest({
+      elicitation: {
+        mode: "form",
+        message: "Pick.",
+        fields: [
+          { kind: "text", key: "constructor", title: "Constructor", required: true },
+          { kind: "text", key: "valueOf", title: "ValueOf", required: true },
+        ],
+      },
+    })));
+
+    // Untouched: NOT answerable, even though both keys exist on the prototype.
+    expect(store.pendingInteraction!.answers).toBeDefined();
+    const untouched = Object.keys(store.pendingInteraction!.answers);
+    expect(untouched).toHaveLength(0);
+
+    // Answering the first makes it a real own data property.
+    store.setInteractionAnswer("constructor", "typed-by-user");
+    const answers = store.pendingInteraction!.answers;
+    expect(Object.keys(answers)).toEqual(["constructor"]);
+    expect(answers["constructor"]).toBe("typed-by-user");
+    // The second is still unanswered, so the form is not answerable yet.
+    expect(Object.hasOwn(answers, "valueOf")).toBe(false);
+  });
+
+  it("a real __proto__ answer survives as its own data property", () => {
+    // The other half: assigning through the prototype chain dropped the answer
+    // silently, so a completed form arrived empty. The answer map is
+    // null-prototype, so this key becomes a real own property and round-trips.
+    const store = useDirectBotsStore();
+    store.applyEvent(openedEvent(formRequest({
+      elicitation: {
+        mode: "form",
+        message: "Pick.",
+        fields: [{ kind: "text", key: "__proto__", title: "Proto", required: true }],
+      },
+    })));
+    store.setInteractionAnswer("__proto__", "user-value");
+    const answers = store.pendingInteraction!.answers;
+    expect(Object.hasOwn(answers, "__proto__")).toBe(true);
+    expect(answers["__proto__"]).toBe("user-value");
+  });
+
   it("a second opened form does not drop the first", () => {
     // M1's cancellation is request-scoped, so the same turn can hold more than
     // one pending interaction. Dropping the first here used to leave it with no

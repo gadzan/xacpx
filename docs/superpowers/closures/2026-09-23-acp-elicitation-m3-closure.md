@@ -617,3 +617,64 @@ run does not exercise the package build, so a typecheck-only drift between
 `channel-relay` and the wire surfaces only in the CI `Build (all packages)` step.
 Any change to `relay-protocol` should be verified with that step, not only with
 `tsc -p packages/<p>/tsconfig.json`.
+
+## Third review round: fabricated responder, prototype keys, agent regex, privacy gate
+
+A second full re-review found four P1s in layers the previous rounds had not
+reached. Three of them are in code that round two added, and one — the fabricated
+responder — had been pinned as correct by its own tests.
+
+### An infrastructure close was committed as a user decision
+
+`requestElicitation` returned `{ action: "cancel", responderId: initiatorId }` on
+every hub close and transport failure. The comment claimed "no responder to
+report" while returning the initiator, and that id is exactly what the broker
+re-verifies against — so the fake PASSED, and `commit()` recorded a decision the
+human never made. The contract it violates states it plainly: do not return a
+decision, and do not invent a `responderId` for a cancellation the user did not
+cause.
+
+Every one of those paths now rejects with `RelayElicitationUnavailable`. Core's
+abort race and post-decision checks settle the request as `cancel` regardless, so
+the intended outcome is unchanged and no longer laundered through a fake identity.
+The early guards (no client, no attributable initiator, non-`direct` destination,
+field-model drift, unknown action) reject the same way.
+
+The two tests that had pinned the wrong behaviour — "a hub-side close is a cancel"
+and "a transport failure closes the interaction instead of throwing" — asserted the
+fabricated decision. Corrected rather than preserved.
+
+### Answer maps read inherited values
+
+Answers were a plain object, so a required field keyed `constructor` / `toString` /
+`valueOf` read a value `Object.prototype` always provides and the form looked
+answered. Submit was allowed, the hub resolved the interaction, and core then
+rejected the answer — after the form was gone. Collecting had the mirror problem: a
+`__proto__` answer assigned through the prototype chain and vanished.
+
+Answer maps are now null-prototype and every presence check is `Object.hasOwn`.
+Core and the other two renderers already did this; the relay web renderer had not.
+
+### The renderer executed an agent-supplied regex
+
+`new RegExp(field.pattern).test(text)` ran on every keystroke and re-render. Core
+states the rule and the reason — an agent-supplied pattern is never executed,
+because uncontrolled regex evaluation is a resource-exhaustion vector — and the
+protocol validator bounds the pattern's length precisely so it does not have to be
+compiled. A catastrophically-backtracking pattern froze the dashboard.
+
+The pattern is now reported as metadata and left to core. This was introduced by
+the previous round, in the same commit that fixed the field kinds.
+
+### The privacy gate was bypassed
+
+`RelayChannel.requestElicitation` never checked `request.chatType`, and the Direct
+Conversation `HumanIngressContext` had no such field — so the relay renderer could
+not have proven `direct` even if it looked. #360's privacy contract was satisfied by
+omission.
+
+`HumanIngressContext` carries `chatType` now, and the relay web ingress stamps
+`"direct"` alongside the identities it already stamps, because an authenticated
+relay dashboard genuinely is one human's view. The renderer then refuses anything
+that is not provably `direct`, treating absent as unproven — the fail-closed
+reading the contract requires.

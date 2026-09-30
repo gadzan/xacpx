@@ -98,7 +98,26 @@ export type DirectBotInteractionErrorCode =
  */
 function isInteractionAnswerable(state: PendingInteractionState): boolean {
   const fields = state.request.elicitation?.fields ?? [];
-  return fields.every((field) => (field.required ? state.answers[field.key] !== undefined : true));
+  return fields.every((field) => (field.required ? hasAnswer(state.answers, field.key) : true));
+}
+
+/**
+ * Whether an answer was recorded, by OWN property.
+ *
+ * `key in answers` and `answers[key] !== undefined` are both wrong here: a
+ * required field named `constructor`, `toString` or `valueOf` reads a value that
+ * `Object.prototype` always provides, so a form the user never filled looks
+ * answered and Submit is allowed. Answers are ordinary objects, so an inherited
+ * value is indistinguishable from a real one unless the lookup is an own-property
+ * check.
+ */
+function hasAnswer(answers: Record<string, unknown>, key: string): boolean {
+  return Object.hasOwn(answers, key) && answers[key] !== undefined;
+}
+
+/** A fresh answer map with no prototype, so no key can read an inherited value. */
+function emptyAnswers(): Record<string, InteractionValueDto> {
+  return Object.create(null) as Record<string, InteractionValueDto>;
 }
 
 /**
@@ -112,13 +131,13 @@ function isInteractionAnswerable(state: PendingInteractionState): boolean {
 function collectInteractionAnswers(
   state: PendingInteractionState,
 ): Record<string, InteractionValueDto> | null {
-  const keys = Object.keys(state.answers);
-  if (keys.length === 0) return null;
-  const content: Record<string, InteractionValueDto> = {};
-  for (const key of keys) {
-    const value = state.answers[key];
-    if (value === undefined) continue;
-    content[key] = value;
+  // Null-prototype, for the same reason core and the other renderers use one: a
+  // field key of `__proto__` would otherwise assign through the prototype chain
+  // and never become a data property, so the answer would be silently dropped.
+  const content: Record<string, InteractionValueDto> = Object.create(null);
+  for (const key of Object.keys(state.answers)) {
+    if (!hasAnswer(state.answers, key)) continue;
+    content[key] = state.answers[key] as InteractionValueDto;
   }
   return Object.keys(content).length === 0 ? null : content;
 }
@@ -126,7 +145,7 @@ function collectInteractionAnswers(
 /** Fields that still need an answer, for the renderer's progress line. */
 function missingInteractionFields(state: PendingInteractionState): InteractionFieldDto[] {
   const fields = state.request.elicitation?.fields ?? [];
-  return fields.filter((field) => field.required && state.answers[field.key] === undefined);
+  return fields.filter((field) => field.required && !hasAnswer(state.answers, field.key));
 }
 
 class DirectBotRpcError extends Error {
@@ -2212,10 +2231,17 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     if (!current) return;
     const known = current.request.elicitation?.fields.some((field) => field.key === key);
     if (!known) return;
-    patchInteraction(current.request.requestId, {
-      answers: { ...current.answers, [key]: value },
-      errorCode: null,
-    });
+    // Copied with `Object.create(null)` + assign, NOT a spread: an object spread
+    // produces a plain object with `Object.prototype`, which restores the
+    // inherited-value hole this whole path exists to avoid.
+    const answers = emptyAnswers();
+    for (const existing of Object.keys(current.answers)) {
+      if (hasAnswer(current.answers, existing)) {
+        answers[existing] = current.answers[existing] as InteractionValueDto;
+      }
+    }
+    answers[key] = value;
+    patchInteraction(current.request.requestId, { answers, errorCode: null });
   }
 
   /** Replace one pending entry. Missing keys are left alone, not created. */
@@ -2770,7 +2796,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         instanceId: e.instanceId,
         request: interaction,
         kind: interaction.kind,
-        answers: {},
+        answers: emptyAnswers(),
         outcome: null,
         submitting: false,
         errorCode: null,

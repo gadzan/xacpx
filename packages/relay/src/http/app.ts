@@ -687,6 +687,11 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         chatKey: `relay:${account.id}`,
         senderId: account.id,
         isOwner: true,
+        // Privacy, stamped by the hub for the same reason the identities are: a
+        // relay web session is one authenticated human, so this surface can
+        // genuinely assert `direct`. A renderer may show a form only when it can
+        // prove that, and "absent" means unproven — not direct.
+        chatType: "direct",
       };
     }
     if (body.type === MSG.conversationPrompt) {
@@ -698,6 +703,17 @@ export function createApp(deps: AppDeps): Hono<Vars> {
           accountId: account.id,
           senderName: account.username,
           isOwner: true,
+          // The privacy fact this surface can actually prove: a relay web
+          // dashboard is an authenticated session for a single human, and the
+          // conversation pane is that human's own view. Stamped HERE, by the hub,
+          // rather than read off the frame — exactly like the identities above.
+          //
+          // It has to be present because the renderer contract requires
+          // `chatType === "direct"` to show a form and treats absent as unproven.
+          // Without this stamp the relay renderer would refuse every Direct Bot
+          // elicitation, and the privacy gate #360 introduced would be satisfied
+          // by omission rather than by proof.
+          chatType: "direct",
         },
       };
     }

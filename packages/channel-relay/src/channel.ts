@@ -138,6 +138,30 @@ export interface RelayChannelDeps {
   createTerminalDriver?: () => RmuxTerminalDriver;
 }
 
+/**
+ * An interaction could not be opened, or was closed before a human decided.
+ *
+ * Distinct from a `ChannelElicitationDecision` on purpose, and the distinction is
+ * the whole point. The renderer contract says an infrastructure close — timeout,
+ * withdrawal, transport failure, shutdown, a destination that cannot be shown a
+ * private form — is NOT a user action and must not carry an invented
+ * `responderId`. Returning `{ action: "cancel", responderId: initiatorId }`
+ * instead made core's re-verification compare the initiator with itself, so the
+ * fake passed and an infrastructure close was committed as a user decision.
+ *
+ * Throwing this lets core's own abort race and post-decision checks settle the
+ * request as `cancel`, which is the outcome these paths always intended.
+ *
+ * `reason` is for the channel's own logs and tests; core deliberately receives
+ * no decision rather than a decision describing why not.
+ */
+export class RelayElicitationUnavailable extends Error {
+  constructor(readonly reason: string) {
+    super(`relay elicitation is unavailable: ${reason}`);
+    this.name = "RelayElicitationUnavailable";
+  }
+}
+
 export class RelayChannel implements MessageChannelRuntime {
   readonly id = "relay";
   readonly nativeSessionListFormat = "table" as const;
@@ -518,7 +542,10 @@ export class RelayChannel implements MessageChannelRuntime {
       // interaction. `startLogger` is NOT the signal here — it is only assigned
       // on the terminal-enabled bootstrap branch, so an ordinary production
       // channel (terminal disabled) would bail on a logger that was never set.
-      return { action: "cancel", responderId: "" };
+      //
+      // Rejected rather than answered: no human was asked, so there is no user
+      // decision to report, and a `responderId` here would be invented.
+      throw new RelayElicitationUnavailable("channel-missing");
     }
     // The turn's own initiator, used for ONE purpose: refusing to open an
     // interaction for a turn that has no attributable human. It is deliberately
@@ -530,7 +557,19 @@ export class RelayChannel implements MessageChannelRuntime {
     // and would let a decision by anybody pass as the turn's initiator.
     const initiatorId = request.requester?.senderId ?? "";
     if (!initiatorId) {
-      return { action: "cancel", responderId: "" };
+      throw new RelayElicitationUnavailable("unattributable");
+    }
+    // Only a provably private destination may show a form: an elicitation
+    // contains the agent's question and the human's answer, and neither belongs
+    // where a group can read it. `undefined` is treated as unproven, NOT as
+    // direct — the caller must have the channel's own report.
+    if (request.chatType !== "direct") {
+      await this.startLogger?.warn(
+        "relay.elicitation.rejected",
+        "relay renderer refuses a form it cannot prove is direct",
+        { requestId, chatType: request.chatType },
+      );
+      throw new RelayElicitationUnavailable("not-direct");
     }
     const fields = relayFieldsFrom(request.fields);
     if (fields === null) {
@@ -540,7 +579,7 @@ export class RelayChannel implements MessageChannelRuntime {
       await this.startLogger?.warn("relay.elicitation.rejected", "core/wire field model drift", {
         requestId,
       });
-      return { action: "cancel", responderId: initiatorId };
+      throw new RelayElicitationUnavailable("unsupported");
     }
     const correlation = this.conversationCorrelation(request);
     const interaction: InteractionRequestDto = {
@@ -564,13 +603,26 @@ export class RelayChannel implements MessageChannelRuntime {
       const outcome = parseRelayInteractionOutcome(relayResult);
       if (!outcome.responded) {
         // Not a user action: the hub closed the window (timeout, unsupported,
-        // withdrawn). The agent sees an abort, never a fake decline. There is no
-        // responder to report, because no authenticated human decided anything.
+        // withdrawn). The agent must learn the turn produced no decision, and the
+        // form is withdrawn with it — the hub already removed the pending
+        // interaction and told every browser, so there is nothing left to collect.
+        //
+        // This REJECTS rather than returning a decision, because the renderer
+        // contract forbids inventing one: `request.signal` abort and every
+        // infrastructure close are not user actions, and no authenticated human
+        // answered. Returning `{ action: "cancel", responderId: initiatorId }`
+        // here — which is what this did — faked a responder that happens to equal
+        // the turn initiator, so the broker's re-verification PASSED and committed
+        // an infrastructure close as a real user decision.
+        //
+        // Rejecting is safe and not a silent failure: the broker's own abort race
+        // and its post-decision checks settle the request as `cancel` either way,
+        // which is the outcome this path always intended.
         await this.startLogger?.warn("relay.elicitation.closed", "relay interaction closed without a user decision", {
           requestId,
           reason: outcome.reason,
         });
-        return { action: "cancel", responderId: initiatorId };
+        throw new RelayElicitationUnavailable(outcome.reason);
       }
       const decision = outcome.response;
       // THE LOAD-BEARING LINE: the responder is the one the HUB stamped from its
@@ -594,7 +646,11 @@ export class RelayChannel implements MessageChannelRuntime {
       if (decision.action === "decline" || decision.action === "cancel") {
         return { action: decision.action, responderId };
       }
-      return { action: "cancel", responderId };
+      // An action outside the elicitation set is a protocol surprise. Rejected
+      // rather than mapped to `cancel`: a cancel is a USER action, and the
+      // responder here would be invented — the same failure that made
+      // infrastructure closes commit as user decisions, in a smaller dose.
+      throw new RelayElicitationUnavailable("unsupported-action");
     } catch (error) {
       // Transport failure, or the request signal fired while the RPC was still
       // in flight. Either way there is no decision to report and the interaction
@@ -609,7 +665,13 @@ export class RelayChannel implements MessageChannelRuntime {
         requestId,
         message: error instanceof Error ? error.message : String(error),
       });
-      return { action: "cancel", responderId: initiatorId };
+      // REJECTED, not returned. The renderer contract is explicit that an
+      // infrastructure failure is not a user action and must not carry an invented
+      // `responderId`; returning one that equals the turn initiator would pass
+      // the broker's re-verification and commit a transport failure as a user's
+      // decision. Rejecting lets core's abort race and post-decision checks
+      // settle the request as `cancel`, which is the intended outcome.
+      throw error instanceof Error ? error : new Error(String(error));
     }
   }
 

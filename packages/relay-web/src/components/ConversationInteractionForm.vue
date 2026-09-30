@@ -53,8 +53,20 @@ const { t } = useI18n();
 
 const fields = computed<readonly InteractionFieldDto[]>(() => props.request.elicitation?.fields ?? []);
 
+/**
+ * Own-property presence for an answer.
+ *
+ * `!== undefined` is not enough: a field keyed `constructor` or `toString` reads
+ * a value `Object.prototype` always provides, so an unanswered required field
+ * looks answered. Answers arrive as a null-prototype map from the store, and this
+ * is the matching check.
+ */
+function hasAnswer(answers: Record<string, unknown>, key: string): boolean {
+  return Object.hasOwn(answers, key) && answers[key] !== undefined;
+}
+
 const requiredMissing = computed<readonly InteractionFieldDto[]>(() =>
-  fields.value.filter((field) => field.required && props.answers[field.key] === undefined),
+  fields.value.filter((field) => field.required && !hasAnswer(props.answers, field.key)),
 );
 
 const messageLines = computed<readonly string[]>(() => {
@@ -122,17 +134,19 @@ function fieldProblems(field: InteractionFieldDto, answer: InteractionValueDto |
     const text = String(answer);
     if (field.minLength !== undefined && text.length < field.minLength) problems.push("minLength");
     if (field.maxLength !== undefined && text.length > field.maxLength) problems.push("maxLength");
-    if (field.pattern !== undefined) {
-      // Compiled only here, from the hub-validated field, and a malformed
-      // pattern is IGNORED rather than surfaced: core still validates, and
-      // treating a bad pattern as a failed answer would block a form the user
-      // filled correctly.
-      try {
-        if (!new RegExp(field.pattern).test(text)) problems.push("pattern");
-      } catch {
-        // Unusable pattern: core is the authority.
-      }
-    }
+    // NOTE: `field.pattern` is deliberately NOT evaluated here.
+    //
+    // Core states the rule and the reason: an agent-supplied regex is never
+    // executed, because uncontrolled regex evaluation is a resource-exhaustion
+    // vector. A catastrophically-backtracking pattern would run on every
+    // keystroke and every re-render of this component, freezing the dashboard —
+    // and the pattern is attacker-supplied text the hub validates for length
+    // only, precisely so it does not have to be compiled.
+    //
+    // The pattern is reported as METADATA (the field's own description, rendered
+    // below, or the pattern text itself for a renderer that wants it) and left for
+    // core to enforce. A renderer that cannot express a format safely must fail
+    // closed rather than approximate it.
   }
   if (field.kind === "number") {
     const value = Number(answer);
@@ -151,7 +165,7 @@ function fieldProblems(field: InteractionFieldDto, answer: InteractionValueDto |
 /** Every field that would be rejected, so Submit can be blocked with a reason. */
 const invalidFields = computed<readonly { field: InteractionFieldDto; problems: string[] }[]>(() =>
   fields.value
-    .map((field) => ({ field, problems: fieldProblems(field, props.answers[field.key]) }))
+    .map((field) => ({ field, problems: fieldProblems(field, hasAnswer(props.answers, field.key) ? props.answers[field.key] as InteractionValueDto : undefined) }))
     .filter((entry) => entry.problems.length > 0),
 );
 
@@ -159,7 +173,7 @@ const canSubmit = computed<boolean>(() => invalidFields.value.length === 0);
 
 /** Multi-select selections are a set, so toggling an option adds or removes it. */
 function onMultiToggle(field: InteractionFieldDto, optionValue: string): void {
-  const current = props.answers[field.key];
+  const current = hasAnswer(props.answers, field.key) ? props.answers[field.key] : undefined;
   const selected = Array.isArray(current) ? current : [];
   emit('answer', field.key, selected.includes(optionValue)
     ? selected.filter((v) => v !== optionValue)
@@ -255,7 +269,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
             :key="String(option)"
             type="button"
             class="rounded border border-border px-3 py-1 text-xs transition-colors"
-            :class="String(answers[field.key]) === String(option)
+            :class="String(hasAnswer(answers, field.key) ? answers[field.key] : "") === String(option)
               ? 'border-accent bg-accent/10 text-accent'
               : 'text-fg hover:bg-surface'"
             @click="emit('answer', field.key, option)"
@@ -290,7 +304,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
             type="button"
             :data-test="`interaction-multi-${option.value}`"
             class="mr-1 mb-1 rounded border px-2 py-1 text-xs transition-colors"
-            :class="(Array.isArray(answers[field.key]) ? answers[field.key] as string[] : []).includes(option.value)
+            :class="(Array.isArray(hasAnswer(answers, field.key) ? answers[field.key] : undefined) ? answers[field.key] as string[] : []).includes(option.value)
               ? 'border-accent bg-accent/10 text-accent'
               : 'border-border text-fg hover:bg-surface'"
             @click="onMultiToggle(field, option.value)"

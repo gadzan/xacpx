@@ -121,9 +121,28 @@ function coreRequest(overrides: Partial<ChannelElicitationRequest> = {}): Channe
     ],
     expiresAt: Date.now() + 120_000,
     signal: controller.signal,
+    // A relay web dashboard is one authenticated human, so this surface proves
+    // `direct` and stamps it. The renderer refuses without it — see
+    // `requestElicitation`.
+    chatType: "direct",
     ...overrides,
   } as ChannelElicitationRequest;
 }
+
+test("a form is refused unless the destination is provably direct", async () => {
+  // The M1 privacy contract, and the relay renderer must honour it: a form puts
+  // the agent's question and the human's answers into the chat, so a group
+  // destination leaks both. `undefined` is UNPROVEN, not direct — treating it as
+  // direct would fail open, which is exactly what the contract forbids.
+  for (const chatType of [undefined, "group"] as const) {
+    const { channel, options } = makeHarness({ sendRequest: () => new Promise(() => {}) });
+    await startStarted(channel, options);
+    const settled = channel.requestElicitation(
+      coreRequest({ ...(chatType !== undefined ? { chatType } : { chatType: undefined }) }),
+    );
+    await expect(settled).rejects.toThrow("unavailable");
+  }
+});
 
 test("production requestElicitation opens an interaction and carries the hub's answer back", async () => {
   const outbound: Array<{ type: string; payload: unknown; timeoutMs?: number }> = [];
@@ -210,10 +229,15 @@ test("the zero-answer accept travels as null, not {}", async () => {
   });
 });
 
-test("a hub-side close is a cancel, never a decline the user did not make", async () => {
-  // Every transport-closed reason must come back as a cancellation. Reporting a
-  // window timeout or a connector withdrawal as `decline` would tell the agent
-  // the human refused to answer.
+test("a hub-side close is a rejection, never a decision the user did not make", async () => {
+  // Every transport-closed reason must REJECT. Returning a decision here faked a
+  // `responderId` — and because it was the turn initiator, core's re-verification
+  // PASSED and committed an infrastructure close as a real user decision.
+  //
+  // The renderer contract is explicit: an external abort is not a user action and
+  // must not carry an invented `responderId`. Rejecting is not a silent failure
+  // either — core's own abort race and post-decision checks settle the request as
+  // `cancel`, which is the outcome this path always wanted.
   for (const reason of ["timeout", "unsupported", "aborted", "withdrawn"]) {
     let answer: ((value: unknown) => void) | null = null;
     const { channel, options } = makeHarness({
@@ -223,21 +247,24 @@ test("a hub-side close is a cancel, never a decline the user did not make", asyn
     const settled = channel.requestElicitation(coreRequest({ requestId: `req-${reason}` }));
     await waitForTick();
     answer!({ responded: false, reason });
-    expect(await settled).toEqual({ action: "cancel", responderId: "relay:acct-9" });
+    await expect(settled).rejects.toThrow();
+    // And no decision was produced for anybody to commit.
+    await settled.catch((error: Error) => {
+      expect(error.message).toContain("unavailable");
+    });
   }
 });
 
-test("a transport failure closes the interaction instead of throwing", async () => {
-  // A renderer that THROWS leaves the broker waiting on a promise nobody
-  // settles, which strands the turn. The channel converts it to fail-closed cancel.
+test("a transport failure rejects rather than inventing a responder", async () => {
+  // A renderer that swallows a transport failure and returns
+  // `{ action: "cancel", responderId: initiatorId }` looks harmless but is not:
+  // the initiator id is exactly what the broker re-verifies against, so the fake
+  // passes and a transport failure is committed as a user decision.
   const { channel, options } = makeHarness({
     sendRequest: () => Promise.reject(new Error("instance-offline")),
   });
   await startStarted(channel, options);
-  expect(await channel.requestElicitation(coreRequest())).toEqual({
-    action: "cancel",
-    responderId: "relay:acct-9",
-  });
+  await expect(channel.requestElicitation(coreRequest())).rejects.toThrow("instance-offline");
 });
 
 test("a malformed hub answer is a close, not a decision", async () => {
@@ -269,7 +296,9 @@ test("a malformed hub answer is a close, not a decision", async () => {
     const settled = channel.requestElicitation(coreRequest({ requestId: "req-bad" }));
     await waitForTick();
     answer!(surprise);
-    expect(await settled).toEqual({ action: "cancel", responderId: "relay:acct-9" });
+    // A surprise frame is a protocol failure, not a user action: it must not
+    // produce a decision at all, and must not invent a responder.
+    await expect(settled).rejects.toThrow();
   }
 });
 
@@ -292,7 +321,9 @@ test("the request signal aborts the in-flight interaction", async () => {
   await waitFor(() => sent === 1, "outbound request");
   controller.abort();
 
-  expect(await settled).toEqual({ action: "cancel", responderId: "relay:acct-9" });
+  // Rejected, not answered: an abort the agent caused is not a user decision, and
+  // the initiator id would have been exactly what the broker re-verifies against.
+  await expect(settled).rejects.toThrow();
 });
 
 test("an unattributable request is refused rather than opened", async () => {
@@ -307,10 +338,10 @@ test("an unattributable request is refused rather than opened", async () => {
   });
   await startStarted(channel, options);
 
-  const settled = await channel.requestElicitation(
+  const settled = channel.requestElicitation(
     coreRequest({ requestId: "req-no-sender", requester: { senderId: "" } }),
   );
-  expect(settled).toEqual({ action: "cancel", responderId: "" });
+  await expect(settled).rejects.toThrow("unattributable");
   // Nothing reached the hub at all.
   expect(outbound).toHaveLength(0);
 });

@@ -164,6 +164,16 @@ export interface HumanIngressContext {
   accountId?: string;
   senderName?: string;
   isOwner?: boolean;
+  /**
+   * The channel's own report of route privacy.
+   *
+   * REQUIRED by the M1 renderer contract: only `"direct"` may render a form, and
+   * `undefined` is treated as unproven rather than direct. Absent here means a
+   * destination that never reported one, which a privacy-preserving renderer must
+   * refuse. The relay web ingress stamps `"direct"` because a conversation pane is
+   * an authenticated single-human view.
+   */
+  chatType?: "direct" | "group";
 }
 
 export interface PendingDispatch {

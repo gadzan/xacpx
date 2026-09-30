@@ -167,6 +167,9 @@ async function makeHub(): Promise<Hub> {
     requestId: "req-web-1",
     chatKey: "bot:conv-1:topic-1",
     requester: { senderId: "relay:relay-acct", isOwner: true },
+    // A relay web dashboard is one authenticated human, so the hub stamps this.
+    // The renderer refuses without it.
+    chatType: "direct",
     agent: { name: "codex" },
     message: "Which region should I deploy to?",
     mode: "form",
@@ -336,6 +339,13 @@ test("a withdrawal closes the form on a subscribed browser", async () => {
     requestId: "req-web-2",
     signal: controller.signal,
   });
+  // Observed, not ignored: the promise rejects from the signal, and a rejection
+  // nobody has attached to surfaces as an unhandled-rejection failure rather than
+  // as the assertion this test wants to make.
+  let withdrawalRejection: unknown;
+  const withdrawalObserved = settled.catch((error: unknown) => {
+    withdrawalRejection = error;
+  });
   await waitFor(
     () => browserEvents(hub.seen).some((e) => e.event.type === "interaction-opened"),
     "interaction-opened",
@@ -347,9 +357,10 @@ test("a withdrawal closes the form on a subscribed browser", async () => {
     () => browserEvents(hub.seen).some((e) => e.event.type === "interaction-closed"),
     "interaction-closed",
   );
+  await withdrawalObserved;
   const closed = browserEvents(hub.seen).find((e) => e.event.type === "interaction-closed")!;
   expect((closed.event as { reason: string }).reason).toBe("withdrawn");
-  expect(await settled).toEqual({ action: "cancel", responderId: "relay:relay-acct" });
+  expect(withdrawalRejection).toBeInstanceOf(Error);
 
   browser.close();
   await hub.close();
@@ -365,6 +376,13 @@ test("an expiry closes the form on a subscribed browser", async () => {
     requestId: "req-web-3",
     expiresAt: Date.now() + 40,
   });
+  // Observed, not ignored: the expiry rejects synchronously from the hub's own
+  // timeout, and an unattached rejection fails the run as an unhandled rejection
+  // rather than as this test's assertion.
+  let expiryRejection: unknown;
+  const expiryObserved = settled.catch((error: unknown) => {
+    expiryRejection = error;
+  });
   await waitFor(
     () => browserEvents(hub.seen).some((e) => e.event.type === "interaction-opened"),
     "interaction-opened",
@@ -373,11 +391,13 @@ test("an expiry closes the form on a subscribed browser", async () => {
     () => browserEvents(hub.seen).some((e) => e.event.type === "interaction-closed"),
     "interaction-closed",
   );
+  await expiryObserved;
 
   const closes = browserEvents(hub.seen).filter((e) => e.event.type === "interaction-closed");
   expect(closes).toHaveLength(1);
   expect((closes[0]!.event as { reason: string }).reason).toBe("expired");
-  expect(await settled).toEqual({ action: "cancel", responderId: "relay:relay-acct" });
+  // No human decided, so no decision may be reported and no responder invented.
+  expect(expiryRejection).toBeInstanceOf(Error);
 
   browser.close();
   await hub.close();
