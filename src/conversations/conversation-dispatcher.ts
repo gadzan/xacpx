@@ -223,6 +223,16 @@ export class ConversationDispatcher {
         if (this.inFlightExecutions.size > 0) {
           await Promise.allSettled(this.inFlightExecutions.values());
         }
+        // Shutdown owns unstarted holds from here: once `closed` is set, a
+        // held sibling must never start — the retire loop in shutdown()
+        // returns it to `pending` with provenance intact instead. Without
+        // this fence the recheck below launches B after shutdown began,
+        // extending shutdown by a whole provider turn (or wedging it) and
+        // bypassing retire entirely. Returning exits via `finally`
+        // (draining=false); the tail kick is already closed-guarded.
+        if (this.closed) {
+          return;
+        }
         // The deferred set belongs to the pass that just ended: per-pass
         // deferrals must not leak into the recheck, or a held claim can
         // never become runnable inside this drain.

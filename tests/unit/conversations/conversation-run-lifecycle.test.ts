@@ -6437,6 +6437,54 @@ test("PR7 scheduler: shared-single-writer serializes unknown-effect siblings", a
     second.store.close();
   }
 });
+test("PR7 scheduler: shutdown never starts a held sibling, it retires it", async () => {
+  // Healthy drain, no injected failure: A runs, B is claimed and held. Shut
+  // down while A still hangs, then settle A. The post-settle recheck must
+  // NOT launch B — shutdown owns unstarted holds now. B stays `pending`
+  // (retired with provenance intact) and the runner never sees a second run.
+  const second = await createLifecycle({ autoKick: false });
+  await second.service.activateAfterConsumerLock();
+  seedTesterBot(second.state);
+  const group = await second.bots.createGroup({ title: "ShutdownHold", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await second.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(second.runner).hang = hang;
+  const accepted = await second.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-shutdown-hold",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  void second.dispatcher.kick();
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+  const testerTurn = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  const heldBefore = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(heldBefore.state).toBe("claimed");
+  const attemptBefore = testerTurn.attempt;
+  // Shut down mid-drain: the drain is blocked awaiting hung A. Settling A
+  // must not launch B — the post-settle recheck is fenced on `closed`, so
+  // the active drain exits and shutdown retires the still-unstarted hold.
+  const shutting = second.dispatcher.shutdown();
+  await tick();
+  hang.resolve();
+  await shutting;
+  expect(fakeRunner(second.runner).runs).toHaveLength(1);
+  const retired = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(retired.state).toBe("pending");
+  expect(retired.owner).toBeUndefined();
+  expect(retired.generation).toBe(heldBefore.generation);
+  expect(retired.humanIngress).toEqual(HUMAN_INGRESS);
+  const testerRetired = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerRetired.origin).toBe("human-explicit");
+  expect(testerRetired.attempt).toBe(attemptBefore);
+  second.store.close();
+});
+
 
 test("PR7 scheduler: held writer-slot claim survives a lease boundary with provenance intact", async () => {
   // Short lease so the test clock can cross it: B is held behind a hung A,
