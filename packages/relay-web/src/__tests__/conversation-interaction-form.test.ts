@@ -49,14 +49,20 @@ function mountForm(
     expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBeDefined();
   });
 
-  it("a format the renderer cannot verify exactly blocks Submit", () => {
+  it("EVERY format the renderer cannot verify exactly blocks Submit", () => {
     // Core uses ajv-formats; a second implementation here would drift, and the
     // drift would surface only after the interaction had already resolved. So the
     // formats this renderer cannot agree on are refused rather than approximated.
-    for (const format of ["uri", "date-time", "some-future-format"]) {
+    //
+    // `date` and `email` are listed on purpose: they were once hand-rolled here
+    // and both diverged — `Date.parse` normalizes 2026-02-30 into March, and the
+    // email regex accepted `a..b@example.com` that core rejects. Only a value
+    // this renderer can verify exactly may be allowed through, and the set of
+    // those is empty.
+    for (const format of ["uri", "date-time", "date", "email", "some-future-format"]) {
       const wrapper = mountForm(
         [{ kind: "text", key: "f", title: "F", required: true, format }],
-        { f: "https://example.com" },
+        { f: "2026-02-30" },
       );
       expect(wrapper.find('[data-test="interaction-invalid"]').exists(), format).toBe(true);
       expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled"), format).toBeDefined();
@@ -216,26 +222,54 @@ describe("ConversationInteractionForm field kinds", () => {
       .toBeDefined();
   });
 
-  it("text minLength / maxLength / known format are enforced locally", () => {
+  it("text minLength / maxLength are enforced locally", () => {
     const wrapper = mountForm(
       [
         { kind: "text", key: "short", title: "Short", required: true, minLength: 2, maxLength: 4 },
-        { kind: "text", key: "when", title: "When", required: false, format: "date" },
       ],
-      { short: "x", when: "not-a-date" },
+      { short: "x" },
     );
     expect(wrapper.find('[data-test="interaction-invalid"]').exists()).toBe(true);
     expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBeDefined();
   });
 
-  it("an unparseable date is not emitted as the answer", () => {
+  it("an impossible CALENDAR date is refused, not normalized away", () => {
+    // The decisive counterexample to the old approximation. `Date.parse` accepts
+    // "2026-02-30" by rolling it over to March 2nd, so the old check let Submit
+    // through, the hub resolved the interaction, and core's `isDate` — which
+    // range-checks the day against `daysInMonth` — then rejected the answer. The
+    // user could no longer correct it.
+    //
+    // A value that is not a real calendar date must therefore be refused here or
+    // nowhere. Note the browser's own parser does NOT agree, which is the point.
+    expect(Number.isNaN(Date.parse("2026-02-30"))).toBe(false);
+    const wrapper = mountForm(
+      [{ kind: "text", key: "when", title: "When", required: true, format: "date" }],
+      { when: "2026-02-30" },
+    );
+    expect(wrapper.find('[data-test="interaction-invalid"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBeDefined();
+    // And the user is told the control cannot be checked, NOT that their value is
+    // wrong: this is the renderer's limit, not a judgment about the answer.
+    const message = wrapper.find('[data-test="interaction-invalid"]').text();
+    expect(message).toContain("When:");
+    expect(message).toContain("cannot be checked yet");
+  });
+
+  it("a string the renderer cannot verify is still emitted as the answer", () => {
+    // Fail closed at Submit, never at input. A `date`/`email`/`uri` value is
+    // carried through unchanged: blocking the keystroke would silently discard
+    // the user's text, and the only safe place to draw the line is Submit, where
+    // the user is told why.
     const wrapper = mountForm([
       { kind: "text", key: "when", title: "When", required: true, format: "date" },
     ]);
     const input = wrapper.find('[data-test="interaction-input-when"]');
     (input.element as HTMLInputElement).value = "garbage";
     input.trigger("input");
-    expect(wrapper.emitted("answer")).toBeUndefined();
+    expect(wrapper.emitted("answer")).toEqual([["when", "garbage"]]);
+    // Submit is offered nowhere near it.
+    expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBeDefined();
   });
 
   it("a default is SHOWN but not submitted without a user action", () => {

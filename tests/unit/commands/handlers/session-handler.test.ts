@@ -765,6 +765,137 @@ test("handlePromptWithSession binds BOTH brokers on a Direct Bot turn and carrie
   resetGlobalPermissionBrokerForTests();
 });
 
+test("both brokers keep their own route in the PRODUCTION shared registry", async () => {
+  // The seam above uses a fake `bindTurn()` that just records the context, which
+  // is why the round-4 fix passed a test and failed in production.
+  //
+  // `src/main.ts` wires the two brokers to ONE registry:
+  //
+  //     elicitationBroker = new ElicitationInteractionBroker({
+  //       registry: permissionBroker.turnRegistry,
+  //       ...
+  //     })
+  //
+  // and `TurnInteractionRegistry.bindTurn()` throws on a second binding of the
+  // same interactionId. So binding both kinds against one id silently lost the
+  // SECOND bind (the catch swallowed it) and the registry kept only the
+  // permission route. The elicitation broker then resolved `relay:<account>`,
+  // `parseDirectConversationChatKey()` found no `bot:<conversation>:<topic>` in
+  // it, the Direct Bot `conversation` correlation vanished, and the uncorrelated-
+  // form gate scoped the form out of the very topic it belonged to. The whole
+  // Direct Bot form path went dark with every check green.
+  //
+  // This test installs the REAL brokers on a REAL shared registry, exactly as
+  // main.ts does, so the registry semantics are exercised rather than assumed.
+  const { ElicitationInteractionBroker } = await import("../../../../src/interactions/elicitation-interaction-broker.js");
+  const { PermissionInteractionBroker } = await import("../../../../src/permissions/permission-interaction-broker.js");
+  const { createTurnInteractionRegistry } = await import("../../../../src/interactions/turn-interaction-registry.js");
+  const {
+    setGlobalElicitationBroker,
+    resetGlobalElicitationBrokerForTests,
+  } = await import("../../../../src/interactions/elicitation-interaction-broker.js");
+  const {
+    setGlobalPermissionBroker,
+    resetGlobalPermissionBrokerForTests,
+  } = await import("../../../../src/permissions/permission-interaction-broker.js");
+  resetGlobalPermissionBrokerForTests();
+  resetGlobalElicitationBrokerForTests();
+
+  // The daemon's wiring: one registry, shared by both brokers.
+  const registry = createTurnInteractionRegistry();
+  const silentLogger = {
+    info: async () => {},
+    warn: async () => {},
+    error: async () => {},
+    debug: async () => {},
+  };
+  const permissionBroker = new PermissionInteractionBroker({
+    registry,
+    getChannelByChatKey: () => null,
+    logger: silentLogger as never,
+  });
+  const elicitationBroker = new ElicitationInteractionBroker({
+    registry,
+    getChannelByChatKey: () => null,
+    logger: silentLogger as never,
+  });
+  setGlobalPermissionBroker(permissionBroker);
+  setGlobalElicitationBroker(elicitationBroker);
+
+  const session = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "sess-1",
+    archived: false,
+    replyMode: "final" as const,
+  } as unknown as ResolvedSession;
+
+  let mintedInteractionId: unknown = "unset";
+  let capturedDuringPrompt: Record<string, unknown> | undefined;
+  const makeContext = () => ({
+    sessions: {},
+    lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
+    interaction: {
+      promptTransportSession: async (...args: unknown[]) => {
+        // `handlePromptWithSession` passes the turn interactionId as the
+        // THIRTEENTH argument (index 12), so the minted id is observable without
+        // adding a seam.
+        mintedInteractionId = args[12];
+        // Captured HERE, while the turn is running, because the handler disposes
+        // its bindings when the prompt completes. Asserting on the registry
+        // after `await handlePromptWithSession(...)` would observe an empty one
+        // and pass with every binding lost.
+        capturedDuringPrompt = {
+          count: registry.boundTurnCount,
+          turnId: mintedInteractionId,
+          permission: registry.resolve(mintedInteractionId as string, "permission")?.chatKey,
+          elicitation: registry.resolve(mintedInteractionId as string, "elicitation")?.chatKey,
+        };
+        return { text: "ok" };
+      },
+    },
+    recovery: {},
+    config: undefined as unknown as AppConfig,
+    logger: { info: async () => {}, warn: async () => {}, error: async () => {}, debug: async () => {} },
+    quota: undefined,
+    orchestration: undefined,
+  }) as unknown as SessionHandlerContext;
+
+  await handlePromptWithSession(
+    makeContext(), session, "bot:conv-1:topic-1", "hi",
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    // A Direct Bot turn that ALSO carries the trusted ingress address, so both
+    // resolvers return a route — the shape that exposes the collision.
+    {
+      channel: "relay",
+      senderId: "relay:acct-42",
+      origin: "human",
+      permissionChatKey: "relay:acct-42",
+      chatType: "direct",
+    } as never,
+  );
+
+  // Both kinds survived into the shared registry. This is the assertion that
+  // fails if the second bind is ever swallowed again: `boundTurnCount` counts
+  // every kind, so a lost elicitation bind leaves one.
+  // Both kinds survived into the shared registry. This is the assertion that
+  // fails if the second bind is ever swallowed again: `boundTurnCount` counts
+  // every kind, so a lost elicitation bind leaves one, and each kind holds its
+  // own address rather than a collapsed pick.
+  expect(capturedDuringPrompt).toEqual({
+    count: 2,
+    turnId: mintedInteractionId,
+    permission: "relay:acct-42",
+    elicitation: "bot:conv-1:topic-1",
+  });
+  // And the turn's disposal is honest: everything it bound is gone afterwards.
+  expect(registry.boundTurnCount).toBe(0);
+
+  resetGlobalElicitationBrokerForTests();
+  resetGlobalPermissionBrokerForTests();
+});
+
 test("handlePromptWithSession refuses a malformed bot isolation key", async () => {
   // `bot:garbage` parses to nothing, so no elicitation route can be built from
   // it: a prefix-only match could be satisfied by any turn in any topic.

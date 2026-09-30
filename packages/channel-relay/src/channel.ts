@@ -16,7 +16,7 @@ import {
   type RelayEnvelope,
   parseControlPayload,
 } from "@ganglion/xacpx-relay-protocol";
-import { parseDirectConversationChatKey } from "xacpx/plugin-api";
+import { isDirectConversationChatKey, parseDirectConversationChatKey } from "xacpx/plugin-api";
 import type {
   ChannelStartInput,
   ChannelElicitationDecision,
@@ -177,6 +177,14 @@ export class RelayChannel implements MessageChannelRuntime {
    * would make the broker dispatch onto a channel that cannot answer. Core's own
    * probe still requires both halves, so an earlier build whose method was a stub
    * is caught by the runtime check rather than by this declaration.
+   *
+   * Note the scope this declaration does NOT express: it is per-CHANNEL, while
+   * the renderer is per-ROUTE. A form is showable only on a Direct Conversation
+   * turn (`bot:<conversation>:<topic>`); an ordinary session turn resolves to
+   * `relay:<accountId>`, which has no `conversation` correlation and no surface
+   * that mounts a form. `requestElicitation` refuses those turns itself — see
+   * `unsupported-route` there — because this contract has no way to say "capable
+   * on some routes only".
    */
   readonly elicitationModes: readonly ChannelElicitationMode[] = ["form"];
 
@@ -570,6 +578,31 @@ export class RelayChannel implements MessageChannelRuntime {
         { requestId, chatType: request.chatType },
       );
       throw new RelayElicitationUnavailable("not-direct");
+    }
+    // ROUTE-SCOPED capability, which is what the channel-wide
+    // `elicitationModes = ["form"]` above could not express.
+    //
+    // A form is renderable on exactly one route: a Direct Conversation turn,
+    // whose chatKey is `bot:<conversation>:<topic>`. That key is what yields the
+    // `conversation` product correlation the web form needs to find its topic,
+    // and it is the only surface that mounts a renderer — the Direct Bot pane.
+    // An ordinary Relay session turn resolves its route to `relay:<accountId>`
+    // (the permission fallback), so its `conversationCorrelation()` is
+    // `undefined` and the frame it produces belongs to no topic at all.
+    //
+    // Declaring `form` channel-wide while only that one route can render made
+    // every ordinary session turn also request a form. The hub opened the
+    // interaction, the uncorrelated frame was scoped out of every topic view,
+    // and the result was a form nobody could see reaching its timeout. That is
+    // worse than refusing: an agent told the human was asked when no human ever
+    // saw the question.
+    if (!isDirectConversationChatKey(request.chatKey)) {
+      await this.startLogger?.warn(
+        "relay.elicitation.rejected",
+        "relay form renderer is route-scoped to Direct Conversation turns",
+        { requestId, chatKey: request.chatKey },
+      );
+      throw new RelayElicitationUnavailable("unsupported-route");
     }
     const fields = relayFieldsFrom(request.fields);
     if (fields === null) {

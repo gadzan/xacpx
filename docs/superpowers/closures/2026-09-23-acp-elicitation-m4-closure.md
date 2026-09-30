@@ -436,3 +436,98 @@ per-turn identity fields, and the channel's `chatType` report. The test installs
 BOTH brokers and asserts the two binds carry different chatKeys, one shared
 `interactionId`, and both addresses present. Reverting the permission route back
 to the collapsed one turns it red.
+
+## Addendum - fourth re-review round (2026-10-01)
+
+Full re-review of the third round's fixes. Result was **request changes: 3 P1**,
+one of which invalidated a fix I had just shipped.
+
+### P1 #1 - the shared registry lost the second route, and the fix looked done (FIXED)
+
+`src/main.ts` wires both brokers to ONE registry:
+
+    elicitationBroker = new ElicitationInteractionBroker({
+      registry: permissionBroker.turnRegistry, ... })
+
+and `TurnInteractionRegistry.bindTurn()` threw on a second binding of the same
+`interactionId`. So the round-3 "give each broker its own route" fix passed its
+test and did nothing in production: the permission route bound first, the
+elicitation bind threw duplicate, the handler's catch swallowed it, and the
+registry kept only `relay:<account>`.
+
+The broker then resolved a route from which `parseDirectConversationChatKey()`
+derives no `conversation` correlation — so the uncorrelated-form gate I had just
+added scoped the form OUT of the very topic it belonged to. Round 3's fix
+converted a latent bug into a visibly broken Direct Bot form path.
+
+Why the test missed it: it installed one fake `bindTurn` that recorded contexts,
+so it proved the handler CALLED bind twice, not that the registry STORED two
+routes. A fake that agrees with the fix is not evidence.
+
+Fixed by making the data model carry the kind. `TurnInteractionRegistry` now keys
+routes by `(interactionId, kind)`, with `kind` an explicit bind parameter, so two
+different kinds never collide and each broker reads its own address. Liveness
+(abort/dispose notification) stays keyed by the bare interactionId — the turn
+dies once, so both kinds still fence on the same signal, and disposal only fires
+when the LAST kind for a turn goes away.
+
+`bindTurn(context, abortSignal, kind?)` takes the kind as a PARAMETER because a
+context field alone forces every direct caller to know the broker's internal
+kind; the first attempt with a field-only kind three test files binding routes
+directly, which silently stored `"permission"` where the broker read
+`"elicitation"`.
+
+### P1 #2 - the web validator still approximated `date` and `email` (FIXED)
+
+Round 3 fixed the code-point length measurement and failed open formats closed,
+but left two hand-rolled checks that core does NOT use:
+
+- `date` used `Date.parse`, which NORMALIZES an impossible calendar date rather
+  than rejecting it. `Date.parse("2026-02-30")` is `2026-03-02T00:00:00Z`, while
+  core's `isDate` range-checks the day against `daysInMonth(year, month)` and
+  refuses it. Browser allowed Submit -> hub resolved -> core rejected -> the user
+  could no longer correct the answer.
+- `email` used `/^[^@\s]+@[^@\s]+$/`, which accepts `a..b@example.com`, `a@b`,
+  and `é@example.com`; core's `ajv-formats` regex rejects all of them. Wrong in
+  BOTH directions.
+
+The browser cannot import core's answer, because `elicitation-schema.ts` pulls in
+`ajv` at module scope — shipping a JSON Schema engine to read one string is not a
+trade worth making.
+
+So every format is now `unverifiable`, in BOTH places the rule was duplicated
+(`formatProblem` for the Submit gate and `coerce` for input). Fail closed at
+Submit, never at input: blocking a keystroke would silently discard the user's
+text, whereas the Submit gate tells them the control cannot be checked yet. The
+problem token is mapped to human-readable text rather than shown raw.
+
+Core already proves the divergence in its own suite
+(`elicitation-schema.test.ts` ~1960: "non-existent calendar dates are
+rejected"). The web regression pins the counterexample the old check accepted.
+
+### P1 #3 - channel-wide capability for a route-scoped renderer (FIXED, in the renderer)
+
+Round 3 closed the half of this finding about cross-topic misrendering. The other
+half remained: `elicitationModes = ["form"]` is declared CHANNEL-wide, so an
+ordinary Relay session turn's agent still believes the turn can request a form.
+
+The chain is real. `session-handler`'s `elicitationRoute ?? permissionRoute`
+falls back to the permission route, which for an ordinary turn is
+`relay:<accountId>`. `getChannelByChatKey` maps that to the relay channel, the
+broker's capability check passes, `chatType: "direct"` from the control path
+passes the privacy gate, and the hub opens an interaction. But
+`conversationCorrelation()` needs a `bot:`-prefixed key, so the frame carries no
+`conversation` row at all.
+
+And there is no surface for it: `ConversationInteractionForm` is mounted only by
+`ConversationMessageList`, rendered only by `DirectBotPane`, mounted only when a
+Bot is selected. `ChatPane` has no interaction state. So round 3's change moved
+the outcome from "shown in the wrong Bot topic" to "shown nowhere" — the form
+still only ever reaches its timeout.
+
+Fixed with a route-scoped refusal inside `requestElicitation`, matching the
+existing convention (`control-bridge.ts` / `channel-scope.ts` prefix-test
+chatKeys, and the renderer's own `not-direct` refusal). A turn whose chatKey is
+not a Direct Conversation key is refused as `unsupported-route`, and the
+capability comment now states plainly what the declaration cannot express: it is
+per-channel, while the renderer is per-route.

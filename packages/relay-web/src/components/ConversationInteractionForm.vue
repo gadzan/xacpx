@@ -113,12 +113,11 @@ function coerce(
     return { ok: true, value: parsed };
   }
   if (field.kind === "text") {
-    if (field.format === "date" && trimmed !== "" && Number.isNaN(Date.parse(trimmed))) {
-      return { ok: false };
-    }
-    if (field.format === "email" && trimmed !== "" && !/^[^@\s]+@[^@\s]+$/.test(trimmed)) {
-      return { ok: false };
-    }
+    // No `format` narrowing here on purpose. An earlier revision narrowed
+    // `date` with `Date.parse` and `email` with a regex; `Date.parse` normalizes
+    // `2026-02-30` to March 2nd instead of rejecting it, so the browser accepted a
+    // calendar date core's `isDate` refuses, and the disagreement only surfaced
+    // after the hub had already resolved the interaction. See `formatProblem`.
     return { ok: true, value: raw };
   }
   return { ok: true, value: raw };
@@ -154,31 +153,33 @@ function codePointLength(value: string): number {
 }
 
 /**
- * Formats the renderer checks itself.
+ * Formats the renderer checks itself: NONE.
  *
- * A DELIBERATELY SMALL set, and the reason is that core uses `ajv-formats` — the
- * JSON Schema reference implementation — whose own comment records three
- * hand-rolled attempts each fixing one direction while breaking another. A second
- * copy in the browser would drift, and the drift would show up as "browser
- * accepted, core rejected" after the interaction had already resolved.
+ * This is deliberate and it is a correction. An earlier revision claimed
+ * `date` and `email` were "simple enough to agree exactly" and hand-rolled
+ * them; they are not, and both were wrong:
  *
- * So: the formats below are the ones simple enough to agree exactly, and anything
- * else — `uri`, `date-time`, an unknown name — is FLAGGED as unverifiable rather
- * than approximated. `unverifiable` blocks Submit in the caller, which is the
- * fail-closed direction: a user is told the control cannot be validated yet
- * instead of being allowed to submit an answer core will reject.
+ *   - `date` used `Date.parse`, which NORMALIZES an impossible calendar date
+ *     instead of rejecting it. `Date.parse("2026-02-30")` is
+ *     `2026-03-02T00:00:00Z`, so the browser allowed Submit, the hub resolved
+ *     the interaction, and core's `isDate()` — which range-checks the day
+ *     against `daysInMonth(year, month)` — then rejected the answer. The user
+ *     could no longer correct it.
+ *   - `email` used a simplified regex that disagrees with `ajv-formats`,
+ *     which is what core actually calls.
+ *
+ * Core itself documents why: three hand-rolled attempts each fixed one
+ * direction while breaking another. And this module cannot simply import
+ * core's answer, because `elicitation-schema.ts` pulls in `ajv` at module
+ * scope, so the browser would have to ship the JSON Schema engine to read one
+ * string.
+ *
+ * So every format is `unverifiable`, and `unverifiable` blocks Submit. That is
+ * the fail-closed direction: the user is told the control cannot be validated
+ * yet instead of being allowed to construct an answer core will refuse.
  */
-function formatProblem(field: InteractionFieldDto, value: string): string | null {
+function formatProblem(field: InteractionFieldDto, _value: string): string | null {
   if (field.format === undefined || field.format === "text") return null;
-  if (field.format === "date") {
-    // `Date.parse` is the same approximation core does NOT use, but for a bare
-    // YYYY-MM-DD the two agree, and this is the only one of the four that is
-    // genuinely simple.
-    return Number.isNaN(Date.parse(value)) ? "format" : null;
-  }
-  if (field.format === "email") {
-    return /^[^@\s]+@[^@\s]+$/.test(value) ? null : "format";
-  }
   return "unverifiable";
 }
 
@@ -238,6 +239,22 @@ const invalidFields = computed<readonly { field: InteractionFieldDto; problems: 
 );
 
 const canSubmit = computed<boolean>(() => invalidFields.value.length === 0);
+
+/**
+ * Human-readable text for one problem token.
+ *
+ * The tokens are internal (`minLength`, `unverifiable`), and showing them raw
+ * would put a compiler-facing word in front of a user. `unverifiable` in
+ * particular is a statement about the RENDERER, not about the user's answer, so
+ * it gets wording that says the control cannot be checked yet rather than
+ * implying the value is wrong.
+ */
+function problemLabel(problem: string): string {
+  if (problem === "unverifiable") return t("bot.interaction.formatUnverifiable");
+  if (problem === "required") return t("bot.interaction.problemRequired");
+  if (problem === "integer") return t("bot.interaction.problemInteger");
+  return problem;
+}
 
 /** Multi-select selections are a set, so toggling an option adds or removes it. */
 function onMultiToggle(field: InteractionFieldDto, optionValue: string): void {
@@ -440,7 +457,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
         <div v-for="entry in invalidFields" :key="entry.field.key">
           {{ t('bot.interaction.fieldInvalid', {
             title: entry.field.title,
-            problem: entry.problems.join(', '),
+            problem: entry.problems.map(problemLabel).join(', '),
           }) }}
         </div>
       </div>

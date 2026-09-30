@@ -144,6 +144,30 @@ test("a form is refused unless the destination is provably direct", async () => 
   }
 });
 
+test("a form on a non-Direct-Conversation route is refused as unsupported", async () => {
+  // ROUTE-SCOPED capability, not channel-wide. `elicitationModes = ["form"]`
+  // is declared for the whole channel, but a form is renderable on exactly one
+  // route: the Direct Conversation turn, whose `bot:<conversation>:<topic>` key
+  // is what produces the `conversation` correlation the web form needs to find
+  // its topic, and the only surface that mounts a renderer.
+  //
+  // An ordinary Relay session turn resolves to `relay:<accountId>` instead, so
+  // its correlation is `undefined` and the frame belongs to no topic at all. The
+  // hub still opened the interaction, the uncorrelated frame was then scoped out
+  // of every topic view, and the form could only ever reach its timeout — the
+  // agent reported a human had been asked when no human ever saw the question.
+  //
+  // Refusing here is what makes the advertised capability truthful, and it
+  // matches the existing convention of a per-turn refusal inside the renderer
+  // (see `not-direct` above).
+  const { channel, options } = makeHarness({ sendRequest: () => new Promise(() => {}) });
+  await startStarted(channel, options);
+  const settled = channel.requestElicitation(
+    coreRequest({ chatKey: "relay:acct-9", chatType: "direct" }),
+  );
+  await expect(settled).rejects.toThrow("unsupported-route");
+});
+
 test("the asking Agent identity is projected onto the wire, not dropped", async () => {
   // The renderer MUST show who is asking and must NOT build that identity out of
   // \"message\"/\"schemaTitle\" — both agent-controlled. So the identity has to

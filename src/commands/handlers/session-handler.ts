@@ -1098,8 +1098,10 @@ async function promptWithSession(
     });
     // Permission wins on its own turns, because its route is the one the daemon
     // trusts for a human permission decision. An elicitation route, when present,
-    // belongs to a Direct Conversation turn — which has no permission route —
-    // so the two never compete for the same turn.
+    // belongs to a Direct Conversation turn. Both may exist at once when that
+    // turn also carries a `permissionChatKey`, so the selection below only
+    // decides which route's SHARED fields the turn context carries — each broker
+    // is still bound to its own address below.
     const route = elicitationRoute ?? permissionRoute;
     const interactionId = route
       ? PermissionInteractionBroker.createInteractionId()
@@ -1127,8 +1129,9 @@ async function promptWithSession(
       // trusted ingress key the daemon actually verified — a permission decision
       // delivered to a route nobody authenticated.
       //
-      // Both routes are still bound (so both kinds work), but each with its own
-      // address, so neither can be answered on the other's route.
+      // Both routes are bound (so both kinds work), each with its own address:
+      // permission keeps the trusted ingress route, elicitation keeps the
+      // product isolation key. Neither can be answered on the other's route.
       // Shared, per-turn fields from the route that owns this turn: the
       // elicitation route when one exists (a Direct Bot turn), else the
       // permission route. The only field that DIFFERS between the two brokers is
@@ -1172,9 +1175,10 @@ async function promptWithSession(
       }
       try {
         // Independent binding: each broker may be constructed with its own
-        // registry in tests. A duplicate-id bind (shared registry in
-        // production) throws and is simply skipped — the route already
-        // exists for both.
+        // registry in tests. A same-KIND duplicate bind throws and is skipped,
+        // because the registry keys routes by (interactionId, kind) — two
+        // different kinds never collide, which is what lets the production
+        // shared registry hold both addresses without either being lost.
         disposeElicitation = getGlobalElicitationBroker()?.bindTurn(elicitationTurnContext, abortSignal);
       } catch {
         disposeElicitation = undefined;
