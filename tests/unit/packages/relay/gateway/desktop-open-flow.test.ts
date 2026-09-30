@@ -45,12 +45,13 @@ function desktopDeps(overrides: Partial<{
       cancelled.push(streamId);
     },
     ownsStream: (streamId: string, viewerId: string) => owners.get(streamId)?.viewerId === viewerId,
+    streamOwner: (streamId: string) => owners.get(streamId),
     cancelPendingByRequest: (requestId: string, viewerId: string, reason: string) => {
       for (const [streamId, owner] of [...owners]) {
         if (owner.requestId !== requestId || owner.viewerId !== viewerId) continue;
         owners.delete(streamId);
         cancelled.push(streamId);
-        events.push({ type: MSG.desktopCancel, payload: { streamId } });
+        events.push({ instanceId: owner.instanceId, type: MSG.desktopCancel, payload: { streamId } });
         return true;
       }
       return false;
@@ -66,7 +67,9 @@ function desktopDeps(overrides: Partial<{
     },
     gateway: {
       sendEvent: (instanceId, type, payload) => {
-        events.push({ type, payload });
+        // Record the instanceId the hub chose to talk to: the routing assertions
+        // depend on it, not just on which message was built.
+        events.push({ instanceId, type, payload });
         return true;
       },
       sendRequest: async (instanceId, type, payload) => {
@@ -131,6 +134,30 @@ test("desktop-open reserves, prepares, and emits a targeted desktop-opened", asy
   expect(parseWebServerEvent(webEventEnvelope(event as never))).not.toBeNull();
 });
 
+test("an oversized connector error is bounded so the browser still receives it", async () => {
+  // A connector failure message is free-form: an RFB 3.7/3.8 server listing 255
+  // unknown security types produces `unsupported RFB security types: ...` well
+  // past 1 KiB. The web validator drops an over-length `desktop-request-failed`
+  // outright, so forwarding the raw text would replace a precise failure with a
+  // silent one — the pending RPC would then only ever see its own timeout.
+  const huge = "unsupported RFB security types: " + Array.from({ length: 255 }, (_, i) => "t" + i).join(",");
+  expect(huge.length).toBeGreaterThan(512);
+  const { deps, socket, sent } = desktopDeps({
+    prepareResult: { error: { code: "desktop-auth-unsupported", message: huge.slice(0, 4096) } },
+  });
+  sendDesktop(deps, "a1", socket, "desktop-open");
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(sent.length).toBe(1);
+  const event = sent[0]?.event as Record<string, unknown>;
+  expect(event.kind).toBe("desktop-request-failed");
+  expect(event.code).toBe("desktop-auth-unsupported");
+  const message = String(event.message);
+  // Bounded: still a valid WebServerEvent, so the browser can act on it.
+  expect(message.length).toBeLessThanOrEqual(512);
+  expect(message).not.toBe(huge);
+  expect(parseWebServerEvent(webEventEnvelope(event as never))).not.toBeNull();
+});
+
 test("desktop-open fails closed without capability, offline, busy, or bad prepare", async () => {
   const busyStub = (scope: "instance" | "account") => ({
     reserve: () => ({ ok: false as const, code: "desktop-busy", scope }),
@@ -167,7 +194,7 @@ test("desktop-open fails closed without capability, offline, busy, or bad prepar
     // pending dial running until the connector's own stage timeouts. Cases that
     // fail BEFORE reserve have no stream to name and must send nothing.
     expect(setup.events).toEqual(reserveHappened
-      ? [{ type: MSG.desktopCancel, payload: { streamId: "s-1" } }]
+      ? [{ instanceId: "i1", type: MSG.desktopCancel, payload: { streamId: "s-1" } }]
       : []);
   }
 });
@@ -193,7 +220,23 @@ test("desktop-close cancels the stream and notifies the connector", () => {
   const { deps, socket, events, owners } = desktopDeps();
   owners.set("s-1", { viewerId: "viewer-1", accountId: "a1", instanceId: "i1" });
   sendDesktop(deps, "a1", socket, "desktop-close");
-  expect(events).toEqual([{ type: MSG.desktopCancel, payload: { streamId: "s-1" } }]);
+  expect(events).toEqual([{ instanceId: "i1", type: MSG.desktopCancel, payload: { streamId: "s-1" } }]);
+});
+
+test("desktop-close routes the cancel to the owner instance, not the browser-supplied one", () => {
+  // The browser chooses which stream to close, not which connector to talk to.
+  // The hub stamped the authoritative {viewerId, accountId, instanceId} at
+  // reserve, so the cancel must follow that record even when the message names
+  // a different instance.
+  const { deps, socket, events, owners } = desktopDeps();
+  owners.set("s-1", { viewerId: "viewer-1", accountId: "a1", instanceId: "i-owner" });
+  // Forge the instanceId: the viewer genuinely owns the stream, but says i2.
+  const msg = { kind: "desktop-close", instanceId: "i-other", streamId: "s-1" };
+  expect(parseWebClientMessage(webClientEnvelope(msg as never))).not.toBeNull();
+  handleWebClientMessage(deps, "a1", socket as never, JSON.stringify(webClientEnvelope(msg as never)));
+
+  // The event went to the owner instance, never to the requested one.
+  expect(events).toEqual([{ instanceId: "i-owner", type: MSG.desktopCancel, payload: { streamId: "s-1" } }]);
 });
 
 test("desktop-close from another viewer is rejected", () => {
@@ -223,7 +266,7 @@ test("desktop-close by requestId releases a pending prepare so reopen is not bus
   expect(cancelled).toEqual(["s-1"]);
   expect(owners.size).toBe(0);
   // The connector is told symmetrically with the streamId path.
-  expect(events).toEqual([{ type: MSG.desktopCancel, payload: { streamId: "s-1" } }]);
+  expect(events).toEqual([{ instanceId: "i1", type: MSG.desktopCancel, payload: { streamId: "s-1" } }]);
   // Nothing was reported to the browser, but the prepare was still issued.
   expect(requests.length).toBe(1);
   expect(sent.length).toBe(0);

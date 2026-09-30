@@ -2,6 +2,7 @@ import {
   decodeEnvelope,
   isErrorPayload,
   DESKTOP_HUB_REQUEST_TIMEOUT_MS,
+  MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
   MSG,
   parseTerminalEventPayload,
   parseWebClientMessage,
@@ -63,6 +64,13 @@ export interface WebClientDeps {
     cancelPendingByRequest(requestId: string, ownerViewerId: string, reason: string): boolean;
     /** Lifetime owner check: pending AND paired streams stay bound to the requesting viewer. */
     ownsStream(streamId: string, ownerViewerId: string): boolean;
+    /**
+     * The hub-stamped owner of a stream, or undefined if it has none. The close
+     * path routes the connector cancel through this instead of the browser's
+     * `instanceId`: the browser chooses which stream to close, not which
+     * connector to talk to.
+     */
+    streamOwner(streamId: string): DesktopStreamOwner | undefined;
     /** Bind a fresh reservation to its requesting viewer before the async prepare. */
     trackOwner(streamId: string, owner: DesktopStreamOwner): void;
   };
@@ -453,7 +461,16 @@ async function handleDesktopOpen(
     return;
   }
   if (isErrorPayload(payload)) {
-    failWith(payload.error.code, payload.error.message);
+    // Bound both fields to what a Web `desktop-request-failed` may carry before
+    // forwarding. The connector's message is free-form (an RFB server can make it
+    // huge — 255 unknown security types produces well over 1 KiB), and the web
+    // validator drops the whole event when it exceeds the cap. That would turn a
+    // precise honest failure into a silent one: the pending RPC would only ever
+    // see the browser's own timeout. Truncate here so the code survives.
+    failWith(
+      payload.error.code.slice(0, 128),
+      payload.error.message.slice(0, MAX_DESKTOP_ERROR_MESSAGE_LENGTH),
+    );
     return;
   }
   const result = payload as DesktopPrepareResult;
@@ -507,8 +524,15 @@ function handleDesktopClose(
   // reserve through the paired binary session. A stale/forged close from
   // another tab must not kill someone's viewer.
   if (msg.streamId !== undefined) {
-    if (!deps.desktop.ownsStream(msg.streamId, viewerId)) return;
-    sendDesktopCancel(deps.gateway as Parameters<typeof sendDesktopCancel>[0], msg.instanceId, msg.streamId);
+    // Ownership is the authorization, and the OWNER record is the routing.
+    // `msg.instanceId` is browser-chosen: a client that owns i1's stream could
+    // name i2 and make the hub deliver a cancel to a connector that never had
+    // anything to do with that stream. The hub already stamped the authoritative
+    // {viewerId, accountId, instanceId} at reserve, so read all three from it.
+    const owner = deps.desktop.streamOwner(msg.streamId);
+    if (!owner || owner.viewerId !== viewerId) return;
+    if (owner.accountId !== accountId) return;
+    sendDesktopCancel(deps.gateway as Parameters<typeof sendDesktopCancel>[0], owner.instanceId, msg.streamId);
     deps.desktop.cancel(msg.streamId, "browser-close");
     return;
   }

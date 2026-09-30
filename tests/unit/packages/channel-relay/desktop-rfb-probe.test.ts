@@ -89,6 +89,31 @@ test("truncated handshakes wait for more bytes, truncated banners fail via probe
   expect(verdict).toMatchObject({ ok: false, code: "desktop-not-rfb" });
 });
 
+test("a live non-RFB service reports desktop-not-rfb, not rfb-unavailable", async () => {
+  // The evaluator is pure and therefore already correct for a non-RFB greeting,
+  // which is why the direct unit test above passes while production did not:
+  // `dialLoopbackTcp` rejects with a generic Error on an unparseable banner and
+  // `probeLoopbackRfb` folded every non-abort rejection into
+  // `desktop-rfb-unavailable`. Pointing desktop.port at a real HTTP listener was
+  // then reported as \"nothing is listening\", which sends an operator chasing a
+  // dead server instead of the wrong port. End to end through the real dial:
+  const httpServer = net.createServer((socket) => {
+    socket.on("error", () => {});
+    socket.write("HTTP/1.1 200 OK\\r\\nContent-Length: 2\\r\\n\\r\\nok");
+  });
+  await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", () => resolve()));
+  try {
+    const port = (httpServer.address() as { port: number }).port;
+    const verdict = await probeLoopbackRfb({ port, connectTimeoutMs: 1000 });
+    expect(verdict.ok).toBe(false);
+    expect(verdict).toMatchObject({ ok: false, code: "desktop-not-rfb" });
+    // And the operator-facing guidance for that code is the wrong-port message.
+    expect(desktopSetupGuidance("linux", "desktop-not-rfb")).toMatch(/not an RFB|VNC/);
+  } finally {
+    httpServer.close();
+  }
+});
+
 test("probe performs the RFB version exchange against a real server", async () => {
   // A standards-compliant fake: banner first, then WAIT for the client
   // version before sending SecurityTypes. The old read-only probe deadlocked

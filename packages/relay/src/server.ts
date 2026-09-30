@@ -1342,6 +1342,10 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
                 reason,
               ),
             ownsStream: (streamId, ownerViewerId) => runtime.desktopStreamOwners.get(streamId)?.viewerId === ownerViewerId,
+            // Hub-stamped identity for the stream. Returned to the close path so
+            // the connector cancel goes to the instance that actually owns the
+            // stream, never to whatever `instanceId` the browser put on the wire.
+            streamOwner: (streamId) => runtime.desktopStreamOwners.get(streamId),
             trackOwner: (streamId, owner) => {
               runtime.desktopStreamOwners.set(streamId, owner);
             },

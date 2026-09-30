@@ -119,8 +119,16 @@ RDP/远程管理能力。
 # -localhost 隐含 -listen localhost：把监听地址限制到本机。没有它 x11vnc 默认
 # 监听所有接口，5900 会暴露到 LAN/公网—— connector 固定拨 127.0.0.1 只约束
 # 「它连哪」，不约束「谁在听」，所以这一项不能省。
-x11vnc -display :0 -rfbport 5900 -localhost -passwdfile ~/.vnc/passwd
+# -rfbauth 读取传统 VNC password file（vncpasswd 格式，含 obfuscated hash）。
+# 用 -storepasswd 生成：它写的就是 -rfbauth 期望的格式。
+x11vnc -storepasswd ~/.vnc/passwd
+x11vnc -display :0 -rfbport 5900 -localhost -rfbauth ~/.vnc/passwd
 ```
+
+**不要**把 `~/.vnc/passwd` 配给 `-passwdfile`：后者读取文件**第一行的明文密码**，
+两者的文件格式不同。把 TigerVNC/vncpasswd 生成的 `~/.vnc/passwd` 当成 plaintext 读
+只会得到认证失败，而且错得很不明显。如果确实要用 `-passwdfile`，请务必确认该文件
+第一行就是明文密码，并把权限收紧到仅本人可读。
 
 ```bash
 # TigerVNC：新建一个虚拟桌面（需要连 DISPLAY 时）

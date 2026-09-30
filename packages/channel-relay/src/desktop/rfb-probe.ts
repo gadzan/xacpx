@@ -183,6 +183,19 @@ export interface RfbProbeOptions {
   dial?: (port: number, timeoutMs: number, signal?: AbortSignal) => Promise<Uint8Array>;
 }
 
+/**
+ * The port answered but was not speaking RFB. Distinct from a dial failure on
+ * purpose: an operator pointing `desktop.port` at an HTTP or SSH service needs
+ * "the port is listening but it is not a VNC server", not "nothing is
+ * listening" — the two have completely different fixes.
+ */
+export class NotRfbServerError extends Error {
+  constructor() {
+    super("not an RFB server banner");
+    this.name = "NotRfbServerError";
+  }
+}
+
 export async function probeLoopbackRfb(options: RfbProbeOptions): Promise<RfbProbeVerdict> {
   const dial = options.dial ?? dialLoopbackTcp;
   let bytes: Uint8Array;
@@ -194,6 +207,9 @@ export async function probeLoopbackRfb(options: RfbProbeOptions): Promise<RfbPro
     // reporting `desktop-rfb-unavailable` here would tell a viewer that no RFB
     // server exists when in fact the connector was logging out.
     if (options.signal?.aborted) throw err;
+    if (err instanceof NotRfbServerError) {
+      return { ok: false, code: "desktop-not-rfb", detail: err.message };
+    }
     return {
       ok: false,
       code: "desktop-rfb-unavailable",
@@ -281,7 +297,7 @@ async function dialLoopbackTcp(
         if (buffered.length < 12) return;
         const parsed = parseBanner(new Uint8Array(buffered.subarray(0, 12)));
         if (!parsed) {
-          fail(new Error("not an RFB server banner"));
+          fail(new NotRfbServerError());
           return;
         }
         phase = "security";
@@ -305,7 +321,7 @@ async function dialLoopbackTcp(
       const banner = Buffer.concat(bannerChunks).subarray(0, 12);
       const parsed = parseBanner(new Uint8Array(banner));
       if (!parsed) {
-        fail(new Error("not an RFB server banner"));
+        fail(new NotRfbServerError());
         return;
       }
       const verdict = evaluateRfbHandshake(parsed, new Uint8Array(Buffer.concat(securityChunks)));

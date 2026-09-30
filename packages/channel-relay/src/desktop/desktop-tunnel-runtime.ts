@@ -402,14 +402,20 @@ export class DesktopTunnelRuntime {
     for (const replay of earlyChunks) {
       forwardToWs(socket, tcp, replay);
     }
+    // Every transport listener below targets THIS tunnel object, never whatever
+    // `this.active` happens to be when the event lands. A is registered while
+    // active; a close/cancel then clears `active` and starts closing A's
+    // sockets; a reconnect can publish B before A's close handshake completes.
+    // A's late `close`/`error` must not find `this.active === B` and tear down a
+    // healthy replacement, so the guard is object identity, not stream name.
     socket.on("message", (data, isBinary) => {
       if (tunnel.closed) return;
       if (!isBinary || !(data instanceof Buffer)) {
-        this.closeActive("text-frame");
+        this.closeTunnel(tunnel, "text-frame");
         return;
       }
       if (data.byteLength === 0 || data.byteLength > DESKTOP_WS_MAX_PAYLOAD_BYTES) {
-        this.closeActive("oversize-frame");
+        this.closeTunnel(tunnel, "oversize-frame");
         return;
       }
       const ok = tcp.write(data);
@@ -430,15 +436,25 @@ export class DesktopTunnelRuntime {
     // every abnormal shutdown, and an 'error' with no listener throws — which
     // under `bun test` fails the entire file even when the close is handled.
     socket.on("error", () => {});
-    const onSocketClose = () => this.closeActive("hub-close");
-    socket.on("close", onSocketClose);
-    socket.on("error", () => this.closeActive("hub-error"));
+    socket.on("close", () => this.closeTunnel(tunnel, "hub-close"));
+    socket.on("error", () => this.closeTunnel(tunnel, "hub-error"));
     tcp.on("data", (chunk: Buffer) => {
       if (tunnel.closed) return;
       forwardToWs(socket, tcp, chunk);
     });
-    tcp.on("error", () => this.closeActive("rfb-error"));
-    tcp.on("close", () => this.closeActive("rfb-close"));
+    tcp.on("error", () => this.closeTunnel(tunnel, "rfb-error"));
+    tcp.on("close", () => this.closeTunnel(tunnel, "rfb-close"));
+  }
+
+  /**
+   * Close a specific tunnel if it is still THE active one and has not already
+   * been torn down. Callers must pass the tunnel they hold a reference to —
+   * taking no argument would read `this.active`, which by the time a late
+   * event arrives may be a different, healthy tunnel.
+   */
+  private closeTunnel(tunnel: ActiveTunnel, reason: string): void {
+    if (this.active !== tunnel || tunnel.closed) return;
+    this.closeActive(reason);
   }
 
   private closeActive(reason: string): void {
