@@ -75,6 +75,12 @@ function interactionOpenFrame(overrides: Partial<InteractionRequestDto> = {}): I
     elicitation: {
       mode: "form",
       message: "Which region should I deploy to?",
+      // The asking Agent, REQUIRED on the wire. This fixture claims to be "built
+      // the way `RelayChannel` builds it", so when core started carrying the
+      // identity onto the frame this fixture had to carry it too — otherwise the
+      // hub's validator rejects the frame and every e2e case here times out
+      // waiting for an open that can never arrive.
+      agent: { name: "codex" },
       fields: [
         {
           kind: "text",
@@ -437,6 +443,10 @@ describe("relay hub interaction transport (production direction)", () => {
       elicitation: {
         mode: "form",
         message: "Everything is already configured.",
+        // Zero FIELDS, still a real asking Agent. A full `elicitation` replacement
+        // has to restate everything the wire requires — dropping the agent makes
+        // the hub refuse the open before the test can observe anything.
+        agent: { name: "codex" },
         fields: [],
       },
     });

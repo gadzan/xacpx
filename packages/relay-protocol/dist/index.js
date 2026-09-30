@@ -1313,6 +1313,13 @@ var validateInteractionRequest = (p) => {
       return null;
     if (!optStrOrNull(elicitation.schemaTitle))
       return null;
+    if (!isObj(elicitation.agent))
+      return null;
+    const agent = elicitation.agent;
+    if (!isBoundedStr(agent.name, 200) || agent.name === "")
+      return null;
+    if (!optStrOrNull(agent.sessionAlias))
+      return null;
     const fieldsValue = elicitation.fields;
     if (!Array.isArray(fieldsValue))
       return null;
