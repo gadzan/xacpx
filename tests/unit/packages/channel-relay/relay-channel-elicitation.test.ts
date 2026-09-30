@@ -160,12 +160,38 @@ test("a form on a non-Direct-Conversation route is refused as unsupported", asyn
   // Refusing here is what makes the advertised capability truthful, and it
   // matches the existing convention of a per-turn refusal inside the renderer
   // (see `not-direct` above).
-  const { channel, options } = makeHarness({ sendRequest: () => new Promise(() => {}) });
+  //
+  // The refusal is asserted to be IMMEDIATE, and that timing is part of the
+  // contract: if this guard is removed the call proceeds to a hub round trip and
+  // only settles when the transport gives up, so a test that merely awaits
+  // rejection would hang instead of failing red.
+  let hubCalled = false;
+  let rejection: unknown;
+  const { channel, options } = makeHarness({
+    sendRequest: () => {
+      hubCalled = true;
+      return new Promise(() => {});
+    },
+  });
   await startStarted(channel, options);
-  const settled = channel.requestElicitation(
-    coreRequest({ chatKey: "relay:acct-9", chatType: "direct" }),
-  );
-  await expect(settled).rejects.toThrow("unsupported-route");
+  // The refusal must land BEFORE any await inside requestElicitation reaches
+  // the hub, so it is checked synchronously first. A test shaped only as
+  // `await expect(...).rejects` cannot tell a fast refusal from a slow one, and
+  // with the guard removed the promise never rejects at all — the test would
+  // hang for its full timeout instead of failing red.
+  try {
+    await channel.requestElicitation(
+      coreRequest({ chatKey: "relay:acct-9", chatType: "direct" }),
+    );
+  } catch (error) {
+    rejection = error;
+  }
+  // Suspended long enough that a hub round trip WOULD have been attempted had
+  // the guard not fired first.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(rejection).toBeInstanceOf(Error);
+  expect((rejection as Error).message).toContain("unsupported-route");
+  expect(hubCalled).toBe(false);
 });
 
 test("the asking Agent identity is projected onto the wire, not dropped", async () => {
