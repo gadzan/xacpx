@@ -487,7 +487,7 @@ against it after restart. That is a design of its own, not a flag.
 |---|---|
 | PR #360 (M2 + M4, Discord + Feishu renderers) | **merged** as `e3b5b764` (squash) |
 | PR #361 (this milestone) | rebased onto post-#360 `main`; head is M3's 12 commits plus the post-review fixes — #360's own 50 commits are no longer duplicated |
-| Head | `301831a6` — M3's own commits plus the post-review fixes |
+| Head | `b0a15dd3` — M3's own commits plus the post-review fixes |
 | CI | full run on that SHA |
 
 The first CI run on the rebased head failed one test on both Linux and macOS.
