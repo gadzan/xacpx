@@ -777,6 +777,41 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
+  retirePreviousOwnerClaims(owner: string): string[] {
+    return this.sqlite.transaction(() => {
+      const orphaned = this.sqlite.all<DispatchRow>(
+        `SELECT * FROM pending_dispatches
+         WHERE state = 'claimed'
+           AND owner IS NOT NULL
+           AND owner <> ?`,
+        [owner],
+      );
+      const retired: string[] = [];
+      for (const row of orphaned) {
+        const member = this.requireMemberTurn(row.member_turn_id);
+        const run = this.requireRun(row.run_id);
+        if (TERMINAL_RUN_STATES.includes(run.state)) {
+          // Already finished business: leave it for the normal recovery path,
+          // which finishes terminal-run dispatches identically.
+          continue;
+        }
+        if (member.startedAt) {
+          // Crash-after-start is indeterminate territory: leave it for the
+          // existing recovery path, which seals evidence correctly.
+          continue;
+        }
+        this.sqlite.run(
+          `UPDATE pending_dispatches
+           SET state = 'pending', owner = NULL, claimed_at = NULL, lease_expires_at = NULL
+           WHERE id = ?`,
+          [row.id],
+        );
+        retired.push(row.id);
+      }
+      return retired;
+    });
+  }
+
   /**
    * Recompute Run scheduling state after one member re-queues (pre-start
    * recovery or claim release). Never blindly resets to queued: when any

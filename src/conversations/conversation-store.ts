@@ -264,6 +264,18 @@ export interface ConversationStore {
   getDispatchForMemberTurn(memberTurnId: string): PendingDispatch | undefined;
   listDispatchesForRun(runId: string): PendingDispatch[];
   recoverExpiredClaims(now: string): RecoveredClaim[];
+  /** Retire `claimed` dispatches whose owner can no longer be alive, WITHOUT
+   *  touching provenance — the startup counterpart of retireHeldClaim.
+   *  Called once after acquiring the exclusive consumer lock, before the
+   *  first drain: any `claimed` row whose owner differs from the live
+   *  dispatcher's owner id belongs to a previous process (graceful shutdown
+   *  retires its own holds, so survivors are crash orphans or failed-retire
+   *  leftovers). Each is returned to `pending` with owner cleared, keeping
+   *  generation/authorityEpoch/humanIngress/origin/attempt verbatim — an
+   *  orderly handoff, never the recovery rewrite. Started members are
+   *  skipped (crash-after-start is indeterminate territory, owned by the
+   *  existing recovery path). Returns the retired dispatch ids. */
+  retirePreviousOwnerClaims(owner: string): string[];
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined;
   hasDurableBotWork(botId: string): boolean;
   /** True when any durable rows exist for a Group Conversation (runs,

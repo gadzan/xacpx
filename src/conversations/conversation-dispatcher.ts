@@ -53,7 +53,9 @@ const DEFAULT_LEASE_MS = 30_000;
 export class ConversationDispatcher {
   private readonly now: () => Date;
   private readonly leaseMs: number;
-  private readonly ownerId: string;
+  /** Stable per-process claim owner. Published so activation can sweep
+   *  previous-owner claims after acquiring the exclusive consumer lock. */
+  readonly ownerId: string;
   readonly authorityEpoch: string;
   private readonly hooks?: ConversationDispatcherHooks;
   private draining = false;
@@ -149,12 +151,19 @@ export class ConversationDispatcher {
           now: this.now().toISOString(),
         });
       } catch (error) {
-        if (!(error instanceof ConversationError) || error.code !== "stale_claim") {
-          throw error;
+        // stale_claim means the hold already resolved elsewhere (recovered,
+        // started, terminal): forget it. Any OTHER store error keeps the
+        // hold registered — the durable row may still be our live `claimed`
+        // claim, and deleting the in-memory entry would orphan it from every
+        // recovery path this process still owns. The error still propagates
+        // so shutdown fails visibly instead of reporting a clean retire.
+        if (error instanceof ConversationError && error.code === "stale_claim") {
+          this.heldWriterSlotClaims.delete(dispatchId);
+          continue;
         }
-      } finally {
-        this.heldWriterSlotClaims.delete(dispatchId);
+        throw error;
       }
+      this.heldWriterSlotClaims.delete(dispatchId);
     }
   }
 

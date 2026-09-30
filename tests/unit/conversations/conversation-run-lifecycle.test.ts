@@ -6773,6 +6773,209 @@ test("PR7 scheduler: non-stale renewHeldClaim failure fails the drain without or
   expect(fakeRunner(second.runner).runs).toHaveLength(2);
   second.store.close();
 });
+test("PR7 scheduler: failed shutdown retire keeps the hold for the next kick", async () => {
+  // retireHeldClaim throws a NON-stale error during shutdown: the hold must
+  // stay registered (not silently forgotten), the drain-visible shutdown
+  // rejects, and the NEXT kick's per-pass renewal picks B back up — same
+  // generation, humanIngress and human-explicit origin intact.
+  const second = await createLifecycle({ autoKick: false, leaseMs: 30_000 });
+  await second.service.activateAfterConsumerLock();
+  seedTesterBot(second.state);
+  const group = await second.bots.createGroup({ title: "RetireFail", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await second.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(second.runner).hang = hang;
+  const accepted = await second.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-retire-fail",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  // Healthy drain first: A runs, B is claimed and held (renewals succeed).
+  void second.dispatcher.kick();
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+  const testerTurn = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  const heldBefore = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(heldBefore.state).toBe("claimed");
+  const attemptBefore = testerTurn.attempt;
+  // Fail ONLY retireHeldClaim with a transient error, then shut down while A
+  // still hangs. Shutdown awaits A, then its retire loop throws visibly —
+  // but the hold must still be registered afterwards.
+  const realRetire = second.store.retireHeldClaim.bind(second.store);
+  void realRetire;
+  second.store.retireHeldClaim = (() => {
+    throw new Error("injected retire I/O failure");
+  }) as typeof second.store.retireHeldClaim;
+  const shutting = second.dispatcher.shutdown();
+  await tick();
+  hang.resolve();
+  await expect(shutting).rejects.toThrow("injected retire I/O failure");
+  const heldAfter = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(heldAfter.state).toBe("claimed");
+  expect(heldAfter.generation).toBe(heldBefore.generation);
+  expect(heldAfter.humanIngress).toEqual(HUMAN_INGRESS);
+  expect(second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.origin).toBe("human-explicit");
+  // The dead dispatcher can never kick again (closed is permanent), so the
+  // next consumer is a fresh one on the same sqlite file — exactly the
+  // restart shape. Its activation sweep must retire B (previous owner,
+  // live lease) to pending with provenance verbatim, then execute it.
+  second.store.retireHeldClaim = realRetire;
+  second.store.close();
+  const reopenedStore = await SqliteConversationStore.open(second.path);
+  const reopenedRunner = new FakeRunner();
+  const reopenedDispatcher = new ConversationDispatcher(
+    reopenedStore, second.runtime, reopenedRunner, second.sessions, {
+      now: second.nowFn,
+      ownerId: "dispatcher-b",
+      leaseMs: 30_000,
+    },
+  );
+  const reopenedService = new ConversationRunService(
+    reopenedStore, second.bots, second.runtime, reopenedDispatcher, second.sessions, second.state, second.stateStore, {
+      now: second.nowFn,
+      releaseOwnedSession: createStrictOwnedSessionRelease({ sessions: second.sessions, transport: second.physical }),
+    },
+  );
+  await reopenedService.activateAfterConsumerLock();
+  await waitUntil(() => reopenedRunner.runs.length === 1, 4000);
+  expect(reopenedRunner.runs[0]?.botId).toBe(TESTER_ID);
+  await waitUntil(() => reopenedStore.getRun(accepted.run.id)?.state === "completed");
+  const testerDone = reopenedStore.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerDone.origin).toBe("human-explicit");
+  expect(testerDone.attempt).toBe(attemptBefore);
+  // Authority note (same contract as the retire test): the fresh dispatcher
+  // mints a new authorityEpoch, so the live claim under it runs as
+  // orchestration — row-level ingress was already asserted intact above.
+  reopenedStore.close();
+});
+
+test("PR7 scheduler: retirePreviousOwnerClaims retires foreign live claims with provenance verbatim", async () => {
+  // Store seam: a previous dispatcher died holding B `claimed` with a LIVE
+  // lease. The sweep retires it to `pending` — owner cleared, provenance
+  // verbatim — before any drain runs. Started members are skipped.
+  const first = await createLifecycle({ autoKick: false, leaseMs: 30_000, ownerId: "dispatcher-old" });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Orphan", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(first.runner).hang = hang;
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-orphan-hold",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  void first.dispatcher.kick();
+  await waitUntil(() => fakeRunner(first.runner).runs.length === 1);
+  const testerTurn = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(first.store.getDispatchForMemberTurn(testerTurn.id)?.state).toBe("claimed");
+  const attemptBefore = testerTurn.attempt;
+  const generationBefore = first.store.getDispatchForMemberTurn(testerTurn.id)!.generation;
+  // Crash: close WITHOUT shutdown (no retire runs) while A hangs and B holds.
+  first.store.close();
+  const reopenedStore = await SqliteConversationStore.open(first.path);
+  const swept = reopenedStore.retirePreviousOwnerClaims("dispatcher-new");
+  expect(swept).toEqual([reopenedStore.getDispatchForMemberTurn(testerTurn.id)!.id]);
+  const retired = reopenedStore.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(retired.state).toBe("pending");
+  expect(retired.owner).toBeUndefined();
+  expect(retired.generation).toBe(generationBefore);
+  expect(retired.humanIngress).toEqual(HUMAN_INGRESS);
+  expect(reopenedStore.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.origin).toBe("human-explicit");
+  expect(reopenedStore.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.attempt).toBe(attemptBefore);
+  reopenedStore.close();
+});
+
+test("PR7 scheduler: activation executes a retired previous-owner claim with no wake or lease wait", async () => {
+  // Same crash shape, but B's execution parks in a hook gate: A settles, the
+  // recheck launches B, B parks BEFORE markExecutionStarted (still
+  // `dispatched`/unstarted, still sweepable). Crash with B parked-held, then
+  // reopen: activation sweeps, first drain claims and executes B — no wake,
+  // no lease wait, no recovery rewrite.
+  const releaseB = deferred<void>();
+  let bParked = false;
+  const first = await createLifecycle({
+    autoKick: false,
+    leaseMs: 30_000,
+    ownerId: "dispatcher-old",
+    hooks: {
+      beforeExecutionStart: async (work) => {
+        if (work.memberTurn.botId === TESTER_ID) {
+          bParked = true;
+          await releaseB.promise;
+        }
+      },
+    },
+  });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Orphan2", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(first.runner).hang = hang;
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-orphan-hold-2",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  void first.dispatcher.kick();
+  await waitUntil(() => fakeRunner(first.runner).runs.length === 1);
+  const testerTurn = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  const attemptBefore = testerTurn.attempt;
+  // Settle A: the recheck launches B, which parks in the hook gate —
+  // claimed, dispatched, unstarted.
+  hang.resolve();
+  await waitUntil(() => first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === BOT_ID)?.state === "completed");
+  await waitUntil(() => bParked);
+  expect(first.store.getDispatchForMemberTurn(testerTurn.id)?.state).toBe("claimed");
+  expect(first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.state).toBe("dispatched");
+  // Crash with B parked-held. Never resolve releaseB: the first drain stays
+  // parked inside B's execute and performs no further sqlite access.
+  first.store.close();
+  const reopenedStore = await SqliteConversationStore.open(first.path);
+  const reopenedRunner = new FakeRunner();
+  const reopenedDispatcher = new ConversationDispatcher(
+    reopenedStore, first.runtime, reopenedRunner, first.sessions, {
+      now: first.nowFn,
+      ownerId: "dispatcher-new",
+      leaseMs: 30_000,
+    },
+  );
+  const reopenedService = new ConversationRunService(
+    reopenedStore, first.bots, first.runtime, reopenedDispatcher, first.sessions, first.state, first.stateStore, {
+      now: first.nowFn,
+      releaseOwnedSession: createStrictOwnedSessionRelease({ sessions: first.sessions, transport: first.physical }),
+    },
+  );
+  await reopenedService.activateAfterConsumerLock();
+  await waitUntil(() => reopenedRunner.runs.length === 1, 4000);
+  expect(reopenedRunner.runs[0]?.botId).toBe(TESTER_ID);
+  await waitUntil(() => reopenedStore.getRun(accepted.run.id)?.state === "completed");
+  const testerDone = reopenedStore.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerDone.origin).toBe("human-explicit");
+  expect(testerDone.attempt).toBe(attemptBefore);
+  reopenedStore.close();
+});
+
+
+
 
 test("PR7 scheduler: stale renewHeldClaim drops the hold and routes through recovery", async () => {
   // The contrast case: stale_claim IS swallowed. The hold drops, the drain
