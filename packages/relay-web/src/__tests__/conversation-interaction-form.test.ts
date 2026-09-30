@@ -49,6 +49,26 @@ function mountForm(
     expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBeDefined();
   });
 
+  it("code-point length governs a CHOSEN option too", () => {
+    // The astral case, on the option path: one emoji is ONE character per
+    // JSON Schema, and `.length` calls it 2. Core measures the chosen option in
+    // code points, so `minLength: 2` over a single-emoji option is an answer core
+    // rejects — and the only value the field can produce is that emoji.
+    const wrapper = mountForm(
+      [{
+        kind: "single-select",
+        key: "mood",
+        title: "Mood",
+        required: true,
+        minLength: 2,
+        options: [{ value: "\u{1F600}", label: "Singular emoji" }],
+      }],
+      { mood: "\u{1F600}" },
+    );
+    expect(wrapper.find('[data-test="interaction-invalid"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBeDefined();
+  });
+
   it("EVERY format the renderer cannot verify exactly blocks Submit", () => {
     // Core uses ajv-formats; a second implementation here would drift, and the
     // drift would surface only after the interaction had already resolved. So the
@@ -67,6 +87,51 @@ function mountForm(
       expect(wrapper.find('[data-test="interaction-invalid"]').exists(), format).toBe(true);
       expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled"), format).toBeDefined();
     }
+  });
+
+  it("a selected OPTION the renderer cannot verify blocks Submit too", () => {
+    // The same round-5 gap the `text` test above cannot see: core applies the
+    // agent's string constraints to a `single-select`'s CHOSEN OPTION, and its
+    // validator says so ("The agent's own string constraints apply to the chosen
+    // option too"). `enum: ["2026-02-30"]` with `format: "date"` is a legal
+    // schema whose only offered value core's strict `isDate` rejects.
+    //
+    // The control looks perfectly reasonable in the browser — the agent itself
+    // offered that option — so the check cannot be "did the user type something
+    // odd", it has to be the same field constraint applied to the selected value.
+    const wrapper = mountForm(
+      [{
+        kind: "single-select",
+        key: "day",
+        title: "Day",
+        required: true,
+        format: "date",
+        options: [{ value: "2026-02-30", label: "Feb 30" }],
+      }],
+      { day: "2026-02-30" },
+    );
+    expect(wrapper.find('[data-test="interaction-invalid"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBeDefined();
+  });
+
+  it("minLength and maxLength apply to the CHOSEN option, not just typed text", () => {
+    // `enum: ["x"]` with `minLength: 2`: the user can only pick `x`, and core
+    // rejects `x` on the same code-point measurement it uses for text. Blocking
+    // on the NOTE is impossible here — a browser that only length-checks `text`
+    // lets this through and core rejects after the interaction resolved.
+    const wrapper = mountForm(
+      [{
+        kind: "single-select",
+        key: "pick",
+        title: "Pick",
+        required: true,
+        minLength: 2,
+        options: [{ value: "x", label: "Only" }],
+      }],
+      { pick: "x" },
+    );
+    expect(wrapper.find('[data-test="interaction-invalid"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBeDefined();
   });
 
   it("the required shape is shown as metadata, never executed", () => {

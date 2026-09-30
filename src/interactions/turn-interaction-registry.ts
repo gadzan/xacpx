@@ -132,6 +132,19 @@ function routeKey(interactionId: string, kind: TurnInteractionKind): string {
   return `${interactionId}\u0000${kind}`;
 }
 
+/**
+ * Inverse of `routeKey`: the interactionId a storage key belongs to.
+ *
+ * Split on the FIRST separator, not the last, because an interactionId may
+ * itself contain anything — including a NUL-free but arbitrary string — while
+ * the kind is one of two fixed literals. Slicing at the first separator is the
+ * only reading that is correct for every id.
+ */
+function interactionIdOf(routeKeyStr: string): string {
+  const index = routeKeyStr.indexOf("\u0000");
+  return index === -1 ? routeKeyStr : routeKeyStr.slice(0, index);
+}
+
 class TurnInteractionRegistryImpl implements TurnInteractionRegistry {
   /**
    * Routed addresses, keyed by (interactionId, kind).
@@ -256,19 +269,26 @@ class TurnInteractionRegistryImpl implements TurnInteractionRegistry {
 
   /** Test/teardown helper: drop every binding and notify subscribers. */
   clear(): void {
-    // Liveness-first: collect the turns that are about to lose their last
-    // route, drop everything, then notify once per dead turn. Iterating and
-    // deleting per key would notify a turn three times as its kinds vanish.
+    // Snapshot the listener sets BEFORE clearing anything. The first version of
+    // this cleared `abortListeners` first and then looked them up, so every
+    // `get` returned `undefined` and `clear()` silently failed to notify — the
+    // interface said "drop every binding and notify subscribers" and it did
+    // only the first half.
+    const notifications: Array<Set<() => void>> = [];
     const dying = new Set<string>();
     for (const key of this.turns.keys()) {
-      const interactionId = key.slice(0, key.indexOf("\u0000"));
-      dying.add(interactionId);
+      dying.add(interactionIdOf(key));
     }
     this.turns.clear();
-    this.abortListeners.clear();
     for (const interactionId of dying) {
       const listeners = this.abortListeners.get(livenessKey(interactionId));
-      if (!listeners) continue;
+      if (listeners !== undefined && listeners.size > 0) {
+        notifications.push(listeners);
+      }
+    }
+    this.abortListeners.clear();
+    for (const listeners of notifications) {
+      // Copy first: a listener may unsubscribe while iterating.
       for (const listener of [...listeners]) {
         try {
           listener();

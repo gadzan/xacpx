@@ -183,6 +183,35 @@ function formatProblem(field: InteractionFieldDto, _value: string): string | nul
   return "unverifiable";
 }
 
+/**
+ * The agent's own string constraints on a value this field already carries.
+ *
+ * Applies to `text` AND `single-select`. Core's comment in
+ * `validateElicitationAnswer` is explicit: "The agent's own string constraints
+ * apply to the chosen option too." A `single-select` is not a free-text control,
+ * but its value is still an agent-supplied string, so `minLength`, `maxLength`,
+ * and `format` are evaluated against it exactly as for typed text.
+ *
+ * That is not theoretical. `enum: ["2026-02-30"]` with `format: date` is a legal
+ * schema: the browser shows a list the agent itself offered, the user picks the
+ * only entry, Submit is enabled, the hub resolves Accepted — and core then
+ * rejects it, because core runs the strict calendar check the browser cannot
+ * run. The user cannot correct it, because the form is gone. `enum: ["x"]` with
+ * `minLength: 2` is the same shape.
+ *
+ * `pattern` remains the one exception, for both kinds: never executed, only
+ * displayed. See the note in the `text` path.
+ */
+function stringConstraintProblems(field: InteractionFieldDto, value: string): string[] {
+  const problems: string[] = [];
+  const length = codePointLength(value);
+  if (field.minLength !== undefined && length < field.minLength) problems.push("minLength");
+  if (field.maxLength !== undefined && length > field.maxLength) problems.push("maxLength");
+  const format = formatProblem(field, value);
+  if (format !== null) problems.push(format);
+  return problems;
+}
+
 function fieldProblems(field: InteractionFieldDto, answer: InteractionValueDto | undefined): string[] {
   const problems: string[] = [];
   const present = answer !== undefined && !(typeof answer === "string" && answer === "");
@@ -190,13 +219,8 @@ function fieldProblems(field: InteractionFieldDto, answer: InteractionValueDto |
     if (field.required) problems.push("required");
     return problems;
   }
-  if (field.kind === "text") {
-    const text = String(answer);
-    const length = codePointLength(text);
-    if (field.minLength !== undefined && length < field.minLength) problems.push("minLength");
-    if (field.maxLength !== undefined && length > field.maxLength) problems.push("maxLength");
-    const format = formatProblem(field, text);
-    if (format !== null) problems.push(format);
+  if (field.kind === "text" || field.kind === "single-select") {
+    problems.push(...stringConstraintProblems(field, String(answer)));
     // NOTE: `field.pattern` is deliberately NOT evaluated here.
     //
     // Core states the rule and the reason: an agent-provided regex is never

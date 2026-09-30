@@ -531,3 +531,64 @@ chatKeys, and the renderer's own `not-direct` refusal). A turn whose chatKey is
 not a Direct Conversation key is refused as `unsupported-route`, and the
 capability comment now states plainly what the declaration cannot express: it is
 per-channel, while the renderer is per-route.
+
+## Addendum - fifth re-review round (2026-10-01)
+
+Reviewing the shared-registry round. The route fix was confirmed to hold on the
+real wiring; the round's own rewrite introduced one new defect and left one
+terminal-mismatch hole open.
+
+### P1 - `minLength`/`maxLength`/`format` were skipped for `single-select` (FIXED)
+
+Core is explicit that the agent's string constraints apply to the CHOSEN option,
+not only to typed text: `validateElicitationAnswer`'s `single-select` case checks
+the value against the offered options and then applies `minLength`, `maxLength`,
+and the four formats, with the comment "The agent's own string constraints apply
+to the chosen option too." `relayFieldsFrom()` carries all of them onto the wire.
+
+The web form's `fieldProblems()` checked only that the answer was an offered
+option, so a legal schema the agent itself authored went straight through:
+
+    enum: ["2026-02-30"], format: "date"
+
+The browser shows one option, it came from the agent, the user picks it, Submit
+is enabled, the hub resolves Accepted, and core then rejects it under strict
+calendar validation. `enum: ["x"]` with `minLength: 2` is the same shape with the
+code-point measurement.
+
+The constraint block is now shared and applied to `text | single-select`.
+`pattern` remains the one exception for both kinds: displayed, never executed.
+
+This is also why the round-4 "EVERY format blocks Submit" test did not catch it —
+it only constructed `kind: "text"`. A test that names every format but one field
+kind proves the rule for that kind, not the rule.
+
+Three regressions added: `format` on a selected option, `minLength` on a selected
+option, and the astral/code-point case on a selected option. All three fail when
+the shared block is scoped back to `text` alone.
+
+### P2 - `clear()` never notified anyone (FIXED, and it was mine)
+
+The registry rewrite cleared `abortListeners` and then looked the sets back up,
+so every read returned `undefined` and `clear()` dropped the bindings silently —
+while the interface still promised "Drop every binding and notify subscribers".
+The daemon stayed safe only because both brokers abort their own pending before
+calling `clear()` and no `await` separates the two, which is luck, not design.
+
+Now the listener sets are snapshotted before anything is cleared, and the
+notifications fire once per dead turn after the maps are emptied.
+
+Two regressions: `subscribeAbort -> clear() -> fired === 1`, and the same turn
+bound as BOTH kinds notifies exactly once. Notifying per-kind would fence a live
+permission request because an unrelated elicitation route was cleared.
+
+### Stale prose corrected
+
+- `InteractionFieldDto.format` said "Text-only" and "the values the renderer knows
+  are `date` and `email`". It is not text-only (see the P1 above), and the only
+  safe renderer behavior is to treat EVERY format as unverifiable, because
+  `email`/`uri` are `ajv-formats` regexes and `date`/`date-time` need real
+  calendar validation that `Date.parse` does not perform.
+- `InteractionFieldDto.pattern` said a supporting renderer "compiles it in a
+  guarded branch". Neither core nor the Relay renderer executes it now: it is
+  display metadata, and the asking Agent validates its own pattern.

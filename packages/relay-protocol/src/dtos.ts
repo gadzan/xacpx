@@ -785,27 +785,42 @@ export interface InteractionFieldDto {
   minLength?: number;
   maxLength?: number;
   /**
-   * A named format the renderer can check locally. Text-only.
+   * A named format core validates the answer against.
    *
    * Present because the transport is terminal: a value core rejects arrives
    * after the interaction has already resolved, so the renderer has to be able
    * to catch an unparseable value while the form is still open. A renderer that
    * cannot check it simply ignores it and core still validates.
    *
+   * NOT text-only. Core applies the same format to a `single-select`'s chosen
+   * option — its validator comment is "The agent's own string constraints apply
+   * to the chosen option too" — so `enum: ["2026-02-30"]` with `format: "date"`
+   * is a legal schema whose only offered value core will reject. A renderer
+   * that scopes this to text would let that through.
+   *
    * OPEN string, not an enum: core's schema is the authority on which names
    * exist and it declares `format?: string`, so an enum here would need updating
    * per new format and would reject a legal one. Bounded by the field validator.
-   * The values the renderer knows are `date` and `email`; anything else it
-   * ignores.
+   * The values core knows are `email`, `uri`, `date`, and `date-time`; an
+   * unknown name is an annotation core preserves and does not reject.
+   *
+   * Note what a renderer can safely do with this: NONE of them are checkable
+   * without duplicating core. `email` and `uri` are `ajv-formats` regexes, and
+   * `date`/`date-time` need real calendar validation — `Date.parse` normalizes
+   * `2026-02-30` into March instead of rejecting it. A renderer with no shared
+   * implementation of these must treat the field as UNVERIFIABLE rather than
+   * approximate it.
    */
   format?: string;
   /**
    * A regex the answer must match, as source text.
    *
-   * Carried because the renderer cannot otherwise express a format core knows
-   * about, and the transport is terminal. Bounded and accepted as TEXT only: it
-   * is never compiled with an unsanitised pattern, and a renderer that supports
-   * it compiles it in a guarded branch with a fallback of ignoring it.
+   * Metadata, carried so a renderer can DISPLAY the required shape to the human.
+   * It is never executed — not by core and not by the renderer: core's stated
+   * rule is that an agent-supplied regex is a resource-exhaustion vector, so it
+   * validates nothing against it and leaves the check to the asking Agent, which
+   * validates its own pattern on the answer it receives. Bounded and passed as
+   * TEXT only.
    */
   pattern?: string;
   /** Integer-ness for `number` fields; ACP has no separate integer kind. */
