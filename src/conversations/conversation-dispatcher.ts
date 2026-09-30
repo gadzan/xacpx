@@ -121,6 +121,14 @@ export class ConversationDispatcher {
     if (this.drainTask) {
       await this.drainTask.catch(() => undefined);
     }
+    // A failed drain rejects while provider turns it launched are still
+    // running (the hold-time failure above rejects with A in flight). The
+    // drain task no longer tracks them, so shutdown must await the in-flight
+    // set directly — otherwise a test or host that shuts down right after a
+    // drain failure leaks running executions.
+    if (this.inFlightExecutions.size > 0) {
+      await Promise.allSettled(this.inFlightExecutions.values());
+    }
   }
 
   private async runDrain(): Promise<void> {
@@ -369,14 +377,16 @@ export class ConversationDispatcher {
   }
 
   private holdClaimForWriterSlot(work: ClaimedWork): void {
-    // Renew at hold time: the wait that follows may outlast the original
-    // lease (LLM sibling turns routinely exceed 30s). Without this, the next
-    // recoverExpiredClaims() treats the scheduling wait as crash recovery.
-    // A stale claim here means it is already gone (lost race, cancelled
-    // Run): do not hold what we cannot renew; execute()'s fences still guard
-    // the stale object if it is somehow re-read. Any other store error
-    // propagates: failing the drain visibly is safer than parking a durable
-    // claim we never registered as held.
+    // Register FIRST, renew second. The durable dispatch is already `claimed`
+    // by us at this point; if the renewal below throws a non-stale store
+    // error, the drain fails visibly — but the hold must already exist so
+    // the NEXT kick's per-pass renewHeldClaims() picks the claim back up
+    // instead of leaving a `claimed` row no path can see (claimOne only
+    // returns `pending`; recheck only sees registered holds). Only
+    // stale_claim removes the registration: the claim is already gone (lost
+    // race, cancelled Run), and execute()'s fences still guard the stale
+    // object if it is somehow re-read.
+    this.heldWriterSlotClaims.set(work.dispatch.id, work);
     try {
       const renewed = this.store.renewHeldClaim({
         dispatchId: work.dispatch.id,
@@ -388,6 +398,7 @@ export class ConversationDispatcher {
       this.heldWriterSlotClaims.set(work.dispatch.id, { ...work, dispatch: renewed });
     } catch (error) {
       if (error instanceof ConversationError && error.code === "stale_claim") {
+        this.heldWriterSlotClaims.delete(work.dispatch.id);
         return;
       }
       throw error;

@@ -6491,6 +6491,82 @@ test("PR7 scheduler: held writer-slot claim survives a lease boundary with prove
   second.store.close();
 });
 
+test("PR7 scheduler: hold-time renewHeldClaim failure keeps the hold for the next kick", async () => {
+  // Fail B's VERY FIRST hold renewal (before it ever enters the held map).
+  // The drain must reject visibly, but the next kick's per-pass
+  // renewHeldClaims() must pick B back up — same generation, same attempt,
+  // humanIngress and human-explicit origin — and execute it without waiting
+  // for lease recovery. The pre-fix code registered the hold only after a
+  // successful renewal, so this path stranded a durable `claimed` row no
+  // path could see until expiry.
+  const second = await createLifecycle({ autoKick: false, leaseMs: 100 });
+  await second.service.activateAfterConsumerLock();
+  seedTesterBot(second.state);
+  const group = await second.bots.createGroup({ title: "HoldFail", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await second.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(second.runner).hang = hang;
+  const accepted = await second.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-hold-fail",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  // Patch BEFORE the first kick: the first renewHeldClaim call in this drain
+  // is B's hold-time renewal (A never defers — nothing else runs yet).
+  const realRenew = second.store.renewHeldClaim.bind(second.store);
+  let calls = 0;
+  second.store.renewHeldClaim = ((input: unknown) => {
+    calls += 1;
+    if (calls === 1) {
+      throw new Error("injected hold-time store failure");
+    }
+    return realRenew(input as never);
+  }) as typeof second.store.renewHeldClaim;
+  // Hold the drain promise itself: a later kick() would only coalesce
+  // (draining === true) and resolve without observing the failure. A is
+  // claimed and launched first, then B's hold-time renewal throws — so the
+  // drain rejects only after A has started (runs.length === 1 observes the
+  // launch, the rejection surfaces alongside it).
+  const drain = second.dispatcher.kick();
+  const rejection = drain.then(
+    () => "resolved",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  );
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+  expect(await rejection).toBe("injected hold-time store failure");
+  const testerTurn = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  const heldBefore = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  const attemptBefore = testerTurn.attempt;
+  hang.resolve();
+  // The durable claim is untouched: still claimed by us, same generation,
+  // human route intact, member still dispatched (not requeued as recovery).
+  const heldAfter = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(heldAfter.state).toBe("claimed");
+  expect(heldAfter.generation).toBe(heldBefore.generation);
+  expect(heldAfter.humanIngress).toEqual(HUMAN_INGRESS);
+  expect(second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.origin).toBe("human-explicit");
+  // Restore the real renewal: the next kick's per-pass renewHeldClaims()
+  // picks the STILL-REGISTERED hold back up (no lease expiry waited out),
+  // and B executes with attempt and provenance intact.
+  second.store.renewHeldClaim = realRenew;
+  await second.dispatcher.kick();
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 2);
+  await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
+  const testerDone = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerDone.origin).toBe("human-explicit");
+  expect(testerDone.attempt).toBe(attemptBefore);
+  expect(second.store.getDispatchForMemberTurn(testerDone.id)?.generation).toBe(heldBefore.generation);
+  expect(second.store.getDispatchForMemberTurn(testerDone.id)?.humanIngress).toEqual(HUMAN_INGRESS);
+  await second.dispatcher.shutdown();
+  second.store.close();
+});
+
 test("PR7 scheduler: non-stale renewHeldClaim failure fails the drain without orphaning the claim", async () => {
   // A transient store failure during renewal must NOT look like losing the
   // claim: the drain fails visibly, and the durable dispatch stays claimed
