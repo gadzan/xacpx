@@ -269,7 +269,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
             :key="String(option)"
             type="button"
             class="rounded border border-border px-3 py-1 text-xs transition-colors"
-            :class="String(hasAnswer(answers, field.key) ? answers[field.key] : "") === String(option)
+            :class="String(hasAnswer(answers, field.key) ? answers[field.key] : '') === String(option)
               ? 'border-accent bg-accent/10 text-accent'
               : 'text-fg hover:bg-surface'"
             @click="emit('answer', field.key, option)"
@@ -285,7 +285,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
           :id="controlName(field)"
           :data-test="`interaction-select-${field.key}`"
           class="w-full rounded border border-border bg-surface px-2 py-1.5 text-xs text-fg"
-          :value="String(answers[field.key] ?? '')"
+          :value="String(hasAnswer(answers, field.key) ? answers[field.key] : '')"
           @change="onSelect(field, $event)"
         >
           <option value="" disabled>{{ t('bot.interaction.choose') }}</option>
@@ -324,7 +324,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
           inputmode="decimal"
           class="w-full rounded border border-border bg-surface px-2 py-1.5 text-xs text-fg"
           :placeholder="field.title"
-          :value="String(answers[field.key] ?? field.defaultValue ?? '')"
+          :value="String(hasAnswer(answers, field.key) ? answers[field.key] : field.defaultValue ?? '')"
           @input="onNumberInput(field, $event)"
         />
 
@@ -337,7 +337,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
           type="text"
           class="w-full rounded border border-border bg-surface px-2 py-1.5 text-xs text-fg"
           :placeholder="field.title"
-          :value="String(answers[field.key] ?? field.defaultValue ?? '')"
+          :value="String(hasAnswer(answers, field.key) ? answers[field.key] : field.defaultValue ?? '')"
           @input="onTextInput(field, $event)"
         />
       </div>
