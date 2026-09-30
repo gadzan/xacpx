@@ -3021,9 +3021,10 @@ test("recovery of one sibling never resets a running run to queued", async () =>
     members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
     now: NOW,
   });
-  // A starts; B claims but never starts, then B's lease expires.
+  // A starts (lease kept live — A genuinely still executes); B claims but
+  // never starts, then B's lease expires.
   const claimA = first.store.claimNextDispatch({
-    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:10:00.000Z", authorityEpoch: "epoch-a",
   })!;
   first.store.markExecutionStarted({
     dispatchId: claimA.dispatch.id, owner: "dispatcher-a", generation: 1,
@@ -3036,6 +3037,9 @@ test("recovery of one sibling never resets a running run to queued", async () =>
   expect(claimB.memberTurn.botId).toBe(botB.id);
   const recovered = first.store.recoverExpiredClaims("2026-09-15T12:06:00.000Z");
   expect(recovered.find((r) => r.memberTurn.botId === botB.id)?.outcome).toBe("requeued");
+  // A's lease is still live: lease recovery does not touch started work it
+  // cannot prove dead, so nothing converges for A here.
+  expect(recovered.some((r) => r.memberTurn.botId === botA.id)).toBe(false);
   // The Run stays running with started_at intact: A still executes.
   const run = first.store.getRun(accepted.run.id)!;
   expect(run.state).toBe("running");
@@ -7032,6 +7036,76 @@ test("PR7 scheduler: activation converges foreign started claims with no lease w
   expect(run.completionReason).toBe("started_result_unknown");
   expect(reopenedStore.getDispatchForMemberTurn(accepted.memberTurn.id)?.state).toBe("completed");
   expect(reopenedRunner.runs).toHaveLength(0);
+  reopenedStore.close();
+});
+
+test("PR7 scheduler: activation seals explicit two-member run when a started sibling is indeterminate", async () => {
+  // Explicit Group Run [A, B] under shared-single-writer: A starts (provider
+  // turn hung, unproven), B is claimed and writer-slot-held (dispatched,
+  // unstarted), then the daemon crashes with both leases still live. On
+  // restart A must converge to indeterminate AND seal the Run — B must stay
+  // indeterminate, never execute — even though the Run is explicit.
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old" });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "SealPair", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(first.runner).hang = hang;
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-seal-pair",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  expect(accepted.run.mode).toBe("explicit");
+  void first.dispatcher.kick();
+  await waitUntil(() => fakeRunner(first.runner).runs.length === 1);
+  const turnA = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === BOT_ID)!;
+  const turnB = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  // B is claimed then writer-slot-held behind running A: durably `claimed`,
+  // member `dispatched`, never started.
+  await waitUntil(() => first.store.getDispatchForMemberTurn(turnB.id)?.state === "claimed");
+  expect(first.store.getMemberTurn(turnA.id)?.state).toBe("running");
+  expect(first.store.getMemberTurn(turnB.id)?.state).toBe("dispatched");
+  expect(first.store.getMemberTurn(turnB.id)?.startedAt).toBeUndefined();
+  // Crash with both leases live: close WITHOUT shutdown, no clock jump.
+  // Never resolve the hang: the old drain stays parked on A's provider turn
+  // (B held in memory) and performs no further sqlite access.
+  first.store.close();
+  const reopenedStore = await SqliteConversationStore.open(first.path);
+  const reopenedRunner = new FakeRunner();
+  const reopenedDispatcher = new ConversationDispatcher(
+    reopenedStore, first.runtime, reopenedRunner, first.sessions, {
+      now: first.nowFn,
+      ownerId: "dispatcher-new",
+      leaseMs: 30_000,
+    },
+  );
+  const reopenedService = new ConversationRunService(
+    reopenedStore, first.bots, first.runtime, reopenedDispatcher, first.sessions, first.state, first.stateStore, {
+      now: first.nowFn,
+      releaseOwnedSession: createStrictOwnedSessionRelease({ sessions: first.sessions, transport: first.physical }),
+    },
+  );
+  await reopenedService.activateAfterConsumerLock();
+  const run = reopenedStore.getRun(accepted.run.id)!;
+  expect(run.state).toBe("indeterminate");
+  expect(run.completionReason).toBe("started_result_unknown");
+  expect(reopenedStore.getMemberTurn(turnA.id)?.state).toBe("indeterminate");
+  expect(reopenedStore.getMemberTurn(turnB.id)?.state).toBe("indeterminate");
+  expect(reopenedStore.getDispatchForMemberTurn(turnA.id)?.state).toBe("completed");
+  expect(reopenedStore.getDispatchForMemberTurn(turnB.id)?.state).toBe("completed");
+  expect(reopenedRunner.runs).toHaveLength(0);
+  expect(reopenedStore.claimNextDispatch({
+    now: first.nowFn().toISOString(), owner: "dispatcher-new",
+    leaseExpiresAt: new Date(first.nowFn().getTime() + 30_000).toISOString(), authorityEpoch: "epoch-new",
+  })).toBeUndefined();
   reopenedStore.close();
 });
 

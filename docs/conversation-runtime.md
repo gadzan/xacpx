@@ -98,16 +98,18 @@ The durable boundary is the dispatch `authorityEpoch` **bound to** `humanIngress
 
 `PermissionInteractionBroker` resolves via `resolvePermissionTurnRoute`: origin must be `human`, and the return chatKey is `metadata.permissionChatKey` (trusted ingress) rather than the isolation `chatKey`. A `bot:` key never mints an interaction.
 
-## `indeterminate`
+  ## `indeterminate`
 
-If a side-effect-capable underlying turn has started and completion cannot be proven (crash after start, cancel of a write-capable started turn with unknown outcome):
+  If a side-effect-capable underlying turn has started and completion cannot be proven (crash after start, cancel of a write-capable started turn with unknown outcome):
 
-```text
-MemberTurn.state = indeterminate
-Run.state = indeterminate
-```
+  ```text
+  MemberTurn.state = indeterminate
+  Run.state = indeterminate
+  ```
 
-Accepted-but-never-started is a different recovery case (redispatch). Started-but-result-unknown is not.
+  Unknown side effects seal the Run in **either mode** — even an explicit multi-member batch: every still-runnable sibling settles as `indeterminate` with its dispatch finished in the same transaction, so no new side-effect-capable turn can start after unproven execution. Proven sibling evidence is never rewritten (a completed sibling's message and a failed sibling's `failedBotIds` entry survive the seal).
+
+  Accepted-but-never-started is a different recovery case (redispatch). Started-but-result-unknown is not.
 
 ## Profile revision snapshot
 

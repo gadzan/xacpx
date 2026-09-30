@@ -2187,11 +2187,12 @@ export class SqliteConversationStore implements ConversationStore {
    * Automatic batch settle stays running for the PR8 Router — UNLESS
    * forceRunTerminal is set (whole-Run human cancel path), in which case the
    * settled batch aggregates to its terminal outcome exactly like explicit.
-   * Indeterminate (unproven side effects) always terminals directly AND
-   * settles every still-runnable sibling as indeterminate in the same
-   * transaction, so no further member can be claimed afterwards. Only failed
-   * members accumulate in failedBotIds; cancelled/indeterminate are read
-   * from MemberTurns. unavailableBotIds is PR7+ reservation surface.
+   * Indeterminate (unproven side effects) always seals the Run in EITHER
+   * mode — even with runnable siblings — and settles every still-runnable
+   * sibling as indeterminate in the same transaction, so no further member
+   * can be claimed afterwards. Only failed members accumulate in
+   * failedBotIds; cancelled/indeterminate are read from MemberTurns.
+   * unavailableBotIds is PR7+ reservation surface.
    */
   private aggregateRunAfterMemberTerminal(
     runId: string,
@@ -2218,12 +2219,14 @@ export class SqliteConversationStore implements ConversationStore {
       this.sqlite.run(`UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`, [JSON.stringify([...current]), runId]);
     }
     const batchIndeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
-    if (run.mode === "automatic" && batchIndeterminate.length > 0) {
-      // Unknown side effects seal an automatic Run immediately, even with
-      // runnable siblings: settle every still-runnable sibling as
+    if (batchIndeterminate.length > 0) {
+      // Unknown side effects seal the Run immediately, in either mode, even
+      // with runnable siblings: settle every still-runnable sibling as
       // indeterminate in the same transaction so nothing further can be
-      // claimed, then terminal the Run. Covers both runner settlement
-      // (completeCancel unknown) and lease recovery paths identically.
+      // claimed, then terminal the Run. Covers runner settlement
+      // (completeCancel unknown), lease recovery, and consumer-lock
+      // convergence identically: no sibling may start after unproven
+      // execution.
       const reason = batchMembers.length === 1 ? (memberReason ?? "started_result_unknown") : "started_result_unknown";
       for (const turn of batchMembers) {
         if (TERMINAL_MEMBER_STATES.includes(turn.state)) {
@@ -2256,34 +2259,9 @@ export class SqliteConversationStore implements ConversationStore {
     }
     if (run.mode === "automatic" && !forceRunTerminal) {
       // Batch settled but the Run is not done: PR8 Router decides the next
-      // step from durable MemberTurns. Indeterminate (unproven side effects)
-      // cannot auto-continue, so it settles every still-runnable sibling as
-      // indeterminate in the same transaction and terminals the Run — no
-      // further member can be claimed afterwards. Every other settled batch
-      // stays running awaiting routing.
-      const indeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
-      if (indeterminate.length > 0) {
-        const reason = batchMembers.length === 1 ? (memberReason ?? "started_result_unknown") : "started_result_unknown";
-        for (const turn of batchMembers) {
-          if (TERMINAL_MEMBER_STATES.includes(turn.state)) {
-            continue;
-          }
-          this.sqlite.run(
-            `UPDATE member_turns SET state = 'indeterminate', finished_at = ? WHERE id = ?`,
-            [now, turn.id],
-          );
-          this.sqlite.run(
-            `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
-            [runId],
-          );
-          this.finishDispatchForMemberTurn(turn.id, now);
-        }
-        this.sqlite.run(
-          `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = ? WHERE id = ?`,
-          [reason, now, runId],
-        );
-        return this.requireRun(runId);
-      }
+      // step from durable MemberTurns. (Indeterminate already sealed above,
+      // in either mode, so only non-indeterminate batches reach here.)
+      // Every other settled batch stays running awaiting routing.
       if (run.state === "queued") {
         this.sqlite.run(`UPDATE runs SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?`, [now, runId]);
       }
