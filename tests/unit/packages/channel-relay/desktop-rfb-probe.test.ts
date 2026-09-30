@@ -89,6 +89,37 @@ test("truncated handshakes wait for more bytes, truncated banners fail via probe
   expect(verdict).toMatchObject({ ok: false, code: "desktop-not-rfb" });
 });
 
+test("a long server-refusal reason survives the live dial", async () => {
+  // evaluateSecurityTypes permits up to 1024 bytes of reason after count=0, and
+  // the evaluator still returns that reason: the only place it could be lost was
+  // the live dial cutting the security block at 256 bytes, after which the caller
+  // re-evaluated a handshake that no longer parsed and reported "not an RFB
+  // server" instead of the server's own refusal.
+  const reason = "refused: " + "x".repeat(300);
+  expect(reason.length).toBeGreaterThan(256);
+  const banner = Buffer.from("RFB 003.008\n", "ascii");
+  const server = net.createServer((socket) => {
+    socket.on("error", () => {});
+    socket.write(banner);
+    socket.on("data", () => {
+      // u8 count = 0, then u32 reason length, then the reason itself.
+      const len = Buffer.alloc(4);
+      len.writeUInt32BE(Buffer.byteLength(reason, "ascii"), 0);
+      socket.write(Buffer.concat([Buffer.from([0]), len, Buffer.from(reason, "ascii")]));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  try {
+    const port = (server.address() as { port: number }).port;
+    const verdict = await probeLoopbackRfb({ port, connectTimeoutMs: 1000 });
+    expect(verdict).toMatchObject({ ok: false, code: "desktop-rfb-unavailable" });
+    // The reason actually arrived, not a truncated-handshake verdict.
+    expect((verdict as { detail?: string }).detail).toBe(reason.slice(0, 128));
+  } finally {
+    server.close();
+  }
+});
+
 test("a live non-RFB service reports desktop-not-rfb, not rfb-unavailable", async () => {
   // The evaluator is pure and therefore already correct for a non-RFB greeting,
   // which is why the direct unit test above passes while production did not:

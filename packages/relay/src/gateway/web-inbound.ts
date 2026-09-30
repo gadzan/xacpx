@@ -467,10 +467,12 @@ async function handleDesktopOpen(
     // validator drops the whole event when it exceeds the cap. That would turn a
     // precise honest failure into a silent one: the pending RPC would only ever
     // see the browser's own timeout. Truncate here so the code survives.
-    failWith(
-      payload.error.code.slice(0, 128),
-      payload.error.message.slice(0, MAX_DESKTOP_ERROR_MESSAGE_LENGTH),
-    );
+    //
+    // A code is also required to be NON-EMPTY: an empty string passes
+    // `isErrorPayload` but fails the web validator's `isBoundedStr`, with the same
+    // silent drop. Normalise rather than guess what the connector meant.
+    const code = payload.error.code.length > 0 ? payload.error.code.slice(0, 128) : "desktop-protocol-error";
+    failWith(code, payload.error.message.slice(0, MAX_DESKTOP_ERROR_MESSAGE_LENGTH));
     return;
   }
   const result = payload as DesktopPrepareResult;

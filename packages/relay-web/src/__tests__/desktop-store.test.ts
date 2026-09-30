@@ -213,6 +213,31 @@ describe("desktop store", () => {
     void settleLate;
   });
 
+  it("superseding an open with another open releases the first reservation", async () => {
+    // open(A) -> open(B) WITHOUT close() in between. The abandoned controller is
+    // never passed to requestDesktop, so abort() alone cannot stop the RPC or
+    // tell the hub anything; and by the time A rejects its pendingRequestId entry
+    // has already been overwritten by B, so the catch path cannot recover rA.
+    // Without an explicit close the hub keeps A's single-viewer reservation and
+    // B opens straight into desktop-busy.
+    const store = useDesktopStore();
+    const { requestDesktop, sendWebClientMessage } = await import("../api/events");
+    (requestDesktop as unknown as { mockImplementation: (fn: () => Promise<unknown>) => void })
+      .mockImplementation(() => new Promise<unknown>(() => {}));
+
+    store.open("i1", {});
+    await Promise.resolve();
+    store.open("i1", {});
+    await Promise.resolve();
+
+    // The abandoned reservation was released by request, before B was minted.
+    const closes = (sendWebClientMessage as unknown as { mock: { calls: Array<[Record<string, unknown>]> } }).mock.calls
+      .map((c) => c[0])
+      .filter((c) => c.kind === "desktop-close");
+    expect(closes).toHaveLength(1);
+    expect(typeof closes[0].requestId).toBe("string");
+    expect(closes[0].streamId).toBeUndefined();
+  });
   it("closing an open that is still preparing releases the hub reservation by requestId", async () => {
     // The race: the user closes the panel before the prepare answers, so the
     // browser has no streamId to name. It must close by requestId, otherwise the

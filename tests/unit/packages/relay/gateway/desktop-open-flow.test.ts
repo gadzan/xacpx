@@ -158,6 +158,23 @@ test("an oversized connector error is bounded so the browser still receives it",
   expect(parseWebServerEvent(webEventEnvelope(event as never))).not.toBeNull();
 });
 
+test("an empty connector error code is normalized, not silently dropped", async () => {
+  // The web validator requires a NON-EMPTY bounded code. An empty string sails
+  // through the connector-side isErrorPayload check, so forwarding it verbatim
+  // produced an event relay-web then discarded as malformed - and the user saw
+  // only the local 15s timeout instead of the actual failure.
+  const { deps, socket, sent } = desktopDeps({
+    prepareResult: { error: { code: "", message: "connector said nothing useful" } },
+  });
+  sendDesktop(deps, "a1", socket, "desktop-open");
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(sent.length).toBe(1);
+  const event = sent[0]?.event as Record<string, unknown>;
+  expect(event.kind).toBe("desktop-request-failed");
+  expect(event.code).toBe("desktop-protocol-error");
+  expect(parseWebServerEvent(webEventEnvelope(event as never))).not.toBeNull();
+});
+
 test("desktop-open fails closed without capability, offline, busy, or bad prepare", async () => {
   const busyStub = (scope: "instance" | "account") => ({
     reserve: () => ({ ok: false as const, code: "desktop-busy", scope }),

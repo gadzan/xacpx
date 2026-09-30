@@ -284,7 +284,12 @@ async function dialLoopbackTcp(
       settled = true;
       cleanup();
       const banner = Buffer.concat(bannerChunks);
-      const security = Buffer.concat(securityChunks).subarray(0, 256);
+      // Keep the WHOLE security block: `evaluateSecurityTypes` accepts up to 1024
+      // bytes of server-refusal reason after the count byte, so truncating here
+      // makes the caller re-evaluate a hand that no longer parses and report
+      // "truncated / not an RFB server" instead of the real refusal. The evaluator
+      // is the single place that decides how much is acceptable.
+      const security = Buffer.concat(securityChunks).subarray(0, 1029);
       socket.destroy();
       resolve(new Uint8Array(Buffer.concat([banner.subarray(0, 12), security])));
     };

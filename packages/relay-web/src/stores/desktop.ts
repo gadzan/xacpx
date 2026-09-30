@@ -113,7 +113,30 @@ export const useDesktopStore = defineStore("desktop", () => {
     }
   }
 
-  function canOpen(instance: { online: boolean; capabilities?: string[] | null }): boolean {
+  /**
+   * Abandon an in-flight open for this instance, releasing the hub reservation
+   * the abandoned request is holding.
+   *
+   * The order matters. `abort()` alone is not enough: the AbortController is a
+   * local flag that `requestDesktop()` never sees, so it cannot stop the RPC or
+   * tell the hub anything. And by the time the abandoned attempt rejects, its
+   * `pendingRequestId` entry has already been overwritten by the successor, so
+   * the catch path can no longer recover the requestId to cancel with. That
+   * leaves the hub holding a single-viewer reservation for a prepare nobody
+   * wants, and the next open fails `desktop-busy` until it expires.
+   */
+  function abandonPending(instanceId: string, reason: "superseded" | "closed"): void {
+    const controller = pending.get(instanceId);
+    const requestId = pendingRequestId.get(instanceId);
+    pendingRequestId.delete(instanceId);
+    controller?.abort();
+    if (!requestId) return;
+    try {
+      sendWebClientMessage({ kind: "desktop-close", instanceId, requestId });
+    } catch { /* offline: the hub reaps the stream on its TTL sweep */ }
+  }
+
+  function canOpen(instance: { online: boolean; capabilities?: string[] }): boolean {
     return supportsDesktop(instance);
   }
 
@@ -124,9 +147,11 @@ export const useDesktopStore = defineStore("desktop", () => {
   ): Promise<void> {
     const existing = connections.get(instanceId);
     if (existing) return;
-    // A superseding open aborts the previous pending prepare: its streamId never
-    // existed yet, so it can only be closed by the cloud, never desynced here.
-    pending.get(instanceId)?.abort();
+    // A superseding open must RELEASE the previous reservation, not merely stop
+    // caring about it: the hub still holds the single-viewer slot until its
+    // request is cancelled, and without the cancel the successor opens straight
+    // into `desktop-busy`.
+    abandonPending(instanceId, "superseded");
     const attempt = (generation.get(instanceId) ?? 0) + 1;
     generation.set(instanceId, attempt);
     const controller = new AbortController();
@@ -287,10 +312,11 @@ export const useDesktopStore = defineStore("desktop", () => {
   function close(instanceId: string): void {
     const view = sessions.value.get(instanceId);
     const connection = connections.get(instanceId);
-    // Abort any in-flight prepare BEFORE the view lookup: the pending RPC must
-    // not resurrect this session (no connectDesktopRfb, no session row) when
-    // `desktop-opened` lands after the panel is gone.
-    pending.get(instanceId)?.abort();
+    // Release whatever the hub is holding for this instance, whichever way it is
+    // addressed: the paired stream by streamId, or a prepare that never answered
+    // by requestId. Doing it before the view lookup keeps the pending RPC from
+    // resurrecting this session when `desktop-opened` lands after the panel gone.
+    abandonPending(instanceId, "closed");
     pending.delete(instanceId);
     // Bump the generation so a prepare still in flight (or a connection hook
     // from the just-disposed RFB) is provably stale and cannot re-create or
@@ -302,18 +328,6 @@ export const useDesktopStore = defineStore("desktop", () => {
       try {
         sendWebClientMessage({ kind: "desktop-close", instanceId, streamId: view.streamId });
       } catch { /* offline: hub times the stream out */ }
-      pendingRequestId.delete(instanceId);
-    } else {
-      // No streamId yet: the open is still preparing. Name it by requestId so
-      // the hub releases the single-viewer reservation NOW instead of at the
-      // prepare's own timeout — otherwise an immediate reopen fails busy.
-      const pendingRequest = pendingRequestId.get(instanceId);
-      if (pendingRequest) {
-        try {
-          sendWebClientMessage({ kind: "desktop-close", instanceId, requestId: pendingRequest });
-        } catch { /* offline: hub times the stream out */ }
-        pendingRequestId.delete(instanceId);
-      }
     }
     // Deliberately keep the bumped generation: it must outlive this close so
     // the NEXT open() cannot reuse a number an in-flight attempt still holds.

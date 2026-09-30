@@ -52,7 +52,11 @@ else about xacpx core changes.
 ```
 
 - The target is always `127.0.0.1:<port>` — this connector is **not** a generic
-  TCP proxy and never connects to a non-loopback host. No public 5900 exposure.
+  TCP proxy and never connects to a non-loopback host. That fixes where the
+  connector dials; it does not by itself stop the instance's VNC server binding
+  `0.0.0.0`. Keeping 5900 unreachable from outside is a deployment requirement
+  (loopback-only bind, or loopback-only access control plus firewall) — see the
+  platform notes in [`docs/desktop-rfb-setup.md`](../../docs/desktop-rfb-setup.md).
 - Only **outer VNC Auth (RFB security type 2)** is accepted in Phase A
   (Linux + Windows, single viewer). `None`, VeNCrypt/TLS-only, proprietary auth,
   and macOS ARD are rejected fail-closed with `desktop-auth-unsupported`.
