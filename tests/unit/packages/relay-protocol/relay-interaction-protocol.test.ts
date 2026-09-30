@@ -20,6 +20,7 @@ const VALID_FORM = {
   elicitation: {
     mode: "form" as const,
     message: "Which environment?",
+    agent: { name: "codex" },
     fields: [
       {
         kind: "single-select" as const,
@@ -122,7 +123,7 @@ test("a zero-field form is ACCEPTED", () => {
     requestId: "req-1",
     kind: "elicitation",
     expiresAt: 1_800_000_000_000,
-    elicitation: { mode: "form", message: "", fields: [] },
+    elicitation: { mode: "form", message: "", fields: [], agent: { name: "codex" } },
   });
   expect(parsed).not.toBeNull();
   expect(parsed?.elicitation?.fields).toEqual([]);
@@ -330,7 +331,7 @@ test("a zero-field opened interaction reaches web", () => {
     type: "interaction-opened",
     chatKey: "bot:c1:t1",
     sessionAlias: "brt_hidden",
-    interaction: { ...VALID_FORM, elicitation: { mode: "form", message: "x", fields: [] } },
+    interaction: { ...VALID_FORM, elicitation: { ...VALID_FORM.elicitation, message: "x" } },
   }));
   expect(parsed).not.toBeNull();
 });
@@ -369,4 +370,35 @@ test("the web event type whitelist contains both interaction types", () => {
     interaction: VALID_FORM,
   }));
   expect(opened).not.toBeNull();
+});
+
+test("an elicitation frame without the asking Agent is rejected", () => {
+  // The agent name is an IDENTITY a client must display, and the wire makes it
+  // REQUIRED so it cannot be dropped silently at the core → relay hop again. A
+  // frame that omits it — or supplies an empty name — is refused rather than
+  // rendered as an unidentified question.
+  const base = {
+    requestId: "req-agent-check",
+    kind: "elicitation" as const,
+    expiresAt: Date.now() + 60_000,
+    elicitation: {
+      mode: "form" as const,
+      message: "Which region?",
+      fields: [{ kind: "text" as const, key: "region", title: "Region", required: true }],
+    },
+  };
+  for (const missing of [undefined, {}, { name: "" }, { name: 123 }]) {
+    const result = parseControlPayload(MSG.interactionRequest, {
+      ...base,
+      elicitation: { ...base.elicitation, agent: missing },
+    });
+    expect(result, JSON.stringify(missing)).toBeNull();
+  }
+  // With a name it is accepted, and the name survives.
+  const ok = parseControlPayload(MSG.interactionRequest, {
+    ...base,
+    elicitation: { ...base.elicitation, agent: { name: "codex" } },
+  });
+  expect(ok).not.toBeNull();
+  expect(ok!.elicitation!.agent.name).toBe("codex");
 });

@@ -689,6 +689,8 @@ export default {
       cancelled: "Cancelled.",
       withdrawn: "Closed before an answer arrived.",
       requiredMissing: "Still needed: {fields}",
+      requestedBy: "Asked by",
+      pattern: "Expected format",
       fieldInvalid: "{title}: {problem}",
       errorGone: "The question window has closed.",
       errorOutdated: "This feature needs a newer connector — rebuild and reconnect the relay channel on that instance.",

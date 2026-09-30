@@ -630,6 +630,13 @@ export const validateInteractionRequest: Validator<InteractionRequestPayload> = 
     if (!optStrOrNull(elicitation.message)) return null;
     if (typeof elicitation.message === "string" && elicitation.message.length > 8000) return null;
     if (!optStrOrNull(elicitation.schemaTitle)) return null;
+    // The asking Agent. REQUIRED and bounded: it is an identity, not display
+    // text, and a client must be able to show who is asking. An absent or empty
+    // name closes the request rather than rendering an unidentified question.
+    if (!isObj(elicitation.agent)) return null;
+    const agent = elicitation.agent as Record<string, unknown>;
+    if (!isBoundedStr(agent.name, 200) || agent.name === "") return null;
+    if (!optStrOrNull(agent.sessionAlias)) return null;
     const fieldsValue = elicitation.fields;
     // Zero fields is a LEGAL form (M1 core semantics): an all-optional schema
     // with nothing to ask accepts with `content: null`, so the web side must be

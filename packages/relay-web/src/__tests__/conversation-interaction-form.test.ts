@@ -16,7 +16,9 @@ function mountForm(
     requestId: "req-1",
     kind: "elicitation",
     expiresAt: Date.now() + 60_000,
-    elicitation: { mode: "form", message: "Pick.", fields },
+    // `agent` is REQUIRED on the wire: it is the asking identity, owned by core,
+    // and never something the renderer should have to infer.
+    elicitation: { mode: "form", message: "Pick.", fields, agent: { name: "codex" } },
   };
   return mount(ConversationInteractionForm, {
     props: {
@@ -29,6 +31,77 @@ function mountForm(
     global: { plugins: [i18n] },
   });
 }
+
+  // The renderer must measure what core measures, and must refuse what it
+  // cannot check exactly. Both are terminal-transport rules: the hub resolves the
+  // interaction on submit, so an answer the browser allowed and core then rejects
+  // is an answer the user can never correct.
+
+  it("string length is counted in CODE POINTS, as core measures it", () => {
+    // JS .length counts UTF-16 units, so a single astral character is 2. A
+    // minLength: 2 field therefore accepted one emoji here while core counted it
+    // as 1 and rejected it — after the form had closed.
+    const wrapper = mountForm(
+      [{ kind: "text", key: "s", title: "S", required: true, minLength: 2 }],
+      { s: "\u{1F600}" },
+    );
+    expect(wrapper.find('[data-test="interaction-invalid"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBeDefined();
+  });
+
+  it("a format the renderer cannot verify exactly blocks Submit", () => {
+    // Core uses ajv-formats; a second implementation here would drift, and the
+    // drift would surface only after the interaction had already resolved. So the
+    // formats this renderer cannot agree on are refused rather than approximated.
+    for (const format of ["uri", "date-time", "some-future-format"]) {
+      const wrapper = mountForm(
+        [{ kind: "text", key: "f", title: "F", required: true, format }],
+        { f: "https://example.com" },
+      );
+      expect(wrapper.find('[data-test="interaction-invalid"]').exists(), format).toBe(true);
+      expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled"), format).toBeDefined();
+    }
+  });
+
+  it("the required shape is shown as metadata, never executed", () => {
+    const wrapper = mountForm([
+      { kind: "text", key: "s", title: "S", required: true, pattern: "^[a-z]+$" },
+    ]);
+    const shown = wrapper.find('[data-test="interaction-pattern"]');
+    expect(shown.exists()).toBe(true);
+    expect(shown.text()).toContain("^[a-z]+$");
+    // A value that does NOT match it is still accepted by the renderer: neither
+    // core nor this renderer executes an agent-supplied pattern, so the metadata
+    // is advisory and the agent validates its own pattern on the answer it gets.
+    const withAnswer = mountForm(
+      [{ kind: "text", key: "s", title: "S", required: true, pattern: "^[a-z]+$" }],
+      { s: "UPPERCASE" },
+    );
+    expect(withAnswer.find('[data-test="interaction-invalid"]').exists()).toBe(false);
+    expect(withAnswer.find('[data-test="interaction-submit"]').attributes("disabled")).toBe(undefined);
+  });
+
+  it("the agent identity is rendered when the frame carries one", async () => {
+    const wrapper = mountForm([
+      { kind: "text", key: "s", title: "S", required: false },
+    ]);
+    // The frame the hub now carries: an agent name is REQUIRED on the wire.
+    wrapper.setProps({
+      request: {
+        ...wrapper.props("request") as object,
+        elicitation: {
+          mode: "form",
+          message: "Pick.",
+          fields: [{ kind: "text", key: "s", title: "S", required: false }],
+          agent: { name: "codex" },
+        },
+      },
+    } as never);
+    await wrapper.vm.$nextTick();
+    const shown = wrapper.find('[data-test="interaction-agent"]');
+    expect(shown.exists()).toBe(true);
+    expect(shown.text()).toContain("codex");
+  });
 
 describe("ConversationInteractionForm field kinds", () => {
   it("a number field emits a NUMBER, not the input's string", () => {
@@ -182,7 +255,7 @@ describe("ConversationInteractionForm field kinds", () => {
     (input.element as HTMLInputElement).value = "eu-west";
     input.trigger("input");
     expect(wrapper.emitted("answer")![0]).toEqual(["region", "eu-west"]);
-    expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBeUndefined();
+    expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBe(undefined);
   });
 
   it("a numeric default renders in the number control", () => {

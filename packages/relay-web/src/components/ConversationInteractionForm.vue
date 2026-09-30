@@ -54,6 +54,15 @@ const { t } = useI18n();
 const fields = computed<readonly InteractionFieldDto[]>(() => props.request.elicitation?.fields ?? []);
 
 /**
+ * The asking Agent's identity, or empty when the frame carried none.
+ *
+ * Rendered as data in its own element, never merged into the message text: the
+ * identity is trusted core state, while `message`/`schemaTitle` are
+ * agent-controlled and must not be able to impersonate it.
+ */
+const agentName = computed<string>(() => props.request.elicitation?.agent?.name ?? "");
+
+/**
  * Own-property presence for an answer.
  *
  * `!== undefined` is not enough: a field keyed `constructor` or `toString` reads
@@ -122,7 +131,57 @@ function coerce(
  * resolved the interaction; core then rejected the answer set, and the form was
  * already gone — an ordinary typo became an unrecoverable failure. Checking the
  * field's own bounds turns it into a message the user can act on.
+ *
+ * The rules below deliberately mirror core's rather than inventing their own,
+ * and where core uses a library the renderer cannot share, the renderer flags the
+ * value unverifiable instead of approximating it.
  */
+
+/**
+ * JSON Schema string length is in Unicode CODE POINTS, not JS UTF-16 units.
+ *
+ * `.length` disagrees for every astral character — `"😀".length === 2` but is
+ * ONE character per the spec — so a `minLength: 2` field accepted a single
+ * emoji, the browser allowed Submit, the hub resolved, and core then rejected
+ * the answer. That ordering is irreversible.
+ *
+ * Same measurement core uses (`codePointLength`), for the same reason.
+ */
+function codePointLength(value: string): number {
+  let count = 0;
+  for (const _char of value) count += 1;
+  return count;
+}
+
+/**
+ * Formats the renderer checks itself.
+ *
+ * A DELIBERATELY SMALL set, and the reason is that core uses `ajv-formats` — the
+ * JSON Schema reference implementation — whose own comment records three
+ * hand-rolled attempts each fixing one direction while breaking another. A second
+ * copy in the browser would drift, and the drift would show up as "browser
+ * accepted, core rejected" after the interaction had already resolved.
+ *
+ * So: the formats below are the ones simple enough to agree exactly, and anything
+ * else — `uri`, `date-time`, an unknown name — is FLAGGED as unverifiable rather
+ * than approximated. `unverifiable` blocks Submit in the caller, which is the
+ * fail-closed direction: a user is told the control cannot be validated yet
+ * instead of being allowed to submit an answer core will reject.
+ */
+function formatProblem(field: InteractionFieldDto, value: string): string | null {
+  if (field.format === undefined || field.format === "text") return null;
+  if (field.format === "date") {
+    // `Date.parse` is the same approximation core does NOT use, but for a bare
+    // YYYY-MM-DD the two agree, and this is the only one of the four that is
+    // genuinely simple.
+    return Number.isNaN(Date.parse(value)) ? "format" : null;
+  }
+  if (field.format === "email") {
+    return /^[^@\s]+@[^@\s]+$/.test(value) ? null : "format";
+  }
+  return "unverifiable";
+}
+
 function fieldProblems(field: InteractionFieldDto, answer: InteractionValueDto | undefined): string[] {
   const problems: string[] = [];
   const present = answer !== undefined && !(typeof answer === "string" && answer === "");
@@ -132,21 +191,23 @@ function fieldProblems(field: InteractionFieldDto, answer: InteractionValueDto |
   }
   if (field.kind === "text") {
     const text = String(answer);
-    if (field.minLength !== undefined && text.length < field.minLength) problems.push("minLength");
-    if (field.maxLength !== undefined && text.length > field.maxLength) problems.push("maxLength");
+    const length = codePointLength(text);
+    if (field.minLength !== undefined && length < field.minLength) problems.push("minLength");
+    if (field.maxLength !== undefined && length > field.maxLength) problems.push("maxLength");
+    const format = formatProblem(field, text);
+    if (format !== null) problems.push(format);
     // NOTE: `field.pattern` is deliberately NOT evaluated here.
     //
-    // Core states the rule and the reason: an agent-supplied regex is never
+    // Core states the rule and the reason: an agent-provided regex is never
     // executed, because uncontrolled regex evaluation is a resource-exhaustion
     // vector. A catastrophically-backtracking pattern would run on every
     // keystroke and every re-render of this component, freezing the dashboard —
     // and the pattern is attacker-supplied text the hub validates for length
     // only, precisely so it does not have to be compiled.
     //
-    // The pattern is reported as METADATA (the field's own description, rendered
-    // below, or the pattern text itself for a renderer that wants it) and left for
-    // core to enforce. A renderer that cannot express a format safely must fail
-    // closed rather than approximate it.
+    // Nor does core execute it: the pattern is metadata for a renderer to DISPLAY
+    // and for the agent to validate its own answer against. The renderer shows
+    // it below and leaves the check to the agent.
   }
   if (field.kind === "number") {
     const value = Number(answer);
@@ -158,6 +219,13 @@ function fieldProblems(field: InteractionFieldDto, answer: InteractionValueDto |
     const values = Array.isArray(answer) ? answer : [];
     if (field.minItems !== undefined && values.length < field.minItems) problems.push("minItems");
     if (field.maxItems !== undefined && values.length > field.maxItems) problems.push("maxItems");
+  }
+  if (field.kind === "single-select") {
+    // A selection outside the offered options is not an answer core can accept,
+    // and the client is the only party that knows the option set.
+    if (field.options !== undefined && !field.options.some((option) => option.value === answer)) {
+      problems.push("option");
+    }
   }
   return problems;
 }
@@ -212,6 +280,19 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
           <AlertTriangle :size="12" />
           <span>{{ t('bot.interaction.title') }}</span>
         </div>
+        <!-- The asking Agent's identity, as its own element.
+          ACP requires the client to identify who is asking, and the contract is
+          explicit that `message`/`schemaTitle` text must NOT stand in for it —
+          that text is agent-controlled, so mounting an identity out of it would let
+          any agent claim any name. -->
+        <div
+          v-if="agentName"
+          data-test="interaction-agent"
+          class="flex items-center gap-1.5 text-[11px] text-fg-muted"
+        >
+          <span class="uppercase tracking-wide">{{ t('bot.interaction.requestedBy') }}</span>
+          <span class="font-medium text-fg">{{ agentName }}</span>
+        </div>
         <!-- Agent-controlled text, rendered as data. No v-html: the point is that
           nothing the agent wrote can become markup here. -->
         <div
@@ -260,6 +341,16 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
           </span>
         </label>
         <div v-if="field.description" class="text-[11px] leading-snug text-fg-muted">{{ field.description }}</div>
+        <!-- The required shape, shown as METADATA.
+          Neither this renderer nor core executes it — core's rule is that an
+          agent-supplied regex is never compiled, because uncontrolled regex
+          evaluation is a resource-exhaustion vector. It exists so a human can see
+          what the asking Agent expects and format their answer accordingly; the
+          agent validates its own pattern against the answer it receives. -->
+        <div v-if="field.pattern" data-test="interaction-pattern" class="text-[11px] text-fg-muted">
+          <span class="uppercase tracking-wide">{{ t('bot.interaction.pattern') }}</span>
+          <code class="ml-1">{{ field.pattern }}</code>
+        </div>
 
         <!-- Boolean: two explicit options, not a checkbox, so the user answers the
           question rather than toggling a state. -->

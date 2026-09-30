@@ -479,11 +479,26 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const inScope = (state: PendingInteractionState): boolean => {
       if (visibleTopic === undefined) return true;
       const correlation = state.request.conversation;
-      // An interaction with no correlation belongs to an ordinary channel turn,
-      // which has no topic to scope it to.
-      return correlation === undefined
-        || (correlation.conversationId === visibleTopic.conversationId
-          && correlation.topicId === visibleTopic.topicId);
+      // An interaction with no correlation belongs to an ordinary channel turn.
+      //
+      // That is NOT a reason to treat it as in scope. Those frames carry no
+      // `conversation` product row, so there is no topic they provably belong to,
+      // and rendering one here would put a form into a turn the viewer never
+      // opened — answering it could silently answer a different conversation.
+      //
+      // Scoped OUT instead: with no correlation the frame is only ever shown on
+      // the account-wide surface (`activeConversationId` unset), which is where
+      // the turn was actually dispatched from.
+      //
+      // Ferried out by the WIRE, not the view: the Sessions ChatPane that
+      // previously claimed these via the registry's channel-wide
+      // `elicitationModes = ["form"]` has no renderer, so it requested a form it
+      // could not show. A capability declared channel-wide while only one route
+      // can serve it is a capability LIE — the route, not the channel, is the
+      // honest unit.
+      return correlation !== undefined
+        && correlation.conversationId === visibleTopic.conversationId
+        && correlation.topicId === visibleTopic.topicId;
     };
     const open = [...pendingInteractions.value.values()].filter(inScope);
     if (open.length > 0) return open[open.length - 1]!;

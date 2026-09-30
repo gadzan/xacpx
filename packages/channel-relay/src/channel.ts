@@ -592,6 +592,15 @@ export class RelayChannel implements MessageChannelRuntime {
         message: request.message,
         fields,
         ...(request.schemaTitle !== undefined ? { schemaTitle: request.schemaTitle } : {}),
+        // The asking Agent, carried across the wire because it is an IDENTITY and
+        // not presentation. Dropping it here is what made the relay web form show
+        // only a generic "Input needed" while core knew perfectly well which
+        // agent was asking — and a renderer must not reconstruct identity out of
+        // `message`/`schemaTitle`, both of which the agent controls.
+        agent: {
+          name: request.agent.name,
+          ...(request.agent.sessionAlias !== undefined ? { sessionAlias: request.agent.sessionAlias } : {}),
+        },
       },
     };
     try {

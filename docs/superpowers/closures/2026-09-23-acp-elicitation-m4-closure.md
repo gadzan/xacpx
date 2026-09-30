@@ -302,3 +302,114 @@ the parser and were left alone.
   `auditCapability()`'s degraded message never fires. The capability itself stays
   truthful — this costs one observability line, not correctness. Left alone
   because removing the early return would make every ready signal run the audit.
+
+## Addendum - third re-review round (2026-09-30)
+
+Full re-review of the same diff. Result was **request changes: 3 P1 + 1 P2**.
+All four are fixed here. Every conclusion below is what the code actually does,
+not what the earlier addenda claimed it did.
+
+### P1 #1 - agent identity vanished on the core -> relay wire (FIXED)
+
+`ChannelElicitationRequest.agent` is REQUIRED by core and its docblock says
+plainly that renderers MUST display it and MUST NOT substitute `message`,
+`schemaTitle`, or `description` text for it, because that text is
+agent-controlled. `InteractionRequestDto.elicitation` had only `message`,
+`fields`, and `schemaTitle` — no `agent` at all. So a renderer following the
+contract to the letter had no identity to display, and the relay web form showed
+the trusted identity nowhere.
+
+Fixed by carrying it end to end:
+
+- `packages/relay-protocol/src/dtos.ts` — `agent: { name; sessionAlias? }` added
+  and marked REQUIRED, with the reason recorded next to it: an identity, not
+  display text, and a client must be able to show who is asking.
+- `packages/relay-protocol/src/payload-validators.ts` — `isObj(agent)`, non-empty
+  bounded `name`, optional bounded `sessionAlias`. A frame with a missing, empty,
+  or non-string agent is REFUSED outright rather than forwarded unanswerable.
+- `packages/channel-relay/src/channel.ts` — projected onto the frame, with
+  `sessionAlias` carried only when present.
+- `packages/relay-web` — the form renders that identity in its own element
+  (`data-test="interaction-agent"`), with the "requested by" label present in
+  both locales. It is deliberately not merged into the message line: the identity
+  is trusted core state, while the message is agent-controlled and must not be
+  able to impersonate it.
+
+### P1 #2 - the web local validator drifted from core's (FIXED)
+
+Two concrete drifts, both in the terminal direction:
+
+- `text.length` measured UTF-16 units where core measures code points. `.length`
+  says 2 for `"😀"` but the spec says 1, so `minLength: 2` satisfied one emoji here
+  while core rejected it. Now `codePointLength()`, the same measure core uses.
+- `Date.parse` plus a hand-rolled email regex approximated formats core delegates
+  to `ajv-formats`. A second implementation is exactly the drift the reviewer
+  predicted, and this one was already visible in the difference (a "uri" /
+  "date-time" that satisfied the local check could still be rejected by core).
+
+Now only `date` and `email` are checked locally — the two whose local reading
+agrees with the reference — and every other `format`, including unknown names,
+returns `unverifiable`. The caller blocks Submit on it. Fail-closed by design:
+the alternative is letting the user construct an answer core will refuse to
+accept after the interaction has already resolved.
+
+Also added in the same function, from the same drift family: `single-select` now
+rejects a selection outside its offered options, which is the only party the
+renderer knows. And `pattern` is now DISPLAYED as metadata
+(`data-test="interaction-pattern"`), because the earlier comment claimed the
+pattern was shown to the user while the template never rendered it.
+
+Why neither executes `pattern`: core's own rule is that an agent-supplied regex is
+never compiled, since uncontrolled regex evaluation is a resource-exhaustion
+vector, and the pattern is metadata for the agent to validate its own answer
+against. The old comment said "left for core to enforce", which is not true — core
+does not execute it either.
+
+### P1 #3 - form capability declared channel-wide while only one route can serve
+it (FIXED, in the renderer that over-claimed)
+
+The channel declared `elicitationModes = ["form"]` channel-wide, but only one
+route can actually render a form: the Direct Bot topic pane. The Sessions ChatPane
+had no renderer at all, and its registry row had `sessionAlias: ""`.
+
+The rendering consequence was in `direct-bots.ts`'s `pendingInteraction`: it
+treated `conversation === undefined` as IN scope, i.e. belonging to whatever topic
+the viewer happened to be reading. An ordinary channel turn (no product
+correlation) could therefore be rendered into a topic the viewer never opened, and
+answering it would silently answer a different conversation.
+
+The scope predicate now requires a correlation and requires it to match the viewed
+topic. An uncorrelated frame is scoped out of any topic view, and is reachable
+only on the account-wide surface, which is where its turn was actually dispatched
+from. Fail-closed in the other direction too: with no correlation there is no
+topic the frame provably belongs to, and rendering it into one is the more
+dangerous error.
+
+Regression: the negative case (uncorrelated frame inside a topic view is NOT
+rendered) is asserted directly, along with the positive (same frame, matching
+correlation, IS rendered) and the account-wide reachability case.
+
+### P2 - `parseHumanIngress()` dropped `chatType`, leaving the field dead (FIXED)
+
+My previous addendum claimed HumanIngressContext carries `chatType` through. It
+did not: `parseHumanIngress()` forwarded `chatKey`, `senderId`, `accountId`,
+`senderName`, and `isOwner`, and silently dropped `chatType`. `HumanIngressContext`
+declared it, so callers read the field and found nothing — the field was dead
+while the type said otherwise, which is worse than it being absent.
+
+It now round-trips `chatType` when it is exactly `"direct"` or `"group"`.
+
+`undefined` is still NOT read as `"direct"`: a channel that reports nothing is a
+channel whose route the renderer cannot vouch for, and that asymmetry is the
+whole reason the contract makes the renderer refuse a form whose `chatType` is not
+provably direct.
+
+### Doc corrections carried over from this round
+
+- The `pattern` claim: core does NOT enforce it, and neither does the renderer. It
+  is metadata for display and for the agent's own validation. The wire carries it,
+  the form shows it, nobody runs it.
+- `defaultValue` is displayed only for `text` and `number`. `boolean`,
+  `single-select`, and `multi-select` defaults are not surfaced, so "defaults are
+  displayed" is true for two of five kinds — recorded here rather than left
+  implied by the earlier wording.

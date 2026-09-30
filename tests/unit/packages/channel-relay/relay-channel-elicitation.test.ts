@@ -144,6 +144,30 @@ test("a form is refused unless the destination is provably direct", async () => 
   }
 });
 
+test("the asking Agent identity is projected onto the wire, not dropped", async () => {
+  // The renderer MUST show who is asking and must NOT build that identity out of
+  // \"message\"/\"schemaTitle\" — both agent-controlled. So the identity has to
+  // survive the core → relay hop as its own field, which it did not: the wire had
+  // no \"agent\" member at all and the web form showed a generic \"Input needed\".
+  const outbound: Array<{ type: string; payload: unknown }> = [];
+  const { channel, options } = makeHarness({
+    sendRequest: (type, payload) => {
+      outbound.push({ type, payload });
+      return new Promise<never>(() => {});
+    },
+  });
+  await startStarted(channel, options);
+  void channel.requestElicitation(coreRequest());
+
+  const frame = outbound.find((f) => f.type === "control.interaction.request")?.payload as {
+    elicitation?: { agent?: { name?: string; sessionAlias?: string } };
+  } | undefined;
+  expect(frame?.elicitation?.agent?.name).toBeTruthy();
+  expect(typeof frame!.elicitation!.agent!.name).toBe("string");
+  // And it is the agent core pinned to this exact turn, not anything derived here.
+  expect(frame!.elicitation!.agent!.name).toBe("codex");
+});
+
 test("production requestElicitation opens an interaction and carries the hub's answer back", async () => {
   const outbound: Array<{ type: string; payload: unknown; timeoutMs?: number }> = [];
   let answer: ((value: unknown) => void) | null = null;

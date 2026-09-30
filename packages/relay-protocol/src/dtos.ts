@@ -837,6 +837,20 @@ export interface InteractionRequestDto {
     message: string;
     fields: InteractionFieldDto[];
     schemaTitle?: string;
+    /**
+     * The Agent that asked, pinned to the exact turn.
+     *
+     * REQUIRED, not presentation: ACP's User Interaction Requirements oblige a
+     * client to show WHO is asking, so a human cannot mistake one agent's
+     * question for another's. A renderer must display it and must not substitute
+     * `message`/`schemaTitle` text for it — that text is agent-controlled, so
+     * mounting an identity out of it would let any agent claim any name.
+     *
+     * Dropping it on the core → relay hop is what made the relay web form show
+     * only a generic "Input needed": the trusted identity existed in core and
+     * vanished at the wire.
+     */
+    agent: { name: string; sessionAlias?: string };
   };
   /** Present iff `kind === "permission"`. Reserved; M3 does not implement it. */
   permission?: {

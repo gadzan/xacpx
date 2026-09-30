@@ -40,6 +40,7 @@ describe("useDirectBotsStore interactions", () => {
       expiresAt: Date.now() + 60_000,
       elicitation: {
         mode: "form",
+        agent: { name: "codex" },
         message: "Which environment?",
         fields: [
           {
@@ -55,6 +56,10 @@ describe("useDirectBotsStore interactions", () => {
           { kind: "text", key: "note", title: "Note", required: false },
         ],
       },
+      // Direct Bot topic correlation. A form with no correlation belongs to an
+      // ordinary channel turn, which has no topic — so it renders only on the
+      // account-wide surface and never inside a topic the viewer is reading.
+      conversation: { conversationId: "c1", topicId: "t1" },
       ...overrides,
     };
   }
@@ -183,6 +188,7 @@ describe("useDirectBotsStore interactions", () => {
     store.applyEvent(openedEvent(formRequest({
       elicitation: {
         mode: "form",
+        agent: { name: "codex" },
         message: "Anything?",
         fields: [
           {
@@ -323,6 +329,7 @@ describe("useDirectBotsStore interactions", () => {
     store.applyEvent(openedEvent(formRequest({
       elicitation: {
         mode: "form",
+        agent: { name: "codex" },
         message: "Pick.",
         fields: [
           { kind: "text", key: "constructor", title: "Constructor", required: true },
@@ -353,6 +360,7 @@ describe("useDirectBotsStore interactions", () => {
     store.applyEvent(openedEvent(formRequest({
       elicitation: {
         mode: "form",
+        agent: { name: "codex" },
         message: "Pick.",
         fields: [{ kind: "text", key: "__proto__", title: "Proto", required: true }],
       },
@@ -460,4 +468,39 @@ describe("useDirectBotsStore interactions", () => {
     // answered, so it is withdrawn rather than left inviting a submit.
     expect(store.pendingInteraction!.outcome).toBe("withdrawn");
   });
+test("a form with no conversation correlation is NOT rendered inside a topic view", () => {
+  // An uncorrelated frame is an ordinary channel turn. It has no topic, so there
+  // is nothing that proves it belongs to the topic the viewer happens to be
+  // reading — and rendering it there invites answering a different conversation.
+  // Scoped OUT, which is fail-closed: the form is unreachable on that surface
+  // rather than reachable on the wrong one.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst_1";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  store.applyEvent(openedEvent(formRequest({ conversation: undefined })));
+  expect(store.pendingInteraction).toBeNull();
+});
+
+test("a correlated form IS rendered inside its own topic view", () => {
+  const store = useDirectBotsStore();
+  store.instanceId = "inst_1";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  store.applyEvent(openedEvent(formRequest()));
+  expect(store.pendingInteraction).not.toBeNull();
+});
+
+test("an uncorrelated form is reachable on the account-wide surface", () => {
+  // Scoped out of a topic, not dropped: with no topic selected there is no topic
+  // to be wrong about, so the frame stays answerable where its turn came from.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst_1";
+  store.selectedBotId = "bot_1";
+  store.applyEvent(openedEvent(formRequest({ conversation: undefined })));
+  expect(store.pendingInteraction).not.toBeNull();
+});
+
 });
