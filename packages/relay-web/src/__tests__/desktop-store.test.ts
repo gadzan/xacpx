@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { effectScope } from "vue";
 
 import { supportsDesktop } from "../stores/instances";
 import { useDesktopStore } from "../stores/desktop";
 import { DesktopRequestError } from "../api/events";
+import { connectDesktopRfb } from "../lib/desktop-client";
 import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
 
 
@@ -71,6 +73,54 @@ describe("desktop store", () => {
     expect(supportsDesktop({ online: false, capabilities: [RELAY_CAPABILITIES.desktopRfbV1] })).toBe(false);
     expect(supportsDesktop({ online: true, capabilities: [] })).toBe(false);
     expect(supportsDesktop({ online: true })).toBe(false);
+  });
+
+  it("a disposed store's reconnect closure stops firing (no global reset)", async () => {
+    // The subscription set in events.ts is module-scoped, so a store torn down
+    // without unsubscribing (HMR, $dispose, an embedded re-create) leaves its
+    // closure registered and every later reconnect drives a desktop-open for a
+    // viewer nobody is showing. This must hold on the store's own dispose path
+    // and deliberately avoids the global handler reset, which is precisely what
+    // would mask the leak.
+    const events = await import("../api/events");
+    const fire = (events as unknown as { _fireEventsReconnectForTests: () => void })._fireEventsReconnectForTests;
+
+    // No beforeEach interference: this test manages the handler set itself.
+    setActivePinia(createPinia());
+    (events as unknown as { _resetTerminalRequestStateForTests: () => void })._resetTerminalRequestStateForTests();
+    vi.mocked(events.requestDesktop).mockImplementation(async (msg: unknown) => ({
+      requestId: "r",
+      instanceId: (msg as { instanceId: string }).instanceId,
+      streamId: `s-${vi.mocked(events.requestDesktop).mock.calls.length}`,
+      wsPath: "/desktop/observe?ticket=t",
+      expiresAt: 1,
+      security: "vnc-auth",
+    }));
+
+    // Store A opened inside a real scope, then disposed.
+    const scopeA = effectScope();
+    await scopeA.run(async () => {
+      const store = useDesktopStore();
+      await store.open("i-disposed", {}, { target: null });
+      await vi.waitFor(() => expect(store.viewFor("i-disposed").status).toBe("connecting"));
+    });
+    expect(vi.mocked(events.requestDesktop).mock.calls.length).toBe(1);
+    scopeA.stop();
+
+    // A leaked handler would open another stream for i-disposed right here.
+    fire();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(vi.mocked(events.requestDesktop).mock.calls.length).toBe(1);
+
+    // And a live store on a fresh pinia still subscribes, so the unsubscribe is
+    // per-store and did not tear down the shared dispatch.
+    setActivePinia(createPinia());
+    const storeB = useDesktopStore();
+    await storeB.open("i-live", {}, { target: null });
+    await vi.waitFor(() => expect(storeB.viewFor("i-live").status).toBe("connecting"));
+    expect(vi.mocked(events.requestDesktop).mock.calls.length).toBe(2);
+    fire();
+    await vi.waitFor(() => expect(vi.mocked(events.requestDesktop).mock.calls.length).toBe(3));
   });
 
   it("open() requests a stream without persisting tickets or passwords", async () => {
@@ -200,8 +250,9 @@ describe("desktop store", () => {
         };
       });
 
+    const host = document.createElement("div");
     const store = useDesktopStore();
-    store.open("i1", {});
+    store.open("i1", {}, { target: host });
     await vi.waitFor(() => expect(store.viewFor("i1").status).toBe("connecting"));
     expect(opens).toHaveLength(1);
     const first = opens[0] as { requestId: string };
@@ -221,7 +272,14 @@ describe("desktop store", () => {
     // The reopened stream is a genuinely new one: the hub revoked the old id
     // with its ticket, so a reused id would be a protocol violation.
     expect(store.viewFor("i1").streamId).toBe("s-2");
-    expect(store.viewFor("i1").streamId).not.toBe(first.streamId);
+    // And it must repaint into the SAME host element DesktopTab mounted. A
+    // reconnect that drops the target silently renders into a detached div:
+    // the RPC succeeds, the state machine says open, and the panel is black.
+    expect(connectDesktopRfb).toHaveBeenCalledTimes(2);
+    const firstConnect = vi.mocked(connectDesktopRfb).mock.calls[0]?.[0] as { target?: HTMLElement | null };
+    const secondConnect = vi.mocked(connectDesktopRfb).mock.calls[1]?.[0] as { target?: HTMLElement | null };
+    expect(firstConnect.target).toBe(host);
+    expect(secondConnect.target).toBe(host);
     // The stale session was torn down first: the old stream is closed, not
     // silently left to be revoked by the hub much later.
     const closeCalls = (sendWebClientMessage as unknown as { mock: { calls: Array<[Record<string, unknown>]> } }).mock.calls

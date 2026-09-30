@@ -2,7 +2,7 @@
 // only in this store's memory (never localStorage/sessionStorage); tickets
 // are single-use, so every reconnect re-issues desktop-open over /ws.
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { onScopeDispose, ref } from "vue";
 
 import {
   DESKTOP_RPC_TIMEOUT_MS,
@@ -221,6 +221,12 @@ export const useDesktopStore = defineStore("desktop", () => {
     // browser's binary side attaches, so clearing the local entry is what stops
     // a later close from naming a stream the hub already knows by streamId.
     if (pendingRequestId.get(instanceId) === requestId) pendingRequestId.delete(instanceId);
+    // Reconnect rebuilds this viewer from the same render target: losing it
+    // sends the new framebuffer into a detached div and the panel stays black
+    // while everything else reports success. Recorded even when the target is
+    // null (unmounted host), because the reopen still has to happen — only the
+    // repaint destination is absent.
+    reconnectContext.set(instanceId, { hooks, target: opts.target ?? null });
     patch(instanceId, {
       status: opened.security === "ard" ? "error" : "connecting",
       streamId: opened.streamId,
@@ -334,6 +340,7 @@ export const useDesktopStore = defineStore("desktop", () => {
     // Deliberately keep the bumped generation: it must outlive this close so
     // the NEXT open() cannot reuse a number an in-flight attempt still holds.
     sessions.value.delete(instanceId);
+    reconnectContext.delete(instanceId);
   }
 
   function applyEvent(event: { kind: string; instanceId?: string }): void {
@@ -347,15 +354,34 @@ export const useDesktopStore = defineStore("desktop", () => {
   let reconnectUnsub: (() => void) | null = null;
 
   /**
+   * Per-instance context needed to rebuild a viewer after a control-socket
+   * drop. `target` is load-bearing: DesktopTab mounts a `[data-test=desktop-host]`
+   * div and passes it as noVNC's render target, and without it the client falls
+   * back to a detached div, so the reconnect "succeeds" and paints nothing.
+   */
+  const reconnectContext = new Map<string, { hooks: DesktopRfbHooks; target: HTMLElement | null }>();
+
+  /**
    * Subscribe this store's reopen to /ws re-open. Idempotent per STORE: the
    * subscription set in events.ts is module-scoped (one per page, shared by
    * every store), so a per-store guard alone would let each new store instance
    * add another closure and multiply re-opens after a single reconnect. The
-   * unsubscribe is therefore captured on the store and re-registered only once.
+   * unsubscribe is therefore captured on the store and re-registered only once,
+   * and it is released on scope dispose so an HMR'd or re-created store cannot
+   * leave its closure behind to fire against a dead instance.
    */
   function ensureReconnectHook(): void {
     if (reconnectUnsub) return;
-    reconnectUnsub = onEventsReconnect(() => { reopenAfterWsReconnect(); });
+    const handler = () => { reopenAfterWsReconnect(); };
+    reconnectUnsub = onEventsReconnect(handler);
+    // Release it when the store's scope dies (HMR / $dispose / re-create): the
+    // subscription set in events.ts is module-scoped, so without this a dead
+    // store's closure stays registered and fires on every later reconnect.
+    // Bound to any active component/effect scope; a store living at the app
+    // root therefore keeps its subscription for the whole page lifetime.
+    onScopeDispose(() => {
+      if (reconnectUnsub) { reconnectUnsub(); reconnectUnsub = null; }
+    });
   }
 
   /**
@@ -371,17 +397,19 @@ export const useDesktopStore = defineStore("desktop", () => {
    * Fresh open only: the hub revoked the old stream and its ticket, so reusing
    * anything from the closed session would be rejected. `close()` first so no
    * stale local state (generation, abandoned requestId) survives into the new
-   * attempt.
+   * attempt. Everything else about the viewer — its render target and its hooks
+   * — must be carried across verbatim, or the reconnect renders into a detached
+   * div and the tab stays black while reporting success.
    */
   function reopenAfterWsReconnect(): void {
     const live = [...sessions.value.entries()].filter(
       ([, view]) => view.status !== "closed" || view.streamId !== undefined,
     );
-    for (const [instanceId, view] of live) {
-      const hooks: DesktopRfbHooks = {};
+    for (const [instanceId] of live) {
+      const context = reconnectContext.get(instanceId);
       close(instanceId);
-      void open(instanceId, hooks);
-      void view;
+      if (!context) continue;
+      void open(instanceId, context.hooks, { target: context.target });
     }
   }
 
