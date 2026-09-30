@@ -6473,9 +6473,11 @@ test("PR7 scheduler: held writer-slot claim survives a lease boundary with prove
   second.jump(10_000);
   await tick();
   await tick();
-  // Force a fresh drain pass while A still hangs: its pass-top recovery is
-  // what would requeue the expired held claim as `recovery` if renewal did
-  // not protect it. (In production this is any kick arriving mid-wait.)
+  // Kick mid-wait: it only bumps the generation (the drain is still
+  // awaiting hung A, so kick coalesces). The protection under test is the
+  // recheck-after-settle renewal — without it, the settle pass's recovery
+  // would requeue expired B as `recovery` before executing it. In production
+  // the same shape is any kick arriving mid-wait followed by the settle.
   await second.dispatcher.kick();
   hang.resolve();
   await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
@@ -6488,6 +6490,111 @@ test("PR7 scheduler: held writer-slot claim survives a lease boundary with prove
   expect(dispatchAfter.humanIngress).toEqual(HUMAN_INGRESS);
   second.store.close();
 });
+
+test("PR7 scheduler: non-stale renewHeldClaim failure fails the drain without orphaning the claim", async () => {
+  // A transient store failure during renewal must NOT look like losing the
+  // claim: the drain fails visibly, and the durable dispatch stays claimed
+  // with provenance intact for the next kick to renew and execute.
+  const second = await createLifecycle({ autoKick: false, leaseMs: 100 });
+  await second.service.activateAfterConsumerLock();
+  seedTesterBot(second.state);
+  const group = await second.bots.createGroup({ title: "RenewFail", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await second.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(second.runner).hang = hang;
+  const accepted = await second.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-renew-fail",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  // Hold the drain promise itself: a later kick() would only coalesce
+  // (draining === true) and resolve without observing the failure.
+  const drain = second.dispatcher.kick();
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+  const testerTurn = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  const heldBefore = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  // Fail the NEXT renewHeldClaim with a non-stale store error (transient
+  // I/O). The recheck renewal is the next renewal to run once A settles, so
+  // it must reject the drain instead of silently dropping the hold.
+  const realRenew = second.store.renewHeldClaim.bind(second.store);
+  let calls = 0;
+  second.store.renewHeldClaim = ((input: unknown) => {
+    calls += 1;
+    if (calls === 1) {
+      throw new Error("injected transient store failure");
+    }
+    return realRenew(input as never);
+  }) as typeof second.store.renewHeldClaim;
+  hang.resolve();
+  await expect(drain).rejects.toThrow("injected transient store failure");
+  // The durable claim is untouched: still claimed by us, same generation,
+  // human route intact, member still dispatched (not requeued as recovery).
+  const heldAfter = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(heldAfter.state).toBe("claimed");
+  expect(heldAfter.generation).toBe(heldBefore.generation);
+  expect(heldAfter.humanIngress).toEqual(HUMAN_INGRESS);
+  expect(second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.origin).toBe("human-explicit");
+  // Recovery path still works after the visible failure: restore the real
+  // renewal and the held sibling executes normally to completion. A must be
+  // re-hung first: the failed drain settled A's provider turn while the
+  // recheck threw, so without a fresh hang B's recheck would race a
+  // completed A — still correct, but the hang makes the ordering explicit.
+  second.store.renewHeldClaim = realRenew;
+  await second.dispatcher.kick();
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 2);
+  await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
+  expect(fakeRunner(second.runner).runs).toHaveLength(2);
+  second.store.close();
+});
+
+test("PR7 scheduler: stale renewHeldClaim drops the hold and routes through recovery", async () => {
+  // The contrast case: stale_claim IS swallowed. The hold drops, the drain
+  // settles normally, and the member flows through ordinary lease recovery
+  // (origin `recovery`) rather than executing on a claim nobody owns.
+  const second = await createLifecycle({ autoKick: false, leaseMs: 100 });
+  await second.service.activateAfterConsumerLock();
+  seedTesterBot(second.state);
+  const group = await second.bots.createGroup({ title: "StaleHold", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await second.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(second.runner).hang = hang;
+  const accepted = await second.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-stale-hold",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  const drain = second.dispatcher.kick();
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+  // Every renewal reports the claim as lost: hold-time renewal drops the
+  // hold (without deferring the topic), so the drain settles normally.
+  second.store.renewHeldClaim = ((input: unknown) => {
+    throw new ConversationError("stale_claim", "gone");
+  }) as typeof second.store.renewHeldClaim;
+  hang.resolve();
+  await drain;
+  // Advance past the lease so normal recovery requeues the stranded claim,
+  // then drain again: the member executes, marked as recovery.
+  second.jump(10_000);
+  await second.dispatcher.kick();
+  await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
+  const testerAfter = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerAfter.origin).toBe("recovery");
+  second.store.close();
+});
+
+
 
 
 test("PR7 scheduler: bare read-only without proof stays serialized, proven read-only overlaps", async () => {

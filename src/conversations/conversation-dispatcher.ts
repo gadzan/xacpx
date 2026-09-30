@@ -174,30 +174,34 @@ export class ConversationDispatcher {
             }
           });
         }
-        // Wait for launched executions before deciding the pass is over,
-        // then re-check held writer-slot claims: a held sibling becomes
-        // runnable the moment its sibling's provider turn settles, and the
-        // drain executes the SAME held claim object (still ours, still
-        // human) in this pass — no re-claim, no provenance rewrite — so a
-        // two-member Run under shared-single-writer completes without an
-        // extra wake.
+        // Settle launched executions, then re-check held writer-slot claims —
+        // ALWAYS, not only when something was in flight. A held sibling
+        // becomes runnable the moment its sibling's provider turn settles,
+        // and the drain executes the SAME held claim object (still ours,
+        // still human) in this pass — no re-claim, no provenance rewrite —
+        // so a two-member Run under shared-single-writer completes without
+        // an extra wake. The recheck must also run when the in-flight set is
+        // empty: a previous pass may have launched, settled, and parked a
+        // hold (or thrown mid-recheck), and nothing else will pick that hold
+        // back up — claimOne only returns `pending` rows, never our live
+        // `claimed` hold.
         if (this.inFlightExecutions.size > 0) {
           await Promise.allSettled(this.inFlightExecutions.values());
-          // The deferred set belongs to the pass that just ended: per-pass
-          // deferrals must not leak into the recheck, or a held claim can
-          // never become runnable inside this drain.
-          this.deferredTopicIds.clear();
-          const held = this.recheckHeldClaims();
-          if (held) {
-            const execution = this.execute(held);
-            this.inFlightExecutions.set(held.dispatch.id, execution);
-            void execution.finally(() => {
-              if (this.inFlightExecutions.get(held.dispatch.id) === execution) {
-                this.inFlightExecutions.delete(held.dispatch.id);
-              }
-            });
-            continue;
-          }
+        }
+        // The deferred set belongs to the pass that just ended: per-pass
+        // deferrals must not leak into the recheck, or a held claim can
+        // never become runnable inside this drain.
+        this.deferredTopicIds.clear();
+        const held = this.recheckHeldClaims();
+        if (held) {
+          const execution = this.execute(held);
+          this.inFlightExecutions.set(held.dispatch.id, execution);
+          void execution.finally(() => {
+            if (this.inFlightExecutions.get(held.dispatch.id) === execution) {
+              this.inFlightExecutions.delete(held.dispatch.id);
+            }
+          });
+          continue;
         }
       }
     } finally {
@@ -351,8 +355,15 @@ export class ConversationDispatcher {
           leaseExpiresAt,
         });
         this.heldWriterSlotClaims.set(dispatchId, { ...work, dispatch: renewed });
-      } catch {
-        this.heldWriterSlotClaims.delete(dispatchId);
+      } catch (error) {
+        // Only a lost race drops the hold: anything else (SQLite I/O,
+        // driver failure) must fail the drain visibly rather than silently
+        // orphan a durable claim that is still ours.
+        if (error instanceof ConversationError && error.code === "stale_claim") {
+          this.heldWriterSlotClaims.delete(dispatchId);
+          continue;
+        }
+        throw error;
       }
     }
   }
@@ -361,9 +372,11 @@ export class ConversationDispatcher {
     // Renew at hold time: the wait that follows may outlast the original
     // lease (LLM sibling turns routinely exceed 30s). Without this, the next
     // recoverExpiredClaims() treats the scheduling wait as crash recovery.
-    // A renewal failure here means the claim is already gone (lost race,
-    // cancelled Run): do not hold what we cannot renew; execute()'s fences
-    // still guard the stale object if it is somehow re-read.
+    // A stale claim here means it is already gone (lost race, cancelled
+    // Run): do not hold what we cannot renew; execute()'s fences still guard
+    // the stale object if it is somehow re-read. Any other store error
+    // propagates: failing the drain visibly is safer than parking a durable
+    // claim we never registered as held.
     try {
       const renewed = this.store.renewHeldClaim({
         dispatchId: work.dispatch.id,
@@ -373,8 +386,11 @@ export class ConversationDispatcher {
         leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString(),
       });
       this.heldWriterSlotClaims.set(work.dispatch.id, { ...work, dispatch: renewed });
-    } catch {
-      return;
+    } catch (error) {
+      if (error instanceof ConversationError && error.code === "stale_claim") {
+        return;
+      }
+      throw error;
     }
     this.deferredTopicIds.add(work.run.topicId);
   }
@@ -406,10 +422,12 @@ export class ConversationDispatcher {
         this.heldWriterSlotClaims.delete(dispatchId);
         continue;
       }
-      // Renew first: an already-expired held claim must NOT execute — its
+      // Renew first: an already-recovered held claim must NOT execute — its
       // lease lapsed while we were not watching, so recovery owns it now.
       // renewHeldClaim's fence rejects it (stale_claim) and we drop the hold;
       // the normal recovery path requeues it with fresh provenance rules.
+      // Other store errors propagate: a failed renewal must not silently
+      // delete the in-memory hold while the durable claim stays intact.
       let renewed: PendingDispatch;
       try {
         renewed = this.store.renewHeldClaim({
@@ -419,9 +437,12 @@ export class ConversationDispatcher {
           now,
           leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString(),
         });
-      } catch {
-        this.heldWriterSlotClaims.delete(dispatchId);
-        continue;
+      } catch (error) {
+        if (error instanceof ConversationError && error.code === "stale_claim") {
+          this.heldWriterSlotClaims.delete(dispatchId);
+          continue;
+        }
+        throw error;
       }
       if (this.mustDeferForWriterSlot({ ...work, dispatch: renewed })) {
         this.deferredTopicIds.add(work.run.topicId);
