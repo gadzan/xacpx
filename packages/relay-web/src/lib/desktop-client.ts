@@ -8,6 +8,13 @@ export interface DesktopSecurityFailure {
   status?: number;
   /** Server-provided text; optional and language-unspecified by noVNC's API. */
   reason?: string;
+  /**
+   * True once a VncAuth password was actually submitted. Distinguishes a
+   * rejected PASSWORD (after submission) from the server refusing at the
+   * security-scheme stage before any credentials existed — noVNC emits the same
+   * event and sets the same `status` for both.
+   */
+  credentialsSubmitted?: boolean;
 }
 
 export interface DesktopRfbHooks {
@@ -88,6 +95,12 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
     rfb?.addEventListener(type, listener);
   };
 
+  // Whether the user actually submitted a VncAuth password. A `securityfailure`
+  // BEFORE this point is the server refusing at the SCHEME stage (RFB 3.3
+  // security type 0, or a 3.7+ security-types failure) and says nothing about
+  // credentials — noVNC sets the same `status` on both, so the phase, not the
+  // presence of a status, is what distinguishes them.
+  let credentialsSubmitted = false;
   void (input.loadNoVnc ?? defaultLoadNoVnc)().then((mod) => {
     if (disposed) return;
     const Ctor = mod.default ?? mod.RFB;
@@ -164,7 +177,10 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
         : "disconnected";
       hooks.onDisconnect?.({ clean, reason });
     });
-    on("credentialsrequired", () => hooks.onCredentialsRequired?.());
+    on("credentialsrequired", () => {
+      credentialsSubmitted = true;
+      hooks.onCredentialsRequired?.();
+    });
     on("securityfailure", (event) => {
       // Structured, not free text. noVNC's `detail` carries the SecurityResult
       // `status` plus a server-supplied `reason` that is optional and whose
@@ -176,7 +192,7 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
       const reason = typeof detail?.reason === "string" && detail.reason.length > 0
         ? detail.reason
         : undefined;
-      hooks.onSecurityFailure?.({ status, reason });
+      hooks.onSecurityFailure?.({ status, reason, credentialsSubmitted });
     });
   }).catch((err: unknown) => {
     hooks.onSecurityFailure?.({ reason: err instanceof Error ? err.message : "noVNC failed to load" });
@@ -186,6 +202,7 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
     sendCredentials(password: string): void {
       // noVNC requires the credentials OBJECT, not a bare string: VncAuth reads
       // `_rfbCredentials.password` to build the DES response.
+      credentialsSubmitted = true;
       try { rfb?.sendCredentials({ password }); } catch { /* gone */ }
     },
     setScaleViewport(fit: boolean): void {

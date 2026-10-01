@@ -410,9 +410,19 @@ export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus
   const open = () => {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const wasReconnect = retry > 0;
-    socket = new WebSocket(`${proto}://${location.host}/ws`);
-    activeSocket = socket;
-    socket.onmessage = (e) => {
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    socket = ws;
+    activeSocket = ws;
+    // Every handler below is fenced on "am I still the current socket". Two
+    // connectEvents() instances legitimately overlap: a disposed view calls
+    // close(), the close handshake is still in flight, and the replacement view
+    // opens a new socket. The old socket's late `onclose` used to clear
+    // `activeSocket` -- which by then points at the NEW, still-OPEN socket --
+    // reject its in-flight RPCs, and mark the whole app offline. Since the new
+    // socket never closes, nothing fires a reconnect and the damage is permanent.
+    const isCurrent = (): boolean => socket === ws;
+    ws.onmessage = (e) => {
+      if (!isCurrent()) return;
       const decoded = decodeEnvelope(String(e.data));
       if (!decoded.ok) return;
       const event = parseWebServerEvent(decoded.envelope);
@@ -421,14 +431,16 @@ export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus
       publishWebEvent(event);
       onEvent(event);
     };
-    socket.onopen = () => {
+    ws.onopen = () => {
+      if (!isCurrent()) return;
       const reconnected = wasReconnect || everOpened;
       retry = 0;
       everOpened = true;
       onStatus?.(true);
       if (reconnected) fireEventsReconnect();
     };
-    socket.onclose = () => {
+    ws.onclose = () => {
+      if (!isCurrent()) return;
       onStatus?.(false);
       activeSocket = null;
       rejectAllPending("events-offline", "events socket closed");

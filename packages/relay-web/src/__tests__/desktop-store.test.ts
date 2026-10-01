@@ -337,6 +337,29 @@ describe("desktop store", () => {
     expect(only.target).toBe(host);
   });
 
+  it("a reconnect preserves the user's Actual/Fit choice", async () => {
+    // The user toggles Actual AFTER the open. A reconnect must not quietly push
+    // them back to Fit: `setFit` only updates the session row, so the sweep must
+    // read the CURRENT value rather than a value snapshotted at open time.
+    const store = useDesktopStore();
+    const host = document.createElement("div");
+    await store.open("i-fit", {}, { target: host });
+    await vi.waitFor(() => expect(store.viewFor("i-fit").status).toBe("connecting"));
+    const firstConnect = vi.mocked(connectDesktopRfb).mock.calls[0]?.[0] as { fit?: boolean } | undefined;
+    expect(firstConnect?.fit).toBe(true);
+
+    store.setFit("i-fit", false);
+    expect(store.viewFor("i-fit").fit).toBe(false);
+
+    const { _fireEventsReconnectForTests } = await import("../api/events");
+    _fireEventsReconnectForTests();
+    await vi.waitFor(() => expect(vi.mocked(connectDesktopRfb).mock.calls.length).toBe(2));
+    const reopened = vi.mocked(connectDesktopRfb).mock.calls[1]?.[0] as { fit?: boolean; target?: HTMLElement | null };
+    expect(reopened.fit).toBe(false);
+    expect(reopened.target).toBe(host);
+    expect(store.viewFor("i-fit").fit).toBe(false);
+  });
+
   it("a local RPC timeout releases the reservation so a later reconnect is not busy", async () => {
     // The hub prepared the stream and answered, but the reply had not reached
     // the browser when its own timer fired. Without a cancel the reservation
@@ -540,36 +563,31 @@ describe("desktop store", () => {
 
   it("classifies a rejected password structurally, not from the server's wording", async () => {
     // Regression: every noVNC `securityfailure` was first mapped wholesale to
-    // `desktop-auth-unsupported` ("VNC auth scheme is not supported"), and then
-    // told apart by regexing the server's English text. noVNC's API states that
-    // `detail.reason` is optional and its language is unspecified, so a
-    // localised refusal ("Acceso denegado") had to be classified by the SIGNAL,
-    // not by matching English phrases.
+    // `desktop-auth-unsupported` ("VNC auth scheme is not supported"), then told
+    // apart by regexing the server's English text, then (partially fixed) by the
+    // presence of a SecurityResult `status`. All three were wrong: noVNC's API
+    // states `detail.reason` is optional and its language is unspecified, and
+    // noVNC ALSO sets `_securityStatus` for a scheme-stage refusal that happens
+    // before any credentials exist.
     const { classifySecurityFailure } = await import("../stores/desktop");
-    // A status means the handshake reached a security result, so the server
-    // rejected the credentials the user submitted.
-    expect(classifySecurityFailure({ status: 1, reason: "authentication failure" })).toMatchObject({
-      code: "desktop-auth-failed",
-      retryable: true,
-    });
-    // Non-English / unrelated wording must NOT flip the classification.
-    expect(classifySecurityFailure({ status: 1, reason: "Acceso denegado" })).toMatchObject({
-      code: "desktop-auth-failed",
-      retryable: true,
-    });
-    expect(classifySecurityFailure({ status: 0, reason: "" })).toMatchObject({
-      code: "desktop-auth-failed",
-      retryable: true,
-    });
-    // No status at all is the scheme-level refusal.
-    expect(classifySecurityFailure({ reason: "no matching security types" })).toMatchObject({
-      code: "desktop-auth-unsupported",
-      retryable: false,
-    });
-    expect(classifySecurityFailure({})).toMatchObject({
-      code: "desktop-auth-unsupported",
-      retryable: false,
-    });
+    // A rejected password: credentials were actually submitted.
+    expect(classifySecurityFailure({ status: 1, reason: "authentication failure", credentialsSubmitted: true }))
+      .toMatchObject({ code: "desktop-auth-failed", retryable: true });
+    // Non-English wording must NOT flip it.
+    expect(classifySecurityFailure({ status: 1, reason: "Acceso denegado", credentialsSubmitted: true }))
+      .toMatchObject({ code: "desktop-auth-failed", retryable: true });
+    expect(classifySecurityFailure({ status: 0, reason: "", credentialsSubmitted: true }))
+      .toMatchObject({ code: "desktop-auth-failed", retryable: true });
+    // Scheme-stage refusal BEFORE any prompt: the user was never asked for a
+    // password, so telling them the server "rejected the password" is wrong.
+    expect(classifySecurityFailure({ status: 1, reason: "too many security failures", credentialsSubmitted: false }))
+      .toMatchObject({ code: "desktop-auth-unsupported", retryable: false });
+    expect(classifySecurityFailure({ status: 0, credentialsSubmitted: false }))
+      .toMatchObject({ code: "desktop-auth-unsupported", retryable: false });
+    expect(classifySecurityFailure({ reason: "no matching security types" }))
+      .toMatchObject({ code: "desktop-auth-unsupported", retryable: false });
+    expect(classifySecurityFailure({}))
+      .toMatchObject({ code: "desktop-auth-unsupported", retryable: false });
 
     // The driver path uses it. Reuse the hook-capturing mock, then fire noVNC's
     // real order: credentialsrequired → securityfailure → disconnect(clean:false).
@@ -587,7 +605,7 @@ describe("desktop store", () => {
     expect(hooks).toBeDefined();
     hooks?.onCredentialsRequired?.();
     expect(store.viewFor("i1").status).toBe("auth-required");
-    hooks?.onSecurityFailure?.({ status: 1, reason: "authentication failure" });
+    hooks?.onSecurityFailure?.({ status: 1, reason: "authentication failure", credentialsSubmitted: true });
     expect(store.viewFor("i1").status).toBe("error");
     expect(store.viewFor("i1").lastErrorCode).toBe("desktop-auth-failed");
     // noVNC answers _fail() by marking the connection unclean and emitting
@@ -596,6 +614,32 @@ describe("desktop store", () => {
     hooks?.onDisconnect?.({ clean: false, reason: "authentication failure" });
     expect(store.viewFor("i1").status).toBe("error");
     expect(store.viewFor("i1").lastErrorCode).toBe("desktop-auth-failed");
+  });
+
+  it("a security failure before the password prompt is not a password error", async () => {
+    // noVNC sets `_securityStatus` (the same field the password result uses) when
+    // the server refuses at the SCHEME stage — RFB 3.3 security type 0, or a
+    // 3.7+ security-types failure. That happens before any credentials exist, so
+    // keying on `status` alone told the user "the server rejected the password"
+    // when they had never been asked for one. Only a failure AFTER a submitted
+    // password is a password rejection.
+    const store = useDesktopStore();
+    const { connectDesktopRfb } = await import("../lib/desktop-client");
+    const hookSets: Array<Record<string, (...args: unknown[]) => void>> = [];
+    (connectDesktopRfb as unknown as {
+      mockImplementation: (fn: (i: { hooks?: Record<string, (...a: unknown[]) => void> }) => unknown) => void;
+    }).mockImplementation((i) => {
+      hookSets.push(i.hooks ?? {});
+      return { sendCredentials: vi.fn(), setScaleViewport: vi.fn(), dispose: vi.fn() };
+    });
+
+    await store.open("i2", {});
+    const hooks = hookSets[0];
+    expect(hooks).toBeDefined();
+    // The server refuses BEFORE any credentials prompt.
+    hooks?.onSecurityFailure?.({ status: 1, reason: "too many security failures", credentialsSubmitted: false });
+    expect(store.viewFor("i2").status).toBe("error");
+    expect(store.viewFor("i2").lastErrorCode).toBe("desktop-auth-unsupported");
   });
 
   it("a retryable prepare failure keeps its reason on the closed row", async () => {

@@ -50,24 +50,26 @@ export const DESKTOP_AUTH_FAILED_CODE = "desktop-auth-failed";
 /**
  * Classify a noVNC `securityfailure`.
  *
- * noVNC 1.7.0 emits this event for a rejected security type AND for a rejected
- * VncAuth password. It used to be told apart by regex-ing the server's English
- * wording, which misreported a rejected password as `desktop-auth-unsupported`
- * ("the scheme is not supported") as soon as the server localised its message —
- * noVNC's own API states that `detail.reason` is optional and its language is
- * unspecified. So classify on the signal, not on the prose.
+ * noVNC 1.7.0 emits this event for a rejected security TYPE and for a rejected
+ * VncAuth password. It was first told apart by regexing the server's English
+ * wording (which broke as soon as a server localised its message, because
+ * noVNC's API states `detail.reason` is optional and language-unspecified), then
+ * by the presence of a SecurityResult `status`. Both are wrong:
  *
- * A numeric `status` is the SecurityResult the private outer-scheme guard forces
- * to type 2 (VncAuth) in this app, so a status-bearing failure on that path is
- * the server rejecting the credentials the user submitted. No status at all
- * means noVNC could not even reach a security result, which is the scheme-level
- * refusal.
+ * noVNC ALSO sets `_securityStatus` when the server refuses at the SCHEME stage
+ * — RFB 3.3 security type 0, or a 3.7+ security-types failure — which happens
+ * BEFORE any password is exchanged. Keying on `status` therefore told the user
+ * "the server rejected the password" when they had never been asked for one.
+ *
+ * So the discriminator is the phase: only a failure AFTER the user submitted a
+ * VncAuth password is a rejected password.
  */
 export function classifySecurityFailure(failure: {
   status?: number;
   reason?: string;
+  credentialsSubmitted?: boolean;
 }): { code: string; retryable: boolean } {
-  if (failure.status !== undefined) {
+  if (failure.credentialsSubmitted === true) {
     return { code: DESKTOP_AUTH_FAILED_CODE, retryable: true };
   }
   return { code: "desktop-auth-unsupported", retryable: false };
@@ -195,11 +197,9 @@ export const useDesktopStore = defineStore("desktop", () => {
     // The target is also needed verbatim, or the reopen paints into a detached
     // div and reports success on a black panel. Recorded even when the target is
     // null (unmounted host), because the reopen still has to happen.
-    // `fit` is a presentation preference the user toggles on the stream, not a
-    // property of the transport: the reopen must not silently push Actual mode
-    // back to Fit. close() deletes the session row, so this is the only place the
-    // preference survives the reconnect.
-    reconnectContext.set(instanceId, { hooks, target: opts.target ?? null, fit: viewFor(instanceId).fit });
+    // `fit` is NOT captured here: it is a live presentation preference the
+    // reconnect sweep reads off the session row at reopen time.
+    reconnectContext.set(instanceId, { hooks, target: opts.target ?? null });
     let opened;
     try {
       opened = await requestDesktop(
@@ -314,8 +314,10 @@ export const useDesktopStore = defineStore("desktop", () => {
         onSecurityFailure: (failure) => {
           if (!mine()) return;
           connections.delete(instanceId);
-          // Classify on noVNC's structured signal (SecurityResult status), never
-          // on the server's wording: `reason` is optional and language-unspecified.
+          // Classify on noVNC's structured signal — the SecurityResult status
+          // together with whether a password was actually submitted — never on
+          // the server's wording, which noVNC documents as optional and of
+          // unspecified language.
           const failed = classifySecurityFailure(failure);
           patch(instanceId, {
             status: "error",
@@ -387,8 +389,11 @@ export const useDesktopStore = defineStore("desktop", () => {
    * `desktop-open` is still in flight rejects the RPC with `events-offline`,
    * which leave a `closed` row with no streamId, and the reconnect sweep must
    * still recognise it as a viewer the user left open.
+   * Presentation state (Actual/Fit) is deliberately NOT carried here: it changes
+   * at any time and must not require the context to be mutated. The sweep reads
+   * the live value off the session row instead.
    */
-  const reconnectContext = new Map<string, { hooks: DesktopRfbHooks; target: HTMLElement | null; fit: boolean }>();
+  const reconnectContext = new Map<string, { hooks: DesktopRfbHooks; target: HTMLElement | null }>();
 
   function ensureReconnectHook(): void {
     if (reconnectUnsub) return;
@@ -426,11 +431,16 @@ export const useDesktopStore = defineStore("desktop", () => {
       if (view.status !== "closed") return true;
       return view.lastErrorCode === "events-offline";
     });
-    for (const [instanceId] of live) {
+    for (const [instanceId, view] of live) {
       const context = reconnectContext.get(instanceId);
+      // Actual/Fit is a presentation preference the user toggles at any time via
+      // setFit(), which updates the session row — not the reconnect context. So
+      // read the CURRENT value here, before close() deletes the row it lives on,
+      // otherwise a transport reconnect silently reverts the user's choice.
+      const fit = view.fit;
       close(instanceId);
       if (!context) continue;
-      void open(instanceId, context.hooks, { target: context.target, fit: context.fit });
+      void open(instanceId, context.hooks, { target: context.target, fit });
     }
   }
 

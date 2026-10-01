@@ -113,9 +113,10 @@ export const useTerminalStore = defineStore("terminal", () => {
     // closure each time would accumulate duplicates and turn one reconnect into
     // N reopens of every attachment.
     reconnectUnsub = onEventsReconnect(() => { void reopenActiveAttachments(); });
-    onScopeDispose(() => {
-      if (reconnectUnsub) { reconnectUnsub(); reconnectUnsub = null; }
-    });
+    // No onScopeDispose() here: this is an ACTION, so it would bind the cleanup
+    // to whatever effect scope happens to be active at call time — or warn when
+    // there is none. The store-scope cleanup at the setup top level above is the
+    // store's real lifetime and the sole owner of this subscription.
   }
 
   function publishMeta(view: TerminalAttachmentView): void {
