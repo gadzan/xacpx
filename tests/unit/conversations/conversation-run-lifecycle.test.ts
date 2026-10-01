@@ -7109,6 +7109,125 @@ test("PR7 scheduler: activation seals explicit two-member run when a started sib
   reopenedStore.close();
 });
 
+test("PR7 scheduler: sealed run preserves a concurrently started sibling completion", async () => {
+  // Explicit Group [A, B] on a `shared` Topic: both members start
+  // concurrently. A's provider throws (sealing A indeterminate, which seals
+  // B + the Run) while B is still in flight; B's later proven completion
+  // must persist — B reclassifies to completed with its message durable —
+  // while the Run stays indeterminate (A still unknown). Scheduling never
+  // resurrects.
+  const releaseB = deferred<void>();
+  const hangA = deferred<void>();
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old" });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "SealEvidence", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared",
+  });
+  const fr = fakeRunner(first.runner);
+  const origRun = fr.run.bind(fr);
+  void origRun;
+  fr.run = (async (input: ConversationTurnRunInput) => {
+    fr.runs.push(input);
+    if (input.botId === TESTER_ID) {
+      await releaseB.promise;
+      return { status: "completed" as const, text: "proven B work" };
+    }
+    await hangA.promise;
+    throw new Error("A provider boom");
+  }) as FakeRunner["run"];
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-seal-evidence",
+    text: "together",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  expect(accepted.run.mode).toBe("explicit");
+  void first.dispatcher.kick();
+  await waitUntil(() => fr.runs.length === 2, 4000);
+  const turnA = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === BOT_ID)!;
+  const turnB = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(first.store.getMemberTurn(turnA.id)?.state).toBe("running");
+  expect(first.store.getMemberTurn(turnB.id)?.state).toBe("running");
+  // A throws inside its provider turn: the dispatcher seals A indeterminate,
+  // which seals B + the Run. B's provider is still parked in releaseB.
+  hangA.resolve();
+  await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "indeterminate", 4000);
+  expect(first.store.getMemberTurn(turnB.id)?.state).toBe("indeterminate");
+  // B completes with proof afterwards: evidence must persist, Run stays sealed.
+  releaseB.resolve();
+  await waitUntil(() => first.store.getMemberTurn(turnB.id)?.state === "completed", 4000);
+  expect(first.store.listMessages({
+    conversationId: group.id, topicId: topic.id, limit: 20,
+  }).filter((message) => message.role === "bot" && message.senderBotId === TESTER_ID).map((m) => m.content))
+    .toContain("proven B work");
+  const run = first.store.getRun(accepted.run.id)!;
+  expect(run.state).toBe("indeterminate");
+  expect(run.completionReason).toBe("started_result_unknown");
+  expect(first.store.getMemberTurn(turnA.id)?.state).toBe("indeterminate");
+  // Sealed scheduling stays dead: nothing further is claimable.
+  expect(first.store.claimNextDispatch({
+    now: first.nowFn().toISOString(), owner: "dispatcher-old",
+    leaseExpiresAt: new Date(first.nowFn().getTime() + 30_000).toISOString(), authorityEpoch: "epoch-old",
+  })).toBeUndefined();
+  first.store.close();
+});
+
+test("PR7 scheduler: sealed run preserves a concurrently started sibling failure", async () => {
+  // Mirror: B's proven failure after the seal must persist (failed state +
+  // failedBotIds) while the Run stays indeterminate on A's unknown.
+  const releaseB = deferred<void>();
+  const hangA = deferred<void>();
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old" });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "SealEvidenceFail", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared",
+  });
+  const fr = fakeRunner(first.runner);
+  fr.run = (async (input: ConversationTurnRunInput) => {
+    fr.runs.push(input);
+    if (input.botId === TESTER_ID) {
+      await releaseB.promise;
+      return { status: "failed" as const, error: "proven B boom" };
+    }
+    await hangA.promise;
+    throw new Error("A provider boom");
+  }) as FakeRunner["run"];
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-seal-evidence-fail",
+    text: "together",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  void first.dispatcher.kick();
+  await waitUntil(() => fr.runs.length === 2, 4000);
+  const turnA = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === BOT_ID)!;
+  const turnB = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  hangA.resolve();
+  await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "indeterminate", 4000);
+  releaseB.resolve();
+  await waitUntil(() => first.store.getMemberTurn(turnB.id)?.state === "failed", 4000);
+  expect(first.store.getMemberTurn(turnB.id)?.failureReason).toBe("proven B boom");
+  expect(first.store.getRun(accepted.run.id)!.failedBotIds).toContain(TESTER_ID);
+  const run = first.store.getRun(accepted.run.id)!;
+  expect(run.state).toBe("indeterminate");
+  expect(run.completionReason).toBe("started_result_unknown");
+  expect(first.store.claimNextDispatch({
+    now: first.nowFn().toISOString(), owner: "dispatcher-old",
+    leaseExpiresAt: new Date(first.nowFn().getTime() + 30_000).toISOString(), authorityEpoch: "epoch-old",
+  })).toBeUndefined();
+  first.store.close();
+});
+
 test("PR7 scheduler: stale renewHeldClaim drops the hold and routes through recovery", async () => {
   // The contrast case: stale_claim IS swallowed. The hold drops, the drain
   // settles normally, and the member flows through ordinary lease recovery

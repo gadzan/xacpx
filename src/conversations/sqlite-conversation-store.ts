@@ -1226,6 +1226,28 @@ export class SqliteConversationStore implements ConversationStore {
         };
       }
       if (run.state === "indeterminate") {
+        // Sealed Run: scheduling stays dead, but proof from an execution
+        // that was already admitted (started) before the seal is durable
+        // evidence, not a scheduling decision — reconcile it (reclassify
+        // this member, re-derive the Run from the whole batch; an unknown
+        // sibling keeps it indeterminate). Anything without execution
+        // identity falls through to the evidence no-op below.
+        if (member.state === "indeterminate" && member.startedAt) {
+          const evidence = this.persistSealedMemberEvidence({
+            runId: run.id,
+            memberTurnId: member.id,
+            outcome: "completed",
+            content: input.content,
+            sourceTurn: input.sourceTurn,
+            now: input.now,
+          });
+          return {
+            run: evidence.run,
+            memberTurn: evidence.memberTurn,
+            assistantMessage: evidence.message,
+            resurrected: false,
+          };
+        }
         this.finishDispatchForMemberTurn(member.id, input.now);
         return {
           run,
@@ -1286,6 +1308,81 @@ export class SqliteConversationStore implements ConversationStore {
         resurrected: false,
       };
     });
+  }
+  /**
+   * Persist proven evidence for a sealed indeterminate member WITHOUT
+   * touching scheduling: reclassify this member to its proven outcome and
+   * re-derive the Run from the whole batch (an unknown sibling keeps it
+   * indeterminate). Shared by completeExecution/failExecution when a proof
+   * lands for an already-started member after the Run sealed, and by
+   * reconcileLateResult (late provider settlement). Progress counts exactly
+   * once (the seal already counted this member); the Run aggregate never
+   * resurrects scheduling — classifySettledBatch only sets Run-level
+   * state/reason/finished_at.
+   */
+  private persistSealedMemberEvidence(input: {
+    runId: string;
+    memberTurnId: string;
+    outcome: "completed" | "failed";
+    content?: string;
+    reason?: string;
+    sourceTurn: { sessionAlias: string; turnId?: string };
+    now: string;
+  }): { run: ConversationRun; memberTurn: MemberTurnRecord; message?: ConversationMessage } {
+    const run = this.requireRun(input.runId);
+    const member = this.requireMemberTurn(input.memberTurnId);
+    let message: ConversationMessage | undefined;
+    if (input.outcome === "completed") {
+      const seq = this.allocateSeq(run.conversationId, run.topicId);
+      const messageId = this.ids.messageId();
+      this.sqlite.run(
+        `INSERT INTO messages (
+           id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
+         ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+        [
+          messageId,
+          run.conversationId,
+          run.topicId,
+          seq,
+          member.botId,
+          input.content ?? "",
+          run.id,
+          JSON.stringify(input.sourceTurn),
+          input.now,
+        ],
+      );
+      this.sqlite.run(
+        `UPDATE member_turns SET state = 'completed', failure_reason = NULL WHERE id = ?`,
+        [member.id],
+      );
+      message = this.getMessage(messageId);
+    } else {
+      this.sqlite.run(
+        `UPDATE member_turns SET state = 'failed', failure_reason = ? WHERE id = ?`,
+        [input.reason ?? "failed", member.id],
+      );
+      if (!this.requireRun(run.id).failedBotIds.includes(member.botId)) {
+        const failed = [...this.requireRun(run.id).failedBotIds, member.botId];
+        this.sqlite.run(
+          `UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`,
+          [JSON.stringify(failed), run.id],
+        );
+      }
+    }
+    this.finishDispatchForMemberTurn(member.id, input.now);
+    const members = this.listMemberTurns(run.id);
+    const batch = run.activeBatch ?? 1;
+    const reconciledRun = this.classifySettledBatch(
+      run.id,
+      members.filter((turn) => turn.batch === batch),
+      input.now,
+      input.outcome === "failed" ? (input.reason ?? "execution-failed") : undefined,
+    );
+    return {
+      run: reconciledRun,
+      memberTurn: this.requireMemberTurn(member.id),
+      ...(message ? { message } : {}),
+    };
   }
 
   failExecution(input: FailExecutionInput): ConversationRun {
@@ -2142,6 +2239,28 @@ export class SqliteConversationStore implements ConversationStore {
 
   private applyFailExecution(input: FailExecutionInput): ConversationRun {
     const run = this.requireRun(input.runId);
+    if (run.state === "indeterminate") {
+      const sealed = this.requireMemberTurn(input.memberTurnId);
+      if (
+        sealed.runId === run.id
+        && sealed.state === "indeterminate"
+        && sealed.startedAt
+        && (input.terminalState === undefined || input.terminalState === "failed")
+      ) {
+        return this.persistSealedMemberEvidence({
+          runId: run.id,
+          memberTurnId: sealed.id,
+          outcome: "failed",
+          reason: input.reason,
+          sourceTurn: {
+            sessionAlias: sealed.sessionAlias ?? "",
+            ...(sealed.sourceTurnId !== undefined ? { turnId: sealed.sourceTurnId } : {}),
+          },
+          now: input.now,
+        }).run;
+      }
+      return run;
+    }
     if (TERMINAL_RUN_STATES.includes(run.state)) {
       return run;
     }
@@ -2461,59 +2580,19 @@ export class SqliteConversationStore implements ConversationStore {
       if (run.state !== "indeterminate" || member.state !== "indeterminate") {
         return { run, memberTurn: member, reconciled: false };
       }
-      let message: ConversationMessage | undefined;
-      if (input.outcome === "completed") {
-        const seq = this.allocateSeq(run.conversationId, run.topicId);
-        const messageId = this.ids.messageId();
-        this.sqlite.run(
-          `INSERT INTO messages (
-             id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
-           ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
-          [
-            messageId,
-            run.conversationId,
-            run.topicId,
-            seq,
-            member.botId,
-            input.content ?? "",
-            run.id,
-            JSON.stringify(input.sourceTurn),
-            input.now,
-          ],
-        );
-        this.sqlite.run(
-          `UPDATE member_turns SET state = 'completed', failure_reason = NULL WHERE id = ?`,
-          [member.id],
-        );
-        message = this.getMessage(messageId);
-      } else {
-        this.sqlite.run(
-          `UPDATE member_turns SET state = 'failed', failure_reason = ? WHERE id = ?`,
-          [input.reason ?? "failed", member.id],
-        );
-        if (!run.failedBotIds.includes(member.botId)) {
-          const current = new Set(run.failedBotIds);
-          current.add(member.botId);
-          this.sqlite.run(
-            `UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`,
-            [JSON.stringify([...current]), input.runId],
-          );
-        }
-      }
-      this.finishDispatchForMemberTurn(member.id, input.now);
-      const members = this.listMemberTurns(run.id);
-      const batch = run.activeBatch ?? 1;
-      const batchMembers = members.filter((turn) => turn.batch === batch);
-      const reconciledRun = this.classifySettledBatch(
-        run.id,
-        batchMembers,
-        input.now,
-        input.outcome === "failed" ? (input.reason ?? "execution-failed") : undefined,
-      );
+      const evidence = this.persistSealedMemberEvidence({
+        runId: run.id,
+        memberTurnId: member.id,
+        outcome: input.outcome,
+        ...(input.content !== undefined ? { content: input.content } : {}),
+        ...(input.reason !== undefined ? { reason: input.reason } : {}),
+        sourceTurn: input.sourceTurn,
+        now: input.now,
+      });
       return {
-        run: reconciledRun,
-        memberTurn: this.requireMemberTurn(member.id),
-        ...(message ? { message } : {}),
+        run: evidence.run,
+        memberTurn: evidence.memberTurn,
+        ...(evidence.message ? { message: evidence.message } : {}),
         reconciled: true,
       };
     });

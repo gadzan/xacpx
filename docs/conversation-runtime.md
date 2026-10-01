@@ -107,7 +107,7 @@ The durable boundary is the dispatch `authorityEpoch` **bound to** `humanIngress
   Run.state = indeterminate
   ```
 
-  Unknown side effects seal the Run in **either mode** — even an explicit multi-member batch: every still-runnable sibling settles as `indeterminate` with its dispatch finished in the same transaction, so no new side-effect-capable turn can start after unproven execution. Proven sibling evidence is never rewritten (a completed sibling's message and a failed sibling's `failedBotIds` entry survive the seal).
+  Unknown side effects seal the Run in **either mode** — even an explicit multi-member batch: every still-runnable sibling settles as `indeterminate` with its dispatch finished in the same transaction, so no new side-effect-capable turn can start after unproven execution. Sealed scheduling stays dead, but proof from an execution admitted before the seal still persists: a concurrently running sibling (reachable on a `shared` Topic) that later returns a proven completion/failure reclassifies to its outcome with its evidence durable (message / `failedBotIds`), and the Run re-derives from the whole batch — an unknown sibling keeps it `indeterminate`. Only already-started proof lands; nothing new is ever claimed after the seal.
 
   Accepted-but-never-started is a different recovery case (redispatch). Started-but-result-unknown is not.
 
