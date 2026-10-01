@@ -279,18 +279,32 @@ describe("useDirectBotsStore interactions", () => {
     expect(store.pendingInteraction!.outcome).toBeNull();
   });
 
-  it("a gone interaction is reported as gone, not as a retryable failure", async () => {
+  it("a gone interaction is retired, not left up as a retryable failure", async () => {
     // The window closed between the click and the answer: there is nothing to
     // retry, and the form must say so instead of staying up forever. The hub
     // reports this as an error payload, which the transport surfaces as a
     // rejected RPC — the same shape any transport failure produces.
+    //
+    // The distinction the store draws is WHICH error. A `gone` is the hub's
+    // authoritative statement that the request no longer exists, so the form is
+    // retired as `withdrawn` (not `cancelled` — the user chose nothing, something
+    // else consumed it). A transport failure is NOT authoritative, so the form
+    // stays open and answerable — the important half, since otherwise a network
+    // blip would destroy a live form.
+    //
+    // This test previously asserted `outcome` stayed null, which pinned the bug:
+    // the comment said "instead of staying up forever" while the assertion
+    // required it to stay exactly that way.
     const store = useDirectBotsStore();
     mockRpc.mockResolvedValue({ error: { code: "interaction-gone", message: "gone" } });
     store.applyEvent(openedEvent(formRequest()));
     store.setInteractionAnswer("env", "prod");
     await store.submitInteraction("accept");
     expect(store.pendingInteraction!.errorCode).toBe("interactionGone");
-    expect(store.pendingInteraction!.outcome).toBeNull();
+    expect(store.pendingInteraction!.outcome).toBe("withdrawn");
+    // And it is out of the OPEN set, so no further submit can be attempted.
+    expect(store.requestStillHeld("req-1")).toBe(false);
+    expect(store.terminalInteractionCount).toBe(1);
   });
 
   it("a closed interaction is mapped onto a user-visible outcome", () => {
@@ -423,8 +437,16 @@ describe("useDirectBotsStore interactions", () => {
     // Simulate the window closing while the form was open.
     store.pendingInteraction!.request.expiresAt = Date.now() - 1;
     await store.submitInteraction("accept");
+    // Nothing was sent.
     expect(mockRpc).not.toHaveBeenCalled();
-    expect(store.pendingInteraction!.errorCode).toBe("interactionGone");
+    // And the form is RETIRED, not left in the open set with live controls: a
+    // window that already closed is not something the user can act on, so keeping
+    // it up only invited another click against a request the hub will refuse.
+    // This test previously asserted only `errorCode`, which left the form open.
+    expect(store.requestStillHeld("req-1")).toBe(false);
+    expect(store.terminalInteractionCount).toBe(1);
+    // The terminal says the window ran out, NOT that the user chose anything.
+    expect(store.pendingInteraction!.outcome).toBe("withdrawn");
   });
 
   it("reconcile keeps ANOTHER INSTANCE's form open when this pane has no run", async () => {

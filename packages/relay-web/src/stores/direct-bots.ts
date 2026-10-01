@@ -2396,8 +2396,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // Expiry is checked FIRST. An expired form must report that the window
     // closed, not "you left a field blank" — the incomplete-answer message would
     // send a user looking for a field they can no longer usefully fill.
+    //
+    // The form is RETIRED rather than merely flagged. A window that has already
+    // closed is not a condition the user can act on, so leaving it in the open set
+    // kept Submit/Decline/Cancel live for a form the hub will refuse — the same
+    // "normal ending, not an error to retry forever" rule the reject path below
+    // follows. `withdrawn`, because the user chose nothing; the window simply
+    // passed.
     if (current.request.expiresAt <= Date.now()) {
-      patchInteraction(current.request.requestId, { errorCode: "interactionGone" });
+      retireInteraction(current.request.requestId, "withdrawn");
       return;
     }
     if (action === "accept" && !isInteractionAnswerable(current)) {
@@ -2428,12 +2435,34 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     } catch (error) {
       if (generation !== currentSelectionGeneration) return;
       // A gone interaction is a normal ending, not an error to retry forever.
-      const gone = error instanceof DirectBotRpcError && error.code === "interaction-gone";
+      //
+      // `interaction-gone` is the hub's AUTHORITATIVE statement that this request no
+      // longer exists — it was answered from another tab, withdrawn, or expired. So
+      // the form is RETIRED here, not merely annotated with an error code.
+      //
+      // Setting only `errorCode` is what this branch used to do, and it left the
+      // dead form in the open map with its Submit/Decline/Cancel controls still
+      // live: the user could click again, get the same 409, and repeat forever on a
+      // form nobody was waiting for. The hub was already fail-closed, so this is a
+      // state-consistency bug rather than a lost-answer one, but the comment above
+      // promised a normal ending and the code did not deliver it.
+      //
+      // Retiring it closes the loop for the reconnect case where a form was answered
+      // elsewhere during the outage and the hub's positive-only replay never
+      // mentioned it again: the first authoritative 409 is the moment this tab learns
+      // the truth, and it acts on it instead of parking a corpse.
+      if (error instanceof DirectBotRpcError && error.code === "interaction-gone") {
+        // `withdrawn`, not `cancelled`: the user did not choose anything, and the
+        // form's window is over because something else consumed it.
+        patchInteraction(requestId, { submitting: false, errorCode: "interactionGone" });
+        retireInteraction(requestId, "withdrawn");
+        return;
+      }
+      // Any other failure is NOT authoritative about the window: the request may
+      // still be open, so the form stays answerable and the user can retry.
       const code = error instanceof DirectBotRpcError && error.code === "unknown-type"
         ? "connectorOutdated"
-        : gone
-          ? "interactionGone"
-          : "submitFailed";
+        : "submitFailed";
       patchInteraction(requestId, { submitting: false, errorCode: code });
     }
   }

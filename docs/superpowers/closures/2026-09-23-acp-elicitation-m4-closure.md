@@ -860,3 +860,46 @@ was fixed in round 6.
 The global registry keys on a bare `requestId`. Production requestIds come from
 the worker's `randomUUID()`, not an agent-controlled ACP JSON-RPC id, so the
 theoretical collision is not an attacker-reachable path.
+
+## Addendum - tenth re-review round (2026-10-01)
+
+The authoritative open-set gap from round 9, closed for the state it can reach.
+
+### P2 - a gone interaction was reported but never retired (FIXED)
+
+Round 9 left this deliberately open: the hub's subscribe is a POSITIVE replay with
+no "open set complete" boundary, so a form answered from another tab during an
+outage stays local until the user acts. The authority that eventually arrives is a
+409, and the store did not act on it.
+
+`submitInteraction`'s catch set `errorCode: "interactionGone"` and stopped. Its own
+comment said "A gone interaction is a normal ending, not an error to retry
+forever", and the behaviour did not match it: the request stayed in
+`pendingInteractions`, the terminal notice never appeared, and the component kept
+rendering Submit / Decline / Cancel. So a user could click the dead form, get the
+same 409, and repeat indefinitely on a request nobody was waiting for.
+
+The hub was already fail-closed — no stale decision is accepted — so this is state
+consistency rather than correctness or security. But the comment promised a normal
+ending and the code parked a corpse.
+
+`interaction-gone` now retires the form as `withdrawn` (not `cancelled` — the user
+chose nothing; something else consumed it). The same fix applies to the pre-submit
+expiry branch, which had the identical shape: it set an error code on a window the
+user cannot act on and left the controls live.
+
+Two EXISTING tests asserted the old behaviour — one of them with the comment "the
+form must say so instead of staying up forever" directly above an assertion that
+it stay up forever. Both were rewritten.
+
+### What this does NOT close
+
+The gap the reviewer correctly separated from this fix: if the user never clicks,
+a form answered elsewhere during the outage is still displayed indefinitely, and
+only an authoritative open-set snapshot can end it. Retiring on the 409 is the
+smallest self-healing the hub actually offers; the protocol work remains open.
+
+Also worth stating: the fix does not weaken the retry path. A transport failure
+(`submitFailed`) is NOT authoritative about the window — the request may still be
+open — so that branch still leaves the form answerable, which is asserted
+separately above.
