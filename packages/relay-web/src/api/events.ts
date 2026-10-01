@@ -413,14 +413,17 @@ export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
     socket = ws;
     activeSocket = ws;
-    // Every handler below is fenced on "am I still the current socket". Two
-    // connectEvents() instances legitimately overlap: a disposed view calls
-    // close(), the close handshake is still in flight, and the replacement view
-    // opens a new socket. The old socket's late `onclose` used to clear
-    // `activeSocket` -- which by then points at the NEW, still-OPEN socket --
-    // reject its in-flight RPCs, and mark the whole app offline. Since the new
-    // socket never closes, nothing fires a reconnect and the damage is permanent.
-    const isCurrent = (): boolean => socket === ws;
+    // Fenced on the MODULE-GLOBAL owner, not on this instance's own `socket`.
+    //
+    // `socket` is a per-connectEvents() local, so `socket === ws` is trivially
+    // true for a disposed instance's own socket and would NOT stop it: a late
+    // close from socket A would still run its full handler and clear the
+    // module-global `activeSocket` — which by then belongs to socket B, the
+    // replacement — reject B's in-flight RPCs, and mark the app offline. Since B
+    // stays physically OPEN, nothing fires a reconnect and the damage is
+    // permanent. `activeSocket === ws` is what actually identifies the current
+    // owner across overlapping connectEvents() instances.
+    const isCurrent = (): boolean => socket === ws && activeSocket === ws;
     ws.onmessage = (e) => {
       if (!isCurrent()) return;
       const decoded = decodeEnvelope(String(e.data));
