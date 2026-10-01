@@ -7228,6 +7228,85 @@ test("PR7 scheduler: sealed run preserves a concurrently started sibling failure
   first.store.close();
 });
 
+test("PR7 scheduler: unexpected post-claim execution failure rejects activation without unhandled rejection", async () => {
+  // P1: an unexpected async failure inside execute() after claim must reject
+  // the drain — and therefore activation — rather than being swallowed by
+  // allSettled into a false `activated`.
+  const rejections: unknown[] = [];
+  const onUnhandled = (reason: unknown) => {
+    rejections.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const boom = new Error("injected post-claim execution failure");
+    const first = await createLifecycle({
+      autoKick: false,
+      ownerId: "dispatcher-old",
+      hooks: {
+        afterClaim: async () => {
+          throw boom;
+        },
+      },
+    });
+    await first.service.acceptDirectPrompt({
+      botId: BOT_ID,
+      requestId: "req-activate-fail",
+      content: "hello",
+    });
+    const err = await first.service.activateAfterConsumerLock().then(() => null, (e: unknown) => e);
+    expect((err as Error)?.message).toBe("injected post-claim execution failure");
+    expect(first.service.isConsumerActivated()).toBe(false);
+    await tick();
+    await tick();
+    expect(rejections).toEqual([]);
+    first.store.close();
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+
+test("PR7 scheduler: unrelated topics stay sequential while shared siblings overlap", async () => {
+  // P2: sibling overlap must not become global dispatcher parallelism. Two
+  // independent Direct Runs on different bots: while A's provider turn hangs,
+  // B must NOT start in the same drain. The existing shared-overlap test
+  // proves same-Run siblings still overlap.
+  const hangA = deferred<void>();
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-a" });
+  const botB = "bot_second";
+  first.state.bots[botB] = {
+    id: botB, name: "Second", agent: "codex", workspace: "backend", enabled: true,
+    profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+  };
+  await first.service.activateAfterConsumerLock();
+  const acceptedA = await first.service.acceptDirectPrompt({ botId: BOT_ID, requestId: "req-seq-a", content: "a" });
+  const acceptedB = await first.service.acceptDirectPrompt({ botId: botB, requestId: "req-seq-b", content: "b" });
+  const fr = fakeRunner(first.runner);
+  fr.run = (async (input: ConversationTurnRunInput) => {
+    fr.runs.push(input);
+    if (input.botId === BOT_ID) {
+      await hangA.promise;
+      return { status: "completed" as const, text: "a done" };
+    }
+    return { status: "completed" as const, text: "b done" };
+  }) as FakeRunner["run"];
+  void first.dispatcher.kick();
+  await waitUntil(() => fr.runs.length === 1, 4000);
+  expect(fr.runs[0]?.botId).toBe(BOT_ID);
+  // A still hangs: B must not start — no global parallelism.
+  await tick();
+  await tick();
+  await tick();
+  expect(fr.runs).toHaveLength(1);
+  expect(first.store.getRun(acceptedB.run.id)?.state).toBe("queued");
+  hangA.resolve();
+  await waitUntil(() => first.store.getRun(acceptedA.run.id)?.state === "completed", 4000);
+  await waitUntil(() => fr.runs.length === 2, 4000);
+  expect(fr.runs[1]?.botId).toBe(botB);
+  await waitUntil(() => first.store.getRun(acceptedB.run.id)?.state === "completed", 4000);
+  first.store.close();
+});
+
 test("PR7 scheduler: stale renewHeldClaim drops the hold and routes through recovery", async () => {
   // The contrast case: stale_claim IS swallowed. The hold drops, the drain
   // settles normally, and the member flows through ordinary lease recovery

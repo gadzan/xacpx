@@ -93,6 +93,9 @@ export interface ClaimNextDispatchInput {
   authorityEpoch: string;
   /** Topics deferred for this drain pass after a pre-start failure. */
   skipTopicIds?: readonly string[];
+  /** Restrict the claim to one Run's dispatches: the same-batch sibling
+   *  cohort. Unset claims globally (previous sequencing). */
+  runId?: string;
 }
 
 export interface ClaimedWork {

@@ -171,14 +171,32 @@ export class ConversationDispatcher {
   }
 
   private async runDrain(): Promise<void> {
+    // Drain-scoped unexpected-failure capture (P1): execute() rejections
+    // that escape its handled settlement paths must reject kick() — and
+    // therefore fail activation — after every launched execution settles.
+    const executionErrors: { first?: unknown; hasError: boolean } = { hasError: false };
     let seen = 0;
+    // Extra pass without consuming a wake: a pass that deferred Topics on
+    // pre-start failures may still have unrelated pending work. The preview
+    // at the bottom re-enters with the deferrals preserved (they grow
+    // monotonically within the drain, so it terminates); the hot-loop guard
+    // ("no new wake, no retry") still holds because the preview excludes
+    // every deferred Topic.
+    let extraPassDue = false;
+    let preserveDeferred = false;
     try {
-      while (seen !== this.wakeGeneration) {
+      while (seen !== this.wakeGeneration || extraPassDue) {
         if (this.closed) {
           return;
         }
-        seen = this.wakeGeneration;
-        this.deferredTopicIds.clear();
+        if (!extraPassDue) {
+          seen = this.wakeGeneration;
+        }
+        extraPassDue = false;
+        if (!preserveDeferred) {
+          this.deferredTopicIds.clear();
+        }
+        preserveDeferred = false;
         // The drain itself is alive and owns every held claim: renew them
         // BEFORE recoverExpiredClaims() runs, so a scheduling wait that
         // outlasts one lease is never mistaken for a dead owner. Renewal
@@ -186,12 +204,22 @@ export class ConversationDispatcher {
         // that lost its race (stale owner, bumped generation, recovered
         // elsewhere) fails the fence and is dropped from the hold set.
         this.renewHeldClaims();
+        // Sibling cohort for this pass (P2): the first launch goes out
+        // globally (previous sequencing); afterwards only the SAME Run's
+        // siblings are claimable until the cohort settles. The runtime
+        // contract reserves global cross-Topic/Bot parallelism as follow-up
+        // work; PR7 needs same-batch overlap only.
+        let cohortRunId: string | undefined;
+        // True once this pass claimed anything (launched or held): the
+        // extra-pass decision below may only chain off a pass that made
+        // progress, never off an empty preview.
+        let passProgress = false;
         for (;;) {
           if (this.closed) {
             return;
           }
           this.store.recoverExpiredClaims(this.now().toISOString());
-          const claimed = this.claimOne();
+          const claimed = this.claimOne(cohortRunId);
           if (!claimed) {
             break;
           }
@@ -205,21 +233,27 @@ export class ConversationDispatcher {
           // set cleared. The Run card still presents one multi-member batch.
           if (this.mustDeferForWriterSlot(claimed)) {
             this.holdClaimForWriterSlot(claimed);
+            passProgress = true;
+            // The held Run is parked for this pass — but only until a cohort
+            // launches. Before any launch, sequencing stays global so an
+            // unrelated Topic is still drainable (pre-PR behavior); once a
+            // cohort is in flight its scope is kept, so unrelated work waits
+            // for the next pass. Either way the held Run's own rows are
+            // excluded (its Topic is deferred for this pass).
+            if (cohortRunId === undefined) {
+              continue;
+            }
             break;
           }
-          // Executions run concurrently: the drain launches each claimed
-          // member and keeps draining. Sibling overlap is decided by the
-          // isolation policy above, never by drain ordering — a read-only
-          // sibling is claimed and started while the first still runs.
-          // The loop awaits the SET (below), so kick() still settles only
-          // after every launched execution finishes.
-          const execution = this.execute(claimed);
-          this.inFlightExecutions.set(claimed.dispatch.id, execution);
-          void execution.finally(() => {
-            if (this.inFlightExecutions.get(claimed.dispatch.id) === execution) {
-              this.inFlightExecutions.delete(claimed.dispatch.id);
-            }
-          });
+          // Executions of one cohort run concurrently: the drain launches
+          // each claimed sibling and keeps draining the SAME Run (cohort
+          // filter above). Sibling overlap is decided by the isolation policy,
+          // never by drain ordering. Unrelated Topics/Bots wait for the next
+          // pass: the loop awaits the SET (below), so kick() still settles
+          // only after every launched execution finishes.
+          this.launchExecution(claimed, executionErrors);
+          cohortRunId ??= claimed.run.id;
+          passProgress = true;
         }
         // Settle launched executions, then re-check held writer-slot claims —
         // ALWAYS, not only when something was in flight. A held sibling
@@ -232,9 +266,7 @@ export class ConversationDispatcher {
         // hold (or thrown mid-recheck), and nothing else will pick that hold
         // back up — claimOne only returns `pending` rows, never our live
         // `claimed` hold.
-        if (this.inFlightExecutions.size > 0) {
-          await Promise.allSettled(this.inFlightExecutions.values());
-        }
+        await this.awaitCohortInFlight(executionErrors);
         // Shutdown owns unstarted holds from here: once `closed` is set, a
         // held sibling must never start — the retire loop in shutdown()
         // returns it to `pending` with provenance intact instead. Without
@@ -247,19 +279,31 @@ export class ConversationDispatcher {
         }
         // The deferred set belongs to the pass that just ended: per-pass
         // deferrals must not leak into the recheck, or a held claim can
-        // never become runnable inside this drain.
+        // never become runnable inside this drain. Snapshot first: the
+        // extra-pass preview below needs the accumulated set.
+        const passDeferred = new Set(this.deferredTopicIds);
         this.deferredTopicIds.clear();
         const held = this.recheckHeldClaims();
         if (held) {
-          const execution = this.execute(held);
-          this.inFlightExecutions.set(held.dispatch.id, execution);
-          void execution.finally(() => {
-            if (this.inFlightExecutions.get(held.dispatch.id) === execution) {
-              this.inFlightExecutions.delete(held.dispatch.id);
-            }
-          });
+          this.launchExecution(held, executionErrors);
           continue;
         }
+        // Pre-start failures deferred Topics this pass while unrelated work
+        // may remain: take one extra pass with the deferrals preserved (no
+        // wake consumed) when this pass made progress. Deferred Topics grow
+        // monotonically across the extras and every extra pass must itself
+        // make progress (a launch or a hold) to schedule another, so the
+        // chain terminates; the hot-loop guard ("no new wake, no retry")
+        // still holds because a pass that claims nothing schedules nothing.
+        if (passProgress && passDeferred.size > 0) {
+          for (const topicId of passDeferred) {
+            this.deferredTopicIds.add(topicId);
+          }
+          extraPassDue = true;
+          preserveDeferred = true;
+          continue;
+        }
+        this.deferredTopicIds.clear();
       }
     } finally {
       this.draining = false;
@@ -347,14 +391,61 @@ export class ConversationDispatcher {
     await this.kick();
   }
 
-  private claimOne(): ClaimedWork | undefined {
+  private claimOne(cohortRunId?: string): ClaimedWork | undefined {
     return this.store.claimNextDispatch({
       now: this.now().toISOString(),
       owner: this.ownerId,
       leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString(),
       authorityEpoch: this.authorityEpoch,
+      ...(cohortRunId !== undefined ? { runId: cohortRunId } : {}),
       ...(this.deferredTopicIds.size > 0 ? { skipTopicIds: [...this.deferredTopicIds] } : {}),
     });
+  }
+
+  /** Launch one execution with drain-scoped failure capture. The guarded
+   *  promise never rejects (both handlers settle normally), so no `finally`
+   *  child can leak an unhandled rejection; the first unexpected failure is
+   *  recorded on `errors` and rethrown by awaitCohortInFlight after the set
+   *  settles. */
+  private launchExecution(
+    work: ClaimedWork,
+    errors: { first?: unknown; hasError: boolean },
+  ): void {
+    const execution = this.execute(work);
+    const guarded = execution.then(
+      () => {
+        if (this.inFlightExecutions.get(work.dispatch.id) === guarded) {
+          this.inFlightExecutions.delete(work.dispatch.id);
+        }
+      },
+      (error: unknown) => {
+        if (!errors.hasError) {
+          errors.first = error;
+          errors.hasError = true;
+        }
+        if (this.inFlightExecutions.get(work.dispatch.id) === guarded) {
+          this.inFlightExecutions.delete(work.dispatch.id);
+        }
+      },
+    );
+    this.inFlightExecutions.set(work.dispatch.id, guarded);
+  }
+
+  /** Settle the in-flight set, then rethrow the first unexpected execution
+   *  failure (if any). Handled settlement paths (release/requeue/terminal
+   *  persist) resolve normally and never reach here as errors. */
+
+
+  private async awaitCohortInFlight(errors: { first?: unknown; hasError: boolean }): Promise<void> {
+    if (this.inFlightExecutions.size > 0) {
+      await Promise.allSettled(this.inFlightExecutions.values());
+    }
+    if (errors.hasError) {
+      const error = errors.first;
+      errors.hasError = false;
+      errors.first = undefined;
+      throw error;
+    }
   }
   /**
    * PR7 filesystem scheduling gate. PR7 accepts carry no proven read-only

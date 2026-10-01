@@ -904,6 +904,14 @@ export class SqliteConversationStore implements ConversationStore {
       const skipClause = skipTopicIds.length === 0
         ? ""
         : `AND r.topic_id NOT IN (${skipTopicIds.map(() => "?").join(",")})`;
+      const params: string[] = [...skipTopicIds];
+      // Same-batch sibling cohort: once the drain launched one execution,
+      // only siblings of that Run may be admitted concurrently. Unrelated
+      // Topics/Bots wait for the next pass (global sequencing preserved).
+      const runClause = input.runId !== undefined ? `AND r.id = ?` : "";
+      if (input.runId !== undefined) {
+        params.push(input.runId);
+      }
       const row = this.sqlite.get<DispatchRow>(
         `SELECT d.* FROM pending_dispatches d
          JOIN runs r ON r.id = d.run_id
@@ -935,9 +943,10 @@ export class SqliteConversationStore implements ConversationStore {
                AND active.state IN ('running', 'waiting-human')
            )
            ${skipClause}
+           ${runClause}
          ORDER BY msg.seq ASC, r.created_at ASC, r.topic_id ASC, m.batch ASC, m.member_index ASC, d.id ASC
          LIMIT 1`,
-        skipTopicIds,
+        params,
       );
       if (!row) {
         return undefined;
