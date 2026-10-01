@@ -479,6 +479,25 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const inScope = (state: PendingInteractionState): boolean => {
       if (visibleTopic === undefined) return true;
       const correlation = state.request.conversation;
+      // The instance is a scope key in its own right, checked FIRST.
+      //
+      // `DashboardView` subscribes to every instance under the account — a
+      // background instance's events must keep flowing — and this store
+      // deliberately processes `interaction-opened` for all of them, storing the
+      // source instance on the state. So an interaction opened by instance B can
+      // be sitting beside one opened by instance A.
+      //
+      // Conversation and Topic ids are NOT globally unique: two daemons that
+      // copied state, restored a backup, or were cloned produce identical
+      // `c1/t1`. Comparing topic alone therefore matches B's form against A's
+      // pane, and because Submit routes to the state's own `instanceId`, the user
+      // answers B's question while looking at A — a cross-instance isolation
+      // failure of the same family as the cross-topic one above, with a third
+      // missing key.
+      //
+      // Uncoded (`null`) means no instance is selected, which is the account-wide
+      // surface: there is no instance to be wrong about, so nothing is scoped out.
+      if (instanceId.value !== null && state.instanceId !== instanceId.value) return false;
       // An interaction with no correlation belongs to an ordinary channel turn.
       //
       // That is NOT a reason to treat it as in scope. Those frames carry no
@@ -2805,16 +2824,31 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // switch back to its topic and find nothing — and then watch the agent
       // time out. Visibility is decided by `pendingInteraction`, not by arrival.
       const next = new Map(pendingInteractions.value);
+      // A requestId we already hold is a REPLAY, not a new opening: the hub
+      // re-announces every still-open interaction when this tab reconnects, and
+      // overwriting the entry wipes the draft the user spent the last minutes
+      // typing. Only the server-shaped half may come from the replay — the
+      // answers are the user's, and the kind/instance identify the connector
+      // that opened it, which the event states authoritatively.
+      const existing = next.get(interaction.requestId);
       next.set(interaction.requestId, {
         // The connector instance that opened it, which is also the instance the
         // answer routes back to. Never "".
         instanceId: e.instanceId,
         request: interaction,
         kind: interaction.kind,
-        answers: emptyAnswers(),
-        outcome: null,
+        // An explicit edit is the only thing that fills answers, so a replay
+        // reuses what the user typed rather than restarting the form.
+        answers: existing ? existing.answers : emptyAnswers(),
+        // A still-open replay carries no terminal state; an entry that already
+        // reached one while sitting in the open map is a contradiction between
+        // the hub and this tab, so keep it as-is instead of quietly hiding it.
+        outcome: existing ? existing.outcome : null,
+        // An in-flight submit at reconnect has an unknown ack (sent and lost,
+        // or never sent). Resetting is fail-safe: the form stays answerable, and
+        // the close or the close-follow-up converges `submitting`.
         submitting: false,
-        errorCode: null,
+        errorCode: existing ? existing.errorCode : null,
       });
       pendingInteractions.value = next;
       return;

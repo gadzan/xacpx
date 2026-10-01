@@ -468,6 +468,130 @@ describe("useDirectBotsStore interactions", () => {
     // answered, so it is withdrawn rather than left inviting a submit.
     expect(store.pendingInteraction!.outcome).toBe("withdrawn");
   });
+
+  it("a replayed interaction-opened keeps the user's draft while taking the hub's request", () => {
+    // A reconnect replays every still-open interaction, so the same requestId
+    // arrives a second time as an authoritative re-announcement. Rebuilding the
+    // entry wiped `answers`, and the user lost everything typed since the
+    // original open — through no action of their own — right when the network
+    // was at its least reliable.
+    const store = useDirectBotsStore();
+    store.applyEvent(openedEvent(formRequest({ expiresAt: Date.now() + 60_000 })));
+    store.setInteractionAnswer("env", "prod");
+    store.setInteractionAnswer("note", "ready to ship");
+
+    // The replay carries a later deadline and a different message: the hub is
+    // authoritative about anything the user cannot author.
+    const replayedExpiresAt = Date.now() + 120_000;
+    store.applyEvent(openedEvent(
+      formRequest({
+        expiresAt: replayedExpiresAt,
+        elicitation: {
+          mode: "form",
+          agent: { name: "codex" },
+          message: "Which environment (revised)?",
+          fields: formRequest().elicitation!.fields,
+        },
+      }),
+      // The event is also authoritative about the connector, not the local copy.
+      "inst_2",
+    ));
+
+    expect(store.pendingInteraction!.request.requestId).toBe("req-1");
+    expect(store.pendingInteraction!.request.expiresAt).toBe(replayedExpiresAt);
+    expect(store.pendingInteraction!.request.elicitation!.message).toBe("Which environment (revised)?");
+    // The draft survived, keyed by the field it belongs to.
+    expect(store.pendingInteraction!.answers).toEqual({ env: "prod", note: "ready to ship" });
+    // A still-open replay is not a resolution, and the connector that opened it
+    // comes from the replayed event.
+    expect(store.pendingInteraction!.outcome).toBeNull();
+    expect(store.pendingInteraction!.instanceId).toBe("inst_2");
+  });
+
+  it("a cold open still starts with no answers at all", () => {
+    // The control for the test above: preservation is scoped to a requestId that
+    // is already held. A first-time open must not inherit anything, or a default
+    // could be submitted without the user looking at it.
+    const store = useDirectBotsStore();
+    store.applyEvent(openedEvent(formRequest()));
+    expect(Object.keys(store.pendingInteraction!.answers)).toHaveLength(0);
+  });
+
+  it("a replay preserves a submit error the user has not yet acted on", async () => {
+    // The failure is still on screen and unresolved: clearing it on replay would
+    // make a retried submit look like a first attempt.
+    const store = useDirectBotsStore();
+    mockRpc.mockImplementation(() => Promise.reject(new Error("network down")));
+    store.applyEvent(openedEvent(formRequest()));
+    store.setInteractionAnswer("env", "prod");
+    // Network dropped mid-submit: the interaction is still open server-side, so
+    // the reconnect replays it.
+    await store.submitInteraction("accept");
+    store.applyEvent(openedEvent(formRequest({ expiresAt: Date.now() + 90_000 })));
+    expect(store.pendingInteraction!.errorCode).toBe("submitFailed");
+  });
+
+  it("a replay does not leave a form claiming a submit is still in flight", async () => {
+    // The submit's ack was lost with the connection: the request may have landed
+    // or may never have been sent, and nothing on this tab can tell. Leaving
+    // `submitting` true would make the form silently refuse the user's next
+    // click, because a submit is fenced on it.
+    const store = useDirectBotsStore();
+    // An RPC that never settles, so the submit stays in flight.
+    mockRpc.mockImplementation(() => new Promise<never>(() => {}));
+    store.applyEvent(openedEvent(formRequest()));
+    store.setInteractionAnswer("env", "prod");
+    void store.submitInteraction("accept");
+    await flushPromises();
+    expect(store.pendingInteraction!.submitting).toBe(true);
+    store.applyEvent(openedEvent(formRequest({ expiresAt: Date.now() + 90_000 })));
+    expect(store.pendingInteraction!.submitting).toBe(false);
+  });
+
+test("a form opened by ANOTHER INSTANCE is not rendered in this instance's topic view", () => {
+  // Conversation and Topic ids are not globally unique: two daemons that copied
+  // state, restored a backup, or were cloned produce the same `c1/t1`.
+  //
+  // The account-wide subscription in DashboardView means instance B's
+  // `interaction-opened` reaches this store, and matching on topic alone made it
+  // in scope for A's pane. Submit routes to the state's own `instanceId`, so the
+  // user would read B's question in A's UI and deliver the answer to B.
+  //
+  // Same family as the cross-topic finding, with the third scope key missing.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst-A";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  // Same conversation AND topic, different originating instance.
+  store.applyEvent(openedEvent(formRequest(), "inst-B"));
+  expect(store.pendingInteraction).toBeNull();
+});
+
+test("a form opened by the SELECTED instance is rendered", () => {
+  // The control for the test above: identical conversation and topic, but the
+  // instance matches what is on screen, so it is in scope. Without this the
+  // previous test would pass for the wrong reason (nothing ever renders).
+  const store = useDirectBotsStore();
+  store.instanceId = "inst-A";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  store.applyEvent(openedEvent(formRequest(), "inst-A"));
+  expect(store.pendingInteraction).not.toBeNull();
+  // And the answer routes back to the instance that opened it.
+  expect(store.pendingInteraction!.instanceId).toBe("inst-A");
+});
+
+test("an account-wide surface shows no instance's form preferentially", () => {
+  // With no instance selected there is no instance to be wrong about, so the
+  // instance key scopes nothing out. Both instances' frames remain reachable.
+  const store = useDirectBotsStore();
+  store.selectedBotId = "bot_1";
+  store.applyEvent(openedEvent(formRequest(), "inst-B"));
+  expect(store.pendingInteraction).not.toBeNull();
+});
+
 test("a form with no conversation correlation is NOT rendered inside a topic view", () => {
   // An uncorrelated frame is an ordinary channel turn. It has no topic, so there
   // is nothing that proves it belongs to the topic the viewer happens to be

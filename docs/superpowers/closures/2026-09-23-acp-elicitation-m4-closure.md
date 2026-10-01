@@ -592,3 +592,84 @@ permission request because an unrelated elicitation route was cleared.
 - `InteractionFieldDto.pattern` said a supporting renderer "compiles it in a
   guarded branch". Neither core nor the Relay renderer executes it now: it is
   display metadata, and the asking Agent validates its own pattern.
+
+## Addendum - sixth re-review round (2026-10-01)
+
+Full review of the single-select/`clear()` round. Two new P1s and three P2s; all
+fixed.
+
+### P1 - interaction visibility was missing the `instanceId` dimension (FIXED)
+
+`DashboardView` subscribes to EVERY instance under the account, so a background
+daemon's events keep flowing, and this store deliberately stores every
+`interaction-opened` it processes with the source instance attached.
+
+`pendingInteraction`'s scope predicate compared `conversationId` and `topicId`
+only. Those are not globally unique: two daemons that copied state, restored a
+backup, or were cloned produce the same `c1/t1`. So instance B's form was in
+scope for A's pane — and because Submit routes to the state's own `instanceId`,
+the user would read B's question in A's UI and deliver the answer to B. A
+cross-instance isolation failure of the same family as the cross-topic one above,
+with the third scope key missing.
+
+The instance is now the first thing checked. `null` (no instance selected) is the
+account-wide surface, where there is no instance to be wrong about, so it scopes
+nothing out. Three regressions: another instance's same-topic form is not
+rendered, the selected instance's is, and an unselected instance leaves both
+reachable.
+
+### P1 - an empty-string answer skipped every constraint (FIXED)
+
+`fieldProblems()` treated `""` as absent, which the store's own semantics
+contradict: answers are own properties, so a user who types `"a"` and deletes it
+leaves a real `""`, and `collectInteractionAnswers()` sends that `""` verbatim.
+For a REQUIRED field the `required` check caught it; for an OPTIONAL field it
+skipped `minLength`/`maxLength`/`format` entirely, the hub resolved Accepted, and
+core then validated the genuine `""` and rejected — form already gone.
+
+Presence and emptiness are now separate facts: `answer === undefined` is absence,
+which is what `required` governs, and anything else is an answer whose
+constraints apply — including `""`. Three regressions: optional + `minLength: 1`
++ `""`, optional + `format` + `""`, and the control (optional + untouched is not
+validated and IS submittable).
+
+### P2 - unknown `format` was blocked, and a test pinned the wrong semantics (FIXED)
+
+`formatProblem()` returned `unverifiable` for every non-`text` format, so
+`some-future-format` disabled Submit permanently — while core's dispatch ends in
+`default: return true`, because the ACP RFD requires clients to PRESERVE unknown
+formats for the renderer to interpret. An unknown name is an annotation, not a
+constraint, and blocking it invented a rule core does not have.
+
+Now only the four names core actually validates (`email`, `uri`, `date`,
+`date-time`) fail closed. The existing test had enumerated `some-future-format`
+among the blocked, pinning the drift; it is split into a blocked set and an
+explicitly-passed set.
+
+### P2 - reconnect replay discarded an unsubmitted draft (FIXED)
+
+A reconnect replays every still-open interaction, and the handler rebuilt the
+entry unconditionally with `emptyAnswers()`. A user who had half-filled the form
+lost the draft to a transient disconnect. Not a wrong-answer bug, since the
+answer is never sent, but definite data loss introduced by the replay feature.
+
+`interaction-opened` now recognises a requestId it already holds as a replay: the
+server-shaped half (`request`, hence `expiresAt`; plus `instanceId`/`kind`, which
+the event states authoritatively) comes from the replay, while `answers` and
+`errorCode` stay the user's. `submitting` resets to `false`, because an ack in
+flight across a disconnect is unknowable and close/reconcile converges it. A
+still-open replay carries no terminal state, so an `outcome` already reached is
+preserved rather than quietly hidden. The cold path is untouched.
+
+### P2 - `controlName()` produced duplicate DOM ids (FIXED)
+
+Sanitizing and slicing the key collided: `"a-b"` and `"ab"` both produced
+`"fab"`, as did two keys sharing their first 16 sanitized characters. Duplicate
+HTML ids make `<label :for>` bind to the first match, so the label names the wrong
+control. Data was unaffected (the `@input` handler closes over the raw
+`field.key`), so this was DOM/accessibility correctness.
+
+The id is now index-led (`f${index}-${sanitizedKey}`), unique per rendered field
+and stable across re-renders because the index comes from the field list derived
+from the immutable request. `data-test` attributes still use the raw key, which is
+the test contract.

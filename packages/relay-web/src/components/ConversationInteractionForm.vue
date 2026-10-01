@@ -83,9 +83,23 @@ const messageLines = computed<readonly string[]>(() => {
   return message.length === 0 ? [] : message.split('\n');
 });
 
-/** The `name` a field's control uses, matching the store's answer keys. */
-function controlName(field: InteractionFieldDto): string {
-  return `f${field.key.replace(/[^A-Za-z0-9_]/g, '').slice(0, 16)}`;
+/**
+ * The DOM `id` a field's control uses, for `<label :for>` to bind to it.
+ *
+ * The sanitized key alone is NOT unique: `a-b` and `ab` both sanitize to `ab`,
+ * and two keys sharing their first 16 sanitized characters collide outright. A
+ * duplicate `id` leaves `label[for]` bound to whichever element the browser saw
+ * first, so one field's title names a different field's input and clicking it
+ * focuses the wrong control. The answer itself is unaffected — the `@input`
+ * handlers close over `field.key` — but the form is then mislabeled.
+ *
+ * The v-for index therefore leads the id. It is unique per rendered field, so no
+ * key shape can collide, and it is stable across re-renders because the field
+ * list is derived from the immutable request: no random or time-based component,
+ * which would break `label[for]` on every repaint.
+ */
+function controlName(index: number, field: InteractionFieldDto): string {
+  return `f${index}-${field.key.replace(/[^A-Za-z0-9_]/g, '').slice(0, 16)}`;
 }
 
 /**
@@ -174,13 +188,26 @@ function codePointLength(value: string): number {
  * scope, so the browser would have to ship the JSON Schema engine to read one
  * string.
  *
- * So every format is `unverifiable`, and `unverifiable` blocks Submit. That is
- * the fail-closed direction: the user is told the control cannot be validated
- * yet instead of being allowed to construct an answer core will refuse.
+ * So the four names core actually validates are all `unverifiable`, and
+ * `unverifiable` blocks Submit. That is the fail-closed direction: the user is
+ * told the control cannot be validated yet instead of being allowed to
+ * construct an answer core will refuse.
+ *
+ * An UNKNOWN format is the opposite case and must NOT be blocked. Core's
+ * dispatch has a `default` that returns `true` — it accepts anything — and its
+ * comment says why: an unknown format is not this package's to reject, because
+ * the ACP RFD requires clients to preserve unknown formats for the renderer to
+ * interpret. An unknown name is therefore an ANNOTATION the renderer is free to
+ * display, not a constraint it should enforce, and refusing it would invent a
+ * rule core does not have.
  */
+const CORE_VALIDATED_FORMATS: ReadonlySet<string> = new Set(["email", "uri", "date", "date-time"]);
+
 function formatProblem(field: InteractionFieldDto, _value: string): string | null {
   if (field.format === undefined || field.format === "text") return null;
-  return "unverifiable";
+  // Only the names core validates can be mismatched. Anything else is preserved
+  // and accepted, so the renderer has nothing to be wrong about.
+  return CORE_VALIDATED_FORMATS.has(field.format) ? "unverifiable" : null;
 }
 
 /**
@@ -214,11 +241,27 @@ function stringConstraintProblems(field: InteractionFieldDto, value: string): st
 
 function fieldProblems(field: InteractionFieldDto, answer: InteractionValueDto | undefined): string[] {
   const problems: string[] = [];
-  const present = answer !== undefined && !(typeof answer === "string" && answer === "");
-  if (!present) {
+  // PRESENCE and EMPTINESS are two different facts, and conflating them is the
+  // bug this replaces.
+  //
+  // `answer === undefined` means the field was never answered — that is what
+  // `required` governs. A string answer of `""` is NOT absent: the store holds
+  // answers as own properties (`Object.hasOwn(answers, key) && answers[key] !==
+  // undefined`), so a user who typed `"a"` and then deleted it leaves a real
+  // `""` behind, and `collectInteractionAnswers()` sends it verbatim as the
+  // answer to that field.
+  //
+  // Treating `""` as absent here meant an OPTIONAL field skipped every
+  // constraint: `minLength: 1` with the user's `""` was submittable, the hub
+  // resolved Accepted, and core — which receives the genuine `""` and runs
+  // `codePointLength(value) < minLength` — rejected it after the form was gone.
+  // The same hole for `format: email`/`date`.
+  if (answer === undefined) {
     if (field.required) problems.push("required");
     return problems;
   }
+  // From here the field HAS an answer, so its constraints apply to whatever that
+  // answer is — including the empty string the user left behind.
   if (field.kind === "text" || field.kind === "single-select") {
     problems.push(...stringConstraintProblems(field, String(answer)));
     // NOTE: `field.pattern` is deliberately NOT evaluated here.
@@ -370,12 +413,12 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
 
     <template v-else>
       <div
-        v-for="field in fields"
+        v-for="(field, index) in fields"
         :key="field.key"
         class="space-y-1"
         :data-test="`interaction-field-${field.key}`"
       >
-        <label class="flex items-baseline gap-1.5 text-xs font-medium text-fg" :for="controlName(field)">
+        <label class="flex items-baseline gap-1.5 text-xs font-medium text-fg" :for="controlName(index, field)">
           <span>{{ field.title }}</span>
           <span v-if="!field.required" class="text-[10.5px] font-normal text-fg-muted">
             ({{ t('bot.interaction.optional') }})
@@ -414,7 +457,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
           the agent wrote. The current selection is always visible. -->
         <select
           v-else-if="field.kind === 'single-select'"
-          :id="controlName(field)"
+          :id="controlName(index, field)"
           :data-test="`interaction-select-${field.key}`"
           class="w-full rounded border border-border bg-surface px-2 py-1.5 text-xs text-fg"
           :value="String(hasAnswer(answers, field.key) ? answers[field.key] : '')"
@@ -450,7 +493,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
           back a string on some platforms. -->
         <input
           v-else-if="field.kind === 'number'"
-          :id="controlName(field)"
+          :id="controlName(index, field)"
           :data-test="`interaction-input-${field.key}`"
           type="number"
           inputmode="decimal"
@@ -464,7 +507,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
           validate, because the renderer is not the authority on schema rules. -->
         <input
           v-else
-          :id="controlName(field)"
+          :id="controlName(index, field)"
           :data-test="`interaction-input-${field.key}`"
           type="text"
           class="w-full rounded border border-border bg-surface px-2 py-1.5 text-xs text-fg"

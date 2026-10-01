@@ -69,23 +69,42 @@ function mountForm(
     expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBeDefined();
   });
 
-  it("EVERY format the renderer cannot verify exactly blocks Submit", () => {
+  it("every format CORE VALIDATES blocks Submit", () => {
     // Core uses ajv-formats; a second implementation here would drift, and the
-    // drift would surface only after the interaction had already resolved. So the
-    // formats this renderer cannot agree on are refused rather than approximated.
+    // drift would surface only after the interaction had already resolved. So
+    // the formats this renderer cannot agree on are refused rather than
+    // approximated.
     //
     // `date` and `email` are listed on purpose: they were once hand-rolled here
     // and both diverged — `Date.parse` normalizes 2026-02-30 into March, and the
     // email regex accepted `a..b@example.com` that core rejects. Only a value
     // this renderer can verify exactly may be allowed through, and the set of
     // those is empty.
-    for (const format of ["uri", "date-time", "date", "email", "some-future-format"]) {
+    for (const format of ["uri", "date-time", "date", "email"]) {
       const wrapper = mountForm(
         [{ kind: "text", key: "f", title: "F", required: true, format }],
         { f: "2026-02-30" },
       );
       expect(wrapper.find('[data-test="interaction-invalid"]').exists(), format).toBe(true);
       expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled"), format).toBeDefined();
+    }
+  });
+
+  it("an UNKNOWN format is preserved and DOES NOT block Submit", () => {
+    // The mirror image of the test above, and a bug it used to pin the wrong way.
+    //
+    // Core's format dispatch ends in `default: return true` — an unknown name is
+    // an annotation the client must preserve for the renderer to interpret, not a
+    // constraint anything enforces. Blocking Submit on it would invent a rule
+    // core does not have, and the field would be permanently unanswerable while
+    // the agent sees a legal form.
+    for (const format of ["some-future-format", "idn-email", "custom-vendor-thing"]) {
+      const wrapper = mountForm(
+        [{ kind: "text", key: "f", title: "F", required: true, format }],
+        { f: "2026-02-30" },
+      );
+      expect(wrapper.find('[data-test="interaction-invalid"]').exists(), format).toBe(false);
+      expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled"), format).toBe(undefined);
     }
   });
 
@@ -175,6 +194,57 @@ function mountForm(
   });
 
 describe("ConversationInteractionForm field kinds", () => {
+  it("an OPTIONAL field cleared to \"\" is still validated against its constraints", async () => {
+    // Presence and emptiness are two different facts, and conflating them was the
+    // bug. The store holds answers as own properties, so a user who types "a" and
+    // then deletes it leaves a real `""` — and `collectInteractionAnswers()`
+    // sends that `""` verbatim as the answer.
+    //
+    // Treating `""` as absent let an OPTIONAL field skip every constraint:
+    // `minLength: 1` was submittable, the hub resolved Accepted, and core — which
+    // receives the genuine `""` — rejected it after the form was gone.
+    const wrapper = mountForm([
+      { kind: "text", key: "note", title: "Note", required: false, minLength: 1 },
+    ]);
+    // The answer the user leaves behind after typing and clearing.
+    wrapper.setProps({ answers: { note: "" } as never });
+    await wrapper.vm.$nextTick();
+    const cleared = wrapper.find('[data-test="interaction-input-note"]');
+    (cleared.element as HTMLInputElement).value = "";
+    cleared.trigger("input");
+    expect(wrapper.emitted("answer")).toEqual([["note", ""]]);
+    expect(wrapper.find('[data-test="interaction-invalid"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBeDefined();
+  });
+
+  it("an OPTIONAL field left UNTOUCHED is not validated", () => {
+    // The control for the test above: `undefined` is absence, and absence is what
+    // `required` governs. Nothing was answered, so there is nothing to check —
+    // and an optional field with no answer is submittable (ACP's "accept with no
+    // answers"), which is legitimate and must not be blocked.
+    const wrapper = mountForm([
+      { kind: "text", key: "note", title: "Note", required: false, minLength: 1 },
+    ]);
+    expect(wrapper.find('[data-test="interaction-invalid"]').exists()).toBe(false);
+    expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBe(undefined);
+  });
+
+  it("an OPTIONAL format field cleared to \"\" is not silently accepted", async () => {
+    // The same hole on the format path: `""` reaches core as the answer, and a
+    // core-validated format has nothing the browser can check exactly about it.
+    const wrapper = mountForm([
+      { kind: "text", key: "mail", title: "Mail", required: false, format: "email" },
+    ]);
+    wrapper.setProps({ answers: { mail: "" } as never });
+    await wrapper.vm.$nextTick();
+    const input = wrapper.find('[data-test="interaction-input-mail"]');
+    (input.element as HTMLInputElement).value = "";
+    input.trigger("input");
+    expect(wrapper.emitted("answer")).toEqual([["mail", ""]]);
+    expect(wrapper.find('[data-test="interaction-invalid"]').exists()).toBe(true);
+    expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBeDefined();
+  });
+
   it("a number field emits a NUMBER, not the input's string", () => {
     // The bug this pins: the generic text input emitted a string, so a number
     // field answered "3" reached core as "3" and was rejected — after the
@@ -388,5 +458,46 @@ describe("ConversationInteractionForm field kinds", () => {
     (select.element as HTMLSelectElement).value = "prod";
     select.trigger("change");
     expect(wrapper.emitted("answer")![0]).toEqual(["env", "prod"]);
+  });
+});
+
+// An `id` is what `label[for]` binds to, so a duplicate id mislabels a control:
+// the binding resolves to whichever element the browser saw first, and clicking
+// the title focuses a different field's input.
+
+describe("ConversationInteractionForm control ids", () => {
+  it("fields whose keys sanitize to the SAME string get DIFFERENT ids", () => {
+    // The two keys differ only by the hyphen, which the sanitizer strips, so any
+    // id derived from the key alone hands both controls the same `id` and one
+    // field's label is bound to the other field's input. The answer is
+    // unaffected (the handler closes over `field.key`), so nothing else catches it.
+    const wrapper = mountForm([
+      { kind: "text", key: "a-b", title: "A hyphen", required: true },
+      { kind: "text", key: "ab", title: "Ab", required: true },
+    ]);
+    const ids = [
+      wrapper.find('[data-test="interaction-input-a-b"]').attributes("id"),
+      wrapper.find('[data-test="interaction-input-ab"]').attributes("id"),
+    ];
+    expect(ids[0]).toBeDefined();
+    expect(ids[1]).toBeDefined();
+    expect(ids[0]).not.toBe(ids[1]);
+    // Each label names its own control, not whichever one the document saw first.
+    const labels = wrapper.findAll("label");
+    expect(labels.map((l) => l.attributes("for"))).toEqual(ids);
+  });
+
+  it("the id a field gets is STABLE across re-renders", () => {
+    // A random or time-based component would break `label[for]` on the next
+    // repaint, so the uniqueness must come from something the renderer already
+    // holds still — here, the index of a field list derived from an immutable
+    // request.
+    const wrapper = mountForm([
+      { kind: "text", key: "a", title: "A", required: true },
+      { kind: "text", key: "b", title: "B", required: true },
+    ]);
+    const before = wrapper.find('[data-test="interaction-input-a"]').attributes("id");
+    wrapper.setProps({ submitting: true });
+    expect(wrapper.find('[data-test="interaction-input-a"]').attributes("id")).toBe(before);
   });
 });
