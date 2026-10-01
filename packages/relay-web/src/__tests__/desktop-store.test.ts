@@ -506,7 +506,7 @@ describe("desktop store", () => {
     expect(second).toBeDefined();
     // Fire the FIRST (stale) connection's hooks: they must not touch state.
     first?.onDisconnect?.({ clean: true, reason: "stale" });
-    first?.onSecurityFailure?.("stale failure");
+    first?.onSecurityFailure?.({ reason: "stale failure" });
     first?.onConnect?.();
     expect(store.viewFor("i1").status).not.toBe("closed");
     expect(store.viewFor("i1").lastErrorCode).not.toBe("desktop-auth-unsupported");
@@ -538,16 +538,35 @@ describe("desktop store", () => {
     expect(store.viewFor("i1").fit).toBe(false);
   });
 
-  it("a rejected VNC password is classified as an auth failure, not a scheme error", async () => {
-    // Regression: every noVNC `securityfailure` was mapped to
-    // `desktop-auth-unsupported` ("VNC auth scheme is not supported"), which is
-    // the wrong message for a rejected password.
+  it("classifies a rejected password structurally, not from the server's wording", async () => {
+    // Regression: every noVNC `securityfailure` was first mapped wholesale to
+    // `desktop-auth-unsupported` ("VNC auth scheme is not supported"), and then
+    // told apart by regexing the server's English text. noVNC's API states that
+    // `detail.reason` is optional and its language is unspecified, so a
+    // localised refusal ("Acceso denegado") had to be classified by the SIGNAL,
+    // not by matching English phrases.
     const { classifySecurityFailure } = await import("../stores/desktop");
-    expect(classifySecurityFailure("authentication failure")).toMatchObject({
+    // A status means the handshake reached a security result, so the server
+    // rejected the credentials the user submitted.
+    expect(classifySecurityFailure({ status: 1, reason: "authentication failure" })).toMatchObject({
       code: "desktop-auth-failed",
       retryable: true,
     });
-    expect(classifySecurityFailure("no matching security types")).toMatchObject({
+    // Non-English / unrelated wording must NOT flip the classification.
+    expect(classifySecurityFailure({ status: 1, reason: "Acceso denegado" })).toMatchObject({
+      code: "desktop-auth-failed",
+      retryable: true,
+    });
+    expect(classifySecurityFailure({ status: 0, reason: "" })).toMatchObject({
+      code: "desktop-auth-failed",
+      retryable: true,
+    });
+    // No status at all is the scheme-level refusal.
+    expect(classifySecurityFailure({ reason: "no matching security types" })).toMatchObject({
+      code: "desktop-auth-unsupported",
+      retryable: false,
+    });
+    expect(classifySecurityFailure({})).toMatchObject({
       code: "desktop-auth-unsupported",
       retryable: false,
     });
@@ -568,7 +587,7 @@ describe("desktop store", () => {
     expect(hooks).toBeDefined();
     hooks?.onCredentialsRequired?.();
     expect(store.viewFor("i1").status).toBe("auth-required");
-    hooks?.onSecurityFailure?.("authentication failure");
+    hooks?.onSecurityFailure?.({ status: 1, reason: "authentication failure" });
     expect(store.viewFor("i1").status).toBe("error");
     expect(store.viewFor("i1").lastErrorCode).toBe("desktop-auth-failed");
     // noVNC answers _fail() by marking the connection unclean and emitting

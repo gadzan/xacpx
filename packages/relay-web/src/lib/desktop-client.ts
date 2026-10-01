@@ -3,11 +3,18 @@
 // bundle never pays for VNC until the user opens a Desktop tab.
 export type DesktopSecurity = "vnc-auth" | "ard";
 
+export interface DesktopSecurityFailure {
+  /** noVNC's SecurityResult status, when it supplied one. */
+  status?: number;
+  /** Server-provided text; optional and language-unspecified by noVNC's API. */
+  reason?: string;
+}
+
 export interface DesktopRfbHooks {
   onConnect?: () => void;
   onDisconnect?: (detail: { clean: boolean; reason: string }) => void;
   onCredentialsRequired?: () => void;
-  onSecurityFailure?: (reason: string) => void;
+  onSecurityFailure?: (failure: DesktopSecurityFailure) => void;
 }
 
 export interface DesktopRfbConnection {
@@ -85,7 +92,7 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
     if (disposed) return;
     const Ctor = mod.default ?? mod.RFB;
     if (!Ctor) {
-      hooks.onSecurityFailure?.("noVNC failed to load");
+      hooks.onSecurityFailure?.({ reason: "noVNC failed to load" });
       return;
     }
     // Tight (16) sub-auth can select STDVNOAUTH__ (no auth): the probe
@@ -123,7 +130,7 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
         typeof narrow._fail !== "function"
       ) {
         try { rfbInstance.disconnect(); } catch { /* never connected */ }
-        hooks.onSecurityFailure?.("desktop auth guard unavailable (noVNC internals changed)");
+        hooks.onSecurityFailure?.({ reason: "desktop auth guard unavailable (noVNC internals changed)" });
         return;
       }
       const base = narrow._isSupportedSecurityType.bind(rfbInstance);
@@ -159,13 +166,20 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
     });
     on("credentialsrequired", () => hooks.onCredentialsRequired?.());
     on("securityfailure", (event) => {
-      const reason = typeof (event as { detail?: { reason?: string } }).detail?.reason === "string"
-        ? String((event as { detail?: { reason?: string } }).detail?.reason)
-        : "authentication failed";
-      hooks.onSecurityFailure?.(reason);
+      // Structured, not free text. noVNC's `detail` carries the SecurityResult
+      // `status` plus a server-supplied `reason` that is optional and whose
+      // language is explicitly unspecified, so classifying the reason with a
+      // regex over English phrases misreports a rejected password as an
+      // unsupported auth scheme as soon as the server localises its message.
+      const detail = (event as { detail?: { status?: unknown; reason?: unknown } }).detail;
+      const status = typeof detail?.status === "number" ? detail.status : undefined;
+      const reason = typeof detail?.reason === "string" && detail.reason.length > 0
+        ? detail.reason
+        : undefined;
+      hooks.onSecurityFailure?.({ status, reason });
     });
   }).catch((err: unknown) => {
-    hooks.onSecurityFailure?.(err instanceof Error ? err.message : "noVNC failed to load");
+    hooks.onSecurityFailure?.({ reason: err instanceof Error ? err.message : "noVNC failed to load" });
   });
 
   return {

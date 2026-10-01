@@ -115,6 +115,17 @@ const desktopPending = new Map<string, Extract<PendingEntry, { expect: "desktop-
 
 let requestSeq = 0;
 /**
+ * True once any control socket has opened in this page lifetime.
+ *
+ * Reconnect subscribers are owned by long-lived stores, not by a socket, so
+ * they must be notified whenever the control plane becomes available again —
+ * including the FIRST open of a brand-new `connectEvents` after a teardown
+ * (router navigation, remounted view). Without this the remount's first open
+ * looks identical to a cold start, the subscribers are never told, and their
+ * viewers stay dead until the user reconnects by hand.
+ */
+let everOpened = false;
+/**
  * Callbacks invoked after the /ws socket re-opens following a drop.
  *
  * A SET, not a slot: terminal and desktop both need to react (terminal replays
@@ -122,6 +133,8 @@ let requestSeq = 0;
  * not silently displace the first. Fn-identity is the unsubscribe key.
  */
 const reconnectHandlers = new Set<() => void>();
+/** The single subscription owned by the legacy replacement-semantics setter. */
+let legacyReconnectHandler: (() => void) | null = null;
 
 /**
  * Subscribe to /ws re-open. Returns an unsubscribe function; the same function
@@ -133,14 +146,22 @@ export function onEventsReconnect(handler: () => void): () => void {
 }
 
 /**
- * Register a callback invoked after the /ws socket re-opens following a drop.
- * Retained for callers that pass `null` to clear; delegates to the set.
+ * Register the ONE reconnect callback owned by a store that has not migrated to
+ * `onEventsReconnect` yet.
+ *
+ * Kept replacement semantics deliberately: it assigns the slot, so repeat calls
+ * from the same caller replace rather than accumulate. A plain `add` here would
+ * silently multiply reopens, because a fresh closure is a new fn-identity every
+ * time. New code should migrate to `onEventsReconnect()` and its unsubscribe.
  */
 export function setEventsReconnectHandler(handler: (() => void) | null): void {
   if (handler === null) {
-    reconnectHandlers.clear();
+    if (legacyReconnectHandler) reconnectHandlers.delete(legacyReconnectHandler);
+    legacyReconnectHandler = null;
     return;
   }
+  if (legacyReconnectHandler) reconnectHandlers.delete(legacyReconnectHandler);
+  legacyReconnectHandler = handler;
   reconnectHandlers.add(handler);
 }
 
@@ -401,8 +422,9 @@ export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus
       onEvent(event);
     };
     socket.onopen = () => {
-      const reconnected = wasReconnect;
+      const reconnected = wasReconnect || everOpened;
       retry = 0;
+      everOpened = true;
       onStatus?.(true);
       if (reconnected) fireEventsReconnect();
     };
@@ -420,7 +442,11 @@ export function connectEvents(onEvent: (event: WebServerEvent) => void, onStatus
   return () => {
     closed = true;
     if (timer) { clearTimeout(timer); timer = null; }
-    reconnectHandlers.clear();
+    // Deliberately NOT touching `reconnectHandlers`: those subscribers are owned
+    // by long-lived stores (Pinia), not by this socket. A router navigation that
+    // unmounts a view must not silently drop next-page functionality — and the
+    // store would then still believe it is subscribed, because its own
+    // unsubscribe handle is non-null. Each owner releases its own subscription.
     rejectAllPending("events-offline", "events socket disposed");
     socket?.close();
   };
@@ -433,4 +459,7 @@ export function _resetTerminalRequestStateForTests(): void {
   requestSeq = 0;
   reconnectHandlers.clear();
   webEventSubscribers.clear();
+  // Cold start for the reconnect signal: each case's first open must NOT count
+  // as a reconnect, but a later open (or a remount) must.
+  everOpened = false;
 }

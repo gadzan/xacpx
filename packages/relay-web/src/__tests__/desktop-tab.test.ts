@@ -353,11 +353,11 @@ describe("DesktopTab", () => {
     const { connectDesktopRfb: mocked } = await import("../lib/desktop-client");
     const real = (mocked as unknown as MockedFunction<(input: DesktopRfbConnectInput) => DesktopRfbConnection>).getMockImplementation?.();
     if (!real) throw new Error("connectDesktopRfb mock missing passthrough");
-    let failure: string | undefined;
+    let failure: { status?: number; reason?: string } | undefined;
     const conn = real({
       url: "wss://hub/desktop/observe?ticket=t",
       security: "vnc-auth",
-      hooks: { onSecurityFailure: (reason: string) => { failure = reason; } },
+      hooks: { onSecurityFailure: (f) => { failure = f; } },
       loadNoVnc: async () => ({ default: FakeRfb as unknown as new (
         target: HTMLElement,
         url: string,
@@ -365,7 +365,7 @@ describe("DesktopTab", () => {
       ) => NoVncRfb }),
     });
     await vi.waitFor(() => expect(failure).toBeDefined());
-    expect(failure).toMatch(/auth guard unavailable/);
+    expect(failure?.reason).toMatch(/auth guard unavailable/);
     conn.dispose();
   });
 });

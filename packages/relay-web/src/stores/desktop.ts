@@ -48,15 +48,26 @@ export interface DesktopSessionView {
 export const DESKTOP_AUTH_FAILED_CODE = "desktop-auth-failed";
 
 /**
- * Classify a noVNC `securityfailure` reason.
+ * Classify a noVNC `securityfailure`.
  *
  * noVNC 1.7.0 emits this event for a rejected security type AND for a rejected
- * VncAuth password — both go through `_fail()` with a free-text `details`
- * string. The VncAuth failure carries the server's "authentication failure"
- * wording, so match on it rather than guessing from the event name.
+ * VncAuth password. It used to be told apart by regex-ing the server's English
+ * wording, which misreported a rejected password as `desktop-auth-unsupported`
+ * ("the scheme is not supported") as soon as the server localised its message —
+ * noVNC's own API states that `detail.reason` is optional and its language is
+ * unspecified. So classify on the signal, not on the prose.
+ *
+ * A numeric `status` is the SecurityResult the private outer-scheme guard forces
+ * to type 2 (VncAuth) in this app, so a status-bearing failure on that path is
+ * the server rejecting the credentials the user submitted. No status at all
+ * means noVNC could not even reach a security result, which is the scheme-level
+ * refusal.
  */
-export function classifySecurityFailure(reason: string): { code: string; retryable: boolean } {
-  if (/authenticat|password|credential/i.test(reason)) {
+export function classifySecurityFailure(failure: {
+  status?: number;
+  reason?: string;
+}): { code: string; retryable: boolean } {
+  if (failure.status !== undefined) {
     return { code: DESKTOP_AUTH_FAILED_CODE, retryable: true };
   }
   return { code: "desktop-auth-unsupported", retryable: false };
@@ -153,11 +164,14 @@ export const useDesktopStore = defineStore("desktop", () => {
   async function open(
     instanceId: string,
     hooks: DesktopRfbHooks,
-    opts: { signal?: AbortSignal; target?: HTMLElement | null } = {},
+    opts: { signal?: AbortSignal; target?: HTMLElement | null; fit?: boolean } = {},
   ): Promise<void> {
     const existing = connections.get(instanceId);
     if (existing) return;
     ensureReconnectHook();
+    // Reopen passes the preference back so a transport reconnect does not
+    // silently revert the user's Actual/Fit choice.
+    if (opts.fit !== undefined) patch(instanceId, { fit: opts.fit });
     // A superseding open must RELEASE the previous reservation, not merely stop
     // caring about it: the hub still holds the single-viewer slot until its
     // request is cancelled, and without the cancel the successor opens straight
@@ -181,7 +195,11 @@ export const useDesktopStore = defineStore("desktop", () => {
     // The target is also needed verbatim, or the reopen paints into a detached
     // div and reports success on a black panel. Recorded even when the target is
     // null (unmounted host), because the reopen still has to happen.
-    reconnectContext.set(instanceId, { hooks, target: opts.target ?? null });
+    // `fit` is a presentation preference the user toggles on the stream, not a
+    // property of the transport: the reopen must not silently push Actual mode
+    // back to Fit. close() deletes the session row, so this is the only place the
+    // preference survives the reconnect.
+    reconnectContext.set(instanceId, { hooks, target: opts.target ?? null, fit: viewFor(instanceId).fit });
     let opened;
     try {
       opened = await requestDesktop(
@@ -293,22 +311,19 @@ export const useDesktopStore = defineStore("desktop", () => {
           patch(instanceId, { status: "auth-required", needsPassword: true });
           hooks.onCredentialsRequired?.();
         },
-        onSecurityFailure: (reason) => {
+        onSecurityFailure: (failure) => {
           if (!mine()) return;
           connections.delete(instanceId);
-          // Classify by the actual cause. noVNC emits `securityfailure` for
-          // BOTH a rejected security type and a rejected VncAuth password; the
-          // latter is a wrong password (retryable), not "VNC auth scheme is not
-          // supported". The client sends the server's own wording in `reason`,
-          // and `reconnect` never resets a row that already failed auth.
-          const failed = classifySecurityFailure(reason);
+          // Classify on noVNC's structured signal (SecurityResult status), never
+          // on the server's wording: `reason` is optional and language-unspecified.
+          const failed = classifySecurityFailure(failure);
           patch(instanceId, {
             status: "error",
             needsPassword: false,
             lastErrorCode: failed.code,
-            lastErrorMessage: reason,
+            lastErrorMessage: failure.reason ?? "authentication failed",
           });
-          hooks.onSecurityFailure?.(reason);
+          hooks.onSecurityFailure?.(failure);
         },
       },
     });
@@ -373,7 +388,7 @@ export const useDesktopStore = defineStore("desktop", () => {
    * which leave a `closed` row with no streamId, and the reconnect sweep must
    * still recognise it as a viewer the user left open.
    */
-  const reconnectContext = new Map<string, { hooks: DesktopRfbHooks; target: HTMLElement | null }>();
+  const reconnectContext = new Map<string, { hooks: DesktopRfbHooks; target: HTMLElement | null; fit: boolean }>();
 
   function ensureReconnectHook(): void {
     if (reconnectUnsub) return;
@@ -415,7 +430,7 @@ export const useDesktopStore = defineStore("desktop", () => {
       const context = reconnectContext.get(instanceId);
       close(instanceId);
       if (!context) continue;
-      void open(instanceId, context.hooks, { target: context.target });
+      void open(instanceId, context.hooks, { target: context.target, fit: context.fit });
     }
   }
 
