@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 
 import { MSG, RELAY_CAPABILITIES } from "../../../../packages/relay-protocol/src/messages";
-import { parseControlPayload } from "../../../../packages/relay-protocol/src/payload-validators";
+import {
+  INTERACTION_WIRE_LIMITS,
+  parseControlPayload,
+} from "../../../../packages/relay-protocol/src/payload-validators";
 import { parseWebServerEvent } from "../../../../packages/relay-protocol/src/web-dtos";
 import type { RelayEnvelope } from "../../../../packages/relay-protocol/src/envelope";
 
@@ -440,4 +443,197 @@ test("schemaTitle and schemaDescription are both carried and bounded", () => {
       JSON.stringify(typeof bad),
     ).toBeNull();
   }
+});
+
+// The boundary contract between core and the wire.
+//
+// `relayFieldsFrom()` copies the form core already normalized and bounded, field
+// for field, so core's `ELICITATION_SCHEMA_LIMITS` decide what is LEGAL. Two
+// hazards follow, and both have shipped: a wire bound STRICTER than core's rejects
+// a form core accepted — which turns a legal elicitation into a transport failure,
+// not a UI difference (an 80-char field key against core's 128 and the hub's 64);
+// and a wire bound LOOSER breaks the validator's own claim that it refuses shapes
+// "core never produced" (`schemaTitle` had no length check at all).
+//
+// Every core MAXIMUM must be accepted and every core maximum + 1 refused, so a
+// drift is red instead of an unexplained cancel in production. These are the
+// values from `src/interactions/elicitation-schema.ts`.
+
+test("the wire accepts every core-maximum field and refuses one character more", () => {
+  const base = {
+    requestId: "req-boundary",
+    kind: "elicitation" as const,
+    expiresAt: Date.now() + 60_000,
+    elicitation: {
+      mode: "form" as const,
+      message: "",
+      agent: { name: "codex" },
+      fields: [] as unknown[],
+    },
+  };
+  const withField = (over: Record<string, unknown>): unknown => ({
+    ...base,
+    elicitation: {
+      ...base.elicitation,
+      fields: [{ kind: "text", key: "f", title: "F", required: true, ...over }],
+    },
+  });
+  // Core's OWN maxima, written as literals rather than read from the table under
+  // test. Reading `INTERACTION_WIRE_LIMITS.maxFieldKey` here would compare the
+  // table against itself, which is self-consistent by construction: lowering the
+  // wire bound drifts the expectation to match, and the test stays green. The
+  // point of the boundary contract is that these numbers are INDEPENDENT of the
+  // implementation, so a drift in either side shows up as a failure.
+  const CORE = {
+    maxFieldKey: 128,
+    maxTitle: 256,
+    maxDescription: 1000,
+    maxFormat: 64,
+    maxPattern: 512,
+    maxDefaultText: 256,
+    maxOptionText: 256,
+    maxOptions: 100,
+    maxFields: 20,
+    maxSchemaTitle: 256,
+    maxSchemaDescription: 1000,
+  };
+  const atMax = (n: number): string => "x".repeat(n);
+
+  const cases: Array<{ name: string; member: string; max: number }> = [
+    { name: "field key", member: "key", max: CORE.maxFieldKey },
+    { name: "field title", member: "title", max: CORE.maxTitle },
+    { name: "field description", member: "description", max: CORE.maxDescription },
+    { name: "format", member: "format", max: CORE.maxFormat },
+    { name: "pattern", member: "pattern", max: CORE.maxPattern },
+    { name: "string default", member: "defaultValue", max: CORE.maxDefaultText },
+  ];
+
+  for (const c of cases) {
+    expect(
+      parseControlPayload(MSG.interactionRequest, withField({ [c.member]: atMax(c.max) })),
+      `${c.name} at core maximum is accepted`,
+    ).not.toBeNull();
+    expect(
+      parseControlPayload(MSG.interactionRequest, withField({ [c.member]: atMax(c.max + 1) })),
+      `${c.name} one over core maximum is refused`,
+    ).toBeNull();
+  }
+});
+
+test("the wire accepts every core-maximum option and schema member, and refuses one more", () => {
+  const base = {
+    requestId: "req-boundary-opts",
+    kind: "elicitation" as const,
+    expiresAt: Date.now() + 60_000,
+    elicitation: {
+      mode: "form" as const,
+      message: "",
+      agent: { name: "codex" },
+      fields: [] as unknown[],
+    },
+  };
+  const optionFrame = (over: Record<string, unknown>): unknown => ({
+    ...base,
+    elicitation: {
+      ...base.elicitation,
+      fields: [{
+        kind: "single-select",
+        key: "f",
+        title: "F",
+        required: true,
+        options: [{ value: "v", label: "L", ...over }],
+      }],
+    },
+  });
+  for (const [member, max] of [
+    ["value", 256],
+    ["label", 256],
+    ["description", 1000],
+  ] as const) {
+    expect(
+      parseControlPayload(MSG.interactionRequest, optionFrame({ [member]: "x".repeat(max) })),
+      `option ${member} at core maximum`,
+    ).not.toBeNull();
+    expect(
+      parseControlPayload(MSG.interactionRequest, optionFrame({ [member]: "x".repeat(max + 1) })),
+      `option ${member} one over`,
+    ).toBeNull();
+  }
+
+  const schemaFrame = (over: Record<string, unknown>): unknown => ({
+    ...base,
+    elicitation: { ...base.elicitation, fields: [{ kind: "text", key: "f", title: "F", required: true }], ...over },
+  });
+  // schemaTitle reuses the field-title bound; schemaDescription the field-description one.
+  expect(
+    parseControlPayload(MSG.interactionRequest, schemaFrame({ schemaTitle: "x".repeat(256) })),
+    "schema title at core maximum",
+  ).not.toBeNull();
+  expect(
+    parseControlPayload(MSG.interactionRequest, schemaFrame({ schemaTitle: "x".repeat(257) })),
+    "schema title one over",
+  ).toBeNull();
+  expect(
+    parseControlPayload(MSG.interactionRequest, schemaFrame({ schemaDescription: "x".repeat(1000) })),
+    "schema description at core maximum",
+  ).not.toBeNull();
+  expect(
+    parseControlPayload(MSG.interactionRequest, schemaFrame({ schemaDescription: "x".repeat(1001) })),
+    "schema description one over",
+  ).toBeNull();
+});
+
+test("the field-count and option-count bounds match core's", () => {
+  const frame = (fieldCount: number, optionCount: number): unknown => ({
+    requestId: "req-counts",
+    kind: "elicitation" as const,
+    expiresAt: Date.now() + 60_000,
+    elicitation: {
+      mode: "form" as const,
+      message: "",
+      agent: { name: "codex" },
+      fields: Array.from({ length: fieldCount }, (_, i) => ({
+        kind: "single-select",
+        key: `f${i}`,
+        title: `F${i}`,
+        required: true,
+        options: Array.from({ length: optionCount }, (_, j) => ({
+          value: `v${j}`,
+          label: `L${j}`,
+        })),
+      })),
+    },
+  });
+  // Core caps a form at 20 fields and a select at 100 options. Zero fields is
+  // legal (an all-optional schema that accepts `content: null`).
+  expect(parseControlPayload(MSG.interactionRequest, frame(0, 1))).not.toBeNull();
+  expect(parseControlPayload(MSG.interactionRequest, frame(20, 100))).not.toBeNull();
+  expect(parseControlPayload(MSG.interactionRequest, frame(21, 100))).toBeNull();
+  expect(parseControlPayload(MSG.interactionRequest, frame(1, 101))).toBeNull();
+});
+
+test("a multi-select default is bounded per item, not only in aggregate", () => {
+  // A default array is core-side pre-fill that core itself would accept, so each
+  // item is bounded by core's default bound. Checking only the aggregate length
+  // let a two-item array of 1000-char strings through a 256-per-item rule.
+  const frame = (items: string[]): unknown => ({
+    requestId: "req-default-array",
+    kind: "elicitation" as const,
+    expiresAt: Date.now() + 60_000,
+    elicitation: {
+      mode: "form" as const,
+      message: "",
+      agent: { name: "codex" },
+      fields: [{
+        kind: "multi-select",
+        key: "f",
+        title: "F",
+        required: true,
+        options: [{ value: "a", label: "A" }],
+        defaultValue: items,
+      }],
+    },
+  });
+  expect(parseControlPayload(MSG.interactionRequest, frame(["a".repeat(256), "b"]))).not.toBeNull();
+  expect(parseControlPayload(MSG.interactionRequest, frame(["a".repeat(257), "b"]))).toBeNull();
 });

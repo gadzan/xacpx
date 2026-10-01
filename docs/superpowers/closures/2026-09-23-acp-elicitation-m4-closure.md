@@ -718,3 +718,53 @@ technology and anything walking `for` -> element.
 Those two kinds now render a `role="group"` element named by a legend span via
 `aria-labelledby`, and `<label for>` is emitted only for the kinds that render
 exactly one control with that id.
+
+## Addendum - eighth re-review round (2026-10-01)
+
+No new P1s. One P2, a wire-boundary contract drift.
+
+### P2 - the Hub's field limits disagreed with core's normalization limits (FIXED)
+
+`relayFieldsFrom()` is contracted to copy the form core already normalized and
+bounded, field for field. That makes core's `ELICITATION_SCHEMA_LIMITS` the
+authority on what a LEGAL form is, and the wire validator was out of step with it
+in both directions:
+
+  | member            | core | hub | effect |
+  |-------------------|------|-----|--------|
+  | field key         | 128  |  64 | stricter — a legal form failed to open |
+  | field title       | 256  | 200 | stricter |
+  | option value      | 256  | 200 | stricter |
+  | option label      | 256  | 200 | stricter |
+  | fields            |  20  | 100 | looser |
+  | options per field | 100  | 200 | looser |
+  | pattern           | 512  |2000 | looser |
+  | default string    | 256  |8000 | looser |
+  | schema title      | 256  | none | unbounded outright |
+
+The stricter rows are functional, not cosmetic: an 80-character field key is a
+perfectly legal ACP schema, core accepts it, `relayFieldsFrom()` forwards it
+verbatim, and `isBoundedStr(v.key, 64)` rejected the whole request — so a legal
+elicitation became a transport failure instead of a form.
+
+The looser rows break the validator's own stated claim that it refuses shapes
+"core never produced": a bound wider than core's cannot keep that, and
+`schemaTitle` had no length check at all while the section comment implied one.
+
+`INTERACTION_WIRE_LIMITS` is the wire's copy of the contract, in one table with
+the core value each member mirrors, and every site reads from it. The three
+bounds the validator was missing entirely — `schemaTitle` length, field and option
+`description` length, and per-item `multi-select` default length — are now
+enforced. (`defaultValue` was checked only as a single string, so a two-item array
+of 1000-char strings passed a 256-per-item rule.)
+
+The boundary contract is pinned by tests that assert every core MAXIMUM is
+accepted and every maximum + 1 refused, for fields, options, schema metadata, and
+the two count limits.
+
+Those tests hold core's numbers as LITERALS rather than reading the table under
+test. The first version imported `INTERACTION_WIRE_LIMITS` into the expectations,
+which made the test self-consistent by construction — lowering the wire bound
+drifted the expectation with it, and the mutation stayed green. Comparing a table
+against itself proves nothing; the numbers have to be independent for a drift to
+be visible.

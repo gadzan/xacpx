@@ -1,6 +1,57 @@
 import { MSG, type AgentsCreatePayload, type AgentsRemovePayload, type BotsCreatePayload, type BotsDeletePayload, type BotsGetPayload, type BotsUpdatePayload, type CommandExecutePayload, type ConversationHistoryPayload, type ConversationPromptPayload, type ConversationsGetPayload, type ConversationsListPayload, type GroupsCreatePayload, type GroupsDeletePayload, type GroupsGetPayload, type GroupsUpdatePayload, type GroupTopicsArchivePayload, type GroupTopicsCreatePayload, type GroupTopicsTeardownPayload, type FsCopyPayload, type FsCreatePayload, type FsDeletePayload, type FsDiffPayload, type FsDownloadPayload, type FsBrowsePayload, type FsListPayload, type FsReadPayload, type FsRenamePayload, type FsSearchPayload, type FsWritePayload, type GitCheckoutPayload, type GitCommitPayload, type GitFetchPayload, type GitPathsPayload, type GitPullPayload, type GitPushPayload, type GitStatusPayload, type GitWorktreeCreatePayload, type InteractionRequestPayload, type InteractionResponsePayload, type InteractionWithdrawPayload, type OrchestrationCancelPayload, type OrchestrationGetPayload, type PromptCancelPayload, type PromptPayload, type QueueCancelPayload, type RunsCancelPayload, type RunsGetPayload, type RunsListPayload, type ScheduledCancelPayload, type ScheduledCreatePayload, type ScheduledListPayload, type SessionModelGetPayload, type SessionModelSetPayload, type SessionEffortGetPayload, type SessionEffortSetPayload, type SessionsArchivePayload, type SessionsCreatePayload, type SessionsListPayload, type SessionsNativeListPayload, type SessionsRemovePayload, type SessionsRenamePayload, type SessionsUnarchivePayload, type TerminalAttachPayload, type TerminalCreatePayload, type TerminalDetachPayload, type TerminalHeartbeatPayload, type TerminalInputPayload, type TerminalOpenPayload, type TerminalResyncPayload, type TerminalResizePayload, type TerminalResourceExitPayload, type TerminalStreamStartPayload, type TerminalTakeControlPayload, type TerminalTerminatePayload, type TerminalViewerEventPayload, type TopicsCreatePayload, type TopicsListPayload, type UploadPayload, type WorkspacesCreatePayload, type WorkspacesRemovePayload } from "./messages.js";
 export type Validator<T> = (payload: unknown) => T | null;
 /**
+ * One normalized form field.
+ *
+ * The field's own bounds are checked here so a hub cannot forward a shape core
+ * never produced (e.g. a 100k-char title, or a select with a million options).
+ * An out-of-range field invalidates the whole request: a partially-validated
+ * form would render a question the agent did not ask.
+ *
+ * The wire's copy of core's normalized-form bounds, and why it needs its own
+ * table below: `relayFieldsFrom()` is contracted to copy the form core already
+ * normalized and bounded, field for field. That makes core's
+ * `ELICITATION_SCHEMA_LIMITS` the authority on what a LEGAL form looks like, and
+ * this module must accept all of it — a stricter number here rejects a form core
+ * accepted, which turns a legal elicitation into a transport failure rather than
+ * a UI difference. A looser number is also wrong: the validator's own claim is
+ * that it refuses shapes "core never produced", and a bound wider than core's
+ * cannot keep that claim.
+ *
+ * Both failures have already happened. `key` was capped at 64 against core's 128,
+ * so a legal 80-character key made the whole request unopenable; and
+ * `schemaTitle` had no length check at all while the section comment implied one.
+ *
+ * `relay-protocol` does not import core's constants, so these values must be kept
+ * in sync by hand — which is why the boundary tests below assert that every core
+ * MAXIMUM is accepted and every core maximum + 1 is refused. A drift there is red
+ * instead of an unexplained cancel in production.
+ */
+export declare const INTERACTION_WIRE_LIMITS: {
+    /** Field key. Core: `maxFieldKeyLength`. */
+    readonly maxFieldKey: 128;
+    /** Field title, and the schema-level title reuses the same bound. */
+    readonly maxTitle: 256;
+    /** Field and option description. Core: `maxFieldDescriptionLength`. */
+    readonly maxDescription: 1000;
+    /** Fields in one form. Core: `maxFields`. */
+    readonly maxFields: 20;
+    /** Options in one select. Core: `maxOptionsPerField`. */
+    readonly maxOptions: 100;
+    /** Option value and label. Core: `maxOptionValueLength` / `maxOptionLabelLength`. */
+    readonly maxOptionText: 256;
+    /** A string default, and each item of an array default. Core: `maxDefaultValueLength`. */
+    readonly maxDefaultText: 256;
+    /** The pattern, carried as text and never compiled. Core's own bound. */
+    readonly maxPattern: 512;
+    /** A `format` name: open string, bounded. Core: `maxFormatLength`. */
+    readonly maxFormat: 64;
+    /** The schema-level description. Core: `maxFieldDescriptionLength`. */
+    readonly maxSchemaDescription: 1000;
+    /** The prose message. Core carries this separately from the schema metadata. */
+    readonly maxMessage: 8000;
+};
+/**
  * The opened-interaction request.
  *
  * Requires the kind's own payload: an `elicitation` request with no

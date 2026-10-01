@@ -541,37 +541,92 @@ const FIELD_KINDS = ["text", "single-select", "number", "boolean", "multi-select
  * never produced (e.g. a 100k-char title, or a select with a million options).
  * An out-of-range field invalidates the whole request: a partially-validated
  * form would render a question the agent did not ask.
+ *
+ * The wire's copy of core's normalized-form bounds, and why it needs its own
+ * table below: `relayFieldsFrom()` is contracted to copy the form core already
+ * normalized and bounded, field for field. That makes core's
+ * `ELICITATION_SCHEMA_LIMITS` the authority on what a LEGAL form looks like, and
+ * this module must accept all of it — a stricter number here rejects a form core
+ * accepted, which turns a legal elicitation into a transport failure rather than
+ * a UI difference. A looser number is also wrong: the validator's own claim is
+ * that it refuses shapes "core never produced", and a bound wider than core's
+ * cannot keep that claim.
+ *
+ * Both failures have already happened. `key` was capped at 64 against core's 128,
+ * so a legal 80-character key made the whole request unopenable; and
+ * `schemaTitle` had no length check at all while the section comment implied one.
+ *
+ * `relay-protocol` does not import core's constants, so these values must be kept
+ * in sync by hand — which is why the boundary tests below assert that every core
+ * MAXIMUM is accepted and every core maximum + 1 is refused. A drift there is red
+ * instead of an unexplained cancel in production.
  */
+export const INTERACTION_WIRE_LIMITS = {
+  /** Field key. Core: `maxFieldKeyLength`. */
+  maxFieldKey: 128,
+  /** Field title, and the schema-level title reuses the same bound. */
+  maxTitle: 256,
+  /** Field and option description. Core: `maxFieldDescriptionLength`. */
+  maxDescription: 1000,
+  /** Fields in one form. Core: `maxFields`. */
+  maxFields: 20,
+  /** Options in one select. Core: `maxOptionsPerField`. */
+  maxOptions: 100,
+  /** Option value and label. Core: `maxOptionValueLength` / `maxOptionLabelLength`. */
+  maxOptionText: 256,
+  /** A string default, and each item of an array default. Core: `maxDefaultValueLength`. */
+  maxDefaultText: 256,
+  /** The pattern, carried as text and never compiled. Core's own bound. */
+  maxPattern: 512,
+  /** A `format` name: open string, bounded. Core: `maxFormatLength`. */
+  maxFormat: 64,
+  /** The schema-level description. Core: `maxFieldDescriptionLength`. */
+  maxSchemaDescription: 1000,
+  /** The prose message. Core carries this separately from the schema metadata. */
+  maxMessage: 8000,
+} as const;
+
 function validInteractionField(v: unknown): boolean {
   if (!isObj(v)) return false;
   const kind = v.kind;
   if (typeof kind !== "string" || !(FIELD_KINDS as readonly string[]).includes(kind)) return false;
-  // The key is the component name on some platforms, so it is short and bounded.
-  if (!isBoundedStr(v.key, 64)) return false;
-  if (!isBoundedStr(v.title, 200)) return false;
+  // The key identifies the field to core, which accepts up to 128 characters.
+  if (!isBoundedStr(v.key, INTERACTION_WIRE_LIMITS.maxFieldKey)) return false;
+  if (!isBoundedStr(v.title, INTERACTION_WIRE_LIMITS.maxTitle)) return false;
   if (typeof v.required !== "boolean") return false;
   if (!optStrOrNull(v.description)) return false;
+  if (typeof v.description === "string" && v.description.length > INTERACTION_WIRE_LIMITS.maxDescription) {
+    return false;
+  }
   if (!optNum(v.minItems) || !optNum(v.maxItems)) return false;
   if (!optNum(v.minLength) || !optNum(v.maxLength)) return false;
   // An open string, bounded. Not an enum: core is the authority on which format
   // names exist, and a renderer ignores the ones it does not know.
-  if (v.format !== undefined && !isBoundedStr(v.format, 64)) return false;
+  if (v.format !== undefined && !isBoundedStr(v.format, INTERACTION_WIRE_LIMITS.maxFormat)) return false;
   // A regex is accepted only as bounded text. Never compiled here: an unbounded or
   // pathological pattern would turn validation into the attacker's work.
-  if (v.pattern !== undefined && !isBoundedStr(v.pattern, 2000)) return false;
+  if (v.pattern !== undefined && !isBoundedStr(v.pattern, INTERACTION_WIRE_LIMITS.maxPattern)) return false;
   if (!optBoolOrNull(v.integer)) return false;
   if (!optNum(v.minimum) || !optNum(v.maximum)) return false;
   const isSelect = kind === "single-select" || kind === "multi-select";
   if (isSelect) {
     const options = v.options;
-    if (!Array.isArray(options) || options.length === 0 || options.length > 200) return false;
+    if (!Array.isArray(options) || options.length === 0 || options.length > INTERACTION_WIRE_LIMITS.maxOptions) {
+      return false;
+    }
     for (const option of options) {
       if (!isObj(option)) return false;
       // `value` is the correlation identity core validates; `label` is
       // agent-controlled display text. Both are bounded.
-      if (!isBoundedStr(option.value, 200)) return false;
-      if (!isBoundedStr(option.label, 200)) return false;
+      if (!isBoundedStr(option.value, INTERACTION_WIRE_LIMITS.maxOptionText)) return false;
+      if (!isBoundedStr(option.label, INTERACTION_WIRE_LIMITS.maxOptionText)) return false;
       if (!optStrOrNull(option.description)) return false;
+      if (
+        typeof option.description === "string"
+        && option.description.length > INTERACTION_WIRE_LIMITS.maxDescription
+      ) {
+        return false;
+      }
     }
   } else if (v.options !== undefined) {
     // A non-select kind must not carry options: that is a shape core would not
@@ -581,11 +636,19 @@ function validInteractionField(v: unknown): boolean {
   if (v.defaultValue !== undefined) {
     const d = v.defaultValue;
     const scalar = typeof d === "string" || typeof d === "number" || typeof d === "boolean";
-    const array = isStrArr(d);
-    if (!scalar && !array) return false;
+    // Narrowed into a new binding rather than reused: `isStrArr` is a plain
+    // boolean predicate, so it narrows nothing and `d.some` would not typecheck.
+    const items = Array.isArray(d) ? d : null;
+    const legalArray = items !== null && items.every((item) => typeof item === "string");
+    if (!scalar && !legalArray) return false;
     // A default is core-side pre-fill that core itself would accept, so it must
-    // not be an unbounded blob either.
-    if (typeof d === "string" && d.length > 8000) return false;
+    // not be an unbounded blob either. The bound is core's, and it is PER STRING:
+    // checking only the total length let a two-item array of 1000-char strings
+    // through a 256-per-item rule.
+    if (typeof d === "string" && d.length > INTERACTION_WIRE_LIMITS.maxDefaultText) return false;
+    if (legalArray && items.some((item) => (item as string).length > INTERACTION_WIRE_LIMITS.maxDefaultText)) {
+      return false;
+    }
   }
   return true;
 }
@@ -628,13 +691,24 @@ export const validateInteractionRequest: Validator<InteractionRequestPayload> = 
     if (elicitation.mode !== "form") return null;
     // An empty message is allowed: a schema with a good title needs no prose.
     if (!optStrOrNull(elicitation.message)) return null;
-    if (typeof elicitation.message === "string" && elicitation.message.length > 8000) return null;
+    if (
+      typeof elicitation.message === "string"
+      && elicitation.message.length > INTERACTION_WIRE_LIMITS.maxMessage
+    ) {
+      return null;
+    }
     if (!optStrOrNull(elicitation.schemaTitle)) return null;
+    if (typeof elicitation.schemaTitle === "string" && elicitation.schemaTitle.length > INTERACTION_WIRE_LIMITS.maxTitle) {
+      return null;
+    }
     // The schema-level description rides with the title, and is bounded like it.
     // An empty `message` is legal precisely so a schema can carry its whole
     // question, so refusing the description here would strand a legal form.
     if (!optStrOrNull(elicitation.schemaDescription)) return null;
-    if (typeof elicitation.schemaDescription === "string" && elicitation.schemaDescription.length > 8000) {
+    if (
+      typeof elicitation.schemaDescription === "string"
+      && elicitation.schemaDescription.length > INTERACTION_WIRE_LIMITS.maxSchemaDescription
+    ) {
       return null;
     }
     // The asking Agent. REQUIRED and bounded: it is an identity, not display
@@ -650,7 +724,7 @@ export const validateInteractionRequest: Validator<InteractionRequestPayload> = 
     // able to open it and confirm an empty answer. Rejecting here would strand a
     // legal interaction rather than refuse an unsupported one.
     if (!Array.isArray(fieldsValue)) return null;
-    if (fieldsValue.length > 100) return null;
+    if (fieldsValue.length > INTERACTION_WIRE_LIMITS.maxFields) return null;
     if (!fieldsValue.every(validInteractionField)) return null;
     if (o.permission !== undefined) return null;
     return o as unknown as InteractionRequestPayload;
