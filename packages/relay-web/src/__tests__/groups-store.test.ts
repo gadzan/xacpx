@@ -537,6 +537,156 @@ describe("useGroupsStore", () => {
     expect(kept?.promptRequestId).toBe("sturn_a");
   });
 
+  it("refines indeterminate member evidence when post-seal proof arrives via events", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const base: ConversationRunDto = {
+      id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running",
+      profileRevision: 1, createdAt: "now",
+    };
+    store.activeRun = { ...base, state: "indeterminate", completionReason: "started_result_unknown", failedBotIds: [] };
+    store.memberTurnsById = {
+      turn_a: {
+        id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_a", batch: 1, attempt: 1, origin: "human-explicit",
+        state: "indeterminate", createdAt: "now", startedAt: "then",
+      },
+      turn_b: {
+        id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_b", batch: 1, attempt: 1, origin: "human-explicit",
+        state: "indeterminate", createdAt: "now", startedAt: "then",
+      },
+    };
+    // B's proven completion arrives after the seal: member + message evidence
+    // must refine while the Run stays indeterminate (A still unknown).
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: {
+        type: "member-turn-finished",
+        run: { ...base, state: "indeterminate", completionReason: "started_result_unknown" },
+        memberTurn: {
+          id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, attempt: 1, origin: "human-explicit", state: "completed",
+          createdAt: "now", startedAt: "then", finishedAt: "later",
+        },
+      },
+    } as never);
+    expect(store.memberTurnsById["turn_b"]?.state).toBe("completed");
+    expect(store.activeRun?.state).toBe("indeterminate");
+    // Reset B to the sealed baseline to exercise the failure path
+    // independently (a completed member never transitions to failed).
+    store.memberTurnsById = {
+      ...store.memberTurnsById,
+      turn_b: {
+        id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_b", batch: 1, attempt: 1, origin: "human-explicit",
+        state: "indeterminate", createdAt: "now", startedAt: "then",
+      },
+    };
+    // B's proven failure refines the same way, carrying failure evidence.
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: {
+        type: "member-turn-finished",
+        run: { ...base, state: "indeterminate", completionReason: "started_result_unknown", failedBotIds: ["bot_b"] },
+        memberTurn: {
+          id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, attempt: 1, origin: "human-explicit", state: "failed",
+          failureReason: "proven B boom", createdAt: "now", startedAt: "then", finishedAt: "later",
+        },
+      },
+    } as never);
+    expect(store.memberTurnsById["turn_b"]?.state).toBe("failed");
+    expect(store.memberTurnsById["turn_b"]?.failureReason).toBe("proven B boom");
+    expect(store.activeRun?.failedBotIds).toContain("bot_b");
+    // The seal never reopens scheduling: a stale running row still loses.
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: {
+        type: "member-turn-started",
+        run: { ...base, state: "running" },
+        memberTurn: {
+          id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_b", batch: 1, attempt: 1, origin: "human-explicit", state: "running",
+          createdAt: "now", startedAt: "then",
+        },
+      },
+    } as never);
+    expect(store.memberTurnsById["turn_b"]?.state).toBe("failed");
+    // Full reclassification when the last unknown member gets proof.
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: {
+        type: "member-turn-finished",
+        run: { ...base, state: "failed", completionReason: "execution-failed", failedBotIds: ["bot_a", "bot_b"] },
+        memberTurn: {
+          id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, attempt: 1, origin: "human-explicit", state: "failed",
+          failureReason: "proven A boom", createdAt: "now", startedAt: "then", finishedAt: "later",
+        },
+      },
+    } as never);
+    expect(store.memberTurnsById["turn_a"]?.state).toBe("failed");
+    expect(store.activeRun?.state).toBe("failed");
+  });
+
+  it("refines a cached indeterminate run from a runs.get snapshot", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.groupsByInstance["inst_1"] = [GROUP];
+    store.activeRun = {
+      id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "indeterminate",
+      completionReason: "started_result_unknown", profileRevision: 1, createdAt: "now",
+    };
+    store.memberTurnsById = {
+      turn_b: {
+        id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_b", batch: 1, attempt: 1, origin: "human-explicit",
+        state: "indeterminate", createdAt: "now", startedAt: "then",
+      },
+    };
+    const refined: ConversationRunDetailDto = {
+      id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "indeterminate",
+      completionReason: "started_result_unknown", profileRevision: 1, createdAt: "now",
+      failedBotIds: ["bot_b"],
+      memberTurns: [{
+        id: "turn_b", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_b", batch: 1, attempt: 1, origin: "human-explicit", state: "failed",
+        failureReason: "proven B boom", createdAt: "now", startedAt: "then", finishedAt: "later",
+      }],
+    };
+    mockRpc.mockImplementation(async (inst: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [GROUP] };
+      if (type === "control.topics.list") {
+        return { topics: [{ id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" }] };
+      }
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") {
+        return { runs: [{ ...refined, memberTurns: undefined }], conversationId: "conversation_g", topicId: "topic_1" };
+      }
+      if (type === "control.runs.get") return { run: refined };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.reconcileOnReconnect();
+    await flushPromises();
+    expect(store.memberTurnsById["turn_b"]?.state).toBe("failed");
+    expect(store.memberTurnsById["turn_b"]?.failureReason).toBe("proven B boom");
+    expect(store.activeRun?.failedBotIds).toContain("bot_b");
+  });
+
   it("stops the exact active run by runId", async () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";

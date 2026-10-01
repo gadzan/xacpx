@@ -179,9 +179,22 @@ function isActiveRunState(state: ConversationRunStateDto | undefined): boolean {
   return state === "queued" || state === "running" || state === "waiting-human";
 }
 
+/** Backend `indeterminate` seals scheduling but stays evidence-refinable:
+ *  post-seal proof may move the Run `indeterminate → completed/failed/
+ *  cancelled` (last unknown member reclassified) or refine an
+ *  `indeterminate → indeterminate` snapshot (failedBotIds/progress). Only
+ *  proved terminals reject stale nonterminal regressions, and the seal
+ *  never reopens scheduling (`indeterminate → queued/running/waiting-human`
+ *  stays rejected). */
 function shouldUpdateRunState(current: ConversationRunStateDto | undefined, incoming: ConversationRunStateDto): boolean {
   if (!current) return true;
-  if (isTerminalRunState(current)) return false;
+  if (current === incoming) return true;
+  // Proven terminals are evidence-final. Indeterminate is terminal for
+  // SCHEDULING only — post-seal proof may still refine it (below).
+  if (current === "completed" || current === "failed" || current === "cancelled") return false;
+  if (current === "indeterminate") {
+    return incoming === "completed" || incoming === "failed" || incoming === "cancelled" || incoming === "indeterminate";
+  }
   return RUN_STATE_PRECEDENCE[incoming] >= RUN_STATE_PRECEDENCE[current];
 }
 
@@ -191,6 +204,27 @@ function mergeRun(current: ConversationRunDto | null, incoming: ConversationRunD
   }
   if (!shouldUpdateRunState(current.state, incoming.state)) {
     return current;
+  }
+  // Same-state indeterminate snapshots still carry new evidence (failedBotIds
+  // union, progress, timestamps): merge monotonically instead of swapping, so
+  // a thinner stored snapshot never erases a richer one.
+  if (current.state === "indeterminate" && incoming.state === "indeterminate") {
+    const union = (...lists: Array<string[] | undefined>): string[] | undefined => {
+      const seen: Record<string, true> = {};
+      for (const list of lists) for (const id of list ?? []) seen[id] = true;
+      const merged = Object.keys(seen);
+      return merged.length > 0 ? merged : undefined;
+    };
+    return {
+      ...incoming,
+      ...current,
+      state: "indeterminate",
+      completionReason: incoming.completionReason ?? current.completionReason,
+      failedBotIds: union(current.failedBotIds, incoming.failedBotIds),
+      unavailableBotIds: union(current.unavailableBotIds, incoming.unavailableBotIds),
+      consumedMemberTurns: current.consumedMemberTurns === undefined ? incoming.consumedMemberTurns : incoming.consumedMemberTurns === undefined ? current.consumedMemberTurns : Math.max(current.consumedMemberTurns, incoming.consumedMemberTurns),
+      finishedAt: current.finishedAt ?? incoming.finishedAt,
+    };
   }
   return incoming;
 }
@@ -210,9 +244,15 @@ function shouldUpdateMemberTurnState(
   incoming: MemberTurnSummaryDto["state"],
 ): boolean {
   if (!current) return true;
-  const isCurrentTerminal =
-    current === "completed" || current === "failed" || current === "cancelled" || current === "indeterminate";
-  if (isCurrentTerminal) return false;
+  if (current === incoming) return true;
+  // Proven terminals are final: stale nonterminal rows never regress them.
+  if (current === "completed" || current === "failed" || current === "cancelled") return false;
+  // Indeterminate seals SCHEDULING but stays evidence-refinable: post-seal
+  // proof moves the member to its proven outcome. Anything that would
+  // reopen scheduling (queued/dispatched/running) stays rejected.
+  if (current === "indeterminate") {
+    return incoming === "completed" || incoming === "failed";
+  }
   return MEMBER_TURN_STATE_PRECEDENCE[incoming] >= MEMBER_TURN_STATE_PRECEDENCE[current];
 }
 
