@@ -171,6 +171,35 @@ function mountForm(
     expect(withAnswer.find('[data-test="interaction-submit"]').attributes("disabled")).toBe(undefined);
   });
 
+  it("an empty message still shows the schema's own question", async () => {
+    // The wire validator allows `message: ""` on purpose — "a schema with a good
+    // title needs no prose" — so an agent may carry its ENTIRE question in
+    // `schemaTitle`/`schemaDescription`. Rendering neither left such a form with
+    // nothing above its fields, which is a form that asks nothing.
+    const wrapper = mountForm([
+      { kind: "text", key: "s", title: "S", required: false },
+    ]);
+    wrapper.setProps({
+      request: {
+        ...wrapper.props("request") as object,
+        elicitation: {
+          mode: "form",
+          message: "",
+          fields: [{ kind: "text", key: "s", title: "S", required: false }],
+          schemaTitle: "Choose deployment target",
+          schemaDescription: "Pick one region; the rest of the fields are optional.",
+          agent: { name: "codex" },
+        },
+      },
+    } as never);
+    await wrapper.vm.$nextTick();
+    const title = wrapper.find('[data-test="interaction-schema-title"]');
+    const description = wrapper.find('[data-test="interaction-schema-description"]');
+    expect(title.exists()).toBe(true);
+    expect(title.text()).toBe("Choose deployment target");
+    expect(description.text()).toContain("Pick one region");
+  });
+
   it("the agent identity is rendered when the frame carries one", async () => {
     const wrapper = mountForm([
       { kind: "text", key: "s", title: "S", required: false },
@@ -243,6 +272,37 @@ describe("ConversationInteractionForm field kinds", () => {
     expect(wrapper.emitted("answer")).toEqual([["mail", ""]]);
     expect(wrapper.find('[data-test="interaction-invalid"]').exists()).toBe(true);
     expect(wrapper.find('[data-test="interaction-submit"]').attributes("disabled")).toBeDefined();
+  });
+
+  it("only the kinds with ONE control get a label[for]", () => {
+    // A `<label for>` that resolves to no control is worse than no label: it
+    // actively misleads assistive tech and anything that walks `for` -> element.
+    // `boolean` and `multi-select` render a SET of controls and carry no single
+    // id, so their title is a labelled group instead.
+    const wrapper = mountForm([
+      { kind: "text", key: "t", title: "Text", required: true },
+      { kind: "number", key: "n", title: "Num", required: true },
+      { kind: "single-select", key: "s", title: "Sel", required: true, options: [] },
+      { kind: "boolean", key: "b", title: "Bool", required: true },
+      { kind: "multi-select", key: "m", title: "Multi", required: true, options: [] },
+    ]);
+    // Every label in the form points at a control that actually exists.
+    const ids = new Set(
+      [...wrapper.findAll('[id]')].map((el) => el.attributes("id") as string),
+    );
+    for (const label of wrapper.findAll("label")) {
+      const forAttr = label.attributes("for");
+      if (forAttr === undefined) continue;
+      expect(ids.has(forAttr), `label for=${forAttr} has no control`).toBe(true);
+    }
+    // The group kinds are labelled by an accessible name, not a dangling `for`.
+    for (const key of ["b", "m"]) {
+      const group = wrapper.find(`[data-test="interaction-field-${key}"] [role="group"]`);
+      expect(group.exists(), key).toBe(true);
+      const legendId = group.attributes("aria-labelledby");
+      expect(typeof legendId, key).toBe("string");
+      expect(wrapper.find(`#${legendId}`).exists(), key).toBe(true);
+    }
   });
 
   it("a number field emits a NUMBER, not the input's string", () => {

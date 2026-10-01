@@ -630,6 +630,13 @@ export const validateInteractionRequest: Validator<InteractionRequestPayload> = 
     if (!optStrOrNull(elicitation.message)) return null;
     if (typeof elicitation.message === "string" && elicitation.message.length > 8000) return null;
     if (!optStrOrNull(elicitation.schemaTitle)) return null;
+    // The schema-level description rides with the title, and is bounded like it.
+    // An empty `message` is legal precisely so a schema can carry its whole
+    // question, so refusing the description here would strand a legal form.
+    if (!optStrOrNull(elicitation.schemaDescription)) return null;
+    if (typeof elicitation.schemaDescription === "string" && elicitation.schemaDescription.length > 8000) {
+      return null;
+    }
     // The asking Agent. REQUIRED and bounded: it is an identity, not display
     // text, and a client must be able to show who is asking. An absent or empty
     // name closes the request rather than rendering an unidentified question.

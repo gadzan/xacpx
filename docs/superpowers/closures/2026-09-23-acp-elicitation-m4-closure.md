@@ -673,3 +673,48 @@ The id is now index-led (`f${index}-${sanitizedKey}`), unique per rendered field
 and stable across re-renders because the index comes from the field list derived
 from the immutable request. `data-test` attributes still use the raw key, which is
 the test contract.
+
+## Addendum - seventh re-review round (2026-10-01)
+
+No new P1s. Two P2s and one accessibility P3 from a full re-scan.
+
+### P2 - Relay dropped schema-level presentation metadata (FIXED)
+
+Core's `ChannelElicitationRequest` carries `schemaTitle` AND `schemaDescription`,
+and Discord/Feishu render both. The relay channel projected only the title, and
+the wire DTO had no `description` member at all — while Relay Web did not render
+even the title.
+
+This is a real loss precisely because the wire validator allows `message: ""`
+("a schema with a good title needs no prose"): an agent that carries its whole
+question in the schema produced a form with nothing above the fields, asking
+nothing.
+
+`schemaDescription` is now on the DTO, validated (bounded, non-string refused),
+projected by the channel, and rendered by the web form beside the message with the
+same no-v-html rule.
+
+### P2 - terminal forms kept their answers and accumulated (FIXED)
+
+`retireInteraction()` and the `interaction-closed` handler copied the whole state
+into the terminal map, so a finished form held the answers the user typed until
+they happened to visit that exact topic and dismiss it — or reload. The terminal
+notice explains why a form went away; nothing downstream consumes the answer
+text. Answers are now dropped the instant a form reaches a terminal state.
+
+The terminal map also had no bound, and it receives entries for every topic under
+every instance from the account-wide subscription. It is now capped at 32 with
+the oldest evicted first (insertion order is arrival order, because every write
+re-inserts through `new Map(current).set(...)`), and the current size is exposed
+so the bound is observable.
+
+### P3 - `<label for>` pointed at controls that do not exist (FIXED)
+
+The fix for duplicate ids left the `<label for>` in place for every field kind,
+but `boolean` (a button pair) and `multi-select` (a checkbox group) render no
+control carrying that id. A `for` that resolves to nothing misleads assistive
+technology and anything walking `for` -> element.
+
+Those two kinds now render a `role="group"` element named by a legend span via
+`aria-labelledby`, and `<label for>` is emitted only for the kinds that render
+exactly one control with that id.

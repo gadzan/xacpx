@@ -455,6 +455,14 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // Interactions that have reached a terminal state but are still displayed, so
   // the user sees WHY the form went away. Terminals live beside the open ones and
   // are matched by requestId.
+  //
+  // Bounded, because the account-wide subscription delivers terminals for every
+  // topic under every instance and a viewer only ever dismisses the one on
+  // screen. Without a cap the retired-but-undismissed set grows for the life of
+  // the tab. The oldest goes first: the newest is what a viewer returning to a
+  // topic needs to see, and dropping a stale terminal only loses an explanation
+  // for a form that already closed.
+  const TERMINAL_INTERACTION_LIMIT = 32;
   const terminalInteractions = ref<Map<string, PendingInteractionState>>(new Map());
 
   /**
@@ -2302,17 +2310,49 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   function retireInteraction(
     requestId: string,
     outcome: PendingInteractionState["outcome"],
-  ): void {
+  ) {
     const existing = pendingInteractions.value.get(requestId);
     if (!existing) return;
     nextPending((map) => {
       map.delete(requestId);
     });
-    terminalInteractions.value = new Map(terminalInteractions.value).set(requestId, {
-      ...existing,
-      outcome,
-      submitting: false,
-    });
+    terminalInteractions.value = capTerminalInteractions(
+      new Map(terminalInteractions.value).set(requestId, {
+        ...existing,
+        // Answers are dropped the moment the form reaches a terminal state.
+        //
+        // The terminal notice says WHY the form went away; it has no use for what
+        // the user typed. Keeping them meant a completed form held its answers in
+        // memory until the viewer happened to open that exact topic and dismiss it
+        // — or until they reloaded. Data minimisation: once the decision is made,
+        // nothing downstream consumes the answer text.
+        answers: emptyAnswers(),
+        outcome,
+        submitting: false,
+      }),
+    );
+  }
+
+  /**
+   * Keep the newest `TERMINAL_INTERACTION_LIMIT` terminals and drop the rest.
+   *
+   * Map insertion order IS the arrival order here — every write goes through
+   * `new Map(current).set(...)`, which re-inserts an updated key at the end — so
+   * the first entries are the oldest and the last is the newest.
+   */
+  function capTerminalInteractions(
+    map: Map<string, PendingInteractionState>,
+  ): Map<string, PendingInteractionState> {
+    if (map.size <= TERMINAL_INTERACTION_LIMIT) return map;
+    const kept = new Map<string, PendingInteractionState>();
+    for (const [key, value] of map) {
+      kept.set(key, value);
+      if (kept.size > TERMINAL_INTERACTION_LIMIT) {
+        const oldest = kept.keys().next().value;
+        if (oldest !== undefined) kept.delete(oldest);
+      }
+    }
+    return kept;
   }
 
   /** Dismiss a form without answering. Records the user's own dismissal. */
@@ -2397,6 +2437,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       patchInteraction(requestId, { submitting: false, errorCode: code });
     }
   }
+
+  /** How many retired forms this tab is still holding an explanation for. */
+  const terminalInteractionCount = computed<number>(() => terminalInteractions.value.size);
 
   /** Dismiss a form that already reached a terminal outcome. */
   function dismissResolvedInteraction(): void {
@@ -2875,11 +2918,18 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       const nextOpen = new Map(pendingInteractions.value);
       nextOpen.delete(e.requestId);
       pendingInteractions.value = nextOpen;
-      terminalInteractions.value = new Map(terminalInteractions.value).set(e.requestId, {
-        ...open,
-        outcome,
-        submitting: false,
-      });
+      terminalInteractions.value = capTerminalInteractions(
+        new Map(terminalInteractions.value).set(e.requestId, {
+          ...open,
+          // Answers are dropped the instant the form closes. The terminal notice
+          // explains why the form went away; nothing downstream consumes what was
+          // typed. Retaining it kept a finished form's answers in memory for as long
+          // as the viewer stayed away from that topic.
+          answers: emptyAnswers(),
+          outcome,
+          submitting: false,
+        }),
+      );
       return;
     }
 
@@ -3257,6 +3307,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     promptError,
     promptErrorDetail,
     pendingInteraction,
+    // How many retired forms this tab is still holding an explanation for. The
+    // terminal set is bounded (see TERMINAL_INTERACTION_LIMIT), and this makes the
+    // bound observable rather than an internal implementation detail.
+    terminalInteractionCount,
     setInteractionAnswer,
     submitInteraction,
     declineInteraction,

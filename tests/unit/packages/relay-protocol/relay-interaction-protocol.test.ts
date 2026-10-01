@@ -402,3 +402,42 @@ test("an elicitation frame without the asking Agent is rejected", () => {
   expect(ok).not.toBeNull();
   expect(ok!.elicitation!.agent.name).toBe("codex");
 });
+
+test("schemaTitle and schemaDescription are both carried and bounded", () => {
+  // An empty `message` is legal precisely because a schema can carry the whole
+  // question, so both schema-level strings must survive THE validator too:
+  // dropping the description there would strand a form that only asked through
+  // its schema.
+  const base = {
+    requestId: "req-schema",
+    kind: "elicitation" as const,
+    expiresAt: Date.now() + 60_000,
+    elicitation: {
+      mode: "form" as const,
+      message: "",
+      agent: { name: "codex" },
+      fields: [{ kind: "text" as const, key: "region", title: "Region", required: true }],
+    },
+  };
+  const accepted = parseControlPayload(MSG.interactionRequest, {
+    ...base,
+    elicitation: {
+      ...base.elicitation,
+      schemaTitle: "Choose deployment target",
+      schemaDescription: "Pick one region.",
+    },
+  });
+  expect(accepted).not.toBeNull();
+  expect(accepted!.elicitation!.schemaTitle).toBe("Choose deployment target");
+  expect(accepted!.elicitation!.schemaDescription).toBe("Pick one region.");
+  // A non-string, or an over-long one, is refused rather than forwarded.
+  for (const bad of [123, "x".repeat(8001)]) {
+    expect(
+      parseControlPayload(MSG.interactionRequest, {
+        ...base,
+        elicitation: { ...base.elicitation, schemaDescription: bad },
+      }),
+      JSON.stringify(typeof bad),
+    ).toBeNull();
+  }
+});

@@ -63,6 +63,18 @@ const fields = computed<readonly InteractionFieldDto[]>(() => props.request.elic
 const agentName = computed<string>(() => props.request.elicitation?.agent?.name ?? "");
 
 /**
+ * Schema-level presentation text: the form's own title and description.
+ *
+ * Agent-controlled, like `message`, and shown beside it. Shown WITHOUT them a
+ * form whose `message` is empty — which the wire validator permits precisely
+ * because "a schema with a good title needs no prose" — presents nothing above
+ * its fields and asks nothing at all.
+ */
+const schemaTitle = computed<string>(() => props.request.elicitation?.schemaTitle ?? "");
+
+const schemaDescription = computed<string>(() => props.request.elicitation?.schemaDescription ?? "");
+
+/**
  * Own-property presence for an answer.
  *
  * `!== undefined` is not enough: a field keyed `constructor` or `toString` reads
@@ -100,6 +112,20 @@ const messageLines = computed<readonly string[]>(() => {
  */
 function controlName(index: number, field: InteractionFieldDto): string {
   return `f${index}-${field.key.replace(/[^A-Za-z0-9_]/g, '').slice(0, 16)}`;
+}
+
+/**
+ * Does this field render ONE control that carries `controlName(index, field)` as
+ * its `id`?
+ *
+ * Only those may use `<label for>`: a `for` that resolves to no control is worse
+ * than no label, because it actively misleads assistive tech and anything that
+ * walks `for` -> element. `boolean` and `multi-select` render a SET of controls
+ * and carry no single id, so they get a labelled group instead. `number`, `text`,
+ * and `single-select` each render exactly one, with the id set on it.
+ */
+function labelableControl(field: InteractionFieldDto): boolean {
+  return field.kind === "text" || field.kind === "number" || field.kind === "single-select";
 }
 
 /**
@@ -377,6 +403,25 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
           <span class="uppercase tracking-wide">{{ t('bot.interaction.requestedBy') }}</span>
           <span class="font-medium text-fg">{{ agentName }}</span>
         </div>
+        <!-- Schema-level presentation: title and description.
+          Both are agent-controlled text, rendered as data with the same no-v-html
+          rule as the message.
+
+          This is not decoration. The wire validator allows `message: ""` on
+          purpose, "a schema with a good title needs no prose" — so an agent may
+          put its ENTIRE question in the schema. When neither title nor description
+          is shown, such a form opens with nothing above the fields and asks
+          nothing. Shown here so the form always has a question. -->
+        <div
+          v-if="schemaTitle"
+          data-test="interaction-schema-title"
+          class="text-xs font-semibold text-fg"
+        >{{ schemaTitle }}</div>
+        <div
+          v-if="schemaDescription"
+          data-test="interaction-schema-description"
+          class="whitespace-pre-wrap text-xs text-fg"
+        >{{ schemaDescription }}</div>
         <!-- Agent-controlled text, rendered as data. No v-html: the point is that
           nothing the agent wrote can become markup here. -->
         <div
@@ -418,12 +463,35 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
         class="space-y-1"
         :data-test="`interaction-field-${field.key}`"
       >
-        <label class="flex items-baseline gap-1.5 text-xs font-medium text-fg" :for="controlName(index, field)">
+        <!-- Label association.
+          `<label for>` is emitted only for the kinds that render a control
+          carrying this exact `id`: a `for` that points at nothing is not merely
+          useless, it misleads assistive tech and any tooling that resolves
+          `for` -> control. `boolean` (a pair of buttons) and `multi-select` (a
+          checkbox group) have no single control to name, so their title becomes a
+          labelled group: a `role="group"` element named by the legend span. -->
+        <label
+          v-if="labelableControl(field)"
+          class="flex items-baseline gap-1.5 text-xs font-medium text-fg"
+          :for="controlName(index, field)"
+        >
           <span>{{ field.title }}</span>
           <span v-if="!field.required" class="text-[10.5px] font-normal text-fg-muted">
             ({{ t('bot.interaction.optional') }})
           </span>
         </label>
+        <div
+          v-else
+          :id="controlName(index, field)"
+          role="group"
+          :aria-labelledby="`${controlName(index, field)}-legend`"
+          class="flex items-baseline gap-1.5 text-xs font-medium text-fg"
+        >
+          <span :id="`${controlName(index, field)}-legend`">{{ field.title }}</span>
+          <span v-if="!field.required" class="text-[10.5px] font-normal text-fg-muted">
+            ({{ t('bot.interaction.optional') }})
+          </span>
+        </div>
         <div v-if="field.description" class="text-[11px] leading-snug text-fg-muted">{{ field.description }}</div>
         <!-- The required shape, shown as METADATA.
           Neither this renderer nor core executes it — core's rule is that an

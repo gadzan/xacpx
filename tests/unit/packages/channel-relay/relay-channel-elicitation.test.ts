@@ -194,6 +194,29 @@ test("a form on a non-Direct-Conversation route is refused as unsupported", asyn
   expect(hubCalled).toBe(false);
 });
 
+test("the schema title AND description are projected, not just the title", async () => {
+  // The wire validator allows "message: """ on purpose — "a schema with a good title
+  // needs no prose" — so the schema-level text can be the form's ENTIRE question.
+  // Relay carried only the title and dropped the description, so such a form arrived
+  // asking nothing.
+  const outbound: Array<{ type: string; payload: unknown }> = [];
+  const { channel, options } = makeHarness({
+    sendRequest: (type, payload) => {
+      outbound.push({ type, payload });
+      return new Promise<never>(() => {});
+    },
+  });
+  await startStarted(channel, options);
+  void channel.requestElicitation(
+    coreRequest({ schemaTitle: "Choose deployment target", schemaDescription: "Pick one region." }),
+  );
+  const frame = outbound.find((f) => f.type === "control.interaction.request")?.payload as {
+    elicitation?: { schemaTitle?: string; schemaDescription?: string };
+  } | undefined;
+  expect(frame?.elicitation?.schemaTitle).toBe("Choose deployment target");
+  expect(frame?.elicitation?.schemaDescription).toBe("Pick one region.");
+});
+
 test("the asking Agent identity is projected onto the wire, not dropped", async () => {
   // The renderer MUST show who is asking and must NOT build that identity out of
   // \"message\"/\"schemaTitle\" — both agent-controlled. So the identity has to

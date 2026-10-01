@@ -799,6 +799,18 @@ export interface InteractionRequestDto {
         fields: InteractionFieldDto[];
         schemaTitle?: string;
         /**
+         * Schema-level descriptive text, shown beside the title.
+         *
+         * Carried because the wire validator deliberately allows `message: ""`: a
+         * schema with a good title and description needs no prose. Dropping this left
+         * the relay web form with nothing at all above the fields, so an agent that
+         * carried its whole question in the schema produced a form that asked nothing.
+         *
+         * OPTIONAL and independent of `message` — either, both, or neither may be
+         * present. Bounded like the other agent-controlled strings.
+         */
+        schemaDescription?: string;
+        /**
          * The Agent that asked, pinned to the exact turn.
          *
          * REQUIRED, not presentation: ACP's User Interaction Requirements oblige a

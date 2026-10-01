@@ -548,6 +548,39 @@ describe("useDirectBotsStore interactions", () => {
     expect(store.pendingInteraction!.submitting).toBe(false);
   });
 
+test("a terminal form no longer holds the answers the user typed", () => {
+  // The terminal notice says WHY the form went away; nothing downstream consumes
+  // the answer text. Retaining it kept a completed form's answers in memory until
+  // the viewer happened to visit that exact topic and dismiss it.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst-A";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  store.applyEvent(openedEvent(formRequest(), "inst-A"));
+  store.setInteractionAnswer("env", "secret-typed-by-user" as never);
+  store.applyEvent(closedEvent("req-1", "resolved", "inst-A", "accept") as never);
+  const terminal = store.pendingInteraction;
+  expect(terminal).not.toBeNull();
+  expect(terminal!.outcome).toBe("accepted");
+  // The outcome and the request survive; what was typed does not.
+  expect(terminal!.request.requestId).toBe("req-1");
+  expect(Object.keys(terminal!.answers as object)).toHaveLength(0);
+});
+
+test("the terminal set stays bounded as forms retire in the background", () => {
+  // Terminals arrive for every topic under every instance, and a viewer only ever
+  // dismisses the one on screen. Unbounded, the retired-but-undismissed set grows
+  // for the life of the tab.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst-A";
+  for (let i = 0; i < 60; i += 1) {
+    store.applyEvent(openedEvent(formRequest({ requestId: `req-${i}` }), "inst-A"));
+    store.applyEvent(closedEvent(`req-${i}`, "resolved"));
+  }
+  expect(store.terminalInteractionCount).toBeLessThanOrEqual(32);
+});
+
 test("a form opened by ANOTHER INSTANCE is not rendered in this instance's topic view", () => {
   // Conversation and Topic ids are not globally unique: two daemons that copied
   // state, restored a backup, or were cloned produce the same `c1/t1`.

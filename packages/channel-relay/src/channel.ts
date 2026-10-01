@@ -625,6 +625,12 @@ export class RelayChannel implements MessageChannelRuntime {
         message: request.message,
         fields,
         ...(request.schemaTitle !== undefined ? { schemaTitle: request.schemaTitle } : {}),
+        // The schema-level DESCRIPTION travels with the title, for the reason the
+        // wire validator allows an empty `message`: a schema with a good title and
+        // description needs no prose. Dropping it left Relay Web with nothing at
+        // all above the fields when the agent sent an empty message plus
+        // `schemaTitle` — the form lost its own question.
+        ...(request.schemaDescription !== undefined ? { schemaDescription: request.schemaDescription } : {}),
         // The asking Agent, carried across the wire because it is an IDENTITY and
         // not presentation. Dropping it here is what made the relay web form show
         // only a generic "Input needed" while core knew perfectly well which
