@@ -285,7 +285,15 @@ export class ConversationDispatcher {
         this.deferredTopicIds.clear();
         const held = this.recheckHeldClaims();
         if (held) {
+          // The held handoff joins the awaited cohort instead of escaping
+          // it: awaiting here keeps the sibling inside this drain's failure
+          // propagation (an unexpected B failure rejects kick() and fails
+          // activation) AND inside its cohort scope (the next pass starts
+          // with an empty in-flight set, so its global claim cannot overlap
+          // B). A bare launch + continue would resolve kick() while B still
+          // runs — losing B's failure and reopening global claims mid-flight.
           this.launchExecution(held, executionErrors);
+          await this.awaitCohortInFlight(executionErrors);
           continue;
         }
         // Pre-start failures deferred Topics this pass while unrelated work

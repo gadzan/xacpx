@@ -7307,6 +7307,129 @@ test("PR7 scheduler: unrelated topics stay sequential while shared siblings over
   first.store.close();
 });
 
+test("PR7 scheduler: held handoff failure rejects activation without unhandled rejection", async () => {
+  // P1 follow-up: a rechecked held sibling is launched without an await, so
+  // its unexpected failure never reaches awaitCohortInFlight — activation
+  // succeeds while the error is recorded-and-lost. Shape:
+  // shared-single-writer [A, B]; A takes a handled pre-start failure
+  // (release + defer, no wake); the recheck launches held B; B throws
+  // unexpectedly in afterClaim.
+  const rejections: unknown[] = [];
+  const onUnhandled = (reason: unknown) => {
+    rejections.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const boom = new Error("injected held-handoff execution failure");
+    const first = await createLifecycle({
+      autoKick: false,
+      ownerId: "dispatcher-old",
+      hooks: {
+        beforeRuntimeMaterialize: async (work) => {
+          if (work.memberTurn.botId === BOT_ID) {
+            throw new Error("transient materialize failure");
+          }
+        },
+        afterClaim: async (work) => {
+          if (work.memberTurn.botId === TESTER_ID) {
+            throw boom;
+          }
+        },
+      },
+    });
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "HeldHandoff", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "S", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    await first.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: "req-held-handoff-fail",
+      text: "ordered",
+      target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+      humanIngress: HUMAN_INGRESS,
+    });
+    const err = await first.service.activateAfterConsumerLock().then(() => null, (e: unknown) => e);
+    expect((err as Error)?.message).toBe("injected held-handoff execution failure");
+    expect(first.service.isConsumerActivated()).toBe(false);
+    await tick();
+    await tick();
+    expect(rejections).toEqual([]);
+    first.store.close();
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("PR7 scheduler: held handoff keeps cohort scope until the sibling settles", async () => {
+  // P2 follow-up: the rechecked held launch `continue`s into a fresh pass
+  // that resets cohortRunId while B still runs, reopening global claims.
+  // Shape: shared-single-writer [A, B] + unrelated Direct C. C must not
+  // start until B settles.
+  const hangA = deferred<void>();
+  const hangB = deferred<void>();
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-a" });
+  seedTesterBot(first.state);
+  const thirdBot = "bot_third";
+  first.state.bots[thirdBot] = {
+    id: thirdBot, name: "Third", agent: "codex", workspace: "backend", enabled: true,
+    profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+  };
+  await first.service.activateAfterConsumerLock();
+  const group = await first.bots.createGroup({ title: "HeldScope", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const acceptedGroup = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-held-scope",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  const acceptedC = await first.service.acceptDirectPrompt({ botId: thirdBot, requestId: "req-scope-c", content: "c" });
+  const fr = fakeRunner(first.runner);
+  fr.run = (async (input: ConversationTurnRunInput) => {
+    fr.runs.push(input);
+    if (input.botId === BOT_ID) {
+      await hangA.promise;
+      return { status: "completed" as const, text: "a done" };
+    }
+    if (input.botId === TESTER_ID) {
+      await hangB.promise;
+      return { status: "completed" as const, text: "b done" };
+    }
+    return { status: "completed" as const, text: "c done" };
+  }) as FakeRunner["run"];
+  void first.dispatcher.kick();
+  await waitUntil(() => fr.runs.length === 1, 4000);
+  expect(fr.runs[0]?.botId).toBe(BOT_ID);
+  // B is writer-slot-held behind running A; C is still queued.
+  const turnB = first.store.listMemberTurns(acceptedGroup.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(first.store.getMemberTurn(turnB.id)?.state).toBe("dispatched");
+  expect(first.store.getRun(acceptedC.run.id)?.state).toBe("queued");
+  // Settle A: the recheck hands off to held B. B hangs — C must not start.
+  hangA.resolve();
+  await waitUntil(() => fr.runs.length === 2, 4000);
+  expect(fr.runs[1]?.botId).toBe(TESTER_ID);
+  await tick();
+  await tick();
+  await tick();
+  expect(fr.runs).toHaveLength(2);
+  expect(first.store.getRun(acceptedC.run.id)?.state).toBe("queued");
+  // Settle B: only now may C start and finish.
+  hangB.resolve();
+  await waitUntil(() => fr.runs.length === 3, 4000);
+  expect(fr.runs[2]?.botId).toBe(thirdBot);
+  await waitUntil(() => first.store.getRun(acceptedC.run.id)?.state === "completed", 4000);
+  await waitUntil(() => first.store.getRun(acceptedGroup.run.id)?.state === "completed", 4000);
+  first.store.close();
+});
+
 test("PR7 scheduler: stale renewHeldClaim drops the hold and routes through recovery", async () => {
   // The contrast case: stale_claim IS swallowed. The hold drops, the drain
   // settles normally, and the member flows through ordinary lease recovery
