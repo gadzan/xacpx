@@ -221,6 +221,24 @@ export class InteractionRegistry {
   answer(requestId: string, decision: InteractionResponseDto): PendingInteraction | null {
     const entry = this.pending.get(requestId);
     if (!entry || entry.closed) return null;
+    // The KIND must match. This is the terminal authority's own fence, so any
+    // current or future caller is held to it rather than trusting the HTTP
+    // boundary to have checked.
+    //
+    // `validateInteractionResponse` checks `kind` and `action` only against their
+    // own vocabularies; nothing ties them together. A permission decision aimed at
+    // an open elicitation therefore passes validation, and accepting it here would
+    // finish and delete a request the human never answered — after which the
+    // connector rejects the frame anyway and the form is simply gone.
+    //
+    // Refusing the ANSWER rather than closing the window is the point: the request
+    // stays open, so the user still has the form and can answer it properly. The
+    // HTTP boundary carries the same check; the regression test fails only when
+    // both are removed, which is what makes this defense-in-depth rather than two
+    // copies of one bug.
+    if (entry.kind !== decision.kind) {
+      return null;
+    }
     // The window's own fence, re-checked here even though a timer exists.
     //
     // `expiresAt` is when answering STOPS being legal; `timeoutMs` is only when

@@ -2441,6 +2441,19 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   /** How many retired forms this tab is still holding an explanation for. */
   const terminalInteractionCount = computed<number>(() => terminalInteractions.value.size);
 
+  /**
+   * Is this request still held OPEN, rather than retired or dropped?
+   *
+   * Exists because `pendingInteraction` is the VISIBLE form for the current pane,
+   * which an unrelated instance's interaction never is — by design. A test (or a
+   * future caller) that needs "is this request still open at all" must not infer it
+   * from the visible slot, or it would conclude a background form was destroyed
+   * when it was merely out of view.
+   */
+  function requestStillHeld(requestId: string): boolean {
+    return pendingInteractions.value.has(requestId);
+  }
+
   /** Dismiss a form that already reached a terminal outcome. */
   function dismissResolvedInteraction(): void {
     const current = pendingInteraction.value;
@@ -2680,12 +2693,33 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     for (const [requestId, interaction] of pendingInteractions.value) {
       if (generation !== currentSelectionGeneration) break;
       const alreadyExpired = interaction.request.expiresAt <= Date.now();
-      const runGone = !activeRun.value || !isActiveRunState(activeRun.value.state);
-      if (!alreadyExpired && !runGone) continue;
-      // The turn the form belonged to is gone or the window closed: a form with
-      // no live turn is unanswerable, and leaving it up invites a submit that
-      // cannot land.
-      retireInteraction(requestId, alreadyExpired ? "cancelled" : "withdrawn");
+      // An interaction whose window has closed is `withdrawn`, never `cancelled`.
+      // `cancelled` asserts the user made a decision; a passing deadline means
+      // nobody chose anything. Same terminal-label rule as the close event.
+      if (alreadyExpired) {
+        retireInteraction(requestId, "withdrawn");
+        continue;
+      }
+      // A still-open window is NOT judged against this pane's Run.
+      //
+      // `activeRun` is the selected pane's single Run, while this map is
+      // account-wide: it can hold an open form for another instance or topic,
+      // whose turn has nothing to do with what is on screen. Computing
+      // `runGone` from the pane's Run retired those forms as withdrawn even
+      // though the hub still held them open — a background form became
+      // permanently unanswerable, and the user only found out by switching back
+      // to it and seeing a terminal notice for a window that had not closed.
+      //
+      // Run liveness is therefore only decisive for the interaction of the turn
+      // this pane is actually showing. Anything else keeps its open state until
+      // the hub says otherwise, which is the failure mode the hub's own close
+      // event and replay already cover.
+      const ownsThisTurn = interaction.instanceId === iId
+        && interaction.request.conversation?.conversationId === cId
+        && interaction.request.conversation?.topicId === tId;
+      if (ownsThisTurn && (!activeRun.value || !isActiveRunState(activeRun.value.state))) {
+        retireInteraction(requestId, "withdrawn");
+      }
     }
   }
 
@@ -2904,17 +2938,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // takes the second one down with it.
       const open = pendingInteractions.value.get(e.requestId);
       if (!open) return;
-      // The action the human actually chose, carried by the hub. A tab that did
-      // not click must not show "accepted" because it did not see the click.
-      const outcome = e.reason === "resolved"
-        ? (e.action === "decline"
-          ? "declined"
-          : e.action === "cancel"
-            ? "cancelled"
-            : "accepted")
-        : e.reason === "withdrawn"
-          ? "withdrawn"
-          : "cancelled";
       const nextOpen = new Map(pendingInteractions.value);
       nextOpen.delete(e.requestId);
       pendingInteractions.value = nextOpen;
@@ -2926,7 +2949,24 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           // typed. Retaining it kept a finished form's answers in memory for as long
           // as the viewer stayed away from that topic.
           answers: emptyAnswers(),
-          outcome,
+          // `expired` maps to `withdrawn`, never `cancelled`.
+          //
+          // The component's own rule is that a hub-side close is `withdrawn` and
+          // never `cancelled`, because `cancelled` asserts the user made a decision.
+          // A timeout is the opposite: the window simply ran out and nobody chose
+          // anything. Labelling it "Cancelled" told the user they had abandoned a
+          // form they never touched, which is the same terminal-label drift as the
+          // Decline/Cancel fix.
+          //
+          // `resolved` is the only reason that reports a human decision, and it is
+          // read off the hub's own `action` field rather than inferred here.
+          outcome: e.reason === "resolved"
+            ? (e.action === "decline"
+              ? "declined"
+              : e.action === "cancel"
+                ? "cancelled"
+                : "accepted")
+            : "withdrawn",
           submitting: false,
         }),
       );
@@ -3311,6 +3351,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // terminal set is bounded (see TERMINAL_INTERACTION_LIMIT), and this makes the
     // bound observable rather than an internal implementation detail.
     terminalInteractionCount,
+    requestStillHeld,
     setInteractionAnswer,
     submitInteraction,
     declineInteraction,

@@ -768,3 +768,95 @@ which made the test self-consistent by construction — lowering the wire bound
 drifted the expectation with it, and the mutation stayed green. Comparing a table
 against itself proves nothing; the numbers have to be independent for a drift to
 be visible.
+
+## Addendum - ninth re-review round (2026-10-01)
+
+Full re-review of all 55 changed files, base -> head. Result: 1 P1 + 2 P2, all
+fixed here.
+
+### P1 - reconnect reconciliation judged an account-wide map by the current pane's Run (FIXED)
+
+The hub subscription is account-wide on purpose, and `interaction-opened` is
+stored before the selected-instance fence, so `pendingInteractions` can hold
+forms for several instances and topics at once. The reconcile loop then computed
+`runGone` from `activeRun` — the SELECTED pane's single Run — for every entry in
+the map.
+
+So while viewing instance A, a background form from instance B was checked
+against A's `activeRun`. With A idle, `runGone` was true and B's form was retired
+as `withdrawn` even though the hub still held it open and the agent was still
+waiting. The subscribe replay races the reconcile loop rather than preventing it:
+a B form replayed moments earlier is killed by the same loop, and there is no
+second authoritative replay, so it was permanently unanswerable.
+
+The same design also fails in the other direction. Hub subscribe is a POSITIVE
+replay — only still-open requests are re-sent, with no authoritative "open set
+complete" message — so a form answered from another tab while this one was
+disconnected stays local until the user clicks Submit and gets a 409.
+
+Both are one root cause: interaction liveness is request-scoped, but it was being
+approximated from a Run. The run check is now scoped to the interaction that
+belongs to the turn this pane is actually showing (instance + conversation +
+topic), and anything else keeps its open state until the hub's own close event or
+replay says otherwise — which the hub already delivers authoritatively.
+
+Two regressions, and the negative one asserts on `requestStillHeld()` rather than
+`pendingInteraction`, because another instance's form is legitimately INVISIBLE in
+this pane; asserting on the visible slot would pass while the entry was destroyed.
+`requestStillHeld()` exists so "is this still open at all" is answerable without
+inferring it from the visible slot.
+
+### P2 - the hub did not check the response KIND before consuming the request (FIXED)
+
+`PendingInteraction` recorded `kind`, and `validateInteractionResponse` checked
+`kind` and `action` only against their own vocabularies, so nothing tied them
+together. A shape-valid `{kind: "permission", action: "allow_once"}` aimed at an
+open elicitation was accepted: the hub finished the request, deleted it,
+broadcast a close — and only then did the connector's `parseRelayInteractionOutcome()`
+reject the frame for not being an elicitation. The user lost a good form to a frame
+that was never meant for it, and the close broadcast reported a human decision
+that never happened.
+
+Checked at both boundaries, deliberately: the HTTP handler AND the registry's own
+`answer()`, so no future caller can bypass it. The registry refuses the ANSWER
+rather than closing the window, which is what preserves the form. The regression
+fails only when BOTH fences are removed — which is what makes this
+defense-in-depth rather than two copies of one bug.
+
+### P2 - `expired` was reported as the user cancelling (FIXED)
+
+`interaction-closed(reason: "expired")` and the reconnect local-expiry path both
+produced `cancelled`. `cancelled` asserts the user made a decision; a passing
+deadline is the opposite, and the component's own rule is that a hub-side close is
+`withdrawn` and never `cancelled`. Same terminal-label drift as the Decline/Cancel
+fix.
+
+Two EXISTING tests had pinned the wrong behaviour (`expired -> cancelled`), so
+they were rewritten rather than kept green — a test that asserts a misreported
+human action is pinning the defect.
+
+### Cleanup
+
+`tests/unit/packages/channel-relay/relay-elicitation-full-chain.test.ts` was a
+0-byte file. The real full-chain coverage lives in
+`relay-elicitation-browser-delivery.test.ts`, which drives a real `RelayChannel`
++ `RelayClient` + connector WS + `InstanceGateway` + registry + `WebGateway`
+subscription + browser answer. The empty file only made a test entry point that
+did not exist, so it was deleted.
+
+### Explicitly NOT findings, re-verified this round
+
+`RelayClient.stop()` does not reject in-flight `pendingRequests`, because the
+close handler returns early when stopped. Traced the production shutdown order:
+`buildApp.dispose()` aborts the elicitation broker first, which settles every
+request through its own abort race before channel/transport teardown, so no
+production request is left hanging.
+
+Browser RPC matches on `accountId` rather than the URL's `instanceId`. The
+identity model is an account-authenticated human and `requestId` is the
+interaction authority; cross-instance context isolation is handled separately and
+was fixed in round 6.
+
+The global registry keys on a bare `requestId`. Production requestIds come from
+the worker's `randomUUID()`, not an agent-controlled ACP JSON-RPC id, so the
+theoretical collision is not an attacker-reachable path.

@@ -436,3 +436,48 @@ test("a decline is reported as declined, not accepted", async () => {
   browser.close();
   await hub.close();
 });
+
+test("a response whose KIND does not match cannot consume the request", async () => {
+  // The hub is the terminal authority for the request, so the kind invariant has
+  // to be checked BEFORE anything is consumed.
+  //
+  // `validateInteractionResponse` checks `kind` and `action` only against their
+  // own vocabularies, so `{kind: "permission", action: "allow_once"}` is a
+  // shape-valid frame. Aimed at an open ELICITATION it used to be accepted: the
+  // hub finished and deleted the request, the connector then rejected the frame
+  // for not being an elicitation, and the user was left with no form and no
+  // retry — a frame that was never meant for this request took it away.
+  //
+  // The wrong-kind answer must be refused AND the request must survive.
+  const hub = await makeHub();
+  await hub.startAndOpen();
+  // No browser is needed: the assertion is the hub's own terminal behaviour.
+  const settled = hub.channel.requestElicitation(hub.agentRequest);
+  await waitFor(() => hub.pendingIds().includes("req-web-1"), "the form to reach the hub");
+
+  // THE assertion: the wrong-kind frame is refused...
+  expect(await hub.answer({
+    requestId: "req-web-1",
+    kind: "permission",
+    action: "allow_once",
+  })).toBe(false);
+
+  // ...AND the request survives, so the user still has the form.
+  expect(hub.pendingIds()).toContain("req-web-1");
+
+  // And it is still answerable with the correct kind.
+  expect(await hub.answer({
+    requestId: "req-web-1",
+    kind: "elicitation",
+    action: "accept",
+    content: { region: "us-east" },
+  })).toBe(true);
+  expect(hub.pendingIds()).not.toContain("req-web-1");
+  expect(await settled).toEqual({
+    action: "accept",
+    responderId: hub.hubAccountId,
+    content: { region: "us-east" },
+  });
+
+  await hub.close();
+});

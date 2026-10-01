@@ -255,11 +255,17 @@ describe("useDirectBotsStore interactions", () => {
     expect(store.pendingInteraction!.outcome).toBe("withdrawn");
   });
 
-  it("an expired interaction is reported as cancelled, not as a user action", async () => {
+  it("an expired window is reported as withdrawn, not as a user decision", async () => {
+    // `cancelled` asserts the user made a decision, which is a claim about a human
+    // action. A passing deadline is the exact opposite — nobody chose anything —
+    // and the component's own rule is that a hub-side close is `withdrawn` and
+    // never `cancelled`. This test previously asserted `cancelled`, pinning the
+    // drift that told the user they abandoned a form they never touched.
     const store = useDirectBotsStore();
     store.applyEvent(openedEvent(formRequest()));
     store.applyEvent(closedEvent("req-1", "expired"));
-    expect(store.pendingInteraction!.outcome).toBe("cancelled");
+    expect(store.pendingInteraction!.outcome).toBe("withdrawn");
+    expect(store.pendingInteraction!.outcome).not.toBe("cancelled");
   });
 
   it("a transport failure leaves the form open with a bounded code", async () => {
@@ -302,11 +308,14 @@ describe("useDirectBotsStore interactions", () => {
     expect(store.pendingInteraction!.outcome).toBe("withdrawn");
   });
 
-  it("an expired interaction is reported as closed, not declined", () => {
+  it("an expired window is reported as withdrawn, not declined or cancelled", () => {
+    // Neither terminal asserts a human action: `declined` says the user refused and
+    // `cancelled` says they abandoned. A passing deadline says the window ran out
+    // with nobody deciding, which is what `withdrawn` means.
     const store = useDirectBotsStore();
     store.applyEvent(openedEvent(formRequest()));
     store.applyEvent(closedEvent("req-1", "expired"));
-    expect(store.pendingInteraction!.outcome).toBe("cancelled");
+    expect(store.pendingInteraction!.outcome).toBe("withdrawn");
   });
 
   it("a close for a different requestId does not dismiss the open form", () => {
@@ -416,6 +425,83 @@ describe("useDirectBotsStore interactions", () => {
     await store.submitInteraction("accept");
     expect(mockRpc).not.toHaveBeenCalled();
     expect(store.pendingInteraction!.errorCode).toBe("interactionGone");
+  });
+
+  it("reconcile keeps ANOTHER INSTANCE's form open when this pane has no run", async () => {
+    // The store is account-wide, so `pendingInteractions` can hold a form that
+    // belongs to a different instance or topic than the pane on screen. The loop
+    // used to compute `runGone` from the SELECTED pane's single `activeRun`, so a
+    // background instance's open form was checked against this pane's (absent) run
+    // and retired as withdrawn — while the hub still held it open and the agent
+    // still waited. The user only discovered it by switching back and finding a
+    // terminal notice for a window that had not closed.
+    const store = useDirectBotsStore();
+    mockRpc.mockResolvedValue({ run: { id: "run_a", state: "completed", conversationId: "c1", topicId: "t1", requestMessageId: "m1", mode: "explicit", profileRevision: 1, createdAt: "now", memberTurns: [] } });
+    // A form from instance B, in a topic this tab is not viewing.
+    store.applyEvent(openedEvent(formRequest(), "inst-B"));
+    // The pane is on instance A, with NO active run at all.
+    store.instanceId = "inst-A";
+    store.selectedBotId = "bot_1";
+    store.activeConversationId = "c1";
+    store.activeTopicId = "t1";
+    store.activeRun = null;
+    await store.reconcileOnReconnect();
+    await flushPromises();
+    // B's form is still held OPEN by the store: nothing this tab can see has
+    // proved B's turn is gone, and the hub is the authority that says otherwise.
+    // It stays out of THIS pane (round 6's instance scope) — asserting
+    // `pendingInteraction` is null here would pass while the entry was destroyed.
+    expect(store.pendingInteraction).toBeNull();
+    expect(store.terminalInteractionCount).toBe(0);
+    expect(store.requestStillHeld("req-1")).toBe(true);
+  });
+
+  it("reconcile drops the CURRENT pane's form when its own turn is gone", async () => {
+    // The control for the test above, and the case that must still work: the form
+    // that belongs to the turn actually on screen, whose run has completed while
+    // disconnected, is genuinely unanswerable.
+    const store = useDirectBotsStore();
+    mockRpc.mockResolvedValue({ run: { id: "run_1", state: "completed", conversationId: "c1", topicId: "t1", requestMessageId: "m1", mode: "explicit", profileRevision: 1, createdAt: "now", memberTurns: [] } });
+    store.applyEvent(openedEvent(formRequest(), "inst-A"));
+    store.instanceId = "inst-A";
+    store.selectedBotId = "bot_1";
+    store.activeConversationId = "c1";
+    store.activeTopicId = "t1";
+    store.activeRun = {
+      id: "run_1",
+      conversationId: "c1",
+      topicId: "t1",
+      requestMessageId: "m1",
+      requestId: "rq1",
+      mode: "explicit",
+      state: "completed",
+      profileRevision: 1,
+      createdAt: "now",
+    };
+    await store.reconcileOnReconnect();
+    await flushPromises();
+    expect(store.pendingInteraction!.outcome).toBe("withdrawn");
+  });
+
+  it("a locally expired window is withdrawn, never reported as cancelled", async () => {
+    // `cancelled` asserts the user made a decision. A passing deadline is the
+    // opposite — nobody chose anything — and the component's own rule is that a
+    // hub-side close is `withdrawn`, never `cancelled`. Labelling a timeout
+    // "Cancelled" told the user they abandoned a form they never touched.
+    const store = useDirectBotsStore();
+    mockRpc.mockResolvedValue({ run: { id: "run_1", state: "completed", conversationId: "c1", topicId: "t1", requestMessageId: "m1", mode: "explicit", profileRevision: 1, createdAt: "now", memberTurns: [] } });
+    store.applyEvent(openedEvent(formRequest(), "inst-A"));
+    store.instanceId = "inst-A";
+    store.selectedBotId = "bot_1";
+    store.activeConversationId = "c1";
+    store.activeTopicId = "t1";
+    store.activeRun = null;
+    // The window closed while disconnected.
+    store.pendingInteraction!.request.expiresAt = Date.now() - 1;
+    await store.reconcileOnReconnect();
+    await flushPromises();
+    expect(store.pendingInteraction!.outcome).toBe("withdrawn");
+    expect(store.pendingInteraction!.outcome).not.toBe("cancelled");
   });
 
   it("reconcile keeps a form whose turn is still live", async () => {

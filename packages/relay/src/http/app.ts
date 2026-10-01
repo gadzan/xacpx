@@ -741,7 +741,24 @@ export function createApp(deps: AppDeps): Hono<Vars> {
       // An interaction this account did not open is indistinguishable from one
       // that already closed, and answering across accounts is a protocol
       // violation — both are "gone".
-      if (!pending || pending.accountId !== account.id) {
+      //
+      // The KIND must match as well. `PendingInteraction` records it, but the
+      // response validator checks `kind` and `action` only against their own
+      // vocabularies and never ties them together, so a shape-valid
+      // `{kind: "permission", action: "allow_once"}` addressed at an open
+      // elicitation would otherwise be accepted: the hub would finish the request,
+      // delete it, and broadcast a close, and only then would the connector's
+      // `parseRelayInteractionOutcome()` reject the frame because it is not an
+      // elicitation. The user would lose a perfectly good form to a frame that was
+      // never meant for it, and the close broadcast would report a human decision
+      // that never happened.
+      //
+      // The hub is the terminal authority for this request, so the invariant is
+      // checked BEFORE anything is consumed rather than after. This boundary and
+      // the registry's own fence are deliberately BOTH present: removing either
+      // one leaves the request reachable by a wrong-kind frame, which the
+      // regression test asserts by failing only when both are gone.
+      if (!pending || pending.accountId !== account.id || pending.kind !== answer.kind) {
         return c.json({ error: "interaction-gone" }, 409);
       }
       const closed = registry.answer(answer.requestId, answer);
