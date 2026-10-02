@@ -1240,3 +1240,68 @@ note already warned about — treating "the script ran" as "the mutation landed"
 The reliable pattern, used for everything after: assert the replacement count is
 exactly 1, then compare the buffer against the ORIGINAL file content, then verify
 the specific deleted target is absent, and only then run the tests.
+
+## Addendum - authoritative facts must outlive the pane (2026-10-02)
+
+Two more races, found by walking the reconnect path rather than the diff. Same
+root cause, two doors: an authoritative fact was checked *after* the pane's
+generation fence, so a pane switch during an in-flight request discarded a
+conclusion that had not changed.
+
+The generalisation worth keeping:
+
+> **A fact is discardable by the fence only if the fence's scope is the fact's
+> scope.** The generation fence exists to stop a stale *pane* update from
+> overwriting the pane the user is now looking at. It is not a licence to drop
+> facts about requests, instances, or the account.
+
+### The 409 was behind the fence
+
+`submitInteraction`'s catch checked `generation !== currentSelectionGeneration`
+first. A 409 is a REQUEST-scoped fact — "this requestId no longer exists on the
+hub" — and a pane switch cannot make it untrue. The race:
+
+1. the user submits on pane A, the RPC is in flight;
+2. they navigate to B, which increments the generation;
+3. the 409 lands, the fence sees a newer generation and returns.
+
+A's form then stays in the open map, answerable, with no negative evidence
+anywhere. The snapshot cannot rescue it either: the tab's subscription is scoped by
+the CURRENT selection, and A is no longer selected, so no snapshot for A will ever
+arrive. The user discovers the truth only by clicking again and getting a second
+409.
+
+The authoritative check now runs first; the fence still guards everything below it,
+because a transport failure really IS about the pane — it says "this pane's submit
+did not land", which a pane switch does invalidate, and acting on it would patch an
+error onto whatever form now occupies that slot.
+
+### The instance negative was inside the pane reconcile
+
+It sat after `loadBots()` and the ghost-bot check, both behind the fence and behind
+`if (!iId) return`. Two ways to lose it, both real:
+
+- **No pane selected.** `iId === null` returns before the check ever runs. That is
+  exactly when an off-screen form is most exposed: it is the only thing keeping the
+  instance alive in the store, and nothing else will look at it.
+- **Pane switch during the fetch.** The retirement loop bailed on the generation
+  mismatch, discarding a conclusion about the ACCOUNT that had not changed.
+
+It is now its own action, `reconcileOwnedInstanceNegative`, called by the reconnect
+path independently of the pane reconcile — and independently of whether a Bot is
+selected at all. Tests drive it directly, so the store's correctness and the
+reconnect path's willingness to call it are separate assertions; the wiring is
+spied in the DashboardView test.
+
+### A hoist that broke an ordering contract
+
+The first attempt moved the instance check to the top of `reconcileOnReconnect`,
+ahead of the synchronous admission close. Two existing tests went red, and they
+were right to: "the gate is shut before any RPC can stall" is a hard ordering
+property, and inserting an await above it reopens that window. The other test
+timed out because the extra tick reordered the deferred-`bots.list` handshake its
+critical section depends on.
+
+The lesson is not "avoid hoisting". It is that an account-wide fact does not have
+to live *inside* the pane reconcile at all — giving it its own action and its own
+call site removed the conflict instead of relocating it.

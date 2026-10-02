@@ -366,6 +366,13 @@ function onStatus(online: boolean) {
     sendSubscribe(subscribedInstanceIds());
     if (everOnline) {
       void reloadSnapshot();
+      // The owned-instance negative first, and independently of the pane reconcile.
+      //
+      // It is an ACCOUNT-wide fact — which instances this account still owns — so it
+      // must run whether or not a Bot is selected, and must not be cancelled by the
+      // pane reconcile's early return. Running it here, before the pane work starts,
+      // keeps it out of `reconcileOnReconnect`'s critical section entirely.
+      void directBotsStore.reconcileOwnedInstanceNegative();
       void directBotsStore.reconcileOnReconnect();
     }
     everOnline = true;

@@ -2462,24 +2462,22 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // until that arrives is what keeps a double-click from sending two answers.
       patchInteraction(requestId, { submitting: true, errorCode: null });
     } catch (error) {
-      if (generation !== currentSelectionGeneration) return;
-      // A gone interaction is a normal ending, not an error to retry forever.
+      // An authoritative `interaction-gone` is checked BEFORE the generation fence.
       //
-      // `interaction-gone` is the hub's AUTHORITATIVE statement that this request no
-      // longer exists — it was answered from another tab, withdrawn, or expired. So
-      // the form is RETIRED here, not merely annotated with an error code.
+      // It is a REQUEST-scoped fact: this request no longer exists on the hub. It is
+      // scoped to the requestId, not to the pane that issued the submit, so a pane
+      // switch during the flight does not make it untrue or stale.
       //
-      // Setting only `errorCode` is what this branch used to do, and it left the
-      // dead form in the open map with its Submit/Decline/Cancel controls still
-      // live: the user could click again, get the same 409, and repeat forever on a
-      // form nobody was waiting for. The hub was already fail-closed, so this is a
-      // state-consistency bug rather than a lost-answer one, but the comment above
-      // promised a normal ending and the code did not deliver it.
+      // Checking the fence first let the switch swallow it: the user submits on A,
+      // navigates to B, the 409 lands, the fence sees a newer generation and returns
+      // — so A's form stays in the open map, answerable, with no negative evidence
+      // anywhere else. The snapshot cannot help either, because this tab's
+      // subscription is scoped by the CURRENT selection and A is no longer selected.
+      // The user only discovers the truth by clicking again.
       //
-      // Retiring it closes the loop for the reconnect case where a form was answered
-      // elsewhere during the outage and the hub's positive-only replay never
-      // mentioned it again: the first authoritative 409 is the moment this tab learns
-      // the truth, and it acts on it instead of parking a corpse.
+      // Ordering this before the fence costs nothing else: for the non-authoritative
+      // failures the fence still applies, because those genuinely ARE about the
+      // pane the user is looking at.
       if (error instanceof DirectBotRpcError && error.code === "interaction-gone") {
         // `gone`, the neutral outcome — NOT `withdrawn`.
         //
@@ -2500,6 +2498,12 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         retireInteraction(requestId, "gone");
         return;
       }
+      // Everything below IS about the pane: the user is looking at this form and
+      // needs to be told why it failed. A pane switch during the flight makes that
+      // message irrelevant — the form they are now looking at is a different one —
+      // so the stale patch is dropped here, AFTER the authoritative fact above has
+      // already been acted on.
+      if (generation !== currentSelectionGeneration) return;
       // Any other failure is NOT authoritative about the window: the request may
       // still be open, so the form stays answerable and the user can retry.
       const code = error instanceof DirectBotRpcError && error.code === "unknown-type"
@@ -2629,7 +2633,51 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
   }
 
+  /**
+   * Retire every pending interaction whose instance is no longer owned.
+   *
+   * An instance can be DELETED while this tab is disconnected, and that removes the
+   * whole snapshot scope for it: instance X is no longer owned, so the subscribe's
+   * ownership filter drops X and X never receives an `interaction-snapshot`. The tab
+   * therefore holds a pending interaction for X with no open, no close, and no
+   * snapshot to retire it from — and there is no timer either, so it stays until the
+   * user happens to click it and gets a 409.
+   *
+   * The same "no negative evidence, so the client must keep it" failure the snapshot
+   * closed, one level up: what went missing is not one request but the instance that
+   * owned the set the request would have been proven absent from. The authoritative
+   * owned-instance list is the negative evidence.
+   *
+   * `gone`, for the same reason as the snapshot: absence proves the request cannot
+   * continue under this account and says nothing about who or why.
+   *
+   * DELIBERATELY independent of the pane:
+   *   - No selection, no Bot, no Topic, no instance required. `/api/instances` is
+   *     account-wide; the selected instance is irrelevant to it.
+   *   - No generation fence. The owned set is not a pane's property, so a pane
+   *     switch during the flight must not discard a conclusion that is still true.
+   *     (The reconcile's other work IS about the pane, and still checks it.)
+   *
+   * Only a SUCCEEDED refresh may conclude anything. A failed list proves nothing
+   * about X and must leave every interaction alone, or a transient error would
+   * destroy live forms. Scoped per instance, so X's removal never touches Y's.
+   */
+  async function reconcileOwnedInstanceNegative(): Promise<void> {
+    let ownedInstanceIds: Set<string>;
+    try {
+      ownedInstanceIds = new Set((await listOwnedInstances()).map((r) => r.id));
+    } catch {
+      // Offline or unauthorized: not evidence. Leave every interaction open.
+      return;
+    }
+    for (const [requestId, held] of pendingInteractions.value) {
+      if (ownedInstanceIds.has(held.instanceId)) continue;
+      retireInteraction(requestId, "gone");
+    }
+  }
+
   // Reconcile on reconnect
+
   async function reconcileOnReconnect(): Promise<void> {
     // WS events are lost while disconnected: every previously loaded Bot
     // catalog may be stale (create/update/delete, hasRuntime). Mark all
@@ -2653,7 +2701,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const tId = activeTopicId.value;
     const rId = activeRun.value?.id;
     const generation = currentSelectionGeneration;
-    if (!iId) return;
     // Fail-closed from the first line: buffered WS events were lost, so the
     // durable owner is unknown until loadHistory + runs.list re-prove it.
     // Close admission synchronously — before the catalog RPCs can stall — and
@@ -2664,6 +2711,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       historyRequestSequence += 1;
       discoverySequence += 1;
     }
+
+    if (!iId) return;
     // Catalog refresh is best-effort: a transient bots.list failure must
     // never strand the Topic gate closed with no recovery path. Only durable
     // owner discovery (loadHistory + runs.list) controls topicReady; the
@@ -2694,38 +2743,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       dropBotDetail(iId, bId);
       clearSelection();
       return;
-    }
-
-    // An instance can be DELETED while this tab is disconnected, and that removes
-    // the whole snapshot scope for it: instance X is no longer owned, so the
-    // subscribe's ownership filter drops X and X never receives an
-    // `interaction-snapshot`. The tab therefore holds a pending interaction for X
-    // with no open, no close, and no snapshot to retire it from — and there is no
-    // timer either, so it stays until the user happens to click it and gets a 409.
-    //
-    // This is the same "no negative evidence, so the client must keep it" failure
-    // the snapshot closed, one level up: what went missing is not one request but
-    // the instance that owned the set the request would have been proven absent
-    // from. The authoritative owned-instance list is the negative evidence.
-    //
-    // `gone`, for the same reason as the snapshot: absence proves the request
-    // cannot continue under this account and says nothing about who or why.
-    //
-    // Only a SUCCEEDED refresh may conclude anything. A failed list proves nothing
-    // about X and must leave every interaction alone, or a transient error would
-    // destroy live forms. Scoped by instance, so X's removal never touches Y's.
-    let ownedInstanceIds: Set<string> | null = null;
-    try {
-      ownedInstanceIds = new Set((await listOwnedInstances()).map((r) => r.id));
-    } catch {
-      // Offline or unauthorized: not evidence. Leave every interaction open.
-    }
-    if (ownedInstanceIds) {
-      for (const [requestId, held] of pendingInteractions.value) {
-        if (generation !== currentSelectionGeneration) break;
-        if (ownedInstanceIds.has(held.instanceId)) continue;
-        retireInteraction(requestId, "gone");
-      }
     }
 
     if (bId) {
@@ -3559,6 +3576,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     sendPrompt,
     cancelCurrentRun,
     reconcileOnReconnect,
+    reconcileOwnedInstanceNegative,
     applyEvent,
   };
 });
