@@ -465,6 +465,59 @@ describe("Group Components", () => {
       expect(groups.targetSelection).toEqual({ mode: "everyone" });
     });
 
+    it("commits a bare mention terminated by sentence punctuation", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      // "@everyone," used to parse as the unknown name "everyone," and keep
+      // the previous manual selection — a comma after the keyword must
+      // commit it instead.
+      await textarea.setValue("@everyone, please review");
+      expect(groups.targetSelection).toEqual({ mode: "everyone" });
+    });
+
+    it("commits a bare member mention terminated by a colon", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      // "@Tester:" used to parse as the unknown name "Tester:" and silently
+      // keep Bot A — the colon must terminate the token so Tester routes.
+      await textarea.setValue("@Tester: please review");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+    });
+
+    it("resolves the punctuation-terminated mention at send time, never the stale target", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: {
+          bots: BOTS,
+          sendOutcome: () => Promise.resolve("rejected" as const),
+        },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      // Reviewer's scenario: Lead A selected, user types "@everyone, ...".
+      // The send-time boundary must commit everyone BEFORE the parent
+      // resolves the send target — Bot A must never be the silent fallback.
+      await textarea.setValue("@everyone, please review");
+      await textarea.trigger("keydown", { key: "Enter" });
+      await flushPromises();
+      expect(groups.targetSelection).toEqual({ mode: "everyone" });
+      // The send carries the typed text for the resolved target; the store
+      // assertion above is what pins the routing contract.
+      expect(wrapper.emitted("send")?.[0]).toEqual(["@everyone, please review"]);
+    });
+
     it("locks the target selector and Send while a prompt awaits confirmation", async () => {
       const groups = seedGroupSelection();
       groups.targetSelection = { mode: "members", botIds: ["bot_a"] };

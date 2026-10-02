@@ -353,6 +353,11 @@ function onSelectBot(instanceId: string, botId: string) {
 }
 
 function onSelectGroup(instanceId: string, groupId: string) {
+  // Same lifecycle rule as onSelectBot: the desktop viewer is instance-
+  // scoped, so close it explicitly. Clearing chat.instanceId alone unmounts
+  // DesktopTab (its v-if), but leaving desktopTabOpen true means a later
+  // ordinary-session select silently re-prepares a desktop stream.
+  closeDesktop();
   chat.clearSelection();
   directBotsStore.clearSelection();
   void groupsStore.selectGroup(instanceId, groupId);

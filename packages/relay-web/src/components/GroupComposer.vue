@@ -130,9 +130,18 @@ function onKeydown(e: KeyboardEvent): void {
  *  (both are members) cannot select Ann first and then append Anna.
  *  Quoted tokens (`@"Code Reviewer"`) allow display names with spaces; unquoted
  *  tokens stop at whitespace so they cannot swallow the rest of the sentence.
+ *  A bare token also ends at sentence-final or separator punctuation
+ *  (`, : ; . ! ?` and the CJK equivalents): `@everyone,` and `@Tester:` are
+ *  real mentions, not unknown names — without this the router keeps the
+ *  previous manual selection and silently sends to the wrong target.
  *  Names may be CJK or any non-space character (Bot names are only bounded by
- *  a non-empty ≤80 rule). */
-const MENTION_TOKEN = /(^|[\s\n])@("([^"]*)"|([^\s@]*))/g;
+ *  a non-empty ≤80 rule), but a name that itself contains one of the
+ *  terminators must use the quoted form.
+ *  The terminator set is ASCII + CJK sentence punctuation only: apostrophes
+ *  (`O'Brien`) and hyphens stay name characters, and `"` keeps its quoting
+ *  role — an unbalanced quote never starts a bare token. */
+const BARE_MENTION_END = /[\s\n,;:!?.，。：；！？]/;
+const MENTION_TOKEN = /(^|[\s\n])@("([^"]*)"|([^\s@,;:!?.，。：；！？]*))/g;
 
 interface MentionToken {
   /** Selected display name (bare `@` tokens are skipped). */
@@ -162,11 +171,12 @@ function committedMentionTokens(text: string, endOfTextTerminates: boolean): Men
       tokens.push({ name: quoted, everyone: false });
       continue;
     }
-    // Bare token: needs an explicit boundary — whitespace after it, or EOF at an
-    // explicit send/blur boundary where no further character will arrive.
+    // Bare token: needs an explicit boundary — whitespace or sentence
+    // punctuation after it, or EOF at an explicit send/blur boundary where no
+    // further character will arrive.
     const start = match.index ?? 0;
     const end = start + match[0].length;
-    if (end >= text.length ? !endOfTextTerminates : !/[\s\n]/.test(text[end] ?? "")) {
+    if (end >= text.length ? !endOfTextTerminates : !BARE_MENTION_END.test(text[end] ?? "")) {
       continue;
     }
     if (bare.length === 0) continue;
