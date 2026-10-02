@@ -48,8 +48,11 @@ connector 拒绝让弱认证平面成为 xacpx 连接面的旁路。
 - `port` 只能是**本机 loopback**。RFB server 不需要公网可达；connector 主动连
   `127.0.0.1:<port>`。
   这是**单向约束**：它固定了 connector 去连哪里，但没有限制 RFB server 监听在
-  哪个地址。所以「不暴露 5900」还需要 RFB server 自己只监听 loopback
-  （见 §3/§4 的具体开关与验证命令）。两侧都得是 loopback，边界才成立。
+  哪个地址。真正的边界条件是「**外部不可达**」——首选由 RFB server bind
+  loopback 达成，TightVNC 这类没有独立 bind-address 开关的服务端则用
+  `LoopbackOnly` + 防火墙达成同一目的（见 §3/§4 的开关与验证命令）。
+  `0.0.0.0 <bind> + 访问控制 + 防火墙 + 第二机验证不可达` 与 bind loopback
+  等效，都是接受的部署；不要因为只看到 bind 地址不是 127.0.0.1 就判失败。
 - `connectTimeoutMs`（250–10000）同时用于 loopback TCP 连接、banner preflight 与
   Hub `/desktop/instance` upgrade 三者，不提供单独的 upgrade 超时。
   唯一例外：真正建立 tunnel 时读取 12 字节 RFB banner 有**独立的 2 秒硬上限**
@@ -90,11 +93,12 @@ connector 拒绝让弱认证平面成为 xacpx 连接面的旁路。
    netstat -ano | findstr :5900
    ```
 
-   只期望看到 `127.0.0.1:5900` 条目。**如果看到 `0.0.0.0:5900`，那说明监听面没有被
-   限制**，此时该桌面是安全的唯一依赖是 loopback-only 设置 + 防火墙，而不是端口本身
-   不可达。TightVNC 是否有可验证的 bind-address-only 配置项尚未确认，需要 §14 的
-   Windows 真机项给出结论；在确认之前，不要把这条指令理解为「5900 必然只在 loopback
-   上监听」。
+   **优先看到 `127.0.0.1:5900`**；如果看到 `0.0.0.0:5900`，**不要仅凭这一条判失败** ——
+   `LoopbackOnly` 是访问控制，`0.0.0.0 <bind> + LoopbackOnly + 防火墙` 是文档明确接受的
+   部署形态。此时安全依赖的是 loopback-only 设置 + 防火墙，而不是端口本身不可达，
+   必须再从第二台机器确认 5900 不可达（见 §14 真机项）才算通过。TightVNC 是否有可验证的
+   bind-address-only 配置项尚未确认，需要 §14 的 Windows 真机项给出结论；在确认之前，
+   不要把这条指令理解为「5900 必然只在 loopback 上监听」。
 5. 确认 outer security 列表里有 **type 2（VNC Auth）**。仅提供 Tight（outer type 16）
    的端点会被拒绝（见 §6）。
 
@@ -140,7 +144,8 @@ tigervncserver :1 -geometry 1920x1080 -localhost -rfbport 5900
 启动后必须验证监听面，否则文档承诺的「不对外暴露 5900」不成立：
 
 ```bash
-# 期望：只出现 127.0.0.1:5900，不出现 0.0.0.0:5900 / [::]:5900
+# 期望：出现 127.0.0.1:5900；若出现 0.0.0.0:5900 / [::]:5900，不据此判失败，
+# 但必须确认 RFB server 自身做了访问控制，并从第二台机器验证 5900 不可达。
 ss -ltnp | grep 5900
 ```
 
@@ -224,5 +229,9 @@ connector 侧没有独立 desktop doctor 命令。Phase A 的选择是：把 ope
 - **不进控制面**：framebuffer / 键鼠走独立二进制 WebSocket（`/desktop/observe`、
   `/desktop/instance`），永不 base64 进 RelayEnvelope。
 - **ticket 单次 + 60s TTL**，绑定 account + instance + side；过期/复用/跨账号都拒绝。
+- **ticket 不写日志**：仅指 xacpx 自己的日志（hub / connector / relay-web）。ticket 只能放在
+  URL query（`/desktop/observe?ticket=…`、`/desktop/instance?ticket=…`），所以**反代的
+  access log 会记录明文 ticket**。在意的话按 docs/relay-deployment.md 的「Desktop ticket 与
+  access log」一节处理（等价于 `/invite/<code>` 的处理）。
 - **密码只在 tab 内存**，不写 localStorage/sessionStorage，不进日志、不进 ticket。
 - **关闭只关 tunnel**，不停系统 VNC server；connector 退出/断线清空所有 tunnel。
