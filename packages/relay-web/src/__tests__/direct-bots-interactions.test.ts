@@ -1002,7 +1002,7 @@ test("an instance deleted while disconnected retires its forms, not the others'"
   // The authoritative owned set no longer contains inst-A.
   mockApiGet.mockResolvedValue({ instances: [{ id: "inst-B" }] });
 
-  await store.reconcileOnReconnect();
+  await store.reconcileOwnedInstanceNegative();
   await flushPromises();
 
   // A is gone with the neutral outcome — absence proves only that this request can
@@ -1032,7 +1032,7 @@ test("a failed instance list retires nothing", async () => {
   mockRpc.mockResolvedValue({ run: undefined });
   mockApiGet.mockRejectedValue(new Error("network down"));
 
-  await store.reconcileOnReconnect();
+  await store.reconcileOwnedInstanceNegative();
   await flushPromises();
 
   // Both survive: no evidence, no conclusion.
@@ -1040,4 +1040,130 @@ test("a failed instance list retires nothing", async () => {
   expect(store.requestStillHeld("req-b")).toBe(true);
   expect(store.terminalInteractionCount).toBe(0);
 });
+
+// Two races where an AUTHORITATIVE fact was swallowed by the pane's generation
+// fence. Both are the same mistake: a fact scoped to a request or to the whole
+// account being treated as if it belonged to the currently selected pane.
+
+test("an authoritative 409 during a pane switch still retires the request", async () => {
+  // The real race. The user submits on pane A, the RPC is in flight, they navigate
+  // to B, and only then does the hub's authoritative 409 land.
+  //
+  // The fence used to be checked first, so the newer generation returned
+  // immediately and A's form stayed in the open map — answerable, with no negative
+  // evidence anywhere. The snapshot cannot rescue it either: this tab's
+  // subscription is scoped by the CURRENT selection, and A is no longer selected,
+  // so no snapshot for A will ever arrive. The user only learns the truth by
+  // clicking again and getting a second 409.
+  //
+  // A 409 is a REQUEST-scoped fact: "this requestId no longer exists on the hub" is
+  // just as true after a pane switch, so nothing about the pane may discard it.
+  const store = useDirectBotsStore();
+  // The pane is the instance the form was opened on, so the submit can be issued.
+  // (A mismatched pane would make `pendingInteraction` null and the submit would
+  // return before any RPC — not the race under test.)
+  store.instanceId = "inst_1";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  // Same construction as the non-race 409 test above, so the only variable here is
+  // the pane switch.
+  mockRpc.mockResolvedValue({ error: { code: "interaction-gone", message: "gone" } });
+  store.applyEvent(openedEvent(formRequest()));
+  store.setInteractionAnswer("env", "prod");
+
+  const submitted = store.submitInteraction("accept");
+
+  // The user navigates to another topic of the SAME instance while the submit is in
+  // flight, which is what changes the pane generation.
+  store.switchTopic("t2");
+
+  await submitted;
+  await flushPromises();
+
+  expect(store.requestStillHeld("req-1")).toBe(false);
+  expect(store.terminalInteractionOutcome("req-1")).toBe("gone");
 });
+
+test("a transport failure during a pane switch stays dropped", async () => {
+  // The control, and the reason the fence was not simply deleted. A transport
+  // failure is NOT authoritative about the window — the request may well still be
+  // open — so what it really reports is "this pane's submit did not land", which a
+  // pane switch does invalidate.
+  //
+  // Acting on it anyway would patch an error code onto whatever form now occupies
+  // that slot: telling the user about a failure they cannot see from where they are
+  // looking, or attaching it to a different form entirely.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst-A";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  store.applyEvent(openedEvent(formRequest()));
+  store.setInteractionAnswer("env", "prod");
+
+  let reject!: (reason: unknown) => void;
+  mockRpc.mockReturnValue(new Promise((_resolve, rejectFn) => { reject = rejectFn; }));
+  const submitted = store.submitInteraction("accept").catch(() => undefined);
+
+  store.switchTopic("t2");
+  reject(new Error("transport failed"));
+  await submitted;
+  await flushPromises();
+
+  expect(store.requestStillHeld("req-1")).toBe(true);
+});
+
+test("the owned-instance negative runs with NO pane selected", async () => {
+  // The instance negative used to sit after `if (!iId) return`, so with nothing
+  // selected the reconcile returned before it ever ran.
+  //
+  // That is exactly when a background form is most exposed: it is off-screen, it is
+  // the only thing keeping the instance alive in the store, and nothing else will
+  // ever look at it. `/api/instances` is an ACCOUNT-wide authority with no pane to
+  // depend on, so a pane's absence must not suppress it.
+  const store = useDirectBotsStore();
+  store.applyEvent(openedEvent(formRequest({ requestId: "req-bg" }), "inst-A"));
+  expect(store.requestStillHeld("req-bg")).toBe(true);
+
+  store.instanceId = "";
+  store.selectedBotId = "";
+  mockRpc.mockResolvedValue({ run: undefined });
+  mockApiGet.mockResolvedValue({ instances: [] });
+
+  // Called directly, not through the pane reconcile: with no selection at all,
+  // `reconcileOnReconnect` returns early and would never reach the check.
+  await store.reconcileOwnedInstanceNegative();
+  await flushPromises();
+
+  expect(store.requestStillHeld("req-bg")).toBe(false);
+  expect(store.terminalInteractionOutcome("req-bg")).toBe("gone");
+});
+
+test("the owned-instance negative survives a pane switch during its fetch", async () => {
+  // The other half of the same fence problem. The list request is in flight, the
+  // user changes pane, and the retirement loop used to abort on the generation
+  // mismatch — discarding a conclusion about the ACCOUNT that had not changed.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst-B";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  store.applyEvent(openedEvent(formRequest({ requestId: "req-a" }), "inst-A"));
+  store.applyEvent(openedEvent(formRequest({ requestId: "req-b" }), "inst-B"));
+  mockRpc.mockResolvedValue({ run: undefined });
+
+  const listGate = Promise.withResolvers<{ instances: Array<{ id: string }> }>();
+  mockApiGet.mockReturnValue(listGate.promise);
+  const reconcile = store.reconcileOwnedInstanceNegative();
+
+  store.switchTopic("t2");
+
+  listGate.resolve({ instances: [{ id: "inst-B" }] });
+  await reconcile;
+  await flushPromises();
+
+  expect(store.requestStillHeld("req-a")).toBe(false);
+  expect(store.terminalInteractionOutcome("req-a")).toBe("gone");
+  expect(store.requestStillHeld("req-b")).toBe(true);
+});});
