@@ -248,6 +248,56 @@ server {
 }
 ```
 
+### Keep desktop tickets out of access logs
+
+If you enable instance Desktop (RFB/VNC), the browser and the connector each open a WebSocket whose ticket **must** ride the query string:
+
+```text
+/desktop/observe?ticket=<browser-ticket>
+/desktop/instance?ticket=<connector-ticket>
+```
+
+A WebSocket cannot carry a custom header, so the query string is the only transport. xacpx's own logs never write these tickets (the connector reports origin+path only), but **any proxy that logs the request URI records them in cleartext**.
+
+Tickets are single-use with a 60s TTL and are consumed during the upgrade, so a leaked ticket is usually already dead — but treat it like the `/invite/<code>` case: disable access logging for these paths.
+
+Caddy — declare the matcher and the skip as site-scope directives:
+
+```caddyfile
+relay.example.com {
+    @desktop_ticket {
+        path /desktop/observe* /desktop/instance*
+    }
+
+    log
+    log_skip @desktop_ticket
+
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+`log_skip` is an HTTP directive in its own right — it is **not** a `reverse_proxy` subdirective, so it must sit in the site (or route) block. `log` is what actually emits the access log; if you never configure `log`, Caddy writes no access log and there is nothing to skip. With a **named** logger (`log <name> { ... }`), keep `log_skip` as a sibling directive and pass the matcher to it the same way — it applies to that logger's entries.
+
+> `log_skip` requires **Caddy 2.8+**. On older Caddy the directive was named `skip_log`; use that name instead if `caddy validate` rejects `log_skip`.
+
+nginx — keep the proxying but stop logging these two locations:
+
+```nginx
+    # Ticket-bearing WebSocket upgrades: must NOT appear in access logs.
+    location ~ ^/desktop/(observe|instance) {
+        access_log off;
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+    }
+```
+
+The regex location must be declared so it wins over `location /` for these paths (nginx prefers the longest literal prefix but regexes are checked in order — place it as shown, or use `location ^~ /desktop/` if you prefer a prefix match).
+
+Server-side setup for a supported RFB server (Linux/Windows) is in [`docs/desktop-rfb-setup.md`](https://github.com/gadzan/xacpx/blob/main/docs/desktop-rfb-setup.md); the terser operator runbook is `docs/relay-deployment.md`.
+
 ::: details Advanced: dedicated gateway port (`--ws-port`)
 If you start the hub with `xacpx-relay start --ws-port 8788`, the instance gateway gets its own port instead of riding the HTTP port. You can then add a second proxied domain (`gateway.example.com` → `8788`) and point connectors at `wss://gateway.example.com`. This is only needed if you want to firewall the gateway apart from the dashboard.
 :::

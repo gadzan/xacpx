@@ -204,7 +204,7 @@ export class DesktopTunnelRuntime {
       // the probe: drop out instead of opening sockets nobody owns.
       if (isRetired()) return true;
       if (!verdict.ok) {
-        const guidance = desktopSetupGuidance(this.deps.platform ?? process.platform, verdict.code);
+        const guidance = desktopSetupGuidance(this.deps.platform ?? process.platform, verdict.code, config.port);
         // The server's own words matter here: an operator reading the log needs
         // to see what the RFB server said, not just that the connector refused it.
         this.deps.logger?.error("relay.desktop.probe_rejected", "loopback RFB probe failed", {

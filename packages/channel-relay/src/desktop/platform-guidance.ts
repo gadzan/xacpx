@@ -9,22 +9,27 @@ export type DesktopPlatform = "win32" | "linux" | "darwin" | string;
 export function desktopSetupGuidance(
   platform: DesktopPlatform = process.platform,
   code: RfbProbeErrorCode,
+  port: number = 5900,
 ): string {
+  // The port is operator-configured (options.desktop.port, 1..65535). Hardcoding
+  // 5900 here sent people to the wrong port the moment they configured another
+  // one: the probe is right that 5901 refused, but the banner said "start 5900".
+  const target = `127.0.0.1:${port}`;
   if (code === "desktop-rfb-unavailable") {
     if (platform === "win32") {
       // Corrected: the guidance used to say "on 127.0.0.1:5900", but docs/desktop-rfb-setup.md
       // is explicit that loopback-only is a ONE-WAY constraint on the connector's dial, not on
       // the TightVNC bind. The accepted Windows deployment is 0.0.0.0 + LoopbackOnly +
       // firewall, so the old text sent operators chasing a non-existent requirement.
-      return "Start TightVNC in the logged-in user session with VNC authentication, and make it accept loopback connections on port 5900 (service sessions show the wrong desktop). Restrict access with TightVNC LoopbackOnly plus the Windows Firewall; binding to 127.0.0.1 is not required.";
+      return `Start TightVNC in the logged-in user session with VNC authentication, and make it accept loopback connections on port ${port} (service sessions show the wrong desktop). Restrict access with TightVNC LoopbackOnly plus the Windows Firewall; binding to 127.0.0.1 is not required.`;
     }
     if (platform === "darwin") {
-      return "Enable Screen Sharing with a VNC-compatible password, or start a standard VncAuth RFB server reachable on 127.0.0.1:5900.";
+      return `Enable Screen Sharing with a VNC-compatible password, or start a standard VncAuth RFB server reachable on ${target}.`;
     }
-    return "Start TigerVNC/x11vnc with VNC authentication so it is reachable on 127.0.0.1:5900. WayVNC needs legacy VncAuth mode (relax_encryption + allow_broken_crypto); default secure WayVNC is rejected.";
+    return `Start TigerVNC/x11vnc with VNC authentication so it is reachable on ${target}. WayVNC needs legacy VncAuth mode (relax_encryption + allow_broken_crypto); default secure WayVNC is rejected.`;
   }
   if (code === "desktop-not-rfb") {
-    return "The desktop port answered but is not an RFB/VNC server; point options.desktop.port at the loopback VNC server.";
+    return `The desktop port answered but is not an RFB/VNC server; point options.desktop.port at the loopback VNC server (config.port=${port}, target ${target}).`;
   }
   if (platform === "win32") {
     return "TightVNC must offer outer VNC authentication (type 2); Tight-only endpoints (outer 16 without a type-2 offer) are rejected in v1 because sub-auth can select no-auth. Unauthenticated, VeNCrypt-only, or proprietary-auth servers are rejected.";

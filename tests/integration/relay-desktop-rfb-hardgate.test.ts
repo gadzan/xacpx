@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { createServer, connect as netConnect, type Server } from "node:net";
+import { createServer, connect as netConnect, type Server, type Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
 import { WebSocket } from "ws";
 
 import {
@@ -9,6 +12,7 @@ import {
 } from "../../packages/relay-protocol/src/index";
 import { startRelayServer } from "../../packages/relay/src/server";
 import { DesktopTunnelRuntime } from "../../packages/channel-relay/src/desktop/desktop-tunnel-runtime";
+import { RelayChannel } from "../../packages/channel-relay/src/channel";
 
 /**
  * Spec-compliant fake RFB server: writes the banner, WAITS for the 12-byte
@@ -60,6 +64,31 @@ function nextBinary(ws: WebSocket): Promise<Buffer> {
   ws.on("error", () => {});
   ws.on("message", (data) => { clearTimeout(timer); resolve(Buffer.from(data as Uint8Array)); });
   return promise;
+}
+
+/** Poll `predicate` until it holds or the deadline passes (then fail). */
+async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error("waitUntil timed out");
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
+/**
+ * Index of the fake-SRFB socket that received `marker`, waiting until it does.
+ * Used to attribute a tunnel socket to a specific desktop stream: the probe
+ * opens its own short-lived connection, so neither "the last accepted socket"
+ * nor an index captured earlier is reliable.
+ */
+async function waitForReceivedMarker(received: Buffer[][], marker: Buffer): Promise<number> {
+  const find = (): number => received.findIndex((chunks) => chunks.some((c) => c.equals(marker)));
+  const deadline = Date.now() + 5000;
+  while (find() < 0) {
+    if (Date.now() > deadline) throw new Error("marker frame never reached the RFB server");
+    await new Promise((r) => setTimeout(r, 5));
+  }
+  return find();
 }
 // Every constructed socket gets a persistent error swallow at construction
 // time, so late hub-side closes (4403 rejects, stream shutdowns) can never
@@ -477,6 +506,266 @@ test("dedicated --ws-port applies the same desktop hard gate as merged", async (
     }
     await new Promise((r) => setTimeout(r, 100));
     await relay.close();
+  }
+}, 30000);
+
+/**
+ * Task 7's two remaining assertions, driven through the REAL connector.
+ *
+ * The tests above exercise the data plane through `DesktopTunnelRuntime`
+ * directly, so these two cannot be observed there — the code that performs
+ * them is channel/hub wiring:
+ *
+ *   1. browser binary close -> connector plane -> loopback RFB TCP closed;
+ *   2. instance-control disconnect -> browser's binary stream closed.
+ *
+ * Without a real `RelayChannel` in the middle, both would pass even if that
+ * wiring were deleted, which is precisely the gap this closes. Terminal is
+ * disabled so the channel needs no session catalog, agent runtime, or acpx;
+ * the pairing token registers the instance for real, and `RelayClient` opens a
+ * real control connection to the real hub.
+ */
+test("desktop hard-gate: binary lifecycle propagates through a real RelayChannel", async () => {
+  const relay = await startRelayServer({ dbPath: ":memory:", httpPort: 0, host: "127.0.0.1" });
+  const sockets: WebSocket[] = [];
+  let rfb: Server | undefined;
+  let channel: RelayChannel | undefined;
+  let controlAbort: AbortController | undefined;
+  let registryDir: string | undefined;
+  try {
+    const base = `http://127.0.0.1:${relay.httpPort}`;
+    const account = relay.runtime.accounts.createAccount("admin");
+    const { token: loginToken } = relay.runtime.accounts.createLoginToken(account.id);
+    const loginRes = await fetch(`${base}/api/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ token: loginToken }),
+    });
+    const cookie = loginRes.headers.get("set-cookie")?.split(";")[0] ?? "";
+    expect(cookie.length).toBeGreaterThan(0);
+
+    // Fake loopback RFB server. Accepted sockets retain everything the
+    // connector sent, so the test can observe forwarded bytes.
+    const rfbSockets: Socket[] = [];
+    const rfbReceived: Buffer[][] = [];
+    const banner = Uint8Array.from([82, 70, 66, 32, 48, 48, 51, 46, 48, 48, 56, 10]);
+    const security = Uint8Array.from([1, 2]);
+    rfb = createServer((socket) => {
+      const seen: Buffer[] = [];
+      rfbSockets.push(socket);
+      rfbReceived.push(seen);
+      socket.on("error", () => {});
+      socket.write(Buffer.from(banner));
+      socket.on("data", (chunk: Buffer) => {
+        seen.push(Buffer.from(chunk));
+        if (seen.reduce((n, b) => n + b.length, 0) >= 12) {
+          socket.write(Buffer.from(security));
+        }
+      });
+    });
+    const rfbPort = await new Promise<number>((resolve) => {
+      rfb!.listen(0, "127.0.0.1", () => resolve((rfb!.address() as { port: number }).port));
+    });
+
+    registryDir = await mkdtemp(join(tmpdir(), "xacpx-hg-reg-"));
+    const paired = relay.runtime.instances.issuePairingToken(
+      account.id,
+      "inst-hardgate-lifecycle",
+      600_000,
+    );
+    channel = new RelayChannel(
+      {
+        url: `ws://127.0.0.1:${relay.httpPort}`,
+        pairingToken: paired.token,
+        name: "inst-hardgate-lifecycle",
+        terminal: { enabled: false },
+        desktop: { enabled: true, port: rfbPort, connectTimeoutMs: 5000, maxStreams: 1 },
+      } as never,
+      {
+        credentialStore: { load: () => null, save: () => {}, clear: () => {} },
+        terminalRegistryDir: registryDir,
+        endpointSyncDebounceMs: 0,
+      },
+    );
+    controlAbort = new AbortController();
+    // `start()` resolves only when the control connection is aborted (it then
+    // runs the same teardown an offline instance triggers), so it is started in
+    // the background and the test drives the abort itself.
+    const channelStarted = channel.start({
+      logger: undefined,
+      coreVersion: "0.0.0-test",
+      abortSignal: controlAbort.signal,
+      // The channel subscribes to core events for its state mirror and agent
+      // directory. Neither is what this test asserts on, so a no-op
+      // subscription is enough — everything else the channel needs (the
+      // control request bridge, the tunnel) is real.
+      control: {
+        listSessions: () => [],
+        events: { subscribe: () => () => {} },
+      } as never,
+    });
+    // The pairing registration and the desktop bootstrap both happen inside
+    // start(); wait for the tunnel to exist before opening a desktop.
+    await waitUntil(() => channel!.getDesktopRuntimeForTests() !== null);
+    // terminal.enabled=false short-circuits bootstrapTerminal before any catalog
+    // access, so the desktop runtime must be live.
+    expect(channel.getDesktopRuntimeForTests()).not.toBeNull();
+    // `issuePairingToken` hands back only the token: the hub mints the
+    // instanceId (a UUID) when the connector redeems it, so the real id has to
+    // be read back from the instance list.
+    await waitUntil(() => relay.runtime.instances.listByAccount(account.id).length > 0);
+    const instanceId = relay.runtime.instances.listByAccount(account.id)[0].id;
+    expect(relay.runtime.instances.getOwned(instanceId, account.id)?.capabilities)
+      .toContain("desktop.rfb.v1");
+
+    // A real browser control socket: `desktop-open` is the ONLY way the hub
+    // will reserve a stream, so this path exercises the online check, the
+    // capability check, ticket minting, the hub -> connector prepare RPC, and
+    // the channel's request routing — exactly what a relay-web user triggers.
+    const controlWs = await openSocket(`ws://127.0.0.1:${relay.httpPort}/ws`, { cookie });
+    trackSocket(sockets, controlWs);
+    const opened = new Promise<{ wsPath: string; streamId: string }>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("desktop-opened timeout")), 10_000);
+      controlWs.on("message", (raw) => {
+        try {
+          const ev = JSON.parse(raw.toString());
+          // Control events arrive as `web.event` envelopes; the desktop result
+          // is nested in `payload`.
+          const payload = ev?.type === "web.event" ? ev.payload : ev;
+          if (payload?.kind === "desktop-opened") {
+            clearTimeout(timer);
+            resolve({ wsPath: payload.wsPath, streamId: payload.streamId });
+          } else if (payload?.kind === "desktop-request-failed") {
+            clearTimeout(timer);
+            reject(new Error(`desktop-request-failed: ${JSON.stringify(payload)}`));
+          }
+        } catch { /* non-JSON control frame */ }
+      });
+      controlWs.on("error", () => {});
+    });
+    controlWs.send(encodeEnvelope(webClientEnvelope({ kind: "desktop-open", requestId: "req-1", instanceId })));
+    const { wsPath, streamId } = await opened;
+
+    const browserWs = await openSocket(`ws://127.0.0.1:${relay.httpPort}${wsPath}`, { cookie });
+    trackSocket(sockets, browserWs);
+
+    // The chain the hub just drove: prepare -> probe -> upgrade ... -> pair.
+    await waitUntil(() => relay.runtime.desktop.streamRegistry.get(streamId)?.state === "active");
+    expect(channel.getDesktopRuntimeForTests()!.activeStreamId).toBe(streamId);
+
+    const clientVersion = Buffer.from("RFB 003.008\n", "ascii");
+    // The tunnel replays the server banner first, then (only after the browser
+    // sends its 12-byte client version) the security list. Assert both: the
+    // first frame is the banner, and the second is the VncAuth offer, which
+    // exists only because the version reached the fake server.
+    expect(await nextBinary(browserWs)).toEqual(Buffer.from(banner));
+    browserWs.send(clientVersion);
+    expect(await nextBinary(browserWs)).toEqual(Buffer.from(security));
+    const firstFrame = Uint8Array.from([0xde, 0xad, 0xbe, 0xef]);
+    // browser -> hub -> connector -> server: the frame must arrive on the
+    // connector's loopback RFB socket. That proves the data plane is genuinely
+    // wired through the channel before either lifecycle event fires. The probe
+    // opens its own short-lived connection, so match across every socket the
+    // fake server accepted rather than assuming the tunnel owns the last one.
+    browserWs.send(Buffer.from(firstFrame));
+    const forwarded = (): boolean => rfbReceived.some((chunks) =>
+      chunks.some((chunk) => chunk.equals(Buffer.from(firstFrame))));
+    await waitUntil(forwarded);
+    expect(rfbSockets.length).toBeGreaterThan(0);
+    const tunnelIndex = rfbReceived.findIndex((chunks) =>
+      chunks.some((chunk) => chunk.equals(Buffer.from(firstFrame))));
+    const rfbAlive = rfbSockets[tunnelIndex];
+    expect(rfbAlive).toBeDefined();
+    expect(rfbAlive!.destroyed).toBe(false);
+
+    // (1) The browser closes its BINARY connection. The hub must tear down the
+    // paired connector stream, and the connector's loopback RFB socket must be
+    // destroyed — not leaked against a VNC server nobody is watching.
+    browserWs.close();
+    const browserClosedOnce = new Promise<void>((r) => browserWs.once("close", () => r()));
+    await browserClosedOnce;
+    await waitUntil(() => rfbAlive.destroyed);
+    expect(rfbAlive.destroyed).toBe(true);
+    expect(relay.runtime.desktop.streamRegistry.get(streamId)?.state).toBe("closed");
+    expect(channel.getDesktopRuntimeForTests()?.activeStreamId).toBeNull();
+
+    // (2) A NEW desktop, then the instance's control connection drops.
+    //
+    // What this pins down: the spec-level outcome "instance disconnect ->
+    // browser stream closed", driven through a real channel. What it does NOT
+    // pin down is WHICH component performs it. Three mechanisms can close the
+    // connector's loopback RFB socket here — the hub's own instance-offline
+    // fencing (server.ts `onStatusChange` -> `desktop.closeForInstance`),
+    // `RelayChannel`'s `onDisconnected -> closeAll()`, and the tunnel dropping
+    // its socket when the paired binary connection is severed — and disabling
+    // any one of them still yields this outcome. So these assertions are
+    // defense-in-depth proof, not a discriminator; the per-path behaviour is
+    // covered by the unit tests that drive each owner directly.
+    const opened2 = new Promise<{ wsPath: string; streamId: string }>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("second desktop-opened timeout")), 10_000);
+      controlWs.on("message", (raw) => {
+        try {
+          const ev = JSON.parse(raw.toString());
+          const payload = ev?.type === "web.event" ? ev.payload : ev;
+          if (payload?.kind === "desktop-opened") {
+            clearTimeout(timer);
+            resolve({ wsPath: payload.wsPath, streamId: payload.streamId });
+          }
+        } catch { /* non-JSON control frame */ }
+      });
+      controlWs.on("error", () => {});
+    });
+    controlWs.send(encodeEnvelope(webClientEnvelope({ kind: "desktop-open", requestId: "req-2", instanceId })));
+    const second = await opened2;
+    const secondBrowser = await openSocket(`ws://127.0.0.1:${relay.httpPort}${second.wsPath}`, { cookie });
+    trackSocket(sockets, secondBrowser);
+    await waitUntil(() => relay.runtime.desktop.streamRegistry.get(second.streamId)?.state === "active");
+
+    // Drive this stream's own RFB handshake so forwarding is live, then push a
+    // stream-2 marker. The marker identifies THIS stream's tunnel socket:
+    // indexing rfbSockets here would be wrong — the first desktop's socket is
+    // already destroyed, and the probe's short-lived socket may sort anywhere.
+    // Without a per-stream marker, the "no loopback leak after disconnect"
+    // assertion below would silently re-observe stream 1's dead socket and
+    // pass vacuously.
+    const secondMarker = Buffer.from([0x51, 0x51, 0x51, 0x51]);
+    expect(await nextBinary(secondBrowser)).toEqual(Buffer.from(banner));
+    secondBrowser.send(Buffer.from("RFB 003.008\n", "ascii"));
+    expect(await nextBinary(secondBrowser)).toEqual(Buffer.from(security));
+    secondBrowser.send(secondMarker);
+    const secondTunnelIndex = await waitForReceivedMarker(rfbReceived, secondMarker);
+    expect(secondTunnelIndex).toBeGreaterThanOrEqual(0);
+    expect(rfbSockets[secondTunnelIndex].destroyed).toBe(false);
+
+    const browserGone = new Promise<void>((resolve) => {
+      secondBrowser.once("close", () => resolve());
+      secondBrowser.on("error", () => {});
+    });
+
+    // Drop the instance control connection: exactly what an offline instance
+    // looks like to the hub. `start()` returns only after this teardown path
+    // runs, so awaiting it proves the channel processed the disconnect.
+    controlAbort.abort();
+    await browserGone;
+    await channelStarted;
+    expect(secondBrowser.readyState).not.toBe(WebSocket.OPEN);
+    // No loopback RFB socket survives the disconnect: whichever owner closes it
+    // first, a leaked one is the bug this guards. This is stream 2's own socket,
+    // found by its marker and asserted live above BEFORE the abort, so the wait
+    // cannot be satisfied by stream 1's already-dead socket.
+    const rfbSecond = rfbSockets[secondTunnelIndex];
+    await waitUntil(() => rfbSecond.destroyed);
+    expect(rfbSecond.destroyed).toBe(true);
+  } finally {
+    controlAbort?.abort();
+    for (const ws of sockets) {
+      try { ws.close(); } catch { /* gone */ }
+    }
+    await new Promise((r) => setTimeout(r, 150));
+    if (registryDir) await rm(registryDir, { recursive: true, force: true }).catch(() => {});
+    rfb?.close();
+    await relay.close();
+    channel?.stop();
   }
 }, 30000);
 

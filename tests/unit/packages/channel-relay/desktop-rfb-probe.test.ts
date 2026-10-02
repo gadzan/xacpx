@@ -258,3 +258,20 @@ test("platform guidance names the right server per OS", () => {
   expect(desktopSetupGuidance("darwin", "desktop-auth-unsupported")).toContain("Phase B");
   expect(desktopSetupGuidance("win32", "desktop-not-rfb")).toContain("options.desktop.port");
 });
+
+test("platform guidance names the CONFIGURED port, not a hardcoded 5900", () => {
+  // The banner an operator sees is built from this function plus the probe's
+  // verdict, and the probe dials config.port. If guidance kept saying 5900,
+  // a deployment on 5901 got "start 5900" while 5901 is what actually refused.
+  for (const platform of ["win32", "linux", "darwin"] as const) {
+    const win = desktopSetupGuidance(platform, "desktop-rfb-unavailable", 5901);
+    expect(win).toContain("5901");
+    expect(win).not.toContain("5900");
+  }
+  // The 5900-shaped text must still hold when 5900 really is configured.
+  expect(desktopSetupGuidance("linux", "desktop-rfb-unavailable", 5900)).toContain("127.0.0.1:5900");
+  // The diagnostic that tells you how to repoint the config must name the port
+  // actually in effect.
+  const wrongServer = desktopSetupGuidance("linux", "desktop-not-rfb", 5901);
+  expect(wrongServer).toContain("5901");
+});
