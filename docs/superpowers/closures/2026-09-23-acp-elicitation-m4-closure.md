@@ -931,16 +931,23 @@ display the previous addendum was written to end.
 
 ### The change: `interaction-snapshot`
 
+A **web event**, not a control-plane message. It rides the browser socket in the
+normal server→web envelope — `RelayEnvelope { type: "web.event" }` with
+`payload.kind === "interaction-snapshot"` — exactly like `state-snapshot` and
+`interaction-opened`. There is deliberately no `MSG.*` constant and no
+connector↔hub message for it: the connector is not a party. An earlier draft had a
+`MSG.interactionSnapshot` constant and it was removed as dead weight, so do not
+re-add one; the kind string is the whole contract.
+
 Hub -> browser, on subscribe, after the state snapshot:
 
 ```text
 subscribe -> [agent-directory, state-snapshot, interaction-snapshot]
 ```
 
-The frame carries `instanceId` plus, for every interaction the hub still holds
-open and unexpired for that instance, the routing fields (`chatKey`,
-`sessionAlias`) **and** the full `InteractionRequestDto` — the same halves the
-live `interaction-opened` carries. Carrying the whole thing rather than bare
+The outer frame carries `instanceId`; each entry carries `chatKey`,
+`sessionAlias`, and the full `InteractionRequestDto` — the same halves the live
+`interaction-opened` carries. Carrying the whole request rather than bare
 requestIds is what lets the client reuse the existing open handler for the cold
 path, so the snapshot introduces no second merge rule that could drift from the
 live event's.
@@ -1134,3 +1141,102 @@ re-read the file and confirm the marker is present — before drawing any conclu
 from a green run. This is recorded in the addendum rather than removed because a
 mutation that fails silently is indistinguishable from a missing test, which is the
 exact situation it exists to prevent.
+
+## Addendum - the missing negatives (2026-10-02)
+
+Two more "absence is not evidence of a cause" paths, both found by walking the real
+chain rather than the diff. They are the same defect as the omission addendum,
+arriving through different doors, which is the useful generalisation:
+
+> **Absence of a request, of an instance, and of a 409 all prove only that
+> something is gone. None of them says who or why.**
+
+### `subscribe` must install the subscription
+
+The subscribe branch filtered `instanceIds` and sent the directory, state snapshot,
+replay and interaction snapshot — and never called `setSubscription()`.
+
+`WebGateway` treats a socket ABSENT from its subscription map as "receive every
+control-event", so this was not a harmless omission. A browser subscribing `["i1"]`
+received instance i2's live `interaction-opened`, stored it account-wide, and then
+never received an i2 interaction-snapshot — because it only subscribes i1. The form
+could not be retired on reconnect, so the stale-form bug this whole change exists to
+fix reappeared for exactly the instances the subscription was meant to exclude.
+
+Fixed by restoring the call ahead of every send, which also makes the branch match
+the ordering invariant written at its head. The existing test was asserting only
+what was SENT, which structurally cannot detect a missing subscription — the frames
+look identical either way. It now asserts routing through the real `WebGateway`,
+and two new tests cover install-and-scope and a re-subscribe narrowing an existing
+set. Deleting the call again fails all three from outside.
+
+### An instance deleted while disconnected
+
+`DELETE /api/instances/:id` removes an instance from the account's owned set. The
+subscribe's ownership filter then drops that instance on reconnect, so it never
+receives an `interaction-snapshot` again — and the tab holds a pending interaction
+for it with no open, no close, no snapshot, and no timer.
+
+The snapshot is authoritative per instance, and its SCOPE is the set the browser is
+still allowed to ask about. What went missing here is not one request but the
+instance that owned the set the request would have been proven absent from, so the
+negative evidence is the owned-instance list, re-checked after a successful refresh.
+
+Only a SUCCEEDED refresh may conclude anything: a failed `/api/instances` says
+nothing about what was deleted (offline, expired session and 503 are
+indistinguishable), and retiring on it would let a transient error destroy live
+forms — strictly worse than the bug. Scoped per instance, so X's removal never
+touches Y's. Outcome is `gone`, for the same reason as the snapshot absence.
+
+### The 409 asserted a cause the hub never sent
+
+`submitInteraction()` still retired an `interaction-gone` failure as `withdrawn`,
+which asserts "nobody chose anything". The most common real cause is the opposite:
+another tab accepted, which is precisely why the request is gone. The tab then told
+the user "Closed before an answer arrived" about a question that had already been
+answered.
+
+A 409 carries exactly as much information as a snapshot omission — the request is no
+longer open — so it gets the same neutral `gone`. Two tests had pinned the old
+label and were rewritten.
+
+What keeps a NAMED outcome: a hub-sent `interaction-closed` carries a reason, and
+local expiry reports `withdrawn` because the client knows the deadline passed. Those
+name a cause. Absence never does, whether it arrives as a frame, a missing scope, or
+an HTTP status.
+
+## Addendum - docs and the test that proved the wrong thing (2026-10-02)
+
+Two documentation defects and one test that did not test what it claimed.
+
+`InteractionSnapshotDto` documented each entry as carrying `chatKey`, `sessionAlias`
+and `instanceId`. The entry carries only the first two; `instanceId` is the
+snapshot's OUTER field, and appears in an entry only because the live event is not
+itself scoped. The comment sat exactly where someone changing the protocol would
+read it as the contract, so it now says where each field lives and that both shapes
+are validated by one helper.
+
+The closure's protocol description now states that `interaction-snapshot` is a web
+event (`type: "web.event"`, `payload.kind`), with no `MSG.*` constant and no
+connector-facing message. An earlier draft had a `MSG.interactionSnapshot`
+constant; it was removed as dead weight, and the doc now warns against re-adding
+one so nobody builds a control-plane message out of a misread addendum.
+
+The ordering test "an interaction opened AFTER subscribe lands after the snapshot"
+issued a SECOND subscribe and compared two snapshot indices. That proves the second
+snapshot ordering, not that a live open after the snapshot is delivered after it —
+which is what the invariant is about. It now really broadcasts a live
+`interaction-opened` through the gateway and asserts it lands after everything
+subscribe sent. The no-`await` mutation still fails it, so the ordering coverage
+survived the rewrite.
+
+### The mutation guard, again
+
+Two mutation scripts reported success without changing anything: one compared the
+buffer against itself after writing, one matched a string that also appears
+legitimately in an unrelated capability list. Both are the same mistake the CRLF
+note already warned about — treating "the script ran" as "the mutation landed".
+
+The reliable pattern, used for everything after: assert the replacement count is
+exactly 1, then compare the buffer against the ORIGINAL file content, then verify
+the specific deleted target is absent, and only then run the tests.

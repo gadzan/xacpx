@@ -645,9 +645,13 @@ test("subscribe sends every frame in ONE synchronous turn", () => {
 
 test("an interaction opened AFTER subscribe lands after the snapshot", () => {
   // The other half of the invariant, asserted so that "the snapshot is complete"
-  // cannot be read as "no live event may ever follow it". Order guarantees the
-  // follow-up open is delivered after, so the client sees it as an addition
-  // rather than a contradiction.
+  // cannot be read as "no live event may ever follow it".
+  //
+  // This really broadcasts a live `interaction-opened` through the gateway, rather
+  // than issuing a second subscribe. A second subscribe only proves the second
+  // snapshot ordering, which is not what the invariant is about — what matters is
+  // that an interaction opening after the snapshot is delivered as an ADDITION
+  // after it, so the client reconciles instead of treating it as a contradiction.
   const d = depsWithOpen([openInteraction("req-web-1")]);
   handleWebClientMessage(
     d as never,
@@ -655,25 +659,38 @@ test("an interaction opened AFTER subscribe lands after the snapshot", () => {
     d.sock as never,
     encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1"] })),
   );
-  const snapshotIndex = d.sock.sent
-    .map((raw) => decodeEnvelope(raw))
-    .filter((x) => x.ok)
-    .map((x) => parseWebServerEvent(x.envelope))
-    .findIndex((e) => e !== null && e.kind === "interaction-snapshot");
+  const sentSoFar = d.sock.sent.length;
 
-  // A NEW interaction opens after the subscribe has completed.
-  handleWebClientMessage(
-    d as never,
-    "a1",
-    d.sock as never,
-    encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1"] })),
-  );
-  const secondSnapshotIndex = d.sock.sent
-    .map((raw) => decodeEnvelope(raw))
-    .filter((x) => x.ok)
-    .map((x) => parseWebServerEvent(x.envelope))
-    .findIndex((e, i) => e !== null && e.kind === "interaction-snapshot" && i > snapshotIndex);
-  expect(secondSnapshotIndex).toBeGreaterThan(snapshotIndex);
+  // A NEW interaction opens on the hub after the subscribe has completed, and is
+  // broadcast to this socket exactly as production delivers it.
+  d.webGateway.broadcast("a1", {
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "interaction-opened",
+      chatKey: "bot:c1:t1",
+      sessionAlias: "review",
+      instanceId: "i1",
+      interaction: {
+        requestId: "req-live",
+        kind: "elicitation",
+        conversation: { conversationId: "c1", topicId: "t1" },
+        expiresAt: Date.now() + 60_000,
+        elicitation: { mode: "form", message: "m", fields: [], agent: { name: "codex" } },
+      },
+    },
+  } as never);
+
+  // The live open landed strictly after everything subscribe sent, snapshot last.
+  expect(d.sock.sent.length).toBeGreaterThan(sentSoFar);
+  const last = decodeEnvelope(d.sock.sent[d.sock.sent.length - 1]!);
+  expect(last.ok).toBe(true);
+  const lastEvent = last.ok ? parseWebServerEvent(last.envelope) : null;
+  expect(lastEvent?.kind).toBe("control-event");
+  expect(
+    lastEvent?.kind === "control-event"
+      && (lastEvent.event as { type?: string }).type === "interaction-opened",
+  ).toBe(true);
 });
 
 // SUBSCRIPTION ROUTING — a subscribe frame must actually install the subscription.
