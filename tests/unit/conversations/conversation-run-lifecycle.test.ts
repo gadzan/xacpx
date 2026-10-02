@@ -6088,7 +6088,7 @@ test("PR7 everyone: removed-member runtime residue does not consume the accept b
   first.store.close();
 });
 
-test("PR7 group accept: duplicate IDs deduplicate, everyone expands, empty/unknown/disabled reject", async () => {
+test("PR7 group accept: duplicate IDs reject, everyone expands, empty/unknown/disabled reject", async () => {
   const first = await createLifecycle();
   seedTesterBot(first.state);
   const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
@@ -6096,14 +6096,16 @@ test("PR7 group accept: duplicate IDs deduplicate, everyone expands, empty/unkno
     workspace: "backend",
     isolation: "shared-single-writer",
   });
-  const dup = await first.service.acceptGroupPrompt({
+  // Duplicate ids are ambiguous input (IDs are authority): refuse outright
+  // instead of silently normalizing, before any gate or durable row.
+  await expect(first.service.acceptGroupPrompt({
     conversationId: group.id,
     topicId: topic.id,
     requestId: "req-pr7-dup",
     text: "dup",
     target: { mode: "members", botIds: [BOT_ID, BOT_ID, TESTER_ID] },
-  });
-  expect(dup.memberTurns.map((turn) => turn.botId)).toEqual([BOT_ID, TESTER_ID]);
+  })).rejects.toMatchObject({ code: "invalid-target" });
+  expect(first.store.getRunByRequestId(group.id, topic.id, "req-pr7-dup")).toBeUndefined();
   const everyone = await first.service.acceptGroupPrompt({
     conversationId: group.id,
     topicId: topic.id,
@@ -7427,6 +7429,168 @@ test("PR7 scheduler: held handoff keeps cohort scope until the sibling settles",
   expect(fr.runs[2]?.botId).toBe(thirdBot);
   await waitUntil(() => first.store.getRun(acceptedC.run.id)?.state === "completed", 4000);
   await waitUntil(() => first.store.getRun(acceptedGroup.run.id)?.state === "completed", 4000);
+  first.store.close();
+});
+
+test("PR7 scheduler: multi-failure cohort rejects with the first-launched error, deterministically", async () => {
+  // A cohort where B settles BEFORE A: the drain must reject with A's error
+  // (launch order), not whichever rejection happened to write first
+  // (settlement order). Selection must be deterministic so activation
+  // failures are attributable, and a fresh drain afterwards starts clean.
+  const rejections: unknown[] = [];
+  const onUnhandled = (reason: unknown) => {
+    rejections.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const first = await createLifecycle({
+      autoKick: false,
+      ownerId: "dispatcher-a",
+      hooks: {
+        afterClaim: async (work) => {
+          if (work.memberTurn.botId === BOT_ID) {
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            throw new Error("boom A first-launched");
+          }
+          if (work.memberTurn.botId === TESTER_ID) {
+            throw new Error("boom B settles first");
+          }
+        },
+      },
+    });
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "OrderCohort", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "S", {
+      workspace: "backend",
+      isolation: "shared",
+    });
+    const accepted = await first.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: "req-cohort-order",
+      text: "ordered",
+      target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+      humanIngress: HUMAN_INGRESS,
+    });
+    await expect(first.dispatcher.kick()).rejects.toThrow("boom A first-launched");
+    await tick();
+    await tick();
+    expect(rejections).toEqual([]);
+    // A fresh drain starts with clean error state: both claims are still
+    // durably claimed (the failures escaped settlement), so it drains
+    // nothing and resolves.
+    await first.dispatcher.kick();
+    expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
+    first.store.close();
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("PR7 accept: duplicate members target rejects invalid-target with no durable Run", async () => {
+  // An explicit selection naming the same Bot twice is ambiguous input:
+  // IDs are authority, so refuse it outright instead of silently
+  // normalizing — and before any gate or durable row is taken.
+  const first = await createLifecycle({ autoKick: false });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "DupTarget", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-dup-members",
+    text: "hello",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID, BOT_ID] },
+    humanIngress: HUMAN_INGRESS,
+  })).rejects.toMatchObject({ code: "invalid-target" });
+  expect(first.store.listRuns(group.id)).toEqual([]);
+  expect(first.store.getRunByRequestId(group.id, topic.id, "req-dup-members")).toBeUndefined();
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 })).toHaveLength(0);
+  first.store.close();
+});
+
+test("PR7 accept: everyone beyond the member budget refuses before any durable write", async () => {
+  // 65 enabled members, target everyone: the eligible probe set exceeds
+  // MAX_GROUP_TARGET_MEMBERS and must refuse with target_too_large BEFORE
+  // the accept transaction — no Run, no MemberTurn, no request message,
+  // and no lifecycle gates pinned.
+  const first = await createLifecycle({ autoKick: false });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const all = [BOT_ID, TESTER_ID];
+  for (let i = 2; i < 65; i += 1) {
+    const id = `bot_bulk_${i}`;
+    first.state.bots[id] = {
+      id, name: `Bulk ${i}`, agent: "codex", workspace: "backend", enabled: true,
+      profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+    };
+    all.push(id);
+  }
+  expect(all).toHaveLength(65);
+  const group = await first.bots.createGroup({ title: "Bulk", botIds: all });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared",
+  });
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-everyone-65",
+    text: "hello",
+    target: { mode: "everyone" },
+    humanIngress: HUMAN_INGRESS,
+  })).rejects.toMatchObject({ code: "target_too_large" });
+  expect(first.store.listRuns(group.id)).toEqual([]);
+  expect(first.store.getRunByRequestId(group.id, topic.id, "req-everyone-65")).toBeUndefined();
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 })).toHaveLength(0);
+  first.store.close();
+});
+
+test("PR7 dispatcher: missing request snapshot fails the Group claim terminally, never a fallback prompt", async () => {
+  // The frozen-transcript boundary IS the request message. If that row is
+  // missing (corrupted durable state), a Group member has NO deterministic
+  // input: the claim must fail terminally before execution start — no live
+  // fallback, no indeterminate seal, no requeue loop.
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-a" });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "NoSnapshot", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-missing-snapshot",
+    text: "ship it",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  const realGetMessage = first.store.getMessage.bind(first.store);
+  first.store.getMessage = ((messageId: string) =>
+    messageId === accepted.run.requestMessageId ? undefined : realGetMessage(messageId)) as typeof first.store.getMessage;
+  await first.dispatcher.kick();
+  expect(fakeRunner(first.runner).runs).toHaveLength(0);
+  const run = first.store.getRun(accepted.run.id)!;
+  expect(run.state).toBe("failed");
+  // Multi-member batches derive the aggregate reason in the classifier; the
+  // per-member diagnostic rows below carry the exact corruption cause.
+  expect(run.completionReason).toBe("execution-failed");
+  for (const turn of first.store.listMemberTurns(accepted.run.id)) {
+    expect(turn.state).toBe("failed");
+    expect(turn.failureReason).toBe("missing_request_snapshot");
+  }
+  // Corrupted durable state must not hot-loop: a second kick requeues
+  // nothing (the claims settled terminally) and the rows stay put.
+  await first.dispatcher.kick();
+  expect(fakeRunner(first.runner).runs).toHaveLength(0);
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("failed");
+  expect(first.store.listMemberTurns(accepted.run.id).every((turn) => turn.state === "failed")).toBe(true);
   first.store.close();
 });
 

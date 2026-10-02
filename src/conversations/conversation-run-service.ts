@@ -739,13 +739,18 @@ export class ConversationRunService {
       if (!Array.isArray(target.botIds)) {
         throw new ConversationError("invalid-target", "explicit Group target members must be Bot ids");
       }
-      const deduped = [...new Set(target.botIds)];
-      for (const botId of deduped) {
+      // An explicit selection naming the same Bot twice is ambiguous
+      // input: IDs are authority, so refuse it outright — never silently
+      // normalize. Duplicates are refused before any gate or durable row.
+      if (new Set(target.botIds).size !== target.botIds.length) {
+        throw new ConversationError("invalid-target", "explicit Group target members must be unique");
+      }
+      for (const botId of target.botIds) {
         if (typeof botId !== "string" || !botId) {
           throw new ConversationError("invalid-target", "explicit Group target member must be a Bot id");
         }
       }
-      return { kind: "members", botIds: deduped };
+      return { kind: "members", botIds: [...target.botIds] };
     }
     if (target.mode === "everyone") {
       return { kind: "everyone" };

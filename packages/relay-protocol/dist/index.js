@@ -1066,7 +1066,7 @@ var isConversationTarget = (v) => {
     return botId.length > 0 && botId.length <= MAX_BOT_ID_LENGTH;
   }
   if (v.mode === "members") {
-    return Array.isArray(v.botIds) && v.botIds.length > 0 && v.botIds.length <= MAX_GROUP_TARGET_MEMBERS && v.botIds.every((id) => isStr(id) && id.length > 0 && id.length <= MAX_BOT_ID_LENGTH);
+    return Array.isArray(v.botIds) && v.botIds.length > 0 && v.botIds.length <= MAX_GROUP_TARGET_MEMBERS && new Set(v.botIds).size === v.botIds.length && v.botIds.every((id) => isStr(id) && id.length > 0 && id.length <= MAX_BOT_ID_LENGTH);
   }
   return v.mode === "everyone" || v.mode === "automatic";
 };

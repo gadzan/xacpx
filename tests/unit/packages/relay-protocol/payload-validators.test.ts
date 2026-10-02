@@ -240,6 +240,11 @@ test("parseControlPayload validates group RPC shapes and rejects junk isolation"
   expect(parseControlPayload(MSG.conversationPrompt, promptWith(["x".repeat(129)]))).toBeNull();
   expect(parseControlPayload(MSG.conversationPrompt, promptWith(["x".repeat(128)]))).not.toBeNull();
   expect(parseControlPayload(MSG.conversationPrompt, promptWith([""]))).toBeNull();
+  // Duplicate member ids are ambiguous input: an explicit selection naming
+  // the same Bot twice must be refused at the wire (the server rejects it
+  // with invalid-target; the array-length bound must mean unique members).
+  expect(parseControlPayload(MSG.conversationPrompt, promptWith(["bot_a", "bot_a"]))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, promptWith(["bot_a", "bot_b", "bot_a"]))).toBeNull();
   // Legacy single-Bot target: same id-length bound, since the server normalizes
   // it into a members target and the id would reach gate acquisition.
   const singleWith = (botId: string) => ({

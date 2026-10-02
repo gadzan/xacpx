@@ -483,6 +483,9 @@ const isConversationTarget = (v: unknown): boolean => {
     return Array.isArray(v.botIds)
       && v.botIds.length > 0
       && v.botIds.length <= MAX_GROUP_TARGET_MEMBERS
+      // Duplicate ids are ambiguous input: the array-length bound must mean
+      // unique members (the server rejects duplicates with invalid-target).
+      && new Set(v.botIds).size === v.botIds.length
       && v.botIds.every((id) => isStr(id) && id.length > 0 && id.length <= MAX_BOT_ID_LENGTH);
   }
   return v.mode === "everyone" || v.mode === "automatic";

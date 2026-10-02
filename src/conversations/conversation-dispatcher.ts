@@ -171,10 +171,48 @@ export class ConversationDispatcher {
   }
 
   private async runDrain(): Promise<void> {
-    // Drain-scoped unexpected-failure capture (P1): execute() rejections
-    // that escape its handled settlement paths must reject kick() — and
-    // therefore fail activation — after every launched execution settles.
-    const executionErrors: { first?: unknown; hasError: boolean } = { hasError: false };
+    // Unexpected-failure capture (P1): execute() rejections that escape its
+    // handled settlement paths must reject kick() — and therefore fail
+    // activation — after every launched execution settles. Each launch gets
+    // its own outcome cell: the settle handlers write ONLY their cell (no
+    // shared mutable error state, no clear-then-throw race window), and the
+    // drain consumes the cohort exactly once, in LAUNCH order — so the
+    // rethrown failure is deterministic and attributable, never whichever
+    // rejection happened to settle first.
+    const cohort: Array<{ guard: Promise<void>; outcome: { error?: unknown } }> = [];
+    const launchExecution = (work: ClaimedWork): void => {
+      const outcome: { error?: unknown } = {};
+      // The guard never rejects (both handlers settle normally), so no
+      // `finally` child can leak an unhandled rejection; it settles only
+      // AFTER its handler ran, so awaiting every guard means every outcome
+      // cell is final.
+      const guard = this.execute(work).then(
+        () => {
+          if (this.inFlightExecutions.get(work.dispatch.id) === guard) {
+            this.inFlightExecutions.delete(work.dispatch.id);
+          }
+        },
+        (error: unknown) => {
+          outcome.error = error;
+          if (this.inFlightExecutions.get(work.dispatch.id) === guard) {
+            this.inFlightExecutions.delete(work.dispatch.id);
+          }
+        },
+      );
+      this.inFlightExecutions.set(work.dispatch.id, guard);
+      cohort.push({ guard, outcome });
+    };
+    const awaitCohortInFlight = async (): Promise<void> => {
+      const launched = cohort.splice(0);
+      if (launched.length === 0) {
+        return;
+      }
+      await Promise.allSettled(launched.map((entry) => entry.guard));
+      const failure = launched.find((entry) => entry.outcome.error !== undefined);
+      if (failure) {
+        throw failure.outcome.error;
+      }
+    };
     let seen = 0;
     // Extra pass without consuming a wake: a pass that deferred Topics on
     // pre-start failures may still have unrelated pending work. The preview
@@ -251,7 +289,7 @@ export class ConversationDispatcher {
           // never by drain ordering. Unrelated Topics/Bots wait for the next
           // pass: the loop awaits the SET (below), so kick() still settles
           // only after every launched execution finishes.
-          this.launchExecution(claimed, executionErrors);
+          launchExecution(claimed);
           cohortRunId ??= claimed.run.id;
           passProgress = true;
         }
@@ -266,7 +304,7 @@ export class ConversationDispatcher {
         // hold (or thrown mid-recheck), and nothing else will pick that hold
         // back up — claimOne only returns `pending` rows, never our live
         // `claimed` hold.
-        await this.awaitCohortInFlight(executionErrors);
+        await awaitCohortInFlight();
         // Shutdown owns unstarted holds from here: once `closed` is set, a
         // held sibling must never start — the retire loop in shutdown()
         // returns it to `pending` with provenance intact instead. Without
@@ -292,8 +330,8 @@ export class ConversationDispatcher {
           // with an empty in-flight set, so its global claim cannot overlap
           // B). A bare launch + continue would resolve kick() while B still
           // runs — losing B's failure and reopening global claims mid-flight.
-          this.launchExecution(held, executionErrors);
-          await this.awaitCohortInFlight(executionErrors);
+          launchExecution(held);
+          await awaitCohortInFlight();
           continue;
         }
         // Pre-start failures deferred Topics this pass while unrelated work
@@ -410,51 +448,6 @@ export class ConversationDispatcher {
     });
   }
 
-  /** Launch one execution with drain-scoped failure capture. The guarded
-   *  promise never rejects (both handlers settle normally), so no `finally`
-   *  child can leak an unhandled rejection; the first unexpected failure is
-   *  recorded on `errors` and rethrown by awaitCohortInFlight after the set
-   *  settles. */
-  private launchExecution(
-    work: ClaimedWork,
-    errors: { first?: unknown; hasError: boolean },
-  ): void {
-    const execution = this.execute(work);
-    const guarded = execution.then(
-      () => {
-        if (this.inFlightExecutions.get(work.dispatch.id) === guarded) {
-          this.inFlightExecutions.delete(work.dispatch.id);
-        }
-      },
-      (error: unknown) => {
-        if (!errors.hasError) {
-          errors.first = error;
-          errors.hasError = true;
-        }
-        if (this.inFlightExecutions.get(work.dispatch.id) === guarded) {
-          this.inFlightExecutions.delete(work.dispatch.id);
-        }
-      },
-    );
-    this.inFlightExecutions.set(work.dispatch.id, guarded);
-  }
-
-  /** Settle the in-flight set, then rethrow the first unexpected execution
-   *  failure (if any). Handled settlement paths (release/requeue/terminal
-   *  persist) resolve normally and never reach here as errors. */
-
-
-  private async awaitCohortInFlight(errors: { first?: unknown; hasError: boolean }): Promise<void> {
-    if (this.inFlightExecutions.size > 0) {
-      await Promise.allSettled(this.inFlightExecutions.values());
-    }
-    if (errors.hasError) {
-      const error = errors.first;
-      errors.hasError = false;
-      errors.first = undefined;
-      throw error;
-    }
-  }
   /**
    * PR7 filesystem scheduling gate. PR7 accepts carry no proven read-only
    * capability, so every Group member is conservatively unknown and takes
@@ -635,6 +628,16 @@ export class ConversationDispatcher {
       }
       const snapshot = work.memberSnapshot ?? work.memberTurn.profileSnapshot ?? work.run.profileSnapshot;
       const isGroup = this.runtime.conversationKind(work.run.conversationId) === "group";
+      if (isGroup && !this.store.getMessage(work.run.requestMessageId)) {
+        // The frozen-transcript boundary IS the request message: a Group
+        // batch without it has no deterministic input. A missing row is
+        // corrupted durable state — fail the claim terminally BEFORE
+        // execution start (no live-lookup fallback that would hand members
+        // of one batch different inputs, no indeterminate seal, no requeue
+        // loop on state that cannot heal itself).
+        this.failOwnClaimBeforeStart(work, "missing_request_snapshot");
+        return;
+      }
       if (!isGroup) {
         const live = this.runtime.getBot(work.memberTurn.botId);
         if (live.agent !== snapshot.execution.agent || live.workspace !== snapshot.execution.workspace) {
