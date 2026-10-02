@@ -847,15 +847,25 @@ export interface InteractionResponseDto {
 /** Hub -> browser: the authoritative open-interaction set for one instance. */
 export interface InteractionSnapshotDto {
     /**
-     * One entry per interaction the hub still holds open for this instance,
-     * already filtered to those whose window has not passed.
+     * The instance this set is ABOUT. One snapshot speaks for exactly one instance,
+     * so a client reconciling instance A may conclude nothing about B's forms — which
+     * is what makes the per-entry omission below safe to act on.
+     */
+    readonly instanceId: string;
+    /**
+     * One entry per interaction the hub still holds open for `instanceId`, already
+     * filtered to those whose window has not passed.
      *
-     * Each entry carries the ROUTING fields beside the request — `chatKey`,
-     * `sessionAlias`, `instanceId` — exactly as the live `interaction-opened`
-     * event shapes them, because a browser that has never seen the interaction
-     * needs the same routing information to open it. Omitting them would force
-     * the client to invent a chatKey, which is the kind of guess the interaction
-     * contract forbids.
+     * Each entry carries the ROUTING fields (`chatKey`, `sessionAlias`) beside the
+     * request — exactly as the live `interaction-opened` event shapes them, because a
+     * browser that has never seen the interaction needs the same routing information
+     * to open it. Omitting them would force the client to invent a chatKey, which is
+     * the kind of guess the interaction contract forbids.
+     *
+     * NOTE: `instanceId` is NOT here. It belongs to the snapshot's outer field; an
+     * entry repeats it in the live event only because that event is not itself
+     * scoped. Both shapes are validated by the same `validInteractionOpenShape`, so
+     * an entry and a live event are provably the same wire object.
      *
      * The request itself is the same object, so a browser that already holds the
      * interaction merges it rather than depending on field-by-field equality

@@ -214,6 +214,26 @@ function isTerminalRunState(state: ConversationRunStateDto | undefined): boolean
   return state === "completed" || state === "failed" || state === "cancelled" || state === "indeterminate";
 }
 
+/**
+ * The account's owned instances, as `/api/instances` reports them.
+ *
+ * The authoritative owned-instance set, and the only negative evidence available
+ * for a whole instance rather than a single request. `DELETE /api/instances/:id`
+ * removes an instance from this set, which is what makes a reconnect able to notice
+ * that an interaction it still holds can no longer be answered under this account.
+ *
+ * Resolves with the rows precisely as the server sent them — no filtering, no
+ * caching, no "known instances" merge — because the caller is deciding whether
+ * something no longer EXISTS, and a locally remembered instance is exactly the
+ * stale belief that decision must not consult. Rejects on a non-2xx or a
+ * network failure, which the caller must treat as "no evidence" rather than
+ * "owns nothing": a failed list says nothing about which instances were deleted.
+ */
+async function listOwnedInstances(): Promise<Array<{ id: string }>> {
+  const { instances: rows } = await api.get<{ instances: Array<{ id: string }> }>("/api/instances");
+  return Array.isArray(rows) ? rows : [];
+}
+
 function isActiveRunState(state: ConversationRunStateDto | undefined): boolean {
   return state === "queued" || state === "running" || state === "waiting-human";
 }
@@ -2461,10 +2481,23 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // mentioned it again: the first authoritative 409 is the moment this tab learns
       // the truth, and it acts on it instead of parking a corpse.
       if (error instanceof DirectBotRpcError && error.code === "interaction-gone") {
-        // `withdrawn`, not `cancelled`: the user did not choose anything, and the
-        // form's window is over because something else consumed it.
+        // `gone`, the neutral outcome — NOT `withdrawn`.
+        //
+        // A 409 carries exactly as much information as a snapshot omission: the
+        // request is no longer open. It does NOT say who closed it or why. It may
+        // have been accepted from another tab, declined, cancelled, withdrawn, or
+        // expired, and the hub does not tell this client which.
+        //
+        // `withdrawn` asserts nobody chose anything, which is false precisely in
+        // the most common case — someone else answered it — so this tab would show
+        // "Closed before an answer arrived" to a question that had already been
+        // answered. That is the same "client invents terminal semantics" failure the
+        // snapshot path just fixed, arriving over HTTP instead of a frame.
+        //
+        // A hub-sent `interaction-closed` still reports its own reason, and local
+        // expiry still reports `withdrawn`: those name a cause. Absence never does.
         patchInteraction(requestId, { submitting: false, errorCode: "interactionGone" });
-        retireInteraction(requestId, "withdrawn");
+        retireInteraction(requestId, "gone");
         return;
       }
       // Any other failure is NOT authoritative about the window: the request may
@@ -2661,6 +2694,38 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       dropBotDetail(iId, bId);
       clearSelection();
       return;
+    }
+
+    // An instance can be DELETED while this tab is disconnected, and that removes
+    // the whole snapshot scope for it: instance X is no longer owned, so the
+    // subscribe's ownership filter drops X and X never receives an
+    // `interaction-snapshot`. The tab therefore holds a pending interaction for X
+    // with no open, no close, and no snapshot to retire it from — and there is no
+    // timer either, so it stays until the user happens to click it and gets a 409.
+    //
+    // This is the same "no negative evidence, so the client must keep it" failure
+    // the snapshot closed, one level up: what went missing is not one request but
+    // the instance that owned the set the request would have been proven absent
+    // from. The authoritative owned-instance list is the negative evidence.
+    //
+    // `gone`, for the same reason as the snapshot: absence proves the request
+    // cannot continue under this account and says nothing about who or why.
+    //
+    // Only a SUCCEEDED refresh may conclude anything. A failed list proves nothing
+    // about X and must leave every interaction alone, or a transient error would
+    // destroy live forms. Scoped by instance, so X's removal never touches Y's.
+    let ownedInstanceIds: Set<string> | null = null;
+    try {
+      ownedInstanceIds = new Set((await listOwnedInstances()).map((r) => r.id));
+    } catch {
+      // Offline or unauthorized: not evidence. Leave every interaction open.
+    }
+    if (ownedInstanceIds) {
+      for (const [requestId, held] of pendingInteractions.value) {
+        if (generation !== currentSelectionGeneration) break;
+        if (ownedInstanceIds.has(held.instanceId)) continue;
+        retireInteraction(requestId, "gone");
+      }
     }
 
     if (bId) {
