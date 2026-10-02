@@ -220,6 +220,15 @@ async function handleWebClientMessageAsync(
   if (msg.kind === "subscribe") {
     const ownedIds = new Set(deps.instances.listByAccount(accountId).map((instance) => instance.id));
     const instanceIds = [...new Set(msg.instanceIds)].filter((id) => ownedIds.has(id));
+
+    // Install the subscription BEFORE anything is sent. `WebGateway` treats a socket
+    // ABSENT from its subscription map as "receive everything", so skipping this
+    // call does not merely no-op: it makes this socket the account-wide sink until
+    // something else installs a set. The snapshot boundary only guarantees the
+    // instances it covers, so a socket that also receives every other instance's
+    // live events would accumulate forms no snapshot can ever retire.
+    deps.webGateway.setSubscription(socket, instanceIds);
+
     if (typeof deps.gateway.getWebPublishedEndpoints === "function") {
       deps.webGateway.send(socket, {
         kind: "agent-directory",

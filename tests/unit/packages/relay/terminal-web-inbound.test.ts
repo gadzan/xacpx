@@ -330,6 +330,39 @@ test("a subscribe frame filters ownership and installs the subscription", () => 
     kind: "interaction-snapshot",
     instanceId: "i1",
   });
+  // The name says "installs the subscription", so assert it — by driving the real
+  // gateway and observing where a control-event lands, not with a spy. `WebGateway`
+  // treats a socket ABSENT from its subscription map as "receive everything", so an
+  // uninstalled subscription is not a no-op: it makes the socket an account-wide
+  // sink. Asserting only what subscribe sent cannot detect that, which is how the
+  // deletion slipped through once.
+  d.sock.sent.length = 0;
+  const emitFor = (instanceId: string) => {
+    d.webGateway.broadcast("a1", {
+      kind: "control-event",
+      instanceId,
+      event: {
+        type: "interaction-opened",
+        chatKey: "bot:c:t",
+        sessionAlias: "",
+        instanceId,
+        interaction: {
+          requestId: "req",
+          kind: "elicitation",
+          conversation: { conversationId: "c", topicId: "t" },
+          expiresAt: Date.now() + 60_000,
+          elicitation: { mode: "form", message: "m", fields: [], agent: { name: "codex" } },
+        },
+      },
+    } as never);
+  };
+  // i1 was subscribed (and owned), so it is delivered.
+  emitFor("i1");
+  expect(d.sock.sent).toHaveLength(1);
+  // i2 was filtered out by the ownership check, so it must not be.
+  d.sock.sent.length = 0;
+  emitFor("i2");
+  expect(d.sock.sent, "an unsubscribed instance's control-event reached the socket").toEqual([]);
 });
 
 test("in-flight terminal-open after socket close detaches the connector attachment", async () => {
@@ -641,4 +674,178 @@ test("an interaction opened AFTER subscribe lands after the snapshot", () => {
     .map((x) => parseWebServerEvent(x.envelope))
     .findIndex((e, i) => e !== null && e.kind === "interaction-snapshot" && i > snapshotIndex);
   expect(secondSnapshotIndex).toBeGreaterThan(snapshotIndex);
+});
+
+// SUBSCRIPTION ROUTING — a subscribe frame must actually install the subscription.
+//
+// This was a real P1: the subscribe branch filtered `instanceIds` and sent the
+// directory, state snapshot, replay and interaction snapshot, but never called
+// `setSubscription()`. `WebGateway` treats a socket ABSENT from its subscription
+// map as "receive EVERY control-event", so the fresh socket became an account-wide
+// sink — until something else happened to install a set.
+//
+// That silently defeats the snapshot boundary. A browser subscribing ["i1"] would
+// receive instance i2's live `interaction-opened`, store it account-wide, and then
+// never receive an i2 interaction-snapshot (it only subscribes i1), so the form
+// could not be retired on reconnect. The stale-form bug this whole change fixes
+// would reappear for exactly the instances the subscription was meant to exclude.
+//
+// Driven through the REAL `WebGateway` on purpose: the assertion is about which
+// frames reach the socket, not that a particular method was called, so deleting
+// the `setSubscription` call again turns this red from outside.
+
+test("a subscribe frame installs the instance subscription on the real gateway", () => {
+  const webGateway = new WebGateway();
+  const sock = new FakeSocket();
+  webGateway.register("a1", sock as never);
+  const d = {
+    instances: {
+      getOwned: mock((id: string) => (id === "i1" || id === "i2" ? { id } : null)),
+      listByAccount: mock(() => [{ id: "i1" }, { id: "i2" }]),
+    },
+    gateway: {
+      sendEvent: mock(() => true),
+      isOnline: mock(() => true),
+      getPublishedEndpoints: mock(() => []),
+    },
+    webGateway,
+    stateSnapshot: mock(() => ({ turns: [], usage: [], commands: [] })),
+    interactions: {
+      listForInstance: mock(() => []),
+      listForAccount: mock(() => []),
+      get: mock(() => null),
+    },
+    sock,
+  };
+
+  handleWebClientMessage(
+    d as never,
+    "a1",
+    sock as never,
+    encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1"] })),
+  );
+
+  const kind = (raw: string) => {
+    const decoded = decodeEnvelope(raw);
+    if (!decoded.ok) return null;
+    const e = parseWebServerEvent(decoded.envelope) as { kind?: string } | null;
+    return e?.kind ?? null;
+  };
+
+  // Sanity: only i1 was snapshotted. i2 was not even reached.
+  expect(sock.sent.map(kind)).toEqual(["agent-directory", "state-snapshot", "interaction-snapshot"]);
+
+  // The routing assertion. A control-event for the UNSUBSCRIBED instance must not
+  // reach this socket, and one for the subscribed instance must.
+  sock.sent.length = 0;
+  webGateway.broadcast("a1", {
+    kind: "control-event",
+    instanceId: "i2",
+    event: {
+      type: "interaction-opened",
+      chatKey: "bot:c2:t2",
+      sessionAlias: "",
+      instanceId: "i2",
+      interaction: {
+        requestId: "req-i2",
+        kind: "elicitation",
+        conversation: { conversationId: "c2", topicId: "t2" },
+        expiresAt: Date.now() + 60_000,
+        elicitation: { mode: "form", message: "m", fields: [], agent: { name: "codex" } },
+      },
+    },
+  } as never);
+  expect(sock.sent, "an unsubscribed instance's control-event reached the socket").toEqual([]);
+
+  webGateway.broadcast("a1", {
+    kind: "control-event",
+    instanceId: "i1",
+    event: {
+      type: "interaction-opened",
+      chatKey: "bot:c1:t1",
+      sessionAlias: "review",
+      instanceId: "i1",
+      interaction: {
+        requestId: "req-i1",
+        kind: "elicitation",
+        conversation: { conversationId: "c1", topicId: "t1" },
+        expiresAt: Date.now() + 60_000,
+        elicitation: { mode: "form", message: "m", fields: [], agent: { name: "codex" } },
+      },
+    },
+  } as never);
+  expect(sock.sent, "a subscribed instance's control-event was dropped").toHaveLength(1);
+});
+
+test("a re-subscribe narrows an existing socket's instance set", () => {
+  // `setSubscription` is a full-set replace, not an additive union. A browser that
+  // narrows from ["i1","i2"] to ["i1"] must stop receiving i2's live events, or the
+  // snapshot's instance fence is bypassed from the other direction.
+  const webGateway = new WebGateway();
+  const sock = new FakeSocket();
+  webGateway.register("a1", sock as never);
+  const d = {
+    instances: {
+      getOwned: mock((id: string) => (id === "i1" || id === "i2" ? { id } : null)),
+      listByAccount: mock(() => [{ id: "i1" }, { id: "i2" }]),
+    },
+    gateway: {
+      sendEvent: mock(() => true),
+      isOnline: mock(() => true),
+      getPublishedEndpoints: mock(() => []),
+    },
+    webGateway,
+    stateSnapshot: mock(() => ({ turns: [], usage: [], commands: [] })),
+    interactions: {
+      listForInstance: mock(() => []),
+      listForAccount: mock(() => []),
+      get: mock(() => null),
+    },
+    sock,
+  };
+
+  handleWebClientMessage(
+    d as never,
+    "a1",
+    sock as never,
+    encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1", "i2"] })),
+  );
+  sock.sent.length = 0;
+
+  const emitFor = (instanceId: string) => {
+    webGateway.broadcast("a1", {
+      kind: "control-event",
+      instanceId,
+      event: {
+        type: "interaction-opened",
+        chatKey: "bot:c:t",
+        sessionAlias: "",
+        instanceId,
+        interaction: {
+          requestId: "req",
+          kind: "elicitation",
+          conversation: { conversationId: "c", topicId: "t" },
+          expiresAt: Date.now() + 60_000,
+          elicitation: { mode: "form", message: "m", fields: [], agent: { name: "codex" } },
+        },
+      },
+    } as never);
+  };
+
+  emitFor("i2");
+  emitFor("i1");
+  expect(sock.sent).toHaveLength(2);
+
+  // Narrow to just i1.
+  handleWebClientMessage(
+    d as never,
+    "a1",
+    sock as never,
+    encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1"] })),
+  );
+  sock.sent.length = 0;
+  emitFor("i2");
+  expect(sock.sent, "a re-subscribe did not narrow the instance set").toEqual([]);
+  emitFor("i1");
+  expect(sock.sent).toHaveLength(1);
 });
