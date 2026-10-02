@@ -1,0 +1,592 @@
+// Relay Web instance desktop over RFB: browser-level E2E.
+//
+// Drives the assembled path a real user takes — click the instance Desktop
+// entry, VNC password prompt, connect — with REAL noVNC (lazy-loaded chunk)
+// in a REAL Chromium, talking RFB to a mock server through the mock hub's
+// binary /desktop/observe pipe.
+//
+// Why this exists at all: unit tests prove the client's noVNC contract
+// (credentials OBJECT, scaleViewport property, the _isSupportedSecurityType /
+// _negotiateAuthentication / _fail hooks it patches), and the hub's broker.
+// Neither proves the two halves actually meet: that the frame reaches noVNC
+// as an RFB banner, that VncAuth negotiates, and that a rejected password
+// surfaces as an auth failure rather than a timeout.
+//
+// Scope (the plan's Task 10): full VNC handshake through connect, framebuffer
+// visibility on the rendered canvas, pointer/keyboard input reaching the RFB
+// server as client messages, close + reopen with a fresh hub stream, and the
+// fit/fullscreen toggles. Plus the rejected-password path: noVNC emits
+// securityfailure for a rejected password and then disconnect, so a harness
+// that only half-provisions the mock server produces a "timeout" that looks
+// exactly like a production bug.
+//
+// Desktop project only: the Desktop entry lives in the instance header, which
+// the mobile layout collapses behind the sidebar, so the flow this asserts is
+// not reachable on a phone-sized viewport (by design, not by defect).
+import { expect, test as desktopTest, loginAndShowInstances } from "./fixtures";
+import type { Locator, Page } from "@playwright/test";
+import { createServer, type Server } from "node:net";
+
+const RFB_BANNER = Buffer.from("RFB 003.008\n", "ascii");
+/** One security type: VncAuth (2). */
+const SECURITY_LIST = Buffer.from([1, 2]);
+/** Fixed challenge so the run is deterministic (noVNC does the DES work). */
+const CHALLENGE = Buffer.alloc(16, 0x5a);
+
+interface MockRfb {
+  port: number;
+  /** Bytes the browser sent after auth completed (pointer / key frames). */
+  clientTraffic: Buffer[];
+  /** Set once SecurityResult(OK) was sent. */
+  authenticated: boolean;
+  /** True once the DES response was actually received from the browser. */
+  sawDesResponse: boolean;
+  /** Every FramebufferUpdate actually sent, so the browser's canvas proves out. */
+  updates: Array<{ rects: number; bytes: number }>;
+  /**
+   * Client message TYPES decoded from the live RFB stream, in arrival order.
+   * A growing byte total can be produced by a FramebufferUpdateRequest alone,
+   * so input assertions read these instead: 4 = KeyEvent, 5 = PointerEvent.
+   */
+  clientMessageTypes: Array<{ type: number; expectedBytes: number }>;
+  /** True once a KeyEvent (type 4) has been decoded. */
+  sawKeyEvent: boolean;
+  /** True once a PointerEvent (type 5) has been decoded. */
+  sawPointerEvent: boolean;
+  close(): Promise<void>;
+}
+
+/**
+ * One FramebufferUpdate (message 0) covering a single 8x8 Raw rectangle.
+ * Raw encoding is the one every client must support, so no capability
+ * negotiation is needed; padding to 32-bit boundaries is required by RFB.
+ */
+function sendFramebufferUpdate(socket: net.Socket): number {
+  const header = Buffer.alloc(4);
+  header.writeUInt8(0, 0); // message type: FramebufferUpdate
+  header.writeUInt8(0, 1); // padding
+  header.writeUInt16BE(1, 2); // number of rectangles
+  const rect = Buffer.alloc(12);
+  rect.writeUInt16BE(0, 0); // x
+  rect.writeUInt16BE(0, 2); // y
+  rect.writeUInt16BE(8, 4); // width
+  rect.writeUInt16BE(8, 6); // height
+  rect.writeInt32BE(0, 8); // encoding: Raw
+  const pixels = Buffer.alloc(8 * 8 * 4, 0x22);
+  socket.write(Buffer.concat([header, rect, pixels]));
+  return pixels.byteLength;
+}
+
+/**
+ * Client message type -> total message length, per RFB §7.5.
+ *
+ * Input messages have fixed sizes (KeyEvent 8, PointerEvent 6), but so does the
+ * FramebufferUpdateRequest (10) that a connected client sends unprompted. A
+ * byte total therefore cannot attribute growth to input; decoding the type
+ * bits is what makes an input assertion meaningful.
+ */
+const CLIENT_MESSAGE_LENGTHS: Record<number, number> = {
+  0: 20, // SetPixelFormat: type + 3 pad + pixel format
+  2: 4,  // SetEncodings header (type + pad + u16 count), string below
+  3: 10, // FramebufferUpdateRequest: type + pad + x + y + w + h
+  4: 8,  // KeyEvent: type + pad + u32 key
+  5: 6,  // PointerEvent: type + pad + u16 x + u16 y
+  6: 8,  // ClientCutText: type + 3 pad + u32 length (string follows)
+};
+
+/** RFB message-type numbers the tests assert on. */
+const RFB_KEY_EVENT = 4;
+const RFB_POINTER_EVENT = 5;
+/** Client → server: "send me the framebuffer for this rect". */
+const RFB_FRAMEBUFFER_UPDATE_REQUEST = 3;
+
+/**
+ * Read the noVNC canvas's top-left 8x8 pixels and summarise what actually
+ * painted. Polls because noVNC decodes a FramebufferUpdate after the frame
+ * lands, so a single read taken immediately after the server write races the
+ * renderer. Returns the counts from the first read that shows painted pixels,
+ * so the caller still observes a concrete image rather than "eventually
+ * something".
+ */
+async function pollCanvasPixels(canvas: Locator): Promise<{ nonBlack: number; onColour: number; total: number }> {
+  const deadline = Date.now() + 15_000;
+  let last: { nonBlack: number; onColour: number; total: number } | null = null;
+  while (Date.now() < deadline) {
+    const read = await canvas.evaluate((el) => {
+      const c = el as HTMLCanvasElement;
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      if (!ctx || c.width === 0 || c.height === 0) return null;
+      const { data } = ctx.getImageData(0, 0, Math.min(c.width, 8), Math.min(c.height, 8));
+      let nonBlack = 0;
+      let onColour = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] === 0) continue;
+        if (data[i] !== 0 || data[i + 1] !== 0 || data[i + 2] !== 0) nonBlack++;
+        // The mock fills the rectangle with 0x22 on every channel.
+        if (data[i] === 0x22 && data[i + 1] === 0x22 && data[i + 2] === 0x22 && data[i + 3] === 0xff) onColour++;
+      }
+      return { nonBlack, onColour, total: data.length / 4 };
+    });
+    if (read) {
+      last = read;
+      if (read.nonBlack > 0) return read;
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  // Nothing ever painted: report the last observation so the failure names the
+  // actual pixels instead of only "expected non-zero".
+  return last ?? { nonBlack: 0, onColour: 0, total: 0 };
+}
+
+/**
+ * Incremental RFB client-message framer. One instance per RFB socket: it keeps
+ * the unconsumed tail so a message that straddles two TCP segments is decoded
+ * once its body arrives, not re-walked from a mid-message offset (which would
+ * mis-attribute a payload byte as a message type).
+ *
+ * Only decoding is attempted; the buffer is never consumed past a point where
+ * the next message is incomplete, so a truncated tail is carried forward.
+ */
+class RfbClientMessageFramer {
+  private tail = Buffer.alloc(0);
+
+  /** Feed one received segment; returns every message that is now complete. */
+  push(chunk: Buffer): Array<{ type: number; expectedBytes: number }> {
+    const buffered = this.tail.length === 0 ? chunk : Buffer.concat([this.tail, chunk]);
+    const out: Array<{ type: number; expectedBytes: number }> = [];
+    let offset = 0;
+    for (;;) {
+      const type = buffered[offset];
+      if (type === undefined) break; // nothing left
+      const expected = CLIENT_MESSAGE_LENGTHS[type] ?? 0;
+      if (expected === 0) break; // unknown message: stop rather than desync
+      if (buffered.length - offset < expected) break; // body not all here yet
+      out.push({ type, expectedBytes: expected });
+      if (type === 2) {
+        // SetEncodings is variable length: header + 4 bytes per encoding id.
+        const count = buffered.readUInt16BE(offset + 2);
+        const total = 4 + count * 4;
+        if (buffered.length - offset < total) {
+          out.pop();
+          break;
+        }
+        offset += total;
+      } else {
+        offset += expected;
+      }
+    }
+    this.tail = offset === buffered.length ? Buffer.alloc(0) : buffered.subarray(offset);
+    return out;
+  }
+}
+
+/**
+ * RFB 003.008 server with VncAuth. The handshake is phase-per-frame rather
+ * than "wait for 17 bytes": noVNC sends its 16-byte DES response as soon as
+ * the password is submitted and then WAITS for SecurityResult before it sends
+ * the ClientInit byte, so batching both deadlocks the exchange. A rejected
+ * password additionally needs the RFB 3.8 failure-reason string, because
+ * noVNC routes a failed result to SecurityReason and parses it before
+ * dispatching `securityfailure`.
+ */
+function startMockRfb(opts: { rejectPassword?: boolean } = {}): Promise<MockRfb> {
+  const clientTraffic: Buffer[] = [];
+  const updates: Array<{ rects: number; bytes: number }> = [];
+  const clientMessageTypes: Array<{ type: number; expectedBytes: number }> = [];
+  const state = { authenticated: false, sawDesResponse: false, sawKeyEvent: false, sawPointerEvent: false };
+  const sockets: net.Socket[] = [];
+  return new Promise((resolve) => {
+    let server: Server;
+    server = createServer((socket) => {
+      sockets.push(socket);
+      socket.on("close", () => {
+        const i = sockets.indexOf(socket);
+        if (i >= 0) sockets.splice(i, 1);
+      });
+      socket.on("error", () => {});
+      socket.write(RFB_BANNER);
+      let phase: "version" | "choice" | "auth" | "init" | "live" = "version";
+      let buffered = Buffer.alloc(0);
+      // Per-socket, not per-server: the framer carries an incomplete tail
+      // between TCP segments, so two sockets must never share one.
+      const framer = new RfbClientMessageFramer();
+      socket.on("data", (chunk: Buffer) => {
+        buffered = Buffer.concat([buffered, chunk]);
+        if (phase === "live") {
+          if (buffered.length > 0) {
+            clientTraffic.push(Buffer.from(buffered));
+            // Decode the message types now, while the segment boundary is
+            // still visible: a client message that straddles two segments is
+            // reported when its body completes.
+            for (const msg of framer.push(buffered)) {
+              clientMessageTypes.push(msg);
+              if (msg.type === RFB_KEY_EVENT) state.sawKeyEvent = true;
+              if (msg.type === RFB_POINTER_EVENT) state.sawPointerEvent = true;
+              // A FramebufferUpdateRequest is the client asking for pixels:
+              // answer it, so the browser has live data to map and the canvas
+              // actually paints.
+              if (msg.type === RFB_FRAMEBUFFER_UPDATE_REQUEST) {
+                const sentBytes = sendFramebufferUpdate(socket);
+                updates.push({ rects: 1, bytes: sentBytes });
+              }
+            }
+            buffered = Buffer.alloc(0);
+          }
+          return;
+        }
+        if (phase === "version") {
+          if (buffered.length < 12) return;
+          buffered = buffered.subarray(12);
+          phase = "choice";
+          socket.write(SECURITY_LIST);
+          return;
+        }
+        if (phase === "choice") {
+          if (buffered.length < 1) return;
+          buffered = buffered.subarray(1);
+          phase = "auth";
+          socket.write(CHALLENGE);
+          return;
+        }
+        if (phase === "auth") {
+          if (buffered.length < 16) return;
+          buffered = buffered.subarray(16);
+          state.sawDesResponse = true;
+          if (opts.rejectPassword) {
+            // SecurityResult(failed) + the RFB 3.8 failure-reason string:
+            // (u32 length, ASCII text). noVNC routes a 3.8 failure to
+            // SecurityReason and reads this before it dispatches
+            // `securityfailure`, so omitting it leaves the client stalled in
+            // "connecting" — the misleading symptom the app takes care to
+            // surface properly.
+            socket.write(Buffer.from(new Uint32Array([1]).buffer)); // SecurityResult: failed
+            const reason = Buffer.from("authentication failure", "ascii");
+            const len = Buffer.alloc(4);
+            len.writeUInt32BE(reason.byteLength, 0);
+            socket.write(Buffer.concat([len, reason]));
+            socket.end();
+            return;
+          }
+          socket.write(Buffer.from(new Uint32Array([0]).buffer)); // SecurityResult: OK
+          phase = "init";
+          state.authenticated = true;
+        }
+        // ClientInit (1 byte shared flag) -> ServerInit (24-byte PIXEL_FORMAT +
+        // width/height + name). noVNC may already have sent it in this segment.
+        if (phase === "init") {
+          if (buffered.length < 1) return;
+          buffered = buffered.subarray(1);
+          phase = "live";
+          const name = Buffer.from("xacpx-e2e", "ascii");
+          const si = Buffer.alloc(24);
+          si.writeUInt16BE(1024, 0); // width
+          si.writeUInt16BE(768, 2); // height
+          si.writeUInt8(32, 4); // bpp
+          si.writeUInt8(24, 5); // depth
+          si.writeUInt8(0, 6); // big-endian
+          si.writeUInt8(1, 7); // true-colour
+          si.writeUInt16BE(255, 8); // red max
+          si.writeUInt16BE(255, 10); // green max
+          si.writeUInt16BE(255, 12); // blue max
+          si.writeUInt8(16, 14); // red shift
+          si.writeUInt8(8, 15); // green shift
+          si.writeUInt8(0, 16); // blue shift
+          si[17] = 0;
+          si.writeUInt32BE(name.length, 20);
+          socket.write(Buffer.concat([si, name]));
+          if (buffered.length > 0) {
+            clientTraffic.push(Buffer.from(buffered));
+            buffered = Buffer.alloc(0);
+          }
+          // NOTE: no framebuffer update here. noVNC only paints a
+          // FramebufferUpdate it actually asked for, so pushing one straight
+          // after ServerInit is dropped on the floor — the client then has to
+          // request one before the server may send. The first update is written
+          // from the `live` phase when the client's FramebufferUpdateRequest
+          // (type 3) arrives.
+          return;
+        }
+      });
+    });
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address();
+      if (!addr || typeof addr === "string") throw new Error("mock RFB failed to bind");
+      resolve({
+        port: addr.port,
+        clientTraffic,
+        updates,
+        clientMessageTypes,
+        get authenticated() { return state.authenticated; },
+        get sawDesResponse() { return state.sawDesResponse; },
+        get sawKeyEvent() { return state.sawKeyEvent; },
+        get sawPointerEvent() { return state.sawPointerEvent; },
+        close: () =>
+          new Promise((r) => {
+            // server.close() waits for every live connection: the browser holds
+            // one for the whole desktop session, so without an explicit peer
+            // teardown this hangs until the test times out. Tracked sockets are
+            // the browser-side RFB connections; destroy them, then close.
+            for (const sock of sockets.splice(0)) sock.destroy();
+            server.close(() => r());
+          }),
+      });
+    });
+  });
+}
+
+async function openDesktop(page: Page): Promise<void> {
+  await loginAndShowInstances(page);
+  const entry = page.getByTestId("instance-desktop");
+  await expect(entry).toBeVisible({ timeout: 30_000 });
+  await entry.click();
+  await expect(page.getByTestId("desktop-center")).toBeVisible();
+}
+
+/** Drive the VncAuth prompt to the connected state. */
+async function connectDesktop(page: Page): Promise<void> {
+  await expect(page.getByTestId("desktop-status")).toContainText(/password/i, { timeout: 30_000 });
+  await expect(page.getByTestId("desktop-password")).toBeVisible();
+  await page.getByTestId("desktop-password").fill("s3cret");
+  await page.getByTestId("desktop-password-submit").click();
+  await expect(page.getByTestId("desktop-status")).toContainText(/connected/i, { timeout: 30_000 });
+  await expect(page.getByTestId("desktop-password")).toBeHidden();
+}
+
+desktopTest.describe("Relay Web instance desktop over RFB", () => {
+  // Mobile project: the Desktop entry lives in the instance header, which the
+  // mobile layout collapses behind the sidebar. The flow is not reachable on a
+  // phone-sized viewport by design.
+  desktopTest.skip(({ isMobile }) => isMobile === true, "instance desktop needs the desktop layout");
+  desktopTest("vnc-auth password connects desktop to the RFB server", async ({ page, hub }) => {
+    const rfb = await startMockRfb();
+    hub.setDesktopRfb(rfb.port);
+    await openDesktop(page);
+    await connectDesktop(page);
+
+    // noVNC's post-connect setup (SetPixelFormat, SetEncodings,
+    // FramebufferUpdateRequest) is the real proof that both halves of the
+    // desktop plane actually meet: the server answered ServerInit and the
+    // client spoke RFB back. A harness that stubbed noVNC, or forwarded the
+    // wrong bytes, could not get here.
+    await expect
+      .poll(() => rfb.clientTraffic.reduce((sum, b) => sum + b.byteLength, 0), { timeout: 15_000 })
+      .toBeGreaterThan(0);
+    expect(rfb.authenticated).toBe(true);
+    await rfb.close();
+  });
+
+  desktopTest("framebuffer updates reach the browser and render on the canvas", async ({ page, hub }) => {
+    // A visible framebuffer is the point of the feature. Assert on the mock's
+    // server-side send AND the browser's rendered canvas, so a server that
+    // never speaks framebuffer cannot satisfy this by accident.
+    const rfb = await startMockRfb();
+    hub.setDesktopRfb(rfb.port);
+    await openDesktop(page);
+    await connectDesktop(page);
+
+    // The update is now written when the client ASKS for one
+    // (FramebufferUpdateRequest), and noVNC's post-connect setup is async, so
+    // wait for the request instead of assuming it already arrived.
+    await expect
+      .poll(() => rfb.updates.length, { timeout: 15_000 })
+      .toBeGreaterThan(0);
+    expect(rfb.updates[0]).toEqual({ rects: 1, bytes: 8 * 8 * 4 });
+
+    // noVNC creates a canvas inside our host and sizes it to the framebuffer.
+    // The desktop tab's own fit toggle keeps the label in the first fit state,
+    // so the canvas element itself must exist and be sized.
+    const canvas = page.locator('[data-test="desktop-host"] canvas').first();
+    await expect(canvas).toBeVisible();
+    const box = await canvas.boundingBox();
+    expect(box).not.toBeNull();
+    expect(box!.width).toBeGreaterThan(0);
+    expect(box!.height).toBeGreaterThan(0);
+
+    // A sized canvas is not enough on its own: noVNC sizes it from the
+    // ServerInit geometry, so a server that drops every FramebufferUpdate
+    // still produces a correctly sized element. Read the actual pixels — the
+    // mock paints a Raw rectangle of 0x22 bytes, which must show up as non-black
+    // and equal to the sent colour, proving the update traversed the whole
+    // path instead of only sizing the element. noVNC decodes asynchronously
+    // after the frame arrives, so poll until it has painted.
+    const painted = await pollCanvasPixels(canvas);
+    expect(painted.total).toBeGreaterThan(0);
+    expect(painted.nonBlack).toBeGreaterThan(0);
+    // The mock fills the 8x8 rectangle with 0x22 on every channel.
+    expect(painted.onColour).toBeGreaterThan(0);
+
+    await rfb.close();
+  });
+
+  desktopTest("pointer and keyboard input become RFB client messages", async ({ page, hub }) => {
+    // The interactive half of "watch AND control". noVNC 1.7.0 connected with
+    // viewOnly=false grabs the keyboard and registers mousedown/mousemove/
+    // mouseup on its canvas, so a real click / keypress on the canvas must
+    // produce PointerEvent + KeyEvent messages upstream.
+    const rfb = await startMockRfb();
+    hub.setDesktopRfb(rfb.port);
+    await openDesktop(page);
+    await connectDesktop(page);
+
+    // noVNC's post-connect setup is async, and a keypress delivered while the
+    // socket is still in the handshake would be consumed as handshake bytes
+    // (or arrive before the client installs its keyboard handler). Wait for the
+    // client to actually ask for framebuffer data — proof it is past the
+    // handshake — before driving input.
+    await expect
+      .poll(() => rfb.clientMessageTypes.some((m) => m.type === RFB_FRAMEBUFFER_UPDATE_REQUEST), { timeout: 15_000 })
+      .toBe(true);
+
+    // A connected client already emits setup traffic (SetPixelFormat,
+    // SetEncodings, FramebufferUpdateRequest), so the baseline is the decoded
+    // message count BEFORE the input actions.
+    const baselineMessages = rfb.clientMessageTypes.length;
+    const canvas = page.locator('[data-test="desktop-host"] canvas').first();
+    await expect(canvas).toBeVisible();
+    const box = await canvas.boundingBox();
+    if (!box) throw new Error("desktop canvas has no box");
+    // Click the canvas CENTRE via the real mouse: noVNC listens for mousedown
+    // on the canvas element, so the event must land on it, not on an overlay.
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.up();
+    await page.keyboard.press("KeyX");
+
+    // noVNC dispatches PointerEvents in coalescing batches and the keyboard
+    // events are logged before the optional key-timer flush, so settle both
+    // rather than expecting one message per DOM event.
+    await expect
+      .poll(() => rfb.clientMessageTypes.length, { timeout: 15_000 })
+      .toBeGreaterThan(baselineMessages);
+    await expect.poll(() => rfb.sawPointerEvent, { timeout: 15_000 }).toBe(true);
+    await expect.poll(() => rfb.sawKeyEvent, { timeout: 15_000 }).toBe(true);
+
+    await rfb.close();
+  });
+
+  desktopTest("closing the desktop closes the stream and the entry stays usable", async ({ page, hub }) => {
+    const rfb = await startMockRfb();
+    hub.setDesktopRfb(rfb.port);
+    await openDesktop(page);
+    await connectDesktop(page);
+
+    // Close from the panel's own Disconnect button.
+    await page.getByTestId("desktop-close").click();
+    await expect(page.getByTestId("desktop-center")).toBeHidden();
+
+    // The hub was told to close the stream it minted.
+    expect(hub.desktopCloseRequests.length).toBeGreaterThan(0);
+    expect(hub.desktopCloseRequests[0]).toBe(hub.desktopStreamIds[0]);
+    // The instance entry survives: closing is a normal user action, and the
+    // capability must not have been dropped by it, so reopen is possible.
+    await expect(page.getByTestId("instance-desktop")).toBeVisible();
+
+    await rfb.close();
+  });
+
+  desktopTest("reopen after close establishes a second independent stream", async ({ page, hub }) => {
+    // v1 is single-stream per instance, so a reopen must go through the whole
+    // hub handshake again (a fresh streamId + a fresh ticket) rather than
+    // reusing or resurrecting the closed one.
+    const rfb = await startMockRfb();
+    hub.setDesktopRfb(rfb.port);
+    await openDesktop(page);
+    await connectDesktop(page);
+
+    await page.getByTestId("desktop-close").click();
+    await expect(page.getByTestId("desktop-center")).toBeHidden();
+    const firstStreamId = hub.desktopStreamIds[0];
+    expect(hub.desktopCloseRequests[0]).toBe(firstStreamId);
+
+    await page.getByTestId("instance-desktop").click();
+    await expect(page.getByTestId("desktop-center")).toBeVisible();
+    await connectDesktop(page);
+
+    expect(hub.desktopStreamIds.length).toBe(2);
+    expect(hub.desktopStreamIds[1]).not.toBe(firstStreamId);
+    await expect(page.getByTestId("desktop-status")).toContainText(/connected/i);
+
+    await rfb.close();
+  });
+
+  desktopTest("fit and fullscreen toggles reach the noVNC client", async ({ page, hub }) => {
+    const rfb = await startMockRfb();
+    hub.setDesktopRfb(rfb.port);
+    await openDesktop(page);
+    await connectDesktop(page);
+
+    const fit = page.getByTestId("desktop-fit-toggle");
+    const fullscreen = page.getByTestId("desktop-fullscreen-toggle");
+    await expect(fit).toBeVisible();
+    await expect(fullscreen).toBeVisible();
+
+    // fit starts ON (the store seeds fit:true and the wrapper applies it to
+    // `scaleViewport` once noVNC resolves).
+    await expect(fit).toHaveAttribute("aria-label", /fit/i);
+    await fit.click();
+    await expect(fit).toHaveAttribute("aria-label", /actual/i);
+    await fit.click();
+    await expect(fit).toHaveAttribute("aria-label", /fit/i);
+
+    await fullscreen.click();
+    await expect(fullscreen).toHaveAttribute("aria-label", /exit/i);
+    await fullscreen.click();
+    await expect(fullscreen).toHaveAttribute("aria-label", /^fullscreen$/i);
+
+    await rfb.close();
+  });
+
+  desktopTest("a rejected vnc password reports an auth failure, not a timeout", async ({ page, hub }) => {
+    // The regression: noVNC emits securityfailure for a REJECTED password and
+    // then (because _fail() marks the connection unclean) disconnect. Mapping
+    // the disconnect instead overwrites "your password is wrong" with a
+    // generic stream timeout, which reads to the user as "server broken".
+    const rfb = await startMockRfb({ rejectPassword: true });
+    hub.setDesktopRfb(rfb.port);
+    await openDesktop(page);
+
+    await expect(page.getByTestId("desktop-password")).toBeVisible({ timeout: 30_000 });
+    await page.getByTestId("desktop-password").fill("definitely-wrong");
+    await page.getByTestId("desktop-password-submit").click();
+
+    const banner = page.getByTestId("desktop-error");
+    await expect(banner).toBeVisible({ timeout: 30_000 });
+    await expect(banner).toContainText(/password/i);
+    await expect(banner).not.toContainText(/not supported/i);
+    await expect(banner).not.toContainText(/timed out/i);
+    // The failure came from the RFB server, so the mock saw the DES response.
+    expect(rfb.sawDesResponse).toBe(true);
+
+    await rfb.close();
+  });
+
+  // The framer is TCP-stream state, so it is the one part of this harness that
+  // needs proof independent of a browser: a message split across two segments
+  // must still decode as ONE message, and its payload bytes must never be
+  // mis-read as a message type.
+  desktopTest("client framer decodes messages split across TCP segments", async () => {
+    const framer = new RfbClientMessageFramer();
+
+    // PointerEvent (type 5, 6 bytes): 05 00 00 00 00 01
+    const pointer = Buffer.from([5, 0, 0, 0, 0, 1]);
+    // KeyEvent (type 4, 8 bytes): 04 01 00 00 00 00 00 58
+    const key = Buffer.from([4, 1, 0, 0, 0, 0, 0, 0x58]);
+
+    // Split the pointer mid-body and split the key off its type byte.
+    expect(framer.push(pointer.subarray(0, 3))).toEqual([]);
+    const afterPointer = framer.push(pointer.subarray(3));
+    expect(afterPointer).toEqual([{ type: 5, expectedBytes: 6 }]);
+    expect(framer.push(key.subarray(0, 1))).toEqual([]);
+    expect(framer.push(key.subarray(1))).toEqual([{ type: 4, expectedBytes: 8 }]);
+
+    // A complete message followed by a truncated one: only the complete one
+    // decodes, and the tail is retained (not lost, not mis-decoded).
+    const combined = Buffer.concat([key, pointer.subarray(0, 2)]);
+    const decoded = framer.push(combined);
+    expect(decoded).toEqual([{ type: 4, expectedBytes: 8 }]);
+    expect(framer.push(pointer.subarray(2))).toEqual([{ type: 5, expectedBytes: 6 }]);
+
+    // An unknown message type stops the walk instead of desynchronising.
+    expect(framer.push(Buffer.from([0xf9, 1, 2, 3]))).toEqual([]);
+  });
+});

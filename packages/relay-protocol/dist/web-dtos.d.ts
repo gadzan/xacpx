@@ -1,6 +1,6 @@
 import { type RelayEnvelope } from "./envelope.js";
 import type { AgentCommandDto, ControlEventDto, ConversationTurnCorrelationDto, PeerMessageHistoryEntry, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
-import type { InstanceNoticePayload, TerminalRole } from "./messages.js";
+import type { DesktopSecurityKind, InstanceNoticePayload, TerminalRole } from "./messages.js";
 /** Envelope `type` for every relay→web push. */
 export declare const WEB_EVENT_TYPE = "web.event";
 export type MessageDirection = "in" | "out";
@@ -236,6 +236,22 @@ export type WebServerEvent = {
     generation: string;
     reason: string;
     code?: number;
+} | {
+    kind: "desktop-opened";
+    requestId: string;
+    instanceId: string;
+    streamId: string;
+    /** Single-use binary path, e.g. `/desktop/observe?ticket=…`; never persisted. */
+    wsPath: string;
+    /** Epoch ms when the browser ticket expires. */
+    expiresAt: number;
+    security: DesktopSecurityKind;
+} | {
+    kind: "desktop-request-failed";
+    requestId: string;
+    instanceId: string;
+    code: string;
+    message: string;
 };
 /** Wrap a server→web push event in a relay envelope. */
 export declare function webEventEnvelope(event: WebServerEvent): RelayEnvelope;
@@ -319,6 +335,17 @@ export type WebClientMessage = {
     instanceId: string;
     attachmentId: string;
 } | {
+    kind: "desktop-open";
+    requestId: string;
+    instanceId: string;
+} | {
+    kind: "desktop-close";
+    instanceId: string;
+} & ({
+    streamId: string;
+} | {
+    requestId: string;
+}) | {
     kind: "subscribe";
     instanceIds: string[];
 };

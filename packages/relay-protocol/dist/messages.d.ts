@@ -79,6 +79,8 @@ export declare const MSG: {
     readonly terminalDetach: "instance.terminal.detach";
     readonly terminalViewerEvent: "instance.terminal.viewer-event";
     readonly terminalResourceExit: "instance.terminal.resource-exit";
+    readonly desktopPrepare: "instance.desktop.prepare";
+    readonly desktopCancel: "instance.desktop.cancel";
     readonly instanceAgentEndpointsSync: "instance.agent-endpoints.sync";
     readonly agentMessageRoute: "instance.agent-message.route";
     readonly agentMessageDeliver: "instance.agent-message.deliver";
@@ -966,6 +968,7 @@ export interface TerminalAttachPayload {
 export declare const RELAY_CAPABILITIES: {
     readonly terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1";
     readonly terminalMultiViewV1: "terminal.multi-view.v1";
+    readonly desktopRfbV1: "desktop.rfb.v1";
     /** This side can open an ACP form elicitation for a human and carry the
      *  decision back. Both halves (hub and web) must declare it: a hub without it
      *  never asks, so an old hub simply produces no interaction rather than a
@@ -1110,6 +1113,30 @@ export interface TerminalResourceExitPayload {
     reason: string;
     code?: number;
 }
+/** RFB auth surfaced to the browser. v1 serves `vnc-auth` only; `ard` is a
+ *  Phase B placeholder so connectors can report it as explicitly unsupported. */
+export type DesktopSecurityKind = "vnc-auth" | "ard";
+/** Hub → connector `instance.desktop.prepare` request. Carries stream identity
+ *  only — never a target host/port. The connector always dials its own frozen
+ *  desktop config (loopback + configured port). */
+export interface DesktopPreparePayload {
+    streamId: string;
+    /** Single-use connector ticket for the `/desktop/instance` binary upgrade. */
+    ticket: string;
+    /** Epoch ms when the ticket/stream reservation expires. */
+    expiresAt: number;
+}
+export interface DesktopPrepareResult {
+    streamId: string;
+    security: DesktopSecurityKind;
+}
+/** Hub → connector `instance.desktop.cancel` event (fire-and-forget). */
+export interface DesktopCancelPayload {
+    streamId: string;
+}
+/** Stable browser-facing desktop error codes (i18n by code, not message text). */
+export declare const DESKTOP_ERROR_CODES: readonly ["desktop-disabled", "desktop-busy", "desktop-rfb-unavailable", "desktop-not-rfb", "desktop-auth-unsupported", "desktop-stream-timeout", "desktop-instance-offline", "desktop-protocol-error"];
+export type DesktopErrorCode = (typeof DESKTOP_ERROR_CODES)[number];
 export interface InstanceAgentEndpointsSyncPayload {
     endpoints: PublishedAgentEndpointDto[];
 }

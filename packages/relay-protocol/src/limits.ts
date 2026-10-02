@@ -54,6 +54,40 @@ export const MAX_CAPABILITIES = 32;
 /** Max length of a single capability string. */
 export const MAX_CAPABILITY_LENGTH = 128;
 
+// --- instance desktop (RFB/VNC) hard limits (browser ↔ hub ↔ connector) ---
+/** Browser → hub desktop-open request id. */
+export const MAX_DESKTOP_REQUEST_ID_LENGTH = 128;
+/** Hub-minted desktop stream identity (prepare payload, cancel payload, web DTOs). */
+export const MAX_DESKTOP_STREAM_ID_LENGTH = 128;
+/** Hub-minted single-use desktop ticket (prepare payload + binary wsPath query). */
+export const MAX_DESKTOP_TICKET_LENGTH = 128;
+/** `desktop-opened` wsPath (`/desktop/observe?ticket=…`); tickets stay opaque in the query. */
+export const MAX_DESKTOP_WS_PATH_LENGTH = 512;
+export const MAX_DESKTOP_ERROR_MESSAGE_LENGTH = 512;
+/** Single-use desktop ticket TTL (hub ticket store + `expiresAt` stamped on prepare). */
+export const DESKTOP_TICKET_TTL_MS = 60_000;
+/** Hub → connector `instance.desktop.prepare` deadline. Far below the 120s generic
+ *  agent RPC timeout: a hung RFB probe must fail fast, not pin a stream slot. */
+export const DESKTOP_HUB_REQUEST_TIMEOUT_MS = 10_000;
+/**
+ * Browser → hub desktop RPC deadline. Must be strictly longer than
+ * `DESKTOP_HUB_REQUEST_TIMEOUT_MS` so a slow prepare cannot bind a stream
+ * after the browser has already dropped the pending request.
+ */
+export const DESKTOP_RPC_TIMEOUT_MS = 15_000;
+/** v1 single-viewer: at most one active/preparing desktop stream per instance. */
+export const DESKTOP_MAX_STREAMS_PER_INSTANCE = 1;
+/** Hub-wide cap on concurrent active desktop streams per account. */
+export const DESKTOP_MAX_STREAMS_PER_ACCOUNT = 8;
+/** Desktop binary WebSocket max inbound frame (hub + connector). Framebuffer never enters JSON. */
+export const DESKTOP_WS_MAX_PAYLOAD_BYTES = 1 * 1024 * 1024;
+/** Connector single TCP read/forward chunk between loopback RFB and the binary WS. */
+export const DESKTOP_TCP_CHUNK_BYTES = 64 * 1024;
+/** Destination bufferedAmount that pauses the source side (TCP pause / WS backpressure). */
+export const DESKTOP_BUFFERED_SOFT_PAUSE_BYTES = 2 * 1024 * 1024;
+/** Destination bufferedAmount that closes both sides (hub never queues unbounded). */
+export const DESKTOP_BUFFERED_HARD_CLOSE_BYTES = 4 * 1024 * 1024;
+
 /** Max base64 wire length that can decode to `maxDecodedBytes` (with padding). */
 export function maxBase64EncodedLength(maxDecodedBytes: number): number {
   return 4 * Math.ceil(Math.max(0, maxDecodedBytes) / 3);

@@ -69,6 +69,7 @@ import {
   isTerminalRequestType,
 } from "./terminal-bridge.js";
 import { retireRelayTerminals } from "./terminal/retire-terminals.js";
+import { DesktopTunnelRuntime } from "./desktop/desktop-tunnel-runtime.js";
 import { logTerminalEvent } from "./terminal/terminal-log.js";
 import {
   RMUX_BUNDLED_VERSION,
@@ -200,6 +201,7 @@ export class RelayChannel implements MessageChannelRuntime {
   private startLogger: ChannelStartInput["logger"] | undefined;
   private readonly pendingRetirements = new Set<Promise<void>>();
   private endpointSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  private desktop: DesktopTunnelRuntime | null = null;
 
   constructor(
     options: Record<string, unknown> | undefined,
@@ -238,6 +240,8 @@ export class RelayChannel implements MessageChannelRuntime {
       this.terminal = null;
       this.terminalReady = false;
     }
+    this.desktop?.closeAll("logout");
+    this.desktop = null;
     await this.stopTerminalSupervisor();
     this.credentials.clear();
   }
@@ -250,8 +254,13 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     const control = input.control;
     this.control = control;
+    // Capture it for EVERY subsystem here, not inside each bootstrap: desktop is
+    // config-only and does not go through the terminal path, so a terminal-disabled
+    // + desktop-enabled channel would otherwise leave the tunnel runtime with no
+    // logger at all and its probe/tunnel events silently dropped.
+    this.startLogger = input.logger;
 
-    const capabilities = [
+    const capabilities: string[] = [
       ...(await this.bootstrapTerminal(input)),
       // Interaction with the authenticated human, over the same connection that
       // already carries prompts. Advertised because `requestElicitation` is a
@@ -263,7 +272,8 @@ export class RelayChannel implements MessageChannelRuntime {
       // the connector cannot deliver.
       RELAY_CAPABILITIES.interactionElicitationFormV1,
     ];
-
+    if (this.bootstrapDesktop())
+      capabilities.push(RELAY_CAPABILITIES.desktopRfbV1);
     const bridge = createControlBridge(control, {
       ...(input.trustedConversationPrompt
         ? { trustedConversationPrompt: input.trustedConversationPrompt }
@@ -273,6 +283,10 @@ export class RelayChannel implements MessageChannelRuntime {
       envelope: RelayEnvelope,
       respond: (payload: unknown) => void,
     ) => {
+      if (this.desktop && envelope.type === MSG.desktopPrepare) {
+        void this.desktop.handlePrepare(envelope, respond);
+        return;
+      }
       if (
         this.terminal &&
         this.terminalReady &&
@@ -295,6 +309,7 @@ export class RelayChannel implements MessageChannelRuntime {
       capabilities,
       onRequest,
       onEvent: (envelope) => {
+        if (this.desktop?.handleCancel(envelope)) return;
         if (envelope.type === MSG.instanceRecoveryAck) {
           const ids = (
             envelope.payload as InstanceRecoveryAckPayload | undefined
@@ -338,6 +353,7 @@ export class RelayChannel implements MessageChannelRuntime {
       },
       onDisconnected: () => {
         this.terminal?.detachAllAttachments();
+        this.desktop?.closeAll("control-disconnected");
       },
       logger: input.logger,
       onReady: () => {
@@ -448,6 +464,8 @@ export class RelayChannel implements MessageChannelRuntime {
       this.viewerPublish = null;
     }
     await this.stopTerminalSupervisor();
+    this.desktop?.closeAll("stop");
+    this.desktop = null;
 
     this.client?.stop();
     this.client = null;
@@ -919,7 +937,7 @@ export class RelayChannel implements MessageChannelRuntime {
         "relay terminal.enabled requires ChannelStartInput.sessionResources (xacpx with SessionResourceCatalog)",
       );
     }
-    this.startLogger = input.logger;
+    // `startLogger` is captured once in start(), before either bootstrap runs.
 
     const registry = new TerminalRegistryStore({
       dir: registryDir,
@@ -1041,6 +1059,26 @@ export class RelayChannel implements MessageChannelRuntime {
   /** Test seam */
   getTerminalRuntimeForTests(): RelayTerminalRuntime | null {
     return this.terminal;
+  }
+
+  /** Test seam: the runtime built by bootstrapDesktop, so tests can assert it
+   *  received the channel's logger in a desktop-only (terminal-disabled) start. */
+  getDesktopRuntimeForTests(): DesktopTunnelRuntime | null {
+    return this.desktop;
+  }
+
+  /** Desktop is config-only: enabled → runtime + `desktop.rfb.v1` capability. */
+  private bootstrapDesktop(): boolean {
+    if (!this.config.desktop.enabled) {
+      this.desktop = null;
+      return false;
+    }
+    this.desktop = new DesktopTunnelRuntime({
+      config: this.config.desktop,
+      hubUrl: this.config.url,
+      ...(this.startLogger ? { logger: this.startLogger } : {}),
+    });
+    return true;
   }
 
   async sendAgentMessageRoute(payload: {

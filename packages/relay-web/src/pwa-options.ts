@@ -38,9 +38,10 @@ export const pwaOptions: Partial<VitePWAOptions> = {
   workbox: {
     globPatterns: ["**/*.{js,css,html,svg,png,ico,woff2}"],
     // App is an SPA: serve cached index.html for client-side routes, but NEVER
-    // shadow the relay hub's API / WebSocket endpoints.
+    // shadow the relay hub's API / WebSocket endpoints (including the desktop
+    // binary upgrades — serving HTML there would break the noVNC handshake).
     navigateFallback: "/index.html",
-    navigateFallbackDenylist: [/^\/api/, /^\/ws/],
+    navigateFallbackDenylist: [/^\/api/, /^\/ws/, /^\/desktop\/(observe|instance)/],
     // Push handlers live in a classic-script island injected into the generated
     // SW: generateSW owns precaching; importScripts keeps our handlers unbundled.
     importScripts: ["/push-sw.js"],

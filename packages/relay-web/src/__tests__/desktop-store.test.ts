@@ -1,0 +1,663 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createPinia, setActivePinia } from "pinia";
+
+import { supportsDesktop } from "../stores/instances";
+import { useDesktopStore } from "../stores/desktop";
+import { DesktopRequestError } from "../api/events";
+import { connectDesktopRfb } from "../lib/desktop-client";
+import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
+
+
+vi.mock("../api/events", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/events")>();
+  return {
+    ...actual,
+    // requestDesktop rejects early ("events-offline") when no live socket is
+    // recorded; the tests drive open() synchronously, so record one.
+    isEventsSocketOpen: vi.fn(() => true),
+    requestDesktop: vi.fn(async () => ({
+      requestId: "r1",
+      instanceId: "i1",
+      streamId: "s1",
+      wsPath: "/desktop/observe?ticket=t",
+      expiresAt: 1,
+      security: "vnc-auth",
+    })),
+    sendWebClientMessage: vi.fn(),
+  };
+});
+
+vi.mock("../lib/desktop-client", () => ({
+  connectDesktopRfb: vi.fn(() => ({ sendCredentials: vi.fn(), setScaleViewport: vi.fn(), dispose: vi.fn() })),
+}));
+
+async function lastConnectTarget(): Promise<HTMLElement | undefined> {
+  const { connectDesktopRfb } = await import("../lib/desktop-client");
+  const calls = (connectDesktopRfb as unknown as { mock: { calls: Array<[{ target?: HTMLElement }]> } }).mock.calls;
+  return calls[calls.length - 1]?.[0]?.target;
+}
+
+async function lastConnectInput(): Promise<{ target?: HTMLElement; fit?: boolean } | undefined> {
+  const { connectDesktopRfb } = await import("../lib/desktop-client");
+  const calls = (connectDesktopRfb as unknown as { mock: { calls: Array<[{ target?: HTMLElement; fit?: boolean }]> } }).mock.calls;
+  return calls[calls.length - 1]?.[0];
+}
+
+describe("desktop store", () => {
+  beforeEach(async () => {
+    setActivePinia(createPinia());
+    // The reconnect subscription set lives at module scope in events.ts and
+    // outlives an individual store, so a fresh store per test would otherwise
+    // accumulate the handlers of every discarded store and re-open N times.
+    const { _resetTerminalRequestStateForTests } = await import("../api/events");
+    _resetTerminalRequestStateForTests();
+    // clearAllMocks() also wipes implementations, so re-seed the default
+    // requestDesktop AFTER clearing — otherwise the next open() awaits
+    // `undefined` and times out.
+    vi.clearAllMocks();
+    const { requestDesktop } = await import("../api/events");
+    (requestDesktop as unknown as { mockImplementation: (fn: () => Promise<unknown>) => void })
+      .mockImplementation(async () => ({
+        requestId: "r1",
+        instanceId: "i1",
+        streamId: "s1",
+        wsPath: "/desktop/observe?ticket=t",
+        expiresAt: 1,
+        security: "vnc-auth",
+      }));
+  });
+
+  it("gates on the desktop capability and online state", () => {
+    expect(supportsDesktop({ online: true, capabilities: [RELAY_CAPABILITIES.desktopRfbV1] })).toBe(true);
+    expect(supportsDesktop({ online: false, capabilities: [RELAY_CAPABILITIES.desktopRfbV1] })).toBe(false);
+    expect(supportsDesktop({ online: true, capabilities: [] })).toBe(false);
+    expect(supportsDesktop({ online: true })).toBe(false);
+  });
+
+  it("a disposed store's reconnect closure stops firing (no global reset)", async () => {
+    // The subscription set in events.ts is module-scoped, so a store torn down
+    // without unsubscribing (HMR, explicit $dispose, an embedded re-create)
+    // leaves its closure registered and every later reconnect drives a
+    // desktop-open for a viewer nobody is showing. This must hold on the store's
+    // OWN dispose path, and deliberately avoids the global handler reset, which
+    // is precisely what would mask the leak.
+    const events = await import("../api/events");
+    const fire = (events as unknown as { _fireEventsReconnectForTests: () => void })._fireEventsReconnectForTests;
+
+    // No beforeEach interference: this test manages the handler set itself.
+    setActivePinia(createPinia());
+    (events as unknown as { _resetTerminalRequestStateForTests: () => void })._resetTerminalRequestStateForTests();
+    vi.mocked(events.requestDesktop).mockImplementation(async (msg: unknown) => ({
+      requestId: "r",
+      instanceId: (msg as { instanceId: string }).instanceId,
+      streamId: `s-${vi.mocked(events.requestDesktop).mock.calls.length}`,
+      wsPath: "/desktop/observe?ticket=t",
+      expiresAt: 1,
+      security: "vnc-auth",
+    }));
+
+    // No wrapping effectScope: the cleanup must be registered by the store's own
+    // setup scope, so $dispose() alone has to release the subscription.
+    const storeA = useDesktopStore();
+    await storeA.open("i-disposed", {}, { target: null });
+    await vi.waitFor(() => expect(storeA.viewFor("i-disposed").status).toBe("connecting"));
+    expect(vi.mocked(events.requestDesktop).mock.calls.length).toBe(1);
+    storeA.$dispose();
+
+    // A leaked handler would open another stream for i-disposed right here.
+    fire();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(vi.mocked(events.requestDesktop).mock.calls.length).toBe(1);
+
+    // And a live store on a fresh pinia still subscribes, so the unsubscribe is
+    // per-store and did not tear down the shared dispatch.
+    setActivePinia(createPinia());
+    const storeB = useDesktopStore();
+    await storeB.open("i-live", {}, { target: null });
+    await vi.waitFor(() => expect(storeB.viewFor("i-live").status).toBe("connecting"));
+    expect(vi.mocked(events.requestDesktop).mock.calls.length).toBe(2);
+    fire();
+    await vi.waitFor(() => expect(vi.mocked(events.requestDesktop).mock.calls.length).toBe(3));
+  });
+
+  it("open() requests a stream without persisting tickets or passwords", async () => {
+    const store = useDesktopStore();
+    await store.open("i1", {});
+    const view = store.viewFor("i1");
+    expect(view.streamId).toBe("s1");
+    expect(view.status).toBe("connecting");
+    expect(localStorage.getItem("xacpx.desktop.ticket")).toBeNull();
+    expect(sessionStorage.getItem("xacpx.desktop.ticket")).toBeNull();
+    expect(JSON.stringify(view)).not.toContain("t-browser");
+  });
+
+  it("open() forwards the mounted host element as the noVNC target", async () => {
+    const store = useDesktopStore();
+    const target = document.createElement("div");
+    target.dataset.test = "desktop-host";
+    await store.open("i1", {}, { target });
+    expect(await lastConnectTarget()).toBe(target);
+  });
+
+  it("open() without a target still opens (client falls back, tab stays responsible)", async () => {
+    const store = useDesktopStore();
+    await store.open("i1", {});
+    expect(await lastConnectTarget()).toBeUndefined();
+  });
+
+  it("close() drops the in-memory session and notifies the hub", async () => {
+    const store = useDesktopStore();
+    await store.open("i1", {});
+    const { sendWebClientMessage } = await import("../api/events");
+    store.close("i1");
+    expect(sendWebClientMessage).toHaveBeenCalledWith({ kind: "desktop-close", instanceId: "i1", streamId: "s1" });
+    expect(store.sessions.has("i1")).toBe(false);
+  });
+
+  it("close() during prepare abandons the pending open and closes the stream", async () => {
+    const store = useDesktopStore();
+    let release!: (value: unknown) => void;
+    const { requestDesktop, sendWebClientMessage } = await import("../api/events");
+    (requestDesktop as unknown as { mockImplementationOnce: (fn: () => Promise<unknown>) => void })
+      .mockImplementationOnce(async () => new Promise((resolve) => { release = resolve; }));
+    const pending = store.open("i1", {});
+    // Panel disappears before `desktop-opened` ever lands.
+    store.close("i1");
+    release({
+      requestId: "r1",
+      instanceId: "i1",
+      streamId: "s9",
+      wsPath: "/desktop/observe?ticket=t9",
+      expiresAt: 1,
+      security: "vnc-auth",
+    });
+    await pending;
+    expect(sendWebClientMessage).toHaveBeenCalledWith({ kind: "desktop-close", instanceId: "i1", streamId: "s9" });
+    // The late resolve must not resurrect the session or bind noVNC to a dead host.
+    expect(await lastConnectTarget()).toBeUndefined();
+    expect(store.sessions.has("i1")).toBe(false);
+  });
+
+  it("A/B interleaved prepares keep the newer open abortable across the older finally", async () => {
+    // Regression (generation race): A opens → close() aborts A → B opens
+    // (map now holds B's controller) → A's prepare settles and its `finally`
+    // must NOT delete B's entry, otherwise the next close() cannot abort B and
+    // B's late resolve would resurrect the panel and open a noVNC stream.
+    const store = useDesktopStore();
+    const { requestDesktop, sendWebClientMessage } = await import("../api/events");
+    let releaseA!: (value: unknown) => void;
+    let releaseB!: (value: unknown) => void;
+    let aCalls = 0;
+    (requestDesktop as unknown as { mockImplementation: (fn: () => Promise<unknown>) => void })
+      .mockImplementation(async () => {
+        aCalls += 1;
+        return aCalls === 1
+          ? new Promise((resolve) => { releaseA = resolve; })
+          : new Promise((resolve) => { releaseB = resolve; });
+      });
+    const openA = store.open("i1", {});
+    store.close("i1");            // aborts A
+    const openB = store.open("i1", {}); // B supersedes A in the pending map
+    // A settles AFTER B started: its finally must leave B's controller intact.
+    releaseA({ requestId: "rA", instanceId: "i1", streamId: "sA", wsPath: "/desktop/observe?ticket=tA", expiresAt: 1, security: "vnc-auth" });
+    await openA;
+    // Second close() must still be able to abort B's in-flight prepare.
+    store.close("i1");
+    releaseB({ requestId: "rB", instanceId: "i1", streamId: "sB", wsPath: "/desktop/observe?ticket=tB", expiresAt: 1, security: "vnc-auth" });
+    await openB;
+    // Both abandoned prepares sent their close; no noVNC connection was created
+    // and no session row survives for a panel that was closed twice.
+    expect(sendWebClientMessage).toHaveBeenCalledWith({ kind: "desktop-close", instanceId: "i1", streamId: "sA" });
+    expect(sendWebClientMessage).toHaveBeenCalledWith({ kind: "desktop-close", instanceId: "i1", streamId: "sB" });
+    const { connectDesktopRfb } = await import("../lib/desktop-client");
+    expect(connectDesktopRfb).not.toHaveBeenCalled();
+    expect(store.sessions.has("i1")).toBe(false);
+  });
+
+  it("an aborted prepare that ends in an error does not recreate the session row", async () => {
+    // The catch branch must not patch(): close() already deleted the row, and a
+    // patch would resurrect an idle/error row for a panel that is gone.
+    const store = useDesktopStore();
+    const { requestDesktop } = await import("../api/events");
+    let rejectA!: (err: unknown) => void;
+    (requestDesktop as unknown as { mockImplementationOnce: (fn: () => Promise<unknown>) => void })
+      .mockImplementationOnce(async () => new Promise((_resolve, reject) => { rejectA = reject; }));
+    const openA = store.open("i1", {});
+    store.close("i1");
+    rejectA(new Error("hub closed the socket"));
+    await expect(openA).rejects.toThrow("hub closed the socket");
+    expect(store.sessions.has("i1")).toBe(false);
+  });
+
+  it("reopening after a control-socket drop re-opens with a fresh request", async () => {
+    // The hub binds desktop ownership to the control socket's viewerId, so a
+    // /ws drop tears the binary stream down server-side. Design section 16 and
+    // plan Task 8 both require the browser to re-send desktop-open, never to
+    // reuse the revoked ticket/streamId; previously only a manual Reconnect did
+    // anything, so the panel stayed dead after a network blip.
+    const { requestDesktop, sendWebClientMessage } = await import("../api/events");
+    const opens: Array<Record<string, unknown>> = [];
+    (requestDesktop as unknown as { mockImplementation: (fn: (m: unknown) => Promise<unknown>) => void })
+      .mockImplementation(async (msg: unknown) => {
+        opens.push(msg as Record<string, unknown>);
+        return {
+          requestId: "r", instanceId: "i1",
+          streamId: `s-${opens.length}`,
+          wsPath: "/desktop/observe?ticket=t", expiresAt: 1, security: "vnc-auth",
+        };
+      });
+
+    const host = document.createElement("div");
+    const store = useDesktopStore();
+    store.open("i1", {}, { target: host });
+    await vi.waitFor(() => expect(store.viewFor("i1").status).toBe("connecting"));
+    expect(opens).toHaveLength(1);
+    const first = opens[0] as { requestId: string };
+    expect(typeof first.requestId).toBe("string");
+
+    // Fire the reconnect notification through the real events.ts pipeline, so
+    // the desktop store's own subscription is what re-opens. Calling the store
+    // method directly would bypass the wiring this change is about.
+    const { _fireEventsReconnectForTests } = await import("../api/events");
+    _fireEventsReconnectForTests();
+    await vi.waitFor(() => expect(opens).toHaveLength(2));
+
+    // A SECOND open went out, and it is fresh: a new requestId, and a new
+    // streamId (the hub had revoked the old one along with its ticket).
+    const second = opens[1] as { requestId: string };
+    expect(second.requestId).not.toBe(first.requestId);
+    // The reopened stream is a genuinely new one: the hub revoked the old id
+    // with its ticket, so a reused id would be a protocol violation.
+    expect(store.viewFor("i1").streamId).toBe("s-2");
+    // And it must repaint into the SAME host element DesktopTab mounted. A
+    // reconnect that drops the target silently renders into a detached div:
+    // the RPC succeeds, the state machine says open, and the panel is black.
+    expect(connectDesktopRfb).toHaveBeenCalledTimes(2);
+    const firstConnect = vi.mocked(connectDesktopRfb).mock.calls[0]?.[0] as { target?: HTMLElement | null };
+    const secondConnect = vi.mocked(connectDesktopRfb).mock.calls[1]?.[0] as { target?: HTMLElement | null };
+    expect(firstConnect.target).toBe(host);
+    expect(secondConnect.target).toBe(host);
+    // The stale session was torn down first: the old stream is closed, not
+    // silently left to be revoked by the hub much later.
+    const closeCalls = (sendWebClientMessage as unknown as { mock: { calls: Array<[Record<string, unknown>]> } }).mock.calls
+      .map((c) => c[0])
+      .filter((c) => c.kind === "desktop-close");
+    expect(closeCalls.length).toBeGreaterThan(0);
+  });
+
+  it("reopens a desktop whose prepare was still in flight when the socket dropped", async () => {
+    // The hub revokes desktop ownership with the control socket's viewerId, so a
+    // /ws drop while `desktop-open` is still pending rejects the RPC with
+    // `events-offline`. That row ends up `closed` with no streamId, and the
+    // reconnect sweep used to skip it on exactly that shape, leaving the panel
+    // dead until the user noticed and clicked Reconnect.
+    const { requestDesktop } = await import("../api/events");
+    const opens: Array<Record<string, unknown>> = [];
+    let release!: () => void;
+    (requestDesktop as unknown as { mockImplementation: (fn: (m: unknown) => Promise<unknown>) => void })
+      .mockImplementation((msg: unknown) => {
+        opens.push(msg as Record<string, unknown>);
+        // First call hangs (the socket drops before the hub answers), so it
+        // never reaches connectDesktopRfb: only the reopened open connects.
+        if (opens.length === 1) {
+          return new Promise((_r, reject) => {
+            release = () => reject(new DesktopRequestError("events-offline", "events socket closed"));
+          });
+        }
+        return Promise.resolve({
+          requestId: "r", instanceId: "i-pending",
+          streamId: `s-${opens.length}`,
+          wsPath: "/desktop/observe?ticket=t", expiresAt: 1, security: "vnc-auth",
+        });
+      });
+
+    const host = document.createElement("div");
+    const store = useDesktopStore();
+    const first = store.open("i-pending", {}, { target: host }).catch(() => undefined);
+    await vi.waitFor(() => expect(opens).toHaveLength(1));
+
+    // The socket drops: the in-flight prepare rejects with events-offline.
+    release();
+    await first;
+    expect(store.viewFor("i-pending").status).toBe("closed");
+    expect(store.viewFor("i-pending").lastErrorCode).toBe("events-offline");
+    // No streamId yet — exactly the shape the sweep used to skip.
+    expect(store.viewFor("i-pending").streamId).toBeUndefined();
+
+    // The socket comes back; the reopen must fire a SECOND fresh desktop-open.
+    const { _fireEventsReconnectForTests } = await import("../api/events");
+    _fireEventsReconnectForTests();
+    await vi.waitFor(() => expect(opens).toHaveLength(2));
+    await vi.waitFor(() => expect(store.viewFor("i-pending").streamId).toBe("s-2"));
+    // Only ONE connect: the hung first prepare never reached it. What matters is
+    // that this one reuses the mounted host, so the recovered panel repaints
+    // into the visible element rather than a detached div.
+    expect(vi.mocked(connectDesktopRfb).mock.calls).toHaveLength(1);
+    const only = vi.mocked(connectDesktopRfb).mock.calls[0]?.[0] as { target?: HTMLElement | null };
+    expect(only.target).toBe(host);
+  });
+
+  it("a reconnect preserves the user's Actual/Fit choice", async () => {
+    // The user toggles Actual AFTER the open. A reconnect must not quietly push
+    // them back to Fit: `setFit` only updates the session row, so the sweep must
+    // read the CURRENT value rather than a value snapshotted at open time.
+    const store = useDesktopStore();
+    const host = document.createElement("div");
+    await store.open("i-fit", {}, { target: host });
+    await vi.waitFor(() => expect(store.viewFor("i-fit").status).toBe("connecting"));
+    const firstConnect = vi.mocked(connectDesktopRfb).mock.calls[0]?.[0] as { fit?: boolean } | undefined;
+    expect(firstConnect?.fit).toBe(true);
+
+    store.setFit("i-fit", false);
+    expect(store.viewFor("i-fit").fit).toBe(false);
+
+    const { _fireEventsReconnectForTests } = await import("../api/events");
+    _fireEventsReconnectForTests();
+    await vi.waitFor(() => expect(vi.mocked(connectDesktopRfb).mock.calls.length).toBe(2));
+    const reopened = vi.mocked(connectDesktopRfb).mock.calls[1]?.[0] as { fit?: boolean; target?: HTMLElement | null };
+    expect(reopened.fit).toBe(false);
+    expect(reopened.target).toBe(host);
+    expect(store.viewFor("i-fit").fit).toBe(false);
+  });
+
+  it("a local RPC timeout releases the reservation so a later reconnect is not busy", async () => {
+    // The hub prepared the stream and answered, but the reply had not reached
+    // the browser when its own timer fired. Without a cancel the reservation
+    // survives with nobody driving it, and the next open lands on desktop-busy.
+    const store = useDesktopStore();
+    const { requestDesktop, sendWebClientMessage } = await import("../api/events");
+    let settleLate!: (value: unknown) => void;
+    (requestDesktop as unknown as { mockImplementation: (fn: () => Promise<unknown>) => void })
+      .mockImplementation(() => new Promise((_resolve, reject) => {
+        // The browser's own RPC timer is what rejects here (15s > the hub's 10s
+        // prepare deadline, so the hub already answered and left a live stream).
+        reject(new DesktopRequestError("desktop-stream-timeout", "desktop request timed out"));
+      }));
+
+    const opening = store.open("i1", {});
+    const failure = await opening.catch((err: unknown) => err);
+    expect(failure).toBeInstanceOf(DesktopRequestError);
+    expect((failure as DesktopRequestError).code).toBe("desktop-stream-timeout");
+
+    // The reservation must have been released BY REQUEST on the way out.
+    const closeCalls = (sendWebClientMessage as unknown as { mock: { calls: Array<[Record<string, unknown>]> } }).mock.calls.map((c) => c[0]);
+    expect(closeCalls).toHaveLength(1);
+    expect(closeCalls[0]).toMatchObject({ kind: "desktop-close", instanceId: "i1" });
+    expect(typeof closeCalls[0]?.requestId).toBe("string");
+    expect(closeCalls[0]?.streamId).toBeUndefined();
+
+    // A hub reply that lands after the give-up must not resurrect the session:
+    // the row is the local failure's row (a timeout is retryable, so it reads
+    // "closed" with the code attached for the reconnect affordance), not a
+    // connected desktop.
+    expect(store.viewFor("i1").status).toBe("closed");
+    expect(store.viewFor("i1").lastErrorCode).toBe("desktop-stream-timeout");
+    expect(store.viewFor("i1").streamId).toBeUndefined();
+    void settleLate;
+  });
+
+  it("superseding an open with another open releases the first reservation", async () => {
+    // open(A) -> open(B) WITHOUT close() in between. The abandoned controller is
+    // never passed to requestDesktop, so abort() alone cannot stop the RPC or
+    // tell the hub anything; and by the time A rejects its pendingRequestId entry
+    // has already been overwritten by B, so the catch path cannot recover rA.
+    // Without an explicit close the hub keeps A's single-viewer reservation and
+    // B opens straight into desktop-busy.
+    const store = useDesktopStore();
+    const { requestDesktop, sendWebClientMessage } = await import("../api/events");
+    (requestDesktop as unknown as { mockImplementation: (fn: () => Promise<unknown>) => void })
+      .mockImplementation(() => new Promise<unknown>(() => {}));
+
+    store.open("i1", {});
+    await Promise.resolve();
+    store.open("i1", {});
+    await Promise.resolve();
+
+    // The abandoned reservation was released by request, before B was minted.
+    const closes = (sendWebClientMessage as unknown as { mock: { calls: Array<[Record<string, unknown>]> } }).mock.calls
+      .map((c) => c[0])
+      .filter((c) => c.kind === "desktop-close");
+    expect(closes).toHaveLength(1);
+    expect(typeof closes[0].requestId).toBe("string");
+    expect(closes[0].streamId).toBeUndefined();
+  });
+  it("closing an open that is still preparing releases the hub reservation by requestId", async () => {
+    // The race: the user closes the panel before the prepare answers, so the
+    // browser has no streamId to name. It must close by requestId, otherwise the
+    // single-viewer reservation survives the close and the next open fails busy.
+    const store = useDesktopStore();
+    const { requestDesktop, sendWebClientMessage } = await import("../api/events");
+    let resolveOpen!: (value: unknown) => void;
+    (requestDesktop as unknown as { mockImplementation: (fn: () => Promise<unknown>) => void })
+      .mockImplementation(() => new Promise((resolve) => { resolveOpen = resolve; }));
+
+    const openA = store.open("i1", {});
+    await Promise.resolve();
+    store.close("i1"); // no streamId is known yet
+
+    const closeCalls = (sendWebClientMessage as unknown as { mock: { calls: Array<[Record<string, unknown>]> } }).mock.calls.map((c) => c[0]);
+    expect(closeCalls).toHaveLength(1);
+    expect(closeCalls[0]).toMatchObject({ kind: "desktop-close", instanceId: "i1" });
+    // The close MUST name a requestId, and must NOT claim a streamId it never
+    // learned (which the hub would reject as unknown).
+    expect(typeof closeCalls[0]?.requestId).toBe("string");
+    expect(closeCalls[0]?.streamId).toBeUndefined();
+    expect(resolveOpen).toBeDefined();
+    resolveOpen({ requestId: "r1", instanceId: "i1", streamId: "sA", wsPath: "/desktop/observe?ticket=t", expiresAt: 1, security: "vnc-auth" });
+    await openA;
+    expect(store.sessions.has("i1")).toBe(false);
+  });
+
+  it("a superseded attempt cannot delete the newer attempt's session row", async () => {
+    // Generation race: A prepare pending → close A → B opened. Here B still
+    // fails (the hub had already granted A its slot when the close raced it), and
+    // writes its own error row. A then succeeds; its abandoned-cleanup must NOT delete
+    // B's row, otherwise DesktopTab's lazy viewFor() turns a clear Busy/Error
+    // state back into a bare idle row with no reconnect affordance.
+    const store = useDesktopStore();
+    const { requestDesktop, sendWebClientMessage } = await import("../api/events");
+    let releaseA!: (value: unknown) => void;
+    let rejectB!: (err: unknown) => void;
+    let call = 0;
+    (requestDesktop as unknown as { mockImplementation: (fn: () => Promise<unknown>) => void })
+      .mockImplementation(async () => {
+        call += 1;
+        return call === 1
+          ? new Promise((resolve) => { releaseA = resolve; })
+          : new Promise((_resolve, reject) => { rejectB = reject; });
+      });
+    const openA = store.open("i1", {});
+    store.close("i1"); // aborts A and bumps the generation
+    const openB = store.open("i1", {});
+    // B fails with desktop-busy before A's prepare ever settles.
+    let thrownB: unknown;
+    expect(rejectB).toBeDefined();
+    rejectB(new DesktopRequestError("desktop-busy", "instance already has a desktop stream"));
+    await openB.catch((err: unknown) => { thrownB = err; });
+    expect(thrownB).toBeInstanceOf(DesktopRequestError);
+    expect((thrownB as DesktopRequestError).code).toBe("desktop-busy");
+    // B's own failure row is set by its catch branch.
+    expect(store.viewFor("i1").status).toBe("error");
+    const bRow = store.viewFor("i1");
+    // Now A succeeds late: its stream must be closed, but B's row survives.
+    releaseA({ requestId: "rA", instanceId: "i1", streamId: "sA", wsPath: "/desktop/observe?ticket=tA", expiresAt: 1, security: "vnc-auth" });
+    await openA;
+    expect(sendWebClientMessage).toHaveBeenCalledWith({ kind: "desktop-close", instanceId: "i1", streamId: "sA" });
+    expect(store.viewFor("i1")).toEqual(bRow);
+    expect(store.viewFor("i1").status).toBe("error");
+    expect(store.viewFor("i1").lastErrorCode).toBeTruthy();
+  });
+
+  it("stale connection hooks cannot delete the newer attempt's connection", async () => {
+    // After a supersede the old RFB connection is disposed, but its queued hooks
+    // must be inert: they patch the session row AND delete from the connection
+    // registry. A stale onDisconnect/onSecurityFailure that only guarded the row
+    // would still evict the CURRENT connection, leaving sendCredentials(),
+    // setFit(), close().dispose() and a later open() all pointing at nothing.
+    const store = useDesktopStore();
+    const { connectDesktopRfb } = await import("../lib/desktop-client");
+    const conns: Array<{ sent: string[]; fits: boolean[]; disposed: boolean }> = [];
+    const hookSets: Array<Record<string, (...args: unknown[]) => void>> = [];
+    (connectDesktopRfb as unknown as {
+      mockImplementation: (fn: (input: { hooks?: Record<string, (...args: unknown[]) => void> }) => unknown) => void;
+    }).mockImplementation((input) => {
+      hookSets.push(input.hooks ?? {});
+      const rec = { sent: [] as string[], fits: [] as boolean[], disposed: false };
+      conns.push(rec);
+      const conn = {
+        sendCredentials: (p: string) => { rec.sent.push(p); },
+        setScaleViewport: (f: boolean) => { rec.fits.push(f); },
+        dispose: () => { rec.disposed = true; },
+      };
+      return conn;
+    });
+
+    // First open completes fully.
+    await store.open("i1", {});
+    expect(conns.length).toBe(1);
+    const first = hookSets[0];
+    expect(first).toBeDefined();
+    first?.onConnect?.();
+    expect(store.viewFor("i1").status).toBe("open");
+    // close + reopen: the second attempt owns the row AND the connection now.
+    store.close("i1");
+    expect(conns[0]?.disposed).toBe(true);
+    expect(store.sessions.has("i1")).toBe(false);
+    await store.open("i1", {});
+    expect(conns.length).toBe(2);
+    const second = hookSets[1];
+    expect(second).toBeDefined();
+    // Fire the FIRST (stale) connection's hooks: they must not touch state.
+    first?.onDisconnect?.({ clean: true, reason: "stale" });
+    first?.onSecurityFailure?.({ reason: "stale failure" });
+    first?.onConnect?.();
+    expect(store.viewFor("i1").status).not.toBe("closed");
+    expect(store.viewFor("i1").lastErrorCode).not.toBe("desktop-auth-unsupported");
+    // The CURRENT connection is still reachable through the store: a stale hook
+    // that evicted it would make these no-ops.
+    store.sendCredentials("i1", "s3cret");
+    expect(conns[1]?.sent).toEqual(["s3cret"]);
+    expect(conns[0]?.sent).toEqual([]);
+    store.setFit("i1", false);
+    // [true] comes from open() applying the session's initial fit state.
+    expect(conns[1]?.fits).toEqual([true, false]);
+    expect(conns[0]?.fits).toEqual([true]);
+    // close() disposes B, and A stays disposed exactly once.
+    expect(conns[1]?.disposed).toBe(false);
+    store.close("i1");
+    expect(conns[1]?.disposed).toBe(true);
+    expect(conns[0]?.disposed).toBe(true);
+  });
+
+  it("applies the session's fit state to the RFB client", async () => {
+    // Regression: `scaleViewport: true` was passed in the noVNC constructor
+    // options bag, which noVNC ignores (scaleViewport is a post-construction
+    // writable property defaulting to false). The desired fit must reach the
+    // connection instead.
+    const store = useDesktopStore();
+    await store.open("i1", {});
+    expect(await lastConnectInput()).toMatchObject({ fit: true });
+    store.setFit("i1", false);
+    expect(store.viewFor("i1").fit).toBe(false);
+  });
+
+  it("classifies a rejected password structurally, not from the server's wording", async () => {
+    // Regression: every noVNC `securityfailure` was first mapped wholesale to
+    // `desktop-auth-unsupported` ("VNC auth scheme is not supported"), then told
+    // apart by regexing the server's English text, then (partially fixed) by the
+    // presence of a SecurityResult `status`. All three were wrong: noVNC's API
+    // states `detail.reason` is optional and its language is unspecified, and
+    // noVNC ALSO sets `_securityStatus` for a scheme-stage refusal that happens
+    // before any credentials exist.
+    const { classifySecurityFailure } = await import("../stores/desktop");
+    // A rejected password: credentials were actually submitted.
+    expect(classifySecurityFailure({ status: 1, reason: "authentication failure", credentialsSubmitted: true }))
+      .toMatchObject({ code: "desktop-auth-failed", retryable: true });
+    // Non-English wording must NOT flip it.
+    expect(classifySecurityFailure({ status: 1, reason: "Acceso denegado", credentialsSubmitted: true }))
+      .toMatchObject({ code: "desktop-auth-failed", retryable: true });
+    expect(classifySecurityFailure({ status: 0, reason: "", credentialsSubmitted: true }))
+      .toMatchObject({ code: "desktop-auth-failed", retryable: true });
+    // Scheme-stage refusal BEFORE any prompt: the user was never asked for a
+    // password, so telling them the server "rejected the password" is wrong.
+    expect(classifySecurityFailure({ status: 1, reason: "too many security failures", credentialsSubmitted: false }))
+      .toMatchObject({ code: "desktop-auth-unsupported", retryable: false });
+    expect(classifySecurityFailure({ status: 0, credentialsSubmitted: false }))
+      .toMatchObject({ code: "desktop-auth-unsupported", retryable: false });
+    expect(classifySecurityFailure({ reason: "no matching security types" }))
+      .toMatchObject({ code: "desktop-auth-unsupported", retryable: false });
+    expect(classifySecurityFailure({}))
+      .toMatchObject({ code: "desktop-auth-unsupported", retryable: false });
+
+    // The driver path uses it. Reuse the hook-capturing mock, then fire noVNC's
+    // real order: credentialsrequired → securityfailure → disconnect(clean:false).
+    const store = useDesktopStore();
+    const { connectDesktopRfb } = await import("../lib/desktop-client");
+    const hookSets: Array<Record<string, (...args: unknown[]) => void>> = [];
+    (connectDesktopRfb as unknown as {
+      mockImplementation: (fn: (i: { hooks?: Record<string, (...a: unknown[]) => void> }) => unknown) => void;
+    }).mockImplementation((i) => {
+      hookSets.push(i.hooks ?? {});
+      return { sendCredentials: vi.fn(), setScaleViewport: vi.fn(), dispose: vi.fn() };
+    });
+    await store.open("i1", {});
+    const hooks = hookSets[0];
+    expect(hooks).toBeDefined();
+    hooks?.onCredentialsRequired?.();
+    expect(store.viewFor("i1").status).toBe("auth-required");
+    hooks?.onSecurityFailure?.({ status: 1, reason: "authentication failure", credentialsSubmitted: true });
+    expect(store.viewFor("i1").status).toBe("error");
+    expect(store.viewFor("i1").lastErrorCode).toBe("desktop-auth-failed");
+    // noVNC answers _fail() by marking the connection unclean and emitting
+    // disconnect{clean:false}. That must NOT overwrite the auth failure with a
+    // generic desktop-stream-timeout.
+    hooks?.onDisconnect?.({ clean: false, reason: "authentication failure" });
+    expect(store.viewFor("i1").status).toBe("error");
+    expect(store.viewFor("i1").lastErrorCode).toBe("desktop-auth-failed");
+  });
+
+  it("a security failure before the password prompt is not a password error", async () => {
+    // noVNC sets `_securityStatus` (the same field the password result uses) when
+    // the server refuses at the SCHEME stage — RFB 3.3 security type 0, or a
+    // 3.7+ security-types failure. That happens before any credentials exist, so
+    // keying on `status` alone told the user "the server rejected the password"
+    // when they had never been asked for one. Only a failure AFTER a submitted
+    // password is a password rejection.
+    const store = useDesktopStore();
+    const { connectDesktopRfb } = await import("../lib/desktop-client");
+    const hookSets: Array<Record<string, (...args: unknown[]) => void>> = [];
+    (connectDesktopRfb as unknown as {
+      mockImplementation: (fn: (i: { hooks?: Record<string, (...a: unknown[]) => void> }) => unknown) => void;
+    }).mockImplementation((i) => {
+      hookSets.push(i.hooks ?? {});
+      return { sendCredentials: vi.fn(), setScaleViewport: vi.fn(), dispose: vi.fn() };
+    });
+
+    await store.open("i2", {});
+    const hooks = hookSets[0];
+    expect(hooks).toBeDefined();
+    // The server refuses BEFORE any credentials prompt.
+    hooks?.onSecurityFailure?.({ status: 1, reason: "too many security failures", credentialsSubmitted: false });
+    expect(store.viewFor("i2").status).toBe("error");
+    expect(store.viewFor("i2").lastErrorCode).toBe("desktop-auth-unsupported");
+  });
+
+  it("a retryable prepare failure keeps its reason on the closed row", async () => {
+    // `desktop-instance-offline` / `desktop-stream-timeout` / `events-offline`
+    // are retryable, so the store marks the row `closed`. That reason must
+    // survive to the row: otherwise the tab shows only the bare
+    // "Disconnected" copy and the (already translated) cause is dropped.
+    const store = useDesktopStore();
+    const { requestDesktop } = await import("../api/events");
+    (requestDesktop as unknown as {
+      mockImplementationOnce: (fn: () => Promise<unknown>) => void;
+    }).mockImplementationOnce(async () => {
+      throw new DesktopRequestError("desktop-instance-offline", "Instance is offline.");
+    });
+    await expect(store.open("i1", {})).rejects.toBeInstanceOf(DesktopRequestError);
+    const view = store.viewFor("i1");
+    expect(view.status).toBe("closed");
+    expect(view.lastErrorCode).toBe("desktop-instance-offline");
+    expect(view.lastErrorMessage).toContain("offline");
+  });
+});

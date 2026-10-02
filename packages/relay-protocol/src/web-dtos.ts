@@ -1,6 +1,10 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
 import type { AgentAddressDto, AgentCommandDto, ControlEventDto, ConversationTurnCorrelationDto, PeerMessageHistoryEntry, PeerTurnOriginDto, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, ToolStepKind, ToolStepStatus, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import {
+  MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
+  MAX_DESKTOP_REQUEST_ID_LENGTH,
+  MAX_DESKTOP_STREAM_ID_LENGTH,
+  MAX_DESKTOP_WS_PATH_LENGTH,
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
@@ -19,7 +23,7 @@ import {
   STATE_SYNC_TEXT_CAP,
   TERMINAL_REBASE_CHUNK_BYTES,
 } from "./limits.js";
-import type { InstanceNoticePayload, TerminalRole } from "./messages.js";
+import type { DesktopSecurityKind, InstanceNoticePayload, TerminalRole } from "./messages.js";
 import { isBoundedStr, isIntInRange, isNonNegInt, isStr, optBool, optNonNegInt, optNum, optStr, optStrArr, parseCanonicalBase64 } from "./validate-primitives.js";
 
 
@@ -256,6 +260,24 @@ export type WebServerEvent =
       generation: string;
       reason: string;
       code?: number;
+    }
+  | {
+      kind: "desktop-opened";
+      requestId: string;
+      instanceId: string;
+      streamId: string;
+      /** Single-use binary path, e.g. `/desktop/observe?ticket=…`; never persisted. */
+      wsPath: string;
+      /** Epoch ms when the browser ticket expires. */
+      expiresAt: number;
+      security: DesktopSecurityKind;
+    }
+  | {
+      kind: "desktop-request-failed";
+      requestId: string;
+      instanceId: string;
+      code: string;
+      message: string;
     };
 
 /** Wrap a server→web push event in a relay envelope. */
@@ -279,6 +301,8 @@ const WEB_EVENT_KINDS = new Set([
   "terminal-bytes",
   "terminal-role-changed",
   "terminal-exit",
+  "desktop-opened",
+  "desktop-request-failed",
 ]);
 
 /** Compile-time-exhaustive whitelist of inner control-event discriminants. The
@@ -870,6 +894,10 @@ function expectedRebaseChunkCount(totalBytes: number): number {
   return totalBytes === 0 ? 0 : Math.ceil(totalBytes / TERMINAL_REBASE_CHUNK_BYTES);
 }
 
+function validDesktopSecurity(value: unknown): value is DesktopSecurityKind {
+  return value === "vnc-auth" || value === "ard";
+}
+
 function validTerminalRole(value: unknown): value is TerminalRole {
   return value === "controller" || value === "spectator";
 }
@@ -937,6 +965,27 @@ function validTargetedTerminalEvent(candidate: Record<string, unknown>): boolean
   }
 }
 
+function validDesktopServerEvent(candidate: Record<string, unknown>): boolean {
+  switch (candidate.kind) {
+    case "desktop-opened":
+      return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH)
+        && isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        && isBoundedStr(candidate.streamId, MAX_DESKTOP_STREAM_ID_LENGTH)
+        && isBoundedStr(candidate.wsPath, MAX_DESKTOP_WS_PATH_LENGTH)
+        && (candidate.wsPath as string).startsWith("/desktop/observe?ticket=")
+        && isNonNegInt(candidate.expiresAt)
+        && validDesktopSecurity(candidate.security);
+    case "desktop-request-failed":
+      return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH)
+        && isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        && isBoundedStr(candidate.code, 128)
+        && typeof candidate.message === "string"
+        && candidate.message.length <= MAX_DESKTOP_ERROR_MESSAGE_LENGTH;
+    default:
+      return false;
+  }
+}
+
 /** Parse + validate a relay→web push payload; returns null for any malformed envelope. */
 export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | null {
   if (envelope.kind !== "event" || envelope.type !== WEB_EVENT_TYPE) return null;
@@ -963,6 +1012,7 @@ export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | n
       : null;
   }
   if (candidate.kind.startsWith("terminal-") && !validTargetedTerminalEvent(candidate)) return null;
+  if (candidate.kind.startsWith("desktop-") && !validDesktopServerEvent(candidate)) return null;
   return payload as WebServerEvent;
 }
 
@@ -986,6 +1036,17 @@ export type WebClientMessage =
   | { kind: "terminal-resync"; requestId: string; instanceId: string; attachmentId: string; generation: string }
   | { kind: "terminal-terminate"; requestId: string; instanceId: string; terminalId: string; generation: string }
   | { kind: "terminal-detach"; instanceId: string; attachmentId: string }
+  | { kind: "desktop-open"; requestId: string; instanceId: string }
+  | {
+      kind: "desktop-close";
+      instanceId: string;
+      /**
+       * Exactly one target. `streamId` closes a live/paired stream the browser
+       * already learned about; `requestId` aborts an open that never answered
+       * (fast close-then-reopen), which is the only handle the browser has on a
+       * still-pending prepare.
+       */
+    } & ({ streamId: string } | { requestId: string })
   | { kind: "subscribe"; instanceIds: string[] };
 
 export function webClientEnvelope(msg: WebClientMessage): RelayEnvelope {
@@ -1047,7 +1108,7 @@ export function parseWebClientMessage(envelope: RelayEnvelope): WebClientMessage
       ? (p as WebClientMessage)
       : null;
   }
-  if (typeof c.kind !== "string" || !c.kind.startsWith("terminal-")) return null;
+  if (typeof c.kind !== "string" || (!c.kind.startsWith("terminal-") && !c.kind.startsWith("desktop-"))) return null;
   if (rejectsBrowserStampedIdentity(c)) return null;
 
   switch (c.kind) {
@@ -1099,6 +1160,21 @@ export function parseWebClientMessage(envelope: RelayEnvelope): WebClientMessage
     case "terminal-close":
       return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
         && isBoundedStr(c.terminalId, MAX_TERMINAL_ID_LENGTH)
+        ? (p as WebClientMessage)
+        : null;
+    case "desktop-open":
+      return isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH)
+        && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        && c.streamId === undefined
+        && c.wsPath === undefined
+        ? (p as WebClientMessage)
+        : null;
+    case "desktop-close":
+      return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        // Exactly one target: a live stream, or a pending prepare the viewer
+        // learned nothing about yet. Both, or neither, is malformed.
+        && ((isBoundedStr(c.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && c.requestId === undefined)
+          || (isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && c.streamId === undefined))
         ? (p as WebClientMessage)
         : null;
     default:
