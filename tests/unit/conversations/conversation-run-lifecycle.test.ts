@@ -7677,6 +7677,52 @@ test("PR7 dispatcher: corrupted request reference fails the Group claim terminal
   }
 });
 
+test("PR7 dispatcher: a same-topic foreign run's request reference fails the claim terminally", async () => {
+  // The most dangerous referential corruption: run B's request_message_id
+  // repointed at run A's REAL human request from the SAME conversation and
+  // topic. Existence, conversation, topic, and role all hold; only the
+  // request row's own run_id betrays the swap. B must fail terminally with
+  // request_snapshot_mismatch — never execute A's content, never requeue.
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-a" });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const anchor = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-anchor",
+    content: "anchor request",
+  });
+  await first.dispatcher.kick();
+  await waitUntil(() => first.store.getRun(anchor.run.id)?.state === "completed", 4000);
+  const runsAtAnchor = fakeRunner(first.runner).runs.length;
+  expect(runsAtAnchor).toBe(1);
+
+  const victim = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-victim",
+    content: "victim request",
+  });
+  first.store.directWriteForTest("runs", victim.run.id, { request_message_id: anchor.message.id });
+  await first.dispatcher.kick();
+  await waitUntil(() => first.store.getRun(victim.run.id)?.state === "failed", 4000);
+  // Zero NEW runner calls: A ran once; B never reached the runner with A's
+  // (or any) content.
+  expect(fakeRunner(first.runner).runs).toHaveLength(runsAtAnchor);
+  const run = first.store.getRun(victim.run.id)!;
+  expect(run.state).toBe("failed");
+  // Single-member claims settle the run with the precise corruption cause
+  // (the execution-failed aggregate exists only for multi-member batches).
+  expect(run.completionReason).toBe("request_snapshot_mismatch");
+  for (const turn of first.store.listMemberTurns(victim.run.id)) {
+    expect(turn.state).toBe("failed");
+    expect(turn.failureReason).toBe("request_snapshot_mismatch");
+  }
+  // No hot-loop: a second kick keeps B terminal and launches nothing.
+  await first.dispatcher.kick();
+  expect(fakeRunner(first.runner).runs).toHaveLength(runsAtAnchor);
+  expect(first.store.getRun(victim.run.id)?.state).toBe("failed");
+  first.store.close();
+});
+
 test("PR7 dispatcher: a cohort member rejecting undefined still rejects the drain", async () => {
   // `rejected` is a STATUS, not a payload test: Promise.reject(undefined)
   // is a legal rejection and must propagate (activation fails), never be

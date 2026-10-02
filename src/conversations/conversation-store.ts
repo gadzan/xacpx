@@ -78,8 +78,12 @@ export interface AcceptRequestInput {
  * The request message must exist and belong to the Run's Conversation AND
  * Topic with the human role — a corrupted `runs.request_message_id` pointing
  * at another message must fail closed, never feed another message's content
- * into a prompt. `runId` is intentionally NOT checked: request rows persist
- * with `run_id` NULL by schema (only bot result rows carry it).
+ * into a prompt. `runId` IS checked: the human-request writer persists the
+ * message with its own Run's id (same statement that inserts it), so a same-
+ * Topic foreign run's request — which otherwise satisfies conversation, topic,
+ * and role — is rejected. A human request row without `run_id` has no writer
+ * path (none ever did, including the store's first schema) and is corruption:
+ * fail closed rather than guess.
  */
 export function requestSnapshotMatches(
   message: ConversationMessage | undefined,
@@ -88,7 +92,8 @@ export function requestSnapshotMatches(
   return message !== undefined
     && message.conversationId === run.conversationId
     && message.topicId === run.topicId
-    && message.role === "human";
+    && message.role === "human"
+    && message.runId === run.id;
 }
 
 export interface AcceptRequestResult {
