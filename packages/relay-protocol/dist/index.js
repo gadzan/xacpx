@@ -171,7 +171,10 @@ var MSG = {
   conversationHistory: "control.conversation.history",
   runsGet: "control.runs.get",
   runsList: "control.runs.list",
-  runsCancel: "control.runs.cancel"
+  runsCancel: "control.runs.cancel",
+  interactionRequest: "control.interaction.request",
+  interactionRespond: "control.interaction.respond",
+  interactionWithdraw: "control.interaction.withdraw"
 };
 function errorPayload(code, message) {
   return { error: { code, message } };
@@ -204,8 +207,10 @@ function normalizeCapabilities(raw) {
 }
 var RELAY_CAPABILITIES = {
   terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1",
-  terminalMultiViewV1: "terminal.multi-view.v1"
+  terminalMultiViewV1: "terminal.multi-view.v1",
+  interactionElicitationFormV1: "interaction.elicitation.form.v1"
 };
+var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
 var TERMINAL_ERROR_CODES = [
   "terminal-disabled",
   "terminal-rmux-unavailable",
@@ -238,11 +243,11 @@ function decodeCanonicalBase64(encoded) {
     const binary = globalThis.atob(encoded);
     if (globalThis.btoa(binary) !== encoded)
       return null;
-    const decoded2 = new Uint8Array(binary.length);
+    const decoded = new Uint8Array(binary.length);
     for (let i = 0;i < binary.length; i++) {
-      decoded2[i] = binary.charCodeAt(i) & 255;
+      decoded[i] = binary.charCodeAt(i) & 255;
     }
-    return decoded2;
+    return decoded;
   }
   const BufferCtor = globalThis.Buffer;
   if (!BufferCtor)
@@ -314,7 +319,9 @@ var CONTROL_EVENT_TYPE_MAP = {
   "conversation-message": true,
   "conversation-run-changed": true,
   "member-turn-started": true,
-  "member-turn-finished": true
+  "member-turn-finished": true,
+  "interaction-opened": true,
+  "interaction-closed": true
 };
 var CONTROL_EVENT_TYPES = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
 var TOOL_STEP_KIND_MAP = {
@@ -534,6 +541,111 @@ function validConversationMessage(value) {
   const c = value;
   return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.seq === "number" && (c.role === "human" || c.role === "bot" || c.role === "system") && typeof c.content === "string" && typeof c.createdAt === "string" && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId);
 }
+function optInteractionProductId(value) {
+  return value === undefined || typeof value === "string" && value.length > 0;
+}
+function validInteractionRequest(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const c = value;
+  if (!isBoundedStr(c.requestId, 128))
+    return false;
+  if (c.kind !== "permission" && c.kind !== "elicitation")
+    return false;
+  if (typeof c.expiresAt !== "number" || !Number.isFinite(c.expiresAt) || c.expiresAt <= 0)
+    return false;
+  if (c.conversation !== undefined) {
+    if (typeof c.conversation !== "object" || c.conversation === null)
+      return false;
+    const conv = c.conversation;
+    if (typeof conv.conversationId !== "string" || conv.conversationId.length === 0)
+      return false;
+    if (typeof conv.topicId !== "string" || conv.topicId.length === 0)
+      return false;
+    if (!optInteractionProductId(conv.botId))
+      return false;
+    if (!optInteractionProductId(conv.runId))
+      return false;
+    if (!optInteractionProductId(conv.memberTurnId))
+      return false;
+    if (!optInteractionProductId(conv.promptRequestId))
+      return false;
+    for (const item of Object.values(conv)) {
+      if (typeof item === "string" && item.startsWith("brt_"))
+        return false;
+    }
+  }
+  if (c.kind === "elicitation") {
+    const e = c.elicitation;
+    if (typeof e !== "object" || e === null)
+      return false;
+    const elicitation = e;
+    if (elicitation.mode !== "form")
+      return false;
+    if (!optStr(elicitation.message))
+      return false;
+    if (typeof elicitation.message === "string" && elicitation.message.length > 8000)
+      return false;
+    if (!optStr(elicitation.schemaTitle))
+      return false;
+    if (!Array.isArray(elicitation.fields))
+      return false;
+    if (elicitation.fields.length > 100)
+      return false;
+    return elicitation.fields.every(validInteractionField) && c.permission === undefined;
+  }
+  const perm = c.permission;
+  if (typeof perm !== "object" || perm === null)
+    return false;
+  const permission = perm;
+  if (!Array.isArray(permission.availableOutcomes))
+    return false;
+  return c.elicitation === undefined;
+}
+function validInteractionField(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const f = value;
+  if (f.kind !== "text" && f.kind !== "single-select" && f.kind !== "number" && f.kind !== "boolean" && f.kind !== "multi-select")
+    return false;
+  if (!isBoundedStr(f.key, 64))
+    return false;
+  if (!isBoundedStr(f.title, 200))
+    return false;
+  if (typeof f.required !== "boolean")
+    return false;
+  if (!optStr(f.description))
+    return false;
+  const isSelect = f.kind === "single-select" || f.kind === "multi-select";
+  if (isSelect) {
+    const options = f.options;
+    if (!Array.isArray(options) || options.length === 0 || options.length > 200)
+      return false;
+    for (const option of options) {
+      if (typeof option !== "object" || option === null)
+        return false;
+      const o = option;
+      if (!isBoundedStr(o.value, 200))
+        return false;
+      if (!isBoundedStr(o.label, 200))
+        return false;
+      if (!optStr(o.description))
+        return false;
+    }
+  } else if (f.options !== undefined) {
+    return false;
+  }
+  if (f.defaultValue !== undefined) {
+    const d = f.defaultValue;
+    const scalar = typeof d === "string" || typeof d === "number" || typeof d === "boolean";
+    const array = Array.isArray(d) && d.every((item) => typeof item === "string");
+    if (!scalar && !array)
+      return false;
+    if (typeof d === "string" && d.length > 8000)
+      return false;
+  }
+  return true;
+}
 function validConversationRun(value) {
   if (typeof value !== "object" || value === null)
     return false;
@@ -599,6 +711,10 @@ function validControlEvent(e) {
     case "member-turn-started":
     case "member-turn-finished":
       return validConversationRun(c.run) && validMemberTurnSummary(c.memberTurn);
+    case "interaction-opened":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validInteractionRequest(c.interaction);
+    case "interaction-closed":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.requestId === "string" && c.requestId.length > 0 && (c.reason === "resolved" || c.reason === "withdrawn" || c.reason === "expired");
     default: {
       const _exhaustive = type;
       return _exhaustive;
@@ -771,6 +887,7 @@ var optArr = (v) => v === undefined || Array.isArray(v);
 var isStrArr = (v) => Array.isArray(v) && v.every(isStr);
 var optStrOrNull = (v) => v === undefined || v === null || typeof v === "string";
 var optBoolOrNull = (v) => v === undefined || v === null || typeof v === "boolean";
+var optProductId = (v) => v === undefined || typeof v === "string" && v.length > 0 && v.length <= 128;
 var validateSessionsList = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && optNum(o.offset) && optNum(o.limit) && optBool(o.includeArchived) && optBool(o.archivedOnly) && optStr(o.workspace) && optStr(o.agent) ? o : null;
@@ -1083,6 +1200,195 @@ var validateRunsCancel = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? o : null;
 };
+var optObj = (v) => v === undefined || isObj(v);
+var isTimestamp = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
+var INTERACTION_KINDS = ["permission", "elicitation"];
+var INTERACTION_ACTIONS = [
+  "accept",
+  "decline",
+  "cancel",
+  "allow_once",
+  "allow_always",
+  "reject_once",
+  "reject_always"
+];
+var FIELD_KINDS = ["text", "single-select", "number", "boolean", "multi-select"];
+function validInteractionField2(v) {
+  if (!isObj(v))
+    return false;
+  const kind = v.kind;
+  if (typeof kind !== "string" || !FIELD_KINDS.includes(kind))
+    return false;
+  if (!isBoundedStr(v.key, 64))
+    return false;
+  if (!isBoundedStr(v.title, 200))
+    return false;
+  if (typeof v.required !== "boolean")
+    return false;
+  if (!optStrOrNull(v.description))
+    return false;
+  if (!optNum(v.minItems) || !optNum(v.maxItems))
+    return false;
+  if (!optNum(v.minLength) || !optNum(v.maxLength))
+    return false;
+  if (v.format !== undefined && !isBoundedStr(v.format, 64))
+    return false;
+  if (v.pattern !== undefined && !isBoundedStr(v.pattern, 2000))
+    return false;
+  if (!optBoolOrNull(v.integer))
+    return false;
+  if (!optNum(v.minimum) || !optNum(v.maximum))
+    return false;
+  const isSelect = kind === "single-select" || kind === "multi-select";
+  if (isSelect) {
+    const options = v.options;
+    if (!Array.isArray(options) || options.length === 0 || options.length > 200)
+      return false;
+    for (const option of options) {
+      if (!isObj(option))
+        return false;
+      if (!isBoundedStr(option.value, 200))
+        return false;
+      if (!isBoundedStr(option.label, 200))
+        return false;
+      if (!optStrOrNull(option.description))
+        return false;
+    }
+  } else if (v.options !== undefined) {
+    return false;
+  }
+  if (v.defaultValue !== undefined) {
+    const d = v.defaultValue;
+    const scalar = typeof d === "string" || typeof d === "number" || typeof d === "boolean";
+    const array = isStrArr(d);
+    if (!scalar && !array)
+      return false;
+    if (typeof d === "string" && d.length > 8000)
+      return false;
+  }
+  return true;
+}
+var validateInteractionRequest = (p) => {
+  const o = fields(p);
+  if (!o)
+    return null;
+  if (!isBoundedStr(o.requestId, 128))
+    return null;
+  const kind = o.kind;
+  if (typeof kind !== "string" || !INTERACTION_KINDS.includes(kind))
+    return null;
+  if (!isTimestamp(o.expiresAt))
+    return null;
+  if (!optObj(o.conversation))
+    return null;
+  if (o.conversation !== undefined) {
+    const c = o.conversation;
+    if (!isBoundedStr(c.conversationId, 128) || c.conversationId === "")
+      return null;
+    if (!isBoundedStr(c.topicId, 128) || c.topicId === "")
+      return null;
+    if (!optProductId(c.botId))
+      return null;
+    if (!optProductId(c.runId))
+      return null;
+    if (!optProductId(c.memberTurnId))
+      return null;
+    if (!optProductId(c.promptRequestId))
+      return null;
+    for (const value of Object.values(c)) {
+      if (typeof value === "string" && value.startsWith("brt_"))
+        return null;
+    }
+  }
+  if (kind === "elicitation") {
+    const e = o.elicitation;
+    if (!isObj(e))
+      return null;
+    const elicitation = e;
+    if (elicitation.mode !== "form")
+      return null;
+    if (!optStrOrNull(elicitation.message))
+      return null;
+    if (typeof elicitation.message === "string" && elicitation.message.length > 8000)
+      return null;
+    if (!optStrOrNull(elicitation.schemaTitle))
+      return null;
+    if (!isObj(elicitation.agent))
+      return null;
+    const agent = elicitation.agent;
+    if (!isBoundedStr(agent.name, 200) || agent.name === "")
+      return null;
+    if (!optStrOrNull(agent.sessionAlias))
+      return null;
+    const fieldsValue = elicitation.fields;
+    if (!Array.isArray(fieldsValue))
+      return null;
+    if (fieldsValue.length > 100)
+      return null;
+    if (!fieldsValue.every(validInteractionField2))
+      return null;
+    if (o.permission !== undefined)
+      return null;
+    return o;
+  }
+  const perm = o.permission;
+  if (!isObj(perm))
+    return null;
+  const permission = perm;
+  if (!optStrOrNull(permission.title))
+    return null;
+  if (!optStrOrNull(permission.kind))
+    return null;
+  if (!optStrOrNull(permission.summary))
+    return null;
+  if (!isStrArr(permission.availableOutcomes))
+    return null;
+  if (o.elicitation !== undefined)
+    return null;
+  return o;
+};
+var validateInteractionResponse = (p) => {
+  const o = fields(p);
+  if (!o)
+    return null;
+  if (!isBoundedStr(o.requestId, 128))
+    return null;
+  const kind = o.kind;
+  if (typeof kind !== "string" || !INTERACTION_KINDS.includes(kind))
+    return null;
+  const action = o.action;
+  if (typeof action !== "string" || !INTERACTION_ACTIONS.includes(action))
+    return null;
+  if (o.responderId !== undefined || o.senderId !== undefined || o.userId !== undefined)
+    return null;
+  if (action === "accept") {
+    if (o.content === null || o.content === undefined) {
+      return o;
+    }
+    if (!isObj(o.content))
+      return null;
+    for (const value of Object.values(o.content)) {
+      const scalar = typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+      const array = isStrArr(value);
+      if (!scalar && !array)
+        return null;
+      if (typeof value === "string" && value.length > 8000)
+        return null;
+    }
+    return o;
+  }
+  if (o.content !== undefined && o.content !== null)
+    return null;
+  return o;
+};
+var validateInteractionWithdraw = (p) => {
+  const o = fields(p);
+  if (!o)
+    return null;
+  if (!isBoundedStr(o.requestId, 128))
+    return null;
+  return o;
+};
 var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.sessionsList]: validateSessionsList,
   [MSG.sessionsCreate]: validateSessionsCreate,
@@ -1156,7 +1462,10 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationHistory]: validateConversationHistory,
   [MSG.runsGet]: validateRunsGet,
   [MSG.runsList]: validateRunsList,
-  [MSG.runsCancel]: validateRunsCancel
+  [MSG.runsCancel]: validateRunsCancel,
+  [MSG.interactionRequest]: validateInteractionRequest,
+  [MSG.interactionRespond]: validateInteractionResponse,
+  [MSG.interactionWithdraw]: validateInteractionWithdraw
 };
 function parseControlPayload(type, payload) {
   const validate = CONTROL_PAYLOAD_VALIDATORS[type];
@@ -1252,6 +1561,7 @@ export {
   REASONING_CAP,
   RECOVERY_RETENTION_MS,
   RELAY_CAPABILITIES,
+  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
   RELAY_PROTOCOL_VERSION,
   STATE_SYNC_PARTS_CAP,
   STATE_SYNC_TEXT_CAP,
@@ -1286,6 +1596,9 @@ export {
   parseWebServerEvent,
   validControlEvent,
   validInstanceStateSync,
+  validateInteractionRequest,
+  validateInteractionResponse,
+  validateInteractionWithdraw,
   webClientEnvelope,
   webEventEnvelope
 };

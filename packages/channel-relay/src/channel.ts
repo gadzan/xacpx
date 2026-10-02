@@ -4,15 +4,24 @@ import { join } from "node:path";
 import {
   MSG,
   RELAY_CAPABILITIES,
+  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
   type AgentDirectorySnapshotPayload,
   type AgentMessageCompletionPayload,
   type AgentMessageCompletionResult,
+  type ConversationTurnCorrelationDto,
   type InstanceNoticePayload,
   type InstanceRecoveryAckPayload,
+  type InteractionRequestDto,
+  type InteractionResponseDto,
   type RelayEnvelope,
+  parseControlPayload,
 } from "@ganglion/xacpx-relay-protocol";
+import { isDirectConversationChatKey, parseDirectConversationChatKey } from "xacpx/plugin-api";
 import type {
   ChannelStartInput,
+  ChannelElicitationDecision,
+  ChannelElicitationMode,
+  ChannelElicitationRequest,
   PublicControlService,
   CoordinatorMessageInput,
   MessageChannelRuntime,
@@ -25,6 +34,7 @@ import { coreHomeDir } from "xacpx/plugin-api";
 type ChannelStopReason = "shutdown" | "disabled" | "removed" | "logout";
 
 import { parseRelayChannelConfig, type RelayChannelConfig } from "./config.js";
+import { parseRelayInteractionOutcome, relayFieldsFrom } from "./relay-interaction.js";
 import {
   CredentialStore,
   defaultCredentialPath,
@@ -92,6 +102,20 @@ interface RelayClientLike {
   ): Promise<T>;
 }
 
+/**
+ * How long the interaction RPC may stay open, as the interaction's OWN window
+ * plus a reserve for the decision that was made in time to still travel back.
+ *
+ * The window closes at `expiresAt`, but cutting the transport at the same
+ * instant loses a decision the human already made. The reserve is the same one
+ * the hub uses, so the two ends agree on the ceiling and neither side's timer is
+ * the surprise. A hard floor keeps a window that has already passed from
+ * producing a non-positive timeout, which would fail the RPC before it was sent.
+ */
+function windowTransportCeilingMs(expiresAt: number): number {
+  return Math.max(1, expiresAt - Date.now()) + RELAY_INTERACTION_RESPONSE_RESERVE_MS;
+}
+
 export function defaultTerminalRegistryDir(): string {
   return join(coreHomeDir(process.env.HOME ?? homedir()), "relay");
 }
@@ -114,9 +138,55 @@ export interface RelayChannelDeps {
   createTerminalDriver?: () => RmuxTerminalDriver;
 }
 
+/**
+ * An interaction could not be opened, or was closed before a human decided.
+ *
+ * Distinct from a `ChannelElicitationDecision` on purpose, and the distinction is
+ * the whole point. The renderer contract says an infrastructure close — timeout,
+ * withdrawal, transport failure, shutdown, a destination that cannot be shown a
+ * private form — is NOT a user action and must not carry an invented
+ * `responderId`. Returning `{ action: "cancel", responderId: initiatorId }`
+ * instead made core's re-verification compare the initiator with itself, so the
+ * fake passed and an infrastructure close was committed as a user decision.
+ *
+ * Throwing this lets core's own abort race and post-decision checks settle the
+ * request as `cancel`, which is the outcome these paths always intended.
+ *
+ * `reason` is for the channel's own logs and tests; core deliberately receives
+ * no decision rather than a decision describing why not.
+ */
+export class RelayElicitationUnavailable extends Error {
+  constructor(readonly reason: string) {
+    super(`relay elicitation is unavailable: ${reason}`);
+    this.name = "RelayElicitationUnavailable";
+  }
+}
+
 export class RelayChannel implements MessageChannelRuntime {
   readonly id = "relay";
   readonly nativeSessionListFormat = "table" as const;
+  /**
+   * Form capability, declared because this channel IMPLEMENTS it: rendering means
+   * opening an interaction on the hub and waiting for the authenticated human's
+   * answer, which `requestElicitation` does through the real Relay transport.
+   *
+   * A constant, not constructor state. There is no build where this channel
+   * exists but cannot reach a hub — the renderer is the transport itself, so
+   * "capable" and "implemented" cannot diverge. That is the one thing the plugin
+   * contract's G9 forbids: declaring `form` while `requestElicitation` throws
+   * would make the broker dispatch onto a channel that cannot answer. Core's own
+   * probe still requires both halves, so an earlier build whose method was a stub
+   * is caught by the runtime check rather than by this declaration.
+   *
+   * Note the scope this declaration does NOT express: it is per-CHANNEL, while
+   * the renderer is per-ROUTE. A form is showable only on a Direct Conversation
+   * turn (`bot:<conversation>:<topic>`); an ordinary session turn resolves to
+   * `relay:<accountId>`, which has no `conversation` correlation and no surface
+   * that mounts a form. `requestElicitation` refuses those turns itself — see
+   * `unsupported-route` there — because this contract has no way to say "capable
+   * on some routes only".
+   */
+  readonly elicitationModes: readonly ChannelElicitationMode[] = ["form"];
 
   private readonly config: RelayChannelConfig;
   private readonly credentials: CredentialStoreLike;
@@ -181,7 +251,18 @@ export class RelayChannel implements MessageChannelRuntime {
     const control = input.control;
     this.control = control;
 
-    const capabilities = await this.bootstrapTerminal(input);
+    const capabilities = [
+      ...(await this.bootstrapTerminal(input)),
+      // Interaction with the authenticated human, over the same connection that
+      // already carries prompts. Advertised because `requestElicitation` is a
+      // real implementation on this transport, and NOT advertised as a separate
+      // flag that could rot: the capability IS the implementation.
+      //
+      // The permission half is deliberately absent — the wire carries the kind,
+      // but nothing renders it yet, and advertising it would claim a capability
+      // the connector cannot deliver.
+      RELAY_CAPABILITIES.interactionElicitationFormV1,
+    ];
 
     const bridge = createControlBridge(control, {
       ...(input.trustedConversationPrompt
@@ -431,6 +512,327 @@ export class RelayChannel implements MessageChannelRuntime {
       chatKey: input.chatKey,
       text: input.text,
     });
+  }
+
+  /**
+   * Render an ACP form elicitation by OPENING an interaction on the hub.
+   *
+   * This is the real production direction and it is dial-out: core's broker calls
+   * this channel, and this channel asks the hub to put the form in front of its
+   * authenticated human. There is no other entry point — `interaction-opened`
+   * exists only because an interaction was opened here, and the browser answer
+   * exists only because this call is still waiting for it.
+   *
+   * The frame that travels is the one built from CORE's normalized request, so
+   * the browser sees exactly what the agent asked, bounded by core's own
+   * validation. Nothing is re-derived here, least of all identity.
+   *
+   * Fail-closed table (every one of these closes the interaction; none fabricate
+   * a decision, and none report a user's action that did not happen):
+   *
+   * - hub offline / not ready      -> `cancel` (no route to a human)
+   * - `senderId` unreachable       -> `cancel` (an unauthenticated turn cannot
+   *                                        route to an authenticated human)
+   * - transport timeout / disconnect -> `cancel`
+   * - `abort`/turn disposal         -> `cancel`
+   * - hub answers `responded:false` -> the hub's own reason (timeout/unsupported)
+   *
+   * `decline` is NEVER synthesized: only a real browser action produces it, and
+   * the browser's `interaction-closed`/`decline` is what carries it.
+   */
+  async requestElicitation(
+    request: ChannelElicitationRequest,
+  ): Promise<ChannelElicitationDecision> {
+    const requestId = request.requestId;
+    const expiresAt = request.expiresAt;
+    if (!this.isClientReady()) {
+      // Not started, or started but no hub link: there is nowhere to open an
+      // interaction. `startLogger` is NOT the signal here — it is only assigned
+      // on the terminal-enabled bootstrap branch, so an ordinary production
+      // channel (terminal disabled) would bail on a logger that was never set.
+      //
+      // Rejected rather than answered: no human was asked, so there is no user
+      // decision to report, and a `responderId` here would be invented.
+      throw new RelayElicitationUnavailable("channel-missing");
+    }
+    // The turn's own initiator, used for ONE purpose: refusing to open an
+    // interaction for a turn that has no attributable human. It is deliberately
+    // NOT the identity reported back on a decision.
+    //
+    // The reported responder is the one the HUB stamped from its authenticated
+    // session — see the mapping below. Echoing the initiator instead would turn
+    // core's re-verification into `initiator == initiator`, which is a tautology
+    // and would let a decision by anybody pass as the turn's initiator.
+    const initiatorId = request.requester?.senderId ?? "";
+    if (!initiatorId) {
+      throw new RelayElicitationUnavailable("unattributable");
+    }
+    // Only a provably private destination may show a form: an elicitation
+    // contains the agent's question and the human's answer, and neither belongs
+    // where a group can read it. `undefined` is treated as unproven, NOT as
+    // direct — the caller must have the channel's own report.
+    if (request.chatType !== "direct") {
+      await this.startLogger?.warn(
+        "relay.elicitation.rejected",
+        "relay renderer refuses a form it cannot prove is direct",
+        { requestId, chatType: request.chatType },
+      );
+      throw new RelayElicitationUnavailable("not-direct");
+    }
+    // ROUTE-SCOPED capability, which is what the channel-wide
+    // `elicitationModes = ["form"]` above could not express.
+    //
+    // A form is renderable on exactly one route: a Direct Conversation turn,
+    // whose chatKey is `bot:<conversation>:<topic>`. That key is what yields the
+    // `conversation` product correlation the web form needs to find its topic,
+    // and it is the only surface that mounts a renderer — the Direct Bot pane.
+    // An ordinary Relay session turn resolves its route to `relay:<accountId>`
+    // (the permission fallback), so its `conversationCorrelation()` is
+    // `undefined` and the frame it produces belongs to no topic at all.
+    //
+    // Declaring `form` channel-wide while only that one route can render made
+    // every ordinary session turn also request a form. The hub opened the
+    // interaction, the uncorrelated frame was scoped out of every topic view,
+    // and the result was a form nobody could see reaching its timeout. That is
+    // worse than refusing: an agent told the human was asked when no human ever
+    // saw the question.
+    if (!isDirectConversationChatKey(request.chatKey)) {
+      await this.startLogger?.warn(
+        "relay.elicitation.rejected",
+        "relay form renderer is route-scoped to Direct Conversation turns",
+        { requestId, chatKey: request.chatKey },
+      );
+      throw new RelayElicitationUnavailable("unsupported-route");
+    }
+    const fields = relayFieldsFrom(request.fields);
+    if (fields === null) {
+      // Core and the wire disagree on the field model. Closing rather than
+      // projecting a partial form: an answer to a form the agent did not ask for
+      // is worse than no answer.
+      await this.startLogger?.warn("relay.elicitation.rejected", "core/wire field model drift", {
+        requestId,
+      });
+      throw new RelayElicitationUnavailable("unsupported");
+    }
+    const correlation = this.conversationCorrelation(request);
+    const interaction: InteractionRequestDto = {
+      requestId,
+      kind: "elicitation",
+      ...(correlation !== undefined ? { conversation: correlation } : {}),
+      expiresAt,
+      elicitation: {
+        mode: "form",
+        message: request.message,
+        fields,
+        ...(request.schemaTitle !== undefined ? { schemaTitle: request.schemaTitle } : {}),
+        // The schema-level DESCRIPTION travels with the title, for the reason the
+        // wire validator allows an empty `message`: a schema with a good title and
+        // description needs no prose. Dropping it left Relay Web with nothing at
+        // all above the fields when the agent sent an empty message plus
+        // `schemaTitle` — the form lost its own question.
+        ...(request.schemaDescription !== undefined ? { schemaDescription: request.schemaDescription } : {}),
+        // The asking Agent, carried across the wire because it is an IDENTITY and
+        // not presentation. Dropping it here is what made the relay web form show
+        // only a generic "Input needed" while core knew perfectly well which
+        // agent was asking — and a renderer must not reconstruct identity out of
+        // `message`/`schemaTitle`, both of which the agent controls.
+        agent: {
+          name: request.agent.name,
+          ...(request.agent.sessionAlias !== undefined ? { sessionAlias: request.agent.sessionAlias } : {}),
+        },
+      },
+    };
+    try {
+      // The window's own deadline plus a reserve IS the transport ceiling, so a
+      // slow-but-legal answer is never cut off by a generic connector timeout,
+      // while a dead one still expires.
+      const timeoutMs = windowTransportCeilingMs(expiresAt);
+      const relayResult = await this.sendInteractionRequest(interaction, timeoutMs, request.signal);
+      const outcome = parseRelayInteractionOutcome(relayResult);
+      if (!outcome.responded) {
+        // Not a user action: the hub closed the window (timeout, unsupported,
+        // withdrawn). The agent must learn the turn produced no decision, and the
+        // form is withdrawn with it — the hub already removed the pending
+        // interaction and told every browser, so there is nothing left to collect.
+        //
+        // This REJECTS rather than returning a decision, because the renderer
+        // contract forbids inventing one: `request.signal` abort and every
+        // infrastructure close are not user actions, and no authenticated human
+        // answered. Returning `{ action: "cancel", responderId: initiatorId }`
+        // here — which is what this did — faked a responder that happens to equal
+        // the turn initiator, so the broker's re-verification PASSED and committed
+        // an infrastructure close as a real user decision.
+        //
+        // Rejecting is safe and not a silent failure: the broker's own abort race
+        // and its post-decision checks settle the request as `cancel` either way,
+        // which is the outcome this path always intended.
+        await this.startLogger?.warn("relay.elicitation.closed", "relay interaction closed without a user decision", {
+          requestId,
+          reason: outcome.reason,
+        });
+        throw new RelayElicitationUnavailable(outcome.reason);
+      }
+      const decision = outcome.response;
+      // THE LOAD-BEARING LINE: the responder is the one the HUB stamped from its
+      // own authenticated session — never the initiator this channel started
+      // with, and never anything derived here.
+      //
+      // Reporting the initiator would make core's re-verification compare it with
+      // itself, which is a tautology: it would pass for a decision made by ANY
+      // authenticated account, or by none at all.
+      const responderId = decision.responderId;
+      // Narrowed to the elicitation action set. A permission action
+      // (`allow_once` and friends) on an elicitation is a protocol surprise, not
+      // a decision to pass to core — core would reject it, so refuse here with
+      // the same cancel the surprising frame is worth.
+      if (decision.action === "accept") {
+        // `content` is passed through verbatim, including `undefined` and `null`:
+        // core validates the answer set against its own frozen snapshot, so this
+        // channel never decides whether the answers were enough.
+        return { action: "accept", responderId, content: decision.content };
+      }
+      if (decision.action === "decline" || decision.action === "cancel") {
+        return { action: decision.action, responderId };
+      }
+      // An action outside the elicitation set is a protocol surprise. Rejected
+      // rather than mapped to `cancel`: a cancel is a USER action, and the
+      // responder here would be invented — the same failure that made
+      // infrastructure closes commit as user decisions, in a smaller dose.
+      throw new RelayElicitationUnavailable("unsupported-action");
+    } catch (error) {
+      // Transport failure, or the request signal fired while the RPC was still
+      // in flight. Either way there is no decision to report and the interaction
+      // is abandoned — core's own fence settles the abort.
+      //
+      // The withdrawal is also emitted here, not only on the signal path: a
+      // transport failure can happen after the hub already opened the
+      // interaction, and leaving it open would collect answers for a turn whose
+      // outcome is already settled. Idempotent, so nothing double-closes.
+      this.withdrawInteraction(requestId);
+      await this.startLogger?.warn("relay.elicitation.failed", "relay elicitation transport failed", {
+        requestId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      // REJECTED, not returned. The renderer contract is explicit that an
+      // infrastructure failure is not a user action and must not carry an invented
+      // `responderId`; returning one that equals the turn initiator would pass
+      // the broker's re-verification and commit a transport failure as a user's
+      // decision. Rejecting lets core's abort race and post-decision checks
+      // settle the request as `cancel`, which is the intended outcome.
+      throw error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  /**
+   * Open the interaction on the hub and wait for the human's answer.
+   *
+   * Abort is propagated in BOTH directions, because a request that is abandoned
+   * mid-flight must not leave a live form on someone's screen:
+   *
+   *   outbound — core aborts (turn disposal, agent `$/cancel_request`, timeout).
+   *     Rejecting this promise locally is NOT enough on its own: the hub would
+   *     keep the interaction open and keep collecting answers for a turn that no
+   *     longer exists. So the abort also sends `control.interaction.withdraw`,
+   *     which closes the hub's pending entry, broadcasts `interaction-closed:
+   *     withdrawn` to every browser, and makes a later answer `409 gone`.
+   *   inbound — if the transport rejects because the socket went away, we
+   *     surface it as a rejection rather than a hang, and the caller's catch
+   *     closes the interaction.
+   *
+   * The withdrawal is fire-and-forget: the local promise is already settled, and
+   * the hub's `close` is idempotent, so a withdrawal that loses a race against
+   * the human's own answer is a no-op rather than an error.
+   */
+  private sendInteractionRequest(
+    interaction: InteractionRequestDto,
+    timeoutMs: number,
+    signal: AbortSignal | undefined,
+  ): Promise<unknown> {
+    if (signal?.aborted) {
+      return Promise.reject(new Error("elicitation interaction aborted"));
+    }
+    const client = this.client;
+    if (!client || typeof client.sendRequest !== "function") {
+      return Promise.reject(new Error("relay client cannot send requests"));
+    }
+    const inFlight = client.sendRequest(MSG.interactionRequest, interaction, { timeoutMs });
+    if (!signal) return inFlight;
+    return new Promise((resolve, reject) => {
+      const onAbort = (): void => {
+        // Withdraw on the hub BEFORE settling locally, so the form disappears for
+        // the human in the same tick the agent stops waiting for it.
+        this.withdrawInteraction(interaction.requestId);
+        reject(new Error("elicitation interaction aborted"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      inFlight.then(
+        (value) => resolve(value),
+        (error: unknown) => reject(error),
+      ).finally(() => signal.removeEventListener("abort", onAbort));
+    });
+  }
+
+  /**
+   * Tell the hub to close an interaction that is still open.
+   *
+   * Deliberately not awaited by the abort path: the caller's promise is already
+   * settled, and a withdrawal must never delay or block the local outcome. The
+   * hub's registry treats a withdrawal of an already-closed interaction as
+   * success, so this cannot be observed as a failure.
+   */
+  private withdrawInteraction(requestId: string): void {
+    const client = this.client;
+    if (!client || typeof client.sendRequest !== "function") return;
+    try {
+      void Promise.resolve(
+        client.sendRequest(MSG.interactionWithdraw, { requestId }, { timeoutMs: 5_000 }),
+      ).catch(() => {
+        // The socket went away with the interaction. Nothing to withdraw: the hub
+        // drops every interaction a disconnected connector opened.
+      });
+    } catch {
+      // Same as above for a synchronous throw — the hub already withdrew on
+      // disconnect, so there is no state left to clean up.
+    }
+  }
+
+  /**
+   * Product correlation for the web UI's product surface, or `undefined` for an
+   * interaction with no Conversation product row.
+   *
+   * Reads the Direct Conversation key from the turn's own route, which core
+   * already validated and which `parseDirectConversationChatKey` parses strictly
+   * (`bot:garbage` yields nothing). A `relay:` chatKey or any unprefixed key means
+   * the turn is an ordinary channel turn with no product row, and fabricating one
+   * would make the browser open the form on a conversation that does not own it.
+   *
+   * Only the product keys are carried. The durable row ids
+   * (`botId`/`runId`/`memberTurnId`) are left absent because the connector has no
+   * way to know them, and an empty string would compare equal to any other empty
+   * string and satisfy a join it should not. Never a hidden `brt_*` alias — that
+   * is runtime plumbing, and the wire validator rejects it.
+   *
+   * `replyContextToken` is deliberately NOT mapped to `promptRequestId`. It is
+   * the trusted INGRESS chat key (`relay:<accountId>`) that carries the human's
+   * return address, which is a different concept from the prompt request id the
+   * web correlate uses. Coercing one into the other produced a correlation that
+   * looked populated but joined on nothing.
+   */
+  private conversationCorrelation(
+    request: ChannelElicitationRequest,
+  ): ConversationTurnCorrelationDto | undefined {
+    const parsed = parseDirectConversationChatKey(request.chatKey);
+    if (!parsed) return undefined;
+    return {
+      conversationId: parsed.conversationId,
+      topicId: parsed.topicId,
+    };
+  }
+
+  private isClientReady(): boolean {
+    if (!this.client) return false;
+    if (typeof this.client.isReady !== "function") return true;
+    return this.client.isReady();
   }
 
   async sendScheduledMessage(

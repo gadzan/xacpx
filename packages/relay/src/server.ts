@@ -26,6 +26,7 @@ import { createApp } from "./http/app.js";
 import { createRelayUpdateChecker, readRelayVersion } from "./version.js";
 import { startMaintenanceLoop } from "./maintenance.js";
 import { createNoopRelayLogger, type RelayLogger } from "./logging.js";
+import { InteractionRegistry } from "./interaction-registry.js";
 
 const MAX_MESSAGES_PER_SESSION = 2000;
 const WEB_CLIENT_MAX_PAYLOAD_BYTES = 256 * 1024;
@@ -117,6 +118,15 @@ export interface RelayRuntime {
   gateway: InstanceGateway;
   webGateway: WebGateway;
   stateSnapshot(instanceId: string): InstanceStateSnapshotDto;
+  /**
+   * The hub's pending-interaction registry.
+   *
+   * Exposed so the web subscribe path can replay the interactions that are still
+   * open to a socket that connected after the form was announced
+   * (`interaction-opened` is a one-shot push). Optional so a runtime built
+   * without a registry still satisfies this interface.
+   */
+  interactions?: InteractionRegistry;
   app: ReturnType<typeof createApp>;
   pendingWebPromptsCount?(): number;
   close(): void;
@@ -379,12 +389,35 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   };
 
   const pendingCompletionRoutes = new PendingCompletionRouteStore(db);
+  const interactions = new InteractionRegistry({
+    debug: (event, message, fields) => logger.debug(event, message, fields),
+  });
+  // ONE broadcast per interaction close, for every closer.
+  //
+  // Emitted from the registry itself (see `createApp`) rather than from each
+  // closer, so the browser's state is independent of which path ran.
+  //
+  // The instance id is FORWARDED FROM THE EVENT, not blanked. The web gateway
+  // fences control-events on each socket's instance subscription, and the
+  // dashboard subscribes to its real instances on connect — so an event wrapped
+  // with instanceId "" is dropped by every subscribed socket. Every interaction
+  // event now names the connector that owns it, and the wrapper must carry that
+  // through or the fence silently discards it.
+  const broadcastControlEvent = (accountId: string, event: ControlEventDto): void => {
+    webGateway.broadcast(accountId, {
+      kind: "control-event",
+      instanceId: (event as { instanceId?: string }).instanceId ?? "",
+      event,
+    });
+  };
   const gateway = new InstanceGateway({
     instances,
     accounts,
     requestTimeoutMs: options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
     logger,
     pendingCompletionRoutes,
+    interactions,
+    broadcastControlEvent,
     onDirectoryChange: (accountId, endpoints) => {
       webGateway.broadcast(accountId, { kind: "agent-directory", endpoints });
     },
@@ -1079,6 +1112,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),
     vapidPublicKey: vapid ? () => vapid.publicKey : undefined,
     pushSubscriptions,
+    interactions,
     onWebPromptCreated: ({ promptRequestId, instanceId, sessionAlias }) => {
       recordPendingWebPrompt(promptRequestId, instanceId, sessionAlias);
     },
@@ -1113,6 +1147,9 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     gateway,
     webGateway,
     stateSnapshot,
+    // Pending interactions, so the web subscribe path can replay what is still
+    // open to a socket that connected after the form was announced.
+    interactions,
     pendingWebPromptsCount: () => pendingWebPrompts.size,
     app,
     close: () => {
@@ -1211,6 +1248,7 @@ export async function startRelayServer(options: StartRelayOptions): Promise<Runn
           gateway: runtime.gateway,
           webGateway: runtime.webGateway,
           stateSnapshot: runtime.stateSnapshot,
+          interactions: runtime.interactions,
         }, account.id, ws, String(data)));
       });
       return;

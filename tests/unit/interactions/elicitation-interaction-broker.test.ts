@@ -20,6 +20,23 @@ import type { AppLogger } from "../../../src/logging/app-logger.js";
 
 const SENTINEL_ANSWER = "SENTINEL-ELICITATION-ANSWER-9f3c2a";
 
+/**
+ * Bind an ELICITATION turn route directly.
+ *
+ * The registry keys routes by (interactionId, kind) because permission and
+ * elicitation resolve DIFFERENT addresses for the same turn. A caller binding
+ * the registry itself must therefore state which kind it is storing; the
+ * default is `"permission"`, and reading back a route stored under it would
+ * silently hand the broker an address it never wrote.
+ */
+function bindElicitationTurn(
+  registry: ReturnType<typeof createTurnInteractionRegistry>,
+  context: TurnInteractionContext,
+  abortSignal?: AbortSignal,
+): () => void {
+  return registry.bindTurn(context, abortSignal, "elicitation");
+}
+
 function turn(overrides: Partial<TurnInteractionContext> = {}): TurnInteractionContext {
   return {
     interactionId: `ix-${Math.random().toString(36).slice(2, 10)}`,
@@ -227,7 +244,7 @@ describe("ElicitationInteractionBroker fail-closed paths", () => {
     const channel = formChannel(async () => ({ action: "accept", responderId: "user-A", content: { note: "x" } }), seen);
     const { broker, registry } = harness({ channel });
     const scheduledRoute = turn({ origin: "scheduled" });
-    const dispose = registry.bindTurn(scheduledRoute);
+    const dispose = bindElicitationTurn(registry, scheduledRoute);
     try {
       const result = await broker.resolveElicitation(request({ interactionId: scheduledRoute.interactionId }));
       expect(result).toEqual({ action: "cancel" });
@@ -242,7 +259,7 @@ describe("ElicitationInteractionBroker fail-closed paths", () => {
     const channel = formChannel(async () => ({ action: "accept", responderId: "user-A", content: { note: "x" } }), seen);
     const { broker, registry } = harness({ channel });
     const route = turn({ senderId: undefined });
-    const dispose = registry.bindTurn(route);
+    const dispose = bindElicitationTurn(registry, route);
     try {
       const result = await broker.resolveElicitation(request({ interactionId: route.interactionId }));
       expect(result).toEqual({ action: "cancel" });
@@ -734,8 +751,8 @@ describe("ElicitationInteractionBroker deadlines and races", () => {
       const resultB = await broker.resolveElicitation(request({ interactionId: routeB.interactionId }));
       expect(resultA).toEqual({ action: "accept", content: { note: "user-A" } });
       expect(resultB).toEqual({ action: "accept", content: { note: "user-B" } });
-      expect(registry.resolve(routeA.interactionId)?.senderId).toBe("user-A");
-      expect(registry.resolve(routeB.interactionId)?.senderId).toBe("user-B");
+      expect(registry.resolve(routeA.interactionId, "elicitation")?.senderId).toBe("user-A");
+      expect(registry.resolve(routeB.interactionId, "elicitation")?.senderId).toBe("user-B");
     } finally {
       disposeA();
       disposeB();

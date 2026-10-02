@@ -109,6 +109,30 @@ export function directConversationChatKey(conversationId: string, topicId: strin
   return `bot:${conversationId}:${topicId}`;
 }
 
+/**
+ * Inverse of {@link directConversationChatKey}.
+ *
+ * Returns undefined for a key that merely CHATs with the `bot:` prefix but does
+ * not carry both halves, so a caller cannot mint a route from `bot:garbage`.
+ * A chatKey prefix is not enough to identify a turn: the conversation and topic
+ * are what scope it, and a route built from a prefix-only key could be satisfied
+ * by any turn in any topic.
+ */
+export function parseDirectConversationChatKey(
+  chatKey: string,
+): { conversationId: string; topicId: string } | undefined {
+  if (!isDirectConversationChatKey(chatKey)) return undefined;
+  const rest = chatKey.slice("bot:".length);
+  const separator = rest.indexOf(":");
+  if (separator <= 0 || separator === rest.length - 1) return undefined;
+  const conversationId = rest.slice(0, separator);
+  const topicId = rest.slice(separator + 1);
+  // No further segments: `bot:c:t:extra` is not a key this project mints.
+  if (topicId.includes(":")) return undefined;
+  if (!conversationId || !topicId) return undefined;
+  return { conversationId, topicId };
+}
+
 /** Product TurnQueue isolation key, not a human permission return route. */
 export function isDirectConversationChatKey(chatKey: string): boolean {
   return chatKey.startsWith("bot:");
@@ -123,4 +147,20 @@ export function ownedDirectSessionAlias(bindingId: string): string {
  *  session for the same binding id can never share an alias. */
 export function ownedGroupMemberSessionAlias(bindingId: string): string {
   return `brt_group_${bindingId}`;
+}
+
+/**
+ * Whether an alias is a Direct Conversation product session alias.
+ *
+ * Kept beside the minter so the two cannot drift: a prefix that this predicate
+ * accepts but the minter would not produce (or the reverse) would silently break
+ * the join between a Conversation binding and its session.
+ *
+ * Deliberately NOT exported as "is this a hidden alias": the product may add
+ * other hidden alias shapes later, and the callers here need to know precisely
+ * one thing — "is this alias already in its final internal form", which is a
+ * question about naming, not about visibility.
+ */
+export function isProductOwnedSessionAlias(alias: string): boolean {
+  return alias.startsWith("brt_") && alias.length > "brt_".length;
 }

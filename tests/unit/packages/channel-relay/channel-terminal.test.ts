@@ -131,6 +131,10 @@ test("terminal.enabled declares both capabilities after runtime reconcile", asyn
   expect(capturedCaps).toEqual([
     RELAY_CAPABILITIES.terminalRmuxRecoveryV1,
     RELAY_CAPABILITIES.terminalMultiViewV1,
+    // The interaction capability is declared alongside the terminal ones: the
+    // connector advertises everything it can do on this connection, and the two
+    // are independent — either can be present without the other.
+    RELAY_CAPABILITIES.interactionElicitationFormV1,
   ]);
   expect(channel.getTerminalRuntimeForTests()).not.toBeNull();
   controller.abort();
@@ -320,7 +324,13 @@ test("terminal disabled omits capabilities and still starts chat client", async 
   const { input } = makeStartInput({ abortSignal: controller.signal });
   const started = channel.start(input as never);
   await Bun.sleep(10);
-  expect(capturedCaps ?? []).toEqual([]);
+  // No TERMINAL capabilities: the runtime is disabled, so nothing terminal-shaped
+  // is advertised. The interaction capability is separate and unrelated to the
+  // terminal runtime — it is declared because the channel can render a form over
+  // the transport, not because a sidecar is running.
+  expect(capturedCaps ?? []).not.toContain("terminal.rmux.recovery.v1");
+  expect(capturedCaps ?? []).not.toContain("terminal.multi-view.v1");
+  expect(capturedCaps ?? []).toContain("interaction.elicitation.form.v1");
   controller.abort();
   await started;
 });
@@ -370,7 +380,12 @@ test("valid owner + corrupt terminals.json does not advertise terminal capabilit
   while (capturedCaps === undefined && Date.now() < deadline) {
     await Bun.sleep(5);
   }
-  expect(capturedCaps).toEqual([]);
+  // No TERMINAL capabilities: the corrupt registry is quarantined, not silently
+  // trusted, so nothing terminal-shaped is advertised. The interaction capability
+  // is unaffected — it rides on the transport, not on the terminal runtime.
+  expect(capturedCaps).not.toContain("terminal.rmux.recovery.v1");
+  expect(capturedCaps).not.toContain("terminal.multi-view.v1");
+  expect(capturedCaps).toContain("interaction.elicitation.form.v1");
   expect(channel.getTerminalRuntimeForTests()).toBeNull();
   expect(creates).toBe(0);
   expect(readdirSync(dir).some((f) => f.startsWith("terminals.json.corrupt-"))).toBe(true);

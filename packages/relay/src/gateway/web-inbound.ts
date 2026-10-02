@@ -4,6 +4,7 @@ import {
   MSG,
   parseTerminalEventPayload,
   parseWebClientMessage,
+  type InteractionRequestDto,
   type InstanceStateSnapshotDto,
   type PublishedAgentEndpointDto,
   type TerminalOpenResult,
@@ -16,6 +17,7 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 
 import { TERMINAL_REQUEST_TIMEOUT_MS } from "./instance-gateway.js";
+import type { InteractionRegistry } from "../interaction-registry.js";
 import type { WebGateway, WebSocketLike } from "./web-gateway.js";
 
 export interface WebClientDeps {
@@ -46,6 +48,11 @@ export interface WebClientDeps {
     | "getAttachmentBinding"
   >;
   stateSnapshot(instanceId: string): InstanceStateSnapshotDto;
+  /**
+   * The hub's pending-interaction registry, so a subscribe can replay what is
+   * still open. Optional: a hub with no registry has nothing to replay.
+   */
+  interactions?: InteractionRegistry;
 }
 
 function fail(
@@ -88,20 +95,17 @@ async function sendConnectorRequest(
   instanceId: string,
   type: string,
   payload: unknown,
+  timeoutMs: number = TERMINAL_REQUEST_TIMEOUT_MS,
 ): Promise<unknown> {
   try {
-    return await deps.gateway.sendRequest(instanceId, type, payload, {
-      timeoutMs: TERMINAL_REQUEST_TIMEOUT_MS,
-    });
+    return await deps.gateway.sendRequest(instanceId, type, payload, { timeoutMs });
   } catch (err) {
     if (
       err instanceof Error
       && err.message === "instance-reconnected"
       && deps.gateway.isOnline(instanceId)
     ) {
-      return await deps.gateway.sendRequest(instanceId, type, payload, {
-        timeoutMs: TERMINAL_REQUEST_TIMEOUT_MS,
-      });
+      return await deps.gateway.sendRequest(instanceId, type, payload, { timeoutMs });
     }
     throw err;
   }
@@ -149,6 +153,42 @@ async function handleWebClientMessageAsync(
         instanceId,
         ...deps.stateSnapshot(instanceId),
       });
+      // Replay the interactions this account still has open.
+      //
+      // `interaction-opened` is a one-shot push, so a socket that was not yet
+      // connected — a page load, a brief disconnect, a hub event that arrived
+      // between the socket's open and its subscribe — misses it permanently. The
+      // hub is still holding the interaction and the agent is still waiting on an
+      // answer, so the human must be able to reach the form after the fact.
+      //
+      // Only what is genuinely still open is replayed: `listForInstance` returns
+      // live entries, so an interaction that resolved in the meantime is not
+      // resurrected. This is not the deferred hub-restart durability — it is the
+      // same registry, still holding the entry.
+      for (const open of deps.interactions?.listForInstance(instanceId) ?? []) {
+        if (open.expiresAt <= Date.now()) continue;
+        deps.webGateway.send(socket, {
+          kind: "control-event",
+          instanceId,
+          event: {
+            type: "interaction-opened",
+            // The runtime key the store scopes on; the product keys, when the
+            // turn has them, come from the entry's own correlation.
+            chatKey: open.chatKey,
+            sessionAlias: open.sessionAlias,
+            instanceId,
+            interaction: {
+              requestId: open.requestId,
+              kind: open.kind,
+              ...(open.conversation !== undefined ? { conversation: open.conversation } : {}),
+              expiresAt: open.expiresAt,
+              // A replayed form is still a form: the same renderable shape the
+              // original event carried.
+              ...(open.kind === "elicitation" ? { elicitation: open.elicitation } : { permission: open.permission }),
+            } as InteractionRequestDto,
+          },
+        });
+      }
     }
     return;
   }

@@ -341,6 +341,10 @@ test("conversation.prompt Hub-stamps humanIngress from the authenticated account
     accountId: redeemed.accountId,
     senderName: admin.username,
     isOwner: true,
+    // The privacy fact this surface can prove, stamped by the hub alongside the
+    // identities. A renderer may show a form only when it can establish `direct`,
+    // and absent must read as unproven rather than as direct.
+    chatType: "direct",
   });
 });
 
