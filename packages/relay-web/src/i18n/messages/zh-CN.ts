@@ -718,6 +718,7 @@ export default {
       isolationLabel: "文件系统隔离",
       isolationSingleWriter: "共享单写者（推荐）",
       isolationShared: "共享",
+      isolationHint: "仅在成员任务可被强制证明为只读时并行执行；其他任务会串行执行。",
     },
     prompt: {
       placeholder: "给所选成员发消息...（@名称、@everyone）",

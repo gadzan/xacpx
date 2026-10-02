@@ -47,13 +47,24 @@ export function sanitizePublicConversationPrompt(
   const target = input.target;
   let sanitized: ConversationPromptRequestDto["target"];
   if (target !== undefined && typeof target === "object") {
-    if ("botId" in target && typeof target.botId === "string") {
-      sanitized = { botId: target.botId };
-    } else if ("mode" in target && target.mode === "members" && "botIds" in target
-      && Array.isArray(target.botIds) && target.botIds.every((entry): entry is string => typeof entry === "string")) {
-      sanitized = { mode: "members", botIds: [...target.botIds] };
-    } else if ("mode" in target && (target.mode === "everyone" || target.mode === "automatic")) {
-      sanitized = { mode: target.mode };
+    // The variants are a mutually exclusive union. A mixed shape is NEVER
+    // laundered into whichever variant matches first: it is dropped here so
+    // the accept path fails `target_required`/`invalid-target` instead of
+    // silently executing a different route (botId + mode:"automatic" must
+    // not become a direct execution of botId).
+    const hasBotId = "botId" in target;
+    const hasMode = "mode" in target;
+    const hasBotIds = "botIds" in target;
+    const mixed = (hasBotId && (hasMode || hasBotIds)) || (hasMode && hasBotIds && target.mode !== "members");
+    if (!mixed) {
+      if (hasBotId && typeof target.botId === "string") {
+        sanitized = { botId: target.botId };
+      } else if (hasMode && target.mode === "members" && hasBotIds
+        && Array.isArray(target.botIds) && target.botIds.every((entry): entry is string => typeof entry === "string")) {
+        sanitized = { mode: "members", botIds: [...target.botIds] };
+      } else if (hasMode && (target.mode === "everyone" || target.mode === "automatic")) {
+        sanitized = { mode: target.mode };
+      }
     }
   }
   return {

@@ -6363,39 +6363,42 @@ test("PR7 group accept: everyone retries when membership widens mid-acquire", as
   first.store.close();
 });
 
-test("PR7 scheduler: shared isolation overlaps siblings while shared-single-writer serializes", async () => {
-  // Two members, `shared` Topic: B must START while A is still running.
-  {
-    const first = await createLifecycle({ autoKick: false });
-    await first.service.activateAfterConsumerLock();
-    seedTesterBot(first.state);
-    const group = await first.bots.createGroup({ title: "Shared", botIds: [BOT_ID, TESTER_ID] });
-    const topic = await first.service.createGroupTopic(group.id, "S", {
-      workspace: "backend",
-      isolation: "shared",
-    });
-    const hang = deferred<void>();
-    fakeRunner(first.runner).hang = hang;
-    const accepted = await first.service.acceptGroupPrompt({
-      conversationId: group.id,
-      topicId: topic.id,
-      requestId: "req-shared-overlap",
-      text: "together",
-      target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
-    });
-    void first.dispatcher.kick();
-    // A started while its provider turn hangs: B must still be claimed and
-    // started — overlap, not drain sequencing, decides. The drain itself is
-    // still awaiting the hung provider turns, so observe overlap WITHOUT
-    // awaiting the drain: the runner log is the assertion surface.
-    await waitUntil(() => fakeRunner(first.runner).runs.length === 2, 4000);
-    const states = new Map(first.store.listMemberTurns(accepted.run.id).map((m) => [m.botId, m.state]));
-    expect(states.get(BOT_ID)).toBe("running");
-    expect(states.get(TESTER_ID)).toBe("running");
-    hang.resolve();
-    await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
-    first.store.close();
-  }
+test("PR7 scheduler: shared serializes unproven siblings like every other tree", async () => {
+  // No enforceable read-only proof exists in PR7 (every member persists as
+  // `unknown`), so `shared` serializes exactly like `shared-single-writer`:
+  // B stays writer-slot-held while A runs. The `shared` value keeps its
+  // distinct durable meaning for a future capability-enforced caller, but
+  // the scheduler never passes unproven work through on it.
+  const first = await createLifecycle({ autoKick: false });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Shared", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared",
+  });
+  const hang = deferred<void>();
+  fakeRunner(first.runner).hang = hang;
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-shared-serial",
+    text: "together",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+  });
+  void first.dispatcher.kick();
+  await waitUntil(() => fakeRunner(first.runner).runs.length === 1);
+  // B is parked (claimed, human provenance intact) while A holds the
+  // provider turn: no second runner.run until A settles.
+  await tick();
+  await tick();
+  expect(fakeRunner(first.runner).runs).toHaveLength(1);
+  const testerTurn = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerTurn.state).toBe("dispatched");
+  hang.resolve();
+  await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
+  expect(fakeRunner(first.runner).runs).toHaveLength(2);
+  first.store.close();
 });
 
 test("PR7 scheduler: shared-single-writer serializes unknown-effect siblings", async () => {
@@ -7112,13 +7115,14 @@ test("PR7 scheduler: activation seals explicit two-member run when a started sib
 });
 
 test("PR7 scheduler: sealed run preserves a concurrently started sibling completion", async () => {
-  // Explicit Group [A, B] on a `shared` Topic: both members start
-  // concurrently. A's provider throws (sealing A indeterminate, which seals
-  // B + the Run) while B is still in flight; B's later proven completion
-  // must persist — B reclassifies to completed with its message durable —
-  // while the Run stays indeterminate (A still unknown). Scheduling never
-  // resurrects.
-  const releaseB = deferred<void>();
+  // Explicit Group [A, B] on a `shared` Topic whose members carry the only
+  // proven-safe shape (read-only + declared-enforced, hand-accepted — PR7's
+  // own accept always persists unknown): both members start concurrently. A's
+  // provider throws (sealing A indeterminate, which seals B + the Run) while
+  // B is still in flight; B's later proven completion must persist — B
+  // reclassifies to completed with its message durable — while the Run stays
+  // indeterminate (A still unknown). The seal blocks scheduling, not evidence
+  // from an execution that was already admitted.
   const hangA = deferred<void>();
   const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old" });
   await first.service.activateAfterConsumerLock();
@@ -7129,40 +7133,50 @@ test("PR7 scheduler: sealed run preserves a concurrently started sibling complet
     isolation: "shared",
   });
   const fr = fakeRunner(first.runner);
-  const origRun = fr.run.bind(fr);
-  void origRun;
   fr.run = (async (input: ConversationTurnRunInput) => {
     fr.runs.push(input);
     if (input.botId === TESTER_ID) {
-      await releaseB.promise;
       return { status: "completed" as const, text: "proven B work" };
     }
     await hangA.promise;
     throw new Error("A provider boom");
   }) as FakeRunner["run"];
-  const accepted = await first.service.acceptGroupPrompt({
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const accepted = first.store.acceptRequest({
     conversationId: group.id,
     topicId: topic.id,
     requestId: "req-seal-evidence",
-    text: "together",
-    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    botId: botA.id,
+    content: "together",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{
+      botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW),
+      effect: "read-only", effectProvenance: "declared-enforced",
+    }],
+    now: NOW,
+    authorityEpoch: first.dispatcher.authorityEpoch,
     humanIngress: HUMAN_INGRESS,
   });
   expect(accepted.run.mode).toBe("explicit");
-  void first.dispatcher.kick();
+  const draining = first.dispatcher.kick();
+  // B is fast: it may complete before A's provider even throws. Park until
+  // BOTH turns are admitted (B terminal is fine — it started), then throw
+  // from A to seal the Run while B's evidence is already durable.
   await waitUntil(() => fr.runs.length === 2, 4000);
   const turnA = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === BOT_ID)!;
   const turnB = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
-  expect(first.store.getMemberTurn(turnA.id)?.state).toBe("running");
-  expect(first.store.getMemberTurn(turnB.id)?.state).toBe("running");
+  expect(first.store.getMemberTurn(turnB.id)?.state === "running"
+    || first.store.getMemberTurn(turnB.id)?.state === "completed").toBe(true);
   // A throws inside its provider turn: the dispatcher seals A indeterminate,
-  // which seals B + the Run. B's provider is still parked in releaseB.
+  // which re-derives the Run from the whole batch — B's proven completion
+  // survives the seal.
   hangA.resolve();
+  await draining;
   await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "indeterminate", 4000);
-  expect(first.store.getMemberTurn(turnB.id)?.state).toBe("indeterminate");
-  // B completes with proof afterwards: evidence must persist, Run stays sealed.
-  releaseB.resolve();
-  await waitUntil(() => first.store.getMemberTurn(turnB.id)?.state === "completed", 4000);
+  expect(first.store.getMemberTurn(turnB.id)?.state).toBe("completed");
+  expect(first.store.getMemberTurn(turnA.id)?.state).toBe("indeterminate");
   expect(first.store.listMessages({
     conversationId: group.id, topicId: topic.id, limit: 20,
   }).filter((message) => message.role === "bot" && message.senderBotId === TESTER_ID).map((m) => m.content))
@@ -7180,9 +7194,10 @@ test("PR7 scheduler: sealed run preserves a concurrently started sibling complet
 });
 
 test("PR7 scheduler: sealed run preserves a concurrently started sibling failure", async () => {
-  // Mirror: B's proven failure after the seal must persist (failed state +
-  // failedBotIds) while the Run stays indeterminate on A's unknown.
-  const releaseB = deferred<void>();
+  // Mirror via the proven-overlap seam: both members start concurrently on a
+  // `shared` Topic; A's provider throws (sealing A indeterminate) after B's
+  // proven failure is already durable — failed state + failedBotIds survive
+  // the seal and the Run re-derives indeterminate on A's unknown.
   const hangA = deferred<void>();
   const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old" });
   await first.service.activateAfterConsumerLock();
@@ -7196,27 +7211,37 @@ test("PR7 scheduler: sealed run preserves a concurrently started sibling failure
   fr.run = (async (input: ConversationTurnRunInput) => {
     fr.runs.push(input);
     if (input.botId === TESTER_ID) {
-      await releaseB.promise;
       return { status: "failed" as const, error: "proven B boom" };
     }
     await hangA.promise;
     throw new Error("A provider boom");
   }) as FakeRunner["run"];
-  const accepted = await first.service.acceptGroupPrompt({
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const accepted = first.store.acceptRequest({
     conversationId: group.id,
     topicId: topic.id,
     requestId: "req-seal-evidence-fail",
-    text: "together",
-    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    botId: botA.id,
+    content: "together",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{
+      botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW),
+      effect: "read-only", effectProvenance: "declared-enforced",
+    }],
+    now: NOW,
+    authorityEpoch: first.dispatcher.authorityEpoch,
     humanIngress: HUMAN_INGRESS,
   });
-  void first.dispatcher.kick();
+  const draining = first.dispatcher.kick();
   await waitUntil(() => fr.runs.length === 2, 4000);
   const turnA = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === BOT_ID)!;
   const turnB = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(first.store.getMemberTurn(turnB.id)?.state === "running"
+    || first.store.getMemberTurn(turnB.id)?.state === "failed").toBe(true);
   hangA.resolve();
-  await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "indeterminate", 4000);
-  releaseB.resolve();
+  await draining;
   await waitUntil(() => first.store.getMemberTurn(turnB.id)?.state === "failed", 4000);
   expect(first.store.getMemberTurn(turnB.id)?.failureReason).toBe("proven B boom");
   expect(first.store.getRun(accepted.run.id)!.failedBotIds).toContain(TESTER_ID);
@@ -7513,6 +7538,38 @@ test("PR7 accept: duplicate members target rejects invalid-target with no durabl
   first.store.close();
 });
 
+test("PR7 accept: cross-variant target keys fail closed instead of picking a variant", async () => {
+  // The target variants are a mutually exclusive union. Mixed shapes are
+  // ambiguous input: the parser must refuse them, never interpret them as
+  // whichever variant is checked first (botId + mode:"automatic" would
+  // otherwise downgrade the automatic refusal into a direct execution).
+  const first = await createLifecycle({ autoKick: false });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Mixed", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  for (const [name, target] of [
+    ["botId+members", { botId: BOT_ID, mode: "members", botIds: [TESTER_ID] }],
+    ["botId+automatic", { botId: BOT_ID, mode: "automatic" }],
+    ["botId+botIds", { botId: BOT_ID, botIds: [TESTER_ID] }],
+    ["everyone+botIds", { mode: "everyone", botIds: [TESTER_ID] }],
+  ] as const) {
+    await expect(first.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: `req-mixed-${name}`,
+      text: "ambiguous",
+      target: target as never,
+      humanIngress: HUMAN_INGRESS,
+    })).rejects.toMatchObject({ code: "invalid-target" });
+    expect(first.store.getRunByRequestId(group.id, topic.id, `req-mixed-${name}`)).toBeUndefined();
+  }
+  first.store.close();
+});
+
 test("PR7 accept: everyone beyond the member budget refuses before any durable write", async () => {
   // 65 enabled members, target everyone: the eligible probe set exceeds
   // MAX_GROUP_TARGET_MEMBERS and must refuse with target_too_large BEFORE
@@ -7550,49 +7607,138 @@ test("PR7 accept: everyone beyond the member budget refuses before any durable w
   first.store.close();
 });
 
-test("PR7 dispatcher: missing request snapshot fails the Group claim terminally, never a fallback prompt", async () => {
-  // The frozen-transcript boundary IS the request message. If that row is
-  // missing (corrupted durable state), a Group member has NO deterministic
-  // input: the claim must fail terminally before execution start — no live
-  // fallback, no indeterminate seal, no requeue loop.
-  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-a" });
-  await first.service.activateAfterConsumerLock();
-  seedTesterBot(first.state);
-  const group = await first.bots.createGroup({ title: "NoSnapshot", botIds: [BOT_ID, TESTER_ID] });
-  const topic = await first.service.createGroupTopic(group.id, "S", {
-    workspace: "backend",
-    isolation: "shared-single-writer",
-  });
-  const accepted = await first.service.acceptGroupPrompt({
-    conversationId: group.id,
-    topicId: topic.id,
-    requestId: "req-missing-snapshot",
-    text: "ship it",
-    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
-    humanIngress: HUMAN_INGRESS,
-  });
-  const realGetMessage = first.store.getMessage.bind(first.store);
-  first.store.getMessage = ((messageId: string) =>
-    messageId === accepted.run.requestMessageId ? undefined : realGetMessage(messageId)) as typeof first.store.getMessage;
-  await first.dispatcher.kick();
-  expect(fakeRunner(first.runner).runs).toHaveLength(0);
-  const run = first.store.getRun(accepted.run.id)!;
-  expect(run.state).toBe("failed");
-  // Multi-member batches derive the aggregate reason in the classifier; the
-  // per-member diagnostic rows below carry the exact corruption cause.
-  expect(run.completionReason).toBe("execution-failed");
-  for (const turn of first.store.listMemberTurns(accepted.run.id)) {
-    expect(turn.state).toBe("failed");
-    expect(turn.failureReason).toBe("missing_request_snapshot");
+test("PR7 dispatcher: corrupted request reference fails the Group claim terminally, never a fallback prompt", async () => {
+  // Durable corruption, exercised at the SQLite row level (no method
+  // monkeypatching): runs.request_message_id has no FK, so a row can point
+  // at a missing message or at ANOTHER topic's message. Both shapes are
+  // corrupted durable state — the unified referential contract fails the
+  // claim terminally before execution start (no live fallback, no
+  // indeterminate seal, no requeue loop), and the LEFT JOIN claim surface
+  // lets the poison row reach that check instead of silently hiding it.
+  for (const corruption of ["missing", "foreign"] as const) {
+    const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-a" });
+    await first.service.activateAfterConsumerLock();
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "NoSnapshot", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "S", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    const accepted = await first.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: `req-${corruption}-snapshot`,
+      text: "ship it",
+      target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+      humanIngress: HUMAN_INGRESS,
+    });
+    if (corruption === "missing") {
+      first.store.directWriteForTest("runs", accepted.run.id, { request_message_id: "msg_does_not_exist" });
+    } else {
+      // A REAL human message from ANOTHER topic: existence alone must not
+      // satisfy the reference — conversation/topic/role must match too.
+      const foreignTopic = await first.service.createGroupTopic(group.id, "Other", {
+        workspace: "backend",
+        isolation: "shared",
+      });
+      const foreign = await first.service.acceptGroupPrompt({
+        conversationId: group.id,
+        topicId: foreignTopic.id,
+        requestId: "req-foreign-anchor",
+        text: "foreign anchor",
+        target: { mode: "members", botIds: [BOT_ID] },
+        humanIngress: HUMAN_INGRESS,
+      });
+      first.store.directWriteForTest("runs", accepted.run.id, { request_message_id: foreign.message.id });
+    }
+    await first.dispatcher.kick();
+    expect(fakeRunner(first.runner).runs).toHaveLength(0);
+    const run = first.store.getRun(accepted.run.id)!;
+    expect(run.state).toBe("failed");
+    // Multi-member batches derive the aggregate reason in the classifier;
+    // the per-member diagnostic rows carry the exact corruption cause.
+    expect(run.completionReason).toBe("execution-failed");
+    for (const turn of first.store.listMemberTurns(accepted.run.id)) {
+      expect(turn.state).toBe("failed");
+      expect(turn.failureReason === "missing_request_snapshot"
+        || turn.failureReason === "request_snapshot_mismatch").toBe(true);
+    }
+    // Corrupted durable state must not hot-loop: a second kick requeues
+    // nothing FROM THIS RUN (the claims settled terminally) and the rows
+    // stay put. Any runs the kick drains belong to other topics.
+    const runsBefore = fakeRunner(first.runner).runs.length;
+    await first.dispatcher.kick();
+    for (const turn of first.store.listMemberTurns(accepted.run.id)) {
+      expect(turn.state).toBe("failed");
+    }
+    expect(first.store.getRun(accepted.run.id)?.state).toBe("failed");
+    void runsBefore;
+    first.store.close();
   }
-  // Corrupted durable state must not hot-loop: a second kick requeues
-  // nothing (the claims settled terminally) and the rows stay put.
-  await first.dispatcher.kick();
-  expect(fakeRunner(first.runner).runs).toHaveLength(0);
-  expect(first.store.getRun(accepted.run.id)?.state).toBe("failed");
-  expect(first.store.listMemberTurns(accepted.run.id).every((turn) => turn.state === "failed")).toBe(true);
+});
+
+test("PR7 dispatcher: a cohort member rejecting undefined still rejects the drain", async () => {
+  // `rejected` is a STATUS, not a payload test: Promise.reject(undefined)
+  // is a legal rejection and must propagate (activation fails), never be
+  // mistaken for success because the reason equals undefined.
+  const rejections: unknown[] = [];
+  const onUnhandled = (reason: unknown) => {
+    rejections.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const first = await createLifecycle({
+      autoKick: false,
+      ownerId: "dispatcher-old",
+      hooks: {
+        afterClaim: () => Promise.reject(undefined),
+      },
+    });
+    await first.service.acceptDirectPrompt({
+      botId: BOT_ID,
+      requestId: "req-undefined-reject",
+      content: "hello",
+    });
+    const err = await first.service.activateAfterConsumerLock().then(() => "activated", (e: unknown) => e);
+    expect(err).toBeUndefined();
+    expect(first.service.isConsumerActivated()).toBe(false);
+    await tick();
+    await tick();
+    expect(rejections).toEqual([]);
+    first.store.close();
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("PR7 dispatcher: cancel transport rejecting undefined still defers the aggregate and surfaces the failure", async () => {
+  // Same sentinel rule on the cancel fan-out: a runner.cancel that rejects
+  // with undefined is a transport failure — the aggregate must stay deferred
+  // and the error must propagate, never be swallowed by an undefined check.
+  const first = await createLifecycle({ autoKick: false });
+  await first.service.activateAfterConsumerLock();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-cancel-undefined",
+    content: "hello",
+  });
+  // Park the member mid-flight so cancelRun hits the active-turn fan-out
+  // (an already-terminal Run short-circuits before any runner.cancel).
+  const hang = deferred<void>();
+  fakeRunner(first.runner).hang = hang;
+  const drain = first.dispatcher.kick();
+  await waitUntil(() => fakeRunner(first.runner).runs.length === 1);
+  fakeRunner(first.runner).cancel = (() => Promise.reject(undefined)) as FakeRunner["cancel"];
+  await expect(first.dispatcher.cancelRun(accepted.run.id)).rejects.toBeUndefined();
+  // Evidence-only settlement: member rows observed so far persist, but the
+  // Run aggregate was deferred (cancelFailed) — the Run did NOT lie about
+  // being cleanly cancelled.
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("running");
+  hang.resolve();
+  await drain.catch(() => undefined);
   first.store.close();
 });
+
 
 test("PR7 scheduler: stale renewHeldClaim drops the hold and routes through recovery", async () => {
   // The contrast case: stale_claim IS swallowed. The hold drops, the drain

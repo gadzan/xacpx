@@ -721,6 +721,7 @@ export default {
       isolationLabel: "Filesystem isolation",
       isolationSingleWriter: "Shared single writer (recommended)",
       isolationShared: "Shared",
+      isolationHint: "Parallel execution requires an enforceably read-only member turn. Other turns are serialized.",
     },
     prompt: {
       placeholder: "Message the selected members... (@name, @everyone)",

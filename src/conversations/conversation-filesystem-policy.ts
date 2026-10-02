@@ -5,16 +5,16 @@ import type { MemberTurnEffect, MemberTurnEffectProvenance, WorkspaceIsolationPo
  * declared effect may execute concurrently with other in-flight turns on the
  * same Topic, given the Topic's effective isolation policy.
  *
- * Rules (plan §9.6 / §16):
- * - `shared`: the tree itself never serializes — requested parallelism
- *   passes straight through, whatever the declared effect. (A future
- *   enforced capability/tool policy may refuse unsafe work at accept; the
- *   scheduler does not second-guess it here.)
- * - `shared-single-writer`: side-effect-capable turns serialize. Only a
- *   `read-only` turn with an enforced proof may run alongside another
- *   in-flight turn.
- * - `worktree-per-member`: no provisioning exists yet (PR10); treat like
- *   `shared-single-writer` until the worktree lifecycle lands.
+  * Rules (plan §9.6 / §16):
+   *  - No isolation passes unproven work through. `shared` keeps its distinct
+   *  policy value for a future capability-enforced caller, but until an
+   *  enforceable read-only proof exists the scheduler treats every tree the
+   *  same: only a `read-only` turn with an enforced proof may run alongside
+   *  another in-flight turn. PR7 persists every explicit member as `unknown`
+   *  (no enforceable read-only proof exists), so every PR7 Group member
+   *  serializes regardless of isolation.
+   *  - `worktree-per-member`: no provisioning exists yet (PR10); treat like
+   *  every other tree until the worktree lifecycle lands.
  *
  * Never infer from Bot name/description: the caller supplies the declared
  * effect AND its proof, and only `read-only` + `declared-enforced` together
@@ -31,12 +31,11 @@ export function isEffectConcurrencySafe(
   if (otherInFlight <= 0) {
     return true;
   }
-  // `shared` never serializes: requested parallelism passes through
-  // regardless of declared effect. Every other tree serializes unproven
-  // work — only a proven `read-only` runs alongside.
-  if (isolation === "shared") {
-    return true;
-  }
+  // No isolation exempts unproven work: only a proven `read-only` runs
+  // alongside, on any tree. `shared` stays a distinct durable policy value
+  // (a future capability-enforced caller can open safe parallelism there
+  // without migrating Topics), but the scheduler never passes unproven
+  // turns through on it.
   return effect === "read-only" && provenance === "declared-enforced";
 }
 
@@ -46,9 +45,8 @@ export function requiresSingleWriterSlot(
   _isolation: WorkspaceIsolationPolicy,
   provenance?: MemberTurnEffectProvenance,
 ): boolean {
-  // Every isolation reports the same answer today: only a proven `read-only`
-  // turn skips the writer slot. `shared` never serializes by itself — the
-  // scheduler still decides — but this seam must not mark unproven work as
+  // Every isolation reports the same answer: only a proven `read-only`
+  // turn skips the writer slot. This seam must not mark unproven work as
   // safe to run alongside on any tree.
   return !(effect === "read-only" && provenance === "declared-enforced");
 }

@@ -472,12 +472,23 @@ const validateGroupTopicsTeardown: Validator<GroupTopicsTeardownPayload> = (p) =
 };
 const isConversationTarget = (v: unknown): boolean => {
   if (!isObj(v)) return false;
+  // The variants are a MUTUALLY EXCLUSIVE union: a payload carrying keys from
+  // two variants (e.g. botId + mode) is ambiguous input and must be refused,
+  // never silently interpreted as whichever variant is checked first.
+  const hasBotId = "botId" in v;
+  const hasMode = "mode" in v;
+  const hasBotIds = "botIds" in v;
+  const hasDiscriminant = hasBotId || hasMode || hasBotIds;
+  if (!hasDiscriminant) return false;
+  const mixed = (hasBotId && (hasMode || hasBotIds))
+    || (hasMode && hasBotIds && v.mode !== "members");
+  if (mixed) return false;
   // Same resource bound as the members branch: a legacy-shaped single-Bot target
   // is normalized into a members target by the server, so an oversized id would
   // reach gate acquisition unbounded.
-  if (isStr(v.botId)) {
-    const botId = v.botId as string;
-    return botId.length > 0 && botId.length <= MAX_BOT_ID_LENGTH;
+  if (hasBotId) {
+    const botId = v.botId;
+    return typeof botId === "string" && botId.length > 0 && botId.length <= MAX_BOT_ID_LENGTH;
   }
   if (v.mode === "members") {
     return Array.isArray(v.botIds)

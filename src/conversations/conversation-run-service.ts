@@ -263,9 +263,10 @@ export class ConversationRunService {
     return accepted;
   }
   /**
-   * PR7 explicit Group accept. Structured target only: `members` selects Bot
-   *  IDs (deduplicated, stable order) or `everyone` expands to current
-   *  eligible members. Linearized against membership edits with the same
+   * PR7 explicit Group accept. Structured target only: `members` selects
+   *  unique Bot IDs (duplicates and cross-variant key mixes are rejected
+   *  with invalid-target; caller order is preserved) or `everyone` expands
+   *  to current eligible members. Linearized against membership edits with the same
    *  probe → acquire → re-verify → retry-with-widen pattern as updateGroup:
    *  targeted mode holds selected Bot gates; everyone mode retries when the
    *  live set widens beyond held gates. Per-member snapshots use
@@ -729,7 +730,18 @@ export class ConversationRunService {
     if (!target) {
       throw new ConversationError("target_required", "explicit Group prompt requires a target");
     }
-    if ("botId" in target) {
+    // The variants are a mutually exclusive union: mixed shapes are
+    // ambiguous input and fail closed — never silently interpreted as
+    // whichever variant is checked first (botId + mode:"automatic" would
+    // otherwise downgrade the PR7 automatic refusal into a direct
+    // execution of botId).
+    const hasBotId = "botId" in target;
+    const hasMode = "mode" in target;
+    const hasBotIds = "botIds" in target;
+    if ((hasBotId && (hasMode || hasBotIds)) || (hasMode && hasBotIds && target.mode !== "members")) {
+      throw new ConversationError("invalid-target", "explicit Group target carries keys from multiple variants");
+    }
+    if (hasBotId) {
       if (typeof target.botId !== "string" || !target.botId) {
         throw new ConversationError("invalid-target", "explicit Group target member must be a Bot id");
       }

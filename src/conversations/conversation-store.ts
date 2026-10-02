@@ -72,6 +72,25 @@ export interface AcceptRequestInput {
   humanIngress?: HumanIngressContext;
 }
 
+/**
+ * Unified request-snapshot referential contract (one check, three consumers:
+ * claim execution, idempotent accept replay, and transcript composition).
+ * The request message must exist and belong to the Run's Conversation AND
+ * Topic with the human role — a corrupted `runs.request_message_id` pointing
+ * at another message must fail closed, never feed another message's content
+ * into a prompt. `runId` is intentionally NOT checked: request rows persist
+ * with `run_id` NULL by schema (only bot result rows carry it).
+ */
+export function requestSnapshotMatches(
+  message: ConversationMessage | undefined,
+  run: ConversationRun,
+): boolean {
+  return message !== undefined
+    && message.conversationId === run.conversationId
+    && message.topicId === run.topicId
+    && message.role === "human";
+}
+
 export interface AcceptRequestResult {
   reused: boolean;
   message: ConversationMessage;

@@ -8,7 +8,7 @@ import { createSourceTurnId } from "../domain/ids";
 import type { SessionService } from "../sessions/session-service";
 import { ConversationError } from "./conversation-error";
 import { conversationExecutionOrigin, conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
-import type { ClaimedWork, ConversationStore } from "./conversation-store";
+import { requestSnapshotMatches, type ClaimedWork, type ConversationStore } from "./conversation-store";
 import { isEffectConcurrencySafe } from "./conversation-filesystem-policy";
 import {
   emitConversationProductEvent,
@@ -171,7 +171,7 @@ export class ConversationDispatcher {
   }
 
   private async runDrain(): Promise<void> {
-    // Unexpected-failure capture (P1): execute() rejections that escape its
+    // Unexpected-failure capture: execute() rejections that escape its
     // handled settlement paths must reject kick() — and therefore fail
     // activation — after every launched execution settles. Each launch gets
     // its own outcome cell: the settle handlers write ONLY their cell (no
@@ -179,9 +179,14 @@ export class ConversationDispatcher {
     // drain consumes the cohort exactly once, in LAUNCH order — so the
     // rethrown failure is deterministic and attributable, never whichever
     // rejection happened to settle first.
-    const cohort: Array<{ guard: Promise<void>; outcome: { error?: unknown } }> = [];
+    // `rejected` is a STATUS, not a payload test: a member execution may
+    // legally reject with `undefined`, which must still propagate.
+    const cohort: Array<{
+      guard: Promise<void>;
+      outcome: { status: "pending" | "fulfilled" | "rejected"; reason?: unknown };
+    }> = [];
     const launchExecution = (work: ClaimedWork): void => {
-      const outcome: { error?: unknown } = {};
+      const outcome: { status: "pending" | "fulfilled" | "rejected"; reason?: unknown } = { status: "pending" };
       // The guard never rejects (both handlers settle normally), so no
       // `finally` child can leak an unhandled rejection; it settles only
       // AFTER its handler ran, so awaiting every guard means every outcome
@@ -193,7 +198,8 @@ export class ConversationDispatcher {
           }
         },
         (error: unknown) => {
-          outcome.error = error;
+          outcome.status = "rejected";
+          outcome.reason = error;
           if (this.inFlightExecutions.get(work.dispatch.id) === guard) {
             this.inFlightExecutions.delete(work.dispatch.id);
           }
@@ -208,45 +214,54 @@ export class ConversationDispatcher {
         return;
       }
       await Promise.allSettled(launched.map((entry) => entry.guard));
-      const failure = launched.find((entry) => entry.outcome.error !== undefined);
+      const failure = launched.find((entry) => entry.outcome.status === "rejected");
       if (failure) {
-        throw failure.outcome.error;
+        throw failure.outcome.reason;
       }
     };
+    // A logical drain = one global first claim, then same-Run siblings
+    // only (cohortRunId) for that PASS, until the cohort settles or a held
+    // handoff continues the SAME run without a new global claim. A pass
+    // that defers Topics on pre-start failures chains a same-scope extra
+    // pass (no wake consumed, deferrals preserved) when unrelated pending
+    // work may remain; a chained pass that claims nothing ends the drain —
+    // a failed Topic is never retried without a fresh wake.
     let seen = 0;
-    // Extra pass without consuming a wake: a pass that deferred Topics on
-    // pre-start failures may still have unrelated pending work. The preview
-    // at the bottom re-enters with the deferrals preserved (they grow
-    // monotonically within the drain, so it terminates); the hot-loop guard
-    // ("no new wake, no retry") still holds because the preview excludes
-    // every deferred Topic.
-    let extraPassDue = false;
-    let preserveDeferred = false;
+    let chainedExtraPass = false;
     try {
-      while (seen !== this.wakeGeneration || extraPassDue) {
+      while (seen !== this.wakeGeneration || chainedExtraPass) {
         if (this.closed) {
           return;
         }
-        if (!extraPassDue) {
+        if (!chainedExtraPass) {
           seen = this.wakeGeneration;
-        }
-        extraPassDue = false;
-        if (!preserveDeferred) {
           this.deferredTopicIds.clear();
         }
-        preserveDeferred = false;
+        chainedExtraPass = false;
+        // Cohort scope and progress are PER PASS: a held handoff is awaited
+        // inline, so the next pass starts with an empty in-flight set and a
+        // fresh global first claim.
         // The drain itself is alive and owns every held claim: renew them
         // BEFORE recoverExpiredClaims() runs, so a scheduling wait that
         // outlasts one lease is never mistaken for a dead owner. Renewal
         // keeps owner/generation/provenance; only the expiry moves. A hold
         // that lost its race (stale owner, bumped generation, recovered
         // elsewhere) fails the fence and is dropped from the hold set.
+        // Holds this drain already finished (dispatch no longer claimed)
+        // are dropped before renewal: renewing them would throw a visible
+        // stale_claim on a healthy drain.
+        for (const [dispatchId, work] of this.heldWriterSlotClaims) {
+          const live = this.store.getDispatchForMemberTurn(work.memberTurn.id);
+          if (!live || live.id !== dispatchId || live.state !== "claimed") {
+            this.heldWriterSlotClaims.delete(dispatchId);
+          }
+        }
         this.renewHeldClaims();
-        // Sibling cohort for this pass (P2): the first launch goes out
-        // globally (previous sequencing); afterwards only the SAME Run's
-        // siblings are claimable until the cohort settles. The runtime
-        // contract reserves global cross-Topic/Bot parallelism as follow-up
-        // work; PR7 needs same-batch overlap only.
+        // Sibling cohort for this drain: the first launch goes out globally
+        // (previous sequencing); afterwards only the SAME Run's siblings are
+        // claimable until the cohort settles. The runtime contract reserves
+        // global cross-Topic/Bot parallelism as follow-up work; PR7 needs
+        // same-batch overlap only.
         let cohortRunId: string | undefined;
         // True once this pass claimed anything (launched or held): the
         // extra-pass decision below may only chain off a pass that made
@@ -265,19 +280,19 @@ export class ConversationDispatcher {
           // take the Topic single-writer slot waits while another member of
           // the same Run is already executing. The claim is parked WITHOUT
           // touching durable provenance (see holdClaimForWriterSlot) and the
-          // Topic deferred for this pass so the sibling finishes first. The
+          // Topic deferred for this drain so the sibling finishes first. The
           // sibling's completion persist re-wakes the drain (every terminal
-          // persistResult kicks), which starts a fresh pass with the deferred
+          // persistResult kicks), which starts a fresh drain with the deferred
           // set cleared. The Run card still presents one multi-member batch.
           if (this.mustDeferForWriterSlot(claimed)) {
             this.holdClaimForWriterSlot(claimed);
             passProgress = true;
-            // The held Run is parked for this pass — but only until a cohort
+            // The held Run is parked for this drain — but only until a cohort
             // launches. Before any launch, sequencing stays global so an
             // unrelated Topic is still drainable (pre-PR behavior); once a
             // cohort is in flight its scope is kept, so unrelated work waits
-            // for the next pass. Either way the held Run's own rows are
-            // excluded (its Topic is deferred for this pass).
+            // for the next drain. Either way the held Run's own rows are
+            // excluded (its Topic is deferred for this drain).
             if (cohortRunId === undefined) {
               continue;
             }
@@ -287,7 +302,7 @@ export class ConversationDispatcher {
           // each claimed sibling and keeps draining the SAME Run (cohort
           // filter above). Sibling overlap is decided by the isolation policy,
           // never by drain ordering. Unrelated Topics/Bots wait for the next
-          // pass: the loop awaits the SET (below), so kick() still settles
+          // drain: the loop awaits the SET (below), so kick() still settles
           // only after every launched execution finishes.
           launchExecution(claimed);
           cohortRunId ??= claimed.run.id;
@@ -297,13 +312,14 @@ export class ConversationDispatcher {
         // ALWAYS, not only when something was in flight. A held sibling
         // becomes runnable the moment its sibling's provider turn settles,
         // and the drain executes the SAME held claim object (still ours,
-        // still human) in this pass — no re-claim, no provenance rewrite —
+        // still human) in this drain — no re-claim, no provenance rewrite —
         // so a two-member Run under shared-single-writer completes without
         // an extra wake. The recheck must also run when the in-flight set is
-        // empty: a previous pass may have launched, settled, and parked a
+        // empty: a previous drain may have launched, settled, and parked a
         // hold (or thrown mid-recheck), and nothing else will pick that hold
         // back up — claimOne only returns `pending` rows, never our live
-        // `claimed` hold.
+        // `claimed` hold. An unexpected execution failure rethrows here,
+        // after every launched execution settled.
         await awaitCohortInFlight();
         // Shutdown owns unstarted holds from here: once `closed` is set, a
         // held sibling must never start — the retire loop in shutdown()
@@ -315,18 +331,24 @@ export class ConversationDispatcher {
         if (this.closed) {
           return;
         }
-        // The deferred set belongs to the pass that just ended: per-pass
-        // deferrals must not leak into the recheck, or a held claim can
-        // never become runnable inside this drain. Snapshot first: the
-        // extra-pass preview below needs the accumulated set.
+        // The pass deferrals must not leak into the recheck (a held claim
+        // whose Topic is deferred would never re-run), but the chained
+        // extra pass needs them preserved: snapshot before the clear, and
+        // re-add them only when the chain continues.
         const passDeferred = new Set(this.deferredTopicIds);
+        for (const work of this.heldWriterSlotClaims.values()) {
+          // A still-held sibling's Topic is NOT a failure: it must become
+          // claimable again the moment this sibling settles, and the handoff
+          // below already runs it.
+          passDeferred.delete(work.run.topicId);
+        }
         this.deferredTopicIds.clear();
         const held = this.recheckHeldClaims();
         if (held) {
           // The held handoff joins the awaited cohort instead of escaping
           // it: awaiting here keeps the sibling inside this drain's failure
           // propagation (an unexpected B failure rejects kick() and fails
-          // activation) AND inside its cohort scope (the next pass starts
+          // activation) AND inside its cohort scope (the next drain starts
           // with an empty in-flight set, so its global claim cannot overlap
           // B). A bare launch + continue would resolve kick() while B still
           // runs — losing B's failure and reopening global claims mid-flight.
@@ -334,19 +356,17 @@ export class ConversationDispatcher {
           await awaitCohortInFlight();
           continue;
         }
-        // Pre-start failures deferred Topics this pass while unrelated work
-        // may remain: take one extra pass with the deferrals preserved (no
-        // wake consumed) when this pass made progress. Deferred Topics grow
-        // monotonically across the extras and every extra pass must itself
-        // make progress (a launch or a hold) to schedule another, so the
-        // chain terminates; the hot-loop guard ("no new wake, no retry")
-        // still holds because a pass that claims nothing schedules nothing.
+        // A drain that deferred Topics on pre-start failures may still have
+        // unrelated pending work: chain one extra pass (no wake consumed)
+        // with the deferrals preserved. The chained pass claims only OTHER
+        // Topics, so every chain link needs fresh progress and the chain is
+        // bounded by the Topic count. A chained pass that claims nothing
+        // ends the drain — a failed Topic is never retried without a wake.
         if (passProgress && passDeferred.size > 0) {
           for (const topicId of passDeferred) {
             this.deferredTopicIds.add(topicId);
           }
-          extraPassDue = true;
-          preserveDeferred = true;
+          chainedExtraPass = true;
           continue;
         }
         this.deferredTopicIds.clear();
@@ -379,6 +399,9 @@ export class ConversationDispatcher {
     // observed outcomes: persist fulfilled evidence first (below), then
     // rethrow so the barrier stays and retry covers only the unsettled rest.
     const fulfilled: Array<{ member: MemberTurnRecord; result: ConversationTurnCancelResult }> = [];
+    // `hasError` is a STATUS flag, never derived from the thrown value: a
+    // transport may legally reject with `undefined`.
+    let cancelFailed = false;
     let firstError: unknown;
     const cancels = outcome.activeMembers.map(async (active) => {
       const current = this.store.getMemberTurn(active.id);
@@ -395,6 +418,7 @@ export class ConversationDispatcher {
         });
         fulfilled.push({ member: current, result });
       } catch (error) {
+        cancelFailed = true;
         firstError ??= error;
       }
     });
@@ -422,7 +446,7 @@ export class ConversationDispatcher {
           : {}),
         ...(entry.result.outcome === "failed" ? { reason: entry.result.error ?? "failed" } : {}),
       })),
-      ...(firstError !== undefined ? { deferRunAggregate: true } : {}),
+      ...(cancelFailed ? { deferRunAggregate: true } : {}),
     });
     for (const entry of settled.settled) {
       if (entry.outcome === "completed" && entry.message) {
@@ -431,7 +455,7 @@ export class ConversationDispatcher {
         this.emitRunAndMember(settled.run, entry.member.id);
       }
     }
-    if (firstError !== undefined) {
+    if (cancelFailed) {
       throw firstError;
     }
     await this.kick();
@@ -453,17 +477,23 @@ export class ConversationDispatcher {
    * capability, so every Group member is conservatively unknown and takes
    * the Topic single-writer slot. While another member of the same Run is
    * already executing, a newly claimed sibling defers instead of running
-   * concurrently. Direct Runs are unaffected.
+   * concurrently. Started members never defer: a claim whose member already
+   * started (recovery redelivery after a crash) must execute, not park
+   * behind siblings that may themselves settle while it waits. Direct Runs
+   * are unaffected.
    *
-   * Isolation is read from the Topic's durable ExecutionTarget: `shared`
-   * allows the overlap (nothing here serializes it), `shared-single-writer`
-   * and `worktree-per-member` (unprovisioned in PR7) allow a second member
-   * only when it is enforceably read-only — and since PR7 carries no proven
-   * capability, every PR7 member defers. `MemberTurnEffect` attaches to the
-   * assignment when callers can prove read-only; until then the effect is
-   * `undefined` (unproven), which never counts as safe.
+   * Isolation is read from the Topic's durable ExecutionTarget. No isolation
+   * passes unproven work through: only an enforceably read-only member
+   * (`read-only` + `declared-enforced` proof) may overlap another in-flight
+   * turn — and since PR7 carries no proven capability, every PR7 member
+   * defers. `MemberTurnEffect` attaches to the assignment when callers can
+   * prove read-only; until then the effect is `undefined` (unproven), which
+   * never counts as safe.
    */
   private mustDeferForWriterSlot(work: ClaimedWork): boolean {
+    if (work.memberTurn.startedAt) {
+      return false;
+    }
     if (this.runtime.conversationKind(work.run.conversationId) !== "group") {
       return false;
     }
@@ -627,17 +657,19 @@ export class ConversationDispatcher {
         throw materializeFail;
       }
       const snapshot = work.memberSnapshot ?? work.memberTurn.profileSnapshot ?? work.run.profileSnapshot;
-      const isGroup = this.runtime.conversationKind(work.run.conversationId) === "group";
-      if (isGroup && !this.store.getMessage(work.run.requestMessageId)) {
-        // The frozen-transcript boundary IS the request message: a Group
-        // batch without it has no deterministic input. A missing row is
-        // corrupted durable state — fail the claim terminally BEFORE
-        // execution start (no live-lookup fallback that would hand members
-        // of one batch different inputs, no indeterminate seal, no requeue
-        // loop on state that cannot heal itself).
-        this.failOwnClaimBeforeStart(work, "missing_request_snapshot");
+      // Unified request-snapshot contract (claim LEFT JOINs messages so a
+      // corrupted reference reaches this check instead of being silently
+      // invisible): a missing or wrong-reference request row is corrupted
+      // durable state — fail the claim terminally BEFORE execution start
+      // (no live-lookup fallback that would hand members of one batch
+      // different inputs, no indeterminate seal, no requeue loop on state
+      // that cannot heal itself). Applies to Direct and Group alike.
+      if (!requestSnapshotMatches(this.store.getMessage(work.run.requestMessageId), work.run)) {
+        const corrupted = this.store.getMessage(work.run.requestMessageId) !== undefined;
+        this.failOwnClaimBeforeStart(work, corrupted ? "request_snapshot_mismatch" : "missing_request_snapshot");
         return;
       }
+      const isGroup = this.runtime.conversationKind(work.run.conversationId) === "group";
       if (!isGroup) {
         const live = this.runtime.getBot(work.memberTurn.botId);
         if (live.agent !== snapshot.execution.agent || live.workspace !== snapshot.execution.workspace) {
@@ -985,7 +1017,13 @@ export class ConversationDispatcher {
    */
   private frozenGroupTranscript(work: ClaimedWork): string {
     const request = this.store.getMessage(work.run.requestMessageId);
-    const boundary = request?.seq;
+    // execute() validated the snapshot before start; a miss here would mean
+    // the row vanished mid-flight, and the deterministic-input contract
+    // forbids silently composing from a fallback lookup.
+    if (request === undefined || !requestSnapshotMatches(request, work.run)) {
+      throw new ConversationError("request_snapshot_mismatch", `run "${work.run.id}" lost its request snapshot`);
+    }
+    const boundary = request.seq;
     // The window is the newest PUBLIC_TRANSCRIPT_MESSAGES messages strictly
     // before the request boundary — never the oldest rows in the Topic. On a
     // Topic longer than the bound, the members closest to the request are the
@@ -1006,7 +1044,7 @@ export class ConversationDispatcher {
       const sender = message.senderBotId ? `Bot ${message.senderBotId}` : "Bot";
       return `${sender}: ${message.content}`;
     });
-    const requestText = request?.content ?? this.requestText(work.run.requestMessageId);
+    const requestText = request.content;
     if (lines.length === 0) {
       return requestText;
     }

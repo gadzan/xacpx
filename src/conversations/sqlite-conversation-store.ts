@@ -32,7 +32,7 @@ import type {
   SettleCancelBatchResult,
   SettledCancelMember,
 } from "./conversation-store";
-import { MAX_AUTOMATIC_MEMBER_TURNS, MAX_QUEUED_RUNS_PER_TOPIC } from "./conversation-store";
+import { MAX_AUTOMATIC_MEMBER_TURNS, MAX_QUEUED_RUNS_PER_TOPIC, requestSnapshotMatches } from "./conversation-store";
 import {
   conversationExecutionOrigin,
   parseHumanIngress,
@@ -916,7 +916,7 @@ export class SqliteConversationStore implements ConversationStore {
         `SELECT d.* FROM pending_dispatches d
          JOIN runs r ON r.id = d.run_id
          JOIN member_turns m ON m.id = d.member_turn_id
-         JOIN messages msg ON msg.id = r.request_message_id
+         LEFT JOIN messages msg ON msg.id = r.request_message_id
          WHERE d.state = 'pending'
            AND r.state IN ('queued', 'running')
            AND m.started_at IS NULL
@@ -1340,6 +1340,9 @@ export class SqliteConversationStore implements ConversationStore {
   }): { run: ConversationRun; memberTurn: MemberTurnRecord; message?: ConversationMessage } {
     const run = this.requireRun(input.runId);
     const member = this.requireMemberTurn(input.memberTurnId);
+    if (member.runId !== run.id || member.state !== "indeterminate") {
+      throw new ConversationError("stale_claim", `member turn "${input.memberTurnId}" is not sealed evidence for run "${run.id}"`);
+    }
     let message: ConversationMessage | undefined;
     if (input.outcome === "completed") {
       const seq = this.allocateSeq(run.conversationId, run.topicId);
@@ -2148,7 +2151,8 @@ export class SqliteConversationStore implements ConversationStore {
     const dispatches = this.listDispatchesForRun(run.id);
     const memberTurn = memberTurns[0];
     const dispatch = memberTurn ? this.getDispatchForMemberTurn(memberTurn.id) : undefined;
-    if (!message || !memberTurn || !dispatch || memberTurns.length !== dispatches.length) {
+    if (!message || !memberTurn || !dispatch || memberTurns.length !== dispatches.length
+      || !requestSnapshotMatches(message, run)) {
       throw new ConversationError("accepted_request_incomplete", `request "${requestId}" is missing durable rows`);
     }
     return { message, run, memberTurn, dispatch, memberTurns, dispatches };

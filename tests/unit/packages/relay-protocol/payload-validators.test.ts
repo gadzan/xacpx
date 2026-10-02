@@ -245,6 +245,19 @@ test("parseControlPayload validates group RPC shapes and rejects junk isolation"
   // with invalid-target; the array-length bound must mean unique members).
   expect(parseControlPayload(MSG.conversationPrompt, promptWith(["bot_a", "bot_a"]))).toBeNull();
   expect(parseControlPayload(MSG.conversationPrompt, promptWith(["bot_a", "bot_b", "bot_a"]))).toBeNull();
+  // The variants are a mutually exclusive union: mixed shapes are ambiguous
+  // input and must be refused, never interpreted as whichever variant the
+  // validator happens to check first (botId+mode would otherwise downgrade
+  // an `automatic` PR7 refusal into a direct execution of botId).
+  const mixed = (target: Record<string, unknown>) => ({
+    conversationId: "c", topicId: "t", requestId: "r", text: "x", target,
+  });
+  expect(parseControlPayload(MSG.conversationPrompt, mixed({ botId: "bot_a", mode: "members", botIds: ["bot_b"] }))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, mixed({ botId: "bot_a", mode: "automatic" }))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, mixed({ botId: "bot_a", botIds: ["bot_b"] }))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, mixed({ mode: "everyone", botIds: ["bot_b"] }))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, mixed({ mode: "members" }))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, mixed({ botId: "bot_a" }))).not.toBeNull();
   // Legacy single-Bot target: same id-length bound, since the server normalizes
   // it into a members target and the id would reach gate acquisition.
   const singleWith = (botId: string) => ({
