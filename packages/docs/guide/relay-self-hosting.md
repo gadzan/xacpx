@@ -257,7 +257,7 @@ If you enable instance Desktop (RFB/VNC), the browser and the connector each ope
 /desktop/instance?ticket=<connector-ticket>
 ```
 
-A WebSocket cannot carry a custom header, so the query string is the only transport. xacpx's own logs never write these tickets (the connector reports origin+path only), but **any proxy that logs the request URI records them in cleartext**.
+The browser WebSocket API cannot set a custom authentication header, so the query string is the only transport there; the connector side follows the same shape so both planes behave identically. xacpx's own logs never write these tickets (the connector reports origin+path only), but **any proxy that logs the request URI records them in cleartext**.
 
 Tickets are single-use with a 60s TTL and are consumed during the upgrade, so a leaked ticket is usually already dead — but treat it like the `/invite/<code>` case: disable access logging for these paths.
 
