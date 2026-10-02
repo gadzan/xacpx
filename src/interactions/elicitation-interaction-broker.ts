@@ -160,12 +160,20 @@ export class ElicitationInteractionBroker {
    * Bind one exact human turn route. Called by the prompt dispatcher with
    * the SAME context the permission broker receives; the two brokers keep
    * separate pending sets and separate terminal semantics.
+   *
+   * `kind` is stamped here rather than trusted from the caller, so this broker
+   * can never be handed a context that reads someone else's route. The
+   * permission broker resolves `"permission"` by default, and the two must not
+   * collide — they resolve DIFFERENT chatKeys for the same turn.
    */
   bindTurn(
     context: TurnInteractionContext,
     abortSignal?: AbortSignal,
   ): () => void {
-    return this.turns.bindTurn(context, abortSignal);
+    // Stamped into the context, not only passed as the kind argument, because
+    // the broker's own liveness check re-reads the stored value and must see the
+    // same kind it stored.
+    return this.turns.bindTurn({ ...context, kind: "elicitation" }, abortSignal, "elicitation");
   }
 
   get pendingCount(): number {
@@ -196,7 +204,7 @@ export class ElicitationInteractionBroker {
       return { action: "cancel" };
     }
     const interactionId = input.interactionId;
-    const route = typeof interactionId === "string" ? this.turns.resolve(interactionId) : undefined;
+    const route = typeof interactionId === "string" ? this.turns.resolve(interactionId, "elicitation") : undefined;
     if (!interactionId || !route) {
       // Exact-turn ownership: no trusted route means no UI anywhere. Never
       // fall back to latest session / latest chat / latest user (G2).
@@ -316,6 +324,10 @@ export class ElicitationInteractionBroker {
         chatKey: route.chatKey,
         ...(route.accountId !== undefined ? { accountId: route.accountId } : {}),
         ...(route.replyContextToken !== undefined ? { replyContextToken: route.replyContextToken } : {}),
+        // The ingress-reported route privacy, forwarded untouched: the renderer
+        // needs it to decide whether a form may be shown at all, and it must come
+        // from the channel rather than being inferred here.
+        ...(route.chatType !== undefined ? { chatType: route.chatType } : {}),
         requester: {
           senderId: route.senderId,
           ...(route.senderName !== undefined ? { senderName: route.senderName } : {}),
@@ -365,7 +377,7 @@ export class ElicitationInteractionBroker {
       ...this.describe(fields),
     });
 
-    const routeGone = (): boolean => this.turns.resolve(interactionId) !== route;
+    const routeGone = (): boolean => this.turns.resolve(interactionId, "elicitation") !== route;
     if (pending.settled
       || this.pending.get(requestId) !== pending
       || controller.signal.aborted

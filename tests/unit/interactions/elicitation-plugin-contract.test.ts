@@ -11,7 +11,25 @@ import {
 } from "../../../src/interactions/elicitation-schema.js";
 import { ElicitationInteractionBroker } from "../../../src/interactions/elicitation-interaction-broker.js";
 import { createTurnInteractionRegistry } from "../../../src/interactions/turn-interaction-registry.js";
+import type { TurnInteractionContext } from "../../../src/interactions/turn-interaction-registry.js";
 import type { AppLogger } from "../../../src/logging/app-logger.js";
+
+/**
+ * Bind an ELICITATION turn route directly.
+ *
+ * The registry keys routes by (interactionId, kind) because permission and
+ * elicitation resolve DIFFERENT addresses for the same turn. A caller binding
+ * the registry itself must therefore state which kind it is storing; the
+ * default is `"permission"`, and reading back a route stored under it would
+ * silently hand the broker an address it never wrote.
+ */
+function bindElicitationTurn(
+  registry: ReturnType<typeof createTurnInteractionRegistry>,
+  context: TurnInteractionContext,
+  abortSignal?: AbortSignal,
+): () => void {
+  return registry.bindTurn(context, abortSignal, "elicitation");
+}
 
 /**
  * Plugin-contract conformance for ACP form Elicitation.
@@ -87,7 +105,7 @@ test("a typed plugin channel can answer accept + null and core preserves it", as
     // Compiles only because the exported contract permits null.
     content: null,
   }));
-  const dispose = registry.bindTurn({
+  const dispose = bindElicitationTurn(registry, {
     interactionId: "ix-1",
     chatKey: "contract:g:c",
     senderId: "user-A",
@@ -112,7 +130,7 @@ test("a typed plugin channel can omit content entirely", async () => {
     action: "accept",
     responderId: "user-A",
   }));
-  const dispose = registry.bindTurn({
+  const dispose = bindElicitationTurn(registry, {
     interactionId: "ix-2",
     chatKey: "contract:g:c",
     senderId: "user-A",
@@ -141,7 +159,7 @@ test("a typed plugin channel can answer accept with a record", async () => {
     responderId: "user-A",
     content: { note: "typed answer" },
   }));
-  const dispose = registry.bindTurn({
+  const dispose = bindElicitationTurn(registry, {
     interactionId: "ix-3",
     chatKey: "contract:g:c",
     senderId: "user-A",
@@ -165,7 +183,7 @@ test("a typed plugin channel can decline and cancel", async () => {
   const declineHarness = harness(async () => ({ action: "decline", responderId: "user-A" }));
   const cancelHarness = harness(async () => ({ action: "cancel", responderId: "user-A" }));
   for (const [index, { broker, registry }] of [declineHarness, cancelHarness].entries()) {
-    const dispose = registry.bindTurn({
+    const dispose = bindElicitationTurn(registry, {
       interactionId: `ix-dc-${index}`,
       chatKey: "contract:g:c",
       senderId: "user-A",
@@ -213,7 +231,7 @@ test("the presentation copy is deeply readonly at compile time", async () => {
       }) as never,
     logger,
   });
-  const dispose = registry.bindTurn({
+  const dispose = bindElicitationTurn(registry, {
     interactionId: "ix-ro",
     chatKey: "contract:g:c",
     senderId: "user-A",

@@ -82,6 +82,12 @@ export { resolveTurnLane } from "./runtime/turn-lane.js";
 export { createActiveTurnRegistry } from "./sessions/active-turn-registry.js";
 export type { ActiveTurnRegistry } from "./sessions/active-turn-registry.js";
 export { toDisplaySessionAlias } from "./channels/channel-scope.js";
+// Direct Conversation product key parsing. A channel that renders for a
+// `bot:` turn must identify the conversation/topic it belongs to rather than
+// treating the chatKey as an opaque string, and must use the project's own
+// strict parser: a prefix match would let `bot:garbage` satisfy a route it
+// cannot scope.
+export { isDirectConversationChatKey, parseDirectConversationChatKey } from "./domain/ids.js";
 export type { SessionService } from "./sessions/session-service.js";
 export type { BackgroundResult } from "./state/types.js";
 export type { ChatRequestMetadata } from "./weixin/agent/interface.js";
@@ -140,3 +146,10 @@ export type {
 // Core home directory (~/.xacpx or env override). Channel plugins that persist
 // their own runtime credentials (weixin precedent) anchor their state files here.
 export { coreHomeDir } from "./runtime/core-home.js";
+// Deterministic string-format check shared with the channel renderability
+// gates. They need to answer "would core accept this exact value?" about
+// options they are about to show the user, and a hand-rolled approximation — an
+// earlier round's date regex accepted "2026-99-99" — would re-open the
+// dead-option hole. Exporting the same predicate core runs at submit time
+// keeps one implementation instead of two that drift.
+export { satisfiesElicitationFormat } from "./interactions/elicitation-schema.js";

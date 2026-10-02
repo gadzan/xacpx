@@ -20,6 +20,28 @@ interface DaemonLifecycle {
 interface ChannelRegistry {
   startAll(input: ChannelStartInput): Promise<void>;
   stopAll?(reason?: "shutdown" | "disabled" | "removed" | "logout"): void | Promise<void>;
+  /**
+   * Live interaction-capability reads. Optional so existing test doubles that
+   * only stub `startAll` keep working: when absent, the truthfulness check is
+   * skipped rather than guessing.
+   */
+  failedStartupChannelIds?(): string[];
+  formElicitationChannelIds?(): string[];
+  declaredElicitationFormChannelIds?(): string[];
+  elicitationFormCapable?(): boolean;
+  setElicitationReadinessListener?(listener: (readiness: ElicitationReadiness) => void): void;
+}
+
+/**
+ * The live form-Elicitation picture, published as channel outcomes become known.
+ * `startAll()` is not a readiness barrier — a healthy channel's `start()` may
+ * stay pending for the daemon's whole lifetime — so this is the only signal that
+ * arrives at a knowable moment.
+ */
+export interface ElicitationReadiness {
+  formCapable: boolean;
+  formChannelIds: string[];
+  failedChannelIds: string[];
 }
 
 type ChannelStartupPolicy = "require-one" | "best-effort";
@@ -275,6 +297,7 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
     }
 
     const controlService = runtime.control;
+    let startupError: unknown;
     const channelStartPromise = deps.channels.startAll({
       agent: runtime.agent,
       abortSignal: shutdownController.signal,
@@ -297,34 +320,119 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
     // unhandled rejection while the scheduler startup path is still running.
     channelStartPromise.catch(() => {});
 
-    let channelStartSettled = false;
-    let channelStartError: unknown;
-    channelStartPromise.then(
-      () => {
-        channelStartSettled = true;
-      },
-      (error) => {
-        channelStartSettled = true;
-        channelStartError = error;
-      },
-    );
-    // Give immediately-failing channel startup a chance to report before
-    // enabling scheduled dispatch. Long-running channel loops remain pending
-    // here, which is the normal daemon state.
-    await Promise.resolve();
+    // Interaction-capability truthfulness.
+    //
+    // `elicitationModes` is per-channel and fixed at construction, so the daemon
+    // computed the form capability before any channel existed and told the
+    // bridge the answer once. `startAll()` tolerates partial failure and is NOT
+    // a readiness barrier — a healthy channel's `start()` can stay pending for
+    // the daemon's lifetime — so a failed form channel would otherwise leave a
+    // frozen `form=true` that every request then fails to honour.
+    //
+    // Two mechanisms, both keyed on the same live read:
+    //
+    //   1. A listener on the registry, fired as each channel's outcome becomes
+    //      known. It corrects the flag the bridge was given, immediately.
+    //   2. This explicit audit, which derives the broken set from the DECLARED
+    //      form channels minus the live ones — not by filtering the failed set
+    //      against itself, which is vacuously empty.
+    const declaredFormChannelIds = typeof deps.channels.declaredElicitationFormChannelIds === "function"
+      ? deps.channels.declaredElicitationFormChannelIds()
+      : [];
+    const liveFormChannelIds = (): string[] =>
+      typeof deps.channels.formElicitationChannelIds === "function"
+        ? deps.channels.formElicitationChannelIds()
+        : typeof deps.channels.elicitationFormCapable === "function"
+          && deps.channels.elicitationFormCapable()
+          ? declaredFormChannelIds
+          : [];
 
-    if (channelStartSettled && channelStartError) {
-      if (deps.channelStartupPolicy !== "best-effort") {
-        throw channelStartError;
+    // Declared before the audit that uses it, because the readiness listener
+    // registered below calls it from inside a channel's own `start()`.
+    let rejectReadiness: (error: unknown) => void = () => {};
+
+    const auditCapability = async (logger = runtime?.logger): Promise<void> => {
+      const live = liveFormChannelIds();
+      // A form channel is broken when it declares the mode but is not live.
+      // Derived from the DECLARED set, not by filtering the failed set —
+      // filtering against itself is vacuously empty and never fires.
+      const broken = declaredFormChannelIds.filter((id) => !live.includes(id));
+      if (broken.length === 0) return;
+      if (live.length > 0) {
+        await logger?.error(
+          "daemon.channels.elicit_form_degraded",
+          "a form-capable channel failed to start; another still serves form elicitation",
+          { brokenChannels: broken, liveChannels: live },
+        );
+        return;
       }
-      await runtime.logger.error(
-        "daemon.channels.start_failed",
-        "all channels failed to start; daemon remains alive for orchestration IPC",
-        { error: channelStartError instanceof Error ? channelStartError.message : String(channelStartError) },
+      await logger?.error(
+        "daemon.channels.elicit_form_lost",
+        "every form-capable channel failed to start; form elicitation is no longer deliverable",
+        { brokenChannels: broken },
       );
-      await waitForShutdown(shutdownController.signal);
-      return;
+      // Fatal regardless of `channelStartupPolicy`, and deliberately so.
+      //
+      // `best-effort` exists so one broken non-interaction channel does not stop
+      // the daemon serving its other work. This is a different situation: the
+      // daemon ALREADY told the bridge that form Elicitation is available, the
+      // bridge told the agent, and the workers are now running with that flag
+      // baked into the RuntimeEngine at construction. Correcting it after the
+      // fact would need a capability-update channel the bridge protocol does
+      // not have, so the only honest alternatives are to refuse the run or to
+      // run while lying. Refusing is chosen: an agent that asks a form question
+      // and gets a cancel with no operator-visible cause is worse than a
+      // daemon that says why it would not start.
+      throw new Error(
+        `form elicitation is advertised but no form-capable channel started (failed: ${broken.join(", ")}); refusing startup`,
+      );
+    };
+    // The ONLY readiness verdict this run may act on.
+    //
+    // A readiness loss is fatal regardless of `channelStartupPolicy`, which is
+    // why this is a pure failure signal rather than a gate that also resolves on
+    // success: the run must be able to end because of it at ANY later point, not
+    // only while startup is still in progress. A promise that resolves on success
+    // closes that window permanently — once it has resolved, no later `reject`
+    // can change it, so a Feishu bind that fails hundreds of milliseconds AFTER a
+    // clean audit would be silently swallowed.
+    //
+    // It never resolves, so it is raced rather than awaited: the run must still
+    // proceed normally when the capability is intact, and that is what the
+    // shutdown wait below provides.
+    const readinessLost = new Promise<never>((_resolve, reject) => {
+      rejectReadiness = reject;
+    });
+    // Unhandled-rejection guard: every consumer of this promise races it or
+    // already rejected it, but a listener firing during shutdown leaves a
+    // rejection with nobody waiting.
+    readinessLost.catch(() => {});
+
+    // Registered BEFORE the first explicit audit, so it observes every outcome
+    // the audit can observe — including the ones that arrive later, once a
+    // channel's own `start()` has had time to bind.
+    if (typeof deps.channels.setElicitationReadinessListener === "function") {
+      deps.channels.setElicitationReadinessListener((readiness) => {
+        if (readiness.formCapable) return;
+        // Not swallowed: a dead form capability discovered mid-startup is the
+        // same fatal condition as the audit below, and the listener runs first.
+        // It is detached because it is invoked from inside a channel's own
+        // start, where throwing would only take that channel down — so the
+        // failure is turned into a REJECTION of the run instead. Recording it in
+        // a local nothing reads would make the comment above a lie: the daemon
+        // would abort and then finish starting normally.
+        void auditCapability().then(undefined, (error) => {
+          shutdownController.abort();
+          startupError ??= error;
+          rejectReadiness(error);
+        });
+      });
     }
+
+    // Give the per-channel outcomes a chance to land before the explicit audit,
+    // then always run it once so the check is not solely listener-driven.
+    await Promise.resolve();
+    if (startupError === undefined) await auditCapability();
 
     try {
       await runtime.scheduled.scheduler.start();
@@ -333,11 +441,39 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
       throw error;
     }
 
+    // ONE startup-failure path, so the capability verdict cannot be skipped by a
+    // shape it was not written for.
+    //
+    // The original code had two: this `best-effort` early return and the wait
+    // below. An "all channels immediately fail" fixture left through the first,
+    // which returned before the readiness listener was even installed — so the
+    // one form channel failing at that instant was treated as an ordinary
+    // channel failure and the daemon stayed up, advertising a capability it no
+    // longer had. That was exactly the case the audit's own comment calls "fatal
+    // regardless of policy".
+    //
+    // Both exits now converge here, and the capability failure is trialled by
+    // IDENTITY (`startupError`) rather than by which route reported it.
+    //
+    // The wait resolves on whichever comes first: a shutdown signal, the channel
+    // start settling, or a readiness rejection. For a DAEMON the normal lease is
+    // the signal — the shutdown the readiness listener itself requests — so the
+    // verdict has to be re-read afterwards rather than inferred from which promise
+    // happened to settle first. Checking only the caught error would miss the
+    // delayed case entirely, because the listener's abort is what ends the wait
+    // and the audit's rejection is settled asynchronously.
     try {
-      await channelStartPromise;
+      await Promise.race([
+        waitForShutdown(shutdownController.signal),
+        readinessLost,
+        channelStartPromise,
+      ]);
     } catch (error) {
       runtime.scheduled.scheduler.stop();
-      if (deps.channelStartupPolicy !== "best-effort") {
+      // A readiness loss is fatal on its own, regardless of policy: the daemon has
+      // already handed the agent a flag it can no longer honour, and the bridge
+      // protocol has no capability-update channel to correct it.
+      if (error === startupError || deps.channelStartupPolicy !== "best-effort") {
         throw error;
       }
       await runtime.logger.error(
@@ -345,8 +481,32 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
         "all channels failed to start; daemon remains alive for orchestration IPC",
         { error: error instanceof Error ? error.message : String(error) },
       );
+      // KEEP the documented `best-effort` lease — the daemon stays up for
+      // orchestration IPC — but do NOT return here.
+      //
+      // Returning was the bug: it skipped the capability verdict below. The
+      // channel start rejecting does not pre-empt the readiness audit, and the
+      // two arrived as DIFFERENT objects, so the `error === startupError`
+      // identity check above cannot see the capability failure. Reached whenever
+      // the channel start wins the race while the audit is still settling — the
+      // easy version of which is the audit parked on its own `logger.error`, so
+      // the channel rejection lands first by a wide margin.
+      //
+      // Falling through is safe in the ordinary case: `startupError` is empty
+      // when there was no capability loss, so this is still a normal shutdown
+      // followed by a normal return.
       await waitForShutdown(shutdownController.signal);
-      return;
+    }
+    // The capability verdict, re-read rather than inferred from the race above.
+    //
+    // Reached when the wait ended on the shutdown signal or the channel start
+    // settling instead of on the rejection — which is the common case, because
+    // the readiness listener's abort is what ends the wait and the audit's
+    // rejection lands asynchronously. A record in `startupError` at this point is
+    // the fatal capability condition the run must not complete on.
+    if (startupError !== undefined) {
+      runtime.scheduled.scheduler.stop();
+      throw startupError;
     }
   } finally {
     await runCleanupSequence({

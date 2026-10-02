@@ -13,6 +13,10 @@ import {
   type ConversationRunDto,
   type ConversationRunStateDto,
   type ConversationSummaryDto,
+  type InteractionFieldDto,
+  type InteractionKindDto,
+  type InteractionRequestDto,
+  type InteractionValueDto,
   type LiveTurnSnapshotDto,
   type MemberTurnSummaryDto,
   type PlanEntryDto,
@@ -49,6 +53,101 @@ export type DirectBotPromptErrorCode = "topicRecovering" | "botDisabled" | "runI
 export type DirectBotCancelErrorCode = "ownershipUnconfirmed" | "ownershipChecking" | "cancelUnknown";
 export type DirectBotHistoryErrorCode = "discoveryFailed";
 export type DirectBotGeneralErrorCode = "instanceOffline";
+
+/**
+ * An open interaction awaiting this browser's answer.
+ *
+ * `request` is the whole hub-validated payload, so the renderer never has to
+ * reassemble a form from fields plus separate product ids. `answers` holds what
+ * the user has entered; it starts EMPTY rather than seeded from
+ * `defaultValue`, because a default the user never looked at must not be
+ * submittable — the ACP contract requires the user be able to review and modify
+ * before sending.
+ */
+export interface PendingInteractionState {
+  /** Instance this interaction was opened against; empty while unresolved. */
+  instanceId: string;
+  request: InteractionRequestDto;
+  /** The kind, kept alongside so a component does not re-derive it. */
+  kind: InteractionKindDto;
+  answers: Record<string, InteractionValueDto>;
+  /**
+   * Set once the browser received the outcome, so the UI shows what happened
+   * instead of leaving a dead form. Cleared by the caller after the notice.
+   */
+  outcome: "accepted" | "declined" | "cancelled" | "withdrawn" | null;
+  submitting: boolean;
+  /** Last submit failure, surfaced as a bounded code rather than message text. */
+  errorCode: DirectBotInteractionErrorCode | null;
+}
+
+export type DirectBotInteractionErrorCode =
+  | "connectorOutdated"
+  | "instanceOffline"
+  | "interactionGone"
+  | "submitFailed"
+  | "runNotActive";
+
+/**
+ * Whether an accept can be sent.
+ *
+ * A required field must carry an answer; an optional field may be absent. The
+ * condition is per-field and explicitly `true` for absent optionals — writing it
+ * as `required || answered !== undefined` reads the same but is wrong, because
+ * an unanswered optional then evaluates `false` and blocks the whole submit.
+ */
+function isInteractionAnswerable(state: PendingInteractionState): boolean {
+  const fields = state.request.elicitation?.fields ?? [];
+  return fields.every((field) => (field.required ? hasAnswer(state.answers, field.key) : true));
+}
+
+/**
+ * Whether an answer was recorded, by OWN property.
+ *
+ * `key in answers` and `answers[key] !== undefined` are both wrong here: a
+ * required field named `constructor`, `toString` or `valueOf` reads a value that
+ * `Object.prototype` always provides, so a form the user never filled looks
+ * answered and Submit is allowed. Answers are ordinary objects, so an inherited
+ * value is indistinguishable from a real one unless the lookup is an own-property
+ * check.
+ */
+function hasAnswer(answers: Record<string, unknown>, key: string): boolean {
+  return Object.hasOwn(answers, key) && answers[key] !== undefined;
+}
+
+/** A fresh answer map with no prototype, so no key can read an inherited value. */
+function emptyAnswers(): Record<string, InteractionValueDto> {
+  return Object.create(null) as Record<string, InteractionValueDto>;
+}
+
+/**
+ * The answer payload for an accept.
+ *
+ * `null` when nothing was answered at all (an all-optional form the user
+ * submitted empty), which ACP treats as a distinct statement from "the channel
+ * submitted nothing" (`undefined`). An empty object would be a third, meaningless
+ * thing.
+ */
+function collectInteractionAnswers(
+  state: PendingInteractionState,
+): Record<string, InteractionValueDto> | null {
+  // Null-prototype, for the same reason core and the other renderers use one: a
+  // field key of `__proto__` would otherwise assign through the prototype chain
+  // and never become a data property, so the answer would be silently dropped.
+  const content: Record<string, InteractionValueDto> = Object.create(null);
+  for (const key of Object.keys(state.answers)) {
+    if (!hasAnswer(state.answers, key)) continue;
+    content[key] = state.answers[key] as InteractionValueDto;
+  }
+  return Object.keys(content).length === 0 ? null : content;
+}
+
+/** Fields that still need an answer, for the renderer's progress line. */
+function missingInteractionFields(state: PendingInteractionState): InteractionFieldDto[] {
+  const fields = state.request.elicitation?.fields ?? [];
+  return fields.filter((field) => field.required && !hasAnswer(state.answers, field.key));
+}
+
 class DirectBotRpcError extends Error {
   readonly code: string;
   constructor(code: string, message: string) {
@@ -336,6 +435,103 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     return planByRunId.value[currentId] ?? [];
   });
   const cancellingRunId = ref<string | null>(null);
+
+  /**
+   * Open interactions awaiting this browser's answer, keyed by requestId.
+   *
+   * KEYED, not single-slot, and not stackable-in-one-slot: M1's cancellation is
+   * request-scoped, so the same turn can legitimately hold more than one pending
+   * request at once, and a second `interaction-opened` must not silently drop the
+   * first — the hub would still be holding it, and the user would have no UI for
+   * a form the agent is still waiting on.
+   *
+   * `expiresAt` is the HUB's deadline (ms epoch), rendered as a client-side
+   * countdown so the user sees the window closing rather than a form that
+   * suddenly disappears. `answers` starts empty on purpose: pre-filling from
+   * anything other than an explicit edit would let a default be submitted
+   * without the user reviewing it.
+   */
+  const pendingInteractions = ref<Map<string, PendingInteractionState>>(new Map());
+  // Interactions that have reached a terminal state but are still displayed, so
+  // the user sees WHY the form went away. Terminals live beside the open ones and
+  // are matched by requestId.
+  //
+  // Bounded, because the account-wide subscription delivers terminals for every
+  // topic under every instance and a viewer only ever dismisses the one on
+  // screen. Without a cap the retired-but-undismissed set grows for the life of
+  // the tab. The oldest goes first: the newest is what a viewer returning to a
+  // topic needs to see, and dropping a stale terminal only loses an explanation
+  // for a form that already closed.
+  const TERMINAL_INTERACTION_LIMIT = 32;
+  const terminalInteractions = ref<Map<string, PendingInteractionState>>(new Map());
+
+  /**
+   * The interaction the user should see right now: the open one for the topic they
+   * are actually viewing, if any.
+   *
+   * Scoped TO THE SELECTED TOPIC, and open-first. A form belonging to another
+   * topic is not the viewer's business and must not be rendered into their turn
+   * banner — answering it would silently answer a different conversation. When
+   * nothing is open for this topic, the terminal shown is also the one for THIS
+   * topic, so a closed form reads as the outcome of what the user just saw.
+   *
+   * With several open forms on one topic (request-scoped cancellation permits it),
+   * the newest wins, which is deterministic and matches the ordering the hub
+   * emitted.
+   */
+  const pendingInteraction = computed<PendingInteractionState | null>(() => {
+    const visibleTopic =
+      activeConversationId.value && activeTopicId.value
+        ? { conversationId: activeConversationId.value, topicId: activeTopicId.value }
+        : undefined;
+    const inScope = (state: PendingInteractionState): boolean => {
+      if (visibleTopic === undefined) return true;
+      const correlation = state.request.conversation;
+      // The instance is a scope key in its own right, checked FIRST.
+      //
+      // `DashboardView` subscribes to every instance under the account — a
+      // background instance's events must keep flowing — and this store
+      // deliberately processes `interaction-opened` for all of them, storing the
+      // source instance on the state. So an interaction opened by instance B can
+      // be sitting beside one opened by instance A.
+      //
+      // Conversation and Topic ids are NOT globally unique: two daemons that
+      // copied state, restored a backup, or were cloned produce identical
+      // `c1/t1`. Comparing topic alone therefore matches B's form against A's
+      // pane, and because Submit routes to the state's own `instanceId`, the user
+      // answers B's question while looking at A — a cross-instance isolation
+      // failure of the same family as the cross-topic one above, with a third
+      // missing key.
+      //
+      // Uncoded (`null`) means no instance is selected, which is the account-wide
+      // surface: there is no instance to be wrong about, so nothing is scoped out.
+      if (instanceId.value !== null && state.instanceId !== instanceId.value) return false;
+      // An interaction with no correlation belongs to an ordinary channel turn.
+      //
+      // That is NOT a reason to treat it as in scope. Those frames carry no
+      // `conversation` product row, so there is no topic they provably belong to,
+      // and rendering one here would put a form into a turn the viewer never
+      // opened — answering it could silently answer a different conversation.
+      //
+      // Scoped OUT instead: with no correlation the frame is only ever shown on
+      // the account-wide surface (`activeConversationId` unset), which is where
+      // the turn was actually dispatched from.
+      //
+      // Ferried out by the WIRE, not the view: the Sessions ChatPane that
+      // previously claimed these via the registry's channel-wide
+      // `elicitationModes = ["form"]` has no renderer, so it requested a form it
+      // could not show. A capability declared channel-wide while only one route
+      // can serve it is a capability LIE — the route, not the channel, is the
+      // honest unit.
+      return correlation !== undefined
+        && correlation.conversationId === visibleTopic.conversationId
+        && correlation.topicId === visibleTopic.topicId;
+    };
+    const open = [...pendingInteractions.value.values()].filter(inScope);
+    if (open.length > 0) return open[open.length - 1]!;
+    const terminal = [...terminalInteractions.value.values()].filter(inScope);
+    return terminal.length > 0 ? terminal[terminal.length - 1]! : null;
+  });
 
   // Accumulated trace parts retained per runId so completed assistant messages keep their rich cards
   const runParts = ref<Record<string, TurnPartDto[]>>({});
@@ -2064,7 +2260,239 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
   }
 
-  // Exact Run cancellation via runId
+  /**
+   * Record one field's answer, locally.
+   *
+   * Deliberately NOT an RPC: answers are held client-side until the user submits,
+   * so a half-finished form is never visible to anyone. An unknown key is ignored
+   * rather than stored, because the hub-validated field list is the authority on
+   * what this form asks.
+   */
+  function setInteractionAnswer(key: string, value: InteractionValueDto): void {
+    const current = pendingInteraction.value;
+    if (!current) return;
+    const known = current.request.elicitation?.fields.some((field) => field.key === key);
+    if (!known) return;
+    // Copied with `Object.create(null)` + assign, NOT a spread: an object spread
+    // produces a plain object with `Object.prototype`, which restores the
+    // inherited-value hole this whole path exists to avoid.
+    const answers = emptyAnswers();
+    for (const existing of Object.keys(current.answers)) {
+      if (hasAnswer(current.answers, existing)) {
+        answers[existing] = current.answers[existing] as InteractionValueDto;
+      }
+    }
+    answers[key] = value;
+    patchInteraction(current.request.requestId, { answers, errorCode: null });
+  }
+
+  /** Replace one pending entry. Missing keys are left alone, not created. */
+  function patchInteraction(
+    requestId: string,
+    patch: Partial<PendingInteractionState>,
+  ): void {
+    const current = pendingInteractions.value.get(requestId);
+    if (!current) return;
+    nextPending((map) => {
+      const next = map.get(requestId);
+      if (next) map.set(requestId, { ...next, ...patch });
+    });
+  }
+
+  /** Rebuild the open map from a mutation, so Vue sees a new reference. */
+  function nextPending(mutate: (map: Map<string, PendingInteractionState>) => void): void {
+    const next = new Map(pendingInteractions.value);
+    mutate(next);
+    pendingInteractions.value = next;
+  }
+
+  /** Move an interaction from the open set to the terminal set, still displayed. */
+  function retireInteraction(
+    requestId: string,
+    outcome: PendingInteractionState["outcome"],
+  ) {
+    const existing = pendingInteractions.value.get(requestId);
+    if (!existing) return;
+    nextPending((map) => {
+      map.delete(requestId);
+    });
+    terminalInteractions.value = capTerminalInteractions(
+      new Map(terminalInteractions.value).set(requestId, {
+        ...existing,
+        // Answers are dropped the moment the form reaches a terminal state.
+        //
+        // The terminal notice says WHY the form went away; it has no use for what
+        // the user typed. Keeping them meant a completed form held its answers in
+        // memory until the viewer happened to open that exact topic and dismiss it
+        // — or until they reloaded. Data minimisation: once the decision is made,
+        // nothing downstream consumes the answer text.
+        answers: emptyAnswers(),
+        outcome,
+        submitting: false,
+      }),
+    );
+  }
+
+  /**
+   * Keep the newest `TERMINAL_INTERACTION_LIMIT` terminals and drop the rest.
+   *
+   * Map insertion order IS the arrival order here — every write goes through
+   * `new Map(current).set(...)`, which re-inserts an updated key at the end — so
+   * the first entries are the oldest and the last is the newest.
+   */
+  function capTerminalInteractions(
+    map: Map<string, PendingInteractionState>,
+  ): Map<string, PendingInteractionState> {
+    if (map.size <= TERMINAL_INTERACTION_LIMIT) return map;
+    const kept = new Map<string, PendingInteractionState>();
+    for (const [key, value] of map) {
+      kept.set(key, value);
+      if (kept.size > TERMINAL_INTERACTION_LIMIT) {
+        const oldest = kept.keys().next().value;
+        if (oldest !== undefined) kept.delete(oldest);
+      }
+    }
+    return kept;
+  }
+
+  /** Dismiss a form without answering. Records the user's own dismissal. */
+  async function declineInteraction(): Promise<void> {
+    await submitInteraction("decline");
+  }
+
+  /** Dismiss a form as abandoned. Distinct from decline: the user gave up. */
+  async function cancelInteraction(): Promise<void> {
+    await submitInteraction("cancel");
+  }
+
+  /**
+   * Send the user's decision.
+   *
+   * `decline` and `cancel` are user actions and are reported as such — they are
+   * never synthesized from a timeout or a transport failure, which close the form
+   * through `interaction-closed` instead. Collapsing the two would report a
+   * decision the user did not make.
+   *
+   * The frame goes out on `interactionRespond`, the ANSWER direction. The OPEN
+   * direction is `interactionRequest` and belongs to the connector: a browser
+   * sending on it would be asking to open a second interaction whose form it
+   * invented, and the hub would validate it as an open and find no matching
+   * pending interaction to answer.
+   *
+   * The payload carries NO identity. The hub stamps the responder from its own
+   * authenticated session, so anything a browser asserted would be overwritten —
+   * and asserting it at all is a protocol violation the validator rejects.
+   *
+   * The submit is one RPC whose result is an ack; a transport failure sets a
+   * bounded error code and leaves the form open, because the interaction may
+   * still be answerable and the user should be able to retry. The form's
+   * resolution arrives separately, on `interaction-closed`.
+   */
+  async function submitInteraction(
+    action: "accept" | "decline" | "cancel",
+  ): Promise<void> {
+    const current = pendingInteraction.value;
+    if (!current || current.submitting) return;
+    // Expiry is checked FIRST. An expired form must report that the window
+    // closed, not "you left a field blank" — the incomplete-answer message would
+    // send a user looking for a field they can no longer usefully fill.
+    //
+    // The form is RETIRED rather than merely flagged. A window that has already
+    // closed is not a condition the user can act on, so leaving it in the open set
+    // kept Submit/Decline/Cancel live for a form the hub will refuse — the same
+    // "normal ending, not an error to retry forever" rule the reject path below
+    // follows. `withdrawn`, because the user chose nothing; the window simply
+    // passed.
+    if (current.request.expiresAt <= Date.now()) {
+      retireInteraction(current.request.requestId, "withdrawn");
+      return;
+    }
+    if (action === "accept" && !isInteractionAnswerable(current)) {
+      patchInteraction(current.request.requestId, { errorCode: "submitFailed" });
+      return;
+    }
+    patchInteraction(current.request.requestId, { submitting: true, errorCode: null });
+    const requestId = current.request.requestId;
+    const generation = currentSelectionGeneration;
+    try {
+      await unwrapRpc(
+        await api.rpc<{ ok?: boolean }>(
+          current.instanceId,
+          MSG.interactionRespond,
+          {
+            requestId,
+            kind: "elicitation",
+            action,
+            ...(action === "accept" ? { content: collectInteractionAnswers(current) } : {}),
+          },
+        ),
+      );
+      // The ack is not the resolution: the interaction's decision is delivered to
+      // the connector by the same hub call, and every browser learns the form is
+      // closed from `interaction-closed`. Leaving the form on "submitting"
+      // until that arrives is what keeps a double-click from sending two answers.
+      patchInteraction(requestId, { submitting: true, errorCode: null });
+    } catch (error) {
+      if (generation !== currentSelectionGeneration) return;
+      // A gone interaction is a normal ending, not an error to retry forever.
+      //
+      // `interaction-gone` is the hub's AUTHORITATIVE statement that this request no
+      // longer exists — it was answered from another tab, withdrawn, or expired. So
+      // the form is RETIRED here, not merely annotated with an error code.
+      //
+      // Setting only `errorCode` is what this branch used to do, and it left the
+      // dead form in the open map with its Submit/Decline/Cancel controls still
+      // live: the user could click again, get the same 409, and repeat forever on a
+      // form nobody was waiting for. The hub was already fail-closed, so this is a
+      // state-consistency bug rather than a lost-answer one, but the comment above
+      // promised a normal ending and the code did not deliver it.
+      //
+      // Retiring it closes the loop for the reconnect case where a form was answered
+      // elsewhere during the outage and the hub's positive-only replay never
+      // mentioned it again: the first authoritative 409 is the moment this tab learns
+      // the truth, and it acts on it instead of parking a corpse.
+      if (error instanceof DirectBotRpcError && error.code === "interaction-gone") {
+        // `withdrawn`, not `cancelled`: the user did not choose anything, and the
+        // form's window is over because something else consumed it.
+        patchInteraction(requestId, { submitting: false, errorCode: "interactionGone" });
+        retireInteraction(requestId, "withdrawn");
+        return;
+      }
+      // Any other failure is NOT authoritative about the window: the request may
+      // still be open, so the form stays answerable and the user can retry.
+      const code = error instanceof DirectBotRpcError && error.code === "unknown-type"
+        ? "connectorOutdated"
+        : "submitFailed";
+      patchInteraction(requestId, { submitting: false, errorCode: code });
+    }
+  }
+
+  /** How many retired forms this tab is still holding an explanation for. */
+  const terminalInteractionCount = computed<number>(() => terminalInteractions.value.size);
+
+  /**
+   * Is this request still held OPEN, rather than retired or dropped?
+   *
+   * Exists because `pendingInteraction` is the VISIBLE form for the current pane,
+   * which an unrelated instance's interaction never is — by design. A test (or a
+   * future caller) that needs "is this request still open at all" must not infer it
+   * from the visible slot, or it would conclude a background form was destroyed
+   * when it was merely out of view.
+   */
+  function requestStillHeld(requestId: string): boolean {
+    return pendingInteractions.value.has(requestId);
+  }
+
+  /** Dismiss a form that already reached a terminal outcome. */
+  function dismissResolvedInteraction(): void {
+    const current = pendingInteraction.value;
+    if (!current) return;
+    const requestId = current.request.requestId;
+    const nextTerminals = new Map(terminalInteractions.value);
+    nextTerminals.delete(requestId);
+    terminalInteractions.value = nextTerminals;
+  }
+
   async function cancelCurrentRun(): Promise<void> {
     if (!instanceId.value || !activeRun.value) return;
     // Store-level double-click fence: while a cancel RPC for this Run is in
@@ -2275,6 +2703,53 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           }
         }
       }
+
+    // An open interaction is re-proven after a reconnect rather than assumed.
+    //
+    // The hub holds the real state: a form answered from another tab while this
+    // one was disconnected is already closed, and keeping it here would let the
+    // user submit an answer after its own deadline. So the local copy is checked
+    // against the live turn before the form is kept.
+    // An open interaction is re-proven after a reconnect rather than assumed.
+    //
+    // The hub holds the real state: a form answered from another tab while this
+    // one was disconnected is already closed, and keeping it here would let the
+    // user submit an answer after its own deadline. So each local copy is checked
+    // against the live turn before the form is kept.
+    //
+    // Iterates ALL of them, not one slot: several can be open at once, and the
+    // ones that survive stay answerable.
+    for (const [requestId, interaction] of pendingInteractions.value) {
+      if (generation !== currentSelectionGeneration) break;
+      const alreadyExpired = interaction.request.expiresAt <= Date.now();
+      // An interaction whose window has closed is `withdrawn`, never `cancelled`.
+      // `cancelled` asserts the user made a decision; a passing deadline means
+      // nobody chose anything. Same terminal-label rule as the close event.
+      if (alreadyExpired) {
+        retireInteraction(requestId, "withdrawn");
+        continue;
+      }
+      // A still-open window is NOT judged against this pane's Run.
+      //
+      // `activeRun` is the selected pane's single Run, while this map is
+      // account-wide: it can hold an open form for another instance or topic,
+      // whose turn has nothing to do with what is on screen. Computing
+      // `runGone` from the pane's Run retired those forms as withdrawn even
+      // though the hub still held them open — a background form became
+      // permanently unanswerable, and the user only found out by switching back
+      // to it and seeing a terminal notice for a window that had not closed.
+      //
+      // Run liveness is therefore only decisive for the interaction of the turn
+      // this pane is actually showing. Anything else keeps its open state until
+      // the hub says otherwise, which is the failure mode the hub's own close
+      // event and replay already cover.
+      const ownsThisTurn = interaction.instanceId === iId
+        && interaction.request.conversation?.conversationId === cId
+        && interaction.request.conversation?.topicId === tId;
+      if (ownsThisTurn && (!activeRun.value || !isActiveRunState(activeRun.value.state))) {
+        retireInteraction(requestId, "withdrawn");
+      }
+    }
   }
 
   // Handle server WebSocket events
@@ -2435,6 +2910,96 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       if (startedBotId) {
         markBotHasRuntime(event.instanceId, startedBotId);
       }
+    }
+
+    // Interaction lifecycle. Both branches are placed BEFORE the selection fence
+    // below on purpose: an open interaction must be visible and closable even if
+    // the user switches topic mid-question, otherwise the form is stranded on a
+    // conversation that is no longer displayed and its answer is unreachable.
+    if (e.type === "interaction-opened") {
+      const interaction = e.interaction;
+      if (interaction.kind !== "elicitation") return;
+      if (!interaction.elicitation) return;
+      if (interaction.expiresAt <= Date.now()) {
+        // Already closed while in flight: showing it would invite an answer
+        // that cannot be accepted.
+        return;
+      }
+      // Stored regardless of which topic is on screen. Dropping it here used to
+      // be permanent: the hub still holds the interaction, so the user could
+      // switch back to its topic and find nothing — and then watch the agent
+      // time out. Visibility is decided by `pendingInteraction`, not by arrival.
+      const next = new Map(pendingInteractions.value);
+      // A requestId we already hold is a REPLAY, not a new opening: the hub
+      // re-announces every still-open interaction when this tab reconnects, and
+      // overwriting the entry wipes the draft the user spent the last minutes
+      // typing. Only the server-shaped half may come from the replay — the
+      // answers are the user's, and the kind/instance identify the connector
+      // that opened it, which the event states authoritatively.
+      const existing = next.get(interaction.requestId);
+      next.set(interaction.requestId, {
+        // The connector instance that opened it, which is also the instance the
+        // answer routes back to. Never "".
+        instanceId: e.instanceId,
+        request: interaction,
+        kind: interaction.kind,
+        // An explicit edit is the only thing that fills answers, so a replay
+        // reuses what the user typed rather than restarting the form.
+        answers: existing ? existing.answers : emptyAnswers(),
+        // A still-open replay carries no terminal state; an entry that already
+        // reached one while sitting in the open map is a contradiction between
+        // the hub and this tab, so keep it as-is instead of quietly hiding it.
+        outcome: existing ? existing.outcome : null,
+        // An in-flight submit at reconnect has an unknown ack (sent and lost,
+        // or never sent). Resetting is fail-safe: the form stays answerable, and
+        // the close or the close-follow-up converges `submitting`.
+        submitting: false,
+        errorCode: existing ? existing.errorCode : null,
+      });
+      pendingInteractions.value = next;
+      return;
+    }
+    if (e.type === "interaction-closed") {
+      // Close only the interaction this event names. A close for a different
+      // requestId belongs to someone else's turn (or a stale frame) and must not
+      // dismiss the form the user is currently answering. Keying by requestId is
+      // what makes a second form survivable: the first one's close no longer
+      // takes the second one down with it.
+      const open = pendingInteractions.value.get(e.requestId);
+      if (!open) return;
+      const nextOpen = new Map(pendingInteractions.value);
+      nextOpen.delete(e.requestId);
+      pendingInteractions.value = nextOpen;
+      terminalInteractions.value = capTerminalInteractions(
+        new Map(terminalInteractions.value).set(e.requestId, {
+          ...open,
+          // Answers are dropped the instant the form closes. The terminal notice
+          // explains why the form went away; nothing downstream consumes what was
+          // typed. Retaining it kept a finished form's answers in memory for as long
+          // as the viewer stayed away from that topic.
+          answers: emptyAnswers(),
+          // `expired` maps to `withdrawn`, never `cancelled`.
+          //
+          // The component's own rule is that a hub-side close is `withdrawn` and
+          // never `cancelled`, because `cancelled` asserts the user made a decision.
+          // A timeout is the opposite: the window simply ran out and nobody chose
+          // anything. Labelling it "Cancelled" told the user they had abandoned a
+          // form they never touched, which is the same terminal-label drift as the
+          // Decline/Cancel fix.
+          //
+          // `resolved` is the only reason that reports a human decision, and it is
+          // read off the hub's own `action` field rather than inferred here.
+          outcome: e.reason === "resolved"
+            ? (e.action === "decline"
+              ? "declined"
+              : e.action === "cancel"
+                ? "cancelled"
+                : "accepted")
+            : "withdrawn",
+          submitting: false,
+        }),
+      );
+      return;
     }
 
     // Catalog invalidation events
@@ -2810,6 +3375,17 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     promptInFlight,
     promptError,
     promptErrorDetail,
+    pendingInteraction,
+    // How many retired forms this tab is still holding an explanation for. The
+    // terminal set is bounded (see TERMINAL_INTERACTION_LIMIT), and this makes the
+    // bound observable rather than an internal implementation detail.
+    terminalInteractionCount,
+    requestStillHeld,
+    setInteractionAnswer,
+    submitInteraction,
+    declineInteraction,
+    cancelInteraction,
+    dismissResolvedInteraction,
     cancelError,
     generalError,
     generalErrorCode,

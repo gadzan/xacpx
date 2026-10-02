@@ -59,6 +59,13 @@ const HANDSHAKE_ID = "handshake-1";
 const ALLOWED_UPWARD_REQUEST_TYPES: ReadonlySet<string> = new Set([
   MSG.agentMessageRoute,
   MSG.agentMessageCompletion,
+  // The connector is the ONLY side that can open an interaction: core's turn
+  // owns the agent that is asking the question, and the hub learn about it only
+  // because the connector that owns that turn says so.
+  MSG.interactionRequest,
+  // And the only side that can withdraw one — the turn going away is the
+  // connector's news to tell, since it is the turn's owner.
+  MSG.interactionWithdraw,
 ]);
 
 /**

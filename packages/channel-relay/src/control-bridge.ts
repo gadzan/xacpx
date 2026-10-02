@@ -4,6 +4,8 @@ import {
   parseControlPayload,
   type AgentMessageCompletionPayload,
   type AgentMessageDeliverPayload,
+  type InteractionRequestDto,
+  type InteractionResult,
   type OrchestrationTaskDto,
   type RelayEnvelope,
   type ScheduledTaskDto,
@@ -86,6 +88,10 @@ const CONNECTOR_TIMEOUT_EXEMPT_TYPES: ReadonlySet<string> = new Set([
   MSG.commandExecute,
   MSG.sessionModelSet,
   MSG.sessionEffortSet,
+  // `interactionRequest` is NOT here: it is a connector→hub request made through
+  // `RelayClient.sendRequest` with its own ceiling (the window's `expiresAt` +
+  // the shared response reserve), so this bridge never bounds it at all.
+  // `interactionRespond` never arrives as a request in this direction either.
 ]);
 
 export interface ControlBridgeOptions {
@@ -185,7 +191,12 @@ export function createControlBridge(
     }
 
     const deadlineAt = modelSetDeadlineAt(envelope, now);
-    void dispatchControlRequest(control, envelope, deadlineAt, options.trustedConversationPrompt)
+    void dispatchControlRequest(
+      control,
+      envelope,
+      deadlineAt,
+      options.trustedConversationPrompt,
+    )
       .then(respondOnce)
       .catch((error: unknown) => {
         const code = (error as Error & { code?: string }).code ?? "internal";

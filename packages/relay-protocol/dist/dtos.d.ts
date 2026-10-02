@@ -238,9 +238,25 @@ export interface QueueItemDto {
 export interface ConversationTurnCorrelationDto {
     conversationId: string;
     topicId: string;
-    botId: string;
-    runId: string;
-    memberTurnId: string;
+    /**
+     * Product row ids, present when the opener HAS them.
+     *
+     * A hub-sourced frame (conversation prompt) knows all three; a connector that
+     * opens an interaction from a turn knows only the product keys the turn's own
+     * route carried, and manufacturing ids would put fabricated joins in front of
+     * the UI. So they are optional and a consumer that needs one MUST handle its
+     * absence rather than treat "" as "none".
+     */
+    botId?: string;
+    runId?: string;
+    memberTurnId?: string;
+    /**
+     * Hub-issued id for the prompt row that started this turn, when it was
+     * pre-written. Present on the correlation so a consumer can join a turn to its
+     * originating message without a second lookup; absent for turns the hub did
+     * not pre-write.
+     */
+    promptRequestId?: string;
 }
 export interface BotSummaryDto {
     id: string;
@@ -572,6 +588,43 @@ export type ControlEventDto = {
     type: "member-turn-finished";
     run: ConversationRunDto;
     memberTurn: MemberTurnSummaryDto;
+}
+/** An interaction (permission or elicitation) opened for a human. Pushed to
+ *  every connected browser for the account, so a tab that did not open it still
+ *  sees the prompt. `chatKey`/`sessionAlias` are the runtime plumbing the web
+ *  already ignores in favour of the product keys. */
+ | {
+    type: "interaction-opened";
+    chatKey: string;
+    sessionAlias: string;
+    /**
+     * The connector instance that opened this interaction.
+     *
+     * NOT optional and never "": the web gateway fences control-events on each
+     * socket's instance subscription and the dashboard subscribes to its real
+     * instances on connect, so a blank id is dropped by every subscribed
+     * socket. It is also the instance the store routes an answer back to.
+     */
+    instanceId: string;
+    interaction: InteractionRequestDto;
+}
+/** An interaction ended without a browser-supplied decision (resolved,
+ *  withdrawn, or timed out). Lets web drop the pending row instead of leaving
+ *  a dead form on screen. */
+ | {
+    type: "interaction-closed";
+    chatKey: string;
+    sessionAlias: string;
+    /** See `interaction-opened.instanceId` — the same connector that opened it. */
+    instanceId: string;
+    requestId: string;
+    reason: "resolved" | "withdrawn" | "expired";
+    /**
+     * The action a resolve actually carried, so a tab that did NOT click knows
+     * what happened. Without it every resolve reads as "accepted", which is
+     * why a Decline from one tab shows as Accepted in all the others.
+     */
+    action?: "accept" | "decline" | "cancel";
 };
 export interface TerminalAttachRequest {
     terminalId: string;
@@ -651,4 +704,148 @@ export interface PeerMessageHistoryEntry {
     status?: "sending" | "sent" | "queued" | "delivered" | "failed";
     completion?: AgentMessageCompletionMode;
     completionStatus?: "pending" | "completed" | "failed" | "cancelled";
+}
+/** Which decision model an opened interaction uses. */
+export type InteractionKindDto = "permission" | "elicitation";
+/** Terminal actions, per kind. */
+export type InteractionActionDto = "accept" | "decline" | "cancel" | "allow_once" | "allow_always" | "reject_once" | "reject_always";
+/**
+ * One normalized form field, already validated by core against ACP.
+ *
+ * Deliberately NOT the ACP SDK type: the web renderer must never be handed a raw
+ * schema, only a shape core has already bounded. `options` are present for
+ * select kinds only, and each option's `value` (not its agent-controlled label)
+ * is what the answer must carry.
+ */
+export interface InteractionFieldDto {
+    kind: "text" | "single-select" | "number" | "boolean" | "multi-select";
+    key: string;
+    title: string;
+    description?: string;
+    required: boolean;
+    options?: Array<{
+        value: string;
+        label: string;
+        description?: string;
+    }>;
+    minItems?: number;
+    maxItems?: number;
+    minLength?: number;
+    maxLength?: number;
+    /**
+     * A named format core validates the answer against.
+     *
+     * Present because the transport is terminal: a value core rejects arrives
+     * after the interaction has already resolved, so the renderer has to be able
+     * to catch an unparseable value while the form is still open. A renderer that
+     * cannot check it simply ignores it and core still validates.
+     *
+     * NOT text-only. Core applies the same format to a `single-select`'s chosen
+     * option — its validator comment is "The agent's own string constraints apply
+     * to the chosen option too" — so `enum: ["2026-02-30"]` with `format: "date"`
+     * is a legal schema whose only offered value core will reject. A renderer
+     * that scopes this to text would let that through.
+     *
+     * OPEN string, not an enum: core's schema is the authority on which names
+     * exist and it declares `format?: string`, so an enum here would need updating
+     * per new format and would reject a legal one. Bounded by the field validator.
+     * The values core knows are `email`, `uri`, `date`, and `date-time`; an
+     * unknown name is an annotation core preserves and does not reject.
+     *
+     * Note what a renderer can safely do with this: NONE of them are checkable
+     * without duplicating core. `email` and `uri` are `ajv-formats` regexes, and
+     * `date`/`date-time` need real calendar validation — `Date.parse` normalizes
+     * `2026-02-30` into March instead of rejecting it. A renderer with no shared
+     * implementation of these must treat the field as UNVERIFIABLE rather than
+     * approximate it.
+     */
+    format?: string;
+    /**
+     * A regex the answer must match, as source text.
+     *
+     * Metadata, carried so a renderer can DISPLAY the required shape to the human.
+     * It is never executed — not by core and not by the renderer: core's stated
+     * rule is that an agent-supplied regex is a resource-exhaustion vector, so it
+     * validates nothing against it and leaves the check to the asking Agent, which
+     * validates its own pattern on the answer it receives. Bounded and passed as
+     * TEXT only.
+     */
+    pattern?: string;
+    /** Integer-ness for `number` fields; ACP has no separate integer kind. */
+    integer?: boolean;
+    minimum?: number;
+    maximum?: number;
+    defaultValue?: string | number | boolean | string[];
+}
+/** Answer values, by field key. Mirrors core's `ChannelElicitationValue`. */
+export type InteractionValueDto = string | number | boolean | string[];
+/** Hub -> connector, then down to the authenticated human. */
+export interface InteractionRequestDto {
+    /** xacpx broker correlation id. Ephemeral; core never persists it. */
+    requestId: string;
+    kind: InteractionKindDto;
+    /**
+     * Product identity for the web UI. Optional because an interaction on an
+     * ordinary channel turn has no Conversation product row; a Direct Bot turn
+     * does. Never a hidden `brt_*` session alias — those are runtime plumbing.
+     */
+    conversation?: ConversationTurnCorrelationDto;
+    /** Absolute ms after which the interaction is no longer answerable. */
+    expiresAt: number;
+    /** Present iff `kind === "elicitation"`. */
+    elicitation?: {
+        mode: "form";
+        message: string;
+        fields: InteractionFieldDto[];
+        schemaTitle?: string;
+        /**
+         * Schema-level descriptive text, shown beside the title.
+         *
+         * Carried because the wire validator deliberately allows `message: ""`: a
+         * schema with a good title and description needs no prose. Dropping this left
+         * the relay web form with nothing at all above the fields, so an agent that
+         * carried its whole question in the schema produced a form that asked nothing.
+         *
+         * OPTIONAL and independent of `message` — either, both, or neither may be
+         * present. Bounded like the other agent-controlled strings.
+         */
+        schemaDescription?: string;
+        /**
+         * The Agent that asked, pinned to the exact turn.
+         *
+         * REQUIRED, not presentation: ACP's User Interaction Requirements oblige a
+         * client to show WHO is asking, so a human cannot mistake one agent's
+         * question for another's. A renderer must display it and must not substitute
+         * `message`/`schemaTitle` text for it — that text is agent-controlled, so
+         * mounting an identity out of it would let any agent claim any name.
+         *
+         * Dropping it on the core → relay hop is what made the relay web form show
+         * only a generic "Input needed": the trusted identity existed in core and
+         * vanished at the wire.
+         */
+        agent: {
+            name: string;
+            sessionAlias?: string;
+        };
+    };
+    /** Present iff `kind === "permission"`. Reserved; M3 does not implement it. */
+    permission?: {
+        title?: string;
+        kind?: string;
+        summary?: string;
+        availableOutcomes: string[];
+    };
+}
+/** Connector -> hub, then up to core. Carries NO responder identity. */
+export interface InteractionResponseDto {
+    requestId: string;
+    kind: InteractionKindDto;
+    action: InteractionActionDto;
+    /** Elicitation `accept` only. `null` is a valid all-optional accept. */
+    content?: Record<string, InteractionValueDto> | null;
+}
+/** Connector -> hub: WITHDRAW an still-open interaction. */
+export interface InteractionWithdrawDto {
+    /** The interaction to withdraw. Idempotent for ids that already closed. */
+    requestId: string;
 }
