@@ -310,6 +310,119 @@ If you start the hub with `xacpx-relay start --ws-port 8788`, the instance gatew
 | 8788 | Only if you opt into `--ws-port` — dedicated instance gateway | Yes, behind TLS |
 | — | `relay.db` | Never — it is a local file |
 
+## Instance Desktop (RFB/VNC) {#instance-desktop}
+
+Each online instance can optionally expose its **local graphical desktop** to the dashboard, so you can watch and control the machine itself — not just its sessions. This section is the English companion to the per-platform setup and diagnosis guide; the full reference is [`docs/desktop-rfb-setup.md`](https://github.com/gadzan/xacpx/blob/main/docs/desktop-rfb-setup.md) (Chinese) and the operators' runbook is `docs/relay-deployment.md`.
+
+### What you get, and what you don't
+
+| | Phase A |
+|---|---|
+| **Supported servers** | Any RFB 3.3 / 3.7 / 3.8 server that offers **outer VNC Auth (security type 2)** |
+| **Platforms** | Linux and Windows interactive user sessions |
+| **Viewers** | One desktop stream per instance at a time |
+| **Transport** | A **separate binary WebSocket** — framebuffer never enters the control plane, so desktop traffic can not block chat or terminal input |
+| **Ports** | None added publicly. The connector dials `127.0.0.1:<port>` on the instance; **5900 is never exposed to the internet** |
+| **Auth schemes rejected by design** | `None` (no auth), VeNCrypt/TLS-only, proprietary auth, and macOS ARD auth |
+| **Not in Phase A** | macOS ARD pre-auth (Phase B), multi-viewer, file transfer, clipboard sync, session recording |
+
+Enabling desktop advertises the `desktop.rfb.v1` capability. An instance without it simply shows no Desktop entry in the dashboard.
+
+### Enable it on the instance
+
+Desktop is opt-in per instance, in the channel-relay config the connector already uses:
+
+```json
+{
+  "channels": {
+    "relay": {
+      "enabled": true,
+      "options": {
+        "url": "wss://relay.example.com",
+        "desktop": {
+          "enabled": true,
+          "port": 5900,
+          "connectTimeoutMs": 5000,
+          "maxStreams": 1
+        }
+      }
+    }
+  }
+}
+```
+
+| Option | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | Master switch. Omit or `false` → no stream state is created at all. |
+| `port` | `5900` | Integer 1–65535. This is the port the connector **dials** on loopback — the setup guidance and error messages report exactly this value. |
+| `connectTimeoutMs` | `5000` | 250–10000. Shared by the loopback TCP dial, the banner preflight, and the hub upgrade. |
+| `maxStreams` | `1` | Concurrent desktop streams for this instance. |
+
+`host` / `hostname` / `target` are **rejected** — the target is fixed to loopback, so the connector can never become a general TCP proxy.
+
+The VNC password is entered in the dashboard per tab and kept in tab memory only: it is never written to disk, never logged, and never carried in the URL.
+
+### Windows (TightVNC)
+
+1. Install TightVNC and run the **server** in the **logged-in user session** — not as a service. A service session shows a different (empty) desktop.
+2. Authentication: set **VNC password** mode. The primary password must be set; keep "Require user authentication" off unless you also intend to type a Windows username into the dashboard.
+3. Confirm the outer security list offers **type 2 (VNC Auth)**. Servers that only offer Tight (outer type 16) are rejected — a Tight-only endpoint can negotiate sub-auth down to no-auth.
+4. Access control: use **LoopbackOnly** access control plus the Windows Firewall. `LoopbackOnly` is *access control*, not a bind-address control — binding to `0.0.0.0` with loopback-only access control is an accepted deployment, because external connections are still refused.
+5. Verify locally, then verify externally:
+
+```powershell
+netstat -ano | findstr :5900
+```
+
+Prefer `127.0.0.1:5900`. If you see `0.0.0.0:5900`, that is **not by itself a failure** — the accepted deployment is `0.0.0.0` bind + loopback-only access control + firewall. Confirm instead that 5900 is unreachable **from a second machine**.
+
+**Locked screen, UAC, and the login screen are not guaranteed.** This is a hard limitation of the Windows interactive desktop, not a bug:
+
+- After you lock the workstation, TightVNC keeps rendering but keystrokes and mouse events do not reach the lock screen. The dashboard shows a live-looking picture with no input effect.
+- UAC elevation renders on the **secure desktop**, which VNC can neither see nor drive.
+- To remote a host, it must be **already logged in**. Use platform RDP/remote management if you need the login screen.
+
+### Linux (TigerVNC / x11vnc)
+
+Standard VncAuth, and the RFB server must refuse external connections:
+
+```bash
+ss -ltnp | grep 5900
+```
+
+Prefer `127.0.0.1:5900`. An `0.0.0.0` bind is not automatically wrong, but it must come with access control/firewall and must be verified unreachable from another machine.
+
+- **TigerVNC / x11vnc** — standard VncAuth, preferred.
+- **WayVNC** — the default secure configuration is **rejected**. It must run in legacy VncAuth compatibility mode (`relax_encryption` + `allow_broken_crypto`). This is a deliberately weak transitional setup: acceptable while it stays loopback-only, unsuitable to copy into any non-loopback deployment. It also requires **WayVNC 0.10.0 or newer** (legacy DES auth landed there).
+- **GNOME Screen Sharing** (VeNCrypt v1) — unsupported in Phase A.
+
+### macOS
+
+Not supported in Phase A. Apple Screen Sharing speaks ARD auth by default, which the connector rejects with `desktop-auth-unsupported`; ARD pre-auth is Phase B and needs a separate security review. Configure a standard VncAuth endpoint if you need a desktop on macOS today.
+
+### Diagnosing a failed open
+
+Errors surface in the dashboard banner with a stable code plus the RFB server's own rejection text, and the guidance is platform-specific — follow it verbatim.
+
+| Code | Meaning | Fix |
+|---|---|---|
+| `desktop-disabled` | Desktop not enabled on the instance | Set `enabled=true`, reconnect the connector |
+| `desktop-busy` | A viewer is already attached | Close the other Desktop tab |
+| `desktop-rfb-unavailable` | Loopback port refused | VNC server not started, or configured `port` is wrong — the message names **your** configured port |
+| `desktop-not-rfb` | Port answers, but it is not RFB | `desktop.port` points at a different service |
+| `desktop-auth-unsupported` | Auth scheme not accepted | Tight-only outer 16 / VeNCrypt / None / ARD — see the platform sections above |
+| `desktop-auth-failed` | VNC server rejected the password | Re-enter the password |
+| `desktop-stream-timeout` | Tunnel or upgrade timed out | Transient; retry |
+| `desktop-instance-offline` | Instance went away | Wait for it to come back; retry |
+
+Where to look:
+
+- **Hub log** — `relay.desktop.stream.*`: `stream_active`, `stream_closed` (with reason), plus `text_frame`, `oversize_frame`, `backpressure_close`, `preattach_overflow`.
+- **Connector log** — `relay.desktop.probe_rejected` (includes the RFB server's own `detail`), `probe_ok`, `tunnel_failed`.
+- **Dashboard** — the banner shows the code plus detail; a wrong VNC password reports auth failure in the password field instead of a generic timeout.
+
+There is deliberately **no separate desktop doctor command** in Phase A. The open error is made diagnosable instead — the error code, the server's own rejection text, the platform-specific guidance, and the connector log — so no new doctor framework is introduced for this feature.
+
 ## Token & user management
 
 - **More users/instances:** run `add token` again — each call creates an isolated user. Reuse the same token on multiple instances to group them under one user.
