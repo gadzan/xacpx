@@ -1,17 +1,23 @@
 import {
   MSG,
+  RELAY_CAPABILITIES,
   RELAY_PROTOCOL_VERSION,
   TERMINAL_HUB_REQUEST_TIMEOUT_MS,
   decodeEnvelope,
   encodeEnvelope,
   errorPayload,
   normalizeCapabilities,
+  validateInteractionRequest,
+  validateInteractionWithdraw,
   type AgentMessageCompletionPayload,
   type AgentMessageDeliverPayload,
   type AgentMessageRoutePayload,
+  type ControlEventDto,
   type InstanceAgentEndpointsSyncPayload,
   type InstanceAuthPayload,
   type InstanceRegisterPayload,
+  type InteractionRequestDto,
+  type InteractionWithdrawPayload,
   type PublishedAgentEndpointDto,
   type RelayEnvelope,
   type WebAgentDirectoryEndpointDto,
@@ -19,6 +25,8 @@ import {
 import type { AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 import type { PendingCompletionRouteRow } from "../stores/pending-completion-routes.js";
+import type { InteractionRegistry } from "../interaction-registry.js";
+import { interactionResultForBrowser } from "../interaction-registry.js";
 import { createNoopRelayLogger, type RelayLogger } from "../logging.js";
 import { startHeartbeat } from "./heartbeat.js";
 
@@ -89,6 +97,17 @@ export interface InstanceGatewayDeps {
     accountId: string,
     endpoints: WebAgentDirectoryEndpointDto[],
   ) => void;
+  /**
+   * Hub-owned pending interactions (optional: interactions are simply absent
+   * without it, and the hub responds "interaction-unavailable").
+   */
+  interactions?: InteractionRegistry;
+  /**
+   * Push a control event to every browser connected for an account, for the
+   * interaction lifecycle events. Injected by `server.ts` so the connector
+   * gateway never imports the web gateway.
+   */
+  broadcastControlEvent?: (accountId: string, event: ControlEventDto) => void;
   logger?: RelayLogger;
 }
 
@@ -265,6 +284,26 @@ export class InstanceGateway {
     return this.connections.has(instanceId);
   }
 
+  /**
+   * Push a control event to every browser connected for an account.
+   *
+   * PUBLIC, not just a dep: interaction lifecycle events have to reach the
+   * browser from paths that hold the gateway but not its wiring — the HTTP app
+   * owns the registry's close listener, and the socket that opened an
+   * interaction may be long gone by the time it closes. With this as a
+   * dependency-only callback, `deps.gateway.broadcastControlEvent` was undefined
+   * on the real class, so every resolved / withdrawn / expired close was
+   * silently dropped in production while tests — which inject a capturing stub —
+   * stayed green.
+   *
+   * `instanceId` on the event is the connector's own: the dashboard subscribes to
+   * its instances and the web gateway fences on that set, so an interaction
+   * opened by one connector is delivered to the sockets watching that connector.
+   */
+  broadcastControlEvent(accountId: string, event: ControlEventDto): void {
+    this.deps.broadcastControlEvent?.(accountId, event);
+  }
+
   handleConnection(socket: GatewaySocket): void {
     let authed: { instanceId: string; accountId: string } | null = null;
     startHeartbeat(
@@ -314,6 +353,19 @@ export class InstanceGateway {
         clearTimeout(p.timer);
         this.pending.delete(id);
         p.reject(new Error("instance-offline"));
+      }
+    }
+    // Interactions this connector opened are no longer answerable: the turn that
+    // was waiting for a decision went away with the socket, so the browser must
+    // stop showing the form and the pending open must close as withdrawn. Leaving
+    // them would strand a form on screen pointing at a turn that no longer exists.
+    const interactions = this.deps.interactions;
+    if (interactions) {
+      for (const entry of interactions.listForInstance(instanceId)) {
+        // The broadcast is NOT issued here: the registry's own close listener
+        // broadcasts `interaction-closed` for every closer, including this one.
+        // Emitting it here as well would double the browser's close event.
+        interactions.close(entry.requestId, "withdrawn");
       }
     }
     this.deps.onStatusChange?.(instanceId, accountId, false);
@@ -851,6 +903,125 @@ export class InstanceGateway {
           );
         return;
       }
+      // ── Interaction transport, connector direction ──────────────────────
+      //
+      // Why these live HERE and not on the browser HTTP RPC: opening and
+      // withdrawing an interaction are the CONNECTOR's acts. The turn that owns
+      // the agent is the thing that asks the question and the thing that goes
+      // away, so the hub must hear both from the socket that owns that turn —
+      // where the identity is `authed`, not something the frame claims.
+      //
+      // The registry is wired here rather than in a handler below so the
+      // interpreter (which evaluates the answer) can be injected by the process
+      // that owns the WebSocket side, without this file knowing what one is.
+
+      if (envelope.type === MSG.interactionRequest) {
+        // Validate against the SAME validator the browser surface uses, so both
+        // ends of the transport agree on what is legal.
+        const parsed: InteractionRequestDto | null = validateInteractionRequest(envelope.payload);
+        if (!parsed) {
+          respond(errorPayload("invalid-payload", `${MSG.interactionRequest}: malformed payload`));
+          return;
+        }
+        const registry = this.deps.interactions;
+        if (!registry) {
+          // No registry means no place to hold a pending interaction: refusing
+          // beats accepting a request whose answer could never arrive.
+          respond(errorPayload("interaction-unavailable", "interaction registry is not configured"));
+          return;
+        }
+        // Identity comes from the SOCKET, never from the frame: the interaction
+        // belongs to the authenticated instance and account, and a frame that
+        // named another instance would be handing someone else's form away.
+        const instanceId = authed.instanceId;
+        const accountId = authed.accountId;
+        const chatKey = `relay:${accountId}`;
+        const requestId = parsed.requestId;
+        const now = Date.now();
+        // The window that ended before the frame arrived cannot be opened: a
+        // form nobody could legally answer would be put on screen.
+        if (parsed.expiresAt <= now) {
+          respond({ responded: false, reason: "timeout" });
+          return;
+        }
+        if (parsed.kind !== "elicitation") {
+          // The wire carries the permission kind so the transport is shared, but
+          // nothing renders it yet. Refusing up front beats leaving a turn waiting
+          // for an answer that can never arrive. This gate is on BOTH surfaces,
+          // not just the browser's: the kind is the connector's to state, so the
+          // check that refuses it belongs where the connector connects.
+          respond({ responded: false, reason: "unsupported" });
+          return;
+        }
+        const answerWindowMs = parsed.expiresAt - now;
+        registry.open({
+          requestId,
+          instanceId,
+          accountId,
+          kind: parsed.kind,
+          expiresAt: parsed.expiresAt,
+          chatKey,
+          sessionAlias: "",
+          // The window alone drives the expiry timer; the reserve is only how
+          // long the CALL stays open for a decision made in time to travel.
+          answerWindowMs,
+          timeoutMs: answerWindowMs + REQUEST_RESPONSE_RESERVE_MS,
+          ...(parsed.conversation !== undefined ? { conversation: parsed.conversation } : {}),
+          ...(parsed.elicitation !== undefined ? { elicitation: parsed.elicitation } : {}),
+          ...(parsed.permission !== undefined ? { permission: parsed.permission } : {}),
+          resolve: (decision) => respond(interactionResultForBrowser({ responded: true, response: decision }, accountId)),
+          reject: (reason) =>
+            respond({ responded: false, reason: reason === "expired" ? "timeout" : "withdrawn" }),
+        });
+        // Published AFTER registering, so a browser that receives the event
+        // finds a pending interaction to answer.
+        //
+        // `instanceId` is the AUTHENTICATED connector's — the same socket
+        // identity that opened it, never anything the frame claimed. The
+        // dashboard subscribes to its instances and the web gateway fences
+        // control-events on that set: publishing "" here drops the form in every
+        // socket that has subscribed, and leaves the store with nothing to route
+        // an answer back to.
+        this.deps.broadcastControlEvent?.(accountId, {
+          type: "interaction-opened",
+          chatKey,
+          sessionAlias: "",
+          instanceId,
+          interaction: parsed,
+        });
+        return;
+      }
+
+      if (envelope.type === MSG.interactionWithdraw) {
+        // The connector's own act, against its own interaction. The
+        // ownership below is what makes it one: a withdrawal is validated
+        // against the socket's identity, so a frame naming another instance's
+        // requestId — or another account's — is refused rather than closed.
+        const parsed: InteractionWithdrawPayload | null = validateInteractionWithdraw(envelope.payload);
+        if (!parsed) {
+          respond(errorPayload("invalid-payload", `${MSG.interactionWithdraw}: malformed payload`));
+          return;
+        }
+        const registry = this.deps.interactions;
+        if (!registry) {
+          respond(errorPayload("interaction-unavailable", "interaction registry is not configured"));
+          return;
+        }
+        const pending = registry.get(parsed.requestId);
+        if (!pending || pending.instanceId !== authed.instanceId || pending.accountId !== authed.accountId) {
+          // Already closed by a racing path, or not this connector's to close.
+          // Idempotent by contract: the goal state is "not open", which either
+          // interpretation has reached.
+          respond({ ok: true });
+          return;
+        }
+        // The registry notifies every listener, so the browser's close event is
+        // emitted for this path exactly as for an answer or an expiry.
+        registry.close(parsed.requestId, "withdrawn");
+        respond({ ok: true });
+        return;
+      }
+
       respond(
         errorPayload(
           "invalid-request",

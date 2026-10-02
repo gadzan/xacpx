@@ -1,4 +1,4 @@
-import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotSummaryDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationTargetDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, GroupDetailDto, GroupSummaryDto, GroupTopicCreateTargetDto, TopicSummaryDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, InteractionWithdrawDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotSummaryDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationTargetDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, GroupDetailDto, GroupSummaryDto, GroupTopicCreateTargetDto, TopicSummaryDto } from "./dtos.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
     readonly instanceAuth: "instance.auth";
@@ -79,6 +79,8 @@ export declare const MSG: {
     readonly terminalDetach: "instance.terminal.detach";
     readonly terminalViewerEvent: "instance.terminal.viewer-event";
     readonly terminalResourceExit: "instance.terminal.resource-exit";
+    readonly desktopPrepare: "instance.desktop.prepare";
+    readonly desktopCancel: "instance.desktop.cancel";
     readonly instanceAgentEndpointsSync: "instance.agent-endpoints.sync";
     readonly agentMessageRoute: "instance.agent-message.route";
     readonly agentMessageDeliver: "instance.agent-message.deliver";
@@ -107,6 +109,44 @@ export declare const MSG: {
     readonly runsGet: "control.runs.get";
     readonly runsList: "control.runs.list";
     readonly runsCancel: "control.runs.cancel";
+    /**
+     * Connector -> hub: OPEN one interaction. Core's broker is the only production
+     * caller (`RelayChannel.requestElicitation`), so the direction is dial-out:
+     * the connector that owns the agent turn asks the hub to put the form in front
+     * of its authenticated human. The hub validates, creates the pending
+     * interaction, broadcasts `interaction-opened`, and resolves THIS call with
+     * the human's decision — so there is no second downlink queue to reconcile.
+     *
+     * Long-lived by nature: a human interaction window is measured in minutes, so
+     * this type is exempt from the connector's 60s RPC default and bounded by the
+     * payload's own `expiresAt`.
+     */
+    readonly interactionRequest: "control.interaction.request";
+    /**
+     * Browser -> hub: ANSWER an interaction that this hub already opened. The
+     * same frame is forwarded to the still-pending `interactionRequest` call, so
+     * the answer is that call's RPC result.
+     *
+     * The authoritative responder identity is STAMPED BY THE HUB from the
+     * authenticated session before the frame reaches the connector — the browser
+     * payload carries no identity field at all, so there is nothing to forge.
+     */
+    readonly interactionRespond: "control.interaction.respond";
+    /**
+     * Connector -> hub: WITHDRAW an interaction that is still open.
+     *
+     * This is what makes an abort actually stop collecting input. The core
+     * `request.signal` fires when the agent withdraws the elicitation or the turn
+     * is disposed; without this message the connector could only stop waiting
+     * locally, and the hub would keep the pending interaction alive — leaving a
+     * form on the human's screen that accepts answers for a turn that no longer
+     * exists.
+     *
+     * Idempotent: withdrawing a requestId that is already closed is a success, so
+     * a withdrawal racing the human's own answer cannot produce an error the
+     * connector would have to interpret.
+     */
+    readonly interactionWithdraw: "control.interaction.withdraw";
 };
 export type MessageType = (typeof MSG)[keyof typeof MSG];
 export interface ErrorPayload {
@@ -530,6 +570,37 @@ export interface UploadResult {
     mimeType: string;
     size: number;
 }
+/**
+ * Opened an interaction: `InteractionRequestDto` down to the human,
+ * `InteractionResult` back up with the decision. See dtos.ts for shapes.
+ */
+export type InteractionRequestPayload = InteractionRequestDto;
+export type InteractionResponsePayload = InteractionResponseDto;
+export type InteractionWithdrawPayload = InteractionWithdrawDto;
+/**
+ * The RPC result of an opened interaction.
+ *
+ * `responded: false` means the interaction never reached a decision inside the
+ * window — the hub or connector closed it, the turn went away, or the client is
+ * too old to answer. It is deliberately distinct from a user's `cancel`, which
+ * the human chose: an infrastructure close is not a user action, and collapsing
+ * the two would report a decision nobody made.
+ */
+export interface InteractionResult {
+    responded: boolean;
+    /** Present iff `responded`. Responder identity is stamped by the HUB. */
+    response?: InteractionResponseDto;
+    /** Bounded reason when not responded; never contains answer content. */
+    reason?: "timeout" | "aborted" | "shutdown" | "unsupported" | "channel-missing";
+}
+/**
+ * Upward notice that an interaction is open, so every connected browser for the
+ * account sees it without having opened it. Mirrors how a live turn is pushed to
+ * other tabs.
+ */
+export interface InteractionOpenedNotice {
+    request: InteractionRequestDto;
+}
 export interface PromptPayload {
     chatKey: string;
     sessionAlias: string;
@@ -899,7 +970,23 @@ export interface TerminalAttachPayload {
 export declare const RELAY_CAPABILITIES: {
     readonly terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1";
     readonly terminalMultiViewV1: "terminal.multi-view.v1";
+    readonly desktopRfbV1: "desktop.rfb.v1";
+    /** This side can open an ACP form elicitation for a human and carry the
+     *  decision back. Both halves (hub and web) must declare it: a hub without it
+     *  never asks, so an old hub simply produces no interaction rather than a
+     *  frame the web cannot interpret. */
+    readonly interactionElicitationFormV1: "interaction.elicitation.form.v1";
 };
+/**
+ * Grace an interaction RPC gets beyond its own `expiresAt`.
+ *
+ * The window closes at `expiresAt`, but a decision made just inside it still has
+ * to reach the connector. Shared by the hub and the connector so both ends bound
+ * the same RPC identically: if they disagreed, one side would consider the call
+ * alive while the other had already abandoned it, and the answer would be lost
+ * with neither treating it as a failure.
+ */
+export declare const RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
 export type RelayCapability = (typeof RELAY_CAPABILITIES)[keyof typeof RELAY_CAPABILITIES];
 /** Stable browser-facing terminal error codes (i18n by code, not message text). */
 export declare const TERMINAL_ERROR_CODES: readonly ["terminal-disabled", "terminal-rmux-unavailable", "terminal-session-not-found", "terminal-session-archived", "terminal-capacity-exceeded", "terminal-viewer-capacity-exceeded", "terminal-terminating", "terminal-attachment-not-found", "terminal-generation-mismatch", "terminal-not-controller", "terminal-recovery-too-large", "terminal-protocol-error", "terminal-timeout", "instance-offline"];
@@ -1028,6 +1115,30 @@ export interface TerminalResourceExitPayload {
     reason: string;
     code?: number;
 }
+/** RFB auth surfaced to the browser. v1 serves `vnc-auth` only; `ard` is a
+ *  Phase B placeholder so connectors can report it as explicitly unsupported. */
+export type DesktopSecurityKind = "vnc-auth" | "ard";
+/** Hub → connector `instance.desktop.prepare` request. Carries stream identity
+ *  only — never a target host/port. The connector always dials its own frozen
+ *  desktop config (loopback + configured port). */
+export interface DesktopPreparePayload {
+    streamId: string;
+    /** Single-use connector ticket for the `/desktop/instance` binary upgrade. */
+    ticket: string;
+    /** Epoch ms when the ticket/stream reservation expires. */
+    expiresAt: number;
+}
+export interface DesktopPrepareResult {
+    streamId: string;
+    security: DesktopSecurityKind;
+}
+/** Hub → connector `instance.desktop.cancel` event (fire-and-forget). */
+export interface DesktopCancelPayload {
+    streamId: string;
+}
+/** Stable browser-facing desktop error codes (i18n by code, not message text). */
+export declare const DESKTOP_ERROR_CODES: readonly ["desktop-disabled", "desktop-busy", "desktop-rfb-unavailable", "desktop-not-rfb", "desktop-auth-unsupported", "desktop-stream-timeout", "desktop-instance-offline", "desktop-protocol-error"];
+export type DesktopErrorCode = (typeof DESKTOP_ERROR_CODES)[number];
 export interface InstanceAgentEndpointsSyncPayload {
     endpoints: PublishedAgentEndpointDto[];
 }

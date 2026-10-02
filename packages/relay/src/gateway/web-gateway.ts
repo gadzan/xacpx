@@ -40,6 +40,13 @@ export interface WebGatewayOptions {
     attachmentId: string;
     viewerId: string;
   }) => void;
+  /**
+   * Fired when a browser control socket closes, carrying its hub-stamped
+   * viewerId. The hub uses it to cancel that viewer's desktop streams —
+   * otherwise a disconnect mid-prepare leaves an ownerless remote-control
+   * reservation until TTL.
+   */
+  onViewerClosed?: (viewerId: string) => void;
 }
 
 export interface TerminalAttachmentBinding {
@@ -82,6 +89,7 @@ export class WebGateway {
     this.options.logger?.debug("relay.web.connected", "web client connected", { accountId });
     startHeartbeat(socket, this.options.heartbeatIntervalMs, undefined, this.options.logger);
     socket.on("close", () => {
+      const closedViewerId = this.viewerBySocket.get(socket);
       this.clearSocketAttachments(socket);
       set.delete(socket);
       this.subscriptions.delete(socket);
@@ -89,6 +97,8 @@ export class WebGateway {
       this.accountBySocket.delete(socket);
       this.attachmentsBySocket.delete(socket);
       if (set.size === 0) this.byAccount.delete(accountId);
+      // Notify AFTER local cleanup so a re-entrant cancel cannot observe stale maps.
+      if (closedViewerId) this.options.onViewerClosed?.(closedViewerId);
       this.options.logger?.debug("relay.web.disconnected", "web client disconnected", { accountId });
     });
     return viewerId;

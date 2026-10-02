@@ -107,6 +107,68 @@ describe("terminal store", () => {
     expect(store.get(key)?.terminalId).toBe("term-1");
   });
 
+  it("reopen after /ws reconnect happens exactly once per attachment, twice over", async () => {
+    // Regression: `setEventsReconnectHandler()` was assignment in the base, and
+    // became a SET of fn-identity subscribers to let Terminal and Desktop
+    // coexist. Terminal kept calling it on every openOrResume with a FRESH
+    // closure, so nothing deduplicated: each reconnect re-registered another
+    // handler, and the next reconnect ran N reopens of every attachment.
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    FakeWS.instances[0].onopen?.();
+    const store = useTerminalStore();
+    const key = terminalLocalKey("i1", "demo");
+    await openAttached(store, key, FakeWS.instances[0]);
+
+    // The reopen path re-sends `terminal-open` on the NEW socket; the old one is
+    // closed and never sees it. Count opens only: detach ordering varies with
+    // heartbeat ticks.
+    const reopens = (ws: FakeWS | undefined): number =>
+      sentMessages(ws ?? FakeWS.instances[0]).filter(
+        (m) => m !== null && typeof m === "object" && (m as { kind?: string }).kind === "terminal-open",
+      ).length;
+
+    FakeWS.instances[0].onclose?.();
+    await vi.runOnlyPendingTimersAsync();
+    const ws2 = FakeWS.instances[1];
+    ws2?.onopen?.();
+    await vi.runOnlyPendingTimersAsync();
+    // Exactly one reopen. Accumulated handlers would emit two.
+    expect(reopens(ws2)).toBe(1);
+
+    // Second reconnect: still one, not one per accumulated handler.
+    ws2!.onclose?.();
+    await vi.runOnlyPendingTimersAsync();
+    const ws3 = FakeWS.instances[2];
+    ws3?.onopen?.();
+    await vi.runOnlyPendingTimersAsync();
+    expect(reopens(ws3)).toBe(1);
+  });
+
+  it("two terminals reopen once each on the first reconnect", async () => {
+    // The accumulation surface the moment there is more than one attachment:
+    // with N handlers registered, N attachments => N*N reopens.
+    connectEvents((e) => { void useTerminalStore().applyEvent(e); });
+    FakeWS.instances[0].onopen?.();
+    const store = useTerminalStore();
+    await openAttached(store, terminalLocalKey("i1", "demo"), FakeWS.instances[0],
+      { terminalId: "t1", attachmentId: "a1" });
+    await openAttached(store, terminalLocalKey("i2", "demo"), FakeWS.instances[0],
+      { terminalId: "t2", attachmentId: "a2" });
+
+    const reopens = (ws: FakeWS | undefined): number =>
+      sentMessages(ws ?? FakeWS.instances[0]).filter(
+        (m) => m !== null && typeof m === "object" && (m as { kind?: string }).kind === "terminal-open",
+      ).length;
+
+    FakeWS.instances[0].onclose?.();
+    await vi.runOnlyPendingTimersAsync();
+    const ws2 = FakeWS.instances[1];
+    ws2?.onopen?.();
+    await vi.runOnlyPendingTimersAsync();
+    // Two attachments => two reopens. Accumulated handlers would give 4.
+    expect(reopens(ws2)).toBe(2);
+  });
+
   it("sendInput/sendResize only when controller; role-changed updates both sides", async () => {
     connectEvents((e) => { void useTerminalStore().applyEvent(e); });
     FakeWS.instances[0].onopen?.();

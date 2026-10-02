@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import {
   decodeWindowsDescendantsResponse,
@@ -15,6 +15,7 @@ import {
   WINDOWS_TREE_WORKER_SCRIPT,
   WINDOWS_DESCENDANTS_WORKER_SCRIPT,
   type BatchTarget,
+  type WindowsProcessIdentity,
   terminateWindowsDescendantsOf,
 } from "../../../src/process/windows-process-tree";
 import { parseCanonicalFileTime } from "../../../src/process/windows-process-identity";
@@ -112,14 +113,84 @@ test("token snapshots and residual termination reject malformed worker responses
 
 const windowsTest = process.platform === "win32" ? test : test.skip;
 
-test("encoded Windows worker command line stays below the CreateProcess ceiling", () => {
+/**
+ * `Win32_Process.ExecutablePath` for a live pid — the CREATE-TIME path recorded
+ * in the process parameters, i.e. the exact string the worker compares against
+ * the kernel-resolved image. Separate from `handleImagePath` on purpose: a
+ * fixture must prove the two SOURCES disagree, not compare one value with itself.
+ */
+async function cimExecutablePath(pid: number): Promise<string> {
+  const stdout = spawnSync("powershell.exe", [
+    "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+    `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').ExecutablePath`,
+  ], { encoding: "utf8" });
+  if (stdout.status !== 0) throw new Error(`CIM lookup failed for pid ${pid}: ${stdout.stderr}`);
+  return stdout.stdout.trim();
+}
+
+/**
+ * The image path as the kernel resolves it (QueryFullProcessImageName) — the
+ * side of the comparison the worker's `Image()` returns. Deliberately separate
+ * from `queryWindowsProcessIdentity` so a fixture cannot "prove" divergence by
+ * comparing a value against itself.
+ */
+async function handleImagePath(pid: number): Promise<string> {
+  const probe = await probeWindowsProcessIdentity(pid);
+  if (probe.status !== "found") throw new Error(`pid ${pid} is not probeable`);
+  return probe.identity.executablePath;
+}
+
+/**
+ * Absolute path of the node.exe this host resolves bare "node" to. The kernel
+ * may be Bun (process.execPath is bun.exe), so the junction target must be
+ * resolved through a real short-lived node, not assumed.
+ */
+async function realPathOfNode(): Promise<string> {
+  const script = "process.stdout.write(process.execPath)";
+  const stdout = spawnSync("node", ["-e", script], { encoding: "utf8" });
+  if (stdout.status !== 0) throw new Error(`node is unavailable: ${stdout.stderr}`);
+  return stdout.stdout.trim();
+}
+
+test("tree worker compares ancestry ordering against the SAME snapshot, never the canonicalized kernel value", () => {
+  // The child window and the parent window come from ONE CIM snapshot, so the
+  // parent side of the ordering check must stay that snapshot value. After
+  // OpenVerified succeeds the traversal node holds the kernel FILETIME, and a
+  // CIM-quantized child — up to 9 ticks either side of the kernel value, since
+  // the rounding direction is not guaranteed — measured against it can read as
+  // "child predates parent" even when the child was created later.
+  // Reading the parent from the traversal node would abort every legitimate
+  // parent/child pair created within the same 1µs CIM bucket as
+  // rootOutcome: query-failed.
+  const orderingChecks = WINDOWS_TREE_WORKER_SCRIPT.match(
+    /creationDate.{0,120}?predates parent/g,
+  ) ?? [];
+  // Both the initial traversal and the one append pass order their children.
+  expect(orderingChecks).toHaveLength(2);
+  for (const check of orderingChecks) {
+    // The parent side is $byPid[...] — the snapshot row — never the traversal node.
+    expect(check).toContain("$byPid[$p.parentPid].creationDate");
+    expect(check).not.toContain("$parent.creationDate");
+  }
+
+  // The canonicalizing write-back must still be present: it is what makes the
+  // spooled residual replayable under the exact handle contract.
+  expect(WINDOWS_TREE_WORKER_SCRIPT).toContain("$p.creationDate=$check.creation");
+});
+
+test("encoded Windows worker command lines stay below the CreateProcess ceiling", () => {
   // `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand <encoded>`
   // is 67 fixed chars plus the base64 payload. The hard ceiling is 32767 chars
   // (CreateProcessW); this asserts a slightly tighter budget so future script
-  // growth fails loudly instead of silently truncating. The current payload is
-  // ~29 KB so headroom is intentionally small.
-  const encoded = Buffer.from(WINDOWS_TREE_WORKER_SCRIPT, "utf16le").toString("base64");
-  expect(67 + encoded.length).toBeLessThan(32_500);
+  // growth fails loudly instead of silently truncating. The current payloads are
+  // ~31 KB (tree) and ~25 KB (descendants) so headroom is intentionally small.
+  for (const [name, script] of [
+    ["tree", WINDOWS_TREE_WORKER_SCRIPT],
+    ["descendants", WINDOWS_DESCENDANTS_WORKER_SCRIPT],
+  ] as const) {
+    const encoded = Buffer.from(script, "utf16le").toString("base64");
+    expect(67 + encoded.length, `${name} worker script encoded payload`).toBeLessThan(32_500);
+  }
 });
 
 // Regression: the real worker must actually run on Windows. Piping the script
@@ -292,8 +363,32 @@ windowsTest("real worker converges a three-level descendant tree and keeps the p
     expect(() => process.kill(childPid, 0)).not.toThrow();
     expect(() => process.kill(grandchildPid, 0)).not.toThrow();
 
-    const result = await terminateWindowsDescendantsOf(rootProcess.pid!);
-    expect(result.verified).toBe(true);
+    // The pid files are written by the processes themselves, so they can be
+    // readable before CIM has published the row — and OpenProcess on a process
+    // whose CIM row is still settling can return access-denied. Wait for CIM
+    // visibility of BOTH descendants before starting the kill transaction,
+    // otherwise this test measures process-creation timing, not the worker.
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const [childCim, grandchildCim] = await Promise.all([
+        cimExecutablePath(childPid),
+        cimExecutablePath(grandchildPid),
+      ]);
+      if (childCim && grandchildCim) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    // OpenProcess with the worker's minimal mask
+    // (SYNCHRONIZE | QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, 0x00101001)
+    // on a very recently created process can transiently return
+    // ERROR_ACCESS_DENIED on Windows, which the worker correctly fails closed
+    // on. Retry the attempt until it converges instead of asserting on the OS's
+    // willingness to hand out a handle.
+    let result: Awaited<ReturnType<typeof terminateWindowsDescendantsOf>> | null = null;
+    for (let attempt = 0; attempt < 10 && result?.verified !== true; attempt += 1) {
+      result = await terminateWindowsDescendantsOf(rootProcess.pid!);
+      if (result?.verified !== true) await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    expect(result?.verified).toBe(true);
     expect(() => process.kill(rootProcess.pid!, 0)).not.toThrow();
     let childGone = false;
     let grandchildGone = false;
@@ -685,3 +780,288 @@ windowsTest("real descendants-of with the CORRECT parent fingerprint converges t
     try { victim.kill("SIGKILL"); } catch {}
   }
 }, 30_000);
+
+// Regression: a CIM-derived child's `Win32_Process.ExecutablePath` is the
+// CREATE-TIME path recorded in the process parameters, while the worker's
+// `Image()` resolves the image file object. Under a symlinked launcher shim
+// (fnm multishell, volta, nvm-windows) these are different strings for the
+// SAME process. OpenVerified used to compare them, condemned the child
+// 'skipped-replaced', and aborted the whole batch — which made Windows
+// daemon stop impossible on such hosts. This fixture manufactures the
+// divergence deterministically (a junction needs no elevation) so the
+// contract holds on ANY Windows host, not only on fnm ones.
+windowsTest("real worker kills a child whose CIM image path differs from the handle image path", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "cim-image-mismatch-"));
+  // Resolve the real node.exe the way the rest of this file does (bare "node"
+  // through PATH) so the junction points at the directory that actually holds
+  // it, not at this Bun kernel's own directory.
+  const realNode = await realPathOfNode();
+  const link = join(dir, "shim");
+  const shimExecutable = join(link, process.platform === "win32" ? "node.exe" : "node");
+  const childPidFile = join(dir, "child.pid");
+  // The ROOT is spawned normally and spawns the child through the junction, so
+  // only the child carries a divergent image path — the shape of the
+  // fnm-launched bridge child sitting under the daemon root.
+  const rootScript = [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    `const child = spawn(${JSON.stringify(shimExecutable)}, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });`,
+    `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n");
+  // The junction must exist BEFORE the root spawns its child through it.
+  await symlink(dirname(realNode), link, "junction");
+  const rootProcess = spawn("node", ["-e", rootScript], { stdio: "ignore", windowsHide: true });
+  // Declared outside try so the finally can reap the junction-launched child
+  // even when a precondition/assertion fails first: the parent's death does not
+  // guarantee this child's exit, and it would otherwise leak an infinite
+  // setInterval onto the runner.
+  let childPid = 0;
+  try {
+    for (let attempt = 0; attempt < 200 && !childPid; attempt += 1) {
+      try {
+        childPid = Number.parseInt(await readFile(childPidFile, "utf8"), 10) || 0;
+      } catch { /* not written yet */ }
+      if (!childPid) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(childPid).toBeGreaterThan(0);
+
+    // CIM visibility lags spawn. queryWindowsProcessIdentity can already
+    // succeed (handle-derived) while the CIM row still has no commandLine, so
+    // polling for a non-null identity is NOT enough — poll for the field the
+    // test actually depends on.
+    let childIdentity: WindowsProcessIdentity | null = null;
+    let rootIdentity: WindowsProcessIdentity | null = null;
+    for (let attempt = 0; attempt < 100 && (!childIdentity?.commandLine || !rootIdentity); attempt += 1) {
+      if (!childIdentity?.commandLine) childIdentity = await queryWindowsProcessIdentity(childPid);
+      if (!rootIdentity) rootIdentity = await queryWindowsProcessIdentity(rootProcess.pid!);
+      if (!childIdentity?.commandLine || !rootIdentity) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(childIdentity?.commandLine).toBeTruthy();
+    expect(rootIdentity).not.toBeNull();
+
+    // Precondition: the two path SOURCES really disagree for the child. Without
+    // this the test would pass trivially even if the fixture silently failed to
+    // create a divergence (e.g. a future Node that normalizes the image path).
+    // CIM ExecutablePath is the create-time path (through the junction);
+    // handleImagePath is the kernel-resolved image file. They MUST differ.
+    const childCimPath = await cimExecutablePath(childPid);
+    expect(childCimPath.toLowerCase()).not.toBe((await handleImagePath(childPid)).toLowerCase());
+    // And identity must still report the commandLine — the image-path gate that
+    // used to drop it under a symlinked launcher is gone. The first token is the
+    // executable we launched, possibly double-quoted when the path contains a
+    // space, so compare unquoted.
+    const argv0 = childIdentity!.commandLine!.trim().replace(/^"(.*)"$/, "$1");
+    expect(argv0.toLowerCase().startsWith(shimExecutable.toLowerCase())).toBe(true);
+
+    const result = await terminateWindowsProcessTree({
+      pid: rootProcess.pid!,
+      creationDate: rootIdentity!.creationDate,
+    }, { workerDeadlineMs: null });
+
+    expect(result.rootOutcome).toBe("killed");
+    // The mismatched child converges instead of aborting the whole batch with
+    // rootOutcome query-failed — the exact regression this pins.
+    const childOutcome = result.outcomes.find((item) => item.target.pid === childPid);
+    expect(childOutcome).toBeDefined();
+    expect(["killed", "already-exited"]).toContain(childOutcome!.outcome);
+
+    for (const pid of [rootProcess.pid!, childPid]) {
+      let gone = false;
+      for (let attempt = 0; attempt < 200 && !gone; attempt += 1) {
+        try { process.kill(pid, 0); } catch { gone = true; }
+        if (!gone) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(gone).toBe(true);
+    }
+  } finally {
+    if (childPid) { try { process.kill(childPid, "SIGKILL"); } catch {} }
+    try { rootProcess.kill("SIGKILL"); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 60_000);
+
+// Same defect class, second stage: the descendants worker reports a killed
+// descendant's identity, and worker-eof spools every unsafe outcome/leftover as
+// a durable residual. The reaper then feeds that residual's executablePath back
+// to terminateWindowsProcessTree as a strictly-compared ROOT fingerprint
+// ($cim=$false). If the descendants worker reports the CIM create-time alias
+// instead of the handle-derived image, the reaper condemns the record
+// 'skipped-replaced' forever and the fence can never discharge. Pin that the
+// reported image is the RESOLVED one.
+windowsTest("real descendants worker reports the resolved image, not the CIM alias", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "desc-image-canonical-"));
+  const realNode = await realPathOfNode();
+  const link = join(dir, "shim");
+  const shimExecutable = join(link, process.platform === "win32" ? "node.exe" : "node");
+  const childPidFile = join(dir, "child.pid");
+  // Root spawns its child through the junction: the child's CIM ExecutablePath
+  // is the alias, its handle image is the real file. terminate-descendants-of
+  // kills it (parent stays alive) and must report the RESOLVED path.
+  const rootScript = [
+    "const { spawn } = require('node:child_process');",
+    "const fs = require('node:fs');",
+    `const child = spawn(${JSON.stringify(shimExecutable)}, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });`,
+    `fs.writeFileSync(${JSON.stringify(childPidFile)}, String(child.pid));`,
+    "setInterval(() => {}, 1000);",
+  ].join("\n");
+  await symlink(dirname(realNode), link, "junction");
+  const rootProcess = spawn("node", ["-e", rootScript], { stdio: "ignore", windowsHide: true });
+  // Outside try so the finally can reap the junction-launched child even when a
+  // precondition fails first (the parent's death does not guarantee its exit).
+  let childPid = 0;
+  try {
+    for (let attempt = 0; attempt < 200 && !childPid; attempt += 1) {
+      try {
+        childPid = Number.parseInt(await readFile(childPidFile, "utf8"), 10) || 0;
+      } catch { /* not written yet */ }
+      if (!childPid) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(childPid).toBeGreaterThan(0);
+
+    // probeWindowsProcessIdentity returns an OBJECT for every state
+    // ('found' | 'missing' | 'unavailable'), so a plain truthiness check ends the
+    // loop on the first probe even when it is unusable. Retry on the STATUS.
+    let rootProbe: Awaited<ReturnType<typeof probeWindowsProcessIdentity>> | null = null;
+    for (let attempt = 0; attempt < 100 && rootProbe?.status !== "found"; attempt += 1) {
+      rootProbe = await probeWindowsProcessIdentity(rootProcess.pid!);
+      if (rootProbe?.status !== "found") await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    expect(rootProbe?.status).toBe("found");
+    if (rootProbe?.status !== "found") return;
+
+    // Precondition: the child's two path sources really disagree, so the
+    // assertion below is meaningful rather than trivially true.
+    const childCimPath = await cimExecutablePath(childPid);
+    const childQfpi = await handleImagePath(childPid);
+    expect(childCimPath.toLowerCase()).not.toBe(childQfpi.toLowerCase());
+
+    const result = await terminateWindowsDescendantsOf(rootProcess.pid!, {
+      expectedParentCreationDate: rootProbe.identity.creationDate,
+      workerDeadlineMs: null,
+    });
+
+    expect(result.verified).toBe(true);
+    const childOutcome = result.outcomes.find((item) => item.pid === childPid);
+    expect(childOutcome).toBeDefined();
+    expect(["killed", "already-exited"]).toContain(childOutcome!.outcome);
+    // The durable-evidence field must be the resolved image, never the alias:
+    // this exact string becomes a reaper root fingerprint later.
+    expect(childOutcome!.executablePath).toBe(childQfpi);
+    expect(childOutcome!.executablePath).not.toBe(childCimPath);
+    // The parent survives — this action never kills its root.
+    expect(() => process.kill(rootProcess.pid!, 0)).not.toThrow();
+  } finally {
+    if (childPid) { try { process.kill(childPid, "SIGKILL"); } catch {} }
+    try { rootProcess.kill("SIGKILL"); } catch {}
+    await rm(dir, { recursive: true, force: true });
+  }
+}, 60_000);
+
+// The reaper replays a residual whose fingerprint was only ever observable
+// through CIM. Such a creationDate is quantized to 6-digit microseconds and
+// differs from the kernel's FILETIME by 1-9 ticks, so the tree worker must
+// accept that tolerance for a CIM-sourced ROOT — while still refusing a
+// genuinely different process. This pins the safety boundary directly in the
+// PowerShell worker rather than at a mocked seam.
+windowsTest("real worker applies the CIM creation tolerance to a CIM-sourced root and still refuses a replaced one", async () => {
+  // Each assertion needs its OWN process: a successful tree kill terminates it,
+  // and a second call would then observe 'already-exited' rather than the
+  // outcome under test.
+  const settled = async (target: ReturnType<typeof spawn>) => {
+    let probe: Awaited<ReturnType<typeof probeWindowsProcessIdentity>> | null = null;
+    for (let attempt = 0; attempt < 100 && probe?.status !== "found"; attempt += 1) {
+      probe = await probeWindowsProcessIdentity(target.pid!);
+      if (probe?.status !== "found") await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return probe;
+  };
+  const spawnVictim = () => spawn("node", ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true });
+
+  // A CIM-sourced root 5 ticks off the kernel value must still be killed.
+  const toleratedVictim = spawnVictim();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const probe = await settled(toleratedVictim);
+    expect(probe?.status).toBe("found");
+    if (probe?.status !== "found") return;
+    const result = await terminateWindowsProcessTree({
+      pid: toleratedVictim.pid!,
+      creationDate: (BigInt(probe.identity.creationDate) - 5n).toString(),
+      fingerprintSource: "cim",
+    });
+    expect(result.rootOutcome).toBe("killed");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(() => process.kill(toleratedVictim.pid!, 0)).toThrow();
+  } finally {
+    try { toleratedVictim.kill("SIGKILL"); } catch {}
+  }
+
+  // The very same offset WITHOUT the CIM provenance is a replaced pid and must be
+  // refused — the exact compare is what makes pid reuse detectable.
+  const refusedVictim = spawnVictim();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const probe = await settled(refusedVictim);
+    expect(probe?.status).toBe("found");
+    if (probe?.status !== "found") return;
+    const refused = await terminateWindowsProcessTree({
+      pid: refusedVictim.pid!,
+      creationDate: (BigInt(probe.identity.creationDate) - 5n).toString(),
+    });
+    expect(refused.rootOutcome).toBe("skipped-replaced");
+    // The innocent process survives — a mismatched root kill must not fire.
+    expect(() => process.kill(refusedVictim.pid!, 0)).not.toThrow();
+  } finally {
+    try { refusedVictim.kill("SIGKILL"); } catch {}
+  }
+}, 60_000);
+
+test("descendants decoder rejects a malformed creationDate instead of parsing it later", () => {
+  // The merge compares creation times with BigInt(), so an unchecked string from
+  // a corrupt worker payload would throw there instead of failing closed here.
+  const payload = {
+    verified: false,
+    outcomes: [{ pid: 5001, outcome: "access-denied", creationDate: "not-a-filetime", commandLine: "x", executablePath: "C:\\x.exe" }],
+    leftover: [],
+  };
+  expect(decodeWindowsDescendantsResponse(payload, 4242)).toBeNull();
+});
+
+test("descendants decoder rejects a malformed creationDate on a leftover too", () => {
+  const payload = {
+    verified: false,
+    outcomes: [],
+    leftover: [{ pid: 5001, parentPid: 4242, creationDate: "", commandLine: "x", executablePath: "C:\\x.exe" }],
+  };
+  // An empty creationDate means "absent", which is legal.
+  expect(decodeWindowsDescendantsResponse(payload, 4242)?.leftover[0]?.creationDate).toBeNull();
+
+  const garbage = {
+    verified: false,
+    outcomes: [],
+    leftover: [{ pid: 5001, parentPid: 4242, creationDate: "garbage", commandLine: "x", executablePath: "C:\\x.exe" }],
+  };
+  expect(decodeWindowsDescendantsResponse(garbage, 4242)).toBeNull();
+});
+
+test("descendants decoder rejects a malformed fingerprintSource", () => {
+  // A corrupt provenance must fail closed. Treating it as absent would classify
+  // the record as CIM, which REPLACES the exact handle comparison with the wider
+  // replay contract (±9 ticks, no path equality).
+  const payload = {
+    verified: false,
+    outcomes: [{ pid: 5001, outcome: "access-denied", creationDate: "133830000000000000", commandLine: "x", executablePath: "C:\\x.exe", fingerprintSource: "bogus" }],
+    leftover: [],
+  };
+  expect(decodeWindowsDescendantsResponse(payload, 4242)).toBeNull();
+});
+
+test("descendants decoder rejects a malformed fingerprintSource on a leftover too", () => {
+  const payload = {
+    verified: false,
+    outcomes: [],
+    leftover: [{ pid: 5001, parentPid: 4242, creationDate: "133830000000000000", commandLine: "x", executablePath: "C:\\x.exe", fingerprintSource: "bogus" }],
+  };
+  expect(decodeWindowsDescendantsResponse(payload, 4242)).toBeNull();
+});

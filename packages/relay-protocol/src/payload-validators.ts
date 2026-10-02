@@ -20,6 +20,8 @@ import {
   type ConversationPromptPayload,
   type ConversationsGetPayload,
   type ConversationsListPayload,
+  type DesktopCancelPayload,
+  type DesktopPreparePayload,
   type GroupsCreatePayload,
   type GroupsDeletePayload,
   type GroupsGetPayload,
@@ -46,6 +48,9 @@ import {
   type GitPushPayload,
   type GitStatusPayload,
   type GitWorktreeCreatePayload,
+  type InteractionRequestPayload,
+  type InteractionResponsePayload,
+  type InteractionWithdrawPayload,
   type OrchestrationCancelPayload,
   type OrchestrationGetPayload,
   type PromptCancelPayload,
@@ -90,6 +95,8 @@ import {
 } from "./messages.js";
 import {
   MAX_BOT_ID_LENGTH,
+  MAX_DESKTOP_STREAM_ID_LENGTH,
+  MAX_DESKTOP_TICKET_LENGTH,
   MAX_GROUP_TARGET_MEMBERS,
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_COLS,
@@ -127,6 +134,17 @@ const optArr = (v: unknown): boolean => v === undefined || Array.isArray(v);
 const isStrArr = (v: unknown): boolean => Array.isArray(v) && v.every(isStr);
 const optStrOrNull = (v: unknown): boolean => v === undefined || v === null || typeof v === "string";
 const optBoolOrNull = (v: unknown): boolean => v === undefined || v === null || typeof v === "boolean";
+
+/**
+ * An optional product id: absent, or a non-empty bounded string.
+ *
+ * Product correlation ids are optional (the opener may know them or not), but an
+ * EMPTY string is not the same as absent — "" would compare equal to another
+ * "" and silently satisfy a join that should not match. So a present value must
+ * be a real id.
+ */
+const optProductId = (v: unknown): boolean =>
+  v === undefined || (typeof v === "string" && v.length > 0 && v.length <= 128);
 
 // --- session / agent / workspace ---
 const validateSessionsList: Validator<SessionsListPayload> = (p) => {
@@ -377,6 +395,24 @@ const validateTerminalTerminate: Validator<TerminalTerminatePayload> = (p) => {
     ? (o as unknown as TerminalTerminatePayload)
     : null;
 };
+const validateDesktopPrepare: Validator<DesktopPreparePayload> = (p) => {
+  const o = fields(p);
+  return o
+    && isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH)
+    && isBoundedStr(o.ticket, MAX_DESKTOP_TICKET_LENGTH)
+    && isNonNegInt(o.expiresAt)
+    && o.host === undefined
+    && o.port === undefined
+    && o.target === undefined
+    ? (o as unknown as DesktopPreparePayload)
+    : null;
+};
+const validateDesktopCancelEvent: Validator<DesktopCancelPayload> = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH)
+    ? (o as unknown as DesktopCancelPayload)
+    : null;
+};
 const validateUpload: Validator<UploadPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.filename) && isStr(o.content) && isStr(o.mimeType) ? (o as unknown as UploadPayload) : null;
@@ -538,6 +574,289 @@ const validateRunsCancel: Validator<RunsCancelPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? (o as unknown as RunsCancelPayload) : null;
 };
+
+/* --- relay interaction transport (shared by permission + elicitation) --- */
+
+/** Optional present-tense object field: absent or a plain object. */
+const optObj = (v: unknown): boolean => v === undefined || isObj(v);
+
+/** A plausible wall-clock `expiresAt`: a positive finite number, not NaN/Infinity. */
+const isTimestamp = (v: unknown): boolean =>
+  typeof v === "number" && Number.isFinite(v) && v > 0;
+
+const INTERACTION_KINDS = ["permission", "elicitation"] as const;
+const INTERACTION_ACTIONS = [
+  "accept",
+  "decline",
+  "cancel",
+  "allow_once",
+  "allow_always",
+  "reject_once",
+  "reject_always",
+] as const;
+const FIELD_KINDS = ["text", "single-select", "number", "boolean", "multi-select"] as const;
+
+/**
+ * One normalized form field.
+ *
+ * The field's own bounds are checked here so a hub cannot forward a shape core
+ * never produced (e.g. a 100k-char title, or a select with a million options).
+ * An out-of-range field invalidates the whole request: a partially-validated
+ * form would render a question the agent did not ask.
+ *
+ * The wire's copy of core's normalized-form bounds, and why it needs its own
+ * table below: `relayFieldsFrom()` is contracted to copy the form core already
+ * normalized and bounded, field for field. That makes core's
+ * `ELICITATION_SCHEMA_LIMITS` the authority on what a LEGAL form looks like, and
+ * this module must accept all of it — a stricter number here rejects a form core
+ * accepted, which turns a legal elicitation into a transport failure rather than
+ * a UI difference. A looser number is also wrong: the validator's own claim is
+ * that it refuses shapes "core never produced", and a bound wider than core's
+ * cannot keep that claim.
+ *
+ * Both failures have already happened. `key` was capped at 64 against core's 128,
+ * so a legal 80-character key made the whole request unopenable; and
+ * `schemaTitle` had no length check at all while the section comment implied one.
+ *
+ * `relay-protocol` does not import core's constants, so these values must be kept
+ * in sync by hand — which is why the boundary tests below assert that every core
+ * MAXIMUM is accepted and every core maximum + 1 is refused. A drift there is red
+ * instead of an unexplained cancel in production.
+ */
+export const INTERACTION_WIRE_LIMITS = {
+  /** Field key. Core: `maxFieldKeyLength`. */
+  maxFieldKey: 128,
+  /** Field title, and the schema-level title reuses the same bound. */
+  maxTitle: 256,
+  /** Field and option description. Core: `maxFieldDescriptionLength`. */
+  maxDescription: 1000,
+  /** Fields in one form. Core: `maxFields`. */
+  maxFields: 20,
+  /** Options in one select. Core: `maxOptionsPerField`. */
+  maxOptions: 100,
+  /** Option value and label. Core: `maxOptionValueLength` / `maxOptionLabelLength`. */
+  maxOptionText: 256,
+  /** A string default, and each item of an array default. Core: `maxDefaultValueLength`. */
+  maxDefaultText: 256,
+  /** The pattern, carried as text and never compiled. Core's own bound. */
+  maxPattern: 512,
+  /** A `format` name: open string, bounded. Core: `maxFormatLength`. */
+  maxFormat: 64,
+  /** The schema-level description. Core: `maxFieldDescriptionLength`. */
+  maxSchemaDescription: 1000,
+  /** The prose message. Core carries this separately from the schema metadata. */
+  maxMessage: 8000,
+} as const;
+
+function validInteractionField(v: unknown): boolean {
+  if (!isObj(v)) return false;
+  const kind = v.kind;
+  if (typeof kind !== "string" || !(FIELD_KINDS as readonly string[]).includes(kind)) return false;
+  // The key identifies the field to core, which accepts up to 128 characters.
+  if (!isBoundedStr(v.key, INTERACTION_WIRE_LIMITS.maxFieldKey)) return false;
+  if (!isBoundedStr(v.title, INTERACTION_WIRE_LIMITS.maxTitle)) return false;
+  if (typeof v.required !== "boolean") return false;
+  if (!optStrOrNull(v.description)) return false;
+  if (typeof v.description === "string" && v.description.length > INTERACTION_WIRE_LIMITS.maxDescription) {
+    return false;
+  }
+  if (!optNum(v.minItems) || !optNum(v.maxItems)) return false;
+  if (!optNum(v.minLength) || !optNum(v.maxLength)) return false;
+  // An open string, bounded. Not an enum: core is the authority on which format
+  // names exist, and a renderer ignores the ones it does not know.
+  if (v.format !== undefined && !isBoundedStr(v.format, INTERACTION_WIRE_LIMITS.maxFormat)) return false;
+  // A regex is accepted only as bounded text. Never compiled here: an unbounded or
+  // pathological pattern would turn validation into the attacker's work.
+  if (v.pattern !== undefined && !isBoundedStr(v.pattern, INTERACTION_WIRE_LIMITS.maxPattern)) return false;
+  if (!optBoolOrNull(v.integer)) return false;
+  if (!optNum(v.minimum) || !optNum(v.maximum)) return false;
+  const isSelect = kind === "single-select" || kind === "multi-select";
+  if (isSelect) {
+    const options = v.options;
+    if (!Array.isArray(options) || options.length === 0 || options.length > INTERACTION_WIRE_LIMITS.maxOptions) {
+      return false;
+    }
+    for (const option of options) {
+      if (!isObj(option)) return false;
+      // `value` is the correlation identity core validates; `label` is
+      // agent-controlled display text. Both are bounded.
+      if (!isBoundedStr(option.value, INTERACTION_WIRE_LIMITS.maxOptionText)) return false;
+      if (!isBoundedStr(option.label, INTERACTION_WIRE_LIMITS.maxOptionText)) return false;
+      if (!optStrOrNull(option.description)) return false;
+      if (
+        typeof option.description === "string"
+        && option.description.length > INTERACTION_WIRE_LIMITS.maxDescription
+      ) {
+        return false;
+      }
+    }
+  } else if (v.options !== undefined) {
+    // A non-select kind must not carry options: that is a shape core would not
+    // emit, and rendering it would invent a choice the agent never offered.
+    return false;
+  }
+  if (v.defaultValue !== undefined) {
+    const d = v.defaultValue;
+    const scalar = typeof d === "string" || typeof d === "number" || typeof d === "boolean";
+    // Narrowed into a new binding rather than reused: `isStrArr` is a plain
+    // boolean predicate, so it narrows nothing and `d.some` would not typecheck.
+    const items = Array.isArray(d) ? d : null;
+    const legalArray = items !== null && items.every((item) => typeof item === "string");
+    if (!scalar && !legalArray) return false;
+    // A default is core-side pre-fill that core itself would accept, so it must
+    // not be an unbounded blob either. The bound is core's, and it is PER STRING:
+    // checking only the total length let a two-item array of 1000-char strings
+    // through a 256-per-item rule.
+    if (typeof d === "string" && d.length > INTERACTION_WIRE_LIMITS.maxDefaultText) return false;
+    if (legalArray && items.some((item) => (item as string).length > INTERACTION_WIRE_LIMITS.maxDefaultText)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * The opened-interaction request.
+ *
+ * Requires the kind's own payload: an `elicitation` request with no
+ * `elicitation` block, or a `permission` request with no `permission` block, is
+ * rejected rather than forwarded to a renderer that has nothing to render.
+ */
+export const validateInteractionRequest: Validator<InteractionRequestPayload> = (p) => {
+  const o = fields(p);
+  if (!o) return null;
+  if (!isBoundedStr(o.requestId, 128)) return null;
+  const kind = o.kind;
+  if (typeof kind !== "string" || !(INTERACTION_KINDS as readonly string[]).includes(kind)) return null;
+  if (!isTimestamp(o.expiresAt)) return null;
+  if (!optObj(o.conversation)) return null;
+  if (o.conversation !== undefined) {
+    const c = o.conversation as Record<string, unknown>;
+    // Product identity only. A hidden `brt_*` alias must never appear here.
+    if (!isBoundedStr(c.conversationId, 128) || c.conversationId === "") return null;
+    if (!isBoundedStr(c.topicId, 128) || c.topicId === "") return null;
+    // The opener may know these or not: a hub-sourced frame does, a
+    // connector-opened turn does not. Present-but-empty is a fabrication, so a
+    // value that IS present must be a real id.
+    if (!optProductId(c.botId)) return null;
+    if (!optProductId(c.runId)) return null;
+    if (!optProductId(c.memberTurnId)) return null;
+    if (!optProductId(c.promptRequestId)) return null;
+    for (const value of Object.values(c)) {
+      if (typeof value === "string" && value.startsWith("brt_")) return null;
+    }
+  }
+  if (kind === "elicitation") {
+    const e = o.elicitation;
+    if (!isObj(e)) return null;
+    const elicitation = e as Record<string, unknown>;
+    if (elicitation.mode !== "form") return null;
+    // An empty message is allowed: a schema with a good title needs no prose.
+    if (!optStrOrNull(elicitation.message)) return null;
+    if (
+      typeof elicitation.message === "string"
+      && elicitation.message.length > INTERACTION_WIRE_LIMITS.maxMessage
+    ) {
+      return null;
+    }
+    if (!optStrOrNull(elicitation.schemaTitle)) return null;
+    if (typeof elicitation.schemaTitle === "string" && elicitation.schemaTitle.length > INTERACTION_WIRE_LIMITS.maxTitle) {
+      return null;
+    }
+    // The schema-level description rides with the title, and is bounded like it.
+    // An empty `message` is legal precisely so a schema can carry its whole
+    // question, so refusing the description here would strand a legal form.
+    if (!optStrOrNull(elicitation.schemaDescription)) return null;
+    if (
+      typeof elicitation.schemaDescription === "string"
+      && elicitation.schemaDescription.length > INTERACTION_WIRE_LIMITS.maxSchemaDescription
+    ) {
+      return null;
+    }
+    // The asking Agent. REQUIRED and bounded: it is an identity, not display
+    // text, and a client must be able to show who is asking. An absent or empty
+    // name closes the request rather than rendering an unidentified question.
+    if (!isObj(elicitation.agent)) return null;
+    const agent = elicitation.agent as Record<string, unknown>;
+    if (!isBoundedStr(agent.name, 200) || agent.name === "") return null;
+    if (!optStrOrNull(agent.sessionAlias)) return null;
+    const fieldsValue = elicitation.fields;
+    // Zero fields is a LEGAL form (M1 core semantics): an all-optional schema
+    // with nothing to ask accepts with `content: null`, so the web side must be
+    // able to open it and confirm an empty answer. Rejecting here would strand a
+    // legal interaction rather than refuse an unsupported one.
+    if (!Array.isArray(fieldsValue)) return null;
+    if (fieldsValue.length > INTERACTION_WIRE_LIMITS.maxFields) return null;
+    if (!fieldsValue.every(validInteractionField)) return null;
+    if (o.permission !== undefined) return null;
+    return o as unknown as InteractionRequestPayload;
+  }
+  // permission: reserved. M3 accepts the shape so the transport is exercised,
+  // but nothing renders it yet.
+  const perm = o.permission;
+  if (!isObj(perm)) return null;
+  const permission = perm as Record<string, unknown>;
+  if (!optStrOrNull(permission.title)) return null;
+  if (!optStrOrNull(permission.kind)) return null;
+  if (!optStrOrNull(permission.summary)) return null;
+  if (!isStrArr(permission.availableOutcomes)) return null;
+  if (o.elicitation !== undefined) return null;
+  return o as unknown as InteractionRequestPayload;
+};
+
+/**
+ * The human's decision.
+ *
+ * Carries NO responder identity — the hub stamps that. A frame that smuggles one
+ * in is rejected rather than having the field silently dropped: an explicit
+ * rejection surfaces the protocol violation, whereas dropping would let a
+ * client believe it asserted an identity that was ignored.
+ *
+ * EXPORTED because the connector re-validates every answer it is handed against
+ * it. A second, weaker local check would let a hub/connector pair drift on what
+ * counts as an answer — including on the identity rule, which is the one part
+ * that must not drift.
+ */
+export const validateInteractionResponse: Validator<InteractionResponsePayload> = (p) => {
+  const o = fields(p);
+  if (!o) return null;
+  if (!isBoundedStr(o.requestId, 128)) return null;
+  const kind = o.kind;
+  if (typeof kind !== "string" || !(INTERACTION_KINDS as readonly string[]).includes(kind)) return null;
+  const action = o.action;
+  if (typeof action !== "string" || !(INTERACTION_ACTIONS as readonly string[]).includes(action)) return null;
+  // Identity is never client-supplied on this path.
+  if (o.responderId !== undefined || o.senderId !== undefined || o.userId !== undefined) return null;
+  if (action === "accept") {
+    if (o.content === null || o.content === undefined) {
+      return o as unknown as InteractionResponsePayload;
+    }
+    if (!isObj(o.content)) return null;
+    // Bounded per answer so a single field cannot carry an unbounded blob.
+    for (const value of Object.values(o.content)) {
+      const scalar = typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+      const array = isStrArr(value);
+      if (!scalar && !array) return null;
+      if (typeof value === "string" && value.length > 8000) return null;
+    }
+    return o as unknown as InteractionResponsePayload;
+  }
+  if (o.content !== undefined && o.content !== null) return null;
+  return o as unknown as InteractionResponsePayload;
+};
+/**
+ * Connector -> hub WITHDRAW: which interaction, and nothing else.
+ *
+ * No reason and no identity — the withdrawal IS the request, and the hub's
+ * registry treats withdrawing an already-closed interaction as success, so a
+ * withdrawal racing a resolve cannot be observed as an error.
+ */
+export const validateInteractionWithdraw: Validator<InteractionWithdrawPayload> = (p) => {
+  const o = fields(p);
+  if (!o) return null;
+  if (!isBoundedStr(o.requestId, 128)) return null;
+  return o as unknown as InteractionWithdrawPayload;
+};
 /** The control-RPC message types that carry a client-supplied payload to validate.
  *  Excludes: handshake (instanceRegister/instanceAuth — validated in instance-gateway),
  *  event-direction (instanceEvent/instanceNotice — boundary B via validControlEvent),
@@ -565,6 +884,7 @@ export type ControlRpcType =
   | typeof MSG.terminalCreate | typeof MSG.terminalAttach
   | typeof MSG.terminalOpen | typeof MSG.terminalTakeControl
   | typeof MSG.terminalResync | typeof MSG.terminalTerminate
+  | typeof MSG.desktopPrepare
   | typeof MSG.upload
   | typeof MSG.botsGet | typeof MSG.botsCreate | typeof MSG.botsUpdate | typeof MSG.botsDelete
   | typeof MSG.conversationsList | typeof MSG.conversationsGet
@@ -573,7 +893,9 @@ export type ControlRpcType =
   | typeof MSG.groupsList
   | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown
   | typeof MSG.conversationPrompt | typeof MSG.conversationHistory
-  | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel;
+  | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel
+  | typeof MSG.interactionRequest | typeof MSG.interactionRespond
+  | typeof MSG.interactionWithdraw;
 
 /** Registry: control-RPC type → shape validator. `satisfies` locks both directions —
  *  a ControlRpcType with no validator, or a validator whose key isn't a ControlRpcType,
@@ -631,6 +953,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.terminalTakeControl]: validateTerminalTakeControl,
   [MSG.terminalResync]: validateTerminalResync,
   [MSG.terminalTerminate]: validateTerminalTerminate,
+  [MSG.desktopPrepare]: validateDesktopPrepare,
   [MSG.upload]: validateUpload,
   [MSG.botsGet]: validateBotsGet,
   [MSG.botsCreate]: validateBotsCreate,
@@ -653,6 +976,9 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.runsGet]: validateRunsGet,
   [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel,
+  [MSG.interactionRequest]: validateInteractionRequest,
+  [MSG.interactionRespond]: validateInteractionResponse,
+  [MSG.interactionWithdraw]: validateInteractionWithdraw,
 } satisfies Record<ControlRpcType, Validator<unknown>>;
 
 /** The payload type bound to a control-RPC message, derived from its validator's return. */
@@ -816,6 +1142,25 @@ export function parseTerminalEventPayload<T extends TerminalEventType>(
   const validate = TERMINAL_EVENT_PAYLOAD_VALIDATORS[type] as unknown as Validator<TerminalEventPayloadFor<T>>;
   return validate(payload);
 }
+/** Desktop cancel is the only fire-and-forget desktop control event. */
+export type DesktopEventType = typeof MSG.desktopCancel;
+
+export const DESKTOP_EVENT_PAYLOAD_VALIDATORS = {
+  [MSG.desktopCancel]: validateDesktopCancelEvent,
+} satisfies Record<DesktopEventType, Validator<unknown>>;
+
+export type DesktopEventPayloadFor<T extends DesktopEventType> = T extends DesktopEventType
+  ? DesktopCancelPayload
+  : never;
+
+/** Validate a desktop event payload (never the binary framebuffer path). */
+export function parseDesktopEventPayload(
+  type: DesktopEventType,
+  payload: unknown,
+): DesktopCancelPayload | null {
+  const validate = DESKTOP_EVENT_PAYLOAD_VALIDATORS[type] as unknown as Validator<DesktopCancelPayload>;
+  return validate(payload);
+}
 
 // --- Type-level binding assertions -------------------------------------------------
 // These live here, not in the test file: `tests/` is outside every tsconfig's `include`,
@@ -841,3 +1186,5 @@ type _gitDiscardBound = Expect<Equal<PayloadFor<typeof MSG.gitDiscard>, GitPaths
 type _terminalOpenBound = Expect<Equal<PayloadFor<typeof MSG.terminalOpen>, TerminalOpenPayload>>;
 type _terminalTerminateBound = Expect<Equal<PayloadFor<typeof MSG.terminalTerminate>, TerminalTerminatePayload>>;
 type _terminalInputEventBound = Expect<Equal<TerminalEventPayloadFor<typeof MSG.terminalInput>, TerminalInputPayload>>;
+type _desktopPrepareBound = Expect<Equal<PayloadFor<typeof MSG.desktopPrepare>, DesktopPreparePayload>>;
+type _desktopCancelBound = Expect<Equal<DesktopEventPayloadFor<typeof MSG.desktopCancel>, DesktopCancelPayload>>;

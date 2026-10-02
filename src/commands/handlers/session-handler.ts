@@ -24,6 +24,8 @@ import { AcpxQueueOverflowError } from "../../transport/acpx-queue-overflow";
 import { queueOverflowTipText } from "./session-recovery-handler";
 import { PermissionInteractionBroker, getGlobalPermissionBroker } from "../../permissions/permission-interaction-broker.js";
 import { resolvePermissionTurnRoute } from "../../permissions/permission-turn-route.js";
+import { resolveElicitationTurnRoute } from "../../interactions/elicitation-turn-route.js";
+import type { TurnInteractionContext } from "../../interactions/turn-interaction-registry";
 import { getGlobalElicitationBroker } from "../../interactions/elicitation-interaction-broker.js";
 import { isHiddenProductSessionOwner } from "../../state/types";
 
@@ -1062,36 +1064,122 @@ async function promptWithSession(
       metadata,
       ...(accountId !== undefined ? { accountId } : {}),
     });
-    const interactionId = permissionRoute
+    // Direct Conversation turns have no permission route by policy (a product
+    // isolation key must not mint a human permission interaction), but they DO
+    // have a trusted human identity — the hub-stamped HumanIngressContext that
+    // reached this dispatch with its authorityEpoch. So an elicitation route is
+    // resolved there, or a Direct Bot turn could never receive any interaction
+    // at all: no route means no interactionId, and the broker cancels.
+    //
+    // This is NOT gated on `permissionRoute` being absent. A real Direct Bot turn
+    // carries `permissionChatKey: relay:<account>`, so permission resolution
+    // SUCCEEDS on it (the shared resolver prefers that trusted ingress key over
+    // the `bot:` isolation key, which permission accepts because it is not a
+    // product key) — and gating here on "permission found nothing" meant this
+    // resolver never ran, the route collapsed to `relay:<account>`, and the
+    // correlation the relay channel needs to place the form on the right
+    // conversation was silently dropped.
+    //
+    // Running it unconditionally is safe and narrower than the old condition:
+    // `resolveElicitationTurnRoute` refuses every non-`bot:` isolation key, so an
+    // ordinary channel turn yields `undefined` here exactly as before.
+    //
+    // The two routes are NOT collapsed into one address. Permission keeps its
+    // trusted ingress route; elicitation keeps the product isolation key. The
+    // selection below is by turn kind, not "whichever matched first".
+    const elicitationRoute = resolveElicitationTurnRoute({
+      isolationChatKey: chatKey,
+      ...(resolvedOrigin !== undefined ? { origin: resolvedOrigin } : {}),
+      ...(metadata?.senderId !== undefined ? { senderId: metadata.senderId } : {}),
+      ...(metadata?.senderName !== undefined ? { senderName: metadata.senderName } : {}),
+      ...(metadata?.isOwner !== undefined ? { isOwner: metadata.isOwner } : {}),
+      ...(accountId !== undefined ? { accountId } : {}),
+      ...(replyContextToken !== undefined ? { ingressChatKey: replyContextToken } : {}),
+    });
+    // Permission wins on its own turns, because its route is the one the daemon
+    // trusts for a human permission decision. An elicitation route, when present,
+    // belongs to a Direct Conversation turn. Both may exist at once when that
+    // turn also carries a `permissionChatKey`, so the selection below only
+    // decides which route's SHARED fields the turn context carries — each broker
+    // is still bound to its own address below.
+    const route = elicitationRoute ?? permissionRoute;
+    const interactionId = route
       ? PermissionInteractionBroker.createInteractionId()
       : undefined;
     let disposeInteraction: (() => void) | undefined;
-    if (interactionId && permissionRoute) {
-      // One exact-turn binding serves BOTH brokers: they share the route
-      // registry (turn identity/abort) but never share terminal semantics.
-      const turnContext = {
+    if (interactionId && route) {
+      // Each broker gets the route ITS OWN resolver produced, never a collapsed
+      // pick.
+      //
+      // The previous code bound both brokers to `route` =
+      // `elicitationRoute ?? permissionRoute`, and its comment justified sharing
+      // with "a Direct Bot turn has NO permission route by policy". That
+      // invariant is false. `resolvePermissionTurnRoute` resolves
+      // `metadata.permissionChatKey ?? isolationChatKey`, so a Direct Bot turn
+      // carrying a `permissionChatKey` DOES produce a permission route — the
+      // account-wide ingress address — while `resolveElicitationTurnRoute`
+      // deliberately strips `permissionChatKey` and keeps the product isolation
+      // key `bot:<conversation>:<topic>`.
+      //
+      // Consequence, which is what makes this a P2 and not a nit: the
+      // elicitation route is not a superset of the permission route, it is a
+      // DIFFERENT address for a different purpose. Collapsing the two meant the
+      // permission broker was registered on the elicitation route, i.e. a human
+      // permission request would be answered on `bot:<...>` rather than on the
+      // trusted ingress key the daemon actually verified — a permission decision
+      // delivered to a route nobody authenticated.
+      //
+      // Both routes are bound (so both kinds work), each with its own address:
+      // permission keeps the trusted ingress route, elicitation keeps the
+      // product isolation key. Neither can be answered on the other's route.
+      // Shared, per-turn fields from the route that owns this turn: the
+      // elicitation route when one exists (a Direct Bot turn), else the
+      // permission route. The only field that DIFFERS between the two brokers is
+      // `chatKey`, which is the whole point of keeping them separate.
+      const shared = {
         interactionId,
-        chatKey: permissionRoute.chatKey,
         origin: "human" as const,
-        ...(permissionRoute.accountId !== undefined ? { accountId: permissionRoute.accountId } : {}),
+        ...(route.accountId !== undefined ? { accountId: route.accountId } : {}),
         ...(replyContextToken !== undefined ? { replyContextToken } : {}),
-        ...(permissionRoute.senderId !== undefined ? { senderId: permissionRoute.senderId } : {}),
-        ...(permissionRoute.senderName !== undefined ? { senderName: permissionRoute.senderName } : {}),
-        ...(permissionRoute.isOwner !== undefined ? { isOwner: permissionRoute.isOwner } : {}),
+        ...(route.senderId !== undefined ? { senderId: route.senderId } : {}),
+        ...(route.senderName !== undefined ? { senderName: route.senderName } : {}),
+        ...(route.isOwner !== undefined ? { isOwner: route.isOwner } : {}),
+      };
+      // The channel's OWN report of this turn's route privacy, from
+      // `ChatRequestMetadata`. Renderers need it to decide whether a form may be
+      // shown at all: a form puts the agent's question and the user's answers
+      // into the chat, and a group destination shows both to everyone.
+      //
+      // Absent stays absent on purpose — a channel that does not report it has
+      // not established a private destination, and reading that as "direct" is
+      // the fail-open the contract forbids. Attached to both contexts because it
+      // describes the ingress, not either address.
+      const chatType =
+        metadata?.chatType !== undefined ? { chatType: metadata.chatType } : {};
+      const permissionTurnContext: TurnInteractionContext = {
+        ...shared,
+        chatKey: permissionRoute?.chatKey ?? route.chatKey,
+        ...chatType,
+      };
+      const elicitationTurnContext: TurnInteractionContext = {
+        ...shared,
+        chatKey: elicitationRoute?.chatKey ?? route.chatKey,
+        ...chatType,
       };
       let disposePermission: (() => void) | undefined;
       let disposeElicitation: (() => void) | undefined;
       try {
-        disposePermission = getGlobalPermissionBroker()?.bindTurn(turnContext, abortSignal);
+        disposePermission = getGlobalPermissionBroker()?.bindTurn(permissionTurnContext, abortSignal);
       } catch {
         disposePermission = undefined;
       }
       try {
         // Independent binding: each broker may be constructed with its own
-        // registry in tests. A duplicate-id bind (shared registry in
-        // production) throws and is simply skipped — the route already
-        // exists for both.
-        disposeElicitation = getGlobalElicitationBroker()?.bindTurn(turnContext, abortSignal);
+        // registry in tests. A same-KIND duplicate bind throws and is skipped,
+        // because the registry keys routes by (interactionId, kind) — two
+        // different kinds never collide, which is what lets the production
+        // shared registry hold both addresses without either being lost.
+        disposeElicitation = getGlobalElicitationBroker()?.bindTurn(elicitationTurnContext, abortSignal);
       } catch {
         disposeElicitation = undefined;
       }

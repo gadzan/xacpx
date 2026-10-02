@@ -1,6 +1,10 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
 import type { AgentAddressDto, AgentCommandDto, ControlEventDto, ConversationTurnCorrelationDto, PeerMessageHistoryEntry, PeerTurnOriginDto, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, ToolStepKind, ToolStepStatus, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import {
+  MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
+  MAX_DESKTOP_REQUEST_ID_LENGTH,
+  MAX_DESKTOP_STREAM_ID_LENGTH,
+  MAX_DESKTOP_WS_PATH_LENGTH,
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
@@ -19,7 +23,7 @@ import {
   STATE_SYNC_TEXT_CAP,
   TERMINAL_REBASE_CHUNK_BYTES,
 } from "./limits.js";
-import type { InstanceNoticePayload, TerminalRole } from "./messages.js";
+import type { DesktopSecurityKind, InstanceNoticePayload, TerminalRole } from "./messages.js";
 import { isBoundedStr, isIntInRange, isNonNegInt, isStr, optBool, optNonNegInt, optNum, optStr, optStrArr, parseCanonicalBase64 } from "./validate-primitives.js";
 
 
@@ -256,6 +260,24 @@ export type WebServerEvent =
       generation: string;
       reason: string;
       code?: number;
+    }
+  | {
+      kind: "desktop-opened";
+      requestId: string;
+      instanceId: string;
+      streamId: string;
+      /** Single-use binary path, e.g. `/desktop/observe?ticket=…`; never persisted. */
+      wsPath: string;
+      /** Epoch ms when the browser ticket expires. */
+      expiresAt: number;
+      security: DesktopSecurityKind;
+    }
+  | {
+      kind: "desktop-request-failed";
+      requestId: string;
+      instanceId: string;
+      code: string;
+      message: string;
     };
 
 /** Wrap a server→web push event in a relay envelope. */
@@ -279,6 +301,8 @@ const WEB_EVENT_KINDS = new Set([
   "terminal-bytes",
   "terminal-role-changed",
   "terminal-exit",
+  "desktop-opened",
+  "desktop-request-failed",
 ]);
 
 /** Compile-time-exhaustive whitelist of inner control-event discriminants. The
@@ -312,6 +336,8 @@ const CONTROL_EVENT_TYPE_MAP = {
   "conversation-run-changed": true,
   "member-turn-started": true,
   "member-turn-finished": true,
+  "interaction-opened": true,
+  "interaction-closed": true,
 } satisfies Record<ControlEventDto["type"], true>;
 
 const CONTROL_EVENT_TYPES: ReadonlySet<string> = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
@@ -560,6 +586,98 @@ function validConversationMessage(value: unknown): boolean {
     && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId);
 }
 
+/** An optional product id: absent, or a non-empty string (mirrors `optProductId`). */
+function optInteractionProductId(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && value.length > 0);
+}
+
+/**
+ * Local mirror of `validateInteractionRequest` (payload-validators.ts).
+ *
+ * web-dtos deliberately keeps its own validators rather than importing the
+ * control-RPC ones: this file guards the hub→web direction, and a single
+ * validator shared across both boundaries would let a hub-side relaxation
+ * silently widen what a browser accepts. The duplication is the isolation.
+ */
+function validInteractionRequest(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const c = value as Record<string, unknown>;
+  if (!isBoundedStr(c.requestId, 128)) return false;
+  if (c.kind !== "permission" && c.kind !== "elicitation") return false;
+  if (typeof c.expiresAt !== "number" || !Number.isFinite(c.expiresAt) || c.expiresAt <= 0) return false;
+  if (c.conversation !== undefined) {
+    if (typeof c.conversation !== "object" || c.conversation === null) return false;
+    const conv = c.conversation as Record<string, unknown>;
+    if (typeof conv.conversationId !== "string" || conv.conversationId.length === 0) return false;
+    if (typeof conv.topicId !== "string" || conv.topicId.length === 0) return false;
+    // Mirror of the hub validator: the row ids are optional, but a present value
+    // must be a real id rather than "".
+    if (!optInteractionProductId(conv.botId)) return false;
+    if (!optInteractionProductId(conv.runId)) return false;
+    if (!optInteractionProductId(conv.memberTurnId)) return false;
+    if (!optInteractionProductId(conv.promptRequestId)) return false;
+    // No hidden runtime alias may travel as a product routing key.
+    for (const item of Object.values(conv)) {
+      if (typeof item === "string" && item.startsWith("brt_")) return false;
+    }
+  }
+  if (c.kind === "elicitation") {
+    const e = c.elicitation;
+    if (typeof e !== "object" || e === null) return false;
+    const elicitation = e as Record<string, unknown>;
+    if (elicitation.mode !== "form") return false;
+    if (!optStr(elicitation.message)) return false;
+    if (typeof elicitation.message === "string" && elicitation.message.length > 8000) return false;
+    if (!optStr(elicitation.schemaTitle)) return false;
+    if (!Array.isArray(elicitation.fields)) return false;
+    if (elicitation.fields.length > 100) return false;
+    // Zero fields is legal (mirrors core/relay-protocol): an all-optional
+    // form opens, renders a confirmation state, and accepts with null content.
+    return elicitation.fields.every(validInteractionField)
+      && c.permission === undefined;
+  }
+  const perm = c.permission;
+  if (typeof perm !== "object" || perm === null) return false;
+  const permission = perm as Record<string, unknown>;
+  if (!Array.isArray(permission.availableOutcomes)) return false;
+  return c.elicitation === undefined;
+}
+
+/** One normalized form field, mirrored from payload-validators.ts (see above). */
+function validInteractionField(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const f = value as Record<string, unknown>;
+  if (f.kind !== "text" && f.kind !== "single-select" && f.kind !== "number"
+    && f.kind !== "boolean" && f.kind !== "multi-select") return false;
+  if (!isBoundedStr(f.key, 64)) return false;
+  if (!isBoundedStr(f.title, 200)) return false;
+  if (typeof f.required !== "boolean") return false;
+  if (!optStr(f.description)) return false;
+  const isSelect = f.kind === "single-select" || f.kind === "multi-select";
+  if (isSelect) {
+    const options = f.options;
+    if (!Array.isArray(options) || options.length === 0 || options.length > 200) return false;
+    for (const option of options) {
+      if (typeof option !== "object" || option === null) return false;
+      const o = option as Record<string, unknown>;
+      // `value` is what core validates; `label` is agent-controlled display text.
+      if (!isBoundedStr(o.value, 200)) return false;
+      if (!isBoundedStr(o.label, 200)) return false;
+      if (!optStr(o.description)) return false;
+    }
+  } else if (f.options !== undefined) {
+    return false;
+  }
+  if (f.defaultValue !== undefined) {
+    const d = f.defaultValue;
+    const scalar = typeof d === "string" || typeof d === "number" || typeof d === "boolean";
+    const array = Array.isArray(d) && d.every((item) => typeof item === "string");
+    if (!scalar && !array) return false;
+    if (typeof d === "string" && d.length > 8000) return false;
+  }
+  return true;
+}
+
 function validConversationRun(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const c = value as Record<string, unknown>;
@@ -695,6 +813,15 @@ export function validControlEvent(e: unknown): boolean {
     case "member-turn-started":
     case "member-turn-finished":
       return validConversationRun(c.run) && validMemberTurnSummary(c.memberTurn);
+    case "interaction-opened":
+      // The request must itself validate: a form that failed protocol validation
+      // must never reach a renderer, and the guard here is the last one before web.
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
+        && validInteractionRequest(c.interaction);
+    case "interaction-closed":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
+        && typeof c.requestId === "string" && c.requestId.length > 0
+        && (c.reason === "resolved" || c.reason === "withdrawn" || c.reason === "expired");
     default: {
       // Exhaustiveness guard: adding a ControlEventDto member without a case above is a tsc error.
       const _exhaustive: never = type;
@@ -767,6 +894,10 @@ function expectedRebaseChunkCount(totalBytes: number): number {
   return totalBytes === 0 ? 0 : Math.ceil(totalBytes / TERMINAL_REBASE_CHUNK_BYTES);
 }
 
+function validDesktopSecurity(value: unknown): value is DesktopSecurityKind {
+  return value === "vnc-auth" || value === "ard";
+}
+
 function validTerminalRole(value: unknown): value is TerminalRole {
   return value === "controller" || value === "spectator";
 }
@@ -834,6 +965,27 @@ function validTargetedTerminalEvent(candidate: Record<string, unknown>): boolean
   }
 }
 
+function validDesktopServerEvent(candidate: Record<string, unknown>): boolean {
+  switch (candidate.kind) {
+    case "desktop-opened":
+      return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH)
+        && isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        && isBoundedStr(candidate.streamId, MAX_DESKTOP_STREAM_ID_LENGTH)
+        && isBoundedStr(candidate.wsPath, MAX_DESKTOP_WS_PATH_LENGTH)
+        && (candidate.wsPath as string).startsWith("/desktop/observe?ticket=")
+        && isNonNegInt(candidate.expiresAt)
+        && validDesktopSecurity(candidate.security);
+    case "desktop-request-failed":
+      return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH)
+        && isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        && isBoundedStr(candidate.code, 128)
+        && typeof candidate.message === "string"
+        && candidate.message.length <= MAX_DESKTOP_ERROR_MESSAGE_LENGTH;
+    default:
+      return false;
+  }
+}
+
 /** Parse + validate a relay→web push payload; returns null for any malformed envelope. */
 export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | null {
   if (envelope.kind !== "event" || envelope.type !== WEB_EVENT_TYPE) return null;
@@ -860,6 +1012,7 @@ export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | n
       : null;
   }
   if (candidate.kind.startsWith("terminal-") && !validTargetedTerminalEvent(candidate)) return null;
+  if (candidate.kind.startsWith("desktop-") && !validDesktopServerEvent(candidate)) return null;
   return payload as WebServerEvent;
 }
 
@@ -883,6 +1036,17 @@ export type WebClientMessage =
   | { kind: "terminal-resync"; requestId: string; instanceId: string; attachmentId: string; generation: string }
   | { kind: "terminal-terminate"; requestId: string; instanceId: string; terminalId: string; generation: string }
   | { kind: "terminal-detach"; instanceId: string; attachmentId: string }
+  | { kind: "desktop-open"; requestId: string; instanceId: string }
+  | {
+      kind: "desktop-close";
+      instanceId: string;
+      /**
+       * Exactly one target. `streamId` closes a live/paired stream the browser
+       * already learned about; `requestId` aborts an open that never answered
+       * (fast close-then-reopen), which is the only handle the browser has on a
+       * still-pending prepare.
+       */
+    } & ({ streamId: string } | { requestId: string })
   | { kind: "subscribe"; instanceIds: string[] };
 
 export function webClientEnvelope(msg: WebClientMessage): RelayEnvelope {
@@ -944,7 +1108,7 @@ export function parseWebClientMessage(envelope: RelayEnvelope): WebClientMessage
       ? (p as WebClientMessage)
       : null;
   }
-  if (typeof c.kind !== "string" || !c.kind.startsWith("terminal-")) return null;
+  if (typeof c.kind !== "string" || (!c.kind.startsWith("terminal-") && !c.kind.startsWith("desktop-"))) return null;
   if (rejectsBrowserStampedIdentity(c)) return null;
 
   switch (c.kind) {
@@ -996,6 +1160,21 @@ export function parseWebClientMessage(envelope: RelayEnvelope): WebClientMessage
     case "terminal-close":
       return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
         && isBoundedStr(c.terminalId, MAX_TERMINAL_ID_LENGTH)
+        ? (p as WebClientMessage)
+        : null;
+    case "desktop-open":
+      return isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH)
+        && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        && c.streamId === undefined
+        && c.wsPath === undefined
+        ? (p as WebClientMessage)
+        : null;
+    case "desktop-close":
+      return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
+        // Exactly one target: a live stream, or a pending prepare the viewer
+        // learned nothing about yet. Both, or neither, is malformed.
+        && ((isBoundedStr(c.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && c.requestId === undefined)
+          || (isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && c.streamId === undefined))
         ? (p as WebClientMessage)
         : null;
     default:

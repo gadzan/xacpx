@@ -92,6 +92,16 @@ export function supportsRmuxTerminal(instance: {
     && caps.includes(RELAY_CAPABILITIES.terminalMultiViewV1);
 }
 
+/** True when the instance is online and advertises the Phase A desktop capability. */
+export function supportsDesktop(instance: {
+  online: boolean;
+  capabilities?: string[] | null;
+}): boolean {
+  if (!instance.online) return false;
+  const caps = instance.capabilities ?? [];
+  return caps.includes(RELAY_CAPABILITIES.desktopRfbV1);
+}
+
 /** Sidebar grouping modes that support per-group sleeping-session pages. */
 export type GroupArchivedMode = "workspace" | "agent";
 

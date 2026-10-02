@@ -1,12 +1,12 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { onScopeDispose, ref } from "vue";
 import type { WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import {
   isRetryableTerminalError,
   nextTerminalRequestId,
+  onEventsReconnect,
   requestTerminal,
   sendWebClientMessage,
-  setEventsReconnectHandler,
   TerminalRequestError,
 } from "../api/events";
 import {
@@ -98,11 +98,25 @@ export const useTerminalStore = defineStore("terminal", () => {
   const resyncInFlight = new Set<string>();
   /** One extra stream-start while recover is still waiting (key-mash debounce). */
   const waitingStreamStartInFlight = new Set<string>();
+  // Unsubscribe for the /ws reconnect subscription. Released by THIS store's
+  // scope, so it is declared at the setup-store's top level.
+  let reconnectUnsub: (() => void) | null = null;
+  onScopeDispose(() => {
+    reconnectUnsub?.();
+    reconnectUnsub = null;
+  });
 
   function ensureReconnectHook(): void {
-    setEventsReconnectHandler(() => {
-      void reopenActiveAttachments();
-    });
+    if (reconnectUnsub) return;
+    // A stable function, registered once per store. The closure must NOT be
+    // recreated per call: the handler set is keyed on fn-identity, so a new
+    // closure each time would accumulate duplicates and turn one reconnect into
+    // N reopens of every attachment.
+    reconnectUnsub = onEventsReconnect(() => { void reopenActiveAttachments(); });
+    // No onScopeDispose() here: this is an ACTION, so it would bind the cleanup
+    // to whatever effect scope happens to be active at call time — or warn when
+    // there is none. The store-scope cleanup at the setup top level above is the
+    // store's real lifetime and the sole owner of this subscription.
   }
 
   function publishMeta(view: TerminalAttachmentView): void {

@@ -3,17 +3,39 @@ import type { FeishuSendResult } from "./types.js";
 import type { OutboundChannelMedia } from "./media-types.js";
 import { createReadStreamForFeishu, inferFeishuFileType, withFeishuTransientRetry, type FeishuMediaClient } from "./media.js";
 
+/**
+ * The slice of the Feishu SDK this plugin actually calls.
+ *
+ * `cardkit` and the `interactive` message variants are declared alongside the
+ * text ones because the streaming-card path and the elicitation renderer both
+ * use them: the SDK client HAS these methods, and declaring them here means a
+ * SDK change surfaces as a type error instead of a runtime `undefined`.
+ */
 export interface FeishuMessageClient {
   im: {
     message: {
       reply(input: {
         path: { message_id: string };
-        data: { msg_type: "text"; content: string };
+        data: { msg_type: "text"; content: string } | { msg_type: "interactive"; content: string };
       }): Promise<{ data?: { message_id?: string; chat_id?: string } }>;
       create(input: {
         params: { receive_id_type: "chat_id" | "open_id" | "user_id" };
-        data: { receive_id: string; msg_type: "text"; content: string };
+        data:
+          | { receive_id: string; msg_type: "text"; content: string }
+          | { receive_id: string; msg_type: "interactive"; content: string };
       }): Promise<{ data?: { message_id?: string; chat_id?: string } }>;
+    };
+  };
+  cardkit: {
+    v1: {
+      card: {
+        // The SDK (pinned ~1.60) wraps responses in `{ data: ... }`.
+        create(input: { data: { type: "card_json"; data: string } }): Promise<{ data?: { card_id?: string } }>;
+        update(input: {
+          path: { card_id: string };
+          data: { card: { type: "card_json"; data: string }; sequence: number };
+        }): Promise<unknown>;
+      };
     };
   };
 }

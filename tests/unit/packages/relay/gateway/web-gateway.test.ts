@@ -216,3 +216,16 @@ test("backpressure still evicts an over-threshold socket for a subscribed contro
   expect(s.sent.length).toBe(0);
   expect(s.terminated).toBe(true);
 });
+
+test("socket close fires onViewerClosed with its hub-stamped viewerId", () => {
+  const seen: string[] = [];
+  const gw = new WebGateway({ onViewerClosed: (viewerId) => { seen.push(viewerId); } });
+  const a = new FakeSocket();
+  const viewerA = gw.register("a1", a as never);
+  const b = new FakeSocket();
+  gw.register("a1", b as never);
+  a.close();
+  expect(seen).toEqual([viewerA]);
+  b.close();
+  expect(seen).toHaveLength(2);
+});

@@ -109,6 +109,7 @@ There are two session concepts:
 - Runtime durable queue: [`docs/runtime-queue.md`](docs/runtime-queue.md)
 - Runtime permission: [`docs/runtime-permission.md`](docs/runtime-permission.md)
 - Runtime MCP: [`docs/runtime-mcp.md`](docs/runtime-mcp.md)
+- Instance desktop over RFB/VNC (setup, per-platform VNC servers, open-time errors): [`docs/desktop-rfb-setup.md`](docs/desktop-rfb-setup.md)
 - Direct Conversation persistence + lifecycle: [`docs/conversation-runtime.md`](docs/conversation-runtime.md)
 - Control / Relay Bot + Conversation public API: [`docs/control-module.md`](docs/control-module.md), [`docs/relay-module.md`](docs/relay-module.md)
 ## Gotchas

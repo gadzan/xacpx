@@ -7,6 +7,8 @@ import {
   isErrorPayload,
   MSG,
   parseControlPayload,
+  type ControlEventDto,
+  type InteractionResponseDto,
   type LiveTurnSnapshotDto,
   type PublishedAgentEndpointDto,
   type SessionCommandsSnapshotDto,
@@ -18,6 +20,7 @@ import type { AccountRow, AccountStore } from "../stores/accounts.js";
 import type { InstanceStore } from "../stores/instances.js";
 import type { MessageStore } from "../stores/messages.js";
 import type { TurnSlotAnchorStore } from "../stores/turn-slot-anchors.js";
+import type { InteractionRegistry } from "../interaction-registry.js";
 import type { PushSubscriptionStore } from "../stores/push-subscriptions.js";
 import { isAllowedPushEndpoint } from "../push.js";
 import type { RelayLogger } from "../logging.js";
@@ -27,9 +30,24 @@ import { readRelayVersion, type UpdateCheck } from "../version.js";
 
 export interface GatewayForApp {
   isOnline(instanceId: string): boolean;
-  sendRequest(instanceId: string, type: string, payload: unknown): Promise<unknown>;
+  sendRequest(
+    instanceId: string,
+    type: string,
+    payload: unknown,
+    options?: { timeoutMs?: number },
+  ): Promise<unknown>;
   getPublishedEndpoints(accountId: string): PublishedAgentEndpointDto[];
   getWebPublishedEndpoints?(accountId: string): WebAgentDirectoryEndpointDto[];
+  /**
+   * Push a control event to every browser connected for this account.
+   *
+   * Interaction lifecycle needs it: a form must appear in a tab that did not ask
+   * for it, and must disappear from a tab that did not close it. Optional so a
+   * gateway that predates interactions still satisfies this interface — an old
+   * hub then simply never emits them, and the web store keeps its own default
+   * (no form) instead of hanging on a form that will never be resolved.
+   */
+  broadcastControlEvent?(accountId: string, event: ControlEventDto): void;
 }
 
 export interface AppDeps {
@@ -70,6 +88,13 @@ export interface AppDeps {
   onWebPromptQueueCancelled?: (instanceId: string, queueItemId: string) => void;
   /** Web push / provenance: called when a session is archived or removed, clearing pending queues. */
   onWebPromptSessionCleared?: (instanceId: string, sessionAlias: string) => void;
+  /**
+   * Hub-owned pending interactions. Omitted = no interaction transport, so both
+   * the open and answer paths report unavailable rather than pretending. Injected
+   * by `server.ts` so the connector socket teardown path (which is not visible
+   * here) can withdraw interactions opened over that socket.
+   */
+  interactions?: InteractionRegistry;
 }
 const SESSION_COOKIE = "xrelay_session";
 const LOGIN_WINDOW_MS = 10 * 60 * 1000;
@@ -119,6 +144,32 @@ function safePreviewUrl(v: unknown): string | undefined {
 // Coarse pre-buffer ceiling for /rpc bodies: a 10MB upload as base64 inside a JSON
 // envelope is ~13.33MB; 16MB leaves headroom for envelope overhead.
 const RPC_MAX_BODY_BYTES = 16 * 1024 * 1024;
+
+/**
+ * Validate the browser's ANSWER frame.
+ *
+ * Reaches the same validator the connector uses, so both ends of the answer agree
+ * on what is legal — including its refusal to accept a client-asserted
+ * `responderId`/`senderId`/`userId`. The hub does not add an identity here; it
+ * adds the hub's own authenticated one at the point the decision is handed back.
+ */
+function validateInteractionResponsePayload(payload: unknown): InteractionResponseDto | null {
+  const parsed = parseControlPayload(MSG.interactionRespond, payload);
+  if (!parsed) return null;
+  return parsed as InteractionResponseDto;
+}
+
+/**
+ * Shape the connector's outcome for the browser, stamping the responder
+ * identity.
+ *
+ * Re-exported from the registry module, where it lives beside the one component
+ * both the connector-facing (WebSocket) and browser-facing (HTTP) transports
+ * share, so the stamp is applied identically on either surface. Two copies of a
+ * security-critical stamp is how the two drift apart.
+ */
+export { interactionResultForBrowser } from "../interaction-registry.js";
+
 // Design spec caps attachments at ≤5 per message; bound persisted string fields too
 // so arbitrarily long filename/mimeType can't bloat storage.
 const MAX_PERSISTED_ATTACHMENTS = 5;
@@ -268,6 +319,41 @@ export function createApp(deps: AppDeps): Hono<Vars> {
   const now = deps.now ?? (() => new Date());
   const acquireSessionLifecycleRpcLock = createKeyedRpcLock();
   const sessionTurnRpcLock = createKeyedRwLock();
+
+  // ONE broadcast per interaction close, for every closer.
+  //
+  // Whether the window expired, the connector withdrew the call, the human
+  // answered, or the account was revoked, the browser has to be told the form is
+  // gone. Emitting this from the registry — rather than from whichever handler
+  // happened to trigger the close — is what makes the browser's state
+  // independent of which path ran, and is why `interaction-closed` is not
+  // emitted at each of the call sites.
+  deps.interactions?.onClose((closed) => {
+    // Only the account that owns the connector may hear about the close: an
+    // account-scoped broadcast otherwise leaks that an interaction existed.
+    const owner = deps.instances.getOwned(closed.instanceId, closed.accountId);
+    if (owner === null) return;
+    deps.gateway.broadcastControlEvent?.(closed.accountId, {
+      type: "interaction-closed",
+      chatKey: `relay:${closed.accountId}`,
+      sessionAlias: "",
+      // `owner.id`, NOT "" — the dashboard subscribes to its instances and the
+      // web gateway fences control-events on that set, so an event carrying ""
+      // is dropped by every socket that has subscribed. Publishing the owner's
+      // instance is also what lets the store submit: it routes the answer to the
+      // instance the form came from.
+      instanceId: owner.id,
+      requestId: closed.requestId,
+      reason: closed.reason,
+      // Present only for a resolve. A tab that did not click then learns the
+      // human actually declined or cancelled, instead of every close reading as
+      // an acceptance.
+      ...(closed.action !== undefined && (closed.action === "accept"
+        || closed.action === "decline" || closed.action === "cancel")
+        ? { action: closed.action }
+        : {}),
+    });
+  });
 
   // Per-IP failure tracking
   const loginFailures = new Map<string, { count: number; windowStart: number }>();
@@ -601,6 +687,11 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         chatKey: `relay:${account.id}`,
         senderId: account.id,
         isOwner: true,
+        // Privacy, stamped by the hub for the same reason the identities are: a
+        // relay web session is one authenticated human, so this surface can
+        // genuinely assert `direct`. A renderer may show a form only when it can
+        // prove that, and "absent" means unproven — not direct.
+        chatType: "direct",
       };
     }
     if (body.type === MSG.conversationPrompt) {
@@ -612,8 +703,85 @@ export function createApp(deps: AppDeps): Hono<Vars> {
           accountId: account.id,
           senderName: account.username,
           isOwner: true,
+          // The privacy fact this surface can actually prove: a relay web
+          // dashboard is an authenticated session for a single human, and the
+          // conversation pane is that human's own view. Stamped HERE, by the hub,
+          // rather than read off the frame — exactly like the identities above.
+          //
+          // It has to be present because the renderer contract requires
+          // `chatType === "direct"` to show a form and treats absent as unproven.
+          // Without this stamp the relay renderer would refuse every Direct Bot
+          // elicitation, and the privacy gate #360 introduced would be satisfied
+          // by omission rather than by proof.
+          chatType: "direct",
         },
       };
+    }
+    // NOTE: `interactionRequest` and `interactionWithdraw` are deliberately
+    // ABSENT from this surface.
+    //
+    // This endpoint is the AUTHENTICATED BROWSER's RPC into the hub. Opening and
+    // withdrawing an interaction are the CONNECTOR's acts: the turn that owns the
+    // agent is what asks the question and what goes away, and those belong to the
+    // authenticated connector socket (see `instance-gateway.ts`), where identity
+    // is the socket's own rather than anything a frame asserts.
+    //
+    // Accepting a withdrawal here would let any authenticated browser close any
+    // pending interaction by name — closing by bare requestId alone — which is a
+    // connector-only control turned into a browser RPC. Leaving them out of this
+    // dispatcher is the fix, and a request for them falls through to the generic
+    // handler below.
+    if (body.type === MSG.interactionRespond) {
+      // Browser -> hub: ANSWER an interaction that is currently open.
+      const answer = validateInteractionResponsePayload(payload);
+      if (!answer) return c.json({ error: "invalid-payload" }, 400);
+      const registry = deps.interactions;
+      if (!registry) return c.json({ error: "interaction-unavailable" }, 503);
+      const pending = registry.get(answer.requestId);
+      // An interaction this account did not open is indistinguishable from one
+      // that already closed, and answering across accounts is a protocol
+      // violation — both are "gone".
+      //
+      // The KIND must match as well. `PendingInteraction` records it, but the
+      // response validator checks `kind` and `action` only against their own
+      // vocabularies and never ties them together, so a shape-valid
+      // `{kind: "permission", action: "allow_once"}` addressed at an open
+      // elicitation would otherwise be accepted: the hub would finish the request,
+      // delete it, and broadcast a close, and only then would the connector's
+      // `parseRelayInteractionOutcome()` reject the frame because it is not an
+      // elicitation. The user would lose a perfectly good form to a frame that was
+      // never meant for it, and the close broadcast would report a human decision
+      // that never happened.
+      //
+      // The hub is the terminal authority for this request, so the invariant is
+      // checked BEFORE anything is consumed rather than after. This boundary and
+      // the registry's own fence are deliberately BOTH present: removing either
+      // one leaves the request reachable by a wrong-kind frame, which the
+      // regression test asserts by failing only when both are gone.
+      if (!pending || pending.accountId !== account.id || pending.kind !== answer.kind) {
+        return c.json({ error: "interaction-gone" }, 409);
+      }
+      const closed = registry.answer(answer.requestId, answer);
+      if (!closed) {
+        // Lost the race against expiry between the lookup and the answer. The
+        // window is over; the answer is not a late win.
+        return c.json({ error: "interaction-gone" }, 409);
+      }
+      // `interaction-closed: resolved` is broadcast by the registry's own
+      // close listener, so this path emits exactly what every other closer
+      // emits. Adding a second one here would double the browser's close.
+      return c.json({ ok: true });
+    }
+    // An explicit REFUSAL, not merely an absence.
+    //
+    // Leaving these two out of the dispatcher above is not enough on its own:
+    // the generic forward at the end of this handler would pass them on to the
+    // connector, which is a connector-only control routed through a browser
+    // session — and, for a withdrawal, one that closes by requestId alone with
+    // no ownership check. Refusing here names the boundary at the one place that
+    // owns it.
+    if (body.type === MSG.interactionRequest || body.type === MSG.interactionWithdraw) {
+      return c.json({ error: "connector-only" }, 403);
     }
     const releaseSessionRpcLocks: Array<() => void> = [];
     let persistedPromptId: number | undefined;

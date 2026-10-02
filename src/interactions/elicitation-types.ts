@@ -118,6 +118,20 @@ export interface ChannelElicitationRequest {
   readonly chatKey: string;
   readonly accountId?: string;
   readonly replyContextToken?: string;
+  /**
+   * Whether this turn's destination is provably 1:1, as reported by the channel's
+   * own ingress metadata.
+   *
+   * A form renders the agent's question AND the user's answers into the chat, so
+   * this is a PRIVACY input, not a presentation one: only a `direct` destination
+   * is provably visible to the requester alone. `undefined` — the channel said
+   * nothing — is NOT the same as `direct` and must be treated as not provably
+   * private, because a channel that does not report it here is a channel whose
+   * route the renderer cannot vouch for.
+   *
+   * Renderers MUST refuse a form whose `chatType` is not `"direct"`.
+   */
+  readonly chatType?: "direct" | "group";
   /** The authenticated initiator of the exact prompt turn. */
   readonly requester: {
     readonly senderId: string;

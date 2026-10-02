@@ -213,6 +213,11 @@ function buildResiduals(source: ResidualSource, outcomes: ProcessTreeOutcome[]):
   for (const entry of outcomes) {
     if (entry.target.pid === source.pid || TERMINAL.has(entry.outcome)) continue;
     if (!RESIDUAL.has(entry.outcome) || !entry.target.creationDate || !entry.commandLine || !entry.executablePath) return null;
+    // The tree terminator replaces both fingerprint fields with the kernel
+    // values for every descendant it verified through a retained handle, so
+    // those entries replay with the exact compare. The root (and anything the
+    // worker could not verify) keeps what the caller supplied, which on this
+    // path is always CIM-derived.
     residuals.push({
       kind: "residual",
       ownerToken: source.ownerToken,
@@ -220,6 +225,7 @@ function buildResiduals(source: ResidualSource, outcomes: ProcessTreeOutcome[]):
       creationDate: entry.target.creationDate,
       commandLine: entry.commandLine,
       executablePath: entry.executablePath,
+      fingerprintSource: entry.fingerprintSource === "handle" ? "handle" : "cim",
       agentCommand: source.agentCommand,
       generationId: source.generationId,
       killAttempts: 0,
@@ -238,11 +244,16 @@ async function reconcileResidual(
   // A residual is an UNVERIFIED SUBTREE ROOT: kill it through the verified
   // tree terminator so anything it spawned after spooling converges too.
   const terminateTree = deps.terminateTree ?? terminateWindowsProcessTree;
+  // The residual's fingerprint provenance decides the replay tolerance. A
+  // CIM-derived creationDate is quantized to 6-digit microseconds, so demanding
+  // an exact match would condemn a legitimate record as 'skipped-replaced' and
+  // it could never discharge. A handle-derived one stays exact.
   const batch = await terminateTree({
     pid: residual.pid,
     creationDate: residual.creationDate,
     commandLine: residual.commandLine,
     executablePath: residual.executablePath,
+    ...(residual.fingerprintSource === "cim" ? { fingerprintSource: "cim" as const } : {}),
   }, terminateOptions(deps));
   // A root that is already-exited/skipped-replaced does NOT discharge the
   // subtree: the tree terminator returns BEFORE any descendant snapshot in

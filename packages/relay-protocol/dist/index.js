@@ -71,6 +71,20 @@ var TERMINAL_RPC_TIMEOUT_MS = 60000;
 var TERMINAL_KILL_CONFIRM_TIMEOUT_MS = 5000;
 var MAX_CAPABILITIES = 32;
 var MAX_CAPABILITY_LENGTH = 128;
+var MAX_DESKTOP_REQUEST_ID_LENGTH = 128;
+var MAX_DESKTOP_STREAM_ID_LENGTH = 128;
+var MAX_DESKTOP_TICKET_LENGTH = 128;
+var MAX_DESKTOP_WS_PATH_LENGTH = 512;
+var MAX_DESKTOP_ERROR_MESSAGE_LENGTH = 512;
+var DESKTOP_TICKET_TTL_MS = 60000;
+var DESKTOP_HUB_REQUEST_TIMEOUT_MS = 1e4;
+var DESKTOP_RPC_TIMEOUT_MS = 15000;
+var DESKTOP_MAX_STREAMS_PER_INSTANCE = 1;
+var DESKTOP_MAX_STREAMS_PER_ACCOUNT = 8;
+var DESKTOP_WS_MAX_PAYLOAD_BYTES = 1 * 1024 * 1024;
+var DESKTOP_TCP_CHUNK_BYTES = 64 * 1024;
+var DESKTOP_BUFFERED_SOFT_PAUSE_BYTES = 2 * 1024 * 1024;
+var DESKTOP_BUFFERED_HARD_CLOSE_BYTES = 4 * 1024 * 1024;
 function maxBase64EncodedLength(maxDecodedBytes) {
   return 4 * Math.ceil(Math.max(0, maxDecodedBytes) / 3);
 }
@@ -147,6 +161,8 @@ var MSG = {
   terminalDetach: "instance.terminal.detach",
   terminalViewerEvent: "instance.terminal.viewer-event",
   terminalResourceExit: "instance.terminal.resource-exit",
+  desktopPrepare: "instance.desktop.prepare",
+  desktopCancel: "instance.desktop.cancel",
   instanceAgentEndpointsSync: "instance.agent-endpoints.sync",
   agentMessageRoute: "instance.agent-message.route",
   agentMessageDeliver: "instance.agent-message.deliver",
@@ -174,7 +190,10 @@ var MSG = {
   conversationHistory: "control.conversation.history",
   runsGet: "control.runs.get",
   runsList: "control.runs.list",
-  runsCancel: "control.runs.cancel"
+  runsCancel: "control.runs.cancel",
+  interactionRequest: "control.interaction.request",
+  interactionRespond: "control.interaction.respond",
+  interactionWithdraw: "control.interaction.withdraw"
 };
 function errorPayload(code, message) {
   return { error: { code, message } };
@@ -207,8 +226,11 @@ function normalizeCapabilities(raw) {
 }
 var RELAY_CAPABILITIES = {
   terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1",
-  terminalMultiViewV1: "terminal.multi-view.v1"
+  terminalMultiViewV1: "terminal.multi-view.v1",
+  desktopRfbV1: "desktop.rfb.v1",
+  interactionElicitationFormV1: "interaction.elicitation.form.v1"
 };
+var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
 var TERMINAL_ERROR_CODES = [
   "terminal-disabled",
   "terminal-rmux-unavailable",
@@ -224,6 +246,16 @@ var TERMINAL_ERROR_CODES = [
   "terminal-protocol-error",
   "terminal-timeout",
   "instance-offline"
+];
+var DESKTOP_ERROR_CODES = [
+  "desktop-disabled",
+  "desktop-busy",
+  "desktop-rfb-unavailable",
+  "desktop-not-rfb",
+  "desktop-auth-unsupported",
+  "desktop-stream-timeout",
+  "desktop-instance-offline",
+  "desktop-protocol-error"
 ];
 // packages/relay-protocol/src/validate-primitives.ts
 var isObj = (v) => typeof v === "object" && v !== null;
@@ -290,7 +322,9 @@ var WEB_EVENT_KINDS = new Set([
   "terminal-rebase-end",
   "terminal-bytes",
   "terminal-role-changed",
-  "terminal-exit"
+  "terminal-exit",
+  "desktop-opened",
+  "desktop-request-failed"
 ]);
 var CONTROL_EVENT_TYPE_MAP = {
   "turn-output": true,
@@ -317,7 +351,9 @@ var CONTROL_EVENT_TYPE_MAP = {
   "conversation-message": true,
   "conversation-run-changed": true,
   "member-turn-started": true,
-  "member-turn-finished": true
+  "member-turn-finished": true,
+  "interaction-opened": true,
+  "interaction-closed": true
 };
 var CONTROL_EVENT_TYPES = new Set(Object.keys(CONTROL_EVENT_TYPE_MAP));
 var TOOL_STEP_KIND_MAP = {
@@ -537,6 +573,111 @@ function validConversationMessage(value) {
   const c = value;
   return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.seq === "number" && (c.role === "human" || c.role === "bot" || c.role === "system") && typeof c.content === "string" && typeof c.createdAt === "string" && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId);
 }
+function optInteractionProductId(value) {
+  return value === undefined || typeof value === "string" && value.length > 0;
+}
+function validInteractionRequest(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const c = value;
+  if (!isBoundedStr(c.requestId, 128))
+    return false;
+  if (c.kind !== "permission" && c.kind !== "elicitation")
+    return false;
+  if (typeof c.expiresAt !== "number" || !Number.isFinite(c.expiresAt) || c.expiresAt <= 0)
+    return false;
+  if (c.conversation !== undefined) {
+    if (typeof c.conversation !== "object" || c.conversation === null)
+      return false;
+    const conv = c.conversation;
+    if (typeof conv.conversationId !== "string" || conv.conversationId.length === 0)
+      return false;
+    if (typeof conv.topicId !== "string" || conv.topicId.length === 0)
+      return false;
+    if (!optInteractionProductId(conv.botId))
+      return false;
+    if (!optInteractionProductId(conv.runId))
+      return false;
+    if (!optInteractionProductId(conv.memberTurnId))
+      return false;
+    if (!optInteractionProductId(conv.promptRequestId))
+      return false;
+    for (const item of Object.values(conv)) {
+      if (typeof item === "string" && item.startsWith("brt_"))
+        return false;
+    }
+  }
+  if (c.kind === "elicitation") {
+    const e = c.elicitation;
+    if (typeof e !== "object" || e === null)
+      return false;
+    const elicitation = e;
+    if (elicitation.mode !== "form")
+      return false;
+    if (!optStr(elicitation.message))
+      return false;
+    if (typeof elicitation.message === "string" && elicitation.message.length > 8000)
+      return false;
+    if (!optStr(elicitation.schemaTitle))
+      return false;
+    if (!Array.isArray(elicitation.fields))
+      return false;
+    if (elicitation.fields.length > 100)
+      return false;
+    return elicitation.fields.every(validInteractionField) && c.permission === undefined;
+  }
+  const perm = c.permission;
+  if (typeof perm !== "object" || perm === null)
+    return false;
+  const permission = perm;
+  if (!Array.isArray(permission.availableOutcomes))
+    return false;
+  return c.elicitation === undefined;
+}
+function validInteractionField(value) {
+  if (typeof value !== "object" || value === null)
+    return false;
+  const f = value;
+  if (f.kind !== "text" && f.kind !== "single-select" && f.kind !== "number" && f.kind !== "boolean" && f.kind !== "multi-select")
+    return false;
+  if (!isBoundedStr(f.key, 64))
+    return false;
+  if (!isBoundedStr(f.title, 200))
+    return false;
+  if (typeof f.required !== "boolean")
+    return false;
+  if (!optStr(f.description))
+    return false;
+  const isSelect = f.kind === "single-select" || f.kind === "multi-select";
+  if (isSelect) {
+    const options = f.options;
+    if (!Array.isArray(options) || options.length === 0 || options.length > 200)
+      return false;
+    for (const option of options) {
+      if (typeof option !== "object" || option === null)
+        return false;
+      const o = option;
+      if (!isBoundedStr(o.value, 200))
+        return false;
+      if (!isBoundedStr(o.label, 200))
+        return false;
+      if (!optStr(o.description))
+        return false;
+    }
+  } else if (f.options !== undefined) {
+    return false;
+  }
+  if (f.defaultValue !== undefined) {
+    const d = f.defaultValue;
+    const scalar = typeof d === "string" || typeof d === "number" || typeof d === "boolean";
+    const array = Array.isArray(d) && d.every((item) => typeof item === "string");
+    if (!scalar && !array)
+      return false;
+    if (typeof d === "string" && d.length > 8000)
+      return false;
+  }
+  return true;
+}
 function validConversationRun(value) {
   if (typeof value !== "object" || value === null)
     return false;
@@ -602,6 +743,10 @@ function validControlEvent(e) {
     case "member-turn-started":
     case "member-turn-finished":
       return validConversationRun(c.run) && validMemberTurnSummary(c.memberTurn);
+    case "interaction-opened":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validInteractionRequest(c.interaction);
+    case "interaction-closed":
+      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.requestId === "string" && c.requestId.length > 0 && (c.reason === "resolved" || c.reason === "withdrawn" || c.reason === "expired");
     default: {
       const _exhaustive = type;
       return _exhaustive;
@@ -650,6 +795,9 @@ function validNotice(n) {
 function expectedRebaseChunkCount(totalBytes) {
   return totalBytes === 0 ? 0 : Math.ceil(totalBytes / TERMINAL_REBASE_CHUNK_BYTES);
 }
+function validDesktopSecurity(value) {
+  return value === "vnc-auth" || value === "ard";
+}
 function validTerminalRole(value) {
   return value === "controller" || value === "spectator";
 }
@@ -673,6 +821,16 @@ function validTargetedTerminalEvent(candidate) {
       return isBoundedStr(candidate.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) && isBoundedStr(candidate.terminalId, MAX_TERMINAL_ID_LENGTH) && validTerminalRole(candidate.role) && isNonNegInt(candidate.viewerCount);
     case "terminal-exit":
       return isBoundedStr(candidate.terminalId, MAX_TERMINAL_ID_LENGTH) && isBoundedStr(candidate.generation, MAX_TERMINAL_GENERATION_LENGTH) && isBoundedStr(candidate.reason, 128) && optNum(candidate.code) && (candidate.code === undefined || Number.isInteger(candidate.code));
+    default:
+      return false;
+  }
+}
+function validDesktopServerEvent(candidate) {
+  switch (candidate.kind) {
+    case "desktop-opened":
+      return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(candidate.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && isBoundedStr(candidate.wsPath, MAX_DESKTOP_WS_PATH_LENGTH) && candidate.wsPath.startsWith("/desktop/observe?ticket=") && isNonNegInt(candidate.expiresAt) && validDesktopSecurity(candidate.security);
+    case "desktop-request-failed":
+      return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(candidate.code, 128) && typeof candidate.message === "string" && candidate.message.length <= MAX_DESKTOP_ERROR_MESSAGE_LENGTH;
     default:
       return false;
   }
@@ -703,6 +861,8 @@ function parseWebServerEvent(envelope) {
     return isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && typeof candidate.sessionAlias === "string" && typeof candidate.notificationId === "string" && typeof candidate.ok === "boolean" && typeof candidate.text === "string" && (candidate.errorMessage === undefined || typeof candidate.errorMessage === "string") ? payload : null;
   }
   if (candidate.kind.startsWith("terminal-") && !validTargetedTerminalEvent(candidate))
+    return null;
+  if (candidate.kind.startsWith("desktop-") && !validDesktopServerEvent(candidate))
     return null;
   return payload;
 }
@@ -736,7 +896,7 @@ function parseWebClientMessage(envelope) {
   if (c.kind === "subscribe") {
     return Array.isArray(c.instanceIds) && c.instanceIds.every((x) => typeof x === "string" && x.length > 0 && x.length <= MAX_WEB_INSTANCE_ID_LENGTH) ? p : null;
   }
-  if (typeof c.kind !== "string" || !c.kind.startsWith("terminal-"))
+  if (typeof c.kind !== "string" || !c.kind.startsWith("terminal-") && !c.kind.startsWith("desktop-"))
     return null;
   if (rejectsBrowserStampedIdentity(c))
     return null;
@@ -764,6 +924,10 @@ function parseWebClientMessage(envelope) {
       return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) ? p : null;
     case "terminal-close":
       return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.terminalId, MAX_TERMINAL_ID_LENGTH) ? p : null;
+    case "desktop-open":
+      return isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && c.streamId === undefined && c.wsPath === undefined ? p : null;
+    case "desktop-close":
+      return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && (isBoundedStr(c.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && c.requestId === undefined || isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && c.streamId === undefined) ? p : null;
     default:
       return null;
   }
@@ -774,6 +938,7 @@ var optArr = (v) => v === undefined || Array.isArray(v);
 var isStrArr = (v) => Array.isArray(v) && v.every(isStr);
 var optStrOrNull = (v) => v === undefined || v === null || typeof v === "string";
 var optBoolOrNull = (v) => v === undefined || v === null || typeof v === "boolean";
+var optProductId = (v) => v === undefined || typeof v === "string" && v.length > 0 && v.length <= 128;
 var validateSessionsList = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && optNum(o.offset) && optNum(o.limit) && optBool(o.includeArchived) && optBool(o.archivedOnly) && optStr(o.workspace) && optStr(o.agent) ? o : null;
@@ -972,6 +1137,14 @@ var validateTerminalTerminate = (p) => {
   const o = fields(p);
   return o && isBoundedStr(o.terminalId, MAX_TERMINAL_ID_LENGTH) && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH) ? o : null;
 };
+var validateDesktopPrepare = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && isBoundedStr(o.ticket, MAX_DESKTOP_TICKET_LENGTH) && isNonNegInt(o.expiresAt) && o.host === undefined && o.port === undefined && o.target === undefined ? o : null;
+};
+var validateDesktopCancelEvent = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) ? o : null;
+};
 var validateUpload = (p) => {
   const o = fields(p);
   return o && isStr(o.filename) && isStr(o.content) && isStr(o.mimeType) ? o : null;
@@ -1111,6 +1284,228 @@ var validateRunsCancel = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? o : null;
 };
+var optObj = (v) => v === undefined || isObj(v);
+var isTimestamp = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
+var INTERACTION_KINDS = ["permission", "elicitation"];
+var INTERACTION_ACTIONS = [
+  "accept",
+  "decline",
+  "cancel",
+  "allow_once",
+  "allow_always",
+  "reject_once",
+  "reject_always"
+];
+var FIELD_KINDS = ["text", "single-select", "number", "boolean", "multi-select"];
+var INTERACTION_WIRE_LIMITS = {
+  maxFieldKey: 128,
+  maxTitle: 256,
+  maxDescription: 1000,
+  maxFields: 20,
+  maxOptions: 100,
+  maxOptionText: 256,
+  maxDefaultText: 256,
+  maxPattern: 512,
+  maxFormat: 64,
+  maxSchemaDescription: 1000,
+  maxMessage: 8000
+};
+function validInteractionField2(v) {
+  if (!isObj(v))
+    return false;
+  const kind = v.kind;
+  if (typeof kind !== "string" || !FIELD_KINDS.includes(kind))
+    return false;
+  if (!isBoundedStr(v.key, INTERACTION_WIRE_LIMITS.maxFieldKey))
+    return false;
+  if (!isBoundedStr(v.title, INTERACTION_WIRE_LIMITS.maxTitle))
+    return false;
+  if (typeof v.required !== "boolean")
+    return false;
+  if (!optStrOrNull(v.description))
+    return false;
+  if (typeof v.description === "string" && v.description.length > INTERACTION_WIRE_LIMITS.maxDescription) {
+    return false;
+  }
+  if (!optNum(v.minItems) || !optNum(v.maxItems))
+    return false;
+  if (!optNum(v.minLength) || !optNum(v.maxLength))
+    return false;
+  if (v.format !== undefined && !isBoundedStr(v.format, INTERACTION_WIRE_LIMITS.maxFormat))
+    return false;
+  if (v.pattern !== undefined && !isBoundedStr(v.pattern, INTERACTION_WIRE_LIMITS.maxPattern))
+    return false;
+  if (!optBoolOrNull(v.integer))
+    return false;
+  if (!optNum(v.minimum) || !optNum(v.maximum))
+    return false;
+  const isSelect = kind === "single-select" || kind === "multi-select";
+  if (isSelect) {
+    const options = v.options;
+    if (!Array.isArray(options) || options.length === 0 || options.length > INTERACTION_WIRE_LIMITS.maxOptions) {
+      return false;
+    }
+    for (const option of options) {
+      if (!isObj(option))
+        return false;
+      if (!isBoundedStr(option.value, INTERACTION_WIRE_LIMITS.maxOptionText))
+        return false;
+      if (!isBoundedStr(option.label, INTERACTION_WIRE_LIMITS.maxOptionText))
+        return false;
+      if (!optStrOrNull(option.description))
+        return false;
+      if (typeof option.description === "string" && option.description.length > INTERACTION_WIRE_LIMITS.maxDescription) {
+        return false;
+      }
+    }
+  } else if (v.options !== undefined) {
+    return false;
+  }
+  if (v.defaultValue !== undefined) {
+    const d = v.defaultValue;
+    const scalar = typeof d === "string" || typeof d === "number" || typeof d === "boolean";
+    const items = Array.isArray(d) ? d : null;
+    const legalArray = items !== null && items.every((item) => typeof item === "string");
+    if (!scalar && !legalArray)
+      return false;
+    if (typeof d === "string" && d.length > INTERACTION_WIRE_LIMITS.maxDefaultText)
+      return false;
+    if (legalArray && items.some((item) => item.length > INTERACTION_WIRE_LIMITS.maxDefaultText)) {
+      return false;
+    }
+  }
+  return true;
+}
+var validateInteractionRequest = (p) => {
+  const o = fields(p);
+  if (!o)
+    return null;
+  if (!isBoundedStr(o.requestId, 128))
+    return null;
+  const kind = o.kind;
+  if (typeof kind !== "string" || !INTERACTION_KINDS.includes(kind))
+    return null;
+  if (!isTimestamp(o.expiresAt))
+    return null;
+  if (!optObj(o.conversation))
+    return null;
+  if (o.conversation !== undefined) {
+    const c = o.conversation;
+    if (!isBoundedStr(c.conversationId, 128) || c.conversationId === "")
+      return null;
+    if (!isBoundedStr(c.topicId, 128) || c.topicId === "")
+      return null;
+    if (!optProductId(c.botId))
+      return null;
+    if (!optProductId(c.runId))
+      return null;
+    if (!optProductId(c.memberTurnId))
+      return null;
+    if (!optProductId(c.promptRequestId))
+      return null;
+    for (const value of Object.values(c)) {
+      if (typeof value === "string" && value.startsWith("brt_"))
+        return null;
+    }
+  }
+  if (kind === "elicitation") {
+    const e = o.elicitation;
+    if (!isObj(e))
+      return null;
+    const elicitation = e;
+    if (elicitation.mode !== "form")
+      return null;
+    if (!optStrOrNull(elicitation.message))
+      return null;
+    if (typeof elicitation.message === "string" && elicitation.message.length > INTERACTION_WIRE_LIMITS.maxMessage) {
+      return null;
+    }
+    if (!optStrOrNull(elicitation.schemaTitle))
+      return null;
+    if (typeof elicitation.schemaTitle === "string" && elicitation.schemaTitle.length > INTERACTION_WIRE_LIMITS.maxTitle) {
+      return null;
+    }
+    if (!optStrOrNull(elicitation.schemaDescription))
+      return null;
+    if (typeof elicitation.schemaDescription === "string" && elicitation.schemaDescription.length > INTERACTION_WIRE_LIMITS.maxSchemaDescription) {
+      return null;
+    }
+    if (!isObj(elicitation.agent))
+      return null;
+    const agent = elicitation.agent;
+    if (!isBoundedStr(agent.name, 200) || agent.name === "")
+      return null;
+    if (!optStrOrNull(agent.sessionAlias))
+      return null;
+    const fieldsValue = elicitation.fields;
+    if (!Array.isArray(fieldsValue))
+      return null;
+    if (fieldsValue.length > INTERACTION_WIRE_LIMITS.maxFields)
+      return null;
+    if (!fieldsValue.every(validInteractionField2))
+      return null;
+    if (o.permission !== undefined)
+      return null;
+    return o;
+  }
+  const perm = o.permission;
+  if (!isObj(perm))
+    return null;
+  const permission = perm;
+  if (!optStrOrNull(permission.title))
+    return null;
+  if (!optStrOrNull(permission.kind))
+    return null;
+  if (!optStrOrNull(permission.summary))
+    return null;
+  if (!isStrArr(permission.availableOutcomes))
+    return null;
+  if (o.elicitation !== undefined)
+    return null;
+  return o;
+};
+var validateInteractionResponse = (p) => {
+  const o = fields(p);
+  if (!o)
+    return null;
+  if (!isBoundedStr(o.requestId, 128))
+    return null;
+  const kind = o.kind;
+  if (typeof kind !== "string" || !INTERACTION_KINDS.includes(kind))
+    return null;
+  const action = o.action;
+  if (typeof action !== "string" || !INTERACTION_ACTIONS.includes(action))
+    return null;
+  if (o.responderId !== undefined || o.senderId !== undefined || o.userId !== undefined)
+    return null;
+  if (action === "accept") {
+    if (o.content === null || o.content === undefined) {
+      return o;
+    }
+    if (!isObj(o.content))
+      return null;
+    for (const value of Object.values(o.content)) {
+      const scalar = typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+      const array = isStrArr(value);
+      if (!scalar && !array)
+        return null;
+      if (typeof value === "string" && value.length > 8000)
+        return null;
+    }
+    return o;
+  }
+  if (o.content !== undefined && o.content !== null)
+    return null;
+  return o;
+};
+var validateInteractionWithdraw = (p) => {
+  const o = fields(p);
+  if (!o)
+    return null;
+  if (!isBoundedStr(o.requestId, 128))
+    return null;
+  return o;
+};
 var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.sessionsList]: validateSessionsList,
   [MSG.sessionsCreate]: validateSessionsCreate,
@@ -1164,6 +1559,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.terminalTakeControl]: validateTerminalTakeControl,
   [MSG.terminalResync]: validateTerminalResync,
   [MSG.terminalTerminate]: validateTerminalTerminate,
+  [MSG.desktopPrepare]: validateDesktopPrepare,
   [MSG.upload]: validateUpload,
   [MSG.botsGet]: validateBotsGet,
   [MSG.botsCreate]: validateBotsCreate,
@@ -1185,7 +1581,10 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationHistory]: validateConversationHistory,
   [MSG.runsGet]: validateRunsGet,
   [MSG.runsList]: validateRunsList,
-  [MSG.runsCancel]: validateRunsCancel
+  [MSG.runsCancel]: validateRunsCancel,
+  [MSG.interactionRequest]: validateInteractionRequest,
+  [MSG.interactionRespond]: validateInteractionResponse,
+  [MSG.interactionWithdraw]: validateInteractionWithdraw
 };
 function parseControlPayload(type, payload) {
   const validate = CONTROL_PAYLOAD_VALIDATORS[type];
@@ -1257,11 +1656,35 @@ function parseTerminalEventPayload(type, payload) {
   const validate = TERMINAL_EVENT_PAYLOAD_VALIDATORS[type];
   return validate(payload);
 }
+var DESKTOP_EVENT_PAYLOAD_VALIDATORS = {
+  [MSG.desktopCancel]: validateDesktopCancelEvent
+};
+function parseDesktopEventPayload(type, payload) {
+  const validate = DESKTOP_EVENT_PAYLOAD_VALIDATORS[type];
+  return validate(payload);
+}
 export {
   CONTROL_PAYLOAD_VALIDATORS,
+  DESKTOP_BUFFERED_HARD_CLOSE_BYTES,
+  DESKTOP_BUFFERED_SOFT_PAUSE_BYTES,
+  DESKTOP_ERROR_CODES,
+  DESKTOP_EVENT_PAYLOAD_VALIDATORS,
+  DESKTOP_HUB_REQUEST_TIMEOUT_MS,
+  DESKTOP_MAX_STREAMS_PER_ACCOUNT,
+  DESKTOP_MAX_STREAMS_PER_INSTANCE,
+  DESKTOP_RPC_TIMEOUT_MS,
+  DESKTOP_TCP_CHUNK_BYTES,
+  DESKTOP_TICKET_TTL_MS,
+  DESKTOP_WS_MAX_PAYLOAD_BYTES,
+  INTERACTION_WIRE_LIMITS,
   MAX_BOT_ID_LENGTH,
   MAX_CAPABILITIES,
   MAX_CAPABILITY_LENGTH,
+  MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
+  MAX_DESKTOP_REQUEST_ID_LENGTH,
+  MAX_DESKTOP_STREAM_ID_LENGTH,
+  MAX_DESKTOP_TICKET_LENGTH,
+  MAX_DESKTOP_WS_PATH_LENGTH,
   MAX_GROUP_TARGET_MEMBERS,
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
@@ -1283,6 +1706,7 @@ export {
   REASONING_CAP,
   RECOVERY_RETENTION_MS,
   RELAY_CAPABILITIES,
+  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
   RELAY_PROTOCOL_VERSION,
   STATE_SYNC_PARTS_CAP,
   STATE_SYNC_TEXT_CAP,
@@ -1312,11 +1736,15 @@ export {
   optStrArr,
   parseCanonicalBase64,
   parseControlPayload,
+  parseDesktopEventPayload,
   parseTerminalEventPayload,
   parseWebClientMessage,
   parseWebServerEvent,
   validControlEvent,
   validInstanceStateSync,
+  validateInteractionRequest,
+  validateInteractionResponse,
+  validateInteractionWithdraw,
   webClientEnvelope,
   webEventEnvelope
 };

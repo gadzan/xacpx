@@ -32,6 +32,11 @@ describe("PWA configuration", () => {
     expect(denied("/api/me")).toBe(true);
     expect(denied("/api/instances/x/rpc")).toBe(true);
     expect(denied("/ws")).toBe(true);
+    // Desktop binary upgrades are same-origin GETs, not navigations — but if a
+    // future fallback ever matched them, noVNC would receive HTML. Guard both
+    // directions: the SW must ignore them AND vite dev must proxy them.
+    expect(denied("/desktop/observe?ticket=t")).toBe(true);
+    expect(denied("/desktop/instance?ticket=t")).toBe(true);
     // ...but real SPA routes still fall back to the cached shell.
     expect(denied("/settings")).toBe(false);
     expect(denied("/")).toBe(false);

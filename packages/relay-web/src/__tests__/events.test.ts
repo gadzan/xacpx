@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   connectEvents,
   nextTerminalRequestId,
+  requestDesktop,
   requestTerminal,
   sendSubscribe,
   sendWebClientMessage,
   setEventsReconnectHandler,
+  onEventsReconnect,
   settleTerminalRequest,
   TerminalRequestError,
   _resetTerminalRequestStateForTests,
@@ -131,6 +133,46 @@ describe("connectEvents", () => {
     await expect(closing).rejects.toBeInstanceOf(TerminalRequestError);
   });
 
+  it("an unexpected terminal-opened rejects a live ack request immediately", async () => {
+    // Regression: the desktop refactor made settleTerminalRequest ignore a
+    // terminal-opened whose pending entry expected an "ack", so a hub that
+    // answers take-control/resync/terminate with the wrong frame left the
+    // caller hanging until the RPC deadline instead of surfacing the protocol
+    // error at once.
+    connectEvents(() => {});
+    const ws = FakeWS.instances[0];
+    ws.onopen?.();
+
+    const id = nextTerminalRequestId();
+    const pending = requestTerminal(
+      { kind: "terminal-take-control", requestId: id, instanceId: "i1", attachmentId: "a1", generation: "g1" },
+      { expect: "ack", timeoutMs: 60_000 },
+    );
+    const settled = expect(pending).rejects.toMatchObject({ code: "terminal-protocol-error" });
+    pushEvent(ws, {
+      kind: "terminal-opened",
+      requestId: id,
+      instanceId: "i1",
+      terminalId: "t1",
+      generation: "g1",
+      attachmentId: "a1",
+      role: "controller",
+      viewerCount: 1,
+    });
+    await settled;
+    // The entry is gone: a second delivery settles nothing.
+    expect(settleTerminalRequest({
+      kind: "terminal-opened",
+      requestId: id,
+      instanceId: "i1",
+      terminalId: "t1",
+      generation: "g1",
+      attachmentId: "a1",
+      role: "controller",
+      viewerCount: 1,
+    })).toBe(false);
+  });
+
   it("treats ok/terminated/cleanup-pending request-failed codes as ack success", async () => {
     connectEvents(() => {});
     FakeWS.instances[0].onopen?.();
@@ -171,6 +213,26 @@ describe("connectEvents", () => {
     await vi.runOnlyPendingTimersAsync();
     FakeWS.instances[1]?.onopen?.();
     expect(onReconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it("reconnect supports several subscribers, not just the first registrar", async () => {
+    // Terminal and desktop both re-open on /ws recovery. A single-slot handler
+    // meant whichever store registered second silently displaced the first, so
+    // the desktop panel stayed dead until a manual Reconnect.
+    _resetTerminalRequestStateForTests();
+    const first = vi.fn();
+    const second = vi.fn();
+    setEventsReconnectHandler(first);
+    onEventsReconnect(second);
+
+    connectEvents(() => {});
+    FakeWS.instances[0].onopen?.();
+    FakeWS.instances[0].onclose?.();
+    await vi.runOnlyPendingTimersAsync();
+    FakeWS.instances[1]?.onopen?.();
+
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(1);
   });
 
   it("settleTerminalRequest is idempotent for unknown requestIds", () => {
@@ -223,5 +285,73 @@ describe("connectEvents", () => {
       { expect: "opened" },
     );
     await expect(pending).rejects.toMatchObject({ code: "events-offline" });
+  });
+
+  it("a disposed socket's late close does not kill its replacement", async () => {
+    // Two connectEvents() instances can overlap: `A.close()` is called while the
+    // close handshake is still in flight, the replacement view opens B, and only
+    // THEN does A's `onclose` land. A's handler must not touch state that now
+    // belongs to B — not the module-global `activeSocket`, and not the pending
+    // RPCs B has in flight. B stays physically OPEN, so nothing fires a
+    // reconnect and the corruption is permanent.
+    //
+    // This uses the REAL requestDesktop against a FakeWS, so the promise is
+    // genuinely registered in the module-level pending map: `rejectAllPending`
+    // has something real to destroy, which is what makes this mutation-sensitive.
+    const lateCloses: Array<() => void> = [];
+    const deferClose = (ws: FakeWS) => {
+      const real = ws.onclose;
+      if (!real) throw new Error("no onclose installed");
+      ws.onclose = () => { lateCloses.push(real); };
+    };
+
+    // Mount A and dispose it, but hold its close event: the handshake has not
+    // finished, so A's `onclose` has not run.
+    const disposeA = connectEvents(() => {});
+    deferClose(FakeWS.instances[0]!);
+    FakeWS.instances[0]!.onopen?.();
+
+    disposeA();
+
+    // Navigate back: B opens and becomes the module-global owner.
+    const disposeB = connectEvents(() => {});
+    deferClose(FakeWS.instances[1]!);
+    FakeWS.instances[1]!.onopen?.();
+
+    // A fresh prepare on B, in flight. It can only be ended by
+    // `rejectAllPending`, which is exactly what A's stale close would call.
+    const pending = requestDesktop(
+      { kind: "desktop-open", requestId: "dr-stale-close", instanceId: "i1" },
+      { timeoutMs: 30_000 },
+    );
+    const settled: string[] = [];
+    void pending.then(
+      () => settled.push("resolved"),
+      (err: unknown) => settled.push("rejected:" + (err as { code?: string }).code),
+    );
+
+    // NOW A's late close lands. With the fence on the module-global owner, A's
+    // handler bails and B is untouched. Without it, A nulls `activeSocket` and
+    // rejects B's in-flight prepare as events-offline.
+    expect(lateCloses.length).toBeGreaterThan(0);
+    lateCloses[0]!();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(settled).toEqual([]);
+
+    // The control plane is still considered live, and B's RPC completes normally
+    // once its reply arrives.
+    pushEvent(FakeWS.instances[1]!, {
+      kind: "desktop-opened",
+      requestId: "dr-stale-close",
+      instanceId: "i1",
+      streamId: "s-stale",
+      wsPath: "/desktop/observe?ticket=t",
+      expiresAt: 1,
+      security: "vnc-auth",
+    });
+    await vi.advanceTimersByTimeAsync(1);
+    expect(settled).toEqual(["resolved"]);
+    disposeB();
   });
 });

@@ -168,7 +168,21 @@ test.skipIf(process.platform === "win32")(
     } as never);
 
     await waitUntil(() => capturedCaps !== undefined, "client capability capture");
-    expect(capturedCaps).toEqual([]);
+    // What this guards is that NO TERMINAL capability survives the failed
+    // preflight — a browser must never be offered a terminal the hub cannot
+    // deliver. Asserted as "none of the terminal capabilities", not `toEqual([])`,
+    // because an empty array would also fail the moment any unrelated capability
+    // is advertised: the interaction capability, for one, is orthogonal to the
+    // terminal and does keep working when this gate closes the terminal.
+    //
+    // Both terminal capability names must be absent — the pair that is missing
+    // one of them is a channel that would report recovery without multi-view.
+    expect(capturedCaps ?? []).not.toContain(
+      RMUX_BRIDGE_RECOVERY_CAPABILITY,
+    );
+    expect(capturedCaps ?? []).not.toContain(
+      RMUX_BRIDGE_MULTI_VIEW_CAPABILITY,
+    );
     expect(channel.getTerminalRuntimeForTests()).toBeNull();
     expect(listCalls).toBe(0);
     expect(

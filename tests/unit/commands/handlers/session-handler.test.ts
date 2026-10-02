@@ -658,6 +658,297 @@ test("handleSessionAttach drops its fresh row when post-persist setup fails", as
   expect(calls).toEqual(["attach", "remove:a"]);
 });
 
+test("handlePromptWithSession binds BOTH brokers on a Direct Bot turn and carries chatType", async () => {
+  // The rebase conflict, pinned at the file where it happened.
+  //
+  // #361 teaches this seam to route a Direct Bot turn to the elicitation broker,
+  // and #360 teaches it to propagate the channel's own `chatType` into the turn
+  // context a form renderer gates on. Combining them produced a real conflict, and
+  // the two things that must NOT happen are:
+  //
+  //   1. Drop the bot route  -> no interactionId, so the broker cancels before a
+  //      renderer is contacted. The request never reaches a human.
+  //   2. Drop `chatType`     -> an ordinary channel turn loses its own report of
+  //      being `direct`, and a renderer must refuse a form it cannot prove is
+  //      private.
+  //
+  // Both are asserted against the turn context that actually reaches the brokers,
+  // so neither half can be dropped without a red test.
+  const { setGlobalElicitationBroker, resetGlobalElicitationBrokerForTests } = await import("../../../../src/interactions/elicitation-interaction-broker.js");
+  const { resetGlobalPermissionBrokerForTests, setGlobalPermissionBroker } = await import("../../../../src/permissions/permission-interaction-broker.js");
+  resetGlobalPermissionBrokerForTests();
+  resetGlobalElicitationBrokerForTests();
+
+  const bound: Array<Record<string, unknown>> = [];
+  const fakeBroker = {
+    bindTurn: (ctx: Record<string, unknown>) => {
+      bound.push(ctx);
+      return () => {};
+    },
+  };
+  // Install BOTH brokers the way the daemon does, so the seam's
+  // `getGlobalElicitationBroker()` / `getGlobalPermissionBroker()` calls reach
+  // real objects rather than null. Installing only one is what let the two
+  // routes be collapsed invisibly: there was nothing to compare the addresses.
+  setGlobalElicitationBroker(fakeBroker as never);
+  setGlobalPermissionBroker(fakeBroker as never);
+
+  const session = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "sess-1",
+    archived: false,
+    replyMode: "final" as const,
+  } as unknown as ResolvedSession;
+
+  const makeContext = () => ({
+    sessions: {},
+    lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
+    interaction: {
+      promptTransportSession: async () => ({ text: "ok" }),
+    },
+    recovery: {},
+    config: undefined as unknown as AppConfig,
+    logger: { info: async () => {}, warn: async () => {}, error: async () => {}, debug: async () => {} },
+    quota: undefined,
+    orchestration: undefined,
+  }) as unknown as SessionHandlerContext;
+
+  await handlePromptWithSession(
+    makeContext(), session, "bot:conv-1:topic-1", "hi",
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    // A hub-stamped Direct Bot turn: human origin, a trusted ingress address, and
+    // the channel's own report that the destination is private.
+    {
+      channel: "relay",
+      senderId: "relay:acct-42",
+      origin: "human",
+      permissionChatKey: "relay:acct-42",
+      chatType: "direct",
+    } as never,
+  );
+
+  // An interactionId WAS minted for the Direct Bot turn — the M3 fix.
+  expect(bound.length).toBeGreaterThan(0);
+  const turnContext = bound[0]!;
+  expect(typeof turnContext.interactionId).toBe("string");
+  expect((turnContext.interactionId as string).length).toBeGreaterThan(0);
+  // #360's chatType propagation survived the rebase: the renderer can see that
+  // this route is provably private.
+  expect(turnContext.chatType).toBe("direct");
+  // And the trusted identity is carried, so the broker can re-verify the
+  // responder against the exact turn initiator.
+  expect(turnContext.senderId).toBe("relay:acct-42");
+
+  // The two brokers receive THEIR OWN addresses, not one collapsed route.
+  //
+  // This turn has both a `permissionChatKey` ("relay:acct-42") and a Direct Bot
+  // product key ("bot:conv-1:topic-1"), so BOTH resolvers return a route. Binding
+  // both brokers to whichever resolved first meant the permission broker was
+  // registered on the elicitation route, i.e. a human permission request would be
+  // delivered on the product isolation key rather than on the trusted ingress
+  // address the daemon actually verified.
+  //
+  // Note the count: both brokers are installed here, so two binds are expected —
+  // and they must NOT carry the same chatKey.
+  expect(bound.length).toBe(2);
+  const routeAddresses = bound.map((ctx) => ctx.chatKey);
+  expect(new Set(routeAddresses).size).toBe(routeAddresses.length);
+  expect(routeAddresses).toContain("relay:acct-42");
+  expect(routeAddresses).toContain("bot:conv-1:topic-1");
+  // One identity minted for the turn, shared: answering either kind resolves the
+  // SAME turn, which is what keeps the two kinds from double-minting.
+  expect(new Set(bound.map((ctx) => ctx.interactionId)).size).toBe(1);
+
+  resetGlobalElicitationBrokerForTests();
+  resetGlobalPermissionBrokerForTests();
+});
+
+test("both brokers keep their own route in the PRODUCTION shared registry", async () => {
+  // The seam above uses a fake `bindTurn()` that just records the context, which
+  // is why the round-4 fix passed a test and failed in production.
+  //
+  // `src/main.ts` wires the two brokers to ONE registry:
+  //
+  //     elicitationBroker = new ElicitationInteractionBroker({
+  //       registry: permissionBroker.turnRegistry,
+  //       ...
+  //     })
+  //
+  // and `TurnInteractionRegistry.bindTurn()` throws on a second binding of the
+  // same interactionId. So binding both kinds against one id silently lost the
+  // SECOND bind (the catch swallowed it) and the registry kept only the
+  // permission route. The elicitation broker then resolved `relay:<account>`,
+  // `parseDirectConversationChatKey()` found no `bot:<conversation>:<topic>` in
+  // it, the Direct Bot `conversation` correlation vanished, and the uncorrelated-
+  // form gate scoped the form out of the very topic it belonged to. The whole
+  // Direct Bot form path went dark with every check green.
+  //
+  // This test installs the REAL brokers on a REAL shared registry, exactly as
+  // main.ts does, so the registry semantics are exercised rather than assumed.
+  const { ElicitationInteractionBroker } = await import("../../../../src/interactions/elicitation-interaction-broker.js");
+  const { PermissionInteractionBroker } = await import("../../../../src/permissions/permission-interaction-broker.js");
+  const { createTurnInteractionRegistry } = await import("../../../../src/interactions/turn-interaction-registry.js");
+  const {
+    setGlobalElicitationBroker,
+    resetGlobalElicitationBrokerForTests,
+  } = await import("../../../../src/interactions/elicitation-interaction-broker.js");
+  const {
+    setGlobalPermissionBroker,
+    resetGlobalPermissionBrokerForTests,
+  } = await import("../../../../src/permissions/permission-interaction-broker.js");
+  resetGlobalPermissionBrokerForTests();
+  resetGlobalElicitationBrokerForTests();
+
+  // The daemon's wiring: one registry, shared by both brokers.
+  const registry = createTurnInteractionRegistry();
+  const silentLogger = {
+    info: async () => {},
+    warn: async () => {},
+    error: async () => {},
+    debug: async () => {},
+  };
+  const permissionBroker = new PermissionInteractionBroker({
+    registry,
+    getChannelByChatKey: () => null,
+    logger: silentLogger as never,
+  });
+  const elicitationBroker = new ElicitationInteractionBroker({
+    registry,
+    getChannelByChatKey: () => null,
+    logger: silentLogger as never,
+  });
+  setGlobalPermissionBroker(permissionBroker);
+  setGlobalElicitationBroker(elicitationBroker);
+
+  const session = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "sess-1",
+    archived: false,
+    replyMode: "final" as const,
+  } as unknown as ResolvedSession;
+
+  let mintedInteractionId: unknown = "unset";
+  let capturedDuringPrompt: Record<string, unknown> | undefined;
+  const makeContext = () => ({
+    sessions: {},
+    lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
+    interaction: {
+      promptTransportSession: async (...args: unknown[]) => {
+        // `handlePromptWithSession` passes the turn interactionId as the
+        // THIRTEENTH argument (index 12), so the minted id is observable without
+        // adding a seam.
+        mintedInteractionId = args[12];
+        // Captured HERE, while the turn is running, because the handler disposes
+        // its bindings when the prompt completes. Asserting on the registry
+        // after `await handlePromptWithSession(...)` would observe an empty one
+        // and pass with every binding lost.
+        capturedDuringPrompt = {
+          count: registry.boundTurnCount,
+          turnId: mintedInteractionId,
+          permission: registry.resolve(mintedInteractionId as string, "permission")?.chatKey,
+          elicitation: registry.resolve(mintedInteractionId as string, "elicitation")?.chatKey,
+        };
+        return { text: "ok" };
+      },
+    },
+    recovery: {},
+    config: undefined as unknown as AppConfig,
+    logger: { info: async () => {}, warn: async () => {}, error: async () => {}, debug: async () => {} },
+    quota: undefined,
+    orchestration: undefined,
+  }) as unknown as SessionHandlerContext;
+
+  await handlePromptWithSession(
+    makeContext(), session, "bot:conv-1:topic-1", "hi",
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    // A Direct Bot turn that ALSO carries the trusted ingress address, so both
+    // resolvers return a route — the shape that exposes the collision.
+    {
+      channel: "relay",
+      senderId: "relay:acct-42",
+      origin: "human",
+      permissionChatKey: "relay:acct-42",
+      chatType: "direct",
+    } as never,
+  );
+
+  // Both kinds survived into the shared registry. This is the assertion that
+  // fails if the second bind is ever swallowed again: `boundTurnCount` counts
+  // every kind, so a lost elicitation bind leaves one.
+  // Both kinds survived into the shared registry. This is the assertion that
+  // fails if the second bind is ever swallowed again: `boundTurnCount` counts
+  // every kind, so a lost elicitation bind leaves one, and each kind holds its
+  // own address rather than a collapsed pick.
+  expect(capturedDuringPrompt).toEqual({
+    count: 2,
+    turnId: mintedInteractionId,
+    permission: "relay:acct-42",
+    elicitation: "bot:conv-1:topic-1",
+  });
+  // And the turn's disposal is honest: everything it bound is gone afterwards.
+  expect(registry.boundTurnCount).toBe(0);
+
+  resetGlobalElicitationBrokerForTests();
+  resetGlobalPermissionBrokerForTests();
+});
+
+test("handlePromptWithSession refuses a malformed bot isolation key", async () => {
+  // `bot:garbage` parses to nothing, so no elicitation route can be built from
+  // it: a prefix-only match could be satisfied by any turn in any topic.
+  //
+  // The turn carries NO trusted ingress address, which is the only case where the
+  // elicitation route would have to come from the `bot:` key itself. Permission
+  // refuses that key by policy, and the elicitation resolver refuses a malformed
+  // one — so no route exists and no interactionId is minted. Fail closed.
+  const { setGlobalElicitationBroker, resetGlobalElicitationBrokerForTests } = await import("../../../../src/interactions/elicitation-interaction-broker.js");
+  const { resetGlobalPermissionBrokerForTests } = await import("../../../../src/permissions/permission-interaction-broker.js");
+  resetGlobalPermissionBrokerForTests();
+  resetGlobalElicitationBrokerForTests();
+  setGlobalElicitationBroker({
+    bindTurn: () => () => {},
+  } as never);
+
+  const session = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "sess-1",
+    archived: false,
+    replyMode: "final" as const,
+  } as unknown as ResolvedSession;
+
+  let minted: unknown = "unset";
+  const context = {
+    sessions: {},
+    lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
+    interaction: {
+      promptTransportSession: async (...args: unknown[]) => {
+        minted = args[12];
+        return { text: "ok" };
+      },
+    },
+    recovery: {},
+    config: undefined as unknown as AppConfig,
+    logger: { info: async () => {}, warn: async () => {}, error: async () => {}, debug: async () => {} },
+    quota: undefined,
+    orchestration: undefined,
+  } as unknown as SessionHandlerContext;
+
+  await handlePromptWithSession(
+    context, session, "bot:garbage", "hi",
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    { channel: "relay", senderId: "relay:acct-42", origin: "human" } as never,
+  );
+  // No route from a malformed key, hence no interactionId. Fail closed.
+  expect(minted).toBeUndefined();
+
+  resetGlobalElicitationBrokerForTests();
+});
+
 test("handlePromptWithSession mints an interaction id only for explicit human origin", async () => {
   const { resetGlobalPermissionBrokerForTests } = await import("../../../../src/permissions/permission-interaction-broker.js");
   resetGlobalPermissionBrokerForTests();

@@ -19,6 +19,20 @@ beforeAll(() => {
   registerKnownChannelId("feishu");
 });
 
+test("a Direct Conversation isolation key resolves to the relay channel", () => {
+  // `bot` is the product kind, not a channel id, so there is no prefix to match
+  // against the known set. Falling through to the weixin default would send a
+  // Direct Bot turn to a channel that cannot render an interaction, and the
+  // broker would cancel with a message that looks like an unsupported channel.
+  expect(getChannelIdFromChatKey("bot:conv_1:topic_1")).toBe("relay");
+  // An unrelated key with the same first segment is NOT a bot key.
+  expect(getChannelIdFromChatKey("botzone:default:chat")).toBe("weixin");
+  // And the ordinary channels are unaffected.
+  expect(getChannelIdFromChatKey("feishu:default:oc_chat")).toBe("feishu");
+  expect(getChannelIdFromChatKey("weixin:default:wxid_alice")).toBe("weixin");
+  expect(getChannelIdFromChatKey("wxid_alice")).toBe("weixin");
+});
+
 test("extracts channel id from prefixed chat keys and treats legacy keys as weixin", () => {
   expect(getChannelIdFromChatKey("feishu:default:oc_chat")).toBe("feishu");
   expect(getChannelIdFromChatKey("weixin:default:wxid_alice")).toBe("weixin");

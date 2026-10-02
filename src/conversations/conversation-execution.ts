@@ -29,6 +29,16 @@ export function parseHumanIngress(value: unknown): HumanIngressContext | undefin
     ...(isNonEmptyString(raw.accountId) ? { accountId: raw.accountId.trim() } : {}),
     ...(isNonEmptyString(raw.senderName) ? { senderName: raw.senderName.trim() } : {}),
     ...(typeof raw.isOwner === "boolean" ? { isOwner: raw.isOwner } : {}),
+    // Ingress-reported route privacy, forwarded untouched.
+    //
+    // Not inferred here. The field is the channel's own statement about the
+    // destination it received the message on, and the renderer needs exactly that:
+    // `undefined` — the channel said nothing — must NOT be read as `direct`,
+    // because a channel that does not report it is a channel whose route the
+    // renderer cannot vouch for. Round-tripping it here is what keeps a real
+    // `chatType` provable rather than silently dropping it (and leaving the field
+    // dead while callers believed it was threaded).
+    ...(raw.chatType === "direct" || raw.chatType === "group" ? { chatType: raw.chatType } : {}),
   };
 }
 

@@ -1,12 +1,27 @@
 import { spawn } from "node:child_process";
 
 import { parseCanonicalFileTime } from "./windows-process-identity";
+import type { ProcessIdentity } from "../bridge/engine/runtime/worker-eof";
 
 export interface BatchTarget {
   pid: number;
   creationDate: string | null;
   commandLine?: string;
   executablePath?: string;
+  /**
+   * Provenance of `creationDate` / `executablePath`. "cim" tells the worker the
+   * caller could only observe the process through a WMI/CIM snapshot, so the
+   * creationDate is quantized to 6-digit microseconds and may differ from the
+   * kernel's FILETIME by up to 9 ticks IN EITHER DIRECTION (rounding direction is
+   * not a documented guarantee, so no direction is assumed), and the
+   * executablePath is the create-time launcher path.
+   * The worker then treats the record like a CIM-derived descendant: the creation
+   * date is compared with tolerance, and the path is not compared at all (a CIM
+   * path is never a handle image under a symlinked launcher). Note this makes the
+   * match WIDER, not tighter, than the handle-derived contract. Default "handle"
+   * keeps the exact compare for callers that probed a retained handle.
+   */
+  fingerprintSource?: WindowsDescendantFingerprintSource;
 }
 
 export type KillOutcome =
@@ -22,6 +37,13 @@ export interface ProcessTreeOutcome {
   outcome: KillOutcome;
   commandLine?: string;
   executablePath?: string;
+  /**
+   * Provenance of this entry's `creationDate` / `executablePath`. Descendants
+   * verified through a retained handle are wholly handle-derived (the worker
+   * writes both kernel values back); the root and any unverified entry keep
+   * whatever the caller supplied.
+   */
+  fingerprintSource?: WindowsDescendantFingerprintSource;
 }
 
 export interface TerminateProcessTreeResult {
@@ -35,12 +57,34 @@ export interface TerminateProcessTreeResult {
  * action's contract is to keep the parent alive and converge only its
  * transitive descendants.
  */
+
+/**
+ * Provenance of a descendant's `creationDate` / `executablePath`:
+ *   "handle" — both came from a RETAINED process handle (the kernel values);
+ *   "cim"    — both came from a WMI/CIM snapshot, so `creationDate` is
+ *              quantized to 6-digit microseconds and may differ from the
+ *              kernel's FILETIME by up to 9 ticks, and `executablePath` is the
+ *              create-time launcher path.
+ * `"unknown"` means the worker could not attribute either value for this pid.
+ */
+export type WindowsDescendantFingerprintSource = "handle" | "cim" | "unknown";
+
 export interface WindowsDescendantOutcome {
   pid: number;
   outcome: KillOutcome;
   creationDate: string | null;
   commandLine: string | null;
   executablePath: string | null;
+  fingerprintSource?: WindowsDescendantFingerprintSource;
+  /**
+   * INTERNAL bookkeeping — never produced by a worker decoder and never read by
+   * the reaper. Every (creationDate, fingerprintSource) print `mergeEvidence`
+   * has seen for this identity, including the ones a later observation
+   * superseded. Without it a canonicalized survivor would forget the CIM print
+   * it replaced, and the next round could bridge a different pid incarnation
+   * into the identity through the tolerance window.
+   */
+  identityPrints?: readonly ProcessIdentity[];
 }
 
 /** A process still present after convergence, parented by the worker itself or by a killed descendant. */
@@ -50,6 +94,9 @@ export interface WindowsDescendantLeftover {
   creationDate: string | null;
   commandLine: string | null;
   executablePath: string | null;
+  fingerprintSource?: WindowsDescendantFingerprintSource;
+  /** INTERNAL bookkeeping — see `WindowsDescendantOutcome.identityPrints`. */
+  identityPrints?: readonly ProcessIdentity[];
 }
 
 export interface TerminateDescendantsResult {
@@ -144,11 +191,16 @@ export function decodeWindowsTreeWorkerResponse(value: unknown, root: BatchTarge
       return null;
     }
     seen.add(target.pid);
+    const provenance = decodeFingerprintSource(item.fingerprintSource);
+    if (provenance === null) return null;
     outcomes.push({
       target,
       outcome: item.outcome as KillOutcome,
       ...(typeof item.commandLine === "string" ? { commandLine: item.commandLine } : {}),
       ...(typeof item.executablePath === "string" ? { executablePath: item.executablePath } : {}),
+      // Absent = the entry's fingerprint came from the caller (the root), which
+      // the caller already knows is handle-derived; nothing to reinterpret.
+      ...(provenance === undefined ? {} : { fingerprintSource: provenance }),
     });
   }
 
@@ -169,6 +221,43 @@ const DESCENDANT_SAFE_OUTCOMES: Partial<Record<KillOutcome, true>> = { killed: t
  * inconsistency, unsafe outcome, leftover, duplicate pid, or parent-pid entry
  * fails closed.
  */
+const DESCENDANT_FINGERPRINT_SOURCES: Partial<Record<WindowsDescendantFingerprintSource, true>> = {
+  handle: true,
+  cim: true,
+  unknown: true,
+};
+
+/**
+ * Decodes the provenance field of a worker record.
+ *   `undefined` / `null` — absent, legal: `decodeTarget` treats an explicit
+ *     JSON null the same way (PowerShell emits null for absent fields), and
+ *     absent means the caller supplied the values itself;
+ *   a valid source — legal;
+ *   any OTHER non-null value — malformed, and the caller must reject the
+ *   whole response. Treating it as absent would silently downgrade the record
+ *   to the wider CIM replay contract (±9 ticks, no path equality), so a
+ *   corrupt provenance must fail closed like a malformed creationDate.
+ */
+function decodeFingerprintSource(value: unknown): WindowsDescendantFingerprintSource | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  return DESCENDANT_FINGERPRINT_SOURCES[value as WindowsDescendantFingerprintSource]
+    ? value as WindowsDescendantFingerprintSource
+    : null;
+}
+
+/**
+ * A creation time is either absent (null) or a canonical FILETIME. Anything else
+ * — an arbitrary string from a malformed worker payload — fails the whole
+ * response closed rather than reaching `sameProcessIdentity`, which parses it
+ * with `BigInt()` and would throw. A throwing decoder also loses the normal
+ * `unverified` result the caller is designed to handle.
+ */
+function decodeCreationDate(value: unknown): string | null | undefined {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value !== "string" || parseCanonicalFileTime(value) === null) return undefined;
+  return value;
+}
+
 export function decodeWindowsDescendantsResponse(value: unknown, parentPid: number): TerminateDescendantsResult | null {
   if (!value || typeof value !== "object") return null;
   const response = value as Record<string, unknown>;
@@ -183,13 +272,18 @@ export function decodeWindowsDescendantsResponse(value: unknown, parentPid: numb
     const pid = Number(item.pid);
     if (pid === parentPid || seen.has(pid)) return null;
     if (typeof item.outcome !== "string" || !OUTCOMES.has(item.outcome as KillOutcome)) return null;
+    const creationDate = decodeCreationDate(item.creationDate);
+    if (creationDate === undefined) return null;
+    const provenance = decodeFingerprintSource(item.fingerprintSource);
+    if (provenance === null) return null;
     seen.add(pid);
     outcomes.push({
       pid,
       outcome: item.outcome as KillOutcome,
-      creationDate: item.creationDate === null || item.creationDate === undefined || item.creationDate === "" ? null : String(item.creationDate),
+      creationDate,
       commandLine: typeof item.commandLine === "string" && item.commandLine.length > 0 ? item.commandLine : null,
       executablePath: typeof item.executablePath === "string" && item.executablePath.length > 0 ? item.executablePath : null,
+      ...(provenance === undefined ? {} : { fingerprintSource: provenance }),
     });
   }
   const leftover: WindowsDescendantLeftover[] = [];
@@ -200,13 +294,18 @@ export function decodeWindowsDescendantsResponse(value: unknown, parentPid: numb
     const pid = Number(item.pid);
     if (pid === parentPid || seen.has(pid)) return null;
     if (!Number.isSafeInteger(item.parentPid) || Number(item.parentPid) <= 0) return null;
+    const creationDate = decodeCreationDate(item.creationDate);
+    if (creationDate === undefined) return null;
+    const provenance = decodeFingerprintSource(item.fingerprintSource);
+    if (provenance === null) return null;
     seen.add(pid);
     leftover.push({
       pid,
       parentPid: Number(item.parentPid),
-      creationDate: item.creationDate === null || item.creationDate === undefined || item.creationDate === "" ? null : String(item.creationDate),
+      creationDate,
       commandLine: typeof item.commandLine === "string" && item.commandLine.length > 0 ? item.commandLine : null,
       executablePath: typeof item.executablePath === "string" && item.executablePath.length > 0 ? item.executablePath : null,
+      ...(provenance === undefined ? {} : { fingerprintSource: provenance }),
     });
   }
   const recomputed =
@@ -421,7 +520,7 @@ public static class XacpxNativeProcess {
 '@
 function Result($rootOutcome, $outcomes) { @{rootOutcome=$rootOutcome;outcomes=@($outcomes)} | ConvertTo-Json -Depth 8 -Compress }
 function Outcome($node, $status) {
-  @{ target=@{pid=[int]$node.pid;creationDate=[string]$node.creationDate;commandLine=$node.commandLine;executablePath=$node.executablePath}; outcome=$status; commandLine=$node.commandLine; executablePath=$node.executablePath }
+  @{ target=@{pid=[int]$node.pid;creationDate=[string]$node.creationDate;commandLine=$node.commandLine;executablePath=$node.executablePath}; outcome=$status; commandLine=$node.commandLine; executablePath=$node.executablePath; fingerprintSource=$node.fingerprintSource }
 }
 function Snapshot {
   $watch=[Diagnostics.Stopwatch]::StartNew()
@@ -449,14 +548,39 @@ function OpenVerified($node, $cim) {
   if(!$same){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}}
   $image=[XacpxNativeProcess]::Image($h)
   if(!$image){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='query-failed';handle=[IntPtr]::Zero}}
-  if($node.executablePath -and ![string]::Equals([string]$node.executablePath,$image,[StringComparison]::OrdinalIgnoreCase)){
+  # $node.executablePath is only comparable as a STRING when the CALLER supplied it
+  # from a handle (root, $cim=$false). A CIM-derived child ($cim=$true) carries
+  # Win32_Process.ExecutablePath, the CREATE-TIME path recorded in the process
+  # parameters, while Image() resolves the image file object: under any
+  # symlinked/junctioned launcher shim (fnm multishell, volta, nvm-windows)
+  # these are different strings for the SAME process, so comparing them condemns
+  # every such child as 'skipped-replaced' and aborts the whole batch.
+  if(!$cim -and $node.executablePath -and ![string]::Equals([string]$node.executablePath,$image,[StringComparison]::OrdinalIgnoreCase)){
     [XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}
   }
-  return @{ok=$true;status=$null;handle=$h;image=$image}
+  return @{ok=$true;status=$null;handle=$h;image=$image;creation=$actual}
 }
 
 function CL($h){try{[XacpxNativeProcess]::Close($h)}catch{}}
-function VF($p){$c=OpenVerified $p $true;if($c.ok){$open[$p.pid]=$c.handle}else{$ov[$p.pid]=$c.status;CL $c.handle}}
+# On success the handle-derived image AND creation time replace the CIM values.
+# This node may be spooled as a durable residual whose fingerprint the reaper
+# replays as a strictly-compared ROOT, so a launcher alias or a quantized
+# (6-digit microsecond) creationDate there would never discharge. $fs records
+# the provenance so the caller can pick the matching replay tolerance.
+$fs=@{}
+function VF($p){
+  $c=OpenVerified $p $true
+  if($c.ok){
+    $p.executablePath=$c.image
+    $p.creationDate=$c.creation
+    $fs[$p.pid]='handle'
+    $open[$p.pid]=$c.handle
+  }else{
+    $fs[$p.pid]='cim'
+    $ov[$p.pid]=$c.status
+    CL $c.handle
+  }
+}
 if($request.action -eq 'identity'){
   $h=[XacpxNativeProcess]::Open([uint32]$request.pid)
   if($h -eq [IntPtr]::Zero){
@@ -473,7 +597,12 @@ if($request.action -eq 'identity'){
       if($cim -and $cim.CreationDate){
         $cimCreation=$cim.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString()
         $delta=[Numerics.BigInteger]::Abs([Numerics.BigInteger]::Parse($creation)-[Numerics.BigInteger]::Parse($cimCreation))
-        if($delta -le 9 -and [string]::Equals([string]$image,[string]$cim.ExecutablePath,[StringComparison]::OrdinalIgnoreCase)){
+        # The creationDate delta already binds this CIM row to the retained
+        # handle. Image equality would be a second, WEAKER identity proof and it
+        # breaks under a symlinked launcher shim: Win32_Process.ExecutablePath is
+        # the create-time path while $image is the resolved image file, so the
+        # commandLine would be dropped for a perfectly verified process.
+        if($delta -le 9){
           $commandLine=$cim.CommandLine
         }
       }
@@ -541,10 +670,13 @@ $fr=$nx
 }
 foreach($p in $cl){
 if($open.ContainsKey($p.pid)){$h=$open[$p.pid];$s=if(-not [XacpxNativeProcess]::Alive($h)){'already-exited'}elseif([XacpxNativeProcess]::Kill($h)){if([XacpxNativeProcess]::WaitDead($h)){'killed'}else{'kill-requested-unconfirmed'}}else{if([XacpxNativeProcess]::LastError()-eq 5){'access-denied'}else{'query-failed'}}}else{$s=$ov[$p.pid]}
-$out+=@{pid=$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath}
+$out+=@{pid=$p.pid;outcome=$s;creationDate=$p.creationDate;commandLine=$p.commandLine;executablePath=$p.executablePath;fingerprintSource=$fs[$p.pid]}
 }
 } finally {$open.Values|%{CL $_}}
 $vf=!@($out|?{$_.outcome -notin 'killed','already-exited'}).Count -and !$lf.Count -and $pok
+# A leftover that never reached VF has no attributed fingerprint at all: report
+# the explicit "unknown" source rather than silently claiming CIM provenance.
+foreach($l in $lf){if(!$fs.ContainsKey($l.pid)){$fs[$l.pid]='unknown'};$l|Add-Member -NotePropertyName fingerprintSource -NotePropertyValue $fs[$l.pid] -Force}
 Write-Output (@{verified=$vf;outcomes=$out;leftover=$lf}|ConvertTo-Json -Depth 8 -Compress);exit 0
 }
 `;
@@ -580,7 +712,7 @@ public static class XacpxNativeProcess {
 '@
 function Result($rootOutcome, $outcomes) { @{rootOutcome=$rootOutcome;outcomes=@($outcomes)} | ConvertTo-Json -Depth 8 -Compress }
 function Outcome($node, $status) {
-  @{ target=@{pid=[int]$node.pid;creationDate=[string]$node.creationDate;commandLine=$node.commandLine;executablePath=$node.executablePath}; outcome=$status; commandLine=$node.commandLine; executablePath=$node.executablePath }
+  @{ target=@{pid=[int]$node.pid;creationDate=[string]$node.creationDate;commandLine=$node.commandLine;executablePath=$node.executablePath}; outcome=$status; commandLine=$node.commandLine; executablePath=$node.executablePath; fingerprintSource=$node.fingerprintSource }
 }
 function Snapshot {
   $watch=[Diagnostics.Stopwatch]::StartNew()
@@ -589,8 +721,6 @@ function Snapshot {
     if($_.CreationDate){$ticks=$_.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString()}
     [pscustomobject]@{pid=[int]$_.ProcessId;parentPid=[int]$_.ParentProcessId;creationDate=$ticks;commandLine=$_.CommandLine;executablePath=$_.ExecutablePath}
   })
-  # GH runners measure ~3s per CIM enumeration; 8s bounds while absorbing
-  # bursty snapshots.
   if($watch.ElapsedMilliseconds -gt 8000){throw 'CIM enumeration exceeded 8 seconds'}
   return $items
 }
@@ -608,14 +738,15 @@ function OpenVerified($node, $cim) {
   if(!$same){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}}
   $image=[XacpxNativeProcess]::Image($h)
   if(!$image){[XacpxNativeProcess]::Close($h);return @{ok=$false;status='query-failed';handle=[IntPtr]::Zero}}
-  if($node.executablePath -and ![string]::Equals([string]$node.executablePath,$image,[StringComparison]::OrdinalIgnoreCase)){
+  # A caller-supplied path is handle-derived (root, $cim=$false). A CIM child's
+  # Win32_Process.ExecutablePath is the CREATE-TIME path; Image() resolves the
+  # file object. Under a symlinked shim these differ for the SAME process.
+  if(!$cim -and $node.executablePath -and ![string]::Equals([string]$node.executablePath,$image,[StringComparison]::OrdinalIgnoreCase)){
     [XacpxNativeProcess]::Close($h);return @{ok=$false;status='skipped-replaced';handle=[IntPtr]::Zero}
   }
-  return @{ok=$true;status=$null;handle=$h;image=$image}
+  return @{ok=$true;status=$null;handle=$h;image=$image;creation=$actual}
 }
 
-function CL($h){try{[XacpxNativeProcess]::Close($h)}catch{}}
-function VF($p){$c=OpenVerified $p $true;if($c.ok){$open[$p.pid]=$c.handle}else{$ov[$p.pid]=$c.status;CL $c.handle}}
 if($request.action -eq 'identity'){
   $h=[XacpxNativeProcess]::Open([uint32]$request.pid)
   if($h -eq [IntPtr]::Zero){
@@ -632,7 +763,9 @@ if($request.action -eq 'identity'){
       if($cim -and $cim.CreationDate){
         $cimCreation=$cim.CreationDate.ToUniversalTime().ToFileTimeUtc().ToString()
         $delta=[Numerics.BigInteger]::Abs([Numerics.BigInteger]::Parse($creation)-[Numerics.BigInteger]::Parse($cimCreation))
-        if($delta -le 9 -and [string]::Equals([string]$image,[string]$cim.ExecutablePath,[StringComparison]::OrdinalIgnoreCase)){
+        # The delta binds the CIM row to the retained handle; image equality is a
+        # weaker proof that also drops commandLine under a shim.
+        if($delta -le 9){
           $commandLine=$cim.CommandLine
         }
       }
@@ -665,7 +798,12 @@ if($request.action -eq 'terminate-one-cim'){
 $root=[pscustomobject]@{pid=[int]$request.root.pid;creationDate=[string]$request.root.creationDate;commandLine=$request.root.commandLine;executablePath=$request.root.executablePath}
 $handles=@{}
 $nodes=New-Object Collections.ArrayList
-$rootCheck=OpenVerified $root $false
+# A caller that could only observe this pid through CIM (the reaper replaying a
+# residual whose fingerprint was NEVER handle-derived) gets the CIM tolerance
+# (±9 ticks, NO path compare) — the WIDER match; everything else stays exact.
+$rootCim=([string]$request.root.fingerprintSource -eq 'cim')
+$rootCheck=OpenVerified $root $rootCim
+$root|Add-Member -NotePropertyName fingerprintSource -NotePropertyValue $(if($rootCim){'cim'}else{'handle'}) -Force
 if(!$rootCheck.ok){Write-Output (Result $rootCheck.status @((Outcome $root $rootCheck.status)));exit 0}
 $handles[$root.pid]=$rootCheck.handle
 [void]$nodes.Add($root)
@@ -684,11 +822,18 @@ try {
     foreach($p in @($remaining)){
       if($verified.Contains($p.parentPid)){
         $parent=$nodes | Where-Object {$_.pid -eq $p.parentPid} | Select-Object -First 1
+        if(!$parent){throw 'verified parent missing from traversal'}
         if(!$p.creationDate -or !$p.commandLine -or !$p.executablePath){throw 'incomplete descendant fingerprint'}
-        if([Numerics.BigInteger]::Parse($p.creationDate) -lt [Numerics.BigInteger]::Parse($parent.creationDate)){throw 'child predates parent'}
+        # Ordering compares two snapshot values: the parent side stays the CIM
+        # value from $byPid because $nodes already holds the kernel
+        # FILETIME; CIM-vs-kernel reads as "child predates parent".
+        if([Numerics.BigInteger]::Parse($p.creationDate) -lt [Numerics.BigInteger]::Parse($byPid[$p.parentPid].creationDate)){throw 'child predates parent'}
         $check=OpenVerified $p $true
         if(!$check.ok){throw ('descendant verification failed: '+$check.status)}
+        # Both fields become kernel-derived: one observation, one source.
+        $p.creationDate=$check.creation
         $p.executablePath=$check.image
+        $p|Add-Member -NotePropertyName fingerprintSource -NotePropertyValue 'handle' -Force
         $handles[$p.pid]=$check.handle
         [void]$nodes.Add($p);[void]$verified.Add($p.pid)
         $remaining=@($remaining | Where-Object {$_.pid -ne $p.pid});$added++
@@ -701,11 +846,13 @@ try {
   foreach($p in $new){if(![XacpxNativeProcess]::Alive($handles[$p.parentPid])){throw 'append parent exited or liveness unknown'}}
   foreach($p in $new){
     $parent=$nodes | Where-Object {$_.pid -eq $p.parentPid} | Select-Object -First 1
+    if(!$parent){throw 'append parent missing from traversal'}
     if(!$p.creationDate -or !$p.commandLine -or !$p.executablePath){throw 'incomplete appended fingerprint'}
-    if([Numerics.BigInteger]::Parse($p.creationDate) -lt [Numerics.BigInteger]::Parse($parent.creationDate)){throw 'appended child predates parent'}
+    # Same CIM-vs-CIM ordering as the initial traversal.
+    if([Numerics.BigInteger]::Parse($p.creationDate) -lt [Numerics.BigInteger]::Parse($byPid[$p.parentPid].creationDate)){throw 'appended child predates parent'}
     $check=OpenVerified $p $true
     if(!$check.ok){throw ('appended verification failed: '+$check.status)}
-    $p.executablePath=$check.image;$handles[$p.pid]=$check.handle;[void]$nodes.Add($p);[void]$verified.Add($p.pid)
+    $p.creationDate=$check.creation;$p.executablePath=$check.image;$p|Add-Member -NotePropertyName fingerprintSource -NotePropertyValue 'handle' -Force;$handles[$p.pid]=$check.handle;[void]$nodes.Add($p);[void]$verified.Add($p.pid)
   }
   $outcomes=New-Object Collections.ArrayList
   foreach($node in $nodes){

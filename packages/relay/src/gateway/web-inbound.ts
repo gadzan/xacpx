@@ -1,9 +1,13 @@
 import {
   decodeEnvelope,
   isErrorPayload,
+  DESKTOP_HUB_REQUEST_TIMEOUT_MS,
+  MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
   MSG,
   parseTerminalEventPayload,
   parseWebClientMessage,
+  type DesktopPrepareResult,
+  type InteractionRequestDto,
   type InstanceStateSnapshotDto,
   type PublishedAgentEndpointDto,
   type TerminalOpenResult,
@@ -14,13 +18,14 @@ import {
   type WebAgentDirectoryEndpointDto,
   type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
-
+import { type WebGateway, type WebSocketLike } from "./web-gateway.js";
 import { TERMINAL_REQUEST_TIMEOUT_MS } from "./instance-gateway.js";
-import type { WebGateway, WebSocketLike } from "./web-gateway.js";
+import { sendDesktopCancel, type DesktopStreamOwner } from "./desktop-viewer-cancel.js";
+import type { InteractionRegistry } from "../interaction-registry.js";
 
 export interface WebClientDeps {
   instances: {
-    getOwned(id: string, accountId: string): unknown;
+    getOwned(id: string, accountId: string): { id: string; capabilities?: string[] } | null;
     listByAccount(accountId: string): Array<{ id: string }>;
   };
   gateway: {
@@ -46,6 +51,36 @@ export interface WebClientDeps {
     | "getAttachmentBinding"
   >;
   stateSnapshot(instanceId: string): InstanceStateSnapshotDto;
+  desktop?: {
+    reserve(accountId: string, instanceId: string): { ok: true; streamId: string } | { ok: false; code: string; scope: "instance" | "account" };
+    mintConnectorTicket(streamId: string, accountId: string, instanceId: string): { ticket: string; expiresAt: number };
+    mintBrowserTicket(streamId: string, accountId: string, instanceId: string): { ticket: string; expiresAt: number };
+    markReady(streamId: string, security: "vnc-auth" | "ard"): boolean;
+    cancel(streamId: string, reason: string): void;
+    /**
+     * Release a reservation the viewer can only name by requestId - the
+     * close-then-reopen-race case, where the browser aborts before
+     * `desktop-opened` ever told it the streamId. Viewer-scoped: a prepare
+     * still in flight from ANOTHER viewer is never matched.
+     */
+    cancelPendingByRequest(requestId: string, ownerViewerId: string, reason: string): boolean;
+    /** Lifetime owner check: pending AND paired streams stay bound to the requesting viewer. */
+    ownsStream(streamId: string, ownerViewerId: string): boolean;
+    /**
+     * The hub-stamped owner of a stream, or undefined if it has none. The close
+     * path routes the connector cancel through this instead of the browser's
+     * `instanceId`: the browser chooses which stream to close, not which
+     * connector to talk to.
+     */
+    streamOwner(streamId: string): DesktopStreamOwner | undefined;
+    /** Bind a fresh reservation to its requesting viewer before the async prepare. */
+    trackOwner(streamId: string, owner: DesktopStreamOwner): void;
+  };
+  /**
+   * The hub's pending-interaction registry, so a subscribe can replay what is
+   * still open. Optional: a hub with no registry has nothing to replay.
+   */
+  interactions?: InteractionRegistry;
 }
 
 function fail(
@@ -58,6 +93,23 @@ function fail(
 ): void {
   deps.webGateway.send(socket, {
     kind: "terminal-request-failed",
+    requestId,
+    instanceId,
+    code,
+    message,
+  });
+}
+
+function failDesktop(
+  deps: WebClientDeps,
+  socket: WebSocketLike,
+  requestId: string,
+  instanceId: string,
+  code: string,
+  message: string,
+): void {
+  deps.webGateway.send(socket, {
+    kind: "desktop-request-failed",
     requestId,
     instanceId,
     code,
@@ -81,6 +133,18 @@ function mapConnectorError(err: unknown): { code: string; message: string } {
   }
   return { code: "terminal-protocol-error", message: String(err) };
 }
+function mapDesktopConnectorError(err: unknown): { code: string; message: string } {
+  if (err instanceof Error) {
+    if (err.message === "instance-offline" || err.message === "instance-reconnected") {
+      return { code: "desktop-instance-offline", message: "instance is offline" };
+    }
+    if (err.message === "timeout") {
+      return { code: "desktop-stream-timeout", message: "desktop prepare timed out" };
+    }
+    return { code: "desktop-protocol-error", message: err.message.slice(0, 160) };
+  }
+  return { code: "desktop-protocol-error", message: String(err).slice(0, 160) };
+}
 
 /** One retry when the connector socket was superseded mid-RPC (new conn is already online). */
 async function sendConnectorRequest(
@@ -88,20 +152,17 @@ async function sendConnectorRequest(
   instanceId: string,
   type: string,
   payload: unknown,
+  timeoutMs: number = TERMINAL_REQUEST_TIMEOUT_MS,
 ): Promise<unknown> {
   try {
-    return await deps.gateway.sendRequest(instanceId, type, payload, {
-      timeoutMs: TERMINAL_REQUEST_TIMEOUT_MS,
-    });
+    return await deps.gateway.sendRequest(instanceId, type, payload, { timeoutMs });
   } catch (err) {
     if (
       err instanceof Error
       && err.message === "instance-reconnected"
       && deps.gateway.isOnline(instanceId)
     ) {
-      return await deps.gateway.sendRequest(instanceId, type, payload, {
-        timeoutMs: TERMINAL_REQUEST_TIMEOUT_MS,
-      });
+      return await deps.gateway.sendRequest(instanceId, type, payload, { timeoutMs });
     }
     throw err;
   }
@@ -149,6 +210,42 @@ async function handleWebClientMessageAsync(
         instanceId,
         ...deps.stateSnapshot(instanceId),
       });
+      // Replay the interactions this account still has open.
+      //
+      // `interaction-opened` is a one-shot push, so a socket that was not yet
+      // connected — a page load, a brief disconnect, a hub event that arrived
+      // between the socket's open and its subscribe — misses it permanently. The
+      // hub is still holding the interaction and the agent is still waiting on an
+      // answer, so the human must be able to reach the form after the fact.
+      //
+      // Only what is genuinely still open is replayed: `listForInstance` returns
+      // live entries, so an interaction that resolved in the meantime is not
+      // resurrected. This is not the deferred hub-restart durability — it is the
+      // same registry, still holding the entry.
+      for (const open of deps.interactions?.listForInstance(instanceId) ?? []) {
+        if (open.expiresAt <= Date.now()) continue;
+        deps.webGateway.send(socket, {
+          kind: "control-event",
+          instanceId,
+          event: {
+            type: "interaction-opened",
+            // The runtime key the store scopes on; the product keys, when the
+            // turn has them, come from the entry's own correlation.
+            chatKey: open.chatKey,
+            sessionAlias: open.sessionAlias,
+            instanceId,
+            interaction: {
+              requestId: open.requestId,
+              kind: open.kind,
+              ...(open.conversation !== undefined ? { conversation: open.conversation } : {}),
+              expiresAt: open.expiresAt,
+              // A replayed form is still a form: the same renderable shape the
+              // original event carried.
+              ...(open.kind === "elicitation" ? { elicitation: open.elicitation } : { permission: open.permission }),
+            } as InteractionRequestDto,
+          },
+        });
+      }
     }
     return;
   }
@@ -166,6 +263,14 @@ async function handleWebClientMessageAsync(
       attachmentId: msg.attachmentId,
       viewerId,
     });
+    return;
+  }
+  if (msg.kind === "desktop-open") {
+    await handleDesktopOpen(deps, accountId, socket, msg);
+    return;
+  }
+  if (msg.kind === "desktop-close") {
+    handleDesktopClose(deps, accountId, socket, msg);
     return;
   }
   if (msg.kind === "terminal-take-control") {
@@ -326,6 +431,159 @@ async function handleTerminalOpen(
     deps.webGateway.unbindAttachment(result.attachmentId);
     detachConnectorAttachment(deps, msg.instanceId, result.attachmentId, viewerId);
   }
+}
+async function handleDesktopOpen(
+  deps: WebClientDeps,
+  accountId: string,
+  socket: WebSocketLike,
+  msg: { requestId: string; instanceId: string },
+): Promise<void> {
+  if (!deps.desktop) {
+    failDesktop(deps, socket, msg.requestId, msg.instanceId, "desktop-protocol-error", "desktop is not enabled on this hub");
+    return;
+  }
+  const ownerViewerId = deps.webGateway.getViewerId(socket);
+  if (!ownerViewerId) {
+    failDesktop(deps, socket, msg.requestId, msg.instanceId, "desktop-protocol-error", "missing viewer identity");
+    return;
+  }
+  const owned = deps.instances.getOwned(msg.instanceId, accountId);
+  if (!owned) return;
+  if (!deps.gateway.isOnline(msg.instanceId)) {
+    failDesktop(deps, socket, msg.requestId, msg.instanceId, "desktop-instance-offline", "instance is offline");
+    return;
+  }
+  if (!owned.capabilities?.includes("desktop.rfb.v1")) {
+    failDesktop(deps, socket, msg.requestId, msg.instanceId, "desktop-disabled", "desktop is not enabled on this instance");
+    return;
+  }
+  const reserved = deps.desktop.reserve(accountId, msg.instanceId);
+  if (!reserved.ok) {
+    failDesktop(deps, socket, msg.requestId, msg.instanceId, reserved.code, reserved.scope === "account"
+      ? "too many active desktop viewers on this account"
+      : "another desktop viewer is active");
+    return;
+  }
+  const streamId = reserved.streamId;
+  // Bind the pending prepare to the requesting control socket BEFORE the
+  // async connector RPC: a close during prepare must cancel this exact
+  // stream, never a successor that reused the instance slot.
+  deps.desktop.trackOwner(streamId, { viewerId: ownerViewerId, accountId, instanceId: msg.instanceId, requestId: msg.requestId });
+  // The connector is dialing loopback RFB and upgrading /desktop/instance for
+  // this stream from the moment it receives `desktopPrepare`, so EVERY exit
+  // after `reserve` must tell it to stop — not just the local teardown.
+  // Otherwise the hub frees the reservation immediately while the connector
+  // keeps a pending attempt alive until its own stage timeouts or the ticket
+  // rejection reaches it. Covers the hub's prepare deadline
+  // (DESKTOP_HUB_REQUEST_TIMEOUT_MS), a connector error, a malformed result,
+  // unsupported auth, the viewer disappearing mid-RPC, markReady failure, and
+  // the send-failure path. `handleCancel` is a no-op for an unknown streamId,
+  // so a late duplicate is harmless.
+  const cancelStream = (reason: string): void => {
+    sendDesktopCancel(deps.gateway as Parameters<typeof sendDesktopCancel>[0], msg.instanceId, streamId);
+    deps.desktop?.cancel(streamId, reason);
+  };
+  const failWith = (code: string, message: string): void => {
+    cancelStream(code);
+    failDesktop(deps, socket, msg.requestId, msg.instanceId, code, message);
+  };
+  const connectorTicket = deps.desktop.mintConnectorTicket(streamId, accountId, msg.instanceId);
+  let payload: unknown;
+  try {
+    payload = await deps.gateway.sendRequest(msg.instanceId, MSG.desktopPrepare, {
+      streamId,
+      ticket: connectorTicket.ticket,
+      expiresAt: connectorTicket.expiresAt,
+    }, { timeoutMs: DESKTOP_HUB_REQUEST_TIMEOUT_MS });
+  } catch (err) {
+    const mapped = mapDesktopConnectorError(err);
+    failWith(mapped.code, mapped.message);
+    return;
+  }
+  if (isErrorPayload(payload)) {
+    // Bound both fields to what a Web `desktop-request-failed` may carry before
+    // forwarding. The connector's message is free-form (an RFB server can make it
+    // huge — 255 unknown security types produces well over 1 KiB), and the web
+    // validator drops the whole event when it exceeds the cap. That would turn a
+    // precise honest failure into a silent one: the pending RPC would only ever
+    // see the browser's own timeout. Truncate here so the code survives.
+    //
+    // A code is also required to be NON-EMPTY: an empty string passes
+    // `isErrorPayload` but fails the web validator's `isBoundedStr`, with the same
+    // silent drop. Normalise rather than guess what the connector meant.
+    const code = payload.error.code.length > 0 ? payload.error.code.slice(0, 128) : "desktop-protocol-error";
+    failWith(code, payload.error.message.slice(0, MAX_DESKTOP_ERROR_MESSAGE_LENGTH));
+    return;
+  }
+  const result = payload as DesktopPrepareResult;
+  if (!result || result.streamId !== streamId || (result.security !== "vnc-auth" && result.security !== "ard")) {
+    failWith("desktop-protocol-error", "malformed prepare result");
+    return;
+  }
+  if (result.security !== "vnc-auth") {
+    failWith("desktop-auth-unsupported", "Apple Remote Desktop auth needs Phase B");
+    return;
+  }
+  // The requesting socket may have closed (or been superseded) during the
+  // connector RPC. Re-validate ownership BEFORE minting the browser ticket:
+  // an ownerless ticket would hand a live remote-control stream to nobody.
+  if (deps.webGateway.getViewerId(socket) !== ownerViewerId || !deps.desktop.ownsStream(streamId, ownerViewerId)) {
+    failWith("desktop-stream-timeout", "requesting viewer disconnected");
+    return;
+  }
+  if (!deps.desktop.markReady(streamId, result.security)) {
+    failWith("desktop-stream-timeout", "desktop stream expired");
+    return;
+  }
+  const browserTicket = deps.desktop.mintBrowserTicket(streamId, accountId, msg.instanceId);
+  const sent = deps.webGateway.send(socket, {
+    kind: "desktop-opened",
+    requestId: msg.requestId,
+    instanceId: msg.instanceId,
+    streamId,
+    wsPath: `/desktop/observe?ticket=${browserTicket.ticket}`,
+    expiresAt: browserTicket.expiresAt,
+    security: result.security,
+  });
+  if (!sent) {
+    failWith("desktop-stream-timeout", "requesting viewer disconnected");
+    return;
+  }
+  // Success keeps the lifetime binding: the same viewer owns the paired
+  // binary session, so its control-socket close still cancels the stream
+  // and other viewers' desktop-close frames are rejected.
+}
+
+function handleDesktopClose(
+  deps: WebClientDeps,
+  accountId: string,
+  socket: WebSocketLike,
+  msg: { instanceId: string; streamId?: string; requestId?: string },
+): void {
+  if (!deps.desktop) return;
+  const viewerId = deps.webGateway.getViewerId(socket) ?? "";
+  // Lifetime ownership gate: the requesting viewer owns the stream from
+  // reserve through the paired binary session. A stale/forged close from
+  // another tab must not kill someone's viewer.
+  if (msg.streamId !== undefined) {
+    // Ownership is the authorization, and the OWNER record is the routing.
+    // `msg.instanceId` is browser-chosen: a client that owns i1's stream could
+    // name i2 and make the hub deliver a cancel to a connector that never had
+    // anything to do with that stream. The hub already stamped the authoritative
+    // {viewerId, accountId, instanceId} at reserve, so read all three from it.
+    const owner = deps.desktop.streamOwner(msg.streamId);
+    if (!owner || owner.viewerId !== viewerId) return;
+    if (owner.accountId !== accountId) return;
+    sendDesktopCancel(deps.gateway as Parameters<typeof sendDesktopCancel>[0], owner.instanceId, msg.streamId);
+    deps.desktop.cancel(msg.streamId, "browser-close");
+    return;
+  }
+  if (msg.requestId === undefined) return;
+  // Close-then-reopen while the first open is still preparing: the browser
+  // never received a `desktop-opened`, so it has no streamId to name. The
+  // reservation stays single-viewer-locked until this requestId is matched and
+  // released, otherwise the immediate reopen fails `desktop-busy`.
+  if (!deps.desktop.cancelPendingByRequest(msg.requestId, viewerId, "browser-close")) return;
 }
 
 function detachConnectorAttachment(

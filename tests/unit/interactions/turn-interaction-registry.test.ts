@@ -149,6 +149,45 @@ describe("TurnInteractionRegistry", () => {
     expect(registry.resolve(orchestration.interactionId)?.origin).toBe("orchestration");
     for (const dispose of disposers) dispose();
   });
+
+  test("clear() NOTIFIES subscribers, as the interface promises", () => {
+    // The registry rewrite cleared `abortListeners` and then tried to read it
+    // back, so every lookup returned undefined and `clear()` silently dropped
+    // every binding without a single notification. The interface said "Drop every
+    // binding and notify subscribers" and it did only the first half — and it
+    // looked fine, because both brokers abort their own pending before calling
+    // clear() and the daemon does not await in between.
+    const registry = createTurnInteractionRegistry();
+    const route = turn();
+    registry.bindTurn(route);
+    let fired = 0;
+    registry.subscribeAbort(route.interactionId, () => {
+      fired += 1;
+    });
+    registry.clear();
+    expect(fired).toBe(1);
+    // ...and the binding is really gone, not just silent.
+    expect(registry.boundTurnCount).toBe(0);
+    expect(registry.resolve(route.interactionId)).toBeUndefined();
+  });
+
+  test("clear() notifies a turn ONCE even when both of its kinds are bound", () => {
+    // The same turn bound as both permission and elicitation must produce
+    // exactly one abort notification: the turn died once, so a broker still
+    // holding the other kind's route must not be fenced twice off one event.
+    // Notifying per-kind would fire a live permission request because an
+    // unrelated elicitation route was cleared.
+    const registry = createTurnInteractionRegistry();
+    const shared = turn();
+    registry.bindTurn({ ...shared }, undefined, "permission");
+    registry.bindTurn({ ...shared }, undefined, "elicitation");
+    let fired = 0;
+    registry.subscribeAbort(shared.interactionId, () => {
+      fired += 1;
+    });
+    registry.clear();
+    expect(fired).toBe(1);
+  });
 });
 
 describe("PermissionInteractionBroker registry sharing", () => {

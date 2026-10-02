@@ -2554,14 +2554,20 @@ export const useGroupsStore = defineStore("groups", () => {
 
     if ("conversation" in e && e.conversation) {
       const corr = e.conversation;
+      // The correlation ids are optional on the wire (a connector opening an
+      // interaction from a turn knows only the keys its route carried). A
+      // per-member live trace NEEDS the member attribution: an uncorrelated
+      // frame cannot be attributed and is skipped, never guessed.
       if (
+        corr.memberTurnId === undefined ||
+        corr.runId === undefined ||
         corr.conversationId !== activeConversationId.value ||
         corr.topicId !== activeTopicId.value ||
         (activeRun.value && corr.runId !== activeRun.value.id)
       ) {
         return;
       }
-      const key = corr.memberTurnId || corr.runId;
+      const key = corr.memberTurnId;
       const existing = liveTurnsByMember.value[key];
       if (!existing) {
         liveTurnsByMember.value = {

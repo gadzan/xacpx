@@ -15,6 +15,14 @@ const DEFAULT_TERMINAL = {
   historyLimit: 10000,
 };
 
+const DEFAULT_DESKTOP = {
+  enabled: false,
+  backend: "rfb" as const,
+  port: 5900,
+  connectTimeoutMs: 1500,
+  maxStreams: 1,
+};
+
 // ── normalizeRelayUrl ──────────────────────────────────────────────────────────
 
 test("normalizeRelayUrl: empty / whitespace-only → empty string", () => {
@@ -78,14 +86,17 @@ test("parses url, pairingToken, and name", () => {
     pairingToken: "tok",
     name: "pc",
     terminal: DEFAULT_TERMINAL,
+    desktop: DEFAULT_DESKTOP,
   });
 });
-
 test("pairingToken and name are optional; url is required", () => {
   expect(parseRelayChannelConfig({ url: "ws://127.0.0.1:8788" })).toEqual({
     url: "ws://127.0.0.1:8788",
     terminal: DEFAULT_TERMINAL,
+    desktop: DEFAULT_DESKTOP,
   });
+  // A missing url must still fail loudly: without it the connector would dial
+  // an unresolved hub instead of reporting a config error.
   expect(() => parseRelayChannelConfig({})).toThrow(/url/);
   expect(() => parseRelayChannelConfig(undefined)).toThrow(/url/);
 });
@@ -94,23 +105,23 @@ test("parseRelayChannelConfig normalizes bare domain to wss://", () => {
   expect(parseRelayChannelConfig({ url: "relay.example.com" })).toEqual({
     url: "wss://relay.example.com",
     terminal: DEFAULT_TERMINAL,
+    desktop: DEFAULT_DESKTOP,
   });
 });
-
 test("parseRelayChannelConfig normalizes IPv4 to ws:// with default port", () => {
   expect(parseRelayChannelConfig({ url: "1.2.3.4" })).toEqual({
     url: "ws://1.2.3.4:8787",
     terminal: DEFAULT_TERMINAL,
+    desktop: DEFAULT_DESKTOP,
   });
 });
-
 test("parseRelayChannelConfig normalizes https:// to wss://", () => {
   expect(parseRelayChannelConfig({ url: "https://relay.example.com" })).toEqual({
     url: "wss://relay.example.com",
     terminal: DEFAULT_TERMINAL,
+    desktop: DEFAULT_DESKTOP,
   });
 });
-
 test("terminal defaults: disabled rmux backend with spec §8.1 ranges", () => {
   const config = parseRelayChannelConfig({ url: "wss://hub.example.com" });
   expect(config.terminal).toEqual(DEFAULT_TERMINAL);

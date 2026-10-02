@@ -56,6 +56,21 @@ export interface ResidualRecord {
   creationDate: string;
   commandLine: string;
   executablePath: string;
+  /**
+   * Provenance of `creationDate` and `executablePath`, which decides the
+   * tolerance a replay must use when proving the record still names THIS
+   * process:
+   *   "handle" — both came from a RETAINED process handle, so the kernel's
+   *             exact values are authoritative and an exact compare is safe;
+   *   "cim"    — both came from a WMI/CIM snapshot, so `creationDate` is
+   *             quantized to 6-digit microseconds and differs from the kernel's
+   *             FILETIME by 1-9 ticks on most processes (measured 43/48 here),
+   *             and `executablePath` is the CREATE-TIME path that a launcher
+   *             alias replaces once resolved. A replay MUST NOT demand equality
+   *             for these, or every legitimate record is condemned
+   *             'skipped-replaced' and can never discharge.
+   */
+  fingerprintSource: "handle" | "cim";
   agentCommand: string;
   generationId: string;
   killAttempts: number;
@@ -143,7 +158,13 @@ export function decodeResidualRecord(value: unknown): ResidualRecord | null {
     || parseCanonicalFileTime(item.creationDate) === null || !nonempty(item.commandLine)
     || !nonempty(item.executablePath) || !nonempty(item.agentCommand)
     || !UUID.test(String(item.generationId)) || !nonNegativeInteger(item.killAttempts)) return null;
-  return item as unknown as ResidualRecord;
+  // Records written before provenance existed are CIM-derived (nothing else
+  // could produce a residual then). The legacy default is deliberately the
+  // WIDER replay contract (±9 ticks creation tolerance, no path equality):
+  // demanding an exact match would condemn every legitimate legacy record.
+  const source = item.fingerprintSource;
+  if (source !== undefined && source !== "handle" && source !== "cim") return null;
+  return { ...(item as unknown as ResidualRecord), fingerprintSource: source ?? "cim" };
 }
 
 function decodeForCategory(category: OrphanCategory, value: unknown): OrphanRecord | null {

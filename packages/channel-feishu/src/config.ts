@@ -39,6 +39,59 @@ export interface FeishuResolvedAccountConfig {
   allowFrom: string[];
   replyMode: FeishuReplyMode;
   trustGroupOwner: boolean;
+  /**
+   * Card-action callback channel. Feishu delivers interactive-card events
+   * (button clicks, form submits) as CALLBACKS, which the WebSocket long
+   * connection cannot carry — it subscribes to events only. So this is a
+   * separate, opt-in HTTP surface.
+   *
+   * `encryptKey` is what makes the callback authenticated: it is the new-protocol
+   * signing secret, so it is the trust anchor the plugin's identity check needs.
+   * The port is a required companion: an unauthenticated listener on a shared
+   * host is worse than no listener at all.
+   */
+  cardActions?: FeishuCardActionConfig;
+}
+
+/**
+ * Opt-in card-callback (webhook) listener for one account.
+ *
+ * `encryptKey` is REQUIRED, and so is `verificationToken`. `verifyCardRequest`
+ * picks the signing secret by protocol: a new-protocol callback (one carrying
+ * `encrypt` or `schema`) is verified with SHA-256 over the encrypt key, and a
+ * legacy push (no `schema`, no `encrypt`) with SHA-1 over the token.
+ *
+ * Every button the renderer emits carries `schema: "2.0"`, so every real click
+ * is new-protocol — which is why the key is mandatory. The URL-verification
+ * challenge Feishu POSTs when the endpoint is first configured carries NEITHER
+ * marker AND no signature headers at all, so it is recognized and echoed BEFORE
+ * the signature check runs (see `handleRequest`), which is why the token is
+ * mandatory too: the echoed token is the only credential that handshake has, and
+ * an endpoint missing it would start, serve every click, and still fail the
+ * handshake that puts it into service.
+ */
+export interface FeishuCardActionConfig {
+  /**
+   * Decryption key for encrypted pushes; also the new-protocol signing secret.
+   * Required, and never `""` on a config that came through `parseFeishuChannelConfig`:
+   * parsing rejects a missing or blank key (see `parseCardActions`).
+   */
+  encryptKey: string;
+  /**
+   * The legacy (no `schema`, no `encrypt`) signing secret, and the token Feishu
+   * echoes on every callback for the host to cross-check.
+   *
+   * REQUIRED, not optional: the URL-verification challenge arrives with no
+   * signature headers, so the echoed token is that handshake's only credential.
+   * A config without this token starts, serves every click, and still never
+   * finishes being configured.
+   */
+  verificationToken: string;
+  /** Loopback interface to bind. Defaults to 127.0.0.1 — a private surface. */
+  host: string;
+  port: number;
+  /** Route path Feishu POSTs to, e.g. `/webhook/card`. */
+  path: string;
 }
 
 export interface FeishuChannelConfig extends FeishuAccountConfig {
@@ -63,6 +116,9 @@ const BASE_RESERVED_KEYS = new Set([
   "dedupTtlMs",
   "dedupMaxEntries",
   "tuning",
+  // Per-account by nature: each account owns its own listener port, so a shared
+  // value would make multiple accounts fight over one socket.
+  "cardActions",
 ]);
 
 function parseTuning(raw: unknown): FeishuTuning {
@@ -139,6 +195,7 @@ function resolveAccount(
     throw new Error(`${path}.allowFrom must list at least one open_id (or "*") when dmPolicy/groupPolicy is "allowlist"`);
   }
   const replyMode = enumValue<FeishuReplyMode>(merged.replyMode, `${path}.replyMode`, ["static", "streaming", "auto"], "auto");
+  const cardActions = parseCardActions(merged.cardActions, `${path}.cardActions`);
   return {
     accountId,
     ...(stringOptional(merged.name, `${path}.name`) ? { name: stringOptional(merged.name, `${path}.name`)! } : {}),
@@ -153,6 +210,91 @@ function resolveAccount(
     allowFrom,
     replyMode,
     trustGroupOwner: booleanOptional(merged.trustGroupOwner, `${path}.trustGroupOwner`) ?? false,
+    ...(cardActions ? { cardActions } : {}),
+  };
+}
+
+const DEFAULT_CARD_ACTION_HOST = "127.0.0.1";
+const DEFAULT_CARD_ACTION_PATH = "/webhook/card";
+
+/**
+ * Parse the opt-in card-callback listener.
+ *
+ * Absent config means "no card channel", which is the default and the safe
+ * state: without it the Feishu plugin never receives card interactions and
+ * never claims to support form Elicitation.
+ *
+ * A misconfigured listener is a hard error rather than a silently disabled one.
+ * An operator who wrote `cardActions` clearly intends the channel to exist, and
+ * an endpoint that never comes up (because, say, the port was a string) would
+ * look exactly like "the feature does not work" at runtime.
+ *
+ * BOTH SECRETS ARE REQUIRED, because this endpoint has to serve two different
+ * request kinds and each one needs its own key:
+ *
+ *   - a card ACTION. Every button the renderer emits carries `schema: "2.0"`, so
+ *     a real click lands in the new-protocol branch and is verified against
+ *     `encryptKey` with SHA-256.
+ *   - the URL-VERIFICATION challenge. Feishu delivers it with NO signature
+ *     headers at all, so the only credential it carries is the echoed
+ *     `verificationToken` (see `extractUrlVerificationChallenge`). Without one
+ *     the endpoint can never finish being configured — it starts, answers every
+ *     click, and still cannot be put into service.
+ *
+ * The challenge is recognized BEFORE the signature check runs (see
+ * `handleRequest`), because requiring card-action headers first is a shape the
+ * official SDK's webhook adapter never produces for it.
+ */
+function parseCardActions(raw: unknown, path: string): FeishuCardActionConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === false) return undefined;
+  if (!isRecord(raw)) throw new Error(`${path} must be an object`);
+  const encryptKey = stringOptional(raw.encryptKey, `${path}.encryptKey`);
+  if (encryptKey === undefined) {
+    throw new Error(
+      `${path}.encryptKey is required: card actions are signed with it, so without it every click would be rejected with 401`,
+    );
+  }
+  const verificationToken = stringOptional(raw.verificationToken, `${path}.verificationToken`);
+  if (verificationToken === undefined) {
+    throw new Error(
+      `${path}.verificationToken is required: the URL-verification challenge arrives with no signature headers, so the echoed token is that handshake's only credential — without it the endpoint can never finish being configured`,
+    );
+  }
+  const port = raw.port;
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${path}.port must be an integer between 1 and 65535`);
+  }
+  const host = stringOptional(raw.host, `${path}.host`) ?? DEFAULT_CARD_ACTION_HOST;
+  // The request target is compared with STRICT EQUALITY against this path (see
+  // `CardActionHost.handleRequest`, which first strips anything from `?` on), so
+  // this value must be a pure pathname. Two classes of configuration are
+  // rejected:
+  //
+  //   - a relative path, because a request line carries `/webhook/card`, and
+  //     `"webhook/card"` is a different string;
+  //   - a path carrying a query or a fragment, because those are NOT part of the
+  //     server-side pathname being compared. Feishu's POST target is the path the
+  //     operator configured in the console, so `/webhook/card?tenant=x` would be
+  //     POSTed as it appears but split to `/webhook/card` before the comparison,
+  //     and a `#fragment` is never sent to a server at all.
+  //
+  // Both leave the listener bound, the channel advertising form capability, and
+  // every callback 404ing — the "starts successfully but the feature does not
+  // work" shape this parser's own design note says must be a hard error instead.
+  const configuredPath = stringOptional(raw.path, `${path}.path`) ?? DEFAULT_CARD_ACTION_PATH;
+  if (!configuredPath.startsWith("/") || configuredPath.includes("?") || configuredPath.includes("#")) {
+    throw new Error(
+      `${path}.path must be an absolute pathname with no query or fragment (got ${JSON.stringify(configuredPath)}); the request target is matched against it exactly, so a relative path or one carrying "?" / "#" would 404 every callback`,
+    );
+  }
+  return {
+    // No `?? ""` fallbacks: the required checks above already narrowed both.
+    encryptKey,
+    verificationToken,
+    host,
+    port,
+    path: configuredPath,
   };
 }
 
