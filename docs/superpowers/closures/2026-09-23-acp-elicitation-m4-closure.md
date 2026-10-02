@@ -903,3 +903,234 @@ Also worth stating: the fix does not weaken the retry path. A transport failure
 (`submitFailed`) is NOT authoritative about the window — the request may still be
 open — so that branch still leaves the form answerable, which is asserted
 separately above.
+
+## Addendum - the reconnect open-set gap (2026-10-02)
+
+The previous round closed the "parked corpse" — a form answered elsewhere during
+an outage stayed on screen until the user clicked it and got a 409 — and named the
+remaining gap exactly: that is the smallest self-healing the hub offers, but only
+an **authoritative open-set snapshot** actually ends it, and that protocol work
+stayed open. It is now closed.
+
+### The hole: replay is positive-only
+
+Every interaction control-event is a one-shot push, and `interaction-closed` is
+its only negative. So a browser that was disconnected when an interaction was
+answered elsewhere receives **neither**: it missed the open, and it missed the
+close. Replay covered the opening direction well — subscribe re-sends everything
+the registry still holds — but a replay cannot say "that is all of them". The
+client therefore had no way to distinguish:
+
+- "I have every open form" — correct after a clean reconnect, from
+- "I am missing an event" — the disconnect case, where a form the hub already
+  deleted is still in `pendingInteractions`.
+
+The distinction is what makes retirement possible. Without it the client's only
+defensible choice is to keep what it holds, which is precisely the indefinite
+display the previous addendum was written to end.
+
+### The change: `interaction-snapshot`
+
+Hub -> browser, on subscribe, after the state snapshot:
+
+```text
+subscribe -> [agent-directory, state-snapshot, interaction-snapshot]
+```
+
+The frame carries `instanceId` plus, for every interaction the hub still holds
+open and unexpired for that instance, the routing fields (`chatKey`,
+`sessionAlias`) **and** the full `InteractionRequestDto` — the same halves the
+live `interaction-opened` carries. Carrying the whole thing rather than bare
+requestIds is what lets the client reuse the existing open handler for the cold
+path, so the snapshot introduces no second merge rule that could drift from the
+live event's.
+
+The client reconciles three ways under the instance the snapshot names:
+
+| local | in snapshot | effect |
+|---|---|---|
+| held | yes | merge: server-shaped half from the snapshot, local `answers`/`errorCode` preserved |
+| held | no | **close as `gone`** — the neutral outcome; see the addendum below |
+| not held | yes | cold open, routed by the entry's own `chatKey`/`sessionAlias`, not invented |
+
+`gone` rather than `withdrawn` or `cancelled` is deliberate: the snapshot proves
+the window closed and nothing more. `withdrawn` asserts nobody chose anything and
+`cancelled` asserts the user chose to stop — both are claims about a cause the hub
+never sent. See "Addendum - omission is not a withdrawal" below.
+
+The instance fence runs **both** directions. The store is account-wide and holds
+forms for several instances; a snapshot is a statement about exactly one, so an
+omissive signal is only meaningful there. A snapshot for A retires nothing of B's,
+and a snapshot naming B's form does not open it into A's pane. Either direction of
+slack would let one instance's window destroy another's live form.
+
+### Where the validation lives
+
+Entries go through `validInteractionRequest`, the same field rules the live open
+path enforces, and the frame is refused **whole** on any violation — a partially
+parsed open set is worse than none, because the retirement it triggers would be
+based on an incomplete list. This keeps the snapshot from becoming a route around
+validation: a reconnect cannot resurrect a form the hub would never have accepted.
+
+An empty `interactions` array is the strongest form of the frame — "nothing is open
+for this instance" — and must stay valid, or reconnect silently degrades to the
+positive-only behaviour precisely when the negative signal matters most.
+
+### Proof
+
+Per-REVIEW-RULES.md every fix carries a regression that fails without it.
+
+Hub side (`tests/unit/packages/relay/terminal-web-inbound.test.ts`): the snapshot
+is sent with the authoritative set; an interaction that resolved is absent, which
+is the negative evidence; the snapshot is scoped to one instance; an entry carries
+the routing a cold open needs; a malformed frame is refused. Disabling the send
+fails all five.
+
+Protocol side (`tests/unit/packages/relay-protocol/relay-interaction-protocol.test.ts`):
+a populated frame parses, an empty one parses, an entry missing any of its three
+halves is refused, and an entry whose request core would reject is refused.
+Removing the entry checks fails the latter two; the first two guard against the
+frame kind being unknown to the validator, which would be indistinguishable from
+a strict rejection at a browser.
+
+Client side (`packages/relay-web/src/__tests__/direct-bots-interactions.test.ts`):
+an omitted local form is closed, a still-listed one keeps its draft, a cold form
+opens, another instance's forms are untouched and do not render into this pane.
+Skipping the retire loop fails the omission test only; skipping the cold-open loop
+fails both cold-open tests; removing the instance fence fails the isolation test
+only; re-asserting `withdrawn` on omission fails the omission test only.
+
+### Deliberately not changed
+
+`renderGeneration` publication semantics (from the earlier in-flight race fix) are
+untouched: a generation is published only after a successful `updateCard`. That
+round's reviewer explicitly forbade committing early, because it re-opens the
+"failed update re-fences the live card" regression, and nothing here needs it.
+
+The retirement is a snapshot-local reconciliation, not a new downlink queue. The
+hub still answers through the existing long-lived `interactionRequest` call, so
+there is no second path an answer could take and no second owner of the outcome.
+
+### Where the validation lives
+
+Entries go through `validInteractionRequest`, the same field rules the live open
+path enforces, and the frame is refused **whole** on any violation — a partially
+parsed open set is worse than none, because the retirement it triggers would be
+based on an incomplete list. This keeps the snapshot from becoming a route around
+validation: a reconnect cannot resurrect a form the hub would never have accepted.
+
+An empty `interactions` array is the strongest form of the frame — "nothing is open
+for this instance" — and must stay valid, or reconnect silently degrades to the
+positive-only behaviour precisely when the negative signal matters most.
+
+### Ordering invariant
+
+The subscribe branch installs the subscription, captures the open set, and sends
+every frame in **one synchronous turn**. That is what makes omission safe to act
+on:
+
+- open before the capture → in the snapshot
+- closed before the capture → absent from the snapshot
+- open after the send → the live event lands after the snapshot
+
+An `await` inserted between the subscription and the capture (a database lookup,
+metrics, a permission re-check) opens a window where an interaction can open, be
+omitted from the snapshot, *and* have its live event land first — so the client
+retires a form the hub still holds. Repairing that needs a revision / sequence
+fence. The branch therefore stays synchronous, the reason is written at the top of
+it, and `terminal-web-inbound.test.ts` pins it with a no-`await` assertion.
+
+## Addendum - omission is not a withdrawal (2026-10-02)
+
+The addendum above shipped a real defect that a review round caught. Recording it
+here because the mistake generalises.
+
+The motivating case reads like a withdrawal:
+
+```text
+Tab A disconnects
+Tab B Accepts
+the hub resolves and removes the interaction
+Tab A reconnects
+```
+
+so the omission was mapped straight to `withdrawn`. But the motivating case is one
+of at least five the snapshot cannot distinguish — `accepted`, `declined`,
+`cancelled`, `expired`, `withdrawn` — and the mechanism carries no information
+about which one it was. `withdrawn` asserts "nobody chose anything"; after another
+tab accepted, that is false, and the UI told the user the window was pulled when
+someone had answered it.
+
+The proof that the snapshot cannot know is structural, not incidental. It reports
+the **current open set**; a terminal reason exists only on a request that is no
+longer open, so the frame is by construction silent about every terminal cause. Any
+label chosen from an absence is invented.
+
+So the omission now maps to a new neutral outcome, `gone`, and the notice is
+`This request is no longer available.` / `该请求已不再可用。` — a statement about
+availability, which is the only thing proven. The named outcomes stay reserved for
+a hub close event that names one.
+
+Saying which of the five it really was needs the hub to keep a short terminal
+tombstone (`{ requestId, action, reason }`) past the close and send it to a
+reconnecting browser. That is a separate capability, deliberately not guessed at
+here — and not smuggled in through the open set.
+
+## Addendum - two validation authorities, two drift bugs (2026-10-02)
+
+The same review round caught two boundaries this work had left inconsistent with
+the paths it claimed to mirror.
+
+### Run state stopped being an authority over interaction liveness
+
+`reconcileOnReconnect()` still retired an interaction whose owning turn had no
+live Run, reasoning that a finished turn cannot still be waiting on a form. That
+was defensible when the hub offered nothing better, and it is wrong now:
+
+- `activeRun` is the **selected pane's single Run** while the pending map is
+  account-wide, so it could retire a form for another instance or topic that the
+  hub still held open.
+- It runs **after** the authoritative snapshot has already proven the request
+  open, so a weaker heuristic could undo — one microtask later — a fact the hub had
+  just settled.
+
+Two authorities over one fact is the bug regardless of which one wins on a given
+run. Interaction liveness is now decided only by `interaction-opened` /
+`interaction-closed`, the authoritative snapshot, `expiresAt`, and the hub's
+`interaction-gone`. The loop keeps only its local, non-authoritative expiry check,
+which reads the request itself. The two tests that pinned the old heuristic were
+replaced by one asserting a completed Run leaves the form open.
+
+### The snapshot entry validator had already drifted from the live path
+
+The live `interaction-opened` event and a snapshot entry are the same fact by two
+routes, and each had its own hand-written check. They had already diverged: the
+snapshot required `isBoundedStr(chatKey, 128)` while the live event required only
+`typeof === "string"` — the convention every other control event uses for those
+fields. The snapshot was therefore **stricter** than the path it claimed to mirror,
+and any field added to one wire path would silently have been missing from the
+other.
+
+Both now call one `validInteractionOpenShape()`. The bounds stay off
+`chatKey`/`sessionAlias` to match the rest of the file — bounding only these would
+refuse real clients whose keys exceed the cap, and the per-field bounds belong to
+the request itself.
+
+The regression asserts the **pair**, not a particular bound: a mutation is applied
+once and fed to both paths, and the test requires them to agree. Whether a given
+shape is accepted is the helper's business; that two wire paths cannot disagree is
+the contract, and it is what a near-copy breaks. Re-introducing the original drift
+fails it.
+
+### A note on mutation testing
+
+Three of the first mutations against this work silently did not apply: the
+replacement strings used `\n` while the files use CRLF, `split().length - 1`
+returned 0, and the mutation script printed "mutated" anyway. The tests stayed
+green and read as "this case is not covered".
+
+An `AMBIGUOUS occurrences=0` guard is not enough. Assert the mutation **landed** —
+re-read the file and confirm the marker is present — before drawing any conclusion
+from a green run. This is recorded in the addendum rather than removed because a
+mutation that fails silently is indistinguishable from a missing test, which is the
+exact situation it exists to prevent.
