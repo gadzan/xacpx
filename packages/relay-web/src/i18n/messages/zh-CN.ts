@@ -717,6 +717,9 @@ export default {
       declined: "你已拒绝回答。",
       cancelled: "已取消。",
       withdrawn: "在收到答案前已关闭。",
+      // 中性：Hub 只证明窗口已不再 open，未证明是谁或为何关闭，
+      // 因此文案不得声称原因。
+      gone: "该请求已不再可用。",
       requiredMissing: "还需填写：{fields}",
       requestedBy: "提问者",
       pattern: "期望格式",

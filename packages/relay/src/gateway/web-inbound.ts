@@ -8,6 +8,7 @@ import {
   parseWebClientMessage,
   type DesktopPrepareResult,
   type InteractionRequestDto,
+  type ControlEventDto,
   type InstanceStateSnapshotDto,
   type PublishedAgentEndpointDto,
   type TerminalOpenResult,
@@ -189,10 +190,36 @@ async function handleWebClientMessageAsync(
   const msg = parseWebClientMessage(decoded.envelope);
   if (!msg) return;
 
+  // ===========================================================================
+  // ORDERING INVARIANT — the whole subscribe branch is synchronous.
+  //
+  // `setSubscription -> snapshot capture -> snapshot send` must run to completion
+  // in ONE synchronous turn, with no `await` anywhere between them. That is what
+  // makes the snapshot's OMISSION safe to act on:
+  //
+  //   before the capture  -> in the snapshot
+  //   before the capture, closed  -> NOT in the snapshot
+  //   after the send      -> the live event arrives after the snapshot
+  //
+  // An interaction that opens after the capture is carried by a live
+  // `interaction-opened` that necessarily lands AFTER the snapshot, because nothing
+  // between the capture and the next macrotask can reorder frames on this socket.
+  // The client therefore never has to ask "did I miss one before the snapshot?" —
+  // the answer is embedded in the ordering.
+  //
+  // Insert an `await` before the capture (a database lookup, a metrics call, a
+  // permission re-check) and an interaction can open in the window between capture
+  // and send: the snapshot omits it AND its live event precedes it, so the client
+  // retires a form the hub still holds open. That failure requires a revision /
+  // sequence fence to repair, so do not get close to it — keep this branch sync
+  // and push any async work to after the snapshot is sent.
+  //
+  // The test `tests/unit/packages/relay/terminal-web-inbound.test.ts` pins this by
+  // asserting the frames are sent in one turn.
+  // ===========================================================================
   if (msg.kind === "subscribe") {
     const ownedIds = new Set(deps.instances.listByAccount(accountId).map((instance) => instance.id));
     const instanceIds = [...new Set(msg.instanceIds)].filter((id) => ownedIds.has(id));
-    deps.webGateway.setSubscription(socket, instanceIds);
     if (typeof deps.gateway.getWebPublishedEndpoints === "function") {
       deps.webGateway.send(socket, {
         kind: "agent-directory",
@@ -210,7 +237,14 @@ async function handleWebClientMessageAsync(
         instanceId,
         ...deps.stateSnapshot(instanceId),
       });
-      // Replay the interactions this account still has open.
+      // The interactions this account still has open, as the AUTHORITATIVE set.
+      // `listForInstance` returns live entries, so one that resolved in the
+      // meantime is not resurrected. This is not the deferred hub-restart
+      // durability — it is the same registry, still holding the entry.
+      const open = (deps.interactions?.listForInstance(instanceId) ?? []).filter(
+        (entry) => entry.expiresAt > Date.now(),
+      );
+      // Replay them, then declare the set COMPLETE.
       //
       // `interaction-opened` is a one-shot push, so a socket that was not yet
       // connected — a page load, a brief disconnect, a hub event that arrived
@@ -218,34 +252,47 @@ async function handleWebClientMessageAsync(
       // hub is still holding the interaction and the agent is still waiting on an
       // answer, so the human must be able to reach the form after the fact.
       //
-      // Only what is genuinely still open is replayed: `listForInstance` returns
-      // live entries, so an interaction that resolved in the meantime is not
-      // resurrected. This is not the deferred hub-restart durability — it is the
-      // same registry, still holding the entry.
-      for (const open of deps.interactions?.listForInstance(instanceId) ?? []) {
-        if (open.expiresAt <= Date.now()) continue;
+      // Replay alone was not enough, and this is what closes it: it is
+      // POSITIVE-only, so a browser that was disconnected while the interaction was
+      // answered elsewhere received neither an open nor a close and could not tell
+      // "I have everything" from "I am missing an event". The snapshot is the
+      // boundary that lets it retire anything local the hub has already closed,
+      // instead of leaving a dead form on screen indefinitely.
+      //
+      // Both messages carry the SAME frame, built once: a replayed form and a
+      // snapshot entry are the same fact, and two builders would let them drift.
+      const frames = open.map((entry) => ({
+        // The runtime key the store scopes on; the product keys, when the turn
+        // has them, come from the entry's own correlation.
+        chatKey: entry.chatKey,
+        sessionAlias: entry.sessionAlias,
+        instanceId,
+        interaction: {
+          requestId: entry.requestId,
+          kind: entry.kind,
+          ...(entry.conversation !== undefined ? { conversation: entry.conversation } : {}),
+          expiresAt: entry.expiresAt,
+          // A replayed form is still a form: the same renderable shape the
+          // original event carried.
+          ...(entry.kind === "elicitation" ? { elicitation: entry.elicitation } : { permission: entry.permission }),
+        } as InteractionRequestDto,
+      }));
+      for (const frame of frames) {
         deps.webGateway.send(socket, {
           kind: "control-event",
           instanceId,
-          event: {
-            type: "interaction-opened",
-            // The runtime key the store scopes on; the product keys, when the
-            // turn has them, come from the entry's own correlation.
-            chatKey: open.chatKey,
-            sessionAlias: open.sessionAlias,
-            instanceId,
-            interaction: {
-              requestId: open.requestId,
-              kind: open.kind,
-              ...(open.conversation !== undefined ? { conversation: open.conversation } : {}),
-              expiresAt: open.expiresAt,
-              // A replayed form is still a form: the same renderable shape the
-              // original event carried.
-              ...(open.kind === "elicitation" ? { elicitation: open.elicitation } : { permission: open.permission }),
-            } as InteractionRequestDto,
-          },
+          event: { type: "interaction-opened", ...frame } as ControlEventDto,
         });
       }
+      deps.webGateway.send(socket, {
+        kind: "interaction-snapshot",
+        instanceId,
+        interactions: frames.map((frame) => ({
+          chatKey: frame.chatKey,
+          sessionAlias: frame.sessionAlias,
+          interaction: frame.interaction,
+        })),
+      });
     }
     return;
   }

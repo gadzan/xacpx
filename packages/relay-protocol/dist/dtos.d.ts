@@ -886,6 +886,29 @@ export interface InteractionResponseDto {
     /** Elicitation `accept` only. `null` is a valid all-optional accept. */
     content?: Record<string, InteractionValueDto> | null;
 }
+/** Hub -> browser: the authoritative open-interaction set for one instance. */
+export interface InteractionSnapshotDto {
+    /**
+     * One entry per interaction the hub still holds open for this instance,
+     * already filtered to those whose window has not passed.
+     *
+     * Each entry carries the ROUTING fields beside the request — `chatKey`,
+     * `sessionAlias`, `instanceId` — exactly as the live `interaction-opened`
+     * event shapes them, because a browser that has never seen the interaction
+     * needs the same routing information to open it. Omitting them would force
+     * the client to invent a chatKey, which is the kind of guess the interaction
+     * contract forbids.
+     *
+     * The request itself is the same object, so a browser that already holds the
+     * interaction merges it rather than depending on field-by-field equality
+     * between two wire paths.
+     */
+    readonly interactions: readonly {
+        chatKey: string;
+        sessionAlias: string;
+        interaction: InteractionRequestDto;
+    }[];
+}
 /** Connector -> hub: WITHDRAW an still-open interaction. */
 export interface InteractionWithdrawDto {
     /** The interaction to withdraw. Idempotent for ids that already closed. */

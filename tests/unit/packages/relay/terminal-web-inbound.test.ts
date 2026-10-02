@@ -311,7 +311,6 @@ test("a subscribe frame filters ownership and installs the subscription", () => 
   const d = deps(true);
   handleWebClientMessage(d as never, "a1", d.sock as never, encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1", "i2"] })));
   // snapshot send happens; ownership filter drops i2
-  expect(d.sock.sent.length).toBe(2);
   const dirDecoded = decodeEnvelope(d.sock.sent[0]!);
   expect(dirDecoded.ok && parseWebServerEvent(dirDecoded.envelope)).toMatchObject({
     kind: "agent-directory",
@@ -319,6 +318,16 @@ test("a subscribe frame filters ownership and installs the subscription", () => 
   const snapshotDecoded = decodeEnvelope(d.sock.sent[1]!);
   expect(snapshotDecoded.ok && parseWebServerEvent(snapshotDecoded.envelope)).toMatchObject({
     kind: "state-snapshot",
+    instanceId: "i1",
+  });
+  // THREE frames now, because the authoritative open-interaction snapshot closes
+  // the boundary: replay alone is positive-only, so a browser that missed an
+  // event while disconnected could not tell "I have everything" from "I am
+  // missing one" and kept a form the hub had already closed.
+  expect(d.sock.sent.length).toBe(3);
+  const interactionDecoded = decodeEnvelope(d.sock.sent[2]!);
+  expect(interactionDecoded.ok && parseWebServerEvent(interactionDecoded.envelope)).toMatchObject({
+    kind: "interaction-snapshot",
     instanceId: "i1",
   });
 });
@@ -373,3 +382,263 @@ test("in-flight terminal-open after socket close detaches the connector attachme
 });
 
 void webEventEnvelope;
+
+// The authoritative open-set snapshot, and the reconnect boundary it closes.
+//
+// `interaction-opened` is a one-shot push and `interaction-closed` is its only
+// negative, so a browser that was disconnected while an interaction was answered
+// elsewhere receives NEITHER: no open to miss, no close to observe. Subscribe
+// replays the still-open set, but a replay is positive-only — it cannot say
+// "that is all of them", so the client cannot tell "I have everything" from "I am
+// missing an event" and keeps a form the hub has already closed.
+//
+// `control.interaction.snapshot` is that statement, and these three cases are the
+// contract it must satisfy.
+
+/** An interaction the fake registry holds open, shaped like the real entry. */
+function openInteraction(requestId: string, over: Record<string, unknown> = {}) {
+  return {
+    requestId,
+    instanceId: "i1",
+    accountId: "a1",
+    kind: "elicitation" as const,
+    expiresAt: Date.now() + 60_000,
+    chatKey: "bot:c1:t1",
+    sessionAlias: "review",
+    conversation: { conversationId: "c1", topicId: "t1" },
+    elicitation: { mode: "form" as const, message: "Which region?", fields: [], agent: { name: "codex" } },
+    ...over,
+  };
+}
+
+/** Wire-shape entries, i.e. what `parseWebServerEvent` must accept. */
+function entryFor(entry: ReturnType<typeof openInteraction>) {
+  return {
+    chatKey: entry.chatKey,
+    sessionAlias: entry.sessionAlias,
+    interaction: {
+      requestId: entry.requestId,
+      kind: entry.kind,
+      conversation: entry.conversation,
+      expiresAt: entry.expiresAt,
+      elicitation: entry.elicitation,
+    },
+  };
+}
+
+/** A `deps` whose registry holds the given open interactions for i1. */
+function depsWithOpen(open: ReturnType<typeof openInteraction>[]) {
+  const d = deps(true);
+  return {
+    ...d,
+    interactions: {
+      listForInstance: mock((instanceId: string) => (instanceId === "i1" ? open : [])),
+      listForAccount: mock(() => open),
+      get: mock(() => null),
+    },
+  };
+}
+
+/** Decode only the interaction-snapshot frame from a socket's sends. */
+function snapshotFrames(sock: FakeSocket) {
+  return sock.sent
+    .map((raw) => decodeEnvelope(raw))
+    .filter((d) => d.ok)
+    .map((d) => parseWebServerEvent(d.envelope))
+    .filter((e) => e !== null && e.kind === "interaction-snapshot");
+}
+
+test("a snapshot declares the authoritative open set for the instance it names", () => {
+  const d = depsWithOpen([openInteraction("req-web-1"), openInteraction("req-web-2")]);
+  handleWebClientMessage(
+    d as never,
+    "a1",
+    d.sock as never,
+    encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1"] })),
+  );
+  const snapshots = snapshotFrames(d.sock);
+  expect(snapshots).toHaveLength(1);
+  const ids = snapshots[0]!.interactions.map((e) => e.interaction.requestId).sort();
+  expect(ids).toEqual(["req-web-1", "req-web-2"]);
+});
+
+test("a snapshot OMITS an interaction that resolved, which is the negative evidence", async () => {
+  // The case that decides whether the reconnect boundary actually closes.
+  //
+  // Before the snapshot existed, the hub's subscribe path replayed only what it
+  // still held and sent no statement about anything else. A tab that was away
+  // while `req-web-2` was answered elsewhere therefore kept it locally and
+  // displayed it indefinitely — the user could click it and only then learn, from
+  // a 409, that the request was gone.
+  //
+  // The snapshot's OMISSION is the signal: an entry present locally and absent
+  // here is closed on the server. The replay still carries the live one.
+  const d = depsWithOpen([openInteraction("req-web-1")]);
+  handleWebClientMessage(
+    d as never,
+    "a1",
+    d.sock as never,
+    encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1"] })),
+  );
+  const snapshots = snapshotFrames(d.sock);
+  expect(snapshots[0]!.interactions.map((e) => e.interaction.requestId)).toEqual(["req-web-1"]);
+  expect(snapshots[0]!.interactions.map((e) => e.interaction.requestId)).not.toContain("req-web-2");
+});
+
+test("a snapshot is scoped to ONE instance and never merges another's forms", () => {
+  // The store is account-wide, so a browser must be able to reconcile i1 without
+  // concluding anything about i2. An instance-scoped snapshot is what makes that
+  // safe: an omissive signal is only meaningful for the instance it covers.
+  const d = depsWithOpen([openInteraction("req-web-1")]);
+  handleWebClientMessage(
+    d as never,
+    "a1",
+    d.sock as never,
+    encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1", "i2"] })),
+  );
+  // i2 is dropped by the ownership filter entirely, so exactly one snapshot and it
+  // is i1's.
+  const snapshots = snapshotFrames(d.sock);
+  expect(snapshots).toHaveLength(1);
+  expect(snapshots[0]!.instanceId).toBe("i1");
+});
+
+test("a snapshot entry carries the routing a cold-open needs", () => {
+  // The client must not have to invent a chatKey or sessionAlias to open a form it
+  // has never seen: those decide where the answer is routed, and a guess there is
+  // exactly the kind of thing the interaction contract forbids.
+  const d = depsWithOpen([openInteraction("req-web-1")]);
+  handleWebClientMessage(
+    d as never,
+    "a1",
+    d.sock as never,
+    encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1"] })),
+  );
+  const entry = snapshotFrames(d.sock)[0]!.interactions[0]!;
+  expect(entry.chatKey).toBe("bot:c1:t1");
+  expect(entry.sessionAlias).toBe("review");
+  expect(entry.interaction.requestId).toBe("req-web-1");
+  // And the entry is the SAME shape the replay sends, so a client can treat the
+  // two identically.
+  const replayed = d.sock.sent
+    .map((raw) => decodeEnvelope(raw))
+    .filter((x) => x.ok)
+    .map((x) => parseWebServerEvent(x.envelope))
+    .find((e) => e !== null && e.kind === "control-event"
+      && (e.event as { type?: string }).type === "interaction-opened") as {
+    event: { interaction: { requestId: string }; chatKey: string };
+  } | undefined;
+  expect(replayed?.event.interaction.requestId).toBe(entry.interaction.requestId);
+  expect(replayed?.event.chatKey).toBe(entry.chatKey);
+});
+
+test("a malformed snapshot is refused rather than parsed leniently", () => {
+  // An unvalidated snapshot would let a reconnect resurrect a form the hub should
+  // never have accepted: every entry goes through the same field rules the live
+  // open path enforces, and a frame that violates them is dropped whole.
+  const bad = {
+    kind: "interaction-snapshot" as const,
+    instanceId: "i1",
+    interactions: [{
+      chatKey: "bot:c1:t1",
+      sessionAlias: "review",
+      interaction: {
+        requestId: "req-web-1",
+        kind: "elicitation" as const,
+        // An over-long field key: legal nowhere, so the whole frame goes.
+        elicitation: {
+          mode: "form" as const,
+          message: "m",
+          fields: [{ kind: "text", key: "x".repeat(129), title: "T", required: true }],
+          agent: { name: "codex" },
+        },
+      },
+    }],
+  };
+  expect(parseWebServerEvent(webEventEnvelope(bad))).toBeNull();
+  // And a well-formed one still parses, so the rejection is about the payload
+  // rather than the frame kind being unknown.
+  expect(parseWebServerEvent(webEventEnvelope({
+    kind: "interaction-snapshot" as const,
+    instanceId: "i1",
+    interactions: [],
+  }))).not.toBeNull();
+});
+
+// ORDERING INVARIANT: the subscribe branch sends all of its frames in one turn.
+//
+// The snapshot's omissive reconciliation is only safe if interaction opens that
+// happened before the capture are IN the snapshot, and opens that happen after it
+// are carried by a live event that lands AFTER the snapshot. Both halves of that
+// are automatic in Node only while `setSubscription -> capture -> send` runs in a
+// single synchronous turn.
+//
+// An `await` inserted before the capture (a DB lookup, metrics, a permission
+// re-check) opens a window where an interaction can open, be omitted from the
+// snapshot, AND have its live event land first — so the client retires a form the
+// hub still holds. Repairing that needs a revision/sequence fence, so this test
+// fails loudly the moment anyone reaches for an `await` in that branch.
+test("subscribe sends every frame in ONE synchronous turn", () => {
+  const d = depsWithOpen([openInteraction("req-web-1")]);
+  // No `await` on the call, and none inside the assertion chain. If the handler
+  // yields anywhere between installing the subscription and sending the snapshot,
+  // the frames below simply will not be there yet.
+  handleWebClientMessage(
+    d as never,
+    "a1",
+    d.sock as never,
+    encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1"] })),
+  );
+  // The directory, the state snapshot, the replay of the still-open form, and the
+  // snapshot itself — count is the replay's business; what matters is that the
+  // snapshot is LAST, because an omission is only meaningful after the client is
+  // guaranteed to have seen the positive half.
+  expect(d.sock.sent.length).toBeGreaterThanOrEqual(3);
+  const kinds = d.sock.sent
+    .map((raw) => decodeEnvelope(raw))
+    .filter((x) => x.ok)
+    .map((x) => parseWebServerEvent(x.envelope))
+    .map((e) => (e === null ? null : e.kind));
+  expect(kinds[0]).toBe("agent-directory");
+  expect(kinds[1]).toBe("state-snapshot");
+  // Snapshot AFTER the state snapshot and AFTER every replay: an omission is only
+  // meaningful once the client is guaranteed to have seen the positive half,
+  // otherwise it would retire an interaction that merely had not been replayed.
+  expect(kinds[kinds.length - 1]).toBe("interaction-snapshot");
+  // Every frame sits between the directory and the snapshot.
+  expect(kinds.every((k) => k === "agent-directory" || k === "state-snapshot"
+    || k === "interaction-snapshot" || k === "control-event")).toBe(true);
+});
+
+test("an interaction opened AFTER subscribe lands after the snapshot", () => {
+  // The other half of the invariant, asserted so that "the snapshot is complete"
+  // cannot be read as "no live event may ever follow it". Order guarantees the
+  // follow-up open is delivered after, so the client sees it as an addition
+  // rather than a contradiction.
+  const d = depsWithOpen([openInteraction("req-web-1")]);
+  handleWebClientMessage(
+    d as never,
+    "a1",
+    d.sock as never,
+    encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1"] })),
+  );
+  const snapshotIndex = d.sock.sent
+    .map((raw) => decodeEnvelope(raw))
+    .filter((x) => x.ok)
+    .map((x) => parseWebServerEvent(x.envelope))
+    .findIndex((e) => e !== null && e.kind === "interaction-snapshot");
+
+  // A NEW interaction opens after the subscribe has completed.
+  handleWebClientMessage(
+    d as never,
+    "a1",
+    d.sock as never,
+    encodeEnvelope(webClientEnvelope({ kind: "subscribe", instanceIds: ["i1"] })),
+  );
+  const secondSnapshotIndex = d.sock.sent
+    .map((raw) => decodeEnvelope(raw))
+    .filter((x) => x.ok)
+    .map((x) => parseWebServerEvent(x.envelope))
+    .findIndex((e, i) => e !== null && e.kind === "interaction-snapshot" && i > snapshotIndex);
+  expect(secondSnapshotIndex).toBeGreaterThan(snapshotIndex);
+});
