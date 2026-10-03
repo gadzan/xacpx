@@ -74,6 +74,12 @@ function onBotTap(instanceId: string, botId: string): void {
 function onGroupTap(instanceId: string, groupId: string): void {
   emit("selectGroup", instanceId, groupId);
 }
+/** Reload the Groups list after a failed fetch. groupsLoaded stays false on
+ *  failure, so this is also what the next Groups-mode entry does — the
+ *  affordance just lets the user trigger it without leaving the mode. */
+function retryGroupsLoad(instanceId: string): void {
+  void groupsStore.loadGroups(instanceId).catch(() => {});
+}
 function onBotSaved(bot: BotDetailDto): void {
   if (botDialogFor.value) {
     emit("selectBot", botDialogFor.value.instanceId, bot.id);
@@ -659,7 +665,18 @@ const rowSwipes = computed(() => {
                class="py-1 pl-2.5 text-[11px] text-fg-muted">
             {{ $t("instance.loading") }}
           </div>
-          <div v-else-if="!(groupsStore.groupsByInstance[inst.id] ?? []).length"
+          <div v-else-if="groupsStore.groupsListErrorByInstance[inst.id] !== undefined && !groupsStore.groupsLoaded[inst.id]"
+               data-test="groups-load-error"
+               class="py-1 pl-2.5 text-[11px] text-fg-muted">
+            <span>{{ $t("group.list.loadFailed") }}</span>
+            <button type="button"
+                    data-test="groups-retry"
+                    class="ml-1.5 font-medium text-accent hover:underline"
+                    @click="retryGroupsLoad(inst.id)">
+              {{ $t("common.retry") }}
+            </button>
+          </div>
+          <div v-else-if="groupsStore.groupsLoaded[inst.id] && !(groupsStore.groupsByInstance[inst.id] ?? []).length"
                data-test="no-groups"
                class="py-1 pl-2.5 text-[11px] text-fg-muted">
             {{ $t("group.list.empty") }}

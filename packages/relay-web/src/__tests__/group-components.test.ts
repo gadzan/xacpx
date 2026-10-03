@@ -518,6 +518,32 @@ describe("Group Components", () => {
       expect(wrapper.emitted("send")?.[0]).toEqual(["@everyone, please review"]);
     });
 
+    it("shows the translated target error on Enter with an empty selection, without clearing the draft or sending", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: [] };
+      const wrapper = mount(GroupComposer, {
+        props: {
+          bots: BOTS,
+          sendOutcome: () => Promise.resolve("rejected" as const),
+        },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      // No mention in the text: the boundary commit cannot rescue the target.
+      await textarea.setValue("please review this");
+      await textarea.trigger("keydown", { key: "Enter" });
+      await flushPromises();
+      // The banner renders a real sentence — never the raw key path.
+      const banner = wrapper.find('[data-test="group-prompt-error"]');
+      expect(banner.exists()).toBe(true);
+      expect(banner.text()).toBe("Select at least one member before sending.");
+      expect(banner.text()).not.toContain("bot.errors.targetEmpty");
+      // Nothing was sent and the draft survives.
+      expect(wrapper.emitted("send")).toBeUndefined();
+      expect((textarea.element as HTMLTextAreaElement).value).toBe("please review this");
+    });
+
     it("locks the target selector and Send while a prompt awaits confirmation", async () => {
       const groups = seedGroupSelection();
       groups.targetSelection = { mode: "members", botIds: ["bot_a"] };

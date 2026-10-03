@@ -16,6 +16,7 @@ export default {
     create: "创建",
     save: "保存",
     loading: "加载中…",
+    retry: "重试",
     close: "关闭",
   },
   connection: {
@@ -737,6 +738,9 @@ export default {
       runInProgress: "已有运行正在进行。请等待完成或取消后再试。",
       topicQueueFull: "该话题排队中的运行过多。请等待其中一个完成或取消后再试。",
       targetTooLarge: "所选成员数量超过单个运行可处理的上限。请选择更小的成员子集。",
+      targetRequired: "发送前请至少选择一位成员。",
+      targetEmpty: "发送前请至少选择一位成员。",
+      targetUnknownMember: "所选的一个或多个成员已不可用。",
       promptPendingConfirmation: "上一条消息尚未确认。请重试该消息或等待其结束后再发送新消息。",
       cancelUnknown: "取消结果未知。正在等待实例状态...",
       instanceOffline: "实例已离线",
@@ -748,6 +752,7 @@ export default {
     },
     list: {
       empty: "该实例暂无群组。",
+      loadFailed: "群组加载失败。",
     },
     header: {
       members: "{count} 名成员",

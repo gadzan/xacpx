@@ -131,6 +131,21 @@ describe("useGroupsStore", () => {
     expect(store.groupsLoaded["inst_1"]).toBe(true);
   });
 
+  it("records a failed groups listing as an error, never as an authoritative empty list", async () => {
+    const store = useGroupsStore();
+    mockRpc.mockRejectedValueOnce(new Error("connector offline"));
+    await expect(store.loadGroups("inst_1")).rejects.toThrow("connector offline");
+    // The failure is recorded: it must NOT load as loaded-with-nothing.
+    expect(store.groupsLoaded["inst_1"]).not.toBe(true);
+    expect(store.groupsByInstance["inst_1"] ?? []).toEqual([]);
+    expect(store.groupsListErrorByInstance["inst_1"]).toBe("connector offline");
+    // Retry clears the failure and lands the rows.
+    mockRpc.mockResolvedValueOnce({ groups: [GROUP] });
+    await expect(store.loadGroups("inst_1")).resolves.toEqual([GROUP]);
+    expect(store.groupsListErrorByInstance["inst_1"]).toBeUndefined();
+    expect(store.groupsLoaded["inst_1"]).toBe(true);
+  });
+
   it("selects a group with lead default target and converges history plus owner", async () => {
     const store = useGroupsStore();
     mockRpc.mockImplementation(async (inst: string, type: string) => {

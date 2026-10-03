@@ -627,6 +627,14 @@ export const useGroupsStore = defineStore("groups", () => {
     targetSelection.value = { mode: "everyone" };
   }
 
+  /** Per-instance groups-list failures. Empty state must only render for a
+   *  SUCCESSFUL empty listing — a failed RPC is retryable, never an
+   *  authoritative empty list. Kept separate from groupsLoaded so a failed
+   *  fetch does not masquerade as "no groups". Cleared by the next load
+   *  attempt; the tree retries automatically on every Groups-mode entry
+   *  (groupsLoaded stays false) and via the inline retry affordance. */
+  const groupsListErrorByInstance = ref<Record<string, string>>({});
+
   async function loadGroups(targetInstanceId: string): Promise<GroupSummaryDto[]> {
     const seq = (groupsListSeq[targetInstanceId] ?? 0) + 1;
     groupsListSeq[targetInstanceId] = seq;
@@ -634,6 +642,12 @@ export const useGroupsStore = defineStore("groups", () => {
       ...loadingGroupsByInstance.value,
       [targetInstanceId]: (loadingGroupsByInstance.value[targetInstanceId] ?? 0) + 1,
     };
+    // A new attempt supersedes the previous failure (stale or resolved).
+    if (groupsListErrorByInstance.value[targetInstanceId] !== undefined) {
+      const cleared = { ...groupsListErrorByInstance.value };
+      delete cleared[targetInstanceId];
+      groupsListErrorByInstance.value = cleared;
+    }
     try {
       const res = unwrapRpc(
         await api.rpc<{ groups: GroupSummaryDto[] }>(targetInstanceId, MSG.groupsList, {}),
@@ -644,6 +658,16 @@ export const useGroupsStore = defineStore("groups", () => {
       groupsByInstance.value = { ...groupsByInstance.value, [targetInstanceId]: res.groups };
       groupsLoaded.value = { ...groupsLoaded.value, [targetInstanceId]: true };
       return res.groups;
+    } catch (err: unknown) {
+      // Failed listings are NOT empty listings: record the failure so the
+      // tree can offer retry instead of rendering "No groups".
+      if (groupsListSeq[targetInstanceId] === seq) {
+        groupsListErrorByInstance.value = {
+          ...groupsListErrorByInstance.value,
+          [targetInstanceId]: err instanceof Error ? err.message : String(err),
+        };
+      }
+      throw err;
     } finally {
       const remaining = (loadingGroupsByInstance.value[targetInstanceId] ?? 1) - 1;
       if (remaining <= 0) {
@@ -2653,6 +2677,7 @@ export const useGroupsStore = defineStore("groups", () => {
     loadingGroups,
     loadingGroupsByInstance,
     groupsLoaded,
+    groupsListErrorByInstance,
     topicsByConversation,
     messages,
     oldestSeq,

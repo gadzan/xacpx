@@ -266,6 +266,14 @@ async function handleSend(): Promise<void> {
   // The token under the caret is now final, so the structured target must
   // reflect it before the store resolves the send target.
   commitMentionAtBoundary();
+  // Re-check after the boundary commit: the mention is what makes an empty
+  // target valid for this very send, and entering text with no resolvable
+  // target (e.g. deselected all members and typed nothing mentionable) must
+  // surface the translated banner — not a send the local store refuses.
+  if (!groupsStore.targetResolvable) {
+    groupsStore.reportTargetProblem();
+    return;
+  }
   // The parent resolves the send against the store and reports the outcome, so
   // the draft decision uses the real result: an accepted prompt is in the
   // transcript, an uncertain one is replayable via Retry, but a definitive
@@ -314,7 +322,7 @@ function onInputResize(): void {
 
 <template>
   <div class="border-t border-border bg-surface px-3 py-2.5 sm:px-4">
-    <div v-if="groupsStore.promptError" class="mb-2 flex items-center justify-between gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs text-danger">
+    <div v-if="groupsStore.promptError" data-test="group-prompt-error" class="mb-2 flex items-center justify-between gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs text-danger">
       <span class="truncate">{{ groupsStore.promptErrorDetail ?? $t(`bot.errors.${groupsStore.promptError}`) }}</span>
       <button
         v-if="groupsStore.uncertainPromptText"

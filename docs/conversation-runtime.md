@@ -1,6 +1,6 @@
-# Conversation runtime (Direct persistence + lifecycle)
+# Conversation runtime (Direct + Group persistence and lifecycle)
 
-Direct Conversation execution is durable. Group routing, Relay Web UI, automatic Router, and channel bindings are out of scope.
+Direct and Group Conversation execution is durable. Relay Web Group UX (explicit routing) is part of this contract; automatic Router and external channel Conversation bindings are out of scope.
 
 ## Store ownership
 
@@ -159,17 +159,21 @@ Injected release failure leaves `deleting` + ownership in place for retry.
 
 **Remaining Bot-delete boundary:** `BotService.deleteBot` stays fail-closed (`bot_in_use` / `bot_in_group`) and does **not** auto-teardown. It consults AppState runtime references **and** ConversationStore durable work (`hasDurableBotWork`) so an accepted Run/outbox cannot outlive a deleted Bot through a crash-before-materialize window. Call `ConversationRunService.teardownDirectConversation` first, then delete the Bot.
 
-## Group foundations (PR6)
+## Group foundations and explicit routing (PR6 + PR7)
 
 Group Conversations are durable membership records (`kind: "group"`, `botIds` ≥ 2 unique, optional lead in membership, opaque `conversation_` id). No execution, routing, or member sessions happen at Group CRUD time.
 
-Group Topics carry an explicit `ExecutionTarget` (`workspace` + optional `cwd` + `isolation`). `cwd` is forward-compatible persisted shape only: PR6 `createGroupTopic()` rejects any non-empty `cwd` with `cwd_unsupported`, and member materialization also fails closed on a persisted non-empty `cwd` — until launcher execution honors it. `shared-single-writer` is the engineering default; `worktree-per-member` persists as a value with no provisioning yet. Topic teardown mirrors the direct order at Topic scope: mark deleting → cancel active Runs → reconcile indeterminate → verified member-session release → remove member bindings → delete store rows → remove Topic metadata. Retryable on release failure.
+Group Topics carry an explicit `ExecutionTarget` (`workspace` + optional `cwd` + `isolation`). `cwd` is forward-compatible persisted shape only: `createGroupTopic()` rejects any non-empty `cwd` with `cwd_unsupported`, and member materialization also fails closed on a persisted non-empty `cwd` — until launcher execution honors it. `shared-single-writer` is the engineering default; `worktree-per-member` persists as a value with no provisioning yet. Topic teardown mirrors the direct order at Topic scope: mark deleting → cancel active Runs → reconcile indeterminate → verified member-session release → remove member bindings → delete store rows → remove Topic metadata. Retryable on release failure.
 
 Group delete is barrier-first: mark the Group deleting in SQLite + AppState (new Topics and new Group work fail closed from there), teardown every remaining Topic, verified-release residual member runtime, delete residual Conversation-store rows, then remove the Group record last. Rows-after-release-before-record means a physical release failure leaves durable Run/message history intact, and a store-cleanup failure leaves the Group row and the barrier intact for retry; the fail-closed metadata delete reuses the same Topics/bindings/durable-rows guards.
 
-Member sessions run Bot agent/model/effort on the Topic workspace (Topic owns the work target; PR6 runs in the workspace root — per-Topic `cwd` is not honored yet). Member bindings scope `conversationId × topicId × botId` with a `group-member`-separated deterministic id, `brt_group_` aliases, and `group-member` session owners. Direct vs Group, Group A vs Group B, and Topic A vs Topic B all isolate. No Router/controller session exists.
+Member sessions run Bot agent/model/effort on the Topic workspace (Topic owns the work target; runs in the workspace root — per-Topic `cwd` is not honored yet). Member bindings scope `conversationId × topicId × botId` with a `group-member`-separated deterministic id, `brt_group_` aliases, and `group-member` session owners. Direct vs Group, Group A vs Group B, and Topic A vs Topic B all isolate. No Router/controller session exists.
 
-The filesystem seam (`conversation-filesystem-policy.ts`) classifies a declared `MemberTurnEffect`: only an explicit `read-only` declaration is concurrency-safe under `shared-single-writer`; everything else takes the single-writer slot. The effect is never inferred from Bot names. No dispatcher schedules on it yet — PR7 explicit routing attaches it per assignment.
+PR7 adds explicit Group routing with same-Run member cohorts: `/session new <alias> --ws <workspace>` accepts a structured target — `{botId}` (Direct), `{mode: "members", botIds}` (explicit assignment), `{mode: "everyone"}` (eligible-member expansion), or `{mode: "automatic"}` (rejected for explicit prompts; Direct-only preview surface). The wire validator, `parseGroupTarget`, and the public-Control sanitizer enforce the same mutually exclusive union: mixed shapes fail closed with `invalid-target` (never laundered, never dropped-then-defaulted). Target member IDs must be unique in caller order — duplicates are rejected with `invalid-target`, not deduplicated. `everyone` expansion is capped at `MAX_GROUP_TARGET_MEMBERS` (64); larger requests fail `target_too_large` before persisting anything.
+
+The filesystem seam (`conversation-filesystem-policy.ts`) classifies a declared `MemberTurnEffect` plus provenance: only `effect === "read-only"` **with** `effectProvenance === "declared-enforced"` is concurrency-safe under `shared`/`shared-single-writer`; every other combination takes the single-writer slot, so unproven work serializes against any in-flight execution on overlapping trees. The effect is never inferred from Bot names. PR7 accept persists every member as `unknown` provenance, so current user Group turns serialize — sharing a tree today means taking turns, not overlapping. The UI keeps the `Shared` option with copy that says exactly this.
+
+Request-snapshot integrity uses one unified invariant (`requestSnapshotMatches`): the `runs.request_message_id` row must exist with the Run's own Conversation AND Topic, the human role, **and** the Run's own `run_id`. A missing or mismatched row fails the claim terminally before execution start (`missing_request_snapshot` / `request_snapshot_mismatch`), in replay and transcript paths alike — a corrupted reference can never feed another message's content into a prompt. Claim reads LEFT JOIN the message so a poison row reaches that check instead of being silently skipped.
 
 ## Production composition
 
@@ -231,6 +235,6 @@ Idempotent `requestId` retries reuse the durable accept result and do not re-emi
 
 ## Out of scope
 
-Group routing, member selection, Router, parallel batches, `group_send`, Group UI, Relay Web Bot/Conversation UI, external channel Conversation bindings.
+Automatic Router, external channel Conversation bindings.
 
 **Follow-up before Direct Bot product release:** global dispatcher parallelism (more than one claimed execution in flight across Topics/Bots) is not part of this contract. Keep the current drain/claim sequencing until that work is designed. The drain launches the first claim globally, then admits only same-Run siblings concurrently (Topic isolation decides overlap); unrelated Topics/Bots wait for the next pass, after the cohort settles. A pass that defers Topics on pre-start failure takes at most chained extra passes with the deferrals preserved — never a retry without progress. An unexpected execution failure that escapes the handled settlement paths rejects the drain (and therefore fails activation) after every launched execution settles; it is never swallowed into a successful kick.

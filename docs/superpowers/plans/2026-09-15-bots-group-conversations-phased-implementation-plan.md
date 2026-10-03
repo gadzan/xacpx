@@ -716,13 +716,15 @@ Use a product-level target contract:
 
 ```ts
 type ConversationTarget =
+  | { botId: string }
   | { mode: "members"; botIds: string[] }
-  | { mode: "everyone" };
+  | { mode: "everyone" }
+  | { mode: "automatic" };
 ```
 
-Relay Web mention ranges may accompany the target for text highlighting but are not the authority.
+The variants are mutually exclusive. Relay Web mention ranges may accompany the target for text highlighting but are not the authority.
 
-Server validates current membership and deduplicates IDs.
+Server validates current membership and REJECTS duplicate member IDs with `invalid-target` (caller order is preserved for unique IDs) — it does not deduplicate. `mode: "automatic"` is rejected for explicit Group prompts; the union stays closed so a mixed shape can never be laundered into a different route.
 
 ## 10.2 Composer UX
 

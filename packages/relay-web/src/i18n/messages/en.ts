@@ -18,6 +18,7 @@ export default {
     create: "Create",
     save: "Save",
     loading: "Loading…",
+    retry: "Retry",
     close: "Close",
   },
   connection: {
@@ -740,6 +741,9 @@ export default {
       runInProgress: "A run is already in progress. Wait for it to finish or cancel it.",
       topicQueueFull: "This topic has too many queued runs. Wait for one to finish or cancel it.",
       targetTooLarge: "This would select more members than one run can handle. Pick a smaller subset.",
+      targetRequired: "Select at least one member before sending.",
+      targetEmpty: "Select at least one member before sending.",
+      targetUnknownMember: "One or more selected members are no longer available.",
       promptPendingConfirmation: "Previous message is still unconfirmed. Retry it or wait for it to settle before sending a new one.",
       cancelUnknown: "Cancellation outcome unknown. Waiting for instance state...",
       instanceOffline: "Instance is offline",
@@ -751,6 +755,7 @@ export default {
     },
     list: {
       empty: "No groups on this instance.",
+      loadFailed: "Could not load groups.",
     },
     header: {
       members: "{count} members",
