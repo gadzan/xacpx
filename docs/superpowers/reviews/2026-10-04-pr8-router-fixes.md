@@ -33,3 +33,13 @@
 逐文件对照的已有失败包括：workspace-fs 3、workspace-git 5、Control golden fixture 9、credential 文件 POSIX 权限 2、retire terminal lock 1、terminal diagnostics 5、terminal registry lock 2。原提交对照并不等同于新 CI 全绿；仍须以更新提交的 CI 为最终合并检查。
 
 未运行需要真实 acpx + 微信登录的 smoke tests。无可证明 capability restriction 的生产 Router 时继续返回 automatic_unsupported；PR9 handoff、完整 human continuation UX 和 Router 模型 adapter 仍按阶段边界留待后续。
+
+## Focused 复审：remove → delete → stale Router
+
+复审基准：`67ef023cf47b1db7243409bc9dcc1efb4f546417`。新增 Major 在真实 production composition 上先复现为 Run 停留 running/routing：`bots.getBot()` 抛出 BotError，而旧 commit catch 仅处理 ConversationError。
+
+修复保留现有 lifecycle gates，在 commit 时先确认 Group membership，再读 Bot profile；同时将 typed BotError 当作领域拒绝落盘，规范化 `bot_not_found` → `router_unknown_member`、`bot_disabled` → `router_disabled_member`，失败仍检查 routing generation。
+
+新增五项回归：真实 Control remove + delete + stale dispatch 链路，断言 failed/done、无 MemberTurn/dispatch、awaitRouting 收敛，且同 Topic 后续 automatic Run 自动完成；两个 BotError code 各验证当前 owner 持久化失败、旧 owner 不影响新 generation。Router 主 harness 同步改用生产 `bots.getBot()`，避免用 undefined-reader 掩盖异常类型。
+
+相关 Conversation/Control Bridge/protocol/permissions 套件 **578 pass / 0 fail**（23 个文件，Conversation 347 项）；增强后的 Router + production composition focused 套件 **73 pass / 0 fail**（Router 65、composition 8）；根 typecheck 与根构建通过。完整微信 smoke 的环境限制仍沿用上轮记录。

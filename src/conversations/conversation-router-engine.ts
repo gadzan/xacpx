@@ -12,6 +12,7 @@ import {
   type RoutingMember,
 } from "./conversation-router-types";
 import { snapshotGroupMemberProfile } from "../bots/bot-types";
+import { BotError } from "../bots/bot-error";
 import type {
   ConversationRecord,
   ConversationRun,
@@ -200,22 +201,22 @@ export class ConversationRouterEngine {
       }
       return { run: applied.run, outcome: "dispatched", memberTurns: applied.memberTurns };
     } catch (error) {
-      if (error instanceof ConversationError) {
+      if (error instanceof ConversationError || error instanceof BotError) {
+        const reason = error.code === "bot_not_found" ? "router_unknown_member"
+          : error.code === "bot_disabled" ? "router_disabled_member" : error.code;
         const current = store.getRun(runId);
         if (current && (current.state === "completed" || current.state === "failed"
           || current.state === "cancelled" || current.state === "indeterminate")) {
           return { run: current, outcome: "skipped", reason: current.state };
         }
-        if (error.code === "routing_batch_active" || error.code === "stale_routing_attempt") {
+        if (reason === "routing_batch_active" || reason === "stale_routing_attempt") {
           // Another drain already committed a batch for this Run; nothing to do.
-          return { run: current ?? run, outcome: "skipped", reason: error.code };
+          return { run: current ?? run, outcome: "skipped", reason };
         }
-        // Every other durable rejection (assignment ids outside this Topic's
-        // public transcript, duplicate ids, budget overrun, ...) is a routing
-        // decision that cannot be applied. Fail the Run with the store's own
-        // machine-readable code so the reason survives as durable evidence.
-        const failed = this.failRouting(runId, error.code, routingGeneration);
-        return { run: failed, outcome: "rejected", reason: error.code };
+        // A domain rejection must settle this attempt durably, including a
+        // throwing Bot lookup; the generation fence protects any newer owner.
+        const failed = this.failRouting(runId, reason, routingGeneration);
+        return { run: failed, outcome: "rejected", reason };
       }
       throw error;
     }
@@ -389,10 +390,15 @@ export class ConversationRouterEngine {
       }
     }
     const assignments = decision.assignments.map((assignment) => {
-      const bot = this.options.readBot(assignment.botId);
       const group = this.options.readGroup(run.conversationId);
-      if (!bot || !group?.botIds.includes(bot.id)) {
+      // A removed Bot may already have been deleted; production getBot throws
+      // in that case. Reject membership before reading its live profile.
+      if (!group?.botIds.includes(assignment.botId)) {
         throw new ConversationError("router_unknown_member", `assignment "${assignment.id}" targets a removed member`);
+      }
+      const bot = this.options.readBot(assignment.botId);
+      if (!bot) {
+        throw new ConversationError("router_unknown_member", `assignment "${assignment.id}" targets a missing bot`);
       }
       if (!bot.enabled) {
         throw new ConversationError("router_disabled_member", `assignment "${assignment.id}" targets disabled bot "${bot.id}"`);

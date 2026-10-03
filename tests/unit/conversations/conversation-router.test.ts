@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { expect, test } from "bun:test";
 
 import { BotService } from "../../../src/bots/bot-service";
+import { BotError } from "../../../src/bots/bot-error";
 import { BotRuntimeManager } from "../../../src/bots/bot-runtime-manager";
 import type { BotProfile } from "../../../src/bots/bot-types";
 import type { AppConfig } from "../../../src/config/types";
@@ -208,7 +209,7 @@ async function createHarness(options: {
         const topic = state.conversation_topics[topicId];
         return topic?.conversationId === conversationId ? topic : undefined;
       },
-      readBot: (botId) => state.bots[botId],
+      readBot: (botId) => bots.getBot(botId),
       runLifecycleAll: (botIds, critical) => bots.runLifecycleAll(botIds, critical),
       now: () => new Date(NOW),
     })
@@ -1811,4 +1812,48 @@ for (const phase of ["routing", "waiting-human"] as const) {
     expect(harness.store.listMemberTurns(accepted.run.id).map((turn) => turn.state)).toEqual(["completed"]);
     harness.store.close();
   });
+}
+
+for (const [code, reason] of [["bot_not_found", "router_unknown_member"], ["bot_disabled", "router_disabled_member"]] as const) {
+  for (const stale of [false, true]) {
+    test(`commit-time ${code} ${stale ? "cannot fail a newer routing owner" : "fails the Run durably"}`, async () => {
+      const harness = await createHarness({ autoKick: false });
+      const { group, topic } = await createGroup(harness);
+      const accepted = harness.store.acceptRequest({ conversationId: group.id, topicId: topic.id,
+        requestId: `typed-error-${code}-${stale}`, botId: BOT_ID, content: "review", mode: "automatic", members: [],
+        profileSnapshot: snapshotGroupMemberProfile(harness.bots.getBot(BOT_ID), topic.executionTarget!, NOW), now: NOW });
+      let committing = false;
+      const router: ConversationRouter = { capabilityRestriction: RESTRICTED, async decide() {
+        committing = true;
+        if (stale) harness.store.markRoutingState(accepted.run.id, "routing", NOW);
+        return { type: "dispatch", mode: "single", assignments: [
+          { id: "selected", botId: BOT_ID, task: "review", triggerMessageIds: [] },
+        ] };
+      } };
+      const engine = new ConversationRouterEngine(router, {
+        store: harness.store,
+        readGroup: (id) => harness.state.conversations[id],
+        readTopic: (_id, topicId) => harness.state.conversation_topics[topicId],
+        readBot: (botId) => {
+          if (committing && botId === BOT_ID) throw new BotError(code, "commit-time lifecycle rejection");
+          return harness.bots.getBot(botId);
+        },
+        runLifecycleAll: (ids, critical) => harness.bots.runLifecycleAll(ids, critical),
+        now: () => new Date(NOW),
+      });
+      try {
+        const outcome = await engine.route(accepted.run.id);
+        expect(outcome.reason).toBe(reason);
+        const run = harness.store.getRun(accepted.run.id)!;
+        expect(run.state).toBe(stale ? "running" : "failed");
+        expect(run.routingState).toBe(stale ? "routing" : "done");
+        expect(run.completionReason).toBe(stale ? undefined : reason);
+        expect(run.routingGeneration).toBe(stale ? 2 : 1);
+        expect(harness.store.listMemberTurns(run.id)).toEqual([]);
+        expect(harness.store.listDispatchesForRun(run.id)).toEqual([]);
+      } finally {
+        harness.store.close();
+      }
+    });
+  }
 }
