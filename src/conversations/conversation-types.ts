@@ -141,6 +141,8 @@ export interface ConversationRun {
    * from rows alone (see ConversationRoutingState).
    */
   routingState?: ConversationRoutingState;
+  /** Store-owned CAS token for automatic routing, independent of dispatch generation. */
+  routingGeneration?: number;
   /** Currently executing batch. Absent (direct legacy) means batch 1. */
   activeBatch?: number;
   maxMemberTurns: number;

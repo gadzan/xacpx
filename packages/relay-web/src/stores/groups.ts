@@ -1836,7 +1836,7 @@ export const useGroupsStore = defineStore("groups", () => {
         latestPlanRunId.value = promptOwner.id;
       } else if (acceptOverwritesOwner) {
         activeRun.value = mergeRun(activeRun.value, res.run);
-        const turns = res.memberTurns?.length ? res.memberTurns : [res.memberTurn];
+        const turns = res.memberTurns ?? (res.memberTurn ? [res.memberTurn] : []);
         memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, turns);
       }
       const adoptedRun = activeRun.value;
@@ -1860,7 +1860,7 @@ export const useGroupsStore = defineStore("groups", () => {
         if (isFreshRun) {
           const now = Date.now();
           const next: Record<string, GroupLiveTurn> = {};
-          const turns = res.memberTurns?.length ? res.memberTurns : [res.memberTurn];
+          const turns = res.memberTurns ?? (res.memberTurn ? [res.memberTurn] : []);
           for (const turn of turns) {
             next[turn.id] = {
               parts: [],

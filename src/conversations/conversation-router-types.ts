@@ -223,6 +223,12 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function assertFields(value: Record<string, unknown>, fields: readonly string[]): void {
+  if (Object.keys(value).some((key) => !fields.includes(key))) {
+    fail("router_decision_malformed", "Router decision contains an unsupported field");
+  }
+}
+
 /**
  * Strict decision decoding. Every field is checked for shape and type; nothing
  * is defaulted, coerced, repaired, or guessed. Structural validity only:
@@ -253,6 +259,7 @@ export function parseRoutingDecision(value: unknown): RoutingDecision {
 }
 
 function parseDispatch(value: Record<string, unknown>): Extract<RoutingDecision, { type: "dispatch" }> {
+  assertFields(value, ["type", "mode", "assignments"]);
   if (value.mode !== "single" && value.mode !== "parallel" && value.mode !== "sequential") {
     fail("router_decision_malformed", "Router dispatch mode must be single | parallel | sequential", {
       mode: value.mode,
@@ -274,6 +281,10 @@ function parseDispatch(value: Record<string, unknown>): Extract<RoutingDecision,
 function parseAssignment(value: unknown): Extract<RoutingDecision, { type: "dispatch" }>["assignments"][number] {
   if (!isObject(value)) {
     fail("router_decision_malformed", "Router assignment must be an object");
+  }
+  assertFields(value, ["id", "botId", "task", "expectedOutput", "dependsOn", "triggerMessageIds"]);
+  if (!Array.isArray(value.triggerMessageIds)) {
+    fail("router_assignment_malformed", "Router assignment requires triggerMessageIds");
   }
   if (!isNonEmptyString(value.id)) {
     fail("router_assignment_malformed", "Router assignment requires a non-empty id");
@@ -314,6 +325,7 @@ function parseAssignment(value: unknown): Extract<RoutingDecision, { type: "disp
 }
 
 function parseNeedHuman(value: Record<string, unknown>): Extract<RoutingDecision, { type: "need-human" }> {
+  assertFields(value, ["type", "question"]);
   if (!isNonEmptyString(value.question)) {
     fail("router_decision_malformed", "Router need-human decision requires a non-empty question");
   }
@@ -324,6 +336,7 @@ function parseNeedHuman(value: Record<string, unknown>): Extract<RoutingDecision
 }
 
 function parseComplete(value: Record<string, unknown>): Extract<RoutingDecision, { type: "complete" }> {
+  assertFields(value, ["type", "reason", "synthesisBotId"]);
   if (!isNonEmptyString(value.reason)) {
     fail("router_decision_malformed", "Router complete decision requires a non-empty reason");
   }
@@ -331,10 +344,7 @@ function parseComplete(value: Record<string, unknown>): Extract<RoutingDecision,
     fail("router_decision_malformed", `Router complete reason exceeds ${MAX_ROUTER_REASON_LENGTH} characters`);
   }
   if (value.synthesisBotId !== undefined) {
-    if (!isNonEmptyString(value.synthesisBotId)) {
-      fail("router_decision_malformed", "Router complete synthesisBotId must be a non-empty string");
-    }
-    return { type: "complete", reason: value.reason, synthesisBotId: value.synthesisBotId };
+    fail("router_synthesis_unsupported", "Synthesis requires an explicit dispatch assignment; synthesisBotId is unsupported");
   }
   return { type: "complete", reason: value.reason };
 }

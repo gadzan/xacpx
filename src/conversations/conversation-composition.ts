@@ -128,6 +128,7 @@ export async function createConversationRuntime(
         return topic?.conversationId === conversationId ? topic : undefined;
       },
       readBot: (botId) => bots.getBot(botId),
+      runLifecycleAll: (botIds, critical) => bots.runLifecycleAll(botIds, critical),
       now: input.now ?? (() => new Date()),
     })
     : undefined;

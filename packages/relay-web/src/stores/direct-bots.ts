@@ -2064,9 +2064,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       } else if (acceptOverwritesOwner) {
         activeRun.value = mergeRun(activeRun.value, res.run);
         if (res.run.id !== activeRun.value.id) {
-          activeMemberTurn.value = res.memberTurn;
+          activeMemberTurn.value = res.memberTurn ?? null;
         } else {
-          activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, res.memberTurn);
+          if (res.memberTurn) activeMemberTurn.value = mergeMemberTurn(activeMemberTurn.value, res.memberTurn);
         }
       }
       // Null from here on means the accept did not overwrite: a different-id
@@ -2106,7 +2106,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         liveTurn.value = {
           parts: existingParts,
           status: liveTurn.value?.status ?? "working",
-          startedAt: res.memberTurn.startedAt
+          startedAt: res.memberTurn?.startedAt
             ? new Date(res.memberTurn.startedAt).getTime()
             : (liveTurn.value?.startedAt ?? Date.now()),
           revision: (liveTurn.value?.revision ?? 0) + 1,

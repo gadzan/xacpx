@@ -485,9 +485,10 @@ export interface ConversationPromptResponseDto {
   requestId: string;
   run: ConversationRunDto;
   message: ConversationMessageDto;
-  memberTurn: MemberTurnSummaryDto;
-  /** Every accepted member in durable order (first mirrors `memberTurn`).
-   *  Optional for wire compat with older connectors. */
+  /** Absent on an automatic accept/replay with zero durable members. */
+  memberTurn?: MemberTurnSummaryDto;
+  /** Every durable member in order. Automatic responses include this array
+   *  even when empty; optional for legacy single-member wire compatibility. */
   memberTurns?: MemberTurnSummaryDto[];
   /** Topic-wide authoritative owner as of accept (executing, else oldest
    *  queued). Lets the caller adopt the true owner without a second

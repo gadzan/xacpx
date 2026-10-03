@@ -96,6 +96,7 @@ interface RunRow {
   state: string;
   completion_reason: string | null;
   routing_state?: string | null;
+  routing_generation?: number;
   generation: number;
   active_batch: number | null;
   max_member_turns: number;
@@ -433,6 +434,7 @@ function mapRun(row: RunRow): ConversationRun {
       ? { routingState: row.routing_state as ConversationRoutingState }
       : {}),
     generation: Number(row.generation),
+    ...(mode === "automatic" ? { routingGeneration: Number(row.routing_generation ?? 0) } : {}),
     ...(row.active_batch !== null && row.active_batch !== undefined
       ? { activeBatch: Number(row.active_batch) }
       : {}),
@@ -744,6 +746,16 @@ export class SqliteConversationStore implements ConversationStore {
     ).map(mapMemberTurn);
   }
 
+  getMemberResult(turn: MemberTurnRecord): ConversationMessage | undefined {
+    if (!turn.sourceTurnId) return undefined;
+    const row = this.sqlite.get<MessageRow>(
+      `SELECT * FROM messages WHERE conversation_id = ? AND topic_id = ? AND run_id = ?
+       AND role = 'bot' AND sender_bot_id = ? AND json_extract(source_turn_json, '$.turnId') = ?`,
+      [turn.conversationId, turn.topicId, turn.runId, turn.botId, turn.sourceTurnId],
+    );
+    return row ? mapMessage(row) : undefined;
+  }
+
   getDispatchForRun(runId: string): PendingDispatch | undefined {
     const row = this.sqlite.get<DispatchRow>(
       `SELECT d.* FROM pending_dispatches d
@@ -995,6 +1007,12 @@ export class SqliteConversationStore implements ConversationStore {
              WHERE active.topic_id = r.topic_id
                AND active.id <> r.id
                AND active.state IN ('running', 'waiting-human')
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM runs earlier JOIN messages request ON request.id = earlier.request_message_id
+             WHERE earlier.topic_id = r.topic_id AND earlier.id <> r.id
+               AND earlier.state = 'queued' AND earlier.mode = 'automatic'
+               AND request.seq < msg.seq
            )
            ${skipClause}
            ${runClause}
@@ -1656,7 +1674,17 @@ export class SqliteConversationStore implements ConversationStore {
       const members = this.listMemberTurns(runId);
       const member = members[0];
       if (!member) {
-        throw new ConversationError("member_turn_missing", `run "${runId}" has no member turn`);
+        if (run.mode !== "automatic") {
+          throw new ConversationError("member_turn_missing", `run "${runId}" has no member turn`);
+        }
+        const alreadyTerminal = TERMINAL_RUN_STATES.includes(run.state);
+        if (!alreadyTerminal) {
+          this.sqlite.run(
+            "UPDATE runs SET state = 'cancelled', completion_reason = ?, routing_state = 'done', finished_at = ? WHERE id = ?",
+            [reason, now, runId],
+          );
+        }
+        return { run: this.requireRun(runId), alreadyTerminal, executionStarted: false, activeMembers: [] };
       }
       if (TERMINAL_RUN_STATES.includes(run.state)) {
         return {
@@ -1722,12 +1750,19 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
-  failRun(runId: string, reason: string, state: "failed", now: string): ConversationRun {
+  failRun(runId: string, reason: string, state: "failed", now: string, routingGeneration?: number): ConversationRun {
     return this.sqlite.transaction(() => {
       const run = this.requireRun(runId);
+      if (run.mode !== "automatic") {
+        throw new ConversationError("routing_not_automatic", `run "${runId}" is not automatic`);
+      }
       if (TERMINAL_RUN_STATES.includes(run.state)) {
         // Already sealed: a second settlement never rewrites the evidence
         // (idempotent, and a late Router failure cannot overwrite a cancel).
+        return run;
+      }
+      if (routingGeneration !== undefined
+        && (run.routingGeneration !== routingGeneration || run.routingState !== "routing")) {
         return run;
       }
       this.sqlite.run(
@@ -1762,13 +1797,26 @@ export class SqliteConversationStore implements ConversationStore {
       if (TERMINAL_RUN_STATES.includes(run.state)) {
         throw new ConversationError("run_terminal", `run "${runId}" is ${run.state}; routing is sealed`);
       }
-      if (state === "done") {
+      if (run.state === "waiting-human") {
+        throw new ConversationError("routing_invalid_transition", "waiting-human requires a new human request");
+      }
+      if (this.isConversationDeleting(run.conversationId) || this.isTopicDeleting(run.topicId)) {
+        throw new ConversationError("conversation_deleting", "routing cannot acquire a deleting Topic");
+      }
+      if (this.topicHasEarlierOrActiveRun(run)) {
+        throw new ConversationError("routing_topic_busy", "routing must wait for the earlier Topic Run");
+      }
+      if (this.listMemberTurns(runId).some((turn) => !TERMINAL_MEMBER_STATES.includes(turn.state))) {
+        throw new ConversationError("routing_batch_active", `run "${runId}" has unsettled members`);
+      }
+      if (state !== "routing") {
         // `done` is written together with a terminal Run state by
         // applyRoutingDecision, never on its own.
-        throw new ConversationError("routing_invalid_transition", "routing done requires a terminal Run settlement");
+        throw new ConversationError("routing_invalid_transition", "only routing may acquire a decision generation");
       }
       this.sqlite.run(
-        `UPDATE runs SET routing_state = ?, started_at = COALESCE(started_at, ?) WHERE id = ?`,
+        `UPDATE runs SET routing_state = ?, routing_generation = routing_generation + 1,
+           state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?`,
         [state, now, runId],
       );
       return this.requireRun(runId);
@@ -1790,24 +1838,19 @@ export class SqliteConversationStore implements ConversationStore {
         // durable audit row at most (see below, guarded by Run state).
         throw new ConversationError("run_terminal", `run "${run.id}" is ${run.state}; routing is sealed`);
       }
+      if (run.routingState !== "routing" || run.routingGeneration !== input.routingGeneration) {
+        throw new ConversationError("stale_routing_attempt", `run "${run.id}" routing ownership changed`);
+      }
+      if (input.requestMessageId !== run.requestMessageId
+        || !requestSnapshotMatches(this.getMessage(run.requestMessageId), run)) {
+        throw new ConversationError("request_snapshot_mismatch", `run "${run.id}" lost its request snapshot`);
+      }
       const members = this.listMemberTurns(run.id);
-      const batch = Math.max(1, ...members.map((turn) => turn.batch));
+      if (members.some((turn) => !TERMINAL_MEMBER_STATES.includes(turn.state))) {
+        throw new ConversationError("routing_batch_active", `run "${run.id}" has unsettled members`);
+      }
+      const batch = Math.max(0, ...members.map((turn) => turn.batch));
       if (input.decision.type === "dispatch") {
-        // Restart determinism: a Run already carrying a durable batch (with
-        // member turns) must not silently append a second batch from a
-        // replayed decision. `dispatching` is the durable marker that
-        // committed work exists; routing may only advance past it when every
-        // member of that batch is terminal, which the caller checks BEFORE
-        // asking the Router again.
-        const activeBatch = run.activeBatch ?? 1;
-        const activeBatchMembers = members.filter((turn) => turn.batch === activeBatch);
-        const activeUnsettled = activeBatchMembers.filter((turn) => !TERMINAL_MEMBER_STATES.includes(turn.state));
-        if (activeBatchMembers.length > 0 && activeUnsettled.length > 0) {
-          throw new ConversationError(
-            "routing_batch_active",
-            `run "${run.id}" has ${activeUnsettled.length} unsettled members in batch ${activeBatch}`,
-          );
-        }
         // Budget guardrail (design §14.2): a Router decision may never push
         // the Run past its member-turn budget. Budget exhaustion is an
         // explicit completion reason, not a silent truncation.
@@ -1828,7 +1871,8 @@ export class SqliteConversationStore implements ConversationStore {
         // cannot fabricate or borrow context.
         this.assertAssignmentsMapToTranscript(run, input.decision.assignments, input.requestMessageId);
         const distinctIds = new Set(input.decision.assignments.map((assignment) => assignment.id));
-        if (distinctIds.size !== input.decision.assignments.length) {
+        if (distinctIds.size !== input.decision.assignments.length
+          || members.some((turn) => turn.assignmentId && distinctIds.has(turn.assignmentId))) {
           throw new ConversationError(
             "routing_assignment_duplicate",
             `run "${run.id}" routing dispatch repeats an assignment id`,
@@ -1889,13 +1933,13 @@ export class SqliteConversationStore implements ConversationStore {
       }
       if (input.decision.type === "need-human") {
         // Durable waiting-human: this is the only place the Router may park a
-        // Run for the human, and it persists question + terminal state so a
+        // Run for the human, and it persists question + waiting state so a
         // reconnect/restart shows exactly the same blocked semantics.
         this.sqlite.run(
           `UPDATE runs SET state = 'waiting-human', completion_reason = 'needs-input',
-             finished_at = COALESCE(finished_at, ?), routing_state = 'done'
+             finished_at = NULL, routing_state = 'done'
            WHERE id = ?`,
-          [input.now, run.id],
+          [run.id],
         );
         this.writeRoutingDecisionRow(run.id, input.decision, input.now);
         return { run: this.requireRun(run.id), memberTurns: [], dispatches: [], terminal: "waiting-human" };
@@ -1951,16 +1995,26 @@ export class SqliteConversationStore implements ConversationStore {
     for (const row of rows) {
       // Any other Run holding the Topic (running/waiting-human) blocks routing
       // on this one: one active Run per Topic keeps scheduling deterministic.
-      const blocking = this.sqlite.get(
-        `SELECT id FROM runs WHERE topic_id = ? AND id <> ? AND state IN ('running', 'waiting-human') LIMIT 1`,
-        [row.topic_id, row.id],
-      );
-      if (blocking) {
+      if (this.topicHasEarlierOrActiveRun(mapRun(row))) {
         continue;
       }
       awaiting.push({ run: mapRun(row), batchMembers: this.listMemberTurns(row.id) });
     }
     return awaiting;
+  }
+
+  private topicHasEarlierOrActiveRun(run: ConversationRun): boolean {
+    const request = this.getMessage(run.requestMessageId);
+    // Let the routing owner fail a corrupt snapshot before any model call;
+    // ordering must never hide the referential failure behind a busy Topic.
+    if (!requestSnapshotMatches(request, run)) return false;
+    return Boolean(this.sqlite.get(
+      `SELECT active.id FROM runs active LEFT JOIN messages prior ON prior.id = active.request_message_id
+       WHERE active.topic_id = ? AND active.id <> ?
+         AND (active.state IN ('running', 'waiting-human')
+           OR (active.state = 'queued' AND prior.seq < ?)) LIMIT 1`,
+      [run.topicId, run.id, request!.seq],
+    ));
   }
 
   /** A decision's assignments must resolve to real rows of THIS Run's
@@ -2083,6 +2137,10 @@ export class SqliteConversationStore implements ConversationStore {
         [conversationId, topicId],
       );
       this.sqlite.run(
+        "DELETE FROM routing_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
+        [conversationId, topicId],
+      );
+      this.sqlite.run(
         "DELETE FROM runs WHERE conversation_id = ? AND topic_id = ?",
         [conversationId, topicId],
       );
@@ -2105,6 +2163,7 @@ export class SqliteConversationStore implements ConversationStore {
       );
       this.sqlite.run("DELETE FROM member_turns WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM messages WHERE conversation_id = ?", [conversationId]);
+      this.sqlite.run("DELETE FROM routing_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
       this.sqlite.run("DELETE FROM runs WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM topic_seq WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM topic_lifecycle WHERE conversation_id = ?", [conversationId]);
@@ -2170,6 +2229,7 @@ export class SqliteConversationStore implements ConversationStore {
     if (!names.has("effect_provenance")) {
       this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN effect_provenance TEXT");
     }
+    this.sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_member_assignment_unique ON member_turns (run_id, assignment_id) WHERE assignment_id IS NOT NULL");
   }
 
   private ensureMemberTurnSnapshotColumn(): void {
@@ -2198,6 +2258,9 @@ export class SqliteConversationStore implements ConversationStore {
       // as `queued` — a pre-PR8 automatic Run therefore needs its routing
       // state established by the routing kick before it is dispatched again.
       this.sqlite.exec("ALTER TABLE runs ADD COLUMN routing_state TEXT");
+    }
+    if (!names.has("routing_generation")) {
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN routing_generation INTEGER NOT NULL DEFAULT 0");
     }
   }
 
@@ -2447,7 +2510,7 @@ export class SqliteConversationStore implements ConversationStore {
          failed_bot_ids_json, unavailable_bot_ids_json,
          profile_revision, profile_snapshot_json,
          created_at, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, ?, 'queued', NULL, ?, 1, 1, ?, 0, '[]', '[]', ?, ?, ?, NULL, NULL)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, 'queued', NULL, ?, 1, ?, ?, 0, '[]', '[]', ?, ?, ?, NULL, NULL)`,
       [
         runId,
         input.conversationId,
@@ -2460,6 +2523,7 @@ export class SqliteConversationStore implements ConversationStore {
         // anyone). Explicit Runs never carry a routing state — routing on
         // explicit work would violate §14.1.
         mode === "automatic" ? "queued" : null,
+        members.length === 0 ? 0 : 1,
         maxMemberTurns,
         runSnapshot.revision,
         JSON.stringify(runSnapshot),
@@ -2525,8 +2589,7 @@ export class SqliteConversationStore implements ConversationStore {
       reused: false,
       message: this.requireMessage(messageId),
       run: this.requireRun(runId),
-      memberTurn: memberTurns[0]!,
-      dispatch: dispatches[0]!,
+      ...(memberTurns[0] ? { memberTurn: memberTurns[0], dispatch: dispatches[0]! } : {}),
       memberTurns,
       dispatches,
     };
@@ -2560,11 +2623,13 @@ export class SqliteConversationStore implements ConversationStore {
     const dispatches = this.listDispatchesForRun(run.id);
     const memberTurn = memberTurns[0];
     const dispatch = memberTurn ? this.getDispatchForMemberTurn(memberTurn.id) : undefined;
-    if (!message || !memberTurn || !dispatch || memberTurns.length !== dispatches.length
+    if (!message || (run.mode !== "automatic" && (!memberTurn || !dispatch))
+      || memberTurns.length !== dispatches.length
+      || memberTurns.some((turn) => !dispatches.some((row) => row.memberTurnId === turn.id))
       || !requestSnapshotMatches(message, run)) {
       throw new ConversationError("accepted_request_incomplete", `request "${requestId}" is missing durable rows`);
     }
-    return { message, run, memberTurn, dispatch, memberTurns, dispatches };
+    return { message, run, ...(memberTurn ? { memberTurn, dispatch } : {}), memberTurns, dispatches };
   }
 
   private writeIndeterminate(runId: string, memberTurnId: string, now: string, reason: string): void {
@@ -2573,7 +2638,7 @@ export class SqliteConversationStore implements ConversationStore {
       [now, memberTurnId],
     );
     this.sqlite.run(
-      `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+      `UPDATE runs SET state = 'indeterminate', completion_reason = ?, routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
       [reason, now, runId],
     );
     this.finishDispatchForMemberTurn(memberTurnId, now);
@@ -2704,8 +2769,9 @@ export class SqliteConversationStore implements ConversationStore {
     }
     const state = input.terminalState ?? "failed";
     this.sqlite.run(
-      `UPDATE member_turns SET state = ?, finished_at = ?, failure_reason = ? WHERE id = ?`,
-      [state, input.now, state === "failed" ? (input.reason ?? "failed") : null, input.memberTurnId],
+      `UPDATE member_turns SET state = ?, finished_at = ?, failure_reason = ?, blocked_reason = ? WHERE id = ?`,
+      [state, input.now, state === "failed" ? (input.reason ?? "failed") : null,
+        member.origin === "router" ? input.blockedReason ?? null : null, input.memberTurnId],
     );
     this.sqlite.run(
       `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
@@ -2784,7 +2850,7 @@ export class SqliteConversationStore implements ConversationStore {
         this.finishDispatchForMemberTurn(turn.id, now);
       }
       this.sqlite.run(
-        `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = ? WHERE id = ?`,
+        `UPDATE runs SET state = 'indeterminate', completion_reason = ?, routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END, finished_at = ? WHERE id = ?`,
         [reason, now, runId],
       );
       return this.requireRun(runId);
@@ -2835,7 +2901,7 @@ export class SqliteConversationStore implements ConversationStore {
     if (indeterminate.length > 0) {
       const reason = batchMembers.length === 1 ? (memberReason ?? "started_result_unknown") : "started_result_unknown";
       this.sqlite.run(
-        `UPDATE runs SET state = 'indeterminate', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+        `UPDATE runs SET state = 'indeterminate', completion_reason = ?, routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
         [reason, now, runId],
       );
       return this.requireRun(runId);
@@ -2844,7 +2910,7 @@ export class SqliteConversationStore implements ConversationStore {
     if (failed.length > 0) {
       const reason = batchMembers.length === 1 ? (memberReason ?? "execution-failed") : "execution-failed";
       this.sqlite.run(
-        `UPDATE runs SET state = 'failed', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+        `UPDATE runs SET state = 'failed', completion_reason = ?, routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
         [reason, now, runId],
       );
       return this.requireRun(runId);
@@ -2852,13 +2918,13 @@ export class SqliteConversationStore implements ConversationStore {
     const cancelled = batchMembers.filter((turn) => turn.state === "cancelled");
     if (cancelled.length > 0) {
       this.sqlite.run(
-        `UPDATE runs SET state = 'cancelled', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+        `UPDATE runs SET state = 'cancelled', completion_reason = ?, routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
         ["human-cancelled", now, runId],
       );
       return this.requireRun(runId);
     }
     this.sqlite.run(
-      `UPDATE runs SET state = 'completed', completion_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+      `UPDATE runs SET state = 'completed', completion_reason = ?, routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
       ["members-completed", now, runId],
     );
     return this.requireRun(runId);

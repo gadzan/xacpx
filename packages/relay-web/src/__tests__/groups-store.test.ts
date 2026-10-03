@@ -2054,10 +2054,6 @@ describe("useGroupsStore", () => {
       },
       // An automatic accept carries ZERO members: the Router decides the
       // first batch, so there is no human-selected memberTurn to project.
-      memberTurn: {
-        id: "turn_a", runId: "run_a", conversationId: "conversation_g", topicId: "topic_1",
-        botId: "bot_a", batch: 1, attempt: 1, origin: "router", state: "running", createdAt: "now",
-      },
       memberTurns: [],
       activeRunId: "run_a",
     };
@@ -2068,6 +2064,7 @@ describe("useGroupsStore", () => {
     }));
     // The automatic Run's routing substate is projected verbatim.
     expect(store.activeRun?.routingState).toBe("dispatching");
+    expect(store.memberTurns).toEqual([]);
   });
 
   it("PR8: picking a member replaces an automatic selection", async () => {

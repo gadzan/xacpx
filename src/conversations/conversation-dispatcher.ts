@@ -402,7 +402,8 @@ export class ConversationDispatcher {
       return;
     }
     if (!outcome.executionStarted || outcome.activeMembers.length === 0) {
-      this.emitRunAndMember(outcome.run, outcome.memberTurn.id);
+      if (outcome.memberTurn) this.emitRunAndMember(outcome.run, outcome.memberTurn.id);
+      else this.emitProduct({ type: "conversation-run-changed", run: outcome.run });
       await this.kick();
       return;
     }
@@ -941,6 +942,7 @@ export class ConversationDispatcher {
       memberTurnId: started.id,
       now,
       reason: result.error ?? "failed",
+      ...(started.origin === "router" && result.blockedReason ? { blockedReason: result.blockedReason } : {}),
     });
     this.emitRunAndMember(run, started.id);
     this.maybeRouteAutomatic(run);
@@ -954,21 +956,13 @@ export class ConversationDispatcher {
    * outside the dispatch path and its outcome lands durably (dispatch rows,
    * waiting-human, terminal completion), then the handler kicks the drain.
    */
-  private maybeRouteAutomatic(run: ConversationRun): void {
-    if (run.mode !== "automatic") {
-      return;
+  private maybeRouteAutomatic(_settledRun: ConversationRun): void {
+    if (this.closed || !this.onAutomaticBatchSettled) return;
+    // An explicit Run settling can also release a queued automatic Run.
+    // Eligibility and request ordering come from durable rows, never callbacks' timing.
+    for (const { run } of this.store.automaticRunsAwaitingRouting()) {
+      this.onAutomaticBatchSettled(run.id);
     }
-    if (run.state === "completed" || run.state === "failed"
-      || run.state === "cancelled" || run.state === "indeterminate") {
-      return;
-    }
-    const batch = run.activeBatch ?? 1;
-    const unsettled = this.store.listMemberTurns(run.id)
-      .filter((turn) => turn.batch === batch && !TERMINAL_MEMBER_STATES.includes(turn.state));
-    if (unsettled.length > 0) {
-      return;
-    }
-    this.onAutomaticBatchSettled?.(run.id);
   }
 
   /** PR8 wiring seam: the runtime registers the routing service here. */
@@ -1056,23 +1050,10 @@ export class ConversationDispatcher {
   }
 
   /**
-   * Public transcript boundary for one Group MemberTurn.
-   *
-   * The boundary is the highest `seq` among this member's durable
-   * `triggerMessageIds` (which always include the Run's own request message —
-   * the store fence guarantees every id is a real public row of this
-   * Conversation+Topic):
-   *
-   * - A parallel batch member carries only the request as trigger, so its
-   *   boundary is `request.seq`: every member of the same parallel batch sees
-   *   the SAME frozen snapshot S, and a sibling completing early can never
-   *   change an already-selected input (§13.1).
-   * - A sequential member carries its completed dependencies' public results
-   *   as triggers, so its boundary extends past `request.seq` and it can
-   *   build on what is ALREADY canonical public transcript (§13.1).
-   *
-   * Reads durable Conversation rows only — never session hidden history,
-   * Direct history, other Groups, or other Topics.
+   * Frozen pre-request public baseline plus exact allowed result references.
+   * Parallel members share their effective reference set; sequential members
+   * add only completed dependency results, never intervening queued requests.
+   * Reads durable rows of this Conversation+Topic only.
    */
   private frozenGroupTranscript(work: ClaimedWork): string {
     const request = this.store.getMessage(work.run.requestMessageId);
@@ -1082,27 +1063,18 @@ export class ConversationDispatcher {
     if (request === undefined || !requestSnapshotMatches(request, work.run)) {
       throw new ConversationError("request_snapshot_mismatch", `run "${work.run.id}" lost its request snapshot`);
     }
-    const boundary = this.transcriptBoundary(work);
-    // The window is the newest PUBLIC_TRANSCRIPT_MESSAGES messages AT OR BEFORE
-    // the boundary — never the oldest rows in the Topic. Inclusive because a
-    // sequential dependency's public result lives AT its own trigger seq and
-    // that result is exactly what the successor must see; a parallel member's
-    // boundary is the request seq, so nothing a sibling produced later can
-    // leak in either way.
-    const transcript = boundary === undefined
-      ? []
-      : this.store.listMessages({
-        conversationId: work.run.conversationId,
-        topicId: work.run.topicId,
-        beforeSeq: boundary + 1,
-        // One extra row so the filter below keeps exactly the newest
-        // PUBLIC_TRANSCRIPT_MESSAGES pre-request rows for parallel members
-        // (unchanged PR7 window), while rows AT the boundary — a sequential
-        // dependency's public result — are still eligible.
-        limit: PUBLIC_TRANSCRIPT_MESSAGES + 1,
-      })
-        .filter((message) => message.id !== request.id)
-        .slice(-PUBLIC_TRANSCRIPT_MESSAGES);
+    const baseline = this.store.listMessages({
+      conversationId: work.run.conversationId,
+      topicId: work.run.topicId,
+      beforeSeq: request.seq,
+      limit: PUBLIC_TRANSCRIPT_MESSAGES,
+    });
+    // Keep the pre-request snapshot frozen. Later rows enter ONLY by exact
+    // references, never by widening a contiguous seq window across queued work.
+    const allowed = new Map(baseline.map((message) => [message.id, message]));
+    for (const message of this.referencedTranscript(work)) allowed.set(message.id, message);
+    allowed.delete(request.id);
+    const transcript = [...allowed.values()].sort((a, b) => a.seq - b.seq);
     const lines = transcript.map((message) => {
       if (message.role === "human") {
         return `Human: ${message.content}`;
@@ -1118,25 +1090,12 @@ export class ConversationDispatcher {
   }
 
   /**
-   * Highest public seq this member may react to: the max over its durable
-   * `triggerMessageIds`, falling back to the request seq. Every trigger id is
-   * re-validated here as a real public row of this Conversation+Topic — a
-   * fabricated or borrowed id fails the claim before execution start rather
-   * than silently widening the member's input. Rows AT this seq are included
-   * (a sequential dependency's result lives exactly at its trigger seq).
-   *
-   * The boundary is then EXTENDED over this member's completed `dependsOn`
-   * assignments (§13.1): a sequential successor may see every earlier public
-   * result it depended on, resolved from durable rows at claim time — so the
-   * frozen-snapshot rule for parallel siblings is untouched (those carry no
-   * dependencies) while sequential work still sees what it built on.
+   * Exact additional public rows this member may consume. Resolve dependency
+   * assignment → MemberTurn → sourceTurnId, and revalidate every trigger in
+   * scope. A fabricated or borrowed reference fails before execution starts.
    */
-  private transcriptBoundary(work: ClaimedWork): number | undefined {
-    const request = this.store.getMessage(work.run.requestMessageId);
-    if (request === undefined) {
-      return undefined;
-    }
-    let boundary = request.seq;
+  private referencedTranscript(work: ClaimedWork) {
+    const rows = new Map<string, NonNullable<ReturnType<ConversationStore["getMessage"]>>>();
     const claim = (messageId: string): void => {
       const message = this.getMessageInScope(messageId, work);
       if (message === undefined) {
@@ -1145,9 +1104,7 @@ export class ConversationDispatcher {
           `member turn "${work.memberTurn.id}" references message "${messageId}" outside this run's topic`,
         );
       }
-      if (message.seq > boundary) {
-        boundary = message.seq;
-      }
+      rows.set(message.id, message);
     };
     for (const messageId of work.memberTurn.triggerMessageIds) {
       claim(messageId);
@@ -1162,22 +1119,14 @@ export class ConversationDispatcher {
         turn.assignmentId !== undefined
         && dependencies.includes(turn.assignmentId)
         && turn.state === "completed");
-      const messages = this.store.listMessages({
-        conversationId: work.run.conversationId,
-        topicId: work.run.topicId,
-        limit: PUBLIC_TRANSCRIPT_MESSAGES * 2,
-        direction: "newest-first",
-      });
       for (const turn of completed) {
-        const result = messages.find((message) => message.role === "bot"
-          && message.senderBotId === turn.botId
-          && message.runId === work.run.id);
+        const result = this.store.getMemberResult(turn);
         if (result) {
           claim(result.id);
         }
       }
     }
-    return boundary;
+    return [...rows.values()];
   }
 
   /** Durable public message lookup scoped to this Run's Conversation+Topic. */

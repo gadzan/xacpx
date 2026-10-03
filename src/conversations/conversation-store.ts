@@ -101,10 +101,10 @@ export interface AcceptRequestResult {
   reused: boolean;
   message: ConversationMessage;
   run: ConversationRun;
-  memberTurn: MemberTurnRecord;
-  dispatch: PendingDispatch;
-  /** Every accepted member in durable order (first entry mirrors the legacy
-   *  singular `memberTurn`/`dispatch`). Single-member accepts hold one. */
+  memberTurn?: MemberTurnRecord;
+  dispatch?: PendingDispatch;
+  /** Every durable member in order. Automatic accepts may hold zero, with
+   *  singular fields absent; later replay can include Router-created batches. */
   memberTurns: MemberTurnRecord[];
   /** One pending dispatch intent per member, same order as `memberTurns`. */
   dispatches: PendingDispatch[];
@@ -180,6 +180,7 @@ export interface FailExecutionInput {
   memberTurnId: string;
   now: string;
   reason: string;
+  blockedReason?: MemberTurnRecord["blockedReason"];
   terminalState?: Extract<ConversationRun["state"], "failed" | "cancelled" | "indeterminate">;
   /** Whole-Run human cancel path: settle the batch to its terminal outcome
    *  even on automatic Runs (which otherwise stay running for the Router). */
@@ -242,8 +243,8 @@ export interface AssertLiveDispatchForMaterializeInput extends ClaimFenceInput {
 
 export interface CancelRunResult {
   run: ConversationRun;
-  memberTurn: MemberTurnRecord;
-  dispatch: PendingDispatch;
+  memberTurn?: MemberTurnRecord;
+  dispatch?: PendingDispatch;
   alreadyTerminal: boolean;
   executionStarted: boolean;
   /** Every started-but-unsettled member at cancel time (durable order).
@@ -271,6 +272,8 @@ export interface RoutingAssignmentInput {
 
 export interface ApplyRoutingDecisionInput {
   runId: string;
+  /** Ownership of the routing cycle, minted durably before calling Router. */
+  routingGeneration: number;
   now: string;
   decision:
     | {
@@ -342,6 +345,8 @@ export interface ConversationStore {
   listMessages(query: ListMessagesQuery): ConversationMessage[];
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined;
   listMemberTurns(runId: string): MemberTurnRecord[];
+  /** Exact public result join using the minted durable execution identity. */
+  getMemberResult(turn: MemberTurnRecord): ConversationMessage | undefined;
   getDispatchForRun(runId: string): PendingDispatch | undefined;
   getDispatchForMemberTurn(memberTurnId: string): PendingDispatch | undefined;
   listDispatchesForRun(runId: string): PendingDispatch[];
@@ -405,14 +410,12 @@ export interface ConversationStore {
    * itself fails, when the Router is rejected, or budget is exhausted).
    * Terminal Runs and non-automatic Runs are refused.
    */
-  failRun(runId: string, reason: string, state: "failed", now: string): ConversationRun;
+  failRun(runId: string, reason: string, state: "failed", now: string, routingGeneration?: number): ConversationRun;
   cancelRun(runId: string, now: string, reason?: string): CancelRunResult;
   /**
-   * PR8 automatic routing substate transition (plan §11.4). Moves a
-   * nonterminal automatic Run between `queued` → `routing` → `dispatching`;
-   * `done` is written only together with a terminal Run state by
-   * `applyRoutingDecision` / `failRun`, never on its own. Explicit Runs and
-   * terminal Runs are refused.
+   * Acquire the next automatic routing generation (state must be routing).
+   * Refuses terminal/waiting/deleting Runs, unsettled members and earlier
+   * Topic owners. Decision commit owns dispatching/done transitions.
    */
   markRoutingState(runId: string, state: ConversationRoutingState, now: string): ConversationRun;
   /**
@@ -422,8 +425,8 @@ export interface ConversationStore {
    * `need-human` settles the Run as `waiting-human`, and `complete` settles it
    * `completed`. Rejects assignments that do not map to the Run's public
    * transcript, unknown Bots, duplicate assignment ids, budget overruns, and
-   * a second decision on an already-routed batch (idempotent replay is through
-   * the same routingState marker, not a fresh write).
+   * a stale routing generation on ALL decision variants. Re-acquiring routing
+   * after a crash mints a new generation, fencing every older model call.
    */
   applyRoutingDecision(input: ApplyRoutingDecisionInput): ApplyRoutingDecisionResult;
   /** Durable audit of each Router decision taken for this Run (audit only;

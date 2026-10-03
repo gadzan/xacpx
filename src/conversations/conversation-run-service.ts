@@ -204,6 +204,7 @@ export class ConversationRunService {
       throw error;
     }
     this.activation = "activated";
+    if (this.autoKick && !this.closed) void this.dispatcher.kick().catch(() => {});
   }
 
   isConsumerActivated(): boolean {
@@ -236,7 +237,7 @@ export class ConversationRunService {
    * means a configured+provable Router in practice. Both layers fail closed.
    */
   private routerAvailable(): boolean {
-    return this.routerEngine !== undefined;
+    return this.routerEngine?.available === true;
   }
 
   async acceptDirectPrompt(input: {
@@ -325,6 +326,9 @@ export class ConversationRunService {
     humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
     this.assertAccepting();
+    // Durable replay precedes mutable Router/configuration and live-state gates.
+    const alreadyAccepted = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
+    if (alreadyAccepted) return alreadyAccepted;
     const conversation = this.requireConversation(input.conversationId);
     if (conversation.kind !== "group") {
       throw new ConversationError("conversation_not_group", `conversation "${input.conversationId}" is not a Group`);
@@ -338,15 +342,6 @@ export class ConversationRunService {
         "automatic_unsupported",
         "automatic Group routing requires a capability-restricted Router, which is not configured",
       );
-    }
-    // Durable idempotency first: a retry of an already-accepted request must
-    // return the original Run even when current live state (membership,
-    // Topic status, deletion) would reject the request. Direct prompt has the
-    // same precedence (`getAcceptedRequest` before live checks) — the Web
-    // relies on it to survive a lost response with `currentDraftRequestId`.
-    const alreadyAccepted = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
-    if (alreadyAccepted) {
-      return alreadyAccepted;
     }
     for (;;) {
       const probeIds = this.groupMemberCandidates(input.conversationId, parsed);
@@ -1052,35 +1047,54 @@ export class ConversationRunService {
   async cancelRun(runId: string): Promise<void> {
     this.assertOpen();
     await this.dispatcher.cancelRun(runId);
+    this.trackReadyAutomaticRuns();
   }
 
   /**
    * PR8: take one automatic routing step for a Run. Callable from the accept
    * path (first decision) and from the batch-settle hook (subsequent
-   * decisions). Never throws: a Router failure is recorded on the Run, so a
-   * rejected/missed decision is durable evidence rather than an unhandled
-   * rejection in a dispatch continuation.
+   * decisions). Expected model/input failures are recorded with the attempt
+   * fence; unexpected infrastructure failures propagate to activation.
    */
-  async routeAutomaticRun(runId: string, kick: boolean): Promise<void> {
+  routeAutomaticRun(runId: string, kick: boolean): Promise<void> {
+    const existing = this.inFlightRouting.get(runId);
+    if (existing) return existing;
+    if (this.closed) return Promise.resolve();
+    // Register ownership before invoking a Router, including synchronous re-entry.
+    const task = Promise.resolve().then(() => this.performAutomaticRouting(runId, kick)).finally(() => {
+      if (this.inFlightRouting.get(runId) === task) this.inFlightRouting.delete(runId);
+    });
+    this.inFlightRouting.set(runId, task);
+    return task;
+  }
+
+  private async performAutomaticRouting(runId: string, kick: boolean): Promise<void> {
     const engine = this.routerEngine;
     if (!engine?.available) {
+      const current = this.store.getRun(runId);
+      if (!current || current.mode !== "automatic" || TERMINAL_RUN_STATES.includes(current.state)) return;
       // No Router configured: automatic Runs were never admissible, so a
       // surviving one (config removed after accept) must fail closed rather
       // than sit nonterminal forever.
-      this.store.failRun(runId, "automatic_unsupported", "failed", this.now().toISOString());
+      const failed = this.store.failRun(runId, "automatic_unsupported", "failed", this.now().toISOString());
+      this.emitRoutingOutcome({ run: failed, outcome: "failed", reason: "automatic_unsupported" });
+      this.trackReadyAutomaticRuns();
       return;
     }
-    let outcome: RoutingAttemptOutcome;
-    try {
-      outcome = await engine.route(runId);
-    } catch {
-      this.store.failRun(runId, "router-execution-failed", "failed", this.now().toISOString());
-      return;
-    }
+    const outcome = await engine.route(runId);
     if (outcome.outcome === "dispatched" && kick && this.autoKick && this.activation === "activated") {
-      void this.dispatcher.kick();
+      void this.dispatcher.kick().catch(() => {});
     }
     this.emitRoutingOutcome(outcome);
+    if (TERMINAL_RUN_STATES.includes(outcome.run.state)) {
+      this.trackReadyAutomaticRuns();
+      if (kick && this.autoKick && this.activation === "activated") void this.dispatcher.kick().catch(() => {});
+    }
+  }
+
+  private trackReadyAutomaticRuns(): void {
+    if (this.closed) return;
+    for (const { run } of this.store.automaticRunsAwaitingRouting()) this.trackRouting(run.id, true);
   }
 
   /**
@@ -1114,12 +1128,8 @@ export class ConversationRunService {
    * shutdown can settle it deterministically.
    */
   private trackRouting(runId: string, kick: boolean): void {
-    const task = this.routeAutomaticRun(runId, kick).finally(() => {
-      if (this.inFlightRouting.get(runId) === task) {
-        this.inFlightRouting.delete(runId);
-      }
-    });
-    this.inFlightRouting.set(runId, task);
+    if (this.closed) return;
+    void this.routeAutomaticRun(runId, kick).catch(() => {});
   }
 
   /**

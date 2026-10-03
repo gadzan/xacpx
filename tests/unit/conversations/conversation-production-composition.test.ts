@@ -14,6 +14,10 @@ import { createDirectConversationId } from "../../../src/domain/ids";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
 import { createEmptyState, type AppState } from "../../../src/state/types";
+import type { ConversationRouter } from "../../../src/conversations/conversation-router-types";
+import type { Agent } from "../../../src/weixin/agent/interface";
+
+const RESTRICTED = { toolsDisabled: true, filesystemDisabled: true, terminalDisabled: true, permissionInteractionDisabled: true, messagingDisabled: true, orchestrationDisabled: true, structuredOutputOnly: true };
 
 class BarrierStateStore {
   public saved: AppState[] = [];
@@ -70,14 +74,14 @@ function createConfig(): AppConfig {
   };
 }
 
-async function compose(stateStore: BarrierStateStore) {
+async function compose(stateStore: BarrierStateStore, options: { router?: ConversationRouter; agent?: Agent } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "xacpx-compose-"));
   const state = createEmptyState();
   const config = createConfig();
   const stateMutex = new AsyncMutex();
   const sessions = new SessionService(config, stateStore, state, { stateMutex });
   const control = new ControlService({
-    agent: { chat: async () => ({ text: "ok" }) },
+    agent: options.agent ?? { chat: async () => ({ text: "ok" }) },
     sessions,
     activeTurns: { isActiveAnywhere: () => false },
     scheduled: {} as never,
@@ -104,11 +108,60 @@ async function compose(stateStore: BarrierStateStore) {
     }),
     onProductEvent: (event) => kernel.emitConversationProduct(event),
     autoKick: false,
+    ...(options.router ? { router: options.router } : {}),
     stateMutex,
   });
   kernel.bindConversationRuntime(runtime);
   return { state, sessions, control, runtime, stateMutex };
 }
+
+test("real Control automatic prompt returns zero members and same requestId replays the Run", async () => {
+  let decide!: () => void;
+  const router: ConversationRouter = { capabilityRestriction: RESTRICTED, async decide() {
+    await new Promise<void>((resolve) => { decide = resolve; });
+    return { type: "need-human", question: "Choose scope" };
+  } };
+  const { control, runtime } = await compose(new BarrierStateStore(), { router });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+  const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
+  const topic = await control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
+  const request = { conversationId: group.id, topicId: topic.id, requestId: "automatic-api", text: "review", target: { mode: "automatic" as const } };
+  const accepted = await control.promptConversation(request);
+  expect(accepted.memberTurn).toBeUndefined();
+  expect(accepted.memberTurns).toEqual([]);
+  expect(accepted.run.mode).toBe("automatic");
+  const replay = await control.promptConversation(request);
+  expect(replay.reused).toBe(true);
+  expect(replay.run.id).toBe(accepted.run.id);
+  expect(replay.memberTurn).toBeUndefined();
+  expect(replay.memberTurns).toEqual([]);
+  decide();
+  await runtime.runs.awaitRouting();
+  await control.cancelRun(accepted.run.id);
+  expect(runtime.store.getRun(accepted.run.id)?.state).toBe("cancelled");
+  await runtime.shutdown();
+});
+
+test("real automatic permission failure produces durable structured blocked-step evidence", async () => {
+  const { control, runtime } = await compose(new BarrierStateStore(), {
+    agent: { async chat() { throw Object.assign(new Error("permission blocked"), { code: "RUNTIME_PERMISSION_DENIED" }); } },
+    router: { capabilityRestriction: RESTRICTED, async decide(input) { return { type: "dispatch", mode: "single", assignments: [{ id: "write", botId: input.memberMetadata[0]!.botId, task: "write", triggerMessageIds: [] }] }; } },
+  });
+  const bot = await control.createBot({ name: "Writer", agent: "codex", workspace: "backend" });
+  const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+  const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
+  const topic = await control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
+  const accepted = await control.promptConversation({ conversationId: group.id, topicId: topic.id, requestId: "blocked-api", text: "write", target: { mode: "automatic" } });
+  await runtime.runs.awaitRouting();
+  await runtime.dispatcher.kick();
+  const turn = runtime.store.listMemberTurns(accepted.run.id)[0]!;
+  expect(turn.state).toBe("failed");
+  expect(turn.blockedReason).toBe("human-authority-unknown");
+  expect(turn.origin).toBe("router");
+  expect((await control.getRun(accepted.run.id)).memberTurns[0]?.blockedReason).toBe("human-authority-unknown");
+  await runtime.shutdown();
+});
 
 test("Conversation COW snapshot then Session create keeps both domains", async () => {
   const store = new BarrierStateStore();

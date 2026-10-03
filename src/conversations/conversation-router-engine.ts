@@ -1,6 +1,7 @@
 import { ConversationError } from "./conversation-error";
 import { gateRoutingDecision } from "./conversation-router-gate";
 import type { ApplyRoutingDecisionInput } from "./conversation-store";
+import { requestSnapshotMatches } from "./conversation-store";
 import {
   isRouterCapabilityRestricted,
   type ConversationRouter,
@@ -17,7 +18,6 @@ import type {
   ConversationTopic,
   MemberTurnRecord,
 } from "./conversation-types";
-import { PUBLIC_TRANSCRIPT_MESSAGES } from "./conversation-dispatcher";
 import type { ConversationStore, ListMessagesQuery } from "./conversation-store";
 import type { BotProfile } from "../bots/bot-types";
 
@@ -26,12 +26,6 @@ import type { BotProfile } from "../bots/bot-types";
  *  longer than the bound still gives the Router the closest prior context —
  *  the same rule the dispatcher's frozen transcript uses. */
 export const ROUTER_PUBLIC_TRANSCRIPT_MESSAGES = 200;
-
-/** Bound for resolving a completed assignment to its public result row when
- *  fixing a sequential successor's trigger boundary. Bounded like every other
- *  durable read; an out-of-window result simply contributes no trigger, which
- *  is the same answer as "no public result to build on". */
-const PUBLIC_RESULT_LOOKBACK = 400;
 
 /** Store-level decision shape (assignments carry their accepted snapshot). */
 type RoutingDecisionStoreInput = ApplyRoutingDecisionInput["decision"];
@@ -42,6 +36,8 @@ export interface ConversationRouterEngineOptions {
   readGroup: (conversationId: string) => ConversationRecord | undefined;
   readTopic: (conversationId: string, topicId: string) => ConversationTopic | undefined;
   readBot: (botId: string) => BotProfile | undefined;
+  /** Revalidation and durable commit share BotService's lifecycle gates. */
+  runLifecycleAll: <T>(botIds: readonly string[], critical: () => Promise<T>) => Promise<T>;
   now: () => Date;
 }
 
@@ -54,12 +50,8 @@ export interface RoutingAttemptOutcome {
   memberTurns?: MemberTurnRecord[];
 }
 
-/** Durable MemberTurn state → Router-visible assignment outcome. Non-terminal
- *  states (queued/dispatched/running) are NOT outcomes; the Router is only
- *  asked while the previous batch is terminal, so any such state here is a
- *  stale input and reports the closest terminal outcome the Run would
- *  commit. `indeterminate` is preserved exactly: unknown side effects are
- *  never laundered into success or failure. */
+/** Only terminal MemberTurns constitute assignment outcomes. Never turn a
+ *  still-running assignment or unknown side effects into a guessed outcome. */
 function routingOutcomeOf(turn: MemberTurnRecord): RoutingAssignmentRecord["outcome"] {
   switch (turn.state) {
     case "completed":
@@ -71,7 +63,7 @@ function routingOutcomeOf(turn: MemberTurnRecord): RoutingAssignmentRecord["outc
     case "indeterminate":
       return "indeterminate";
     default:
-      return "cancelled";
+      throw new ConversationError("routing_batch_active", `member turn "${turn.id}" is not settled`);
   }
 }
 
@@ -79,11 +71,10 @@ function routingOutcomeOf(turn: MemberTurnRecord): RoutingAssignmentRecord["outc
  * PR8 automatic-Run router engine (design §12–§14, plan §11).
  *
  * Responsibilities, in order:
- * 1. Build the stateless `RoutingInput` from durable store rows + live
- *    membership metadata. NO Direct history, NO private content, NO other
- *    Topic, and NO Router-side conversational history.
- * 2. Mark the Run `routing` durably before the call, so a crash during the
- *    call re-routes deterministically (a decision has no side effects).
+ * 1. Acquire a durable routing generation before the call, so a restart
+ *    can re-route while fencing any older output.
+ * 2. Build the stateless `RoutingInput` from durable rows + live membership.
+ *    NO Direct/private/other-Topic or Router-side conversational history.
  * 3. Gate every decision: strict schema, then domain validation against the
  *    live input. Nothing malformed reaches the durable write.
  * 4. Commit through the store: dispatch inserts `router`-origin MemberTurns,
@@ -102,7 +93,7 @@ export class ConversationRouterEngine {
   /** True when this engine may route at all. An absent Router leaves
    *  automatic mode unsupported (callers must refuse the accept). */
   get available(): boolean {
-    return this.router !== undefined;
+    return ConversationRouterEngine.isUsable(this.router);
   }
 
   /** True when `router` may be wired into automatic mode at all. Fail closed:
@@ -140,17 +131,13 @@ export class ConversationRouterEngine {
       // late Router output must not resurrect scheduling.
       return { run, outcome: "skipped", reason: `run_${run.state}` };
     }
-    const input = this.buildRoutingInput(run);
+    let routingGeneration: number;
     // A Run with zero remaining budget is terminated by budget, not routed:
     // `maxMemberTurns` is a loop guard, not a completion definition, so this
     // must be an EXPLICIT terminal reason (failed + budget-exhausted), never
     // a "completed" Run and never a silent truncation of a Router batch.
-    if (input.remainingBudget <= 0) {
-      const settled = store.failRun(runId, "budget-exhausted", "failed", this.options.now().toISOString());
-      return { run: settled, outcome: "failed", reason: "budget-exhausted" };
-    }
     try {
-      store.markRoutingState(runId, "routing", this.options.now().toISOString());
+      routingGeneration = store.markRoutingState(runId, "routing", this.options.now().toISOString()).routingGeneration!;
     } catch (error) {
       // A concurrent terminal/cancel transition between the read above and
       // here means this routing attempt is stale: skip rather than fight it.
@@ -164,34 +151,47 @@ export class ConversationRouterEngine {
       }
       throw error;
     }
+    let input: RoutingInput;
+    try {
+      input = this.buildRoutingInput(store.getRun(runId)!);
+    } catch (error) {
+      const reason = error instanceof ConversationError ? error.code : "router-input-failed";
+      return { run: this.failRouting(runId, reason, routingGeneration), outcome: "rejected", reason };
+    }
+    if (input.remainingBudget <= 0) {
+      return { run: this.failRouting(runId, "budget-exhausted", routingGeneration), outcome: "failed", reason: "budget-exhausted" };
+    }
     let raw: unknown;
     try {
       raw = await router.decide(input);
     } catch {
       // A Router failure (model error, transport error, timeout) is an
       // unrecoverable failure of THIS Run, not a reason to spin.
-      const failed = this.failRouting(runId, "router-execution-failed");
+      const failed = this.failRouting(runId, "router-execution-failed", routingGeneration);
       return { run: failed, outcome: "failed", reason: "router-execution-failed" };
     }
     const gate = gateRoutingDecision(raw, input);
     if (gate.kind === "rejected") {
       // Malformed/unsafe decisions fail closed BEFORE any durable MemberTurn
       // is created: the Run fails with the machine-readable gate code.
-      const failed = this.failRouting(runId, gate.code);
+      const failed = this.failRouting(runId, gate.code, routingGeneration);
       return { run: failed, outcome: "rejected", reason: gate.code };
     }
-    const decision = this.attachMemberSnapshots(run, gate.decision, input);
     try {
-      const applied = store.applyRoutingDecision({
-        runId,
-        now: this.options.now().toISOString(),
-        decision,
-        requestMessageId: run.requestMessageId,
+      const selected = gate.decision.type === "dispatch" ? gate.decision.assignments.map((a) => a.botId) : [];
+      const applied = await this.options.runLifecycleAll(selected, async () => {
+        const decision = this.attachMemberSnapshots(run, gate.decision);
+        return store.applyRoutingDecision({
+          runId, routingGeneration,
+          now: this.options.now().toISOString(),
+          decision,
+          requestMessageId: run.requestMessageId,
+        });
       });
       if (applied.terminal) {
         return {
           run: applied.run,
-          outcome: applied.terminal === "waiting-human" ? "need-human" : "complete",
+          outcome: applied.terminal === "waiting-human" ? "need-human" : applied.terminal === "failed" ? "failed" : "complete",
           ...(applied.terminal === "waiting-human"
             ? { reason: "needs-input" }
             : { reason: applied.run.completionReason }),
@@ -206,7 +206,7 @@ export class ConversationRouterEngine {
           || current.state === "cancelled" || current.state === "indeterminate")) {
           return { run: current, outcome: "skipped", reason: current.state };
         }
-        if (error.code === "routing_batch_active") {
+        if (error.code === "routing_batch_active" || error.code === "stale_routing_attempt") {
           // Another drain already committed a batch for this Run; nothing to do.
           return { run: current ?? run, outcome: "skipped", reason: error.code };
         }
@@ -214,15 +214,15 @@ export class ConversationRouterEngine {
         // public transcript, duplicate ids, budget overrun, ...) is a routing
         // decision that cannot be applied. Fail the Run with the store's own
         // machine-readable code so the reason survives as durable evidence.
-        const failed = this.failRouting(runId, error.code);
+        const failed = this.failRouting(runId, error.code, routingGeneration);
         return { run: failed, outcome: "rejected", reason: error.code };
       }
       throw error;
     }
   }
 
-  private failRouting(runId: string, reason: string): ConversationRun {
-    return this.options.store.failRun(runId, reason, "failed", this.options.now().toISOString());
+  private failRouting(runId: string, reason: string, routingGeneration: number): ConversationRun {
+    return this.options.store.failRun(runId, reason, "failed", this.options.now().toISOString(), routingGeneration);
   }
 
   /**
@@ -243,10 +243,7 @@ export class ConversationRouterEngine {
   buildRoutingInput(run: ConversationRun): RoutingInput {
     const store = this.options.store;
     const request = store.getMessage(run.requestMessageId);
-    if (!request
-      || request.conversationId !== run.conversationId
-      || request.topicId !== run.topicId
-      || request.role !== "human") {
+    if (!request || !requestSnapshotMatches(request, run)) {
       throw new ConversationError(
         "request_snapshot_mismatch",
         `run "${run.id}" lost its request snapshot; not routable`,
@@ -260,9 +257,8 @@ export class ConversationRouterEngine {
       topicId: run.topicId,
       beforeSeq: request.seq,
       limit: ROUTER_PUBLIC_TRANSCRIPT_MESSAGES,
-      direction: "newest-first",
     };
-    const transcript = store.listMessages(transcriptQuery).map((message) => ({
+    const transcript = store.listMessages(transcriptQuery).reverse().map((message) => ({
       id: message.id,
       seq: message.seq,
       role: message.role,
@@ -314,7 +310,7 @@ export class ConversationRouterEngine {
       if (turn.state === "completed") {
         // Sequential work may build on the public result; read it from the
         // Topic, never from hidden session history.
-        assignment.result = this.latestMemberResult(store, run, turn) ?? "";
+        assignment.result = store.getMemberResult(turn)?.content ?? "";
       }
       if (turn.state === "failed" && turn.failureReason) {
         assignment.failureReason = turn.failureReason;
@@ -371,7 +367,6 @@ export class ConversationRouterEngine {
   private attachMemberSnapshots(
     run: ConversationRun,
     decision: RoutingDecision,
-    input: RoutingInput,
   ): RoutingDecisionStoreInput {
     if (decision.type !== "dispatch") {
       return decision;
@@ -382,86 +377,43 @@ export class ConversationRouterEngine {
       throw new ConversationError("execution_target_missing", `topic "${run.topicId}" has no execution target`);
     }
     const now = this.options.now().toISOString();
-    // Public assistant messages this Run produced (newest-first), used to
-    // resolve each durable completed assignment to its canonical public row.
-    const publicMessages = this.options.store.listMessages({
-      conversationId: run.conversationId,
-      topicId: run.topicId,
-      limit: PUBLIC_RESULT_LOOKBACK,
-      direction: "newest-first",
-    });
-    // Public assistant message produced by each durable completed assignment
-    // (join by sender Bot + Run + content), which a sequential dependency may
-    // build on. Content-matched on purpose: the assignment id is not stamped
-    // on the transcript row, and the run+bot+content triple identifies the
-    // exact public result the Router was shown as `assignment.result`.
+    // Resolve dependencies by exact durable MemberTurn execution identity.
     const publicResultOf = new Map<string, string>();
-    for (const assignment of input.completedAssignments) {
-      if (assignment.outcome !== "completed" || assignment.result === undefined) {
+    for (const turn of this.options.store.listMemberTurns(run.id)) {
+      if (turn.state !== "completed" || !turn.assignmentId) {
         continue;
       }
-      const row = publicMessages.find((message) => message.role === "bot"
-        && message.senderBotId === assignment.botId
-        && message.runId === run.id
-        && message.content === assignment.result);
+      const row = this.options.store.getMemberResult(turn);
       if (row) {
-        publicResultOf.set(assignment.id, row.id);
+        publicResultOf.set(turn.assignmentId, row.id);
       }
+    }
+    const assignments = decision.assignments.map((assignment) => {
+      const bot = this.options.readBot(assignment.botId);
+      const group = this.options.readGroup(run.conversationId);
+      if (!bot || !group?.botIds.includes(bot.id)) {
+        throw new ConversationError("router_unknown_member", `assignment "${assignment.id}" targets a removed member`);
+      }
+      if (!bot.enabled) {
+        throw new ConversationError("router_disabled_member", `assignment "${assignment.id}" targets disabled bot "${bot.id}"`);
+      }
+      const triggers = new Set(assignment.triggerMessageIds);
+      triggers.add(run.requestMessageId);
+      for (const dependency of assignment.dependsOn ?? []) {
+        const resultId = publicResultOf.get(dependency);
+        if (resultId) triggers.add(resultId);
+      }
+      return { ...assignment, triggerMessageIds: [...triggers], profileSnapshot: snapshotGroupMemberProfile(bot, target, now) };
+    });
+    if (decision.mode === "parallel") {
+      const commonTriggers = [...new Set(assignments.flatMap((assignment) => assignment.triggerMessageIds))];
+      for (const assignment of assignments) assignment.triggerMessageIds = [...commonTriggers];
     }
     return {
       type: "dispatch",
       mode: decision.mode,
-      assignments: decision.assignments.map((assignment) => {
-        const bot = this.options.readBot(assignment.botId);
-        if (!bot) {
-          throw new ConversationError(
-            "router_unknown_member",
-            `assignment "${assignment.id}" targets bot "${assignment.botId}" which no longer exists`,
-          );
-        }
-        const triggers = new Set(assignment.triggerMessageIds);
-        triggers.add(run.requestMessageId);
-        for (const dependency of assignment.dependsOn ?? []) {
-          const resultId = publicResultOf.get(dependency);
-          if (resultId) {
-            triggers.add(resultId);
-          }
-        }
-        return {
-          id: assignment.id,
-          botId: assignment.botId,
-          task: assignment.task,
-          ...(assignment.expectedOutput !== undefined ? { expectedOutput: assignment.expectedOutput } : {}),
-          ...(assignment.dependsOn !== undefined ? { dependsOn: assignment.dependsOn } : {}),
-          triggerMessageIds: [...triggers],
-          profileSnapshot: snapshotGroupMemberProfile(bot, target, now),
-        };
-      }),
+      assignments,
     };
   }
 
-  /**
-   * The public assistant text this member produced in this Topic, or
-   * undefined when it produced none. Only PUBLIC transcript rows are read, so
-   * a sequential member can see exactly what the human sees — never the
-   * hidden session of a sibling Bot.
-   */
-  private latestMemberResult(
-    store: ConversationStore,
-    run: ConversationRun,
-    turn: MemberTurnRecord,
-  ): string | undefined {
-    const rows = store.listMessages({
-      conversationId: run.conversationId,
-      topicId: run.topicId,
-      limit: 50,
-      direction: "newest-first",
-    });
-    for (const row of rows) {
-      if (row.role === "bot" && row.senderBotId === turn.botId && row.runId === run.id) {
-        return row.content;
-      }
-    }
-    return undefined;
-  }
 }

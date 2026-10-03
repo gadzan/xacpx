@@ -36,7 +36,7 @@ export function validateRoutingDecision(decision: RoutingDecision, input: Routin
   const decisionIds = new Set<string>();
   const priorAssignmentIds = new Set(input.completedAssignments.map((assignment) => assignment.id));
   for (const assignment of decision.assignments) {
-    if (decisionIds.has(assignment.id)) {
+    if (decisionIds.has(assignment.id) || priorAssignmentIds.has(assignment.id)) {
       throw new RoutingDecisionError(
         "router_assignment_duplicate",
         `Router assigns duplicate assignment id "${assignment.id}"`,

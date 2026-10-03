@@ -394,6 +394,8 @@ export interface ControlPromptInput {
 
 export interface ControlPromptResult {
   ok: boolean;
+  /** Structured execution evidence, produced from typed runtime permission failures. */
+  blockedReason?: "human-authority-required" | "human-authority-unknown";
   text?: string;
   errorMessage?: string;
   /** Proven cancellation (AbortSignal / user Stop), not an error string match. */
@@ -2085,8 +2087,8 @@ export class ControlService {
         requestId: accepted.run.requestId,
         run: toConversationRun(accepted.run),
         message: toConversationMessage(accepted.message),
-        memberTurn: toMemberTurnSummary(accepted.memberTurn),
-        ...(accepted.memberTurns.length > 1
+        ...(accepted.memberTurn ? { memberTurn: toMemberTurnSummary(accepted.memberTurn) } : {}),
+        ...(accepted.run.mode === "automatic" || accepted.memberTurns.length > 1
           ? { memberTurns: accepted.memberTurns.map(toMemberTurnSummary) } : {}),
         ...(listed.activeRunId ? { activeRunId: listed.activeRunId } : {}),
         ...(listed.activeRun ? { activeRun: toConversationRun(listed.activeRun) } : {}),

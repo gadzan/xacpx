@@ -238,10 +238,10 @@ export interface ConversationPromptResponseDto {
   requestId: string;
   run: ConversationRunDto;
   message: ConversationMessageDto;
-  memberTurn: MemberTurnSummaryDto;
-  /** Every accepted member in durable order (first entry mirrors the legacy
-   *  singular `memberTurn`). Present on multi-member accepts; Direct
-   *  single-member responses may omit it for wire compat. */
+  /** Absent on an automatic accept/replay with zero durable members. */
+  memberTurn?: MemberTurnSummaryDto;
+  /** Every durable member in order. Automatic responses always include this
+   *  array (possibly empty); legacy single-member responses may omit it. */
   memberTurns?: MemberTurnSummaryDto[];
   /** Topic-wide authoritative owner as of accept (executing, else oldest
    *  queued). Lets the caller adopt the true owner without a second
