@@ -699,7 +699,13 @@ function validConversationRun(value: unknown): boolean {
       || (Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")))
     && typeof c.createdAt === "string"
     && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt)
-    && (c.activeBatch === undefined || typeof c.activeBatch === "number");
+    && (c.activeBatch === undefined || typeof c.activeBatch === "number")
+    // PR8: automatic-Run routing substate. Absent on explicit Runs; present
+    // exactly on automatic ones. Validated as the durable vocabulary so a
+    // foreign value fails the event rather than reaching the run card.
+    && (c.routingState === undefined
+      || c.routingState === "queued" || c.routingState === "routing"
+      || c.routingState === "dispatching" || c.routingState === "done");
 }
 
 function validMemberTurnSummary(value: unknown): boolean {
@@ -722,7 +728,12 @@ function validMemberTurnSummary(value: unknown): boolean {
     && typeof c.createdAt === "string"
     && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt)
     && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput)
-    && optStrArr(c.dependsOn) && optStr(c.failureReason);
+    && optStrArr(c.dependsOn) && optStr(c.failureReason)
+    // PR8 structured blocked-step evidence: durable, so it survives reconnect;
+    // never a permission upgrade.
+    && (c.blockedReason === undefined
+      || c.blockedReason === "human-authority-required"
+      || c.blockedReason === "human-authority-unknown");
 }
 
 /** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.

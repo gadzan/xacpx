@@ -811,6 +811,10 @@ Expanding a member reuses existing `TurnParts`.
 
 # 11. PR 8 — Stateless automatic ConversationRouter
 
+## Status
+
+Implemented. See [`docs/conversation-runtime.md`](../conversation-runtime.md) § "Automatic collaboration and the stateless ConversationRouter (PR8)" for the shipped contract, `src/conversations/conversation-router-types.ts` (interface + decision schema), `src/conversations/conversation-router-gate.ts` (capability gate + schema/domain validation), `src/conversations/conversation-router-engine.ts` (stateless input build + decision commit), and `tests/unit/conversations/conversation-router.test.ts`. The concrete model Router implementation is intentionally NOT wired in `src/main.ts`, so automatic mode stays unsupported in production deployments until an adapter ships a capability-provable Router — this is the documented fail-closed default, not a gap.
+
 ## Objective
 
 Add automatic collaboration only after explicit Group behavior is stable.

@@ -150,6 +150,13 @@ export interface ConversationRunDto {
   completionReason?: string;
   profileRevision: number;
   activeBatch?: number;
+  /**
+   * PR8 automatic-Run routing substate. Present on automatic Runs only;
+   * explicit Runs omit it entirely (they never route). The Web uses it to
+   * show "deciding next step" without inventing client-side state, and it is
+   * durable so the presentation survives reconnect/restart.
+   */
+  routingState?: ConversationRun["routingState"];
   maxMemberTurns: number;
   consumedMemberTurns: number;
   failedBotIds: string[];
@@ -190,6 +197,14 @@ export interface MemberTurnSummaryDto {
   dependsOn?: string[];
   /** Machine-readable terminal failure reason (failed only). */
   failureReason?: string;
+  /**
+   * PR8 structured blocked-step evidence (design §16): set when an automatic
+   * MemberTurn cannot proceed because the next step needs human-origin
+   * authority. Durable so the "[Start this step myself]" action survives
+   * reconnect. Never an origin upgrade — the action creates a NEW explicit
+   * human request referencing this turn.
+   */
+  blockedReason?: MemberTurnRecord["blockedReason"];
 }
 
 /** Explicit Group routing target. IDs are authority; display names are
@@ -369,6 +384,11 @@ export function toConversationRun(run: ConversationRun): ConversationRunDto {
     mode: run.mode,
     state: run.state,
     profileRevision: run.profileRevision,
+    // PR8: automatic Runs project their routing substate; explicit Runs never
+    // carry one, so the field stays absent rather than lying with a default.
+    ...(run.mode === "automatic" && run.routingState !== undefined
+      ? { routingState: run.routingState }
+      : {}),
     ...(run.activeBatch !== undefined ? { activeBatch: run.activeBatch } : {}),
     maxMemberTurns: run.maxMemberTurns,
     consumedMemberTurns: run.consumedMemberTurns,
@@ -402,6 +422,7 @@ export function toMemberTurnSummary(turn: MemberTurnRecord): MemberTurnSummaryDt
     ...(turn.expectedOutput ? { expectedOutput: turn.expectedOutput } : {}),
     ...(turn.dependsOn && turn.dependsOn.length > 0 ? { dependsOn: [...turn.dependsOn] } : {}),
     ...(turn.failureReason ? { failureReason: turn.failureReason } : {}),
+    ...(turn.blockedReason ? { blockedReason: turn.blockedReason } : {}),
   };
 }
 

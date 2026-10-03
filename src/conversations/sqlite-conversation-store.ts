@@ -25,9 +25,13 @@ import type {
   FailExecutionInput,
   ListMessagesQuery,
   MarkExecutionStartedInput,
+  ApplyRoutingDecisionInput,
+  ApplyRoutingDecisionResult,
   RecoveredClaim,
   ReleaseClaimToPendingInput,
   RenewHeldClaimInput,
+  RoutingAssignmentInput,
+  RoutingDecisionRecord,
   SettleCancelBatchInput,
   SettleCancelBatchResult,
   SettledCancelMember,
@@ -41,6 +45,7 @@ import type {
   ConversationMessage,
   ConversationRun,
   ConversationRunState,
+  ConversationRoutingState,
   HumanIngressContext,
   MemberTurnEffect,
   MemberTurnEffectProvenance,
@@ -90,6 +95,7 @@ interface RunRow {
   mode: string;
   state: string;
   completion_reason: string | null;
+  routing_state?: string | null;
   generation: number;
   active_batch: number | null;
   max_member_turns: number;
@@ -134,6 +140,7 @@ interface MemberTurnRow {
   task: string | null;
   expected_output: string | null;
   depends_on_json: string | null;
+  blocked_reason?: string | null;
 }
 
 interface DispatchRow {
@@ -149,6 +156,17 @@ interface DispatchRow {
   created_at: string;
   claimed_at: string | null;
   completed_at: string | null;
+}
+
+interface RoutingDecisionRow {
+  id: string;
+  run_id: string;
+  decision_type: string;
+  mode: string | null;
+  question: string | null;
+  reason: string | null;
+  assignment_ids_json: string;
+  created_at: string;
 }
 
 const SCHEMA = `
@@ -256,6 +274,30 @@ CREATE INDEX IF NOT EXISTS idx_dispatches_state ON pending_dispatches (state, cr
 CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state);
 CREATE INDEX IF NOT EXISTS idx_member_turns_run ON member_turns (run_id);
 `;
+
+/**
+ * PR8 sequential-assignment scheduling fence (§13.1). A MemberTurn that
+ * declares `dependsOn` may only be claimed after EVERY dependency this Run
+ * knows about is terminal. Dependencies are matched by durable `assignment_id`
+ * (the Router's assignment identity, persisted verbatim on each member turn),
+ * so a chained sequential batch cannot start its second step before the first
+ * step's public result exists.
+ *
+ * `member_turns.depends_on_json` holds assignment ids; a dependency that names
+ * an assignment id with no member row yet is a forward reference inside the
+ * same decision — the Router's own DAG requires it to be in the same batch, and
+ * the gate rejects cyclic graphs. A dependency that exists but is not terminal
+ * blocks; a dependency that never exists blocks forever, which is why the
+ * routing gate resolves dependencies against durable assignments first.
+ */
+const SEQUENTIAL_DEPENDENCY_FENCE = `
+           AND NOT EXISTS (
+             SELECT 1 FROM json_each(m.depends_on_json) AS dep
+             LEFT JOIN member_turns dep_turn
+               ON dep_turn.run_id = m.run_id AND dep_turn.assignment_id = dep.value
+             WHERE dep_turn.id IS NULL
+                OR dep_turn.state IN ('queued', 'dispatched', 'running')
+           )`;
 
 function optionalString(value: string | null | undefined): string | undefined {
   return value == null || value === "" ? undefined : value;
@@ -383,6 +425,13 @@ function mapRun(row: RunRow): ConversationRun {
     mode,
     state: row.state as ConversationRunState,
     ...(optionalString(row.completion_reason) ? { completionReason: row.completion_reason as string } : {}),
+    // PR8 automatic routing substate. Explicit Runs must NEVER read a
+    // routing state: explicit behavior stays "selected members terminal →
+    // Run terminal" with no reevaluation, so a leftover durable value on an
+    // explicit row is dropped rather than routed on.
+    ...(mode === "automatic" && optionalString(row.routing_state)
+      ? { routingState: row.routing_state as ConversationRoutingState }
+      : {}),
     generation: Number(row.generation),
     ...(row.active_batch !== null && row.active_batch !== undefined
       ? { activeBatch: Number(row.active_batch) }
@@ -501,6 +550,9 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
     ...(optionalString(row.task) ? { task: row.task as string } : {}),
     ...(optionalString(row.expected_output) ? { expectedOutput: row.expected_output as string } : {}),
     ...(dependsOn.length > 0 ? { dependsOn } : {}),
+    ...(optionalString(row.blocked_reason)
+      ? { blockedReason: row.blocked_reason as MemberTurnRecord["blockedReason"] }
+      : {}),
     createdAt: row.created_at,
   };
 }
@@ -552,6 +604,8 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureMemberTurnAssignmentColumns();
     this.ensureMemberTurnSnapshotColumn();
     this.ensureRunAggregateColumns();
+    this.ensureMemberTurnBlockedColumn();
+    this.ensureRoutingDecisionTable();
     this.ensureDispatchMultiMemberShape();
   }
 
@@ -944,6 +998,7 @@ export class SqliteConversationStore implements ConversationStore {
            )
            ${skipClause}
            ${runClause}
+           ${SEQUENTIAL_DEPENDENCY_FENCE}
          ORDER BY msg.seq ASC, r.created_at ASC, r.topic_id ASC, m.batch ASC, m.member_index ASC, d.id ASC
          LIMIT 1`,
         params,
@@ -1667,6 +1722,299 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
+  failRun(runId: string, reason: string, state: "failed", now: string): ConversationRun {
+    return this.sqlite.transaction(() => {
+      const run = this.requireRun(runId);
+      if (TERMINAL_RUN_STATES.includes(run.state)) {
+        // Already sealed: a second settlement never rewrites the evidence
+        // (idempotent, and a late Router failure cannot overwrite a cancel).
+        return run;
+      }
+      this.sqlite.run(
+        `UPDATE runs SET state = ?, completion_reason = ?, routing_state = 'done',
+           finished_at = COALESCE(finished_at, ?)
+         WHERE id = ?`,
+        [state, reason, now, runId],
+      );
+      this.finishDispatchForRun(runId, now);
+      return this.requireRun(runId);
+    });
+  }
+
+  markRoutingState(
+    runId: string,
+    state: ConversationRoutingState,
+    now: string,
+  ): ConversationRun {
+    return this.sqlite.transaction(() => {
+      const run = this.requireRun(runId);
+      // Only automatic Runs route. An explicit Run NEVER gains a routing
+      // state: routing on explicit work would invoke the Router against a
+      // Run that already carries human-selected members (§14.1).
+      if (run.mode !== "automatic") {
+        throw new ConversationError(
+          "routing_not_automatic",
+          `run "${runId}" is ${run.mode}, not automatic; routing does not apply`,
+        );
+      }
+      // Terminal Runs are sealed: their evidence is final and no routing
+      // transition may resurrect scheduling (cancel/indeterminate/complete).
+      if (TERMINAL_RUN_STATES.includes(run.state)) {
+        throw new ConversationError("run_terminal", `run "${runId}" is ${run.state}; routing is sealed`);
+      }
+      if (state === "done") {
+        // `done` is written together with a terminal Run state by
+        // applyRoutingDecision, never on its own.
+        throw new ConversationError("routing_invalid_transition", "routing done requires a terminal Run settlement");
+      }
+      this.sqlite.run(
+        `UPDATE runs SET routing_state = ?, started_at = COALESCE(started_at, ?) WHERE id = ?`,
+        [state, now, runId],
+      );
+      return this.requireRun(runId);
+    });
+  }
+
+  applyRoutingDecision(input: ApplyRoutingDecisionInput): ApplyRoutingDecisionResult {
+    return this.sqlite.transaction(() => {
+      const run = this.requireRun(input.runId);
+      if (run.mode !== "automatic") {
+        throw new ConversationError(
+          "routing_not_automatic",
+          `run "${input.runId}" is ${run.mode}, not automatic; routing does not apply`,
+        );
+      }
+      if (TERMINAL_RUN_STATES.includes(run.state)) {
+        // A decision that arrives after the Run sealed is a no-op with an
+        // explicit error — never a resurrection. Late Router output is a
+        // durable audit row at most (see below, guarded by Run state).
+        throw new ConversationError("run_terminal", `run "${run.id}" is ${run.state}; routing is sealed`);
+      }
+      const members = this.listMemberTurns(run.id);
+      const batch = Math.max(1, ...members.map((turn) => turn.batch));
+      if (input.decision.type === "dispatch") {
+        // Restart determinism: a Run already carrying a durable batch (with
+        // member turns) must not silently append a second batch from a
+        // replayed decision. `dispatching` is the durable marker that
+        // committed work exists; routing may only advance past it when every
+        // member of that batch is terminal, which the caller checks BEFORE
+        // asking the Router again.
+        const activeBatch = run.activeBatch ?? 1;
+        const activeBatchMembers = members.filter((turn) => turn.batch === activeBatch);
+        const activeUnsettled = activeBatchMembers.filter((turn) => !TERMINAL_MEMBER_STATES.includes(turn.state));
+        if (activeBatchMembers.length > 0 && activeUnsettled.length > 0) {
+          throw new ConversationError(
+            "routing_batch_active",
+            `run "${run.id}" has ${activeUnsettled.length} unsettled members in batch ${activeBatch}`,
+          );
+        }
+        // Budget guardrail (design §14.2): a Router decision may never push
+        // the Run past its member-turn budget. Budget exhaustion is an
+        // explicit completion reason, not a silent truncation.
+        const consumed = run.consumedMemberTurns + input.decision.assignments.length;
+        if (consumed > run.maxMemberTurns) {
+          this.sqlite.run(
+            `UPDATE runs SET state = 'failed', completion_reason = 'budget-exhausted',
+             finished_at = COALESCE(finished_at, ?), routing_state = 'done'
+             WHERE id = ?`,
+            [input.now, run.id],
+          );
+          this.writeRoutingDecisionRow(run.id, input.decision, input.now);
+          return { run: this.requireRun(run.id), memberTurns: [], dispatches: [], terminal: "failed" };
+        }
+        // Domain fence (defence in depth — the gate already ran): every
+        // assignment must map onto this Run's public transcript. `triggerMessageIds`
+        // must name real public rows of this Conversation+Topic, so a Router
+        // cannot fabricate or borrow context.
+        this.assertAssignmentsMapToTranscript(run, input.decision.assignments, input.requestMessageId);
+        const distinctIds = new Set(input.decision.assignments.map((assignment) => assignment.id));
+        if (distinctIds.size !== input.decision.assignments.length) {
+          throw new ConversationError(
+            "routing_assignment_duplicate",
+            `run "${run.id}" routing dispatch repeats an assignment id`,
+          );
+        }
+        const nextBatch = batch + 1;
+        const memberTurns: MemberTurnRecord[] = [];
+        const dispatches: PendingDispatch[] = [];
+        for (const [index, assignment] of input.decision.assignments.entries()) {
+          const memberTurnId = this.ids.memberTurnId();
+          const dispatchId = this.ids.dispatchId();
+          this.sqlite.run(
+            `INSERT INTO member_turns (
+               id, run_id, conversation_id, topic_id, bot_id, session_alias, logical_session_id, source_turn_id,
+               queue_item_id, batch, member_index, attempt, origin, state, trigger_message_ids_json, profile_snapshot_json,
+               created_at, started_at, finished_at,
+               effect, effect_provenance, assignment_id, task, expected_output, depends_on_json
+             ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 1, 'router', 'queued', ?, ?, ?, NULL, NULL, 'unknown', NULL, ?, ?, ?, ?)`,
+            [
+              memberTurnId,
+              run.id,
+              run.conversationId,
+              run.topicId,
+              assignment.botId,
+              nextBatch,
+              index,
+              JSON.stringify(assignment.triggerMessageIds),
+              // Router-selected members carry the snapshot derived at routing
+              // time from the live Bot profile + this Topic's ExecutionTarget,
+              // so the member executes against the Bot it was assigned to —
+              // never the Run's snapshot carrier (which is just the accepted
+              // execution identity of the Run, not of this member).
+              JSON.stringify(assignment.profileSnapshot),
+              input.now,
+              assignment.id,
+              assignment.task,
+              assignment.expectedOutput ?? null,
+              JSON.stringify(assignment.dependsOn ?? []),
+            ],
+          );
+          this.sqlite.run(
+            `INSERT INTO pending_dispatches (
+               id, run_id, member_turn_id, generation, state, owner, lease_expires_at,
+               authority_epoch, human_ingress, created_at, claimed_at, completed_at
+             ) VALUES (?, ?, ?, ?, 'pending', NULL, NULL, NULL, NULL, ?, NULL, NULL)`,
+            [dispatchId, run.id, memberTurnId, run.generation, input.now],
+          );
+          memberTurns.push(this.requireMemberTurn(memberTurnId));
+          dispatches.push(this.requireDispatch(dispatchId));
+        }
+        this.sqlite.run(
+          `UPDATE runs SET state = 'running', routing_state = 'dispatching', active_batch = ?, started_at = COALESCE(started_at, ?)
+           WHERE id = ?`,
+          [nextBatch, input.now, run.id],
+        );
+        this.writeRoutingDecisionRow(run.id, input.decision, input.now);
+        return { run: this.requireRun(run.id), memberTurns, dispatches };
+      }
+      if (input.decision.type === "need-human") {
+        // Durable waiting-human: this is the only place the Router may park a
+        // Run for the human, and it persists question + terminal state so a
+        // reconnect/restart shows exactly the same blocked semantics.
+        this.sqlite.run(
+          `UPDATE runs SET state = 'waiting-human', completion_reason = 'needs-input',
+             finished_at = COALESCE(finished_at, ?), routing_state = 'done'
+           WHERE id = ?`,
+          [input.now, run.id],
+        );
+        this.writeRoutingDecisionRow(run.id, input.decision, input.now);
+        return { run: this.requireRun(run.id), memberTurns: [], dispatches: [], terminal: "waiting-human" };
+      }
+      this.sqlite.run(
+        `UPDATE runs SET state = 'completed', completion_reason = ?,
+           finished_at = COALESCE(finished_at, ?), routing_state = 'done'
+         WHERE id = ?`,
+        [input.decision.reason, input.now, run.id],
+      );
+      this.writeRoutingDecisionRow(run.id, input.decision, input.now);
+      return { run: this.requireRun(run.id), memberTurns: [], dispatches: [], terminal: "completed" };
+    });
+  }
+
+  listRoutingDecisions(runId: string): RoutingDecisionRecord[] {
+    const rows = this.sqlite.all<RoutingDecisionRow>(
+      "SELECT * FROM routing_decisions WHERE run_id = ? ORDER BY created_at ASC, id ASC",
+      [runId],
+    );
+    return rows.map((row) => ({
+      runId: row.run_id,
+      decisionType: row.decision_type as RoutingDecisionRecord["decisionType"],
+      ...(row.mode ? { mode: row.mode as RoutingDecisionRecord["mode"] } : {}),
+      ...(optionalString(row.question) ? { question: row.question as string } : {}),
+      ...(optionalString(row.reason) ? { reason: row.reason as string } : {}),
+      assignmentIds: parseTriggerMessageIds(row.assignment_ids_json),
+      at: row.created_at,
+    }));
+  }
+
+  automaticRunsAwaitingRouting(): Array<{ run: ConversationRun; batchMembers: MemberTurnRecord[] }> {
+    const rows = this.sqlite.all<RunRow>(
+      `SELECT * FROM runs
+       WHERE mode = 'automatic' AND state IN ('queued', 'running')
+         AND NOT EXISTS (
+           SELECT 1 FROM conversation_lifecycle c
+           WHERE c.conversation_id = runs.conversation_id AND c.state = 'deleting'
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM topic_lifecycle t
+           WHERE t.topic_id = runs.topic_id AND t.state = 'deleting'
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM member_turns m
+           WHERE m.run_id = runs.id
+             AND m.batch = COALESCE(runs.active_batch, 1)
+             AND m.state IN ('queued', 'dispatched', 'running')
+         )
+       ORDER BY created_at ASC`,
+    );
+    const awaiting: Array<{ run: ConversationRun; batchMembers: MemberTurnRecord[] }> = [];
+    for (const row of rows) {
+      // Any other Run holding the Topic (running/waiting-human) blocks routing
+      // on this one: one active Run per Topic keeps scheduling deterministic.
+      const blocking = this.sqlite.get(
+        `SELECT id FROM runs WHERE topic_id = ? AND id <> ? AND state IN ('running', 'waiting-human') LIMIT 1`,
+        [row.topic_id, row.id],
+      );
+      if (blocking) {
+        continue;
+      }
+      awaiting.push({ run: mapRun(row), batchMembers: this.listMemberTurns(row.id) });
+    }
+    return awaiting;
+  }
+
+  /** A decision's assignments must resolve to real rows of THIS Run's
+   *  Conversation+Topic: `triggerMessageIds` are the boundary evidence, and
+   *  the request message must be included so the assignment reacts to its own
+   *  request. Fails closed on fabricated/borrowed ids. */
+  private assertAssignmentsMapToTranscript(
+    run: ConversationRun,
+    assignments: readonly RoutingAssignmentInput[],
+    requestMessageId: string,
+  ): void {
+    for (const assignment of assignments) {
+      for (const messageId of assignment.triggerMessageIds) {
+        const message = this.getMessage(messageId);
+        if (!message
+          || message.conversationId !== run.conversationId
+          || message.topicId !== run.topicId) {
+          throw new ConversationError(
+            "routing_message_not_found",
+            `routing assignment "${assignment.id}" references message "${messageId}" outside this run's topic`,
+          );
+        }
+      }
+      if (!assignment.triggerMessageIds.includes(requestMessageId)) {
+        throw new ConversationError(
+          "routing_message_not_found",
+          `routing assignment "${assignment.id}" must include the run request message "${requestMessageId}"`,
+        );
+      }
+    }
+  }
+
+  private writeRoutingDecisionRow(
+    runId: string,
+    decision: ApplyRoutingDecisionInput["decision"],
+    now: string,
+  ): void {
+    this.sqlite.run(
+      `INSERT INTO routing_decisions (
+         id, run_id, decision_type, mode, question, reason, assignment_ids_json, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        this.ids.memberTurnId(),
+        runId,
+        decision.type,
+        decision.type === "dispatch" ? decision.mode : null,
+        decision.type === "need-human" ? decision.question : null,
+        decision.type === "complete" ? decision.reason : null,
+        JSON.stringify(decision.type === "dispatch" ? decision.assignments.map((a) => a.id) : []),
+        now,
+      ],
+    );
+  }
+
   markConversationDeleting(conversationId: string, now: string): void {
     this.sqlite.transaction(() => {
       this.sqlite.run(
@@ -1844,6 +2192,48 @@ export class SqliteConversationStore implements ConversationStore {
     if (!names.has("unavailable_bot_ids_json")) {
       this.sqlite.exec("ALTER TABLE runs ADD COLUMN unavailable_bot_ids_json TEXT NOT NULL DEFAULT '[]'");
     }
+    if (!names.has("routing_state")) {
+      // PR8 automatic-Run routing substate. NULL on explicit Runs and on
+      // pre-PR8 rows: readers treat NULL as "not routing" (explicit), never
+      // as `queued` — a pre-PR8 automatic Run therefore needs its routing
+      // state established by the routing kick before it is dispatched again.
+      this.sqlite.exec("ALTER TABLE runs ADD COLUMN routing_state TEXT");
+    }
+  }
+
+  /**
+   * PR8 structured blocked-step evidence column. Separate from the runs
+   * migration because it lives on member_turns, and tolerant of databases
+   * that already carry it.
+   */
+  private ensureMemberTurnBlockedColumn(): void {
+    const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(member_turns)");
+    const names = new Set(cols.map((col) => col.name));
+    if (!names.has("blocked_reason")) {
+      this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN blocked_reason TEXT");
+    }
+  }
+
+  /**
+   * PR8 durable Router decision audit (plan §11.4). Append-only: one row per
+   * committed decision. Scheduling NEVER reads it — it is audit/reconciliation
+   * evidence, so a torn history can never resurrect or drop a routing step.
+   */
+  private ensureRoutingDecisionTable(): void {
+    this.sqlite.exec(`
+      CREATE TABLE IF NOT EXISTS routing_decisions (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        decision_type TEXT NOT NULL,
+        mode TEXT,
+        question TEXT,
+        reason TEXT,
+        assignment_ids_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL
+      )`);
+    this.sqlite.exec(
+      "CREATE INDEX IF NOT EXISTS idx_routing_decisions_run ON routing_decisions (run_id, created_at)",
+    );
   }
 
   private ensureDispatchMultiMemberShape(): void {
@@ -2002,15 +2392,28 @@ export class SqliteConversationStore implements ConversationStore {
     // `primaryMember` overlay carries assignment/provenance for members[0];
     // its type omits botId/profileSnapshot, so it cannot diverge the durable
     // order — members[0] is always the legacy singular by construction.
-    const members = [
-      {
-        botId: input.botId,
-        profileSnapshot: input.profileSnapshot,
-        ...(input.primaryMember ?? {}),
-      },
-      ...(input.members ?? []),
-    ];
+    //
+    // PR8 automatic accepts are the ONE exception, by construction: a human
+    // selected nobody, so the accepted Run owns ZERO MemberTurns and the
+    // Router decides the first batch. The signal is `mode: "automatic"` with
+    // an explicitly EMPTY `members` array. `members: []` means "no human
+    // selected anyone"; an undefined `members` (or a populated one) keeps the
+    // legacy singular as members[0] exactly as before, so every existing
+    // accept shape — including durable assignment persistence tests — is
+    // unchanged. The singular botId/profileSnapshot on the empty case then
+    // carries the Run's own accepted execution identity (what the Run was
+    // admitted against) and is never a dispatchable member.
     const mode = input.mode ?? "explicit";
+    const members = input.mode === "automatic" && input.members?.length === 0
+      ? []
+      : [
+        {
+          botId: input.botId,
+          profileSnapshot: input.profileSnapshot,
+          ...(input.primaryMember ?? {}),
+        },
+        ...(input.members ?? []),
+      ];
     // Automatic Runs default to the durable budget guardrail (§14.2): the
     // first batch settling must leave routing headroom, so the default is
     // the 24-turn cap rather than members.length. Explicit Runs stay bounded
@@ -2039,11 +2442,12 @@ export class SqliteConversationStore implements ConversationStore {
     this.sqlite.run(
       `INSERT INTO runs (
          id, conversation_id, topic_id, request_message_id, request_id, mode, state, completion_reason,
+         routing_state,
          generation, active_batch, max_member_turns, consumed_member_turns,
          failed_bot_ids_json, unavailable_bot_ids_json,
          profile_revision, profile_snapshot_json,
          created_at, started_at, finished_at
-       ) VALUES (?, ?, ?, ?, ?, ?, 'queued', NULL, 1, 1, ?, 0, '[]', '[]', ?, ?, ?, NULL, NULL)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, 'queued', NULL, ?, 1, 1, ?, 0, '[]', '[]', ?, ?, ?, NULL, NULL)`,
       [
         runId,
         input.conversationId,
@@ -2051,6 +2455,11 @@ export class SqliteConversationStore implements ConversationStore {
         messageId,
         input.requestId,
         mode,
+        // Automatic Runs enter the routing state machine at `queued`; the
+        // first routing decision is taken by the Router (no human chose
+        // anyone). Explicit Runs never carry a routing state — routing on
+        // explicit work would violate §14.1.
+        mode === "automatic" ? "queued" : null,
         maxMemberTurns,
         runSnapshot.revision,
         JSON.stringify(runSnapshot),

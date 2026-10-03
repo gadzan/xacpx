@@ -376,6 +376,11 @@ export interface ConversationRunDto {
     failedBotIds?: string[];
     /** Members unavailable for the current batch; absent on older wire shapes. */
     unavailableBotIds?: string[];
+    /**
+     * PR8 automatic-Run routing substate. Present on automatic Runs only
+     * (explicit Runs never route); absent on older wire shapes.
+     */
+    routingState?: "queued" | "routing" | "dispatching" | "done";
     createdAt: string;
     startedAt?: string;
     finishedAt?: string;
@@ -434,6 +439,13 @@ export interface MemberTurnSummaryDto {
     dependsOn?: string[];
     /** Machine-readable terminal failure reason (failed only). */
     failureReason?: string;
+    /**
+     * PR8 structured blocked-step evidence (design §16). Set when an automatic
+     * MemberTurn needs human-origin authority to proceed; durable so the
+     * "[Start this step myself]" action survives reconnect. Never an origin
+     * upgrade — the action creates a NEW explicit human request.
+     */
+    blockedReason?: "human-authority-required" | "human-authority-unknown";
 }
 export interface ConversationRunDetailDto extends ConversationRunDto {
     profileSnapshot?: BotProfileSnapshotDto;

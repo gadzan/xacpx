@@ -2026,4 +2026,86 @@ describe("useGroupsStore", () => {
     expect(store.currentTopics).toEqual([]);
     expect(store.activeTopicId).toBeNull();
   });
+
+  it("PR8: automatic selection resolves to the automatic wire target", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.setTarget({ mode: "automatic" });
+    expect(store.targetSelection).toEqual({ mode: "automatic" });
+    expect(store.targetResolvable).toBe(true);
+
+    const promptResponse: ConversationPromptResponseDto = {
+      reused: false,
+      conversationId: "conversation_g",
+      topicId: "topic_1",
+      requestId: "req_automatic",
+      message: {
+        id: "msg_a", conversationId: "conversation_g", topicId: "topic_1", seq: 1,
+        role: "human", content: "ship it", createdAt: "now",
+      },
+      run: {
+        id: "run_a", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_a", requestId: "req_automatic", mode: "automatic", state: "running",
+        routingState: "dispatching", profileRevision: 1, createdAt: "now",
+      },
+      // An automatic accept carries ZERO members: the Router decides the
+      // first batch, so there is no human-selected memberTurn to project.
+      memberTurn: {
+        id: "turn_a", runId: "run_a", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_a", batch: 1, attempt: 1, origin: "router", state: "running", createdAt: "now",
+      },
+      memberTurns: [],
+      activeRunId: "run_a",
+    };
+    mockRpc.mockResolvedValueOnce(promptResponse);
+    await store.sendPrompt("ship it");
+    expect(mockRpc).toHaveBeenLastCalledWith("inst_1", "control.conversation.prompt", expect.objectContaining({
+      target: { mode: "automatic" },
+    }));
+    // The automatic Run's routing substate is projected verbatim.
+    expect(store.activeRun?.routingState).toBe("dispatching");
+  });
+
+  it("PR8: picking a member replaces an automatic selection", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.groupsByInstance["inst_1"] = [GROUP];
+    store.groupDetails["inst_1:conversation_g"] = { ...GROUP, topics: [] };
+    store.setTarget({ mode: "automatic" });
+    expect(store.targetSelection).toEqual({ mode: "automatic" });
+    store.toggleTargetMember("bot_a");
+    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+    // An explicit mention also narrows back: the Router may not keep deciding
+    // after a human names somebody.
+    store.setTarget({ mode: "automatic" });
+    store.mentionBot("bot_b");
+    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+  });
+
+  it("PR8: mergeRun keeps a stored routingState when a thinner snapshot omits it", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const baseRun: ConversationRunDto = {
+      id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "running",
+      routingState: "dispatching", profileRevision: 1, createdAt: "now",
+    };
+    store.activeRun = baseRun;
+    const thinner: ConversationRunDto = { ...baseRun, consumedMemberTurns: undefined };
+    delete (thinner as Partial<ConversationRunDto>).routingState;
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: { type: "conversation-run-changed", run: thinner },
+    } as never);
+    expect(store.activeRun?.routingState).toBe("dispatching");
+  });
 });

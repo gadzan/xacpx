@@ -194,3 +194,104 @@ test("shutdown waits for in-flight createTopic persist and shares one promise", 
   expect(store.saved.length).toBe(writesAtShutdown);
   await expect(control.createTopic(conversationId, "later")).rejects.toMatchObject({ code: "runtime_closed" });
 });
+
+test("production composition wires a capability-proven Router and refuses an unprovable one", async () => {
+  const restricted = {
+    toolsDisabled: true,
+    filesystemDisabled: true,
+    terminalDisabled: true,
+    permissionInteractionDisabled: true,
+    messagingDisabled: true,
+    orchestrationDisabled: true,
+    structuredOutputOnly: true,
+  };
+  for (const [label, router] of [
+    ["provable", { capabilityRestriction: restricted, decide: async () => ({ type: "complete" as const, reason: "x" }) }],
+    ["unprovable", { capabilityRestriction: { ...restricted, toolsDisabled: false }, decide: async () => ({ type: "complete" as const, reason: "x" }) }],
+    ["no-decide", { capabilityRestriction: restricted }],
+  ] as const) {
+    const store = new BarrierStateStore();
+    const dir = mkdtempSync(join(tmpdir(), "xacpx-router-wire-"));
+    const state = createEmptyState();
+    const config = createConfig();
+    const stateMutex = new AsyncMutex();
+    const sessions = new SessionService(config, store, state, { stateMutex });
+    const control = new ControlService({
+      agent: { chat: async () => ({ text: "ok" }) },
+      sessions,
+      activeTurns: { isActiveAnywhere: () => false },
+      scheduled: {} as never,
+      orchestration: {} as never,
+      events: createControlEventBus(),
+      workspaces: { list: () => [] },
+    } as never);
+    const kernel = conversationKernel(control);
+    const runtime = await createConversationRuntime({
+      config,
+      state,
+      stateStore: store,
+      sessions,
+      control: kernel,
+      sqlitePath: join(dir, "conversations.sqlite"),
+      releaseOwnedSession: createProductionOwnedSessionRelease({
+        sessions,
+        transport: { async deleteSession() {}, async releaseLogicalSession() {} },
+      }),
+      onProductEvent: (event) => kernel.emitConversationProduct(event),
+      autoKick: false,
+      stateMutex,
+      ...(router === undefined ? {} : { router }),
+    });
+    kernel.bindConversationRuntime(runtime);
+    await runtime.activateAfterConsumerLock();
+    // A provable Router is accepted; everything else is dropped, so automatic
+    // mode stays unsupported rather than running a Router that could act.
+    if (label === "provable") {
+      await expect(control.promptConversation({
+        conversationId: "conversation_missing",
+        topicId: "topic_missing",
+        requestId: "req-missing",
+        text: "x",
+        target: { mode: "automatic" },
+      })).rejects.toMatchObject({ code: "conversation_not_found" });
+    }
+    await runtime.shutdown();
+  }
+});
+
+test("production composition with no Router leaves automatic mode unsupported", async () => {
+  const store = new BarrierStateStore();
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-norouter-"));
+  const state = createEmptyState();
+  const config = createConfig();
+  const stateMutex = new AsyncMutex();
+  const sessions = new SessionService(config, store, state, { stateMutex });
+  const control = new ControlService({
+    agent: { chat: async () => ({ text: "ok" }) },
+    sessions,
+    activeTurns: { isActiveAnywhere: () => false },
+    scheduled: {} as never,
+    orchestration: {} as never,
+    events: createControlEventBus(),
+    workspaces: { list: () => [] },
+  } as never);
+  const kernel = conversationKernel(control);
+  const runtime = await createConversationRuntime({
+    config,
+    state,
+    stateStore: store,
+    sessions,
+    control: kernel,
+    sqlitePath: join(dir, "conversations.sqlite"),
+    releaseOwnedSession: createProductionOwnedSessionRelease({
+      sessions,
+      transport: { async deleteSession() {}, async releaseLogicalSession() {} },
+    }),
+    onProductEvent: (event) => kernel.emitConversationProduct(event),
+    autoKick: false,
+    stateMutex,
+  });
+  kernel.bindConversationRuntime(runtime);
+  await runtime.activateAfterConsumerLock();
+  await runtime.shutdown();
+});

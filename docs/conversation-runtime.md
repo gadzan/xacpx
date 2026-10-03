@@ -1,6 +1,6 @@
 # Conversation runtime (Direct + Group persistence and lifecycle)
 
-Direct and Group Conversation execution is durable. Relay Web Group UX (explicit routing) is part of this contract; automatic Router and external channel Conversation bindings are out of scope.
+Direct and Group Conversation execution is durable. Relay Web Group UX (explicit routing) and the stateless automatic ConversationRouter (PR8) are part of this contract; external channel Conversation bindings and public/private handoff remain out of scope.
 
 ## Store ownership
 
@@ -175,6 +175,37 @@ The filesystem seam (`conversation-filesystem-policy.ts`) classifies a declared 
 
 Request-snapshot integrity uses one unified invariant (`requestSnapshotMatches`): the `runs.request_message_id` row must exist with the Run's own Conversation AND Topic, the human role, **and** the Run's own `run_id`. A missing or mismatched row fails the claim terminally before execution start (`missing_request_snapshot` / `request_snapshot_mismatch`), in replay and transcript paths alike — a corrupted reference can never feed another message's content into a prompt. Claim reads LEFT JOIN the message so a poison row reaches that check instead of being silently skipped.
 
+## Automatic collaboration and the stateless ConversationRouter (PR8)
+
+PR8 adds automatic collaboration for Group Conversations. A human explicitly selects automatic mode; the durable Run then carries **zero** MemberTurns (`members: []` + `mode: "automatic"`), because no human chose anyone, and a stateless **ConversationRouter** decides each step.
+
+```
+queued ──accept──▶ routing ──decision──▶ dispatching ──batch terminal──▶ routing again
+                                                              │                  │
+                                                              └── complete ◀─────┘
+                                                                   need-human
+                                                                   failed (budget / router / rejected)
+                                                                   cancelled / indeterminate (sealed)
+```
+
+`routing` is a durable `runs.routing_state` substate, not a new top-level Run state: `queued` → `routing` → `dispatching` → `done` (written only together with a terminal Run state). Restart behavior is derived from rows alone: a `dispatching` Run waits for its MemberTurns, and `queued`/`routing` recomputes the decision, so there is no in-process state to lose. Explicit Runs never carry `routing_state` and never route.
+
+**Capability boundary (fail closed, pre-execution).** `bindRouter` accepts only a Router implementation that declares, before any model call, that it has no tools, no filesystem/terminal, no permission interaction, no Agent Messaging/Orchestration side effects, and bounded structured output only (`isRouterCapabilityRestricted` — every one of the seven flags must be `true`). A missing or permissive declaration means `bindRouter` returns `undefined`, so no engine is built and `{mode: "automatic"}` accepts fail closed with `automatic_unsupported`. Observing "no tool events" after the fact is never a proof. No Router configured for an already-accepted automatic Run fails that Run durably rather than parking it forever.
+
+**RoutingInput is public-only.** `ConversationRouterEngine.buildRoutingInput` derives every field from durable rows or live product metadata: the Run's own human request (referentially fenced by conversation+topic+run+role), a bounded newest-first window of THIS Topic's public messages (`ROUTER_PUBLIC_TRANSCRIPT_MESSAGES = 200`), current live Group membership with Bot profiles, the durable Run row, this Run's durable MemberTurns with their public results, `maxMemberTurns - consumedMemberTurns` as the remaining budget, and the Topic's `ExecutionTarget`. No Direct history, no private content, no other Topic, no hidden session, no Bot `instructions`, and no Router-side conversational history: each `decide` call rebuilds the snapshot from rows, so a warm model process cannot carry state across decisions.
+
+**Decision gate.** `gateRoutingDecision` is two layers, both fail-closed. `parseRoutingDecision` decodes strictly (no defaults, coercion, or repair; unknown types, over-long fields, non-string ids and malformed arrays all reject with a machine-readable `RoutingDecisionError` code). Then domain validation runs against the live input: every `botId` must be a live **enabled** member, assignment ids must be unique, `dependsOn` must resolve inside the decision or to a durable assignment of this Run, the dependency graph must be acyclic, `single` must carry exactly one assignment, `parallel` at least two, `dependencies implies sequential`, a Bot may not appear twice in one batch, and the batch must fit the remaining budget. `done`/`complete`/`need-human`/`dispatch` is the whole vocabulary — there is no ambiguous `none`. A rejected decision fails the Run with the gate's code **before** any durable MemberTurn exists.
+
+**Commit.** `store.applyRoutingDecision` inserts one MemberTurn + one pending dispatch per assignment in the next batch with `origin: "router"`, stamps `assmentId`/`task`/`expectedOutput`/`dependsOn`/`triggerMessageIds` verbatim, and takes the Topic single-writer effect policy (`unknown` — automatic work carries no enforceable read-only proof). `need-human` settles the Run `waiting-human` with `completionReason: "needs-input"` and records the question durably in `routing_decisions`; `complete` settles `completed` with the Router's reason. Every decision appends one audit row to `routing_decisions` (append-only, never read for scheduling). Budget exhaustion is an explicit `failed` + `budget-exhausted` terminal: `maxMemberTurns` is a loop guard, never a completion definition.
+
+**Parallel vs sequential transcripts.** Each MemberTurn's public-input boundary is the max `seq` over its durable `triggerMessageIds` (always including the Run's own request), so members of one parallel batch read the **same** frozen snapshot S and a sibling completing early cannot change an already-selected input. A sequential successor additionally carries its completed dependencies' public results as triggers, resolved from durable rows at claim time, so it can build on what is already canonical public transcript. Trigger ids are re-validated as real public rows of this Conversation+Topic at dispatch: a fabricated or borrowed id fails the claim.
+
+**Filesystem policy is unchanged.** Router-requested parallelism never bypasses the PR7 writer-slot gate: `mustDeferForWriterSlot` still serializes any turn that is not `read-only` + `declared-enforced`, and PR8 never supplies that proof, so automatic Group work always takes the Topic single-writer slot.
+
+**Provenance.** Router-selected MemberTurns are `origin: "router"` and execute as `orchestration`: the accept-time human ingress authorizes the Run's request, never the downstream automatic work, so dispatch rows for automatic work carry no `authorityEpoch` and no `humanIngress`. Future work that needs human-origin authority stores structured `blockedReason` evidence on the MemberTurn (`human-authority-required` / `human-authority-unknown`); the UX action creates a NEW explicit human request and never upgrades the stored origin.
+
+**Cancellation and sealing.** A cancelled Run is never re-routed, a sealed `indeterminate` Run never receives a dispatch (no blind retry), and late Router output for a terminal Run is a durable no-op.
+
 ## Production composition
 
 `buildApp` (`src/main.ts`) constructs the production Conversation runtime via `createConversationRuntime` (`src/conversations/conversation-composition.ts`) **before** Control/Relay accept Conversation requests. Construction is **passive**:
@@ -235,6 +266,6 @@ Idempotent `requestId` retries reuse the durable accept result and do not re-emi
 
 ## Out of scope
 
-Automatic Router, external channel Conversation bindings.
+Public/private member-to-member handoff (`group_send`), handoff recovery, external channel Conversation bindings, and the full blocked-permission "Start this step myself" product flow (PR8 stores the durable domain seam only). Automatic Router ships in PR8 as described below.
 
 **Follow-up before Direct Bot product release:** global dispatcher parallelism (more than one claimed execution in flight across Topics/Bots) is not part of this contract. Keep the current drain/claim sequencing until that work is designed. The drain launches the first claim globally, then admits only same-Run siblings concurrently (Topic isolation decides overlap); unrelated Topics/Bots wait for the next pass, after the cohort settles. A pass that defers Topics on pre-start failure takes at most chained extra passes with the deferrals preserved — never a retry without progress. An unexpected execution failure that escapes the handled settlement paths rejects the drain (and therefore fails activation) after every launched execution settles; it is never swallowed into a successful kick.
