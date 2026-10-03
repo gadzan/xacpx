@@ -1305,3 +1305,48 @@ critical section depends on.
 The lesson is not "avoid hoisting". It is that an account-wide fact does not have
 to live *inside* the pane reconcile at all — giving it its own action and its own
 call site removed the conflict instead of relocating it.
+
+## Addendum - the fence dropped a state, not just a message (2026-10-03)
+
+The pane generation fence was doing double duty in `submitInteraction`'s catch: it
+guarded `errorCode` (correctly — a message for a pane the user has left) and
+`submitting` (wrongly — a property of the request, not of the pane).
+
+The fence had already been split once, by moving the authoritative 409 above it.
+That left everything else below, including the clear of `submitting`. So:
+
+1. the user submits on pane A and `submitting` goes true;
+2. they navigate to B;
+3. the transport rejects;
+4. the fence returns early, so `submitting` stays true on a form nobody has closed.
+
+Switching back to A finds a live form whose Submit / Decline / Cancel all refuse to
+fire — `pendingInteraction.submitting` gates every one of them — and which stays that
+way until the next reconnect replays it. A transient network blip now depends on a
+disconnect to recover, which is not a thing a user would ever connect the two of.
+
+The fix separates the two writes on the axis the previous addendum established:
+
+> `submitting` is the request's lifecycle state and is cleared as soon as the RPC is
+> over. `errorCode` is a pane message and stays behind the fence.
+
+A field-level split rather than a whole-branch one, because the branch contained both.
+
+### A comment that described the wrong architecture
+
+The 409 race test and the store comment both explained the missing snapshot this
+way: "this tab's subscription is scoped by the CURRENT selection, and A is no longer
+selected, so no snapshot for A will ever arrive."
+
+That is not how the Dashboard subscribes. `DashboardView` subscribes to **every
+owned instance** — `instances.instances.map(i => i.id)` — precisely so background
+turns keep their state accurate while the user views a different instance. A stays
+subscribed.
+
+The real reason the snapshot cannot help is the trigger, not the scope: this was a
+pane switch, not a reconnect, so nothing re-subscribes and no authoritative open set
+is re-declared. The next snapshot for A is one reconnect away.
+
+Worth correcting rather than leaving, because a reader who believed the comment
+would conclude the subscription needed narrowing — which would have broken the
+background-instance tracking on purpose.
