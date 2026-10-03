@@ -1266,15 +1266,15 @@ hub" — and a pane switch cannot make it untrue. The race:
 3. the 409 lands, the fence sees a newer generation and returns.
 
 A's form then stays in the open map, answerable, with no negative evidence
-anywhere. The snapshot cannot rescue it either: the tab's subscription is scoped by
-the CURRENT selection, and A is no longer selected, so no snapshot for A will ever
-arrive. The user discovers the truth only by clicking again and getting a second
-409.
+anywhere. The snapshot cannot rescue it immediately either: Dashboard remains
+subscribed to every owned instance, but a pane switch does not trigger a
+re-subscribe, so no new authoritative open-set snapshot is emitted. The next
+snapshot arrives only after a reconnect/re-subscribe. The user discovers the
+truth only by clicking again and getting a second 409.
 
-The authoritative check now runs first; the fence still guards everything below it,
-because a transport failure really IS about the pane — it says "this pane's submit
-did not land", which a pane switch does invalidate, and acting on it would patch an
-error onto whatever form now occupies that slot.
+The authoritative check now runs first. The generation fence still guards the
+pane-scoped errorCode: after the user has left that pane, the stale
+transport-error message no longer needs to be surfaced there.
 
 ### The instance negative was inside the pane reconcile
 
@@ -1334,14 +1334,15 @@ A field-level split rather than a whole-branch one, because the branch contained
 
 ### A comment that described the wrong architecture
 
-The 409 race test and the store comment both explained the missing snapshot this
-way: "this tab's subscription is scoped by the CURRENT selection, and A is no longer
-selected, so no snapshot for A will ever arrive."
+An earlier revision of the 409 race explanation — in the store comment, the test
+comment, and the "409 was behind the fence" section above — said the snapshot could
+not help because "this tab's subscription is scoped by the CURRENT selection, and A is
+no longer selected, so no snapshot for A will ever arrive." That sentence has been
+removed everywhere; it is quoted here only to record the mistake.
 
-That is not how the Dashboard subscribes. `DashboardView` subscribes to **every
-owned instance** — `instances.instances.map(i => i.id)` — precisely so background
-turns keep their state accurate while the user views a different instance. A stays
-subscribed.
+`DashboardView` subscribes to **every owned instance** —
+`instances.instances.map(i => i.id)` — precisely so background turns keep their state
+accurate while the user views a different instance. A stays subscribed.
 
 The real reason the snapshot cannot help is the trigger, not the scope: this was a
 pane switch, not a reconnect, so nothing re-subscribes and no authoritative open set
