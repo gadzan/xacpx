@@ -1784,3 +1784,31 @@ test("parallel assignments with different supplied references receive the same e
   for (const call of harness.runner.runs) expect(call.text).toContain("SHARED PRIOR RESULT");
   harness.store.close();
 });
+
+for (const phase of ["routing", "waiting-human"] as const) {
+  test(`cancel after a completed batch in ${phase} preserves members but cancels the automatic Run`, async () => {
+    let calls = 0;
+    const entered = deferred<void>();
+    const answer = deferred<RoutingDecision>();
+    const harness = await createHarness({ router: { capabilityRestriction: RESTRICTED, async decide() {
+      if (++calls === 1) return { type: "dispatch", mode: "single", assignments: [{ id: "completed", botId: BOT_ID, task: "review", triggerMessageIds: [] }] };
+      entered.resolve(); return answer.promise;
+    } }, autoKick: false });
+    const { group, topic } = await createGroup(harness);
+    const accepted = await acceptAutomatic(harness, group.id, topic.id, `cancel-settled-${phase}`);
+    await harness.dispatcher.kick();
+    await entered.promise;
+    if (phase === "waiting-human") {
+      answer.resolve({ type: "need-human", question: "scope?" });
+      await harness.service.awaitRouting();
+      expect(harness.store.getRun(accepted.run.id)?.finishedAt).toBeUndefined();
+    }
+    await harness.service.cancelRun(accepted.run.id);
+    if (phase === "routing") answer.resolve({ type: "complete", reason: "late" });
+    await harness.service.awaitRouting();
+    expect(harness.store.getRun(accepted.run.id)?.state).toBe("cancelled");
+    expect(harness.store.getRun(accepted.run.id)?.completionReason).toBe("human-cancelled");
+    expect(harness.store.listMemberTurns(accepted.run.id).map((turn) => turn.state)).toEqual(["completed"]);
+    harness.store.close();
+  });
+}

@@ -19,12 +19,12 @@
 | Medium：严格 schema | 拒绝额外字段、缺失 trigger 数组和 PR8 不支持的 synthesisBotId；文档区分 supplied references 与 server-derived effective references。 |
 | Medium：blockedReason producer | typed runtime permission error → SessionTurnRunner → TurnQueue → Conversation runner → dispatcher → SQLite → public DTO；真实 composition 验证 `human-authority-unknown`，不从错误文案推断权限。 |
 
-同时修复 waiting-human 提前写 finishedAt、首批编号从 2 开始的问题。自检补充 Topic FIFO：更早的显式 Run 和零成员 automatic 请求不能被后续路由/claim 越过；settle/cancel 后唤醒合格后继。并行批次取共同 effective reference set；回归覆盖不同 supplied references 和首轮 Router pending 时取消。
+同时修复 waiting-human 提前写 finishedAt、首批编号从 2 开始的问题。自检补充 Topic FIFO：更早的显式 Run 和零成员 automatic 请求不能被后续路由/claim 越过；settle/cancel 后唤醒合格后继。并行批次取共同 effective reference set；回归覆盖不同 supplied references 和首轮 Router pending 时取消。已有成员完成后停在 routing/waiting-human 的 automatic Run 也可取消：Run 记 cancelled/human-cancelled，保留已完成成员与结果，不误记为 completed。
 
 ## 验证结果
 
 - 根 TypeScript `--noEmit`、全包 `bun run build:packages` 通过；最后代码调整后重新完成根构建和协议声明生成。
-- Conversation、Control Bridge、relay-protocol、permissions：**571 pass / 0 fail**，23 个文件。其中 Router 专项 59 项，Conversation 总计 340 项。
+- Conversation、Control Bridge、relay-protocol、permissions：**573 pass / 0 fail**，23 个文件。其中 Router 专项 61 项，Conversation 总计 342 项。
 - Relay Web 全量：**1929 pass**，147 个文件；构建同时通过 vue-tsc。
 - 扩展 Control/Bots/State/Sessions/Integration：693 pass / 1 fail；唯一失败为 `worker binding engine resolution inherits the logical group's engine`。隔离运行原审查 HEAD 与修复代码均为 117 pass / 同一项 fail。
 - 标准 `npm test` 完成前置构建、typecheck、acpx import policy 后停在 Hermes 的 bundled `/dist/` 路径用例；原审查 HEAD 同一用例也失败（两者均 9 pass / 1 fail）。不能将标准全量测试报告为通过。

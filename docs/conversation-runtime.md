@@ -177,7 +177,7 @@ Request-snapshot integrity uses one unified invariant (`requestSnapshotMatches`)
 
 ## Automatic collaboration and the stateless ConversationRouter (PR8)
 
-PR8 adds automatic collaboration for Group Conversations. A human explicitly selects automatic mode; the durable Run then carries **zero** MemberTurns (`members: []` + `mode: "automatic"`), because no human chose anyone, and a stateless **ConversationRouter** decides each step. Accept and durable replay return `memberTurns: []` with the singular `memberTurn` absent until members exist. The same `requestId` replays the same Run before current Router/configuration or membership checks, including after a lost response and Router removal. Cancellation and verified teardown also work for zero-member queued, routing and waiting-human Runs.
+PR8 adds automatic collaboration for Group Conversations. A human explicitly selects automatic mode; the durable Run then carries **zero** MemberTurns (`members: []` + `mode: "automatic"`), because no human chose anyone, and a stateless **ConversationRouter** decides each step. Accept and durable replay return `memberTurns: []` with the singular `memberTurn` absent until members exist. The same `requestId` replays the same Run before current Router/configuration or membership checks, including after a lost response and Router removal. Cancellation and verified teardown also work for zero-member queued, routing and waiting-human Runs. Cancelling a routing/waiting-human Run after its members settled records cancelled/human-cancelled on the Run while preserving completed members and their results.
 
 ```
 queued ──accept──▶ routing ──decision──▶ dispatching ──batch terminal──▶ routing again

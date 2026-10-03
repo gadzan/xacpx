@@ -1681,7 +1681,7 @@ export class SqliteConversationStore implements ConversationStore {
         if (!alreadyTerminal) {
           this.sqlite.run(
             "UPDATE runs SET state = 'cancelled', completion_reason = ?, routing_state = 'done', finished_at = ? WHERE id = ?",
-            [reason, now, runId],
+            ["human-cancelled", now, runId],
           );
         }
         return { run: this.requireRun(runId), alreadyTerminal, executionStarted: false, activeMembers: [] };
@@ -1694,6 +1694,20 @@ export class SqliteConversationStore implements ConversationStore {
           alreadyTerminal: true,
           executionStarted: false,
           activeMembers: [],
+        };
+      }
+      if (run.mode === "automatic"
+        && members.every((turn) => TERMINAL_MEMBER_STATES.includes(turn.state) && turn.state !== "indeterminate")) {
+        // Settled members are evidence of earlier work, not the outcome of a
+        // human Stop while the Router is deciding or waiting for input.
+        this.sqlite.run(
+          "UPDATE runs SET state = 'cancelled', completion_reason = ?, routing_state = 'done', finished_at = ? WHERE id = ?",
+          ["human-cancelled", now, runId],
+        );
+        return {
+          run: this.requireRun(runId), memberTurn: member,
+          dispatch: this.requireDispatchForMemberTurn(member.id),
+          alreadyTerminal: false, executionStarted: false, activeMembers: [],
         };
       }
       // Settle every never-started sibling in the same transaction so no new
