@@ -637,3 +637,180 @@ test("a multi-select default is bounded per item, not only in aggregate", () => 
   expect(parseControlPayload(MSG.interactionRequest, frame(["a".repeat(256), "b"]))).not.toBeNull();
   expect(parseControlPayload(MSG.interactionRequest, frame(["a".repeat(257), "b"]))).toBeNull();
 });
+
+// The authoritative open set, on the wire boundary.
+//
+// The client-side reconciliation semantics (draft preserved, omitted entry
+// retired, per-instance scoping) are asserted in
+// terminal-web-inbound.test.ts; what is pinned here is that the frame itself
+// survives the web-event validator, so a browser never receives a snapshot it
+// cannot parse — which would silently degrade reconnect back to positive-only.
+
+/** A valid snapshot frame, as the hub emits it on subscribe. */
+function snapshotEnvelope(over: Record<string, unknown> = {}): unknown {
+  return {
+    v: 1,
+    kind: "event",
+    type: "web.event",
+    payload: {
+      kind: "interaction-snapshot",
+      instanceId: "i1",
+      interactions: [
+        {
+          chatKey: "bot:c1:t1",
+          sessionAlias: "review",
+          interaction: {
+            requestId: "req-web-1",
+            kind: "elicitation",
+            conversation: { conversationId: "c1", topicId: "t1" },
+            expiresAt: Date.now() + 60_000,
+            elicitation: {
+              mode: "form",
+              message: "Which region?",
+              fields: [{ kind: "text", key: "region", title: "Region", required: true }],
+              agent: { name: "codex" },
+            },
+          },
+        },
+      ],
+      ...over,
+    },
+  };
+}
+
+test("a snapshot frame survives the web-event validator", () => {
+  const parsed = parseWebServerEvent(snapshotEnvelope() as RelayEnvelope);
+  expect(parsed).not.toBeNull();
+  expect(parsed!.kind).toBe("interaction-snapshot");
+  expect(parsed!.interactions).toHaveLength(1);
+  expect(parsed!.interactions[0]!.chatKey).toBe("bot:c1:t1");
+  expect(parsed!.interactions[0]!.sessionAlias).toBe("review");
+});
+
+test("an EMPTY snapshot is the strongest statement and must stay valid", () => {
+  // "Nothing is open for this instance" is exactly the frame that lets a browser
+  // conclude it is not missing an event. Refusing it would silently degrade
+  // reconnect to positive-only behavior precisely when the negative signal
+  // matters most.
+  const parsed = parseWebServerEvent(snapshotEnvelope({ interactions: [] }) as RelayEnvelope);
+  expect(parsed).not.toBeNull();
+  expect(parsed!.interactions).toHaveLength(0);
+});
+
+test("a snapshot entry missing its routing or request is refused whole", () => {
+  // Routing decides where the answer goes, so an entry without it cannot be opened
+  // safely: the client would have to invent a chatKey. Refused ENTIRELY rather
+  // than partially applied — a half-parsed open set is worse than none.
+  for (const missing of ["chatKey", "sessionAlias", "interaction"]) {
+    const frame = snapshotEnvelope() as { payload: { interactions: unknown[] } };
+    const entry = { ...frame.payload.interactions[0] } as Record<string, unknown>;
+    delete entry[missing];
+    frame.payload.interactions = [entry];
+    expect(
+      parseWebServerEvent(frame as unknown as RelayEnvelope),
+      `missing ${missing}`,
+    ).toBeNull();
+  }
+});
+
+test("a snapshot entry whose request core would reject is refused whole", () => {
+  // The snapshot goes through the SAME field rules as the live open path. Without
+  // that, a reconnect could resurrect a form the hub never would have accepted in
+  // the first place — the snapshot would become a way around validation rather
+  // than a statement about what passed it.
+  const frame = snapshotEnvelope() as { payload: { interactions: unknown[] } };
+  const entry = frame.payload.interactions[0] as { interaction: { elicitation: { fields: unknown[] } } };
+  entry.interaction.elicitation.fields = [
+    { kind: "text", key: "x".repeat(129), title: "T", required: true },
+  ];
+  expect(parseWebServerEvent(frame as unknown as RelayEnvelope)).toBeNull();
+});
+
+// The live event and the snapshot entry must be the same shape, checked once.
+//
+// These were two hand-written checks, and they had already drifted: the snapshot
+// required bounded `chatKey`/`sessionAlias` while the live event required only
+// `typeof === "string"` (the convention every other control event uses). The
+// snapshot was therefore STRICTER than the path it claimed to mirror, and any
+// field added to one wire path would silently be missing from the other.
+//
+// These cases pin the shared helper directly rather than restating its rules, so
+// what fails is the drift and not a particular bound.
+
+/** The one interaction, shaped for BOTH wire paths from the same object. */
+function twinOpenInteraction() {
+  return {
+    requestId: "req-web-1",
+    kind: "elicitation" as const,
+    conversation: { conversationId: "c1", topicId: "t1" },
+    expiresAt: Date.now() + 60_000,
+    elicitation: {
+      mode: "form" as const,
+      message: "Which region?",
+      fields: [{ kind: "text" as const, key: "region", title: "Region", required: true }],
+      agent: { name: "codex" },
+    },
+  };
+}
+
+/** The routing fields both paths carry beside the request. */
+const ROUTING = { chatKey: "bot:c1:t1", sessionAlias: "review" };
+
+test("the live open event and the snapshot entry accept the SAME payload", () => {
+  const shared = twinOpenInteraction();
+  const live = parseWebServerEvent(
+    controlEventEnvelope({
+      type: "interaction-opened",
+      ...ROUTING,
+      instanceId: "i1",
+      interaction: shared,
+    }),
+  );
+  const snap = parseWebServerEvent(
+    snapshotEnvelope({ interactions: [{ ...ROUTING, interaction: shared }] }),
+  );
+  expect(live).not.toBeNull();
+  expect(snap).not.toBeNull();
+});
+
+test("a mutation that breaks one path breaks the other", () => {
+  // The real regression this guards. Each mutation is applied to the interaction
+  // once and fed to BOTH paths; if the two ever stop sharing a validator, one of
+  // the two assertions goes green while the other goes red.
+  const mutations: [string, (i: Record<string, unknown>) => void][] = [
+    ["missing routing chatKey", (i) => { delete i.chatKey; }],
+    ["missing routing sessionAlias", (i) => { delete i.sessionAlias; }],
+    [
+      "unbounded routing behaves IDENTICALLY on both paths",
+      (i) => { i.chatKey = "x".repeat(500); },
+    ],
+    [
+      "an interaction whose core is invalid",
+      (i) => {
+        const el = (i.interaction as Record<string, unknown>).elicitation as Record<string, unknown>;
+        el.fields = [{ kind: "text", key: "x".repeat(129), title: "T", required: true }];
+      },
+    ],
+  ];
+
+  for (const [name, mutate] of mutations) {
+    const entry: Record<string, unknown> = { ...ROUTING, interaction: twinOpenInteraction() };
+    mutate(entry);
+    // The point is the PAIR, not either value on its own. Whether a given shape is
+    // accepted is the helper's business; that both paths agree is the contract,
+    // and it is what a near-copy would break.
+    expect(
+      parseWebServerEvent(snapshotEnvelope({ interactions: [entry] }) as RelayEnvelope) !== null,
+      `snapshot / ${name}`,
+    ).toBe(
+      parseWebServerEvent(
+        controlEventEnvelope({
+          type: "interaction-opened",
+          instanceId: "i1",
+          ...entry,
+        }),
+      ) !== null,
+      `live / ${name}`,
+    );
+  }
+});

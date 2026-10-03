@@ -17,6 +17,7 @@ import type {
 } from "@ganglion/xacpx-relay-protocol";
 
 const mockRpc = vi.fn();
+const mockApiGet = vi.fn();
 vi.mock("../api/client", () => ({
   ApiError: class ApiError extends Error {
     constructor(public code: string, public status: number) {
@@ -25,6 +26,8 @@ vi.mock("../api/client", () => ({
   },
   api: {
     rpc: (instanceId: string, type: string, payload?: unknown) => mockRpc(instanceId, type, payload),
+    // The owned-instance list goes over the plain HTTP surface, not the RPC tunnel.
+    get: (path: string) => mockApiGet(path),
   },
 }));
 
@@ -35,6 +38,12 @@ describe("useDirectBotsStore", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     mockRpc.mockReset();
+    // Default to "the owned-instance list is unavailable", which the store treats as
+    // no evidence and therefore retires nothing. Tests that actually exercise the
+    // instance negative override this; everything else about pane behaviour is left
+    // undisturbed.
+    mockApiGet.mockReset();
+    mockApiGet.mockRejectedValue(new Error("not configured"));
     localStorage.clear();
   });
 

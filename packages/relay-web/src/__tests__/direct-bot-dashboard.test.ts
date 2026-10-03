@@ -140,6 +140,13 @@ describe("DashboardView Direct Bot integration", () => {
 
     const directBots = useDirectBotsStore();
     const reconcileSpy = vi.spyOn(directBots, "reconcileOnReconnect").mockResolvedValue();
+    // The account-wide negative must run on its OWN, not as a step of the pane
+    // reconcile. It answers "which instances does this account still own", which has
+    // nothing to do with the selected Bot, and `reconcileOnReconnect` returns early
+    // when no Bot is selected — exactly when an off-screen form most needs it. Spying
+    // it here keeps the WIRING honest: the store can be correct and the reconnect path
+    // can still never call it.
+    const instanceNegativeSpy = vi.spyOn(directBots, "reconcileOwnedInstanceNegative").mockResolvedValue();
 
     mount(DashboardView, {
       global: {
@@ -163,6 +170,7 @@ describe("DashboardView Direct Bot integration", () => {
     await flushPromises();
 
     expect(reconcileSpy).toHaveBeenCalled();
+    expect(instanceNegativeSpy).toHaveBeenCalled();
   });
 
   it("restores persisted bot selection on page load", async () => {

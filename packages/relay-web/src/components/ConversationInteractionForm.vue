@@ -38,7 +38,7 @@ const props = defineProps<{
   answers: Record<string, InteractionValueDto>;
   submitting: boolean;
   errorCode: string | null;
-  outcome: "accepted" | "declined" | "cancelled" | "withdrawn" | null;
+  outcome: "accepted" | "declined" | "cancelled" | "withdrawn" | "gone" | null;
 }>();
 
 const emit = defineEmits<{
@@ -443,7 +443,9 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
     </div>
 
     <!-- Terminal notice. A hub-side close is `withdrawn`, never `cancelled`: the
-      user did not choose it and the UI must not claim they did. -->
+      user did not choose it and the UI must not claim they did. `gone` is the
+      neutral case — the open-set snapshot proved the window closed but says
+      nothing about who or why — so it must not fall through to a named outcome. -->
     <div
       v-if="outcome"
       data-test="interaction-outcome"
@@ -453,6 +455,7 @@ function onSelect(field: InteractionFieldDto, event: Event): void {
       {{ outcome === 'accepted' ? t('bot.interaction.accepted')
         : outcome === 'declined' ? t('bot.interaction.declined')
         : outcome === 'cancelled' ? t('bot.interaction.cancelled')
+        : outcome === 'gone' ? t('bot.interaction.gone')
         : t('bot.interaction.withdrawn') }}
     </div>
 

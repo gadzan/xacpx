@@ -74,8 +74,17 @@ export interface PendingInteractionState {
   /**
    * Set once the browser received the outcome, so the UI shows what happened
    * instead of leaving a dead form. Cleared by the caller after the notice.
+   *
+   * `gone` is the outcome that asserts NOTHING about who closed the window or
+   * why. It exists because the authoritative open-set snapshot can only prove
+   * "this request is no longer open" — it cannot distinguish accepted / declined /
+   * cancelled / expired / withdrawn, and picking one of those from an absence
+   * is exactly the "client invents terminal semantics from missing information"
+   * failure this store spent several rounds removing. Use it when the only
+   * evidence is absence, and reserve the named outcomes for a hub close event
+   * that names one.
    */
-  outcome: "accepted" | "declined" | "cancelled" | "withdrawn" | null;
+  outcome: "accepted" | "declined" | "cancelled" | "withdrawn" | "gone" | null;
   submitting: boolean;
   /** Last submit failure, surfaced as a bounded code rather than message text. */
   errorCode: DirectBotInteractionErrorCode | null;
@@ -203,6 +212,26 @@ const RUN_STATE_PRECEDENCE: Record<ConversationRunStateDto, number> = {
 
 function isTerminalRunState(state: ConversationRunStateDto | undefined): boolean {
   return state === "completed" || state === "failed" || state === "cancelled" || state === "indeterminate";
+}
+
+/**
+ * The account's owned instances, as `/api/instances` reports them.
+ *
+ * The authoritative owned-instance set, and the only negative evidence available
+ * for a whole instance rather than a single request. `DELETE /api/instances/:id`
+ * removes an instance from this set, which is what makes a reconnect able to notice
+ * that an interaction it still holds can no longer be answered under this account.
+ *
+ * Resolves with the rows precisely as the server sent them — no filtering, no
+ * caching, no "known instances" merge — because the caller is deciding whether
+ * something no longer EXISTS, and a locally remembered instance is exactly the
+ * stale belief that decision must not consult. Rejects on a non-2xx or a
+ * network failure, which the caller must treat as "no evidence" rather than
+ * "owns nothing": a failed list says nothing about which instances were deleted.
+ */
+async function listOwnedInstances(): Promise<Array<{ id: string }>> {
+  const { instances: rows } = await api.get<{ instances: Array<{ id: string }> }>("/api/instances");
+  return Array.isArray(rows) ? rows : [];
 }
 
 function isActiveRunState(state: ConversationRunStateDto | undefined): boolean {
@@ -2439,37 +2468,67 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // until that arrives is what keeps a double-click from sending two answers.
       patchInteraction(requestId, { submitting: true, errorCode: null });
     } catch (error) {
-      if (generation !== currentSelectionGeneration) return;
-      // A gone interaction is a normal ending, not an error to retry forever.
+      // An authoritative `interaction-gone` is checked BEFORE the generation fence.
       //
-      // `interaction-gone` is the hub's AUTHORITATIVE statement that this request no
-      // longer exists — it was answered from another tab, withdrawn, or expired. So
-      // the form is RETIRED here, not merely annotated with an error code.
+      // It is a REQUEST-scoped fact: this request no longer exists on the hub. It is
+      // scoped to the requestId, not to the pane that issued the submit, so a pane
+      // switch during the flight does not make it untrue or stale.
       //
-      // Setting only `errorCode` is what this branch used to do, and it left the
-      // dead form in the open map with its Submit/Decline/Cancel controls still
-      // live: the user could click again, get the same 409, and repeat forever on a
-      // form nobody was waiting for. The hub was already fail-closed, so this is a
-      // state-consistency bug rather than a lost-answer one, but the comment above
-      // promised a normal ending and the code did not deliver it.
+      // Checking the fence first let the switch swallow it: the user submits on A,
+      // navigates to B, the 409 lands, the fence sees a newer generation and returns
+      // — so A's form stays in the open map, answerable, with no negative evidence
+      // anywhere else. A snapshot cannot rescue it either, because this was a pane
+      // switch and not a reconnect: no re-subscribe runs, so no authoritative open
+      // set is re-declared. The user only discovers the truth by clicking again.
       //
-      // Retiring it closes the loop for the reconnect case where a form was answered
-      // elsewhere during the outage and the hub's positive-only replay never
-      // mentioned it again: the first authoritative 409 is the moment this tab learns
-      // the truth, and it acts on it instead of parking a corpse.
+      // Ordering this before the fence costs nothing else: for the non-authoritative
+      // failures the fence still applies, because those genuinely ARE about the
+      // pane the user is looking at.
       if (error instanceof DirectBotRpcError && error.code === "interaction-gone") {
-        // `withdrawn`, not `cancelled`: the user did not choose anything, and the
-        // form's window is over because something else consumed it.
+        // `gone`, the neutral outcome — NOT `withdrawn`.
+        //
+        // A 409 carries exactly as much information as a snapshot omission: the
+        // request is no longer open. It does NOT say who closed it or why. It may
+        // have been accepted from another tab, declined, cancelled, withdrawn, or
+        // expired, and the hub does not tell this client which.
+        //
+        // `withdrawn` asserts nobody chose anything, which is false precisely in
+        // the most common case — someone else answered it — so this tab would show
+        // "Closed before an answer arrived" to a question that had already been
+        // answered. That is the same "client invents terminal semantics" failure the
+        // snapshot path just fixed, arriving over HTTP instead of a frame.
+        //
+        // A hub-sent `interaction-closed` still reports its own reason, and local
+        // expiry still reports `withdrawn`: those name a cause. Absence never does.
         patchInteraction(requestId, { submitting: false, errorCode: "interactionGone" });
-        retireInteraction(requestId, "withdrawn");
+        retireInteraction(requestId, "gone");
         return;
       }
-      // Any other failure is NOT authoritative about the window: the request may
-      // still be open, so the form stays answerable and the user can retry.
+
+      // The RPC is over. That is a REQUEST-scoped fact, so the request's own
+      // "submit in flight" flag is cleared here, BEFORE the fence.
+      //
+      // `submitting` is not a message for the user — it is the request's lifecycle
+      // state, and it gates every future submit. Leaving it set because the pane
+      // changed wedges a form that is still perfectly valid: the user switches back
+      // to A and finds Submit / Decline / Cancel all refusing to fire, on a form
+      // nobody has closed. Only the next reconnect would clear it, which makes a
+      // transient network blip depend on a disconnect to recover.
+      patchInteraction(requestId, { submitting: false });
+
+      // What follows IS about the pane: the user is looking at this form and needs
+      // to be told why it failed. A pane switch during the flight makes that message
+      // irrelevant — the form they are now looking at is a different one — so the
+      // stale patch is dropped here, AFTER the request-scoped states above have
+      // already been settled.
+      //
+      // Any failure reaching this point is NOT authoritative about the window: the
+      // request may still be open, so it stays answerable and the user can retry.
+      if (generation !== currentSelectionGeneration) return;
       const code = error instanceof DirectBotRpcError && error.code === "unknown-type"
         ? "connectorOutdated"
         : "submitFailed";
-      patchInteraction(requestId, { submitting: false, errorCode: code });
+      patchInteraction(requestId, { errorCode: code });
     }
   }
 
@@ -2487,6 +2546,19 @@ export const useDirectBotsStore = defineStore("directBots", () => {
    */
   function requestStillHeld(requestId: string): boolean {
     return pendingInteractions.value.has(requestId);
+  }
+
+  /**
+   * The terminal outcome a request reached, or null if it never reached one.
+   *
+   * Exists so a caller can assert WHICH outcome a request got, not merely that it
+   * got one. `terminalInteractionCount` alone cannot tell `gone` from
+   * `withdrawn`, and those two mean different things to the reader: an authoritative
+   * open-set snapshot proves only that a window closed, and claiming a reason the
+   * hub never sent is the failure this store keeps having to undo.
+   */
+  function terminalInteractionOutcome(requestId: string): PendingInteractionState["outcome"] {
+    return terminalInteractions.value.get(requestId)?.outcome ?? null;
   }
 
   /** Dismiss a form that already reached a terminal outcome. */
@@ -2580,6 +2652,49 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
   }
 
+  /**
+   * Retire every pending interaction whose instance is no longer owned.
+   *
+   * An instance can be DELETED while this tab is disconnected, and that removes the
+   * whole snapshot scope for it: instance X is no longer owned, so the subscribe's
+   * ownership filter drops X and X never receives an `interaction-snapshot`. The tab
+   * therefore holds a pending interaction for X with no open, no close, and no
+   * snapshot to retire it from — and there is no timer either, so it stays until the
+   * user happens to click it and gets a 409.
+   *
+   * The same "no negative evidence, so the client must keep it" failure the snapshot
+   * closed, one level up: what went missing is not one request but the instance that
+   * owned the set the request would have been proven absent from. The authoritative
+   * owned-instance list is the negative evidence.
+   *
+   * `gone`, for the same reason as the snapshot: absence proves the request cannot
+   * continue under this account and says nothing about who or why.
+   *
+   * DELIBERATELY independent of the pane:
+   *   - No selection, no Bot, no Topic, no instance required. `/api/instances` is
+   *     account-wide; the selected instance is irrelevant to it.
+   *   - No generation fence. The owned set is not a pane's property, so a pane
+   *     switch during the flight must not discard a conclusion that is still true.
+   *     (The reconcile's other work IS about the pane, and still checks it.)
+   *
+   * Only a SUCCEEDED refresh may conclude anything. A failed list proves nothing
+   * about X and must leave every interaction alone, or a transient error would
+   * destroy live forms. Scoped per instance, so X's removal never touches Y's.
+   */
+  async function reconcileOwnedInstanceNegative(): Promise<void> {
+    let ownedInstanceIds: Set<string>;
+    try {
+      ownedInstanceIds = new Set((await listOwnedInstances()).map((r) => r.id));
+    } catch {
+      // Offline or unauthorized: not evidence. Leave every interaction open.
+      return;
+    }
+    for (const [requestId, held] of pendingInteractions.value) {
+      if (ownedInstanceIds.has(held.instanceId)) continue;
+      retireInteraction(requestId, "gone");
+    }
+  }
+
   // Reconcile on reconnect
   async function reconcileOnReconnect(): Promise<void> {
     // WS events are lost while disconnected: every previously loaded Bot
@@ -2604,7 +2719,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const tId = activeTopicId.value;
     const rId = activeRun.value?.id;
     const generation = currentSelectionGeneration;
-    if (!iId) return;
     // Fail-closed from the first line: buffered WS events were lost, so the
     // durable owner is unknown until loadHistory + runs.list re-prove it.
     // Close admission synchronously — before the catalog RPCs can stall — and
@@ -2615,6 +2729,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       historyRequestSequence += 1;
       discoverySequence += 1;
     }
+
+    if (!iId) return;
     // Catalog refresh is best-effort: a transient bots.list failure must
     // never strand the Topic gate closed with no recovery path. Only durable
     // owner discovery (loadHistory + runs.list) controls topicReady; the
@@ -2714,45 +2830,31 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     //
     // The hub holds the real state: a form answered from another tab while this
     // one was disconnected is already closed, and keeping it here would let the
-    // user submit an answer after its own deadline. So the local copy is checked
-    // against the live turn before the form is kept.
-    // An open interaction is re-proven after a reconnect rather than assumed.
+    // user submit an answer after its own deadline.
     //
-    // The hub holds the real state: a form answered from another tab while this
-    // one was disconnected is already closed, and keeping it here would let the
-    // user submit an answer after its own deadline. So each local copy is checked
-    // against the live turn before the form is kept.
+    // The ONLY authorities are the interaction sources —
+    // `interaction-opened` / `interaction-closed`, the authoritative open-set
+    // snapshot, `expiresAt`, and the hub's `interaction-gone`. Run state is not
+    // one of them.
     //
-    // Iterates ALL of them, not one slot: several can be open at once, and the
-    // ones that survive stay answerable.
+    // This loop previously ALSO retired an interaction whose owning turn had no
+    // live Run, on the reasoning that a finished turn cannot still be waiting on a
+    // form. That was a second, weaker authority: `activeRun` is the selected
+    // pane's single Run and the map is account-wide, so the heuristic could
+    // retire a form the hub still held open. Worse, it now runs AFTER the
+    // authoritative snapshot has already proven the request open — so the
+    // heuristic could undo, one microtask later, a fact the hub just settled.
+    // Two authorities over one fact is the bug, whichever one wins on a given run.
+    //
+    // What remains here is purely local and non-authoritative: expiry. `expiresAt`
+    // is part of the request itself, so this does not consult any other source.
     for (const [requestId, interaction] of pendingInteractions.value) {
       if (generation !== currentSelectionGeneration) break;
       const alreadyExpired = interaction.request.expiresAt <= Date.now();
-      // An interaction whose window has closed is `withdrawn`, never `cancelled`.
+      // A window whose deadline passed is `withdrawn`, never `cancelled`.
       // `cancelled` asserts the user made a decision; a passing deadline means
       // nobody chose anything. Same terminal-label rule as the close event.
       if (alreadyExpired) {
-        retireInteraction(requestId, "withdrawn");
-        continue;
-      }
-      // A still-open window is NOT judged against this pane's Run.
-      //
-      // `activeRun` is the selected pane's single Run, while this map is
-      // account-wide: it can hold an open form for another instance or topic,
-      // whose turn has nothing to do with what is on screen. Computing
-      // `runGone` from the pane's Run retired those forms as withdrawn even
-      // though the hub still held them open — a background form became
-      // permanently unanswerable, and the user only found out by switching back
-      // to it and seeing a terminal notice for a window that had not closed.
-      //
-      // Run liveness is therefore only decisive for the interaction of the turn
-      // this pane is actually showing. Anything else keeps its open state until
-      // the hub says otherwise, which is the failure mode the hub's own close
-      // event and replay already cover.
-      const ownsThisTurn = interaction.instanceId === iId
-        && interaction.request.conversation?.conversationId === cId
-        && interaction.request.conversation?.topicId === tId;
-      if (ownsThisTurn && (!activeRun.value || !isActiveRunState(activeRun.value.state))) {
         retireInteraction(requestId, "withdrawn");
       }
     }
@@ -2897,6 +2999,75 @@ export const useDirectBotsStore = defineStore("directBots", () => {
             })
             .catch(() => {});
         }
+      }
+      return;
+    }
+
+    // The authoritative OPEN-INTERACTION SET for one instance.
+    //
+    // This is the reconnect-completion boundary. The hub's subscribe path replays
+    // `interaction-opened` for everything it still holds, then declares the set
+    // complete with this message. Replay alone is positive-only: a tab that was
+    // disconnected while an interaction was answered elsewhere receives NEITHER an
+    // open nor a close for it, so it cannot tell "I have everything" from "I am
+    // missing an event" and keeps a form the hub has already closed — visible until
+    // the user happens to click it and gets a 409.
+    //
+    // With the hub now stating "that is all of them", anything local that the
+    // snapshot omits is closed on the server and is retired here. The three cases
+    // this settles:
+    //
+    //   local + in the snapshot -> keep the user's draft, take the server's
+    //                             metadata (expiresAt). Same merge policy the
+    //                             replay already follows, reused here rather than
+    //                             reimplemented so the two cannot drift.
+    //   local + NOT in snapshot -> the hub closed it while this tab was away.
+    //                             Retire now, rather than waiting for a submit the
+    //                             user may never make.
+    //   in snapshot + not local  -> cold open.
+    //
+    // Scoped to the instance the snapshot names: the store is account-wide, so a
+    // snapshot for instance A must conclude nothing about B's forms.
+    if (event.kind === "interaction-snapshot") {
+      const stillOpen = new Set(event.interactions.map((entry) => entry.interaction.requestId));
+      for (const [requestId, held] of pendingInteractions.value) {
+        if (held.instanceId !== event.instanceId) continue;
+        if (stillOpen.has(requestId)) continue;
+        // The snapshot proves the window is no longer open, which is ALL it proves.
+        //
+        // It cannot say who closed it or why: another tab may have accepted,
+        // declined, been declined, timed out, or been withdrawn — and every one of
+        // those is indistinguishable from here. So the terminal state is the neutral
+        // `gone`, not `withdrawn`: `withdrawn` asserts nobody chose anything, which
+        // an absence cannot support, and claiming it would misreport "another tab
+        // accepted" as "the window was pulled".
+        //
+        // Telling the user which of those it really was needs a hub-side terminal
+        // tombstone (`{ requestId, action, reason }`) retained past the close, which
+        // is a separate capability. Until then the UI says what is known and stops.
+        retireInteraction(requestId, "gone");
+      }
+      for (const entry of event.interactions) {
+        const interaction = entry.interaction;
+        if (interaction.kind !== "elicitation") continue;
+        if (!interaction.elicitation) continue;
+        if (interaction.expiresAt <= Date.now()) continue;
+        // Feed through the `interaction-opened` handler, which already implements
+        // the preserve-draft/take-server-metadata merge for a known requestId and
+        // the cold open for an unknown one. The routing fields come from the
+        // snapshot entry itself, so a cold-opened form routes exactly as the live
+        // event would have routed it — nothing is invented here.
+        applyEvent({
+          kind: "control-event",
+          instanceId: event.instanceId,
+          event: {
+            type: "interaction-opened",
+            chatKey: entry.chatKey,
+            sessionAlias: entry.sessionAlias,
+            instanceId: event.instanceId,
+            interaction,
+          },
+        });
       }
       return;
     }
@@ -3387,6 +3558,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // bound observable rather than an internal implementation detail.
     terminalInteractionCount,
     requestStillHeld,
+    terminalInteractionOutcome,
     setInteractionAnswer,
     submitInteraction,
     declineInteraction,
@@ -3422,6 +3594,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     sendPrompt,
     cancelCurrentRun,
     reconcileOnReconnect,
+    reconcileOwnedInstanceNegative,
     applyEvent,
   };
 });
