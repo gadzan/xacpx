@@ -215,12 +215,55 @@ then cancel **every** request routed to the listener-less account.
 
 Declaring nothing is honest and still fully usable for messaging.
 
-### 5.3 Listener failure must fail closed
+### 5.3 A failed listener must fail closed — via registry readiness, not config
 
-If a listener fails to bind at startup, that account cannot deliver a form. The
-deployment rule this implies: **do not keep advertising form with a broken
-listener.** Removing `cardActions` from the config is the supported way to take a
-form-incapable account out of the capability calculation.
+There are **two** capability notions, and confusing them is how a deployment ends
+up advertising something it cannot serve.
+
+| | Determined by | Answers |
+|---|---|---|
+| **Declared** | `elicitationModes`, computed **in the constructor from config** | "is this build/config configured to be able to deliver a form?" |
+| **Live** | the channel registry's readiness bookkeeping | "did a form-capable channel actually start right now?" |
+
+Constructor config decides the **declared** half only. It cannot decide the live
+half, because a bind can fail *after* construction — `EADDRINUSE`, a port already
+taken, a permissions error — and nothing in the config knows that at that point.
+
+The live half is a separate mechanism, and it is what actually makes a bind failure
+fail closed:
+
+```text
+FeishuChannel.start() throws (e.g. EADDRINUSE)
+  → MessageChannelRegistry records the channel in failedStartupChannels
+    (channel-registry.ts:132-136, inside a `finally` so it is recorded AS IT
+    HAPPENS rather than after a barrier that may never come)
+  → a readiness listener corrects the bridge's capability flag immediately
+    (run-console.ts:332-335)
+  → auditCapability derives the broken set as DECLARED minus LIVE
+    (run-console.ts:354-359)
+  → some form channel still live → log elicit_form_degraded and continue
+  → no form channel live        → log elicit_form_lost and REFUSE STARTUP
+    (run-console.ts:369-388)
+```
+
+That last step is fatal **regardless of `channelStartupPolicy`**, deliberately: the
+daemon has already told the bridge form elicitation is available, the bridge told
+the agent, and that flag is baked into the runtime at construction. Correcting it
+afterwards would need a capability-update channel the bridge protocol does not
+have, so the only honest alternatives are to refuse the run or to run while lying.
+
+**Operator consequence:** a bind failure is loud. You get a startup failure naming
+the channel, not a daemon that starts fine and then cancels every elicitation with
+no visible cause.
+
+**And it stays loud even when it happens late:** the readiness signal never
+resolves on success, so a Feishu bind that fails hundreds of milliseconds after a
+clean audit still fails the run (`run-console.ts:390-398`). A promise that resolved
+on success would have closed that window permanently.
+
+Removing `cardActions` from the config is the *other* direction — an operator
+deliberately declaring "this account is not form-capable". It works through the
+declared half, and it is **not** the mechanism that keeps a bind failure truthful.
 
 ### 5.4 URL mode is never declared
 

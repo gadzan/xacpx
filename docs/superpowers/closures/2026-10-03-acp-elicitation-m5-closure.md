@@ -44,7 +44,7 @@ Four dispositions, exactly as the working agreement requires.
 | Feishu mixed-account capability gating | `packages/channel-feishu/src/channel.ts:129-140` (`inboundOnlyAccounts`) |
 | Discord / channel-relay capability declarations | `packages/channel-discord/src/channel.ts`, `packages/channel-relay/src/channel.ts:262-273` |
 | Feishu multi-select fail-closed (no reshaping) | `packages/channel-feishu/src/elicitation-limits.ts:66` + tests |
-| **Built-artifact capability gate** (this closure) | `tests/smoke/acp-elicitation-capability-artifact.test.ts`, 5/5 pass |
+| **Built-artifact capability gate** (this closure) | `tests/smoke/acp-elicitation-capability-artifact.test.ts`, 6/6 pass, enforced in CI after `Build (all packages)` |
 | **Feishu deployment runbook** (this closure) | `docs/feishu-cardactions-deployment.md` |
 | **Relay interaction runbook** (this closure) | `docs/relay-interaction-deployment.md` |
 | Tracked `dist` hygiene for `relay-protocol` | `assert:relay-protocol` in `package.json:52` |
@@ -96,32 +96,51 @@ and asserts:
 | Feishu, one account has `cardActions`, one does not | `elicitationModes` is `[]` |
 | Feishu, every inbound account has `cardActions` | `elicitationModes` is `["form"]` |
 | Feishu, with form declared | does **not** contain `"url"` |
-| Discord | every declared mode is in `["form","url"]`; never `"url"` |
+| Discord | `elicitationModes` is exactly `["form"]` |
+| channel-relay connector registration | contains `interaction.elicitation.form.v1`; contains no permission capability |
 
-Run it with:
-
-```bash
-bun run build:channel-feishu
-bun run build:channel-discord
-bun test tests/smoke/acp-elicitation-capability-artifact.test.ts
-```
+The relay case is not a class-field check. `elicitationModes` is not the relay
+channel's real surface — what it hands `createClient` on its **production start
+path** is, because that is the list the connector sends to the hub on hello. The
+test drives a real `start()` against the built bundle and captures that list, so
+the capability assembly and registration are the shipped ones. It awaits a
+deferred that `createClient` resolves rather than polling, so a timeout means
+"registration never happened" rather than "the poll was too short".
 
 **It refuses to pass on source.** If `dist/index.js` is missing, the probe throws
 rather than silently reading `undefined` — a gate that cannot fail is not a gate.
 
-Not wired into default `npm test`, which is `tests/unit/**` only. That matches
-`tests/smoke/terminal-pty-smoke.test.ts` and
-`tests/smoke/relay-rmux-platform-package.test.ts`, the existing smoke conventions.
+### 2.1 It is enforced, not manual
 
-### 2.1 Mutation proof
+The Linux leg of `.github/workflows/test.yml` runs this probe **after
+`Build (all packages)`**, which is the step that produces the bundles it consumes.
+Without that, the gate could be green locally and skipped in CI entirely — the
+exact gap between "asserted in a built artifact" and "asserted in a built artifact,
+by the thing that decides whether a PR merges".
+
+Not duplicated on macOS: one enforced gate closes the hole, and the channel
+bundles are platform-independent JS.
+
+### 2.2 Mutation proof
 
 | Mutation | Expected failing test | Actual failing test |
 |---|---|---|
 | declare form when **any** account has `cardActions` (the capability lie) | mixed-account case | `feishu bundle: a MIXED account set declares no channel-wide form capability` |
+| Discord bundle declares no form (`["form"]` → `[]`) | Discord case | `discord bundle: form capability is declared, not merely not-wrong` |
+| connector registration omits the interaction capability | relay case | `relay bundle: the connector hello advertises the interaction capability it can deliver` |
 
-The mutation was applied to `packages/channel-feishu/src/channel.ts`, the Feishu
-bundle rebuilt, and the gate re-run: exactly the mixed-account case failed. The
-gate is load-bearing, not decorative.
+Each was applied to source, the affected bundle rebuilt, and the gate re-run; each
+failed exactly the case named, 5 pass / 1 fail in all three runs. The gate is
+load-bearing, not decorative.
+
+The Discord mutation is the one that matters most for the artefact claim: an
+earlier revision of that test asserted only "every declared mode is in the allowed
+set" and "url is absent", both of which hold on an empty array — so a
+tree-shaken or stale bundle would have passed. `toEqual(["form"])` cannot.
+
+Each mutation script asserted its target count was exactly 1, that the write
+changed the file, and that the target string was gone before any test ran — the
+discipline this milestone's earlier rounds repeatedly had to relearn.
 
 ---
 
@@ -165,18 +184,41 @@ Real card actions take the opposite path: they must pass the full signature chec
 Recognizing the challenge by token does **not** open a bypass for real actions —
 unknown or missing token → 401.
 
-### 3.4 Listener startup failure must fail closed on capability
+### 3.4 Two capability notions: declared (config) and live (registry readiness)
 
-The channel declares `elicitationModes` **from config**, in the constructor
-(`channel.ts:152-215`), not from whether the listener later started. This is
-correct *because* the capability is derived from the config that determines whether
-the listener can start: no `cardActions` → no listener → no answer path → declare
-nothing.
+The channel declares `elicitationModes` **from config, in the constructor**
+(`channel.ts:152-215`). That is the **declared** half — "is this build configured
+to be able to deliver a form".
 
-The invariant an operator must hold: **if a deployment change breaks the listener,
-the channel must stop declaring form.** Removing `cardActions` does that
-automatically. Silently starting a channel with a listener that failed to bind
-while still advertising form is the failure mode the gating exists to prevent.
+It cannot be the **live** half, because a bind can fail *after* construction
+(`EADDRINUSE`, a taken port, a permissions error), and nothing in the config knows
+that at the time. The live half is a separate mechanism, and it is what makes a
+bind failure fail closed:
+
+```text
+FeishuChannel.start() throws
+  → registry records the channel in failedStartupChannels
+    (src/channels/channel-registry.ts:132-136, in a `finally`, so it is recorded
+    AS IT HAPPENS — `allSettled` is not a readiness barrier)
+  → readiness listener corrects the bridge's capability flag immediately
+    (src/run-console.ts:332-335)
+  → auditCapability computes DECLARED minus LIVE (run-console.ts:354-359)
+  → some still live   → elicit_form_degraded, continue
+  → none live         → elicit_form_lost, REFUSE STARTUP (run-console.ts:369-388),
+                        fatal regardless of channelStartupPolicy
+```
+
+Fatal deliberately: the flag is already baked into the runtime at construction,
+and the bridge protocol has no capability-update channel, so the honest
+alternatives are refusing the run or lying while running. The readiness signal
+never resolves on success, so a bind that fails *after* a clean audit still fails
+the run (`run-console.ts:390-398`).
+
+Removing `cardActions` is the other direction — an operator deliberately declaring
+an account non-form-capable, which works through the declared half. It is **not**
+the mechanism that keeps a bind failure truthful.
+
+Full operator-facing text: `docs/feishu-cardactions-deployment.md` §5.3.
 
 ### 3.5 A mixed account set cannot be described truthfully
 
@@ -250,7 +292,7 @@ the level of the durable boundary, not by patching the interaction path.
 | Relay Permission renderer | The wire already carries `kind: "permission"` and the registry stores the payload for replay (`packages/relay/src/interaction-registry.ts:109`), but `InteractionRequestDto.permission` is marked *"Reserved; M3 does not implement it"* (`packages/relay-protocol/src/dtos.ts:905-911`) and `relay-web` has **no** permission branch — both the live-open and snapshot paths bail on any non-elicitation kind | a renderer + capability `interactionPermissionV1` before any advertisement |
 | Durable interaction across hub restart | Persisting the hub registry alone is fake durability: the connector's pending RPC also dies, so nothing is waiting for the answer | a full caller-chain resume design |
 | `waiting-human` Run state | Read in ≥8 places (`src/conversations/conversation-run-service.ts:568,573,692,970,1067,1073,1643,1650`), **never written** — the M3 readiness doc predicted exactly this (B4) | a design, then implementation; must be driven by authoritative open-interaction state |
-| ACP URL-mode | `ChannelElicitationMode` is `"form"` and the comment says so explicitly (`elicitation-types.ts:213-220`). `interactionPermissionV1` does not exist anywhere in the repo, which is the correct fail-closed shape | an ACP-conformant URL contract: target-host display, consent before navigation, `elicitationId`, `elicitation/complete` |
+| ACP URL-mode | `ChannelElicitationMode` is `"form"` only, and the declaration comment says why (`src/interactions/elicitation-types.ts:221`): ACP defines `form | url`, but there is no URL dispatch, no `elicitationId`, no `elicitation/complete`, and no consent-before-navigation implementation. Widening the union would advertise a capability core cannot deliver | an ACP-conformant URL contract: target-host display, consent before navigation, `elicitationId`, `elicitation/complete`, per-channel capability proof |
 
 Each is a capability of its own, each starts only once the renderer and authority
 chain genuinely exist, and none may be advertised before it is deliverable.
@@ -265,7 +307,7 @@ complete":
 | Layer | Status |
 |---|---|
 | Production code path exercised | **yes** — the capability gate constructs the real built bundles |
-| Built artifact verified | **yes** — `tests/smoke/acp-elicitation-capability-artifact.test.ts`, 5/5 |
+| Built artifact verified | **yes** — `tests/smoke/acp-elicitation-capability-artifact.test.ts`, 6/6 (Feishu ×3, Feishu no-URL, Discord, channel-relay registration) |
 | Injected / loopback transport verified | **yes** — the gate's Feishu construction is production-shaped; the existing unit suites cover the rest |
 | Real platform round trip | **not exercised** — no public HTTPS endpoint, no Feishu console credentials, no live relay deployment available in this environment |
 | Live deployment validation | **blocked by environment** — see above |
@@ -278,17 +320,26 @@ is made anywhere in this milestone.
 | Command | Result |
 |---|---|
 | `node node_modules/typescript/bin/tsc --noEmit` | 0 errors |
-| `bun test tests/smoke/acp-elicitation-capability-artifact.test.ts` | 5 pass / 0 fail |
-| `bun test tests/unit/packages/channel-feishu/` | 195 pass / 16 fail — **identical** on clean `origin/main` (195 / 16, run in the same session) |
-| `bun test tests/unit/channels/moved-channel-hints.test.ts tests/unit/interactions/` | 244 pass / 0 fail — **identical** on both refs |
-| `bun test tests/unit/channels/ tests/unit/interactions/ tests/unit/packages/channel-feishu/` (aggregate) | 883 pass / 4 fail |
+| `bun test tests/smoke/acp-elicitation-capability-artifact.test.ts` | 6 pass / 0 fail |
+| `bun test tests/unit/packages/channel-feishu/` | 490 pass / 0 fail — **identical** on clean `origin/main` (490 / 0, same 33 files) |
+| `bun test tests/unit/channels/ tests/unit/interactions/` | 393 pass / 4 fail — **identical** on clean `origin/main`, same 397 tests, same 4 failing names |
 
-The aggregate run's 4 failures are load flake, not regressions: the same 4
-(`reports the plugin install hint when the plugin is absent` ×4) pass in isolation
-on both refs, and both the feishu and the channels/interactions suites produce
-**byte-identical** results on `origin/main` and on this branch. Per the
-baseline-attribution rule, each suspicious failure was re-run in isolation on both
-refs before being classified, and none is a deterministic branch-only failure.
+None of these is a branch-only failure. The 4 are the pre-existing plugin-install
+hints (Feishu/Yuanbao "runtime missing"), present with byte-identical results on
+both refs.
+
+**A baseline trap worth recording.** An earlier comparison on this branch reported
+`channel-feishu` as 195 pass / 16 fail against a clean-main worktree, which looked
+like a *regression in the safe direction*. It was not: that worktree had only
+`dist/plugin-api.d.ts` and no `dist/plugin-api.js`, so the `xacpx/plugin-api` alias
+failed and the suite could not load — 211 tests instead of 490. The worktree was
+measuring the absence of a build step, not the code. Both refs were re-run after
+installing the artifact, and they agree exactly.
+
+The rule this reinforces: the `xacpx/plugin-api` alias resolves to
+`dist/plugin-api.js`, so **any** package-level comparison requires that artifact to
+exist in the worktree. "Fewer tests ran" is a symptom to investigate, never a
+result to accept.
 
 ---
 
