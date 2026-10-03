@@ -63,7 +63,14 @@ else about xacpx core changes.
 - Framebuffer/keyboard/mouse bytes ride an independent binary WebSocket, never
   the control plane or RelayEnvelope.
 - Setup, per-platform VNC server notes (TightVNC / TigerVNC / x11vnc / WayVNC)
-  and lock-and-UAC limits: [`docs/desktop-rfb-setup.md`](../../docs/desktop-rfb-setup.md).
+  and lock-and-UAC limits: [`docs/desktop-rfb-setup.md`](../../docs/desktop-rfb-setup.md)
+  (Chinese full reference) and the English
+  [`Instance Desktop (RFB/VNC)`](../../packages/docs/guide/relay-self-hosting.md#instance-desktop)
+  section of the self-hosting guide.
+- Diagnosing a failed open: error codes are stable (`desktop-rfb-unavailable`,
+  `desktop-auth-unsupported`, `desktop-busy`, `desktop-not-rfb`, …) and the
+  message names the **configured** port, plus the RFB server's own rejection
+  text. There is no separate desktop doctor command in Phase A by design.
 - Structured logs use `relay.desktop.*` events — hub side `stream_closed`,
   `text_frame`, `oversize_frame`, `backpressure_close`, `preattach_overflow`
   (IDs and reasons only — never RFB bytes or the VNC password).

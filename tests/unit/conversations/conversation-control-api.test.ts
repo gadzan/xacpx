@@ -470,6 +470,95 @@ test("exact run cancel only affects that Run", async () => {
   expect(control.getRun(runA.run.id).state).toBe("cancelled");
 });
 
+test("Direct prompt refuses Group-shaped structured targets instead of silently routing to the owning Bot", async () => {
+  const { control } = await wire({ autoKick: false });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  for (const target of [
+    { mode: "members", botIds: [bot.id] },
+    { mode: "members", botIds: ["some-other-bot"] },
+    { mode: "everyone" },
+    { mode: "automatic" },
+  ]) {
+    await expect(control.promptConversation({
+      conversationId,
+      requestId: `req-structured-${JSON.stringify(target)}`,
+      text: "hello",
+      target,
+    })).rejects.toMatchObject({ code: "conversation_target_mismatch" });
+  }
+  // The refusal must not consume or shadow the (conversation, topic, request)
+  // identity space: a legitimate later Direct prompt still works.
+  const accepted = await control.promptConversation({
+    conversationId,
+    requestId: "req-after-refusal",
+    text: "hello",
+  });
+  expect(accepted.memberTurn.botId).toBe(bot.id);
+});
+
+test("public Control facade rejects a malformed target instead of silently rewriting the route", async () => {
+  // The sanitizer used to DROP an invalid target. For Group that degraded
+  // into target_required; for Direct it failed OPEN — an absent target is
+  // legal there, so {botId: owningBot, mode: "automatic"} executed the
+  // owning bot as an unstructured Direct prompt. A target that is present
+  // but not exactly one variant must throw typed invalid-target at the
+  // public boundary for BOTH conversation kinds.
+  const { control } = await wire({ autoKick: false });
+  const publicControl = asPublicControl(control);
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const conversationId = createDirectConversationId(bot.id);
+  const malformed = [
+    { botId: bot.id, mode: "automatic" },
+    { botId: bot.id, mode: "members", botIds: [bot.id] },
+    { botId: bot.id, botIds: [bot.id] },
+    { mode: "automatic", botIds: [bot.id] },
+    { mode: "members", botIds: [bot.id, 42] },
+    { mode: "bogus" },
+    { botId: 42 },
+    {},
+  ] as const;
+  for (const target of malformed) {
+    await expect(publicControl.promptConversation({
+      conversationId,
+      requestId: `req-public-malformed-${JSON.stringify(target)}`,
+      text: "hello",
+      target: target as never,
+    })).rejects.toMatchObject({ code: "invalid-target" });
+  }
+  // A Group conversation gets the same typed refusal from the sanitizer —
+  // it must not degrade to target_required either.
+  const botB = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const group = await control.createGroup({ title: "Team", botIds: [bot.id, botB.id], leadBotId: bot.id });
+  const topic = await control.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  await expect(publicControl.promptConversation({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-public-group-mixed",
+    text: "ship it",
+    target: { botId: bot.id, mode: "automatic" } as never,
+  })).rejects.toMatchObject({ code: "invalid-target" });
+  // None of the rejected shapes may have consumed durable state: the same
+  // requestIds now succeed for well-formed prompts.
+  const acceptedDirect = await publicControl.promptConversation({
+    conversationId,
+    requestId: "req-public-after-malformed",
+    text: "hello",
+  });
+  expect(acceptedDirect.memberTurn.botId).toBe(bot.id);
+  const acceptedGroup = await publicControl.promptConversation({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-public-group-mixed",
+    text: "ship it",
+    target: { mode: "members", botIds: [bot.id, botB.id] },
+  });
+  expect(acceptedGroup.memberTurns?.map((turn) => turn.botId)).toEqual([bot.id, botB.id]);
+});
+
 test("Direct target must match the Conversation Bot and cannot inject a hidden alias", async () => {
   const { control } = await wire({ autoKick: false });
   const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
@@ -1145,4 +1234,61 @@ test("toMemberTurnSummary projects timestamps alongside failureReason", async ()
   expect(summary.startedAt).toBe("2026-09-16T00:00:01.000Z");
   expect(summary.finishedAt).toBe("2026-09-16T00:00:02.000Z");
   expect(summary.failureReason).toBe("provider crashed");
+});
+
+test("PR7 control: groups.list stays separate from Direct-only conversations.list", async () => {
+  const { control } = await wire({ autoKick: false });
+  const botA = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const botB = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const group = await control.createGroup({ title: "Team", botIds: [botA.id, botB.id], leadBotId: botA.id });
+  const groups = control.listGroups();
+  expect(groups.map((entry) => entry.id)).toContain(group.id);
+  expect(groups.find((entry) => entry.id === group.id)?.kind).toBe("group");
+  const direct = control.listConversations();
+  expect(direct.every((entry) => entry.kind === "bot")).toBe(true);
+  expect(direct.map((entry) => entry.id)).not.toContain(group.id);
+});
+
+test("PR7 control: Group prompt accepts structured target and projects plural memberTurns", async () => {
+  const { control } = await wire({ autoKick: false });
+  const botA = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const botB = await control.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  const group = await control.createGroup({ title: "Team", botIds: [botA.id, botB.id], leadBotId: botA.id });
+  const topic = await control.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const accepted = await control.promptConversation({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-control",
+    text: "ship it",
+    target: { mode: "members", botIds: [botA.id, botB.id] },
+  });
+  expect(accepted.memberTurn.botId).toBe(botA.id);
+  expect(accepted.memberTurns?.map((turn) => turn.botId)).toEqual([botA.id, botB.id]);
+  const retry = await control.promptConversation({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-control",
+    text: "ship it",
+    target: { mode: "members", botIds: [botA.id, botB.id] },
+  });
+  expect(retry.reused).toBe(true);
+  expect(retry.run.id).toBe(accepted.run.id);
+  await expect(control.promptConversation({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-control-bad",
+    text: "bad",
+    target: { mode: "members", botIds: [] },
+  })).rejects.toMatchObject({ code: "empty_target" });
+  const direct = await control.promptConversation({
+    conversationId: createDirectConversationId(botA.id),
+    topicId: createDirectTopicId(botA.id),
+    requestId: "req-pr7-direct",
+    text: "hello",
+  });
+  expect(direct.memberTurn.botId).toBe(botA.id);
+  expect(direct.memberTurns).toBeUndefined();
 });

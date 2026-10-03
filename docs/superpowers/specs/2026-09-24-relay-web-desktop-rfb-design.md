@@ -62,6 +62,11 @@ Desktop 不应复制 Terminal 的 ANSI recovery 协议，但应复用它验证�
 - stream ticket 单次使用、短 TTL、绑定 account + instance + side。
 - Desktop tunnel 只能到 loopback + configured port。
 - ticket、VNC password、ARD password 不写日志。
+  **Scope:** this promise covers xacpx's own logs (connector, hub, relay-web).
+  Tickets necessarily travel in the URL query of `/desktop/observe?ticket=…` and
+  `/desktop/instance?ticket=…`, so any reverse proxy in front that logs the
+  full request URI WILL record them. Self-hosting docs therefore must warn about
+  access-log configuration for these two paths; see docs/relay-deployment.md.
 - 未认证的 VNC server 默认拒绝。
 - Desktop disabled 时不声明 capability，也不创建任何 stream endpoint 状态。
 

@@ -3,6 +3,8 @@ import type {
   ConversationMessage,
   ConversationRun,
   HumanIngressContext,
+  MemberTurnEffect,
+  MemberTurnEffectProvenance,
   MemberTurnOrigin,
   MemberTurnRecord,
   PendingDispatch,
@@ -20,6 +22,12 @@ export interface ListMessagesQuery {
 export interface AcceptMemberInput {
   botId: string;
   profileSnapshot: BotProfileSnapshot;
+  /** Declared side-effect capability. Only an explicitly proven `read-only`
+   *  (effect + effectProvenance "declared-enforced") counts as safe for
+   *  concurrent execution; everything else persists as `unknown`. Absent ⇒
+   *  `unknown` (PR7: no enforceable read-only proof exists yet). */
+  effect?: MemberTurnEffect;
+  effectProvenance?: MemberTurnEffectProvenance;
   /** Durable provenance for this member. Defaults to human-explicit on
    *  human-ingress accepts, orchestration-fresh "followup" otherwise;
    *  PR7/PR8 pass router/handoff explicitly. Never inferred from names. */
@@ -64,6 +72,30 @@ export interface AcceptRequestInput {
   humanIngress?: HumanIngressContext;
 }
 
+/**
+ * Unified request-snapshot referential contract (one check, three consumers:
+ * claim execution, idempotent accept replay, and transcript composition).
+ * The request message must exist and belong to the Run's Conversation AND
+ * Topic with the human role — a corrupted `runs.request_message_id` pointing
+ * at another message must fail closed, never feed another message's content
+ * into a prompt. `runId` IS checked: the human-request writer persists the
+ * message with its own Run's id (same statement that inserts it), so a same-
+ * Topic foreign run's request — which otherwise satisfies conversation, topic,
+ * and role — is rejected. A human request row without `run_id` has no writer
+ * path (none ever did, including the store's first schema) and is corruption:
+ * fail closed rather than guess.
+ */
+export function requestSnapshotMatches(
+  message: ConversationMessage | undefined,
+  run: ConversationRun,
+): boolean {
+  return message !== undefined
+    && message.conversationId === run.conversationId
+    && message.topicId === run.topicId
+    && message.role === "human"
+    && message.runId === run.id;
+}
+
 export interface AcceptRequestResult {
   reused: boolean;
   message: ConversationMessage;
@@ -85,6 +117,9 @@ export interface ClaimNextDispatchInput {
   authorityEpoch: string;
   /** Topics deferred for this drain pass after a pre-start failure. */
   skipTopicIds?: readonly string[];
+  /** Restrict the claim to one Run's dispatches: the same-batch sibling
+   *  cohort. Unset claims globally (previous sequencing). */
+  runId?: string;
 }
 
 export interface ClaimedWork {
@@ -191,6 +226,10 @@ export interface SettleCancelBatchResult {
 
 export interface ReleaseClaimToPendingInput extends ClaimFenceInput {}
 
+export interface RenewHeldClaimInput extends ClaimFenceInput {
+  leaseExpiresAt: string;
+}
+
 export interface FailClaimBeforeStartInput extends ClaimFenceInput, FailExecutionInput {}
 
 export interface AssertLiveDispatchForMaterializeInput extends ClaimFenceInput {
@@ -252,6 +291,30 @@ export interface ConversationStore {
   getDispatchForMemberTurn(memberTurnId: string): PendingDispatch | undefined;
   listDispatchesForRun(runId: string): PendingDispatch[];
   recoverExpiredClaims(now: string): RecoveredClaim[];
+  /** Converge `claimed` dispatches whose owner can no longer be alive: the
+   *  startup handoff after acquiring the exclusive consumer lock, before the
+   *  first drain. Any `claimed` row whose owner differs from the live
+   *  dispatcher's owner id belongs to a previous process (graceful shutdown
+   *  retires its own holds, so survivors are crash orphans or failed-retire
+   *  leftovers) — the lock is stronger death evidence than lease expiry, so
+   *  foreign rows converge immediately instead of waiting out their old lease:
+   *  unstarted members return to `pending` with owner cleared, keeping
+   *  generation/authorityEpoch/humanIngress/origin/attempt verbatim (an
+   *  orderly handoff, never the recovery rewrite); started members seal to
+   *  `indeterminate` with `started_result_unknown` and the aggregate
+   *  converges in the same transaction (unproven side effects — never
+   *  re-executed); members of terminal Runs finish their dispatch (already
+   *  finished business, identical to the normal recovery path). Returns one
+   *  entry per converged row. */
+  convergePreviousOwnerClaims(owner: string, now: string): RecoveredClaim[];
+  /** Retire `claimed` dispatches whose owner can no longer be alive, WITHOUT
+   *  touching provenance — the unstarted-only seam of
+   *  convergePreviousOwnerClaims, kept for direct unit coverage of the
+   *  orderly-handoff branch. Started members are skipped (converged to
+   *  indeterminate by convergePreviousOwnerClaims); members of terminal Runs
+   *  are skipped identically (finished by convergePreviousOwnerClaims).
+   *  Returns the retired dispatch ids. */
+  retirePreviousOwnerClaims(owner: string): string[];
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined;
   hasDurableBotWork(botId: string): boolean;
   /** True when any durable rows exist for a Group Conversation (runs,
@@ -259,6 +322,22 @@ export interface ConversationStore {
    *  metadata delete against orphaning history the Group row is needed to
    *  interpret. */
   hasDurableGroupWork(conversationId: string): boolean;
+  /** Extend the lease on a writer-slot-held claim WITHOUT touching anything
+   *  else: same owner, same generation, same authorityEpoch/humanIngress. The
+   *  fence rejects anything that is not our live unstarted claim (stale owner,
+   *  wrong generation, already started, or already recovered) with
+   *  `stale_claim`, so a lost race can never extend a lease it no longer owns.
+   *  Scheduling waits must never look like crash recovery. */
+  renewHeldClaim(input: RenewHeldClaimInput): PendingDispatch;
+  /** Retire one unstarted held claim at graceful shutdown WITHOUT touching
+   *  provenance: the dispatch returns to `pending` with owner cleared and a
+   *  FRESH lease window, but authorityEpoch/humanIngress, generation, member
+   *  origin and attempt are preserved verbatim. Unlike lease recovery (which
+   *  rewrites origin to `recovery` and bumps attempt) this is an orderly
+   *  handoff: the next consumer claims it as ordinary pending work and the
+   *  member executes on its original human route. Fenced like renewal — only
+   *  our live unstarted claim retires; anything else rejects `stale_claim`. */
+  retireHeldClaim(input: ClaimFenceInput): PendingDispatch;
   releaseClaimToPending(input: ReleaseClaimToPendingInput): PendingDispatch;
   markExecutionStarted(input: MarkExecutionStartedInput): MemberTurnRecord;
   assertLiveDispatchForMaterialize(input: AssertLiveDispatchForMaterializeInput): void;

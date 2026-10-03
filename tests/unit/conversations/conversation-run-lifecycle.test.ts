@@ -10,7 +10,7 @@ import type { AppConfig } from "../../../src/config/types";
 import { ControlService, conversationKernel } from "../../../src/control/control-service";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
 import { ConversationError } from "../../../src/conversations/conversation-error";
-import { ConversationDispatcher, type ConversationDispatcherHooks } from "../../../src/conversations/conversation-dispatcher";
+import { ConversationDispatcher, PUBLIC_TRANSCRIPT_MESSAGES, type ConversationDispatcherHooks } from "../../../src/conversations/conversation-dispatcher";
 import { ConversationRunService } from "../../../src/conversations/conversation-run-service";
 import {
   canMintHumanPermissionInteraction,
@@ -43,6 +43,7 @@ import type { ChatRequest, ChatResponse } from "../../../src/weixin/agent/interf
 const NOW = "2026-09-15T12:00:00.000Z";
 const BOT_ID = "bot_reviewer";
 const TESTER_ID = "bot_tester";
+const EXTRA_ID = "bot_extra";
 
 function seedTesterBot(state: AppState): void {
   state.bots[TESTER_ID] = {
@@ -178,6 +179,7 @@ async function createLifecycle(options: {
   runner?: ConversationTurnRunner;
   hooks?: ConversationDispatcherHooks;
   beforeAcceptPersist?: () => Promise<void>;
+  beforeGroupAcceptGatesAcquired?: () => Promise<void>;
   beforeArchiveGatesAcquired?: () => Promise<void>;
   beforeTeardownFinalize?: () => Promise<void>;
   afterTeardownMarkedDeleting?: () => Promise<void>;
@@ -266,6 +268,7 @@ async function createLifecycle(options: {
     now: nowFn,
     stateMutex,
     beforeAcceptPersist: options.beforeAcceptPersist,
+    beforeGroupAcceptGatesAcquired: options.beforeGroupAcceptGatesAcquired,
     beforeArchiveGatesAcquired: options.beforeArchiveGatesAcquired,
     beforeTeardownFinalize: options.beforeTeardownFinalize,
     afterTeardownMarkedDeleting: options.afterTeardownMarkedDeleting,
@@ -377,6 +380,7 @@ test("crash after execution start and before result persistence is indeterminate
   });
   const drain = first.dispatcher.kick();
   await started.promise;
+
   expect(first.store.getMemberTurn(accepted.memberTurn.id)?.state).toBe("running");
   expect(first.store.getMemberTurn(accepted.memberTurn.id)?.sourceTurnId).toBeDefined();
 
@@ -500,10 +504,16 @@ test("cancel running Run uses the exact session and does not touch another Topic
   });
   const drain = first.dispatcher.kick();
   await started.promise;
-  await waitUntil(() => runner.runs.length === 1);
+  // The drain launches every claimable dispatch concurrently (direct members
+  // never defer), so BOTH Topics' provider turns are in flight here — the old
+  // serial drain left only the first running. FakeRunner.run() captures the
+  // hang gate per call, so clearing it now lets the already-started
+  // non-target turn settle on its own while the target turn (already past
+  // its gate check) stays hung and therefore still cancellable: cancelCalls
+  // must name exactly the target session and the other Run must complete.
+  runner.hang = undefined;
   await first.service.cancelRun(running.run.id);
   await drain;
-  expect(first.store.getRun(running.run.id)?.state).toBe("cancelled");
   await first.dispatcher.kick();
   expect(first.store.getRun(other.run.id)?.state).toBe("completed");
   expect(runner.cancelCalls).toHaveLength(1);
@@ -3011,9 +3021,10 @@ test("recovery of one sibling never resets a running run to queued", async () =>
     members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW) }],
     now: NOW,
   });
-  // A starts; B claims but never starts, then B's lease expires.
+  // A starts (lease kept live — A genuinely still executes); B claims but
+  // never starts, then B's lease expires.
   const claimA = first.store.claimNextDispatch({
-    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
+    now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:10:00.000Z", authorityEpoch: "epoch-a",
   })!;
   first.store.markExecutionStarted({
     dispatchId: claimA.dispatch.id, owner: "dispatcher-a", generation: 1,
@@ -3026,6 +3037,9 @@ test("recovery of one sibling never resets a running run to queued", async () =>
   expect(claimB.memberTurn.botId).toBe(botB.id);
   const recovered = first.store.recoverExpiredClaims("2026-09-15T12:06:00.000Z");
   expect(recovered.find((r) => r.memberTurn.botId === botB.id)?.outcome).toBe("requeued");
+  // A's lease is still live: lease recovery does not touch started work it
+  // cannot prove dead, so nothing converges for A here.
+  expect(recovered.some((r) => r.memberTurn.botId === botA.id)).toBe(false);
   // The Run stays running with started_at intact: A still executes.
   const run = first.store.getRun(accepted.run.id)!;
   expect(run.state).toBe("running");
@@ -3709,18 +3723,47 @@ test("automatic cancel that races a member completion still terminals the run", 
   }
 });
 
-test("worktree-per-member topics fail closed at member materialization", async () => {
-  const first = await createLifecycle();
+test("worktree-per-member topics are refused at creation and never leave a queued Run", async () => {
+  const first = await createLifecycle({ autoKick: true });
+  await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
   const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
-  const topic = await first.service.createGroupTopic(group.id, "WT", {
+  // Create refuses the policy: PR10 provisioning does not exist, so a Topic
+  // created with it could never execute.
+  await expect(first.service.createGroupTopic(group.id, "WT", {
     workspace: "backend",
     isolation: "worktree-per-member",
+  })).rejects.toMatchObject({ code: "invalid-isolation" });
+  expect(first.state.conversation_topics["wt-missing"]).toBeUndefined();
+
+  // A durable row that predates the gate (legacy/damaged state) must settle
+  // terminally at dispatch instead of requeueing on every kick forever.
+  const topic = await first.service.createGroupTopic(group.id, "Legacy WT", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
   });
-  expect(topic.executionTarget?.isolation).toBe("worktree-per-member");
+  const legacy = first.state.conversation_topics[topic.id];
+  if (legacy?.executionTarget) legacy.executionTarget.isolation = "worktree-per-member";
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-legacy-wt",
+    text: "go",
+    target: { mode: "members", botIds: [BOT_ID] },
+  });
+  await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "failed");
+  const settled = first.store.getRun(accepted.run.id)!;
+  expect(settled.state).toBe("failed");
+  expect(settled.completionReason).toContain("worktree_unprovisioned");
+  // Materialization itself still fails closed for direct callers.
   await expect(first.runtime.getOrCreateGroupMemberSession({
     botId: BOT_ID, conversationId: group.id, topicId: topic.id,
   })).rejects.toMatchObject({ code: "worktree_unprovisioned" });
+  // The dispatch must be terminally settled, never left pending: a pending
+  // row would make every later kick re-attempt an unexecutable target.
+  const dispatch = first.store.getDispatchForRun(accepted.run.id);
+  expect(dispatch?.state).toBe("completed");
+  expect(first.store.listMemberTurns(accepted.run.id)[0]?.state).toBe("failed");
   first.store.close();
 });
 
@@ -5779,4 +5822,2350 @@ test("structurally invalid snapshot and trigger ids fail closed as corrupt", asy
   expect(second.store.listDispatchesForRun(accepted2.run.id).every((d) => d.state === "pending")).toBe(true);
   expect(second.store.getRun(accepted2.run.id)?.state).toBe("queued");
   second.store.close();
+});
+
+test("PR7 group accept: structured members target creates one explicit Run with per-member Topic snapshots", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  await first.bots.updateBot(TESTER_ID, { agent: "claude", workspace: "frontend" });
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-members",
+    text: "ship it",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+  });
+  expect(accepted.run.mode).toBe("explicit");
+  expect(accepted.memberTurns.map((turn) => turn.botId)).toEqual([BOT_ID, TESTER_ID]);
+  expect(accepted.dispatches).toHaveLength(2);
+  expect(accepted.memberTurns[0]?.origin).toBe("followup");
+  const turnB = accepted.memberTurns.find((turn) => turn.botId === TESTER_ID)!;
+  expect(turnB.profileSnapshot?.execution).toMatchObject({ agent: "claude", workspace: "backend" });
+  const retry = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-members",
+    text: "ship it",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+  });
+  expect(retry.reused).toBe(true);
+  expect(retry.run.id).toBe(accepted.run.id);
+  expect(retry.memberTurns.map((turn) => turn.id)).toEqual(accepted.memberTurns.map((turn) => turn.id));
+  first.store.close();
+});
+
+test("PR7 group accept: an oversized members target is refused before any lifecycle gate", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const oversized = Array.from({ length: 65 }, (_, i) => `bot_phantom_${i}`);
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-oversized",
+    text: "too many",
+    target: { mode: "members", botIds: oversized },
+  })).rejects.toMatchObject({ code: "invalid-target" });
+  // Nothing durable was created for the refused request.
+  expect(first.store.getRunByRequestId(group.id, topic.id, "req-pr7-oversized")).toBeUndefined();
+  expect(first.store.listRuns(group.id, topic.id)).toHaveLength(0);
+  first.store.close();
+});
+
+test("PR7 group accept: non-member ids are refused before any lifecycle gate is taken", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Each request supplies its own fresh foreign ids: with only a count cap the
+  // gate map would still grow without bound, one mutex per fabricated id.
+  for (let round = 0; round < 3; round++) {
+    const foreign = Array.from({ length: 64 }, (_, i) => `bot_phantom_r${round}_${i}`);
+    await expect(first.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: `req-pr7-foreign-${round}`,
+      text: "nope",
+      target: { mode: "members", botIds: foreign },
+    })).rejects.toMatchObject({ code: "group_member_not_member" });
+  }
+  // Repeated probing must not add a single lifecycle-gate entry for the
+  // fabricated ids: the pre-check rejects before gates are acquired, so the
+  // process-lifetime lock map stays bounded by real Bots.
+  const gateLocks = (first.bots as unknown as { lifecycleGate?: { locks?: Map<string, unknown> } })
+    .lifecycleGate?.locks;
+  expect(gateLocks).toBeDefined();
+  for (const key of gateLocks!.keys()) {
+    expect(key.startsWith("bot_phantom")).toBe(false);
+  }
+  // And the map holds only the two real members (plus whatever the harness
+  // itself gated), never the 192 fabricated ids across the three rounds.
+  expect(gateLocks!.size).toBeLessThanOrEqual(4);
+  // An oversized id is malformed input, so it keeps its own code.
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-long-botid",
+    text: "nope",
+    target: { mode: "members", botIds: [BOT_ID, "x".repeat(129)] },
+  })).rejects.toMatchObject({ code: "invalid-target" });
+  // Nothing durable was created for any refused request.
+  expect(first.store.listRuns(group.id, topic.id)).toHaveLength(0);
+  first.store.close();
+});
+
+test("PR7 group accept: members and everyone share one mutual-exclusion budget", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const big = Array.from({ length: 70 }, (_, i) => `bot_m${i}`);
+  for (const id of big) {
+    first.state.bots[id] = {
+      id, name: `M${id}`, agent: "codex", workspace: "backend", enabled: true,
+      profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+    };
+  }
+  const group = await first.bots.createGroup({ title: "Big", botIds: [BOT_ID, ...big] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const gateLocks = (first.bots as unknown as { lifecycleGate?: { locks?: Map<string, unknown> } })
+    .lifecycleGate?.locks;
+  const keysBefore = new Set(gateLocks?.keys() ?? []);
+  // `everyone` expands to 71 eligible members, which exceeds the shared budget.
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-big-everyone",
+    text: "all",
+    target: { mode: "everyone" },
+  })).rejects.toMatchObject({ code: "target_too_large" });
+  // The budget is enforced on the set actually gated, NOT on the eligible set
+  // computed later: no member's mutex may be pinned by a refused request.
+  const addedKeys = [...(gateLocks?.keys() ?? [])].filter((k) => !keysBefore.has(k));
+  for (const id of big) {
+    expect(addedKeys).not.toContain(id);
+  }
+  expect(addedKeys).toEqual([]);
+  // An explicit members list beyond the same budget is refused identically, so
+  // the Group is never addressable one way but not the other.
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-big-members",
+    text: "all",
+    target: { mode: "members", botIds: [BOT_ID, ...big] },
+  })).rejects.toMatchObject({ code: "invalid-target" });
+  // A subset within budget still works.
+  const subset = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-big-subset",
+    text: "all",
+    target: { mode: "members", botIds: big.slice(0, 30) },
+  });
+  expect(subset.memberTurns).toHaveLength(30);
+  first.store.close();
+});
+
+test("PR7 everyone: disabled members do not consume the mutual-exclusion budget", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  // 70 current members, but only two are enabled: the actual Run targets two
+  // Bots, so it must not be refused by the 64-member budget.
+  const extra = Array.from({ length: 69 }, (_, i) => `bot_d${i}`);
+  for (const id of extra) {
+    first.state.bots[id] = {
+      id, name: `D${id}`, agent: "codex", workspace: "backend", enabled: false,
+      profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+    };
+  }
+  const group = await first.bots.createGroup({ title: "Mostly Off", botIds: [BOT_ID, ...extra] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-disabled-budget",
+    text: "all",
+    target: { mode: "everyone" },
+  });
+  // TESTER_ID is enabled but not a member; BOT_ID is the only eligible member.
+  expect(accepted.memberTurns.map((turn) => turn.botId)).toEqual([BOT_ID]);
+  first.store.close();
+});
+
+test("PR7 everyone: a member enabled mid-accept retries and joins the Run", async () => {
+  const first = await createLifecycle({
+    // Runs after the eligible probe but before gate acquisition: enable the
+    // third member, exactly the commit order that leaves the probed set
+    // uncovered. Enable and accept both run under the same lifecycle mutex, so
+    // the accept must retry against the new eligible set rather than lose C.
+    beforeGroupAcceptGatesAcquired: (() => {
+      // One-shot: only the FIRST accept's probe should observe the disabled
+      // state. Re-enabling on every loop iteration would also be caught by the
+      // uncovered retry, but arming once keeps the interleaving deterministic.
+      let armed = true;
+      return () => {
+        if (!armed) return Promise.resolve();
+        armed = false;
+        return first.bots.updateBot(EXTRA_ID, { enabled: true }).then(() => {});
+      };
+    })(),
+  });
+  seedTesterBot(first.state);
+  first.state.bots[EXTRA_ID] = {
+    id: EXTRA_ID, name: "Extra", agent: "codex", workspace: "backend", enabled: false,
+    profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Flipping", botIds: [BOT_ID, TESTER_ID, EXTRA_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-flip",
+    text: "all",
+    target: { mode: "everyone" },
+  });
+  expect(accepted.memberTurns.map((turn) => turn.botId).sort()).toEqual([BOT_ID, EXTRA_ID, TESTER_ID].sort());
+  first.store.close();
+});
+
+test("PR7 everyone: removed-member runtime residue does not consume the accept budget", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const removed = Array.from({ length: 63 }, (_, i) => `bot_c${i}`);
+  for (const id of removed) {
+    first.state.bots[id] = {
+      id, name: `C${id}`, agent: "codex", workspace: "backend", enabled: true,
+      profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+    };
+  }
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, ...removed] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Every candidate member has materialized Group-member runtime: this is the
+  // residue a real run leaves behind.
+  for (const id of removed) {
+    await first.runtime.getOrCreateGroupMemberSession({
+      botId: id, conversationId: group.id, topicId: topic.id,
+    });
+  }
+  // The members leave the Group. Their runtime/binding residue survives until
+  // Topic teardown — that is the documented cleanup authority.
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID] });
+  const residueBefore = first.state.bot_runtime_bindings;
+  const residueCount = Object.values(residueBefore).filter((b) => b.scope === "group-member").length;
+  expect(residueCount).toBeGreaterThan(0);
+  // Everyone now targets only the two current members.
+  const everyone = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-residue-everyone",
+    text: "all",
+    target: { mode: "everyone" },
+  });
+  expect(everyone.memberTurns.map((turn) => turn.botId)).toEqual([BOT_ID, TESTER_ID]);
+  first.store.close();
+});
+
+test("PR7 group accept: duplicate IDs reject, everyone expands, empty/unknown/disabled reject", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Duplicate ids are ambiguous input (IDs are authority): refuse outright
+  // instead of silently normalizing, before any gate or durable row.
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-dup",
+    text: "dup",
+    target: { mode: "members", botIds: [BOT_ID, BOT_ID, TESTER_ID] },
+  })).rejects.toMatchObject({ code: "invalid-target" });
+  expect(first.store.getRunByRequestId(group.id, topic.id, "req-pr7-dup")).toBeUndefined();
+  const everyone = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-everyone",
+    text: "all",
+    target: { mode: "everyone" },
+  });
+  expect(everyone.memberTurns.map((turn) => turn.botId)).toEqual([BOT_ID, TESTER_ID]);
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-empty",
+    text: "empty",
+    target: { mode: "members", botIds: [] },
+  })).rejects.toMatchObject({ code: "empty_target" });
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-unknown",
+    text: "unknown",
+    target: { mode: "members", botIds: ["bot_ghost"] },
+  })).rejects.toMatchObject({ code: "group_member_not_member" });
+  await first.bots.updateBot(TESTER_ID, { enabled: false });
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-disabled",
+    text: "disabled",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+  })).rejects.toMatchObject({ code: "bot_disabled" });
+  // Everyone is the eligible set, not the full membership: a disabled member
+  // is skipped rather than failing the whole accept.
+  const everyoneEligible = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-everyone-disabled",
+    text: "all disabled",
+    target: { mode: "everyone" },
+  });
+  expect(everyoneEligible.memberTurns.map((turn) => turn.botId)).toEqual([BOT_ID]);
+  // No eligible member at all: stable empty_target.
+  await first.bots.updateBot(BOT_ID, { enabled: false });
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-everyone-none",
+    text: "no eligible",
+    target: { mode: "everyone" },
+  })).rejects.toMatchObject({ code: "empty_target" });
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-auto",
+    text: "auto",
+    target: { mode: "automatic" },
+  })).rejects.toMatchObject({ code: "automatic_unsupported" });
+  first.store.close();
+});
+
+test("PR7 group accept: removed member rejects and targeted member races concurrent removal", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const botC = "bot_carol";
+  first.state.bots[botC] = {
+    id: botC, name: "Carol", agent: "codex", workspace: "backend", enabled: true,
+    profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID] });
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-removed",
+    text: "removed",
+    target: { mode: "members", botIds: [botC] },
+  })).rejects.toMatchObject({ code: "group_member_not_member" });
+  // Deterministic removal race: park the accept between probe and gate
+  // acquisition, commit the removal, then let the accept proceed. Inside
+  // the gates it re-reads live membership and must reject the removed
+  // member — never persist a Run for it.
+  const gate = deferred();
+  const removerStarted = deferred<void>();
+  let parkAccept = true;
+  const raced = await createLifecycle({
+    beforeGroupAcceptGatesAcquired: async () => {
+      if (parkAccept) {
+        parkAccept = false;
+        removerStarted.resolve();
+        await gate.promise;
+      }
+    },
+  });
+  seedTesterBot(raced.state);
+  raced.state.bots[botC] = {
+    id: botC, name: "Carol", agent: "codex", workspace: "backend", enabled: true,
+    profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+  };
+  const racedGroup = await raced.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const racedTopic = await raced.service.createGroupTopic(racedGroup.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const racing = raced.service.acceptGroupPrompt({
+    conversationId: racedGroup.id,
+    topicId: racedTopic.id,
+    requestId: "req-pr7-race",
+    text: "race",
+    target: { mode: "members", botIds: [botC] },
+  });
+  await removerStarted.promise;
+  await raced.bots.updateGroup(racedGroup.id, { botIds: [BOT_ID, TESTER_ID] });
+  gate.resolve();
+  // Same canonical code as the in-gate path: the pre-check linearizes before the
+  // removal commit, but the API contract does not change with the ordering.
+  await expect(racing).rejects.toMatchObject({ code: "group_member_not_member" });
+  raced.store.close();
+  first.store.close();
+});
+
+test("PR7 group accept: requestId retry returns the durable Run after membership shrink, disable, and archive", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const botC = "bot_carol";
+  first.state.bots[botC] = {
+    id: botC, name: "Carol", agent: "codex", workspace: "backend", enabled: true,
+    profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID, botC] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const input = {
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-idempotent",
+    text: "ship",
+    target: { mode: "members" as const, botIds: [TESTER_ID] },
+  };
+  const accepted = await first.service.acceptGroupPrompt(input);
+  expect(accepted.reused).toBe(false);
+  expect(accepted.memberTurns.map((turn) => turn.botId)).toEqual([TESTER_ID]);
+
+  // Settle the Run, then remove the member from the Group. Membership
+  // removal is refused while the member has nonterminal work, so the
+  // durable accept must be terminal before the live membership diverges.
+  await first.service.cancelRun(accepted.run.id);
+  // Lost response: client retries with the same requestId after the member
+  // was removed from the Group. The durable accept must win over live state.
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, botC] });
+  const afterRemoval = await first.service.acceptGroupPrompt(input);
+  expect(afterRemoval.reused).toBe(true);
+  expect(afterRemoval.run.id).toBe(accepted.run.id);
+  expect(afterRemoval.message.id).toBe(accepted.message.id);
+  expect(afterRemoval.memberTurns.map((turn) => turn.id)).toEqual(accepted.memberTurns.map((turn) => turn.id));
+  expect(await first.service.listTopicRuns(group.id, topic.id)).toMatchObject({
+    runs: expect.arrayContaining([expect.objectContaining({ id: accepted.run.id })]),
+  });
+});
+
+test("PR7 group accept: requestId retry survives member disabled after settle", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const input = {
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-idempotent-disabled",
+    text: "ship",
+    target: { mode: "members" as const, botIds: [TESTER_ID] },
+  };
+  const accepted = await first.service.acceptGroupPrompt(input);
+  await first.service.cancelRun(accepted.run.id);
+  expect(first.state.bots[TESTER_ID]?.enabled, "test seed must stay enabled").toBe(true);
+  await first.bots.updateBot(TESTER_ID, { enabled: false });
+  const retried = await first.service.acceptGroupPrompt(input);
+  expect(retried.reused).toBe(true);
+  expect(retried.run.id).toBe(accepted.run.id);
+  expect(retried.memberTurns.map((turn) => turn.id)).toEqual(accepted.memberTurns.map((turn) => turn.id));
+  first.store.close();
+});
+
+test("PR7 group accept: requestId retry survives archived Topic", async () => {
+  const first = await createLifecycle();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const input = {
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-idempotent-archived",
+    text: "ship",
+    target: { mode: "members" as const, botIds: [TESTER_ID] },
+  };
+  const accepted = await first.service.acceptGroupPrompt(input);
+  await first.service.cancelRun(accepted.run.id);
+  await first.service.archiveGroupTopic(group.id, topic.id);
+  await expect(first.service.acceptGroupPrompt({ ...input, requestId: "req-pr7-fresh" }))
+    .rejects.toThrow(/not active/);
+  const retried = await first.service.acceptGroupPrompt(input);
+  expect(retried.reused).toBe(true);
+  expect(retried.run.id).toBe(accepted.run.id);
+  first.store.close();
+});
+
+test("PR7 group accept: everyone retries when membership widens mid-acquire", async () => {
+  let parkWiden = true;
+  const acceptGate = deferred();
+  const releaseAccept = deferred();
+  const first = await createLifecycle({
+    beforeGroupAcceptGatesAcquired: async () => {
+      if (parkWiden) {
+        parkWiden = false;
+        acceptGate.resolve();
+        await releaseAccept.promise;
+      }
+    },
+  });
+  seedTesterBot(first.state);
+  const botC = "bot_carol";
+  first.state.bots[botC] = {
+    id: botC, name: "Carol", agent: "codex", workspace: "backend", enabled: true,
+    profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+  };
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  // Accept probes stale [A,B] and parks pre-acquisition. Membership then
+  // commits [A,B,C]. The retry must cover C before persisting the Run.
+  const accepting = first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-widen",
+    text: "widen",
+    target: { mode: "everyone" },
+  });
+  await acceptGate.promise;
+  await first.bots.updateGroup(group.id, { botIds: [BOT_ID, TESTER_ID, botC] });
+  releaseAccept.resolve();
+  const accepted = await accepting;
+  expect(accepted.memberTurns.map((turn) => turn.botId)).toEqual([BOT_ID, TESTER_ID, botC]);
+  first.store.close();
+});
+
+test("PR7 scheduler: shared serializes unproven siblings like every other tree", async () => {
+  // No enforceable read-only proof exists in PR7 (every member persists as
+  // `unknown`), so `shared` serializes exactly like `shared-single-writer`:
+  // B stays writer-slot-held while A runs. The `shared` value keeps its
+  // distinct durable meaning for a future capability-enforced caller, but
+  // the scheduler never passes unproven work through on it.
+  const first = await createLifecycle({ autoKick: false });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Shared", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared",
+  });
+  const hang = deferred<void>();
+  fakeRunner(first.runner).hang = hang;
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-shared-serial",
+    text: "together",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+  });
+  void first.dispatcher.kick();
+  await waitUntil(() => fakeRunner(first.runner).runs.length === 1);
+  // B is parked (claimed, human provenance intact) while A holds the
+  // provider turn: no second runner.run until A settles.
+  await tick();
+  await tick();
+  expect(fakeRunner(first.runner).runs).toHaveLength(1);
+  const testerTurn = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerTurn.state).toBe("dispatched");
+  hang.resolve();
+  await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
+  expect(fakeRunner(first.runner).runs).toHaveLength(2);
+  first.store.close();
+});
+
+test("PR7 scheduler: shared-single-writer serializes unknown-effect siblings", async () => {
+  // Two members, `shared-single-writer` Topic: B must NOT start while A runs.
+  {
+    const second = await createLifecycle({ autoKick: false });
+    await second.service.activateAfterConsumerLock();
+    seedTesterBot(second.state);
+    const group = await second.bots.createGroup({ title: "Serial", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await second.service.createGroupTopic(group.id, "S", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    const hang = deferred<void>();
+    fakeRunner(second.runner).hang = hang;
+    const accepted = await second.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: "req-serial-order",
+      text: "ordered",
+      target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+      humanIngress: HUMAN_INGRESS,
+    });
+    void second.dispatcher.kick();
+    await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+    // B's dispatch stays parked (claimed, human provenance intact) while A
+    // holds the provider turn: no second runner.run until A settles. The
+    // pre-fix code called releaseClaimToPending() here, which NULLed the
+    // dispatch's authority_epoch/human_ingress and rewrote the member origin
+    // to `recovery` — a scheduling wait masquerading as crash recovery.
+    await tick();
+    await tick();
+    expect(fakeRunner(second.runner).runs).toHaveLength(1);
+    const testerTurn = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+    expect(testerTurn.state).toBe("dispatched");
+    expect(testerTurn.origin).toBe("human-explicit");
+    const testerDispatch = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+    expect(testerDispatch.state).toBe("claimed");
+    expect(testerDispatch.humanIngress).toBeDefined();
+    hang.resolve();
+    // A settles, the held sibling runs in the same drain, and the Run
+    // completes without any extra kick.
+    await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
+    expect(fakeRunner(second.runner).runs).toHaveLength(2);
+    second.store.close();
+  }
+});
+test("PR7 scheduler: shutdown never starts a held sibling, it retires it", async () => {
+  // Healthy drain, no injected failure: A runs, B is claimed and held. Shut
+  // down while A still hangs, then settle A. The post-settle recheck must
+  // NOT launch B — shutdown owns unstarted holds now. B stays `pending`
+  // (retired with provenance intact) and the runner never sees a second run.
+  const second = await createLifecycle({ autoKick: false });
+  await second.service.activateAfterConsumerLock();
+  seedTesterBot(second.state);
+  const group = await second.bots.createGroup({ title: "ShutdownHold", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await second.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(second.runner).hang = hang;
+  const accepted = await second.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-shutdown-hold",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  void second.dispatcher.kick();
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+  const testerTurn = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  const heldBefore = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(heldBefore.state).toBe("claimed");
+  const attemptBefore = testerTurn.attempt;
+  // Shut down mid-drain: the drain is blocked awaiting hung A. Settling A
+  // must not launch B — the post-settle recheck is fenced on `closed`, so
+  // the active drain exits and shutdown retires the still-unstarted hold.
+  const shutting = second.dispatcher.shutdown();
+  await tick();
+  hang.resolve();
+  await shutting;
+  expect(fakeRunner(second.runner).runs).toHaveLength(1);
+  const retired = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(retired.state).toBe("pending");
+  expect(retired.owner).toBeUndefined();
+  expect(retired.generation).toBe(heldBefore.generation);
+  expect(retired.humanIngress).toEqual(HUMAN_INGRESS);
+  const testerRetired = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerRetired.origin).toBe("human-explicit");
+  expect(testerRetired.attempt).toBe(attemptBefore);
+  second.store.close();
+});
+
+
+test("PR7 scheduler: held writer-slot claim survives a lease boundary with provenance intact", async () => {
+  // Short lease so the test clock can cross it: B is held behind a hung A,
+  // the clock jumps past B's original expiry, then A settles. B must execute
+  // with the SAME claim/generation — humanIngress, human-explicit origin and
+  // attempt untouched — never via recovery requeue.
+  const second = await createLifecycle({ autoKick: false, leaseMs: 100 });
+  await second.service.activateAfterConsumerLock();
+  seedTesterBot(second.state);
+  const group = await second.bots.createGroup({ title: "Lease", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await second.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(second.runner).hang = hang;
+  const accepted = await second.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-lease-hold",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  void second.dispatcher.kick();
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+  const testerTurn = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  const heldBefore = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  const generationBefore = heldBefore.generation;
+  const attemptBefore = testerTurn.attempt;
+  // Cross B's lease while A still hangs: without renewal the next drain's
+  // recoverExpiredClaims() would requeue B as `recovery` and strip its human
+  // route. Advance well past the 100ms lease.
+  second.jump(10_000);
+  await tick();
+  await tick();
+  // Kick mid-wait: it only bumps the generation (the drain is still
+  // awaiting hung A, so kick coalesces). The protection under test is the
+  // recheck-after-settle renewal — without it, the settle pass's recovery
+  // would requeue expired B as `recovery` before executing it. In production
+  // the same shape is any kick arriving mid-wait followed by the settle.
+  await second.dispatcher.kick();
+  hang.resolve();
+  await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
+  expect(fakeRunner(second.runner).runs).toHaveLength(2);
+  const testerAfter = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerAfter.origin).toBe("human-explicit");
+  expect(testerAfter.attempt).toBe(attemptBefore);
+  const dispatchAfter = second.store.getDispatchForMemberTurn(testerAfter.id)!;
+  expect(dispatchAfter.generation).toBe(generationBefore);
+  expect(dispatchAfter.humanIngress).toEqual(HUMAN_INGRESS);
+  second.store.close();
+});
+
+
+test("PR7 scheduler: shutdown retires held claims so a fast restart executes without recovery rewrite", async () => {
+  // B is held behind A; the hold-time renewal fails so the drain rejects with
+  // B registered-but-unrenewed. Resolve A, let it settle, then shut down with
+  // B still held and its lease still live. Shutdown must retire B to pending
+  // WITHOUT the recovery rewrite (no origin=recovery, no attempt bump, ingress
+  // kept in the row); a reopen before the old lease expiry then claims and
+  // executes B on its first kick — no external wake, no lease wait.
+  //
+  // Authority note: the reopened dispatcher mints a fresh authorityEpoch, so
+  // per the durable epoch contract the execution itself runs as orchestration
+  // (a new process never inherits live human permission authority). What
+  // retire preserves is the ROW: no recovery rewrite at rest, ingress kept
+  // for audit, attempt un-bumped — versus lease recovery which NULLs ingress,
+  // rewrites origin, and bumps attempt after a 30s stall.
+  const second = await createLifecycle({ autoKick: false, leaseMs: 30_000 });
+  await second.service.activateAfterConsumerLock();
+  seedTesterBot(second.state);
+  const group = await second.bots.createGroup({ title: "Restart", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await second.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(second.runner).hang = hang;
+  const accepted = await second.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-restart-hold",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  // Fail B's very first hold renewal: B registers as held, the drain rejects.
+  const realRenew = second.store.renewHeldClaim.bind(second.store);
+  let calls = 0;
+  second.store.renewHeldClaim = ((input: unknown) => {
+    calls += 1;
+    if (calls === 1) {
+      throw new Error("injected hold-time store failure");
+    }
+    return realRenew(input as never);
+  }) as typeof second.store.renewHeldClaim;
+  const drain = second.dispatcher.kick();
+  const rejection = drain.then(
+    () => "resolved",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  );
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+  expect(await rejection).toBe("injected hold-time store failure");
+  const testerTurn = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  const heldBefore = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(heldBefore.state).toBe("claimed");
+  const attemptBefore = testerTurn.attempt;
+  // Shut down while A still hangs: shutdown awaits A's in-flight turn.
+  // Resolve the hang as part of teardown so the wait can complete — but the
+  // failed drain already settled (rejected), so no new drain picks B up in
+  // between; and persistResult's kick is refused (closed=true). B stays HELD
+  // (claimed, unstarted) until shutdown's retire loop returns it to pending.
+  const shutting = second.dispatcher.shutdown();
+  await tick();
+  hang.resolve();
+  await shutting;
+  const retired = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(retired.state).toBe("pending");
+  expect(retired.owner).toBeUndefined();
+  expect(retired.generation).toBe(heldBefore.generation);
+  // No recovery rewrite at rest: ingress kept, origin and attempt verbatim.
+  expect(retired.humanIngress).toEqual(HUMAN_INGRESS);
+  expect(second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.origin).toBe("human-explicit");
+  expect(second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.attempt).toBe(attemptBefore);
+  // Reopen on the SAME sqlite file before the old lease could have expired:
+  // the new consumer's first kick claims B immediately (no lease wait, no
+  // external wake) and executes it to completion with the row intact.
+  second.store.close();
+  const reopenedStore = await SqliteConversationStore.open(second.path);
+  const reopenedRunner = new FakeRunner();
+  const reopenedDispatcher = new ConversationDispatcher(
+    reopenedStore, second.runtime, reopenedRunner, second.sessions, {
+      now: second.nowFn,
+      ownerId: "dispatcher-b",
+      leaseMs: 30_000,
+    },
+  );
+  await reopenedDispatcher.kick();
+  await waitUntil(() => reopenedRunner.runs.length === 1, 4000);
+  expect(reopenedRunner.runs[0]?.botId).toBe(TESTER_ID);
+  await waitUntil(() => reopenedStore.getRun(accepted.run.id)?.state === "completed");
+  const testerDone = reopenedStore.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerDone.origin).toBe("human-explicit");
+  expect(testerDone.attempt).toBe(attemptBefore);
+  reopenedStore.close();
+});
+
+
+
+
+test("PR7 scheduler: hold-time renewHeldClaim failure keeps the hold for the next kick", async () => {
+  // Fail B's VERY FIRST hold renewal (before it ever enters the held map).
+  // The drain must reject visibly, but the next kick's per-pass
+  // renewHeldClaims() must pick B back up — same generation, same attempt,
+  // humanIngress and human-explicit origin — and execute it without waiting
+  // for lease recovery. The pre-fix code registered the hold only after a
+  // successful renewal, so this path stranded a durable `claimed` row no
+  // path could see until expiry.
+  const second = await createLifecycle({ autoKick: false, leaseMs: 100 });
+  await second.service.activateAfterConsumerLock();
+  seedTesterBot(second.state);
+  const group = await second.bots.createGroup({ title: "HoldFail", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await second.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(second.runner).hang = hang;
+  const accepted = await second.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-hold-fail",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  // Patch BEFORE the first kick: the first renewHeldClaim call in this drain
+  // is B's hold-time renewal (A never defers — nothing else runs yet).
+  const realRenew = second.store.renewHeldClaim.bind(second.store);
+  let calls = 0;
+  second.store.renewHeldClaim = ((input: unknown) => {
+    calls += 1;
+    if (calls === 1) {
+      throw new Error("injected hold-time store failure");
+    }
+    return realRenew(input as never);
+  }) as typeof second.store.renewHeldClaim;
+  // Hold the drain promise itself: a later kick() would only coalesce
+  // (draining === true) and resolve without observing the failure. A is
+  // claimed and launched first, then B's hold-time renewal throws — so the
+  // drain rejects only after A has started (runs.length === 1 observes the
+  // launch, the rejection surfaces alongside it).
+  const drain = second.dispatcher.kick();
+  const rejection = drain.then(
+    () => "resolved",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  );
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+  expect(await rejection).toBe("injected hold-time store failure");
+  const testerTurn = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  const heldBefore = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  const attemptBefore = testerTurn.attempt;
+  hang.resolve();
+  // The durable claim is untouched: still claimed by us, same generation,
+  // human route intact, member still dispatched (not requeued as recovery).
+  const heldAfter = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(heldAfter.state).toBe("claimed");
+  expect(heldAfter.generation).toBe(heldBefore.generation);
+  expect(heldAfter.humanIngress).toEqual(HUMAN_INGRESS);
+  expect(second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.origin).toBe("human-explicit");
+  // Restore the real renewal: the next kick's per-pass renewHeldClaims()
+  // picks the STILL-REGISTERED hold back up (no lease expiry waited out),
+  // and B executes with attempt and provenance intact.
+  second.store.renewHeldClaim = realRenew;
+  await second.dispatcher.kick();
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 2);
+  await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
+  const testerDone = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerDone.origin).toBe("human-explicit");
+  expect(testerDone.attempt).toBe(attemptBefore);
+  expect(second.store.getDispatchForMemberTurn(testerDone.id)?.generation).toBe(heldBefore.generation);
+  expect(second.store.getDispatchForMemberTurn(testerDone.id)?.humanIngress).toEqual(HUMAN_INGRESS);
+  await second.dispatcher.shutdown();
+  second.store.close();
+});
+
+test("PR7 scheduler: non-stale renewHeldClaim failure fails the drain without orphaning the claim", async () => {
+  // A transient store failure during renewal must NOT look like losing the
+  // claim: the drain fails visibly, and the durable dispatch stays claimed
+  // with provenance intact for the next kick to renew and execute.
+  const second = await createLifecycle({ autoKick: false, leaseMs: 100 });
+  await second.service.activateAfterConsumerLock();
+  seedTesterBot(second.state);
+  const group = await second.bots.createGroup({ title: "RenewFail", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await second.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(second.runner).hang = hang;
+  const accepted = await second.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-renew-fail",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  // Hold the drain promise itself: a later kick() would only coalesce
+  // (draining === true) and resolve without observing the failure.
+  const drain = second.dispatcher.kick();
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+  const testerTurn = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  const heldBefore = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  // Fail the NEXT renewHeldClaim with a non-stale store error (transient
+  // I/O). The recheck renewal is the next renewal to run once A settles, so
+  // it must reject the drain instead of silently dropping the hold.
+  const realRenew = second.store.renewHeldClaim.bind(second.store);
+  let calls = 0;
+  second.store.renewHeldClaim = ((input: unknown) => {
+    calls += 1;
+    if (calls === 1) {
+      throw new Error("injected transient store failure");
+    }
+    return realRenew(input as never);
+  }) as typeof second.store.renewHeldClaim;
+  hang.resolve();
+  await expect(drain).rejects.toThrow("injected transient store failure");
+  // The durable claim is untouched: still claimed by us, same generation,
+  // human route intact, member still dispatched (not requeued as recovery).
+  const heldAfter = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(heldAfter.state).toBe("claimed");
+  expect(heldAfter.generation).toBe(heldBefore.generation);
+  expect(heldAfter.humanIngress).toEqual(HUMAN_INGRESS);
+  expect(second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.origin).toBe("human-explicit");
+  // Recovery path still works after the visible failure: restore the real
+  // renewal and the held sibling executes normally to completion. A must be
+  // re-hung first: the failed drain settled A's provider turn while the
+  // recheck threw, so without a fresh hang B's recheck would race a
+  // completed A — still correct, but the hang makes the ordering explicit.
+  second.store.renewHeldClaim = realRenew;
+  await second.dispatcher.kick();
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 2);
+  await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
+  expect(fakeRunner(second.runner).runs).toHaveLength(2);
+  second.store.close();
+});
+test("PR7 scheduler: failed shutdown retire keeps the hold for the next kick", async () => {
+  // retireHeldClaim throws a NON-stale error during shutdown: the hold must
+  // stay registered (not silently forgotten), the drain-visible shutdown
+  // rejects, and the NEXT kick's per-pass renewal picks B back up — same
+  // generation, humanIngress and human-explicit origin intact.
+  const second = await createLifecycle({ autoKick: false, leaseMs: 30_000 });
+  await second.service.activateAfterConsumerLock();
+  seedTesterBot(second.state);
+  const group = await second.bots.createGroup({ title: "RetireFail", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await second.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(second.runner).hang = hang;
+  const accepted = await second.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-retire-fail",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  // Healthy drain first: A runs, B is claimed and held (renewals succeed).
+  void second.dispatcher.kick();
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+  const testerTurn = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  const heldBefore = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(heldBefore.state).toBe("claimed");
+  const attemptBefore = testerTurn.attempt;
+  // Fail ONLY retireHeldClaim with a transient error, then shut down while A
+  // still hangs. Shutdown awaits A, then its retire loop throws visibly —
+  // but the hold must still be registered afterwards.
+  const realRetire = second.store.retireHeldClaim.bind(second.store);
+  void realRetire;
+  second.store.retireHeldClaim = (() => {
+    throw new Error("injected retire I/O failure");
+  }) as typeof second.store.retireHeldClaim;
+  const shutting = second.dispatcher.shutdown();
+  await tick();
+  hang.resolve();
+  await expect(shutting).rejects.toThrow("injected retire I/O failure");
+  const heldAfter = second.store.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(heldAfter.state).toBe("claimed");
+  expect(heldAfter.generation).toBe(heldBefore.generation);
+  expect(heldAfter.humanIngress).toEqual(HUMAN_INGRESS);
+  expect(second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.origin).toBe("human-explicit");
+  // The dead dispatcher can never kick again (closed is permanent), so the
+  // next consumer is a fresh one on the same sqlite file — exactly the
+  // restart shape. Its activation sweep must retire B (previous owner,
+  // live lease) to pending with provenance verbatim, then execute it.
+  second.store.retireHeldClaim = realRetire;
+  second.store.close();
+  const reopenedStore = await SqliteConversationStore.open(second.path);
+  const reopenedRunner = new FakeRunner();
+  const reopenedDispatcher = new ConversationDispatcher(
+    reopenedStore, second.runtime, reopenedRunner, second.sessions, {
+      now: second.nowFn,
+      ownerId: "dispatcher-b",
+      leaseMs: 30_000,
+    },
+  );
+  const reopenedService = new ConversationRunService(
+    reopenedStore, second.bots, second.runtime, reopenedDispatcher, second.sessions, second.state, second.stateStore, {
+      now: second.nowFn,
+      releaseOwnedSession: createStrictOwnedSessionRelease({ sessions: second.sessions, transport: second.physical }),
+    },
+  );
+  await reopenedService.activateAfterConsumerLock();
+  await waitUntil(() => reopenedRunner.runs.length === 1, 4000);
+  expect(reopenedRunner.runs[0]?.botId).toBe(TESTER_ID);
+  await waitUntil(() => reopenedStore.getRun(accepted.run.id)?.state === "completed");
+  const testerDone = reopenedStore.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerDone.origin).toBe("human-explicit");
+  expect(testerDone.attempt).toBe(attemptBefore);
+  // Authority note (same contract as the retire test): the fresh dispatcher
+  // mints a new authorityEpoch, so the live claim under it runs as
+  // orchestration — row-level ingress was already asserted intact above.
+  reopenedStore.close();
+});
+
+test("PR7 scheduler: retirePreviousOwnerClaims retires foreign live claims with provenance verbatim", async () => {
+  // Store seam: a previous dispatcher died holding B `claimed` with a LIVE
+  // lease. The sweep retires it to `pending` — owner cleared, provenance
+  // verbatim — before any drain runs. Started members are skipped.
+  const first = await createLifecycle({ autoKick: false, leaseMs: 30_000, ownerId: "dispatcher-old" });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Orphan", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(first.runner).hang = hang;
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-orphan-hold",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  void first.dispatcher.kick();
+  await waitUntil(() => fakeRunner(first.runner).runs.length === 1);
+  const testerTurn = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(first.store.getDispatchForMemberTurn(testerTurn.id)?.state).toBe("claimed");
+  const attemptBefore = testerTurn.attempt;
+  const generationBefore = first.store.getDispatchForMemberTurn(testerTurn.id)!.generation;
+  // Crash: close WITHOUT shutdown (no retire runs) while A hangs and B holds.
+  first.store.close();
+  const reopenedStore = await SqliteConversationStore.open(first.path);
+  const swept = reopenedStore.retirePreviousOwnerClaims("dispatcher-new");
+  expect(swept).toEqual([reopenedStore.getDispatchForMemberTurn(testerTurn.id)!.id]);
+  const retired = reopenedStore.getDispatchForMemberTurn(testerTurn.id)!;
+  expect(retired.state).toBe("pending");
+  expect(retired.owner).toBeUndefined();
+  expect(retired.generation).toBe(generationBefore);
+  expect(retired.humanIngress).toEqual(HUMAN_INGRESS);
+  expect(reopenedStore.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.origin).toBe("human-explicit");
+  expect(reopenedStore.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.attempt).toBe(attemptBefore);
+  reopenedStore.close();
+});
+
+test("PR7 scheduler: activation executes a retired previous-owner claim with no wake or lease wait", async () => {
+  // Same crash shape, but B's execution parks in a hook gate: A settles, the
+  // recheck launches B, B parks BEFORE markExecutionStarted (still
+  // `dispatched`/unstarted, still sweepable). Crash with B parked-held, then
+  // reopen: activation sweeps, first drain claims and executes B — no wake,
+  // no lease wait, no recovery rewrite.
+  const releaseB = deferred<void>();
+  let bParked = false;
+  const first = await createLifecycle({
+    autoKick: false,
+    leaseMs: 30_000,
+    ownerId: "dispatcher-old",
+    hooks: {
+      beforeExecutionStart: async (work) => {
+        if (work.memberTurn.botId === TESTER_ID) {
+          bParked = true;
+          await releaseB.promise;
+        }
+      },
+    },
+  });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Orphan2", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(first.runner).hang = hang;
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-orphan-hold-2",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  void first.dispatcher.kick();
+  await waitUntil(() => fakeRunner(first.runner).runs.length === 1);
+  const testerTurn = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  const attemptBefore = testerTurn.attempt;
+  // Settle A: the recheck launches B, which parks in the hook gate —
+  // claimed, dispatched, unstarted.
+  hang.resolve();
+  await waitUntil(() => first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === BOT_ID)?.state === "completed");
+  await waitUntil(() => bParked);
+  expect(first.store.getDispatchForMemberTurn(testerTurn.id)?.state).toBe("claimed");
+  expect(first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)?.state).toBe("dispatched");
+  // Crash with B parked-held. Never resolve releaseB: the first drain stays
+  // parked inside B's execute and performs no further sqlite access.
+  first.store.close();
+  const reopenedStore = await SqliteConversationStore.open(first.path);
+  const reopenedRunner = new FakeRunner();
+  const reopenedDispatcher = new ConversationDispatcher(
+    reopenedStore, first.runtime, reopenedRunner, first.sessions, {
+      now: first.nowFn,
+      ownerId: "dispatcher-new",
+      leaseMs: 30_000,
+    },
+  );
+  const reopenedService = new ConversationRunService(
+    reopenedStore, first.bots, first.runtime, reopenedDispatcher, first.sessions, first.state, first.stateStore, {
+      now: first.nowFn,
+      releaseOwnedSession: createStrictOwnedSessionRelease({ sessions: first.sessions, transport: first.physical }),
+    },
+  );
+  await reopenedService.activateAfterConsumerLock();
+  await waitUntil(() => reopenedRunner.runs.length === 1, 4000);
+  expect(reopenedRunner.runs[0]?.botId).toBe(TESTER_ID);
+  await waitUntil(() => reopenedStore.getRun(accepted.run.id)?.state === "completed");
+  const testerDone = reopenedStore.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerDone.origin).toBe("human-explicit");
+  expect(testerDone.attempt).toBe(attemptBefore);
+  reopenedStore.close();
+});
+
+
+
+
+test("PR7 scheduler: activation converges foreign started claims with no lease wait", async () => {
+  // Crash-after-start fast restart: the old dispatcher crashes AFTER
+  // markExecutionStarted with the 30s lease still live. The replacement
+  // acquires the exclusive consumer lock (death proof) and activates WITHOUT
+  // advancing the clock: the foreign started claim must converge to
+  // indeterminate on that first activation — never re-executed, never left
+  // running behind a live lease.
+  const started = deferred();
+  const resume = deferred();
+  const first = await createLifecycle({
+    autoKick: false,
+    ownerId: "dispatcher-old",
+    hooks: {
+      afterExecutionStart: async () => {
+        started.resolve();
+        await resume.promise;
+      },
+    },
+  });
+  await first.service.activateAfterConsumerLock();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-started-fast-restart",
+    content: "hello",
+  });
+  void first.dispatcher.kick();
+  await started.promise;
+  expect(first.store.getMemberTurn(accepted.memberTurn.id)?.state).toBe("running");
+  expect(first.store.getDispatchForMemberTurn(accepted.memberTurn.id)?.state).toBe("claimed");
+  // Crash with the lease live: close WITHOUT shutdown, no clock jump. Never
+  // resolve resume: the old drain stays parked past execution start and
+  // performs no further sqlite access.
+  first.store.close();
+  const reopenedStore = await SqliteConversationStore.open(first.path);
+  const reopenedRunner = new FakeRunner();
+  const reopenedDispatcher = new ConversationDispatcher(
+    reopenedStore, first.runtime, reopenedRunner, first.sessions, {
+      now: first.nowFn,
+      ownerId: "dispatcher-new",
+      leaseMs: 30_000,
+    },
+  );
+  const reopenedService = new ConversationRunService(
+    reopenedStore, first.bots, first.runtime, reopenedDispatcher, first.sessions, first.state, first.stateStore, {
+      now: first.nowFn,
+      releaseOwnedSession: createStrictOwnedSessionRelease({ sessions: first.sessions, transport: first.physical }),
+    },
+  );
+  await reopenedService.activateAfterConsumerLock();
+  expect(reopenedStore.getMemberTurn(accepted.memberTurn.id)?.state).toBe("indeterminate");
+  const run = reopenedStore.getRun(accepted.run.id)!;
+  expect(run.state).toBe("indeterminate");
+  expect(run.completionReason).toBe("started_result_unknown");
+  expect(reopenedStore.getDispatchForMemberTurn(accepted.memberTurn.id)?.state).toBe("completed");
+  expect(reopenedRunner.runs).toHaveLength(0);
+  reopenedStore.close();
+});
+
+test("PR7 scheduler: activation seals explicit two-member run when a started sibling is indeterminate", async () => {
+  // Explicit Group Run [A, B] under shared-single-writer: A starts (provider
+  // turn hung, unproven), B is claimed and writer-slot-held (dispatched,
+  // unstarted), then the daemon crashes with both leases still live. On
+  // restart A must converge to indeterminate AND seal the Run — B must stay
+  // indeterminate, never execute — even though the Run is explicit.
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old" });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "SealPair", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(first.runner).hang = hang;
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-seal-pair",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  expect(accepted.run.mode).toBe("explicit");
+  void first.dispatcher.kick();
+  await waitUntil(() => fakeRunner(first.runner).runs.length === 1);
+  const turnA = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === BOT_ID)!;
+  const turnB = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  // B is claimed then writer-slot-held behind running A: durably `claimed`,
+  // member `dispatched`, never started.
+  await waitUntil(() => first.store.getDispatchForMemberTurn(turnB.id)?.state === "claimed");
+  expect(first.store.getMemberTurn(turnA.id)?.state).toBe("running");
+  expect(first.store.getMemberTurn(turnB.id)?.state).toBe("dispatched");
+  expect(first.store.getMemberTurn(turnB.id)?.startedAt).toBeUndefined();
+  // Crash with both leases live: close WITHOUT shutdown, no clock jump.
+  // Never resolve the hang: the old drain stays parked on A's provider turn
+  // (B held in memory) and performs no further sqlite access.
+  first.store.close();
+  const reopenedStore = await SqliteConversationStore.open(first.path);
+  const reopenedRunner = new FakeRunner();
+  const reopenedDispatcher = new ConversationDispatcher(
+    reopenedStore, first.runtime, reopenedRunner, first.sessions, {
+      now: first.nowFn,
+      ownerId: "dispatcher-new",
+      leaseMs: 30_000,
+    },
+  );
+  const reopenedService = new ConversationRunService(
+    reopenedStore, first.bots, first.runtime, reopenedDispatcher, first.sessions, first.state, first.stateStore, {
+      now: first.nowFn,
+      releaseOwnedSession: createStrictOwnedSessionRelease({ sessions: first.sessions, transport: first.physical }),
+    },
+  );
+  await reopenedService.activateAfterConsumerLock();
+  const run = reopenedStore.getRun(accepted.run.id)!;
+  expect(run.state).toBe("indeterminate");
+  expect(run.completionReason).toBe("started_result_unknown");
+  expect(reopenedStore.getMemberTurn(turnA.id)?.state).toBe("indeterminate");
+  expect(reopenedStore.getMemberTurn(turnB.id)?.state).toBe("indeterminate");
+  expect(reopenedStore.getDispatchForMemberTurn(turnA.id)?.state).toBe("completed");
+  expect(reopenedStore.getDispatchForMemberTurn(turnB.id)?.state).toBe("completed");
+  expect(reopenedRunner.runs).toHaveLength(0);
+  expect(reopenedStore.claimNextDispatch({
+    now: first.nowFn().toISOString(), owner: "dispatcher-new",
+    leaseExpiresAt: new Date(first.nowFn().getTime() + 30_000).toISOString(), authorityEpoch: "epoch-new",
+  })).toBeUndefined();
+  reopenedStore.close();
+});
+
+test("PR7 scheduler: sealed run preserves a concurrently started sibling completion", async () => {
+  // Explicit Group [A, B] on a `shared` Topic whose members carry the only
+  // proven-safe shape (read-only + declared-enforced, hand-accepted — PR7's
+  // own accept always persists unknown): both members start concurrently. A's
+  // provider throws (sealing A indeterminate, which seals B + the Run) while
+  // B is still in flight; B's later proven completion must persist — B
+  // reclassifies to completed with its message durable — while the Run stays
+  // indeterminate (A still unknown). The seal blocks scheduling, not evidence
+  // from an execution that was already admitted.
+  const hangA = deferred<void>();
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old" });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "SealEvidence", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared",
+  });
+  const fr = fakeRunner(first.runner);
+  fr.run = (async (input: ConversationTurnRunInput) => {
+    fr.runs.push(input);
+    if (input.botId === TESTER_ID) {
+      return { status: "completed" as const, text: "proven B work" };
+    }
+    await hangA.promise;
+    throw new Error("A provider boom");
+  }) as FakeRunner["run"];
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-seal-evidence",
+    botId: botA.id,
+    content: "together",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{
+      botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW),
+      effect: "read-only", effectProvenance: "declared-enforced",
+    }],
+    now: NOW,
+    authorityEpoch: first.dispatcher.authorityEpoch,
+    humanIngress: HUMAN_INGRESS,
+  });
+  expect(accepted.run.mode).toBe("explicit");
+  const draining = first.dispatcher.kick();
+  // B is fast: it may complete before A's provider even throws. Park until
+  // BOTH turns are admitted (B terminal is fine — it started), then throw
+  // from A to seal the Run while B's evidence is already durable.
+  await waitUntil(() => fr.runs.length === 2, 4000);
+  const turnA = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === BOT_ID)!;
+  const turnB = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(first.store.getMemberTurn(turnB.id)?.state === "running"
+    || first.store.getMemberTurn(turnB.id)?.state === "completed").toBe(true);
+  // A throws inside its provider turn: the dispatcher seals A indeterminate,
+  // which re-derives the Run from the whole batch — B's proven completion
+  // survives the seal.
+  hangA.resolve();
+  await draining;
+  await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "indeterminate", 4000);
+  expect(first.store.getMemberTurn(turnB.id)?.state).toBe("completed");
+  expect(first.store.getMemberTurn(turnA.id)?.state).toBe("indeterminate");
+  expect(first.store.listMessages({
+    conversationId: group.id, topicId: topic.id, limit: 20,
+  }).filter((message) => message.role === "bot" && message.senderBotId === TESTER_ID).map((m) => m.content))
+    .toContain("proven B work");
+  const run = first.store.getRun(accepted.run.id)!;
+  expect(run.state).toBe("indeterminate");
+  expect(run.completionReason).toBe("started_result_unknown");
+  expect(first.store.getMemberTurn(turnA.id)?.state).toBe("indeterminate");
+  // Sealed scheduling stays dead: nothing further is claimable.
+  expect(first.store.claimNextDispatch({
+    now: first.nowFn().toISOString(), owner: "dispatcher-old",
+    leaseExpiresAt: new Date(first.nowFn().getTime() + 30_000).toISOString(), authorityEpoch: "epoch-old",
+  })).toBeUndefined();
+  first.store.close();
+});
+
+test("PR7 scheduler: sealed run preserves a concurrently started sibling failure", async () => {
+  // Mirror via the proven-overlap seam: both members start concurrently on a
+  // `shared` Topic; A's provider throws (sealing A indeterminate) after B's
+  // proven failure is already durable — failed state + failedBotIds survive
+  // the seal and the Run re-derives indeterminate on A's unknown.
+  const hangA = deferred<void>();
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old" });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "SealEvidenceFail", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared",
+  });
+  const fr = fakeRunner(first.runner);
+  fr.run = (async (input: ConversationTurnRunInput) => {
+    fr.runs.push(input);
+    if (input.botId === TESTER_ID) {
+      return { status: "failed" as const, error: "proven B boom" };
+    }
+    await hangA.promise;
+    throw new Error("A provider boom");
+  }) as FakeRunner["run"];
+  const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+  const botA = first.bots.getBot(BOT_ID);
+  const botB = first.bots.getBot(TESTER_ID);
+  const accepted = first.store.acceptRequest({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-seal-evidence-fail",
+    botId: botA.id,
+    content: "together",
+    profileSnapshot: snapshotBotProfile(botA, NOW),
+    members: [{
+      botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW),
+      effect: "read-only", effectProvenance: "declared-enforced",
+    }],
+    now: NOW,
+    authorityEpoch: first.dispatcher.authorityEpoch,
+    humanIngress: HUMAN_INGRESS,
+  });
+  const draining = first.dispatcher.kick();
+  await waitUntil(() => fr.runs.length === 2, 4000);
+  const turnA = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === BOT_ID)!;
+  const turnB = first.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(first.store.getMemberTurn(turnB.id)?.state === "running"
+    || first.store.getMemberTurn(turnB.id)?.state === "failed").toBe(true);
+  hangA.resolve();
+  await draining;
+  await waitUntil(() => first.store.getMemberTurn(turnB.id)?.state === "failed", 4000);
+  expect(first.store.getMemberTurn(turnB.id)?.failureReason).toBe("proven B boom");
+  expect(first.store.getRun(accepted.run.id)!.failedBotIds).toContain(TESTER_ID);
+  const run = first.store.getRun(accepted.run.id)!;
+  expect(run.state).toBe("indeterminate");
+  expect(run.completionReason).toBe("started_result_unknown");
+  expect(first.store.claimNextDispatch({
+    now: first.nowFn().toISOString(), owner: "dispatcher-old",
+    leaseExpiresAt: new Date(first.nowFn().getTime() + 30_000).toISOString(), authorityEpoch: "epoch-old",
+  })).toBeUndefined();
+  first.store.close();
+});
+
+test("PR7 scheduler: unexpected post-claim execution failure rejects activation without unhandled rejection", async () => {
+  // P1: an unexpected async failure inside execute() after claim must reject
+  // the drain — and therefore activation — rather than being swallowed by
+  // allSettled into a false `activated`.
+  const rejections: unknown[] = [];
+  const onUnhandled = (reason: unknown) => {
+    rejections.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const boom = new Error("injected post-claim execution failure");
+    const first = await createLifecycle({
+      autoKick: false,
+      ownerId: "dispatcher-old",
+      hooks: {
+        afterClaim: async () => {
+          throw boom;
+        },
+      },
+    });
+    await first.service.acceptDirectPrompt({
+      botId: BOT_ID,
+      requestId: "req-activate-fail",
+      content: "hello",
+    });
+    const err = await first.service.activateAfterConsumerLock().then(() => null, (e: unknown) => e);
+    expect((err as Error)?.message).toBe("injected post-claim execution failure");
+    expect(first.service.isConsumerActivated()).toBe(false);
+    await tick();
+    await tick();
+    expect(rejections).toEqual([]);
+    first.store.close();
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+
+test("PR7 scheduler: unrelated topics stay sequential while shared siblings overlap", async () => {
+  // P2: sibling overlap must not become global dispatcher parallelism. Two
+  // independent Direct Runs on different bots: while A's provider turn hangs,
+  // B must NOT start in the same drain. The existing shared-overlap test
+  // proves same-Run siblings still overlap.
+  const hangA = deferred<void>();
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-a" });
+  const botB = "bot_second";
+  first.state.bots[botB] = {
+    id: botB, name: "Second", agent: "codex", workspace: "backend", enabled: true,
+    profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+  };
+  await first.service.activateAfterConsumerLock();
+  const acceptedA = await first.service.acceptDirectPrompt({ botId: BOT_ID, requestId: "req-seq-a", content: "a" });
+  const acceptedB = await first.service.acceptDirectPrompt({ botId: botB, requestId: "req-seq-b", content: "b" });
+  const fr = fakeRunner(first.runner);
+  fr.run = (async (input: ConversationTurnRunInput) => {
+    fr.runs.push(input);
+    if (input.botId === BOT_ID) {
+      await hangA.promise;
+      return { status: "completed" as const, text: "a done" };
+    }
+    return { status: "completed" as const, text: "b done" };
+  }) as FakeRunner["run"];
+  void first.dispatcher.kick();
+  await waitUntil(() => fr.runs.length === 1, 4000);
+  expect(fr.runs[0]?.botId).toBe(BOT_ID);
+  // A still hangs: B must not start — no global parallelism.
+  await tick();
+  await tick();
+  await tick();
+  expect(fr.runs).toHaveLength(1);
+  expect(first.store.getRun(acceptedB.run.id)?.state).toBe("queued");
+  hangA.resolve();
+  await waitUntil(() => first.store.getRun(acceptedA.run.id)?.state === "completed", 4000);
+  await waitUntil(() => fr.runs.length === 2, 4000);
+  expect(fr.runs[1]?.botId).toBe(botB);
+  await waitUntil(() => first.store.getRun(acceptedB.run.id)?.state === "completed", 4000);
+  first.store.close();
+});
+
+test("PR7 scheduler: held handoff failure rejects activation without unhandled rejection", async () => {
+  // P1 follow-up: a rechecked held sibling is launched without an await, so
+  // its unexpected failure never reaches awaitCohortInFlight — activation
+  // succeeds while the error is recorded-and-lost. Shape:
+  // shared-single-writer [A, B]; A takes a handled pre-start failure
+  // (release + defer, no wake); the recheck launches held B; B throws
+  // unexpectedly in afterClaim.
+  const rejections: unknown[] = [];
+  const onUnhandled = (reason: unknown) => {
+    rejections.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const boom = new Error("injected held-handoff execution failure");
+    const first = await createLifecycle({
+      autoKick: false,
+      ownerId: "dispatcher-old",
+      hooks: {
+        beforeRuntimeMaterialize: async (work) => {
+          if (work.memberTurn.botId === BOT_ID) {
+            throw new Error("transient materialize failure");
+          }
+        },
+        afterClaim: async (work) => {
+          if (work.memberTurn.botId === TESTER_ID) {
+            throw boom;
+          }
+        },
+      },
+    });
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "HeldHandoff", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "S", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    await first.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: "req-held-handoff-fail",
+      text: "ordered",
+      target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+      humanIngress: HUMAN_INGRESS,
+    });
+    const err = await first.service.activateAfterConsumerLock().then(() => null, (e: unknown) => e);
+    expect((err as Error)?.message).toBe("injected held-handoff execution failure");
+    expect(first.service.isConsumerActivated()).toBe(false);
+    await tick();
+    await tick();
+    expect(rejections).toEqual([]);
+    first.store.close();
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("PR7 scheduler: held handoff keeps cohort scope until the sibling settles", async () => {
+  // P2 follow-up: the rechecked held launch `continue`s into a fresh pass
+  // that resets cohortRunId while B still runs, reopening global claims.
+  // Shape: shared-single-writer [A, B] + unrelated Direct C. C must not
+  // start until B settles.
+  const hangA = deferred<void>();
+  const hangB = deferred<void>();
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-a" });
+  seedTesterBot(first.state);
+  const thirdBot = "bot_third";
+  first.state.bots[thirdBot] = {
+    id: thirdBot, name: "Third", agent: "codex", workspace: "backend", enabled: true,
+    profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+  };
+  await first.service.activateAfterConsumerLock();
+  const group = await first.bots.createGroup({ title: "HeldScope", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const acceptedGroup = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-held-scope",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  const acceptedC = await first.service.acceptDirectPrompt({ botId: thirdBot, requestId: "req-scope-c", content: "c" });
+  const fr = fakeRunner(first.runner);
+  fr.run = (async (input: ConversationTurnRunInput) => {
+    fr.runs.push(input);
+    if (input.botId === BOT_ID) {
+      await hangA.promise;
+      return { status: "completed" as const, text: "a done" };
+    }
+    if (input.botId === TESTER_ID) {
+      await hangB.promise;
+      return { status: "completed" as const, text: "b done" };
+    }
+    return { status: "completed" as const, text: "c done" };
+  }) as FakeRunner["run"];
+  void first.dispatcher.kick();
+  await waitUntil(() => fr.runs.length === 1, 4000);
+  expect(fr.runs[0]?.botId).toBe(BOT_ID);
+  // B is writer-slot-held behind running A; C is still queued.
+  const turnB = first.store.listMemberTurns(acceptedGroup.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(first.store.getMemberTurn(turnB.id)?.state).toBe("dispatched");
+  expect(first.store.getRun(acceptedC.run.id)?.state).toBe("queued");
+  // Settle A: the recheck hands off to held B. B hangs — C must not start.
+  hangA.resolve();
+  await waitUntil(() => fr.runs.length === 2, 4000);
+  expect(fr.runs[1]?.botId).toBe(TESTER_ID);
+  await tick();
+  await tick();
+  await tick();
+  expect(fr.runs).toHaveLength(2);
+  expect(first.store.getRun(acceptedC.run.id)?.state).toBe("queued");
+  // Settle B: only now may C start and finish.
+  hangB.resolve();
+  await waitUntil(() => fr.runs.length === 3, 4000);
+  expect(fr.runs[2]?.botId).toBe(thirdBot);
+  await waitUntil(() => first.store.getRun(acceptedC.run.id)?.state === "completed", 4000);
+  await waitUntil(() => first.store.getRun(acceptedGroup.run.id)?.state === "completed", 4000);
+  first.store.close();
+});
+
+test("PR7 scheduler: multi-failure cohort rejects with the first-launched error, deterministically", async () => {
+  // A cohort where B settles BEFORE A: the drain must reject with A's error
+  // (launch order), not whichever rejection happened to write first
+  // (settlement order). Selection must be deterministic so activation
+  // failures are attributable, and a fresh drain afterwards starts clean.
+  const rejections: unknown[] = [];
+  const onUnhandled = (reason: unknown) => {
+    rejections.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const first = await createLifecycle({
+      autoKick: false,
+      ownerId: "dispatcher-a",
+      hooks: {
+        afterClaim: async (work) => {
+          if (work.memberTurn.botId === BOT_ID) {
+            await new Promise((resolve) => setTimeout(resolve, 30));
+            throw new Error("boom A first-launched");
+          }
+          if (work.memberTurn.botId === TESTER_ID) {
+            throw new Error("boom B settles first");
+          }
+        },
+      },
+    });
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "OrderCohort", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "S", {
+      workspace: "backend",
+      isolation: "shared",
+    });
+    const accepted = await first.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: "req-cohort-order",
+      text: "ordered",
+      target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+      humanIngress: HUMAN_INGRESS,
+    });
+    await expect(first.dispatcher.kick()).rejects.toThrow("boom A first-launched");
+    await tick();
+    await tick();
+    expect(rejections).toEqual([]);
+    // A fresh drain starts with clean error state: both claims are still
+    // durably claimed (the failures escaped settlement), so it drains
+    // nothing and resolves.
+    await first.dispatcher.kick();
+    expect(first.store.getRun(accepted.run.id)?.state).toBe("queued");
+    first.store.close();
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("PR7 accept: duplicate members target rejects invalid-target with no durable Run", async () => {
+  // An explicit selection naming the same Bot twice is ambiguous input:
+  // IDs are authority, so refuse it outright instead of silently
+  // normalizing — and before any gate or durable row is taken.
+  const first = await createLifecycle({ autoKick: false });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "DupTarget", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-dup-members",
+    text: "hello",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID, BOT_ID] },
+    humanIngress: HUMAN_INGRESS,
+  })).rejects.toMatchObject({ code: "invalid-target" });
+  expect(first.store.listRuns(group.id)).toEqual([]);
+  expect(first.store.getRunByRequestId(group.id, topic.id, "req-dup-members")).toBeUndefined();
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 })).toHaveLength(0);
+  first.store.close();
+});
+
+test("PR7 accept: cross-variant target keys fail closed instead of picking a variant", async () => {
+  // The target variants are a mutually exclusive union. Mixed shapes are
+  // ambiguous input: the parser must refuse them, never interpret them as
+  // whichever variant is checked first (botId + mode:"automatic" would
+  // otherwise downgrade the automatic refusal into a direct execution).
+  const first = await createLifecycle({ autoKick: false });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Mixed", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  for (const [name, target] of [
+    ["botId+members", { botId: BOT_ID, mode: "members", botIds: [TESTER_ID] }],
+    ["botId+automatic", { botId: BOT_ID, mode: "automatic" }],
+    ["botId+botIds", { botId: BOT_ID, botIds: [TESTER_ID] }],
+    ["everyone+botIds", { mode: "everyone", botIds: [TESTER_ID] }],
+  ] as const) {
+    await expect(first.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: `req-mixed-${name}`,
+      text: "ambiguous",
+      target: target as never,
+      humanIngress: HUMAN_INGRESS,
+    })).rejects.toMatchObject({ code: "invalid-target" });
+    expect(first.store.getRunByRequestId(group.id, topic.id, `req-mixed-${name}`)).toBeUndefined();
+  }
+  first.store.close();
+});
+
+test("PR7 accept: everyone beyond the member budget refuses before any durable write", async () => {
+  // 65 enabled members, target everyone: the eligible probe set exceeds
+  // MAX_GROUP_TARGET_MEMBERS and must refuse with target_too_large BEFORE
+  // the accept transaction — no Run, no MemberTurn, no request message,
+  // and no lifecycle gates pinned.
+  const first = await createLifecycle({ autoKick: false });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const all = [BOT_ID, TESTER_ID];
+  for (let i = 2; i < 65; i += 1) {
+    const id = `bot_bulk_${i}`;
+    first.state.bots[id] = {
+      id, name: `Bulk ${i}`, agent: "codex", workspace: "backend", enabled: true,
+      profileRevision: 1, createdAt: NOW, updatedAt: NOW,
+    };
+    all.push(id);
+  }
+  expect(all).toHaveLength(65);
+  const group = await first.bots.createGroup({ title: "Bulk", botIds: all });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared",
+  });
+  await expect(first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-everyone-65",
+    text: "hello",
+    target: { mode: "everyone" },
+    humanIngress: HUMAN_INGRESS,
+  })).rejects.toMatchObject({ code: "target_too_large" });
+  expect(first.store.listRuns(group.id)).toEqual([]);
+  expect(first.store.getRunByRequestId(group.id, topic.id, "req-everyone-65")).toBeUndefined();
+  expect(first.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 })).toHaveLength(0);
+  first.store.close();
+});
+
+test("PR7 dispatcher: corrupted request reference fails the Group claim terminally, never a fallback prompt", async () => {
+  // Durable corruption, exercised at the SQLite row level (no method
+  // monkeypatching): runs.request_message_id has no FK, so a row can point
+  // at a missing message or at ANOTHER topic's message. Both shapes are
+  // corrupted durable state — the unified referential contract fails the
+  // claim terminally before execution start (no live fallback, no
+  // indeterminate seal, no requeue loop), and the LEFT JOIN claim surface
+  // lets the poison row reach that check instead of silently hiding it.
+  for (const corruption of ["missing", "foreign"] as const) {
+    const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-a" });
+    await first.service.activateAfterConsumerLock();
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "NoSnapshot", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "S", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    const accepted = await first.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: `req-${corruption}-snapshot`,
+      text: "ship it",
+      target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+      humanIngress: HUMAN_INGRESS,
+    });
+    if (corruption === "missing") {
+      first.store.directWriteForTest("runs", accepted.run.id, { request_message_id: "msg_does_not_exist" });
+    } else {
+      // A REAL human message from ANOTHER topic: existence alone must not
+      // satisfy the reference — conversation/topic/role must match too.
+      const foreignTopic = await first.service.createGroupTopic(group.id, "Other", {
+        workspace: "backend",
+        isolation: "shared",
+      });
+      const foreign = await first.service.acceptGroupPrompt({
+        conversationId: group.id,
+        topicId: foreignTopic.id,
+        requestId: "req-foreign-anchor",
+        text: "foreign anchor",
+        target: { mode: "members", botIds: [BOT_ID] },
+        humanIngress: HUMAN_INGRESS,
+      });
+      first.store.directWriteForTest("runs", accepted.run.id, { request_message_id: foreign.message.id });
+    }
+    await first.dispatcher.kick();
+    expect(fakeRunner(first.runner).runs).toHaveLength(0);
+    const run = first.store.getRun(accepted.run.id)!;
+    expect(run.state).toBe("failed");
+    // Multi-member batches derive the aggregate reason in the classifier;
+    // the per-member diagnostic rows carry the exact corruption cause.
+    expect(run.completionReason).toBe("execution-failed");
+    for (const turn of first.store.listMemberTurns(accepted.run.id)) {
+      expect(turn.state).toBe("failed");
+      expect(turn.failureReason === "missing_request_snapshot"
+        || turn.failureReason === "request_snapshot_mismatch").toBe(true);
+    }
+    // Corrupted durable state must not hot-loop: a second kick requeues
+    // nothing FROM THIS RUN (the claims settled terminally) and the rows
+    // stay put. Any runs the kick drains belong to other topics.
+    const runsBefore = fakeRunner(first.runner).runs.length;
+    await first.dispatcher.kick();
+    for (const turn of first.store.listMemberTurns(accepted.run.id)) {
+      expect(turn.state).toBe("failed");
+    }
+    expect(first.store.getRun(accepted.run.id)?.state).toBe("failed");
+    void runsBefore;
+    first.store.close();
+  }
+});
+
+test("PR7 dispatcher: a same-topic foreign run's request reference fails the claim terminally", async () => {
+  // The most dangerous referential corruption: run B's request_message_id
+  // repointed at run A's REAL human request from the SAME conversation and
+  // topic. Existence, conversation, topic, and role all hold; only the
+  // request row's own run_id betrays the swap. B must fail terminally with
+  // request_snapshot_mismatch — never execute A's content, never requeue.
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-a" });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const anchor = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-anchor",
+    content: "anchor request",
+  });
+  await first.dispatcher.kick();
+  await waitUntil(() => first.store.getRun(anchor.run.id)?.state === "completed", 4000);
+  const runsAtAnchor = fakeRunner(first.runner).runs.length;
+  expect(runsAtAnchor).toBe(1);
+
+  const victim = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-victim",
+    content: "victim request",
+  });
+  first.store.directWriteForTest("runs", victim.run.id, { request_message_id: anchor.message.id });
+  await first.dispatcher.kick();
+  await waitUntil(() => first.store.getRun(victim.run.id)?.state === "failed", 4000);
+  // Zero NEW runner calls: A ran once; B never reached the runner with A's
+  // (or any) content.
+  expect(fakeRunner(first.runner).runs).toHaveLength(runsAtAnchor);
+  const run = first.store.getRun(victim.run.id)!;
+  expect(run.state).toBe("failed");
+  // Single-member claims settle the run with the precise corruption cause
+  // (the execution-failed aggregate exists only for multi-member batches).
+  expect(run.completionReason).toBe("request_snapshot_mismatch");
+  for (const turn of first.store.listMemberTurns(victim.run.id)) {
+    expect(turn.state).toBe("failed");
+    expect(turn.failureReason).toBe("request_snapshot_mismatch");
+  }
+  // No hot-loop: a second kick keeps B terminal and launches nothing.
+  await first.dispatcher.kick();
+  expect(fakeRunner(first.runner).runs).toHaveLength(runsAtAnchor);
+  expect(first.store.getRun(victim.run.id)?.state).toBe("failed");
+  first.store.close();
+});
+
+test("PR7 dispatcher: a cohort member rejecting undefined still rejects the drain", async () => {
+  // `rejected` is a STATUS, not a payload test: Promise.reject(undefined)
+  // is a legal rejection and must propagate (activation fails), never be
+  // mistaken for success because the reason equals undefined.
+  const rejections: unknown[] = [];
+  const onUnhandled = (reason: unknown) => {
+    rejections.push(reason);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    const first = await createLifecycle({
+      autoKick: false,
+      ownerId: "dispatcher-old",
+      hooks: {
+        afterClaim: () => Promise.reject(undefined),
+      },
+    });
+    await first.service.acceptDirectPrompt({
+      botId: BOT_ID,
+      requestId: "req-undefined-reject",
+      content: "hello",
+    });
+    const err = await first.service.activateAfterConsumerLock().then(() => "activated", (e: unknown) => e);
+    expect(err).toBeUndefined();
+    expect(first.service.isConsumerActivated()).toBe(false);
+    await tick();
+    await tick();
+    expect(rejections).toEqual([]);
+    first.store.close();
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("PR7 dispatcher: cancel transport rejecting undefined still defers the aggregate and surfaces the failure", async () => {
+  // Same sentinel rule on the cancel fan-out: a runner.cancel that rejects
+  // with undefined is a transport failure — the aggregate must stay deferred
+  // and the error must propagate, never be swallowed by an undefined check.
+  const first = await createLifecycle({ autoKick: false });
+  await first.service.activateAfterConsumerLock();
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: BOT_ID,
+    requestId: "req-cancel-undefined",
+    content: "hello",
+  });
+  // Park the member mid-flight so cancelRun hits the active-turn fan-out
+  // (an already-terminal Run short-circuits before any runner.cancel).
+  const hang = deferred<void>();
+  fakeRunner(first.runner).hang = hang;
+  const drain = first.dispatcher.kick();
+  await waitUntil(() => fakeRunner(first.runner).runs.length === 1);
+  fakeRunner(first.runner).cancel = (() => Promise.reject(undefined)) as FakeRunner["cancel"];
+  await expect(first.dispatcher.cancelRun(accepted.run.id)).rejects.toBeUndefined();
+  // Evidence-only settlement: member rows observed so far persist, but the
+  // Run aggregate was deferred (cancelFailed) — the Run did NOT lie about
+  // being cleanly cancelled.
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("running");
+  hang.resolve();
+  await drain.catch(() => undefined);
+  first.store.close();
+});
+
+
+test("PR7 scheduler: stale renewHeldClaim drops the hold and routes through recovery", async () => {
+  // The contrast case: stale_claim IS swallowed. The hold drops, the drain
+  // settles normally, and the member flows through ordinary lease recovery
+  // (origin `recovery`) rather than executing on a claim nobody owns.
+  const second = await createLifecycle({ autoKick: false, leaseMs: 100 });
+  await second.service.activateAfterConsumerLock();
+  seedTesterBot(second.state);
+  const group = await second.bots.createGroup({ title: "StaleHold", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await second.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(second.runner).hang = hang;
+  const accepted = await second.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-stale-hold",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  const drain = second.dispatcher.kick();
+  await waitUntil(() => fakeRunner(second.runner).runs.length === 1);
+  // Every renewal reports the claim as lost: hold-time renewal drops the
+  // hold (without deferring the topic), so the drain settles normally.
+  second.store.renewHeldClaim = ((input: unknown) => {
+    throw new ConversationError("stale_claim", "gone");
+  }) as typeof second.store.renewHeldClaim;
+  hang.resolve();
+  await drain;
+  // Advance past the lease so normal recovery requeues the stranded claim,
+  // then drain again: the member executes, marked as recovery.
+  second.jump(10_000);
+  await second.dispatcher.kick();
+  await waitUntil(() => second.store.getRun(accepted.run.id)?.state === "completed");
+  const testerAfter = second.store.listMemberTurns(accepted.run.id).find((m) => m.botId === TESTER_ID)!;
+  expect(testerAfter.origin).toBe("recovery");
+  second.store.close();
+});
+
+
+
+
+test("PR7 scheduler: bare read-only without proof stays serialized, proven read-only overlaps", async () => {
+  // Store boundary first: a bare `read-only` with no/invalid proof normalizes
+  // to `unknown` at durable write, so no future reader can schedule on it.
+  {
+    const first = await createLifecycle();
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "Norm", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "S", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+    const botA = first.bots.getBot(BOT_ID);
+    const botB = first.bots.getBot(TESTER_ID);
+    const bare = first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: "req-bare",
+      botId: botA.id,
+      content: "bare",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      members: [{ botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW), effect: "read-only" }],
+      now: NOW,
+    });
+    const bareTurn = bare.memberTurns.find((m) => m.botId === TESTER_ID)!;
+    expect(bareTurn.effect).toBeUndefined();
+    const proven = first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: "req-proven",
+      botId: botA.id,
+      content: "proven",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      members: [{
+        botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW),
+        effect: "read-only", effectProvenance: "declared-enforced",
+      }],
+      now: NOW,
+    });
+    expect(proven.memberTurns.find((m) => m.botId === TESTER_ID)?.effect).toBe("read-only");
+    first.store.close();
+  }
+  // Scheduler second: under shared-single-writer, proven read-only overlaps a
+  // hung sibling while bare read-only (normalized to unknown) still serializes.
+  // Proven overlap:
+  {
+    const first = await createLifecycle({ autoKick: false });
+    await first.service.activateAfterConsumerLock();
+    seedTesterBot(first.state);
+    const group = await first.bots.createGroup({ title: "Overlap", botIds: [BOT_ID, TESTER_ID] });
+    const topic = await first.service.createGroupTopic(group.id, "S", {
+      workspace: "backend",
+      isolation: "shared-single-writer",
+    });
+    // Hand-accept with a proven read-only second member: PR7's own accept
+    // never writes this (always unknown), so the store boundary is the only
+    // way to construct it.
+    const { snapshotBotProfile } = await import("../../../src/bots/bot-types");
+    const botA = first.bots.getBot(BOT_ID);
+    const botB = first.bots.getBot(TESTER_ID);
+    const accepted = first.store.acceptRequest({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId: "req-overlap",
+      botId: botA.id,
+      content: "overlap",
+      profileSnapshot: snapshotBotProfile(botA, NOW),
+      members: [{
+        botId: botB.id, profileSnapshot: snapshotBotProfile(botB, NOW),
+        effect: "read-only", effectProvenance: "declared-enforced",
+      }],
+      now: NOW,
+      authorityEpoch: first.dispatcher.authorityEpoch,
+      humanIngress: HUMAN_INGRESS,
+    });
+    const hang = deferred<void>();
+    fakeRunner(first.runner).hang = hang;
+    void first.dispatcher.kick();
+    await waitUntil(() => fakeRunner(first.runner).runs.length === 2, 4000);
+    const states = new Map(first.store.listMemberTurns(accepted.run.id).map((m) => [m.botId, m.state]));
+    expect(states.get(BOT_ID)).toBe("running");
+    expect(states.get(TESTER_ID)).toBe("running");
+    hang.resolve();
+    await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
+    first.store.close();
+  }
+});
+
+
+test("PR7 dispatcher: Group dispatch materializes Group member sessions with frozen transcript and serial writers", async () => {
+  const first = await createLifecycle({ autoKick: true });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-dispatch",
+    text: "ship it",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+  });
+  await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
+  const runner = fakeRunner(first.runner);
+  expect(runner.runs).toHaveLength(2);
+  const aliases = runner.runs.map((run) => run.sessionAlias);
+  expect(new Set(aliases).size).toBe(2);
+  for (const run of runner.runs) {
+    expect(run.text).toContain("ship it");
+  }
+  const requestTail = (text: string): string => text.slice(text.lastIndexOf("ship it"));
+  expect(requestTail(runner.runs[0]?.text ?? "")).toBe(requestTail(runner.runs[1]?.text ?? ""));
+  const directAliases = Object.values(first.state.sessions)
+    .filter((session) => session.owner?.kind === "bot-direct")
+    .map((session) => session.alias);
+  for (const alias of aliases) {
+    expect(directAliases).not.toContain(alias);
+  }
+  const run = first.store.getRun(accepted.run.id)!;
+  expect(run.state).toBe("completed");
+  first.store.close();
+});
+
+test("PR7 dispatcher: Group member sessions isolate across groups, topics, and Direct", async () => {
+  const first = await createLifecycle({ autoKick: true });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const groupA = await first.bots.createGroup({ title: "A", botIds: [BOT_ID, TESTER_ID] });
+  const groupB = await first.bots.createGroup({ title: "B", botIds: [BOT_ID, TESTER_ID] });
+  const topicA = await first.service.createGroupTopic(groupA.id, "TA", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const topicB = await first.service.createGroupTopic(groupB.id, "TB", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const acceptedA = await first.service.acceptGroupPrompt({
+    conversationId: groupA.id,
+    topicId: topicA.id,
+    requestId: "req-pr7-iso-a",
+    text: "work a",
+    target: { mode: "members", botIds: [BOT_ID] },
+  });
+  const acceptedB = await first.service.acceptGroupPrompt({
+    conversationId: groupB.id,
+    topicId: topicB.id,
+    requestId: "req-pr7-iso-b",
+    text: "work b",
+    target: { mode: "members", botIds: [BOT_ID] },
+  });
+  await waitUntil(() => first.store.getRun(acceptedA.run.id)?.state === "completed");
+  await waitUntil(() => first.store.getRun(acceptedB.run.id)?.state === "completed");
+  const runner = fakeRunner(first.runner);
+  const aliasA = runner.runs.find((run) => run.runId === acceptedA.run.id)?.sessionAlias;
+  const aliasB = runner.runs.find((run) => run.runId === acceptedB.run.id)?.sessionAlias;
+  expect(aliasA).toBeDefined();
+  expect(aliasB).toBeDefined();
+  expect(aliasA).not.toBe(aliasB);
+  first.store.close();
+});
+
+test("PR7 dispatcher: finishing sibling does not alter already-selected frozen input", async () => {
+  const seen: string[] = [];
+  const first = await createLifecycle({
+    autoKick: false,
+    hooks: {
+      beforeRuntimeMaterialize: async (work) => {
+        if (work.memberTurn.botId === TESTER_ID) {
+          seen.push(work.memberTurn.id);
+        }
+      },
+    },
+  });
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-frozen",
+    text: "original ask",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+  });
+  await first.service.activateAfterConsumerLock();
+  await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
+  const runner = fakeRunner(first.runner);
+  expect(runner.runs).toHaveLength(2);
+  const tails = runner.runs.map((run) => run.text.slice(run.text.lastIndexOf("original ask")));
+  expect(tails[0]).toBe(tails[1]);
+  for (const run of runner.runs) {
+    expect(run.text).not.toContain("done");
+  }
+  expect(seen).toHaveLength(1);
+  first.store.close();
+});
+
+test("PR7 transcript: Group member input excludes Direct and other-Topic history", async () => {
+  const first = await createLifecycle({ autoKick: false });
+  seedTesterBot(first.state);
+  const direct = await first.service.acceptDirectPrompt({ botId: BOT_ID, requestId: "req-direct", content: "direct secret" });
+  expect(direct.run.id).toBeDefined();
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topicA = await first.service.createGroupTopic(group.id, "A", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const topicB = await first.service.createGroupTopic(group.id, "B", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topicB.id,
+    requestId: "req-other-topic",
+    text: "other topic secret",
+    target: { mode: "members", botIds: [BOT_ID] },
+  });
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topicA.id,
+    requestId: "req-pr7-exclusion",
+    text: "clean ask",
+    target: { mode: "members", botIds: [BOT_ID] },
+  });
+  await first.service.activateAfterConsumerLock();
+  await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
+  const input = fakeRunner(first.runner).runs.find((run) => run.runId === accepted.run.id)!;
+  expect(input.text).toContain("clean ask");
+  expect(input.text).not.toContain("direct secret");
+  expect(input.text).not.toContain("other topic secret");
+});
+
+test("PR7 transcript: long Topic hands members the newest window before the request boundary", async () => {
+  const first = await createLifecycle({ autoKick: false });
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "A", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const total = PUBLIC_TRANSCRIPT_MESSAGES + 20;
+  for (let i = 0; i < total; i++) {
+    const requestId = `req-pr7-window-${i}`;
+    const result = await first.service.acceptGroupPrompt({
+      conversationId: group.id,
+      topicId: topic.id,
+      requestId,
+      text: `line ${i}`,
+      target: { mode: "members", botIds: [BOT_ID] },
+    });
+    await first.service.cancelRun(result.run.id);
+  }
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-window-final",
+    text: "final ask",
+    target: { mode: "members", botIds: [BOT_ID] },
+  });
+  await first.service.activateAfterConsumerLock();
+  await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
+  const input = fakeRunner(first.runner).runs.find((run) => run.runId === accepted.run.id)!;
+  expect(input.text).toContain("final ask");
+  // The window keeps the newest PUBLIC_TRANSCRIPT_MESSAGES rows before the
+  // request, not the Topic's oldest rows.
+  expect(input.text).toContain(`line ${total - 1}`);
+  expect(input.text).toContain(`line ${total - PUBLIC_TRANSCRIPT_MESSAGES}`);
+  expect(input.text).not.toContain(`line ${total - PUBLIC_TRANSCRIPT_MESSAGES - 1} `);
+  expect(input.text).toContain(`\nHuman: line ${total - PUBLIC_TRANSCRIPT_MESSAGES}\n`);
+  expect(input.text).toContain(`\nHuman: line ${total - 1}\n`);
+});
+
+test("PR7 provenance: trusted human Group accept mints human origin, public accept stays orchestration", async () => {
+  const first = await createLifecycle({ autoKick: false });
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const publicAccepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-public",
+    text: "public ask",
+    target: { mode: "members", botIds: [BOT_ID] },
+  });
+  expect(publicAccepted.memberTurn.botId).toBe(BOT_ID);
+  await first.dispatcher.kick();
+  expect(first.store.getMemberTurn(publicAccepted.memberTurn.id)?.origin).toBe("followup");
+  const trusted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-trusted",
+    text: "trusted ask",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: { chatKey: "relay:acct", senderId: "acct", accountId: "acct", isOwner: true },
+  });
+  expect(trusted.memberTurns.map((turn) => turn.botId)).toEqual([BOT_ID, TESTER_ID]);
+  await first.dispatcher.kick();
+  for (const turn of trusted.memberTurns) {
+    expect(first.store.getMemberTurn(turn.id)?.origin).toBe("human-explicit");
+  }
+  first.store.close();
+});
+
+test("PR7 cancel: whole-Run cancel suppresses not-yet-started sibling and wins exact runId", async () => {
+  const first = await createLifecycle({ autoKick: false });
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "Sprint", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-pr7-cancel",
+    text: "cancel me",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+  });
+  await first.service.cancelRun(accepted.run.id);
+  const run = first.store.getRun(accepted.run.id)!;
+  expect(run.state).toBe("cancelled");
+  const members = first.store.listMemberTurns(accepted.run.id);
+  expect(members.every((turn) => turn.state === "cancelled")).toBe(true);
+  await first.service.activateAfterConsumerLock();
+  await first.dispatcher.kick();
+  expect(fakeRunner(first.runner).runs).toHaveLength(0);
+  expect(first.store.getRun(accepted.run.id)?.state).toBe("cancelled");
+  first.store.close();
 });

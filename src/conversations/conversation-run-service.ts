@@ -1,4 +1,4 @@
-import { snapshotBotProfile, type BotProfile } from "../bots/bot-types";
+import { snapshotBotProfile, snapshotGroupMemberProfile, type BotProfile } from "../bots/bot-types";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import {
@@ -15,6 +15,7 @@ import { classifyConversationRoot } from "./conversation-roots";
 import { planDirectConversation, presentDefaultDirectTopic, presentDirectConversation } from "./direct-conversation";
 import { createDirectBindingId, createDirectTopicId, createScopedGroupMemberBindingId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
+import { MAX_BOT_ID_LENGTH, MAX_GROUP_TARGET_MEMBERS } from "@ganglion/xacpx-relay-protocol";
 import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
 import type { SessionService } from "../sessions/session-service";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
@@ -64,9 +65,13 @@ export interface ConversationRunServiceOptions {
   createTopicId?: () => string;
   stateMutex?: AsyncMutex;
   beforeAcceptPersist?: () => Promise<void>;
+  /** Test-only seam: runs between the Group accept gate-set probe and gate
+   *  acquisition, so tests can deterministically interleave a racing
+   *  membership commit. Never wired in production. */
+  beforeGroupAcceptGatesAcquired?: () => Promise<void>;
   /** Test-only seam: runs between the archive gate-set probe and gate
-   * acquisition, so tests can deterministically interleave a racing
-   * membership commit. Never wired in production. */
+   *  acquisition, so tests can deterministically interleave a racing
+   *  membership commit. Never wired in production. */
   beforeArchiveGatesAcquired?: () => Promise<void>;
   beforeTeardownFinalize?: () => Promise<void>;
   afterTeardownMarkedDeleting?: () => Promise<void>;
@@ -91,6 +96,7 @@ export class ConversationRunService {
   private readonly createTopicIdFn: () => string;
   private readonly stateMutex: AsyncMutex;
   private readonly beforeAcceptPersist?: () => Promise<void>;
+  private readonly beforeGroupAcceptGatesAcquired?: () => Promise<void>;
   private readonly beforeArchiveGatesAcquired?: () => Promise<void>;
   private readonly beforeTeardownFinalize?: () => Promise<void>;
   private readonly afterTeardownMarkedDeleting?: () => Promise<void>;
@@ -116,6 +122,7 @@ export class ConversationRunService {
     this.createTopicIdFn = options.createTopicId ?? (() => createTopicId());
     this.stateMutex = options.stateMutex ?? new AsyncMutex();
     this.beforeAcceptPersist = options.beforeAcceptPersist;
+    this.beforeGroupAcceptGatesAcquired = options.beforeGroupAcceptGatesAcquired;
     this.beforeArchiveGatesAcquired = options.beforeArchiveGatesAcquired;
     this.beforeTeardownFinalize = options.beforeTeardownFinalize;
     this.afterTeardownMarkedDeleting = options.afterTeardownMarkedDeleting;
@@ -155,6 +162,17 @@ export class ConversationRunService {
       await this.recoverRootlessGroupMemberSessions();
       this.assertNoAmbiguousGroupMemberSessions();
       this.assertNonterminalWorkHasAuthority();
+      // The exclusive consumer lock proves any previous dispatcher is gone:
+      // converge its surviving `claimed` rows NOW instead of waiting for
+      // their old leases to expire into lease-driven recovery. Graceful
+      // shutdown already retires its own holds; survivors are crash orphans
+      // or failed-retire leftovers, and neither may stall the first drain.
+      // Unstarted rows return to `pending` with provenance verbatim (orderly
+      // handoff); started rows seal to `indeterminate` with
+      // `started_result_unknown` in the same transaction (unproven side
+      // effects — never re-executed); terminal-run rows finish their
+      // dispatch. The lock is stronger death evidence than lease expiry.
+      this.store.convergePreviousOwnerClaims(this.dispatcher.ownerId, this.now().toISOString());
       await this.dispatcher.kick();
     } catch (error) {
       this.activation = "unavailable";
@@ -244,6 +262,133 @@ export class ConversationRunService {
     }
     return accepted;
   }
+  /**
+   * PR7 explicit Group accept. Structured target only: `members` selects
+   *  unique Bot IDs (duplicates and cross-variant key mixes are rejected
+   *  with invalid-target; caller order is preserved) or `everyone` expands
+   *  to current eligible members. Linearized against membership edits with the same
+   *  probe → acquire → re-verify → retry-with-widen pattern as updateGroup:
+   *  targeted mode holds selected Bot gates; everyone mode retries when the
+   *  live set widens beyond held gates. Per-member snapshots use
+   *  snapshotGroupMemberProfile (Topic workspace wins); disabled/missing
+   *  members fail closed at accept, and dispatch re-checks authoritatively.
+   *  `automatic` mode is rejected (PR8).
+   */
+  async acceptGroupPrompt(input: {
+    conversationId: string;
+    topicId: string;
+    requestId: string;
+    text: string;
+    target?: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" };
+    humanIngress?: HumanIngressContext;
+  }): Promise<AcceptRequestResult> {
+    this.assertAccepting();
+    const conversation = this.requireConversation(input.conversationId);
+    if (conversation.kind !== "group") {
+      throw new ConversationError("conversation_not_group", `conversation "${input.conversationId}" is not a Group`);
+    }
+    const parsed = this.parseGroupTarget(input.target, conversation);
+    // Durable idempotency first: a retry of an already-accepted request must
+    // return the original Run even when current live state (membership,
+    // Topic status, deletion) would reject the request. Direct prompt has the
+    // same precedence (`getAcceptedRequest` before live checks) — the Web
+    // relies on it to survive a lost response with `currentDraftRequestId`.
+    const alreadyAccepted = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
+    if (alreadyAccepted) {
+      return alreadyAccepted;
+    }
+    for (;;) {
+      const probeIds = this.groupMemberCandidates(input.conversationId, parsed);
+      const gateSet = new Set(probeIds);
+      await this.beforeGroupAcceptGatesAcquired?.();
+      const accepted = await this.bots.runLifecycleAll([...gateSet], async () => {
+        const live = this.requireConversation(input.conversationId);
+        if (live.kind !== "group") {
+          throw new ConversationError("conversation_not_group", `conversation "${input.conversationId}" is not a Group`);
+        }
+        const topic = this.requireGroupTopic(input.conversationId, input.topicId);
+        if (topic.status !== "active") {
+          throw new ConversationError("topic_not_active", `topic "${input.topicId}" is not active`);
+        }
+        if (this.store.isConversationDeleting(input.conversationId) || this.store.isTopicDeleting(input.topicId)) {
+          throw new ConversationError("conversation_deleting", "conversation is deleting");
+        }
+        const selected = this.resolveGroupMembers(live, parsed);
+        // Widen detection: `selected` is re-derived from live membership
+        // inside the held gates. Targeted mode holds exactly its selection,
+        // so this is trivially covered; everyone mode retries when live
+        // membership widened beyond the probed gate set. Shrink races need
+        // no retry: a remover holds every removed Bot's gate (old ∪ new),
+        // so it cannot commit between this re-read and the durable write
+        // below — accept either sees the member (remover then fails
+        // group_member_has_work) or misses it (accept rejects not-member).
+        const uncovered = selected.filter((botId) => !gateSet.has(botId));
+        if (uncovered.length > 0) {
+          return null;
+        }
+        const existing = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
+        if (existing) {
+          return existing;
+        }
+        const timestamp = this.now().toISOString();
+        const target = topic.executionTarget;
+        if (!target) {
+          throw new ConversationError("execution_target_missing", `topic "${input.topicId}" has no execution target`);
+        }
+        const snapshots = selected.map((botId) => {
+          const bot = this.bots.getBot(botId);
+          if (!bot.enabled) {
+            throw new BotError("bot_disabled", `bot "${botId}" is disabled`);
+          }
+          return snapshotGroupMemberProfile(bot, target, timestamp);
+        });
+        await this.beforeAcceptPersist?.();
+        const humanIngress = parseHumanIngress(input.humanIngress);
+        const [firstId, ...restIds] = selected;
+        const [firstSnapshot, ...restSnapshots] = snapshots;
+        if (!firstId || !firstSnapshot) {
+          throw new ConversationError("empty_target", "explicit Group target selects no members");
+        }
+        // Effect is always `unknown` here: no read-only capability is
+        // enforceably proven in PR7, so the scheduler must serialize under
+        // shared-single-writer. Persisted explicitly (not omitted) so a later
+        // caller that CAN prove read-only has a visible seam to extend.
+        const created = this.store.acceptRequest({
+          conversationId: input.conversationId,
+          topicId: input.topicId,
+          requestId: input.requestId,
+          botId: firstId,
+          content: input.text,
+          profileSnapshot: firstSnapshot,
+          primaryMember: { effect: "unknown" },
+          ...(restIds.length > 0
+            ? {
+              members: restIds.map((botId, index) => ({
+                botId,
+                profileSnapshot: restSnapshots[index]!,
+                effect: "unknown" as const,
+              })),
+            }
+            : {}),
+          now: timestamp,
+          ...(humanIngress
+            ? { authorityEpoch: this.dispatcher.authorityEpoch, humanIngress }
+            : {}),
+        });
+        return created;
+      });
+      if (accepted !== null) {
+        if (!accepted.reused) {
+          this.emitAcceptProjection(accepted);
+        }
+        if (this.autoKick && this.activation === "activated") {
+          void this.dispatcher.kick();
+        }
+        return accepted;
+      }
+    }
+  }
+
 
   async acceptConversationPrompt(input: {
     conversationId: string;
@@ -251,11 +396,35 @@ export class ConversationRunService {
     requestId: string;
     text: string;
     targetBotId?: string;
+    target?: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" };
     humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
     this.assertOpen();
+    const conversation = this.requireConversation(input.conversationId);
+    if (conversation.kind === "group") {
+      return this.acceptGroupPrompt({
+        conversationId: input.conversationId,
+        topicId: input.topicId,
+        requestId: input.requestId,
+        text: input.text,
+        ...(input.target ? { target: input.target } : {}),
+        ...(input.humanIngress ? { humanIngress: input.humanIngress } : {}),
+      });
+    }
     const botId = this.resolveDirectBotId(input.conversationId);
-    if (input.targetBotId && input.targetBotId !== botId) {
+    if (input.target !== undefined && !("botId" in input.target)) {
+      throw new ConversationError(
+        "conversation_target_mismatch",
+        "Direct conversation accepts only a Bot-id target",
+      );
+    }
+    // A Direct Conversation routes to exactly one Bot. Group-shaped structured
+    // targets must be rejected rather than silently dropped: accepting
+    // `{mode:"members"}` and then executing the owning Bot would run the
+    // opposite of what the caller asked for, and `automatic` would quietly
+    // become an explicit Direct Run.
+    const legacyTarget = input.target && "botId" in input.target ? input.target.botId : input.targetBotId;
+    if (legacyTarget && legacyTarget !== botId) {
       throw new ConversationError(
         "conversation_target_mismatch",
         "Direct conversation target must match the owning Bot",
@@ -311,6 +480,12 @@ export class ConversationRunService {
     return [...byId.values()]
       .map((conversation) => this.presentDirect(conversation))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  /** PR7 separate Group listing surface. Direct-only list above is untouched. */
+  listGroups(): ConversationRecord[] {
+    this.assertOpen();
+    return this.bots.listGroups();
   }
 
   listTopics(conversationId: string): ConversationTopic[] {
@@ -439,9 +614,11 @@ export class ConversationRunService {
    * PR6 Group Topic lifecycle. Creates a Topic under a group Conversation
    * with an explicit ExecutionTarget. The workspace must be registered; the
    * isolation policy is validated against the known enum. worktree-per-member
-   * persists as a value but has no provisioning yet (PR10): callers must not
-   * assume an isolated tree exists. Direct Conversations keep resolving
-   * execution from the owning Bot profile and never take this path.
+   * is rejected at create with `invalid-isolation` (PR10 provisioning is
+   * unimplemented; materialization would fail closed with
+   * `worktree_unprovisioned`): legacy persisted rows stay readable, but no
+   * new Topic can carry it. Direct Conversations keep resolving execution
+   * from the owning Bot profile and never take this path.
    */
   async createGroupTopic(
     conversationId: string,
@@ -545,6 +722,183 @@ export class ConversationRunService {
     }
   }
 
+  /** Normalize the wire target into an explicit selection. Legacy Direct
+   *  `{ botId }` on a Group path selects that single member. `automatic`
+   *  is rejected: PR7 ships explicit routing only. */
+  private parseGroupTarget(
+    target: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" } | undefined,
+    conversation: ConversationRecord,
+  ): { kind: "members"; botIds: string[] } | { kind: "everyone" } {
+    if (!target) {
+      throw new ConversationError("target_required", "explicit Group prompt requires a target");
+    }
+    // The variants are a mutually exclusive union: mixed shapes are
+    // ambiguous input and fail closed — never silently interpreted as
+    // whichever variant is checked first (botId + mode:"automatic" would
+    // otherwise downgrade the PR7 automatic refusal into a direct
+    // execution of botId).
+    const hasBotId = "botId" in target;
+    const hasMode = "mode" in target;
+    const hasBotIds = "botIds" in target;
+    if ((hasBotId && (hasMode || hasBotIds)) || (hasMode && hasBotIds && target.mode !== "members")) {
+      throw new ConversationError("invalid-target", "explicit Group target carries keys from multiple variants");
+    }
+    if (hasBotId) {
+      if (typeof target.botId !== "string" || !target.botId) {
+        throw new ConversationError("invalid-target", "explicit Group target member must be a Bot id");
+      }
+      return { kind: "members", botIds: [target.botId] };
+    }
+    if (target.mode === "members") {
+      if (!Array.isArray(target.botIds)) {
+        throw new ConversationError("invalid-target", "explicit Group target members must be Bot ids");
+      }
+      // An explicit selection naming the same Bot twice is ambiguous
+      // input: IDs are authority, so refuse it outright — never silently
+      // normalize. Duplicates are refused before any gate or durable row.
+      if (new Set(target.botIds).size !== target.botIds.length) {
+        throw new ConversationError("invalid-target", "explicit Group target members must be unique");
+      }
+      for (const botId of target.botIds) {
+        if (typeof botId !== "string" || !botId) {
+          throw new ConversationError("invalid-target", "explicit Group target member must be a Bot id");
+        }
+      }
+      return { kind: "members", botIds: [...target.botIds] };
+    }
+    if (target.mode === "everyone") {
+      return { kind: "everyone" };
+    }
+    throw new ConversationError("automatic_unsupported", "automatic Group routing is not available in this release");
+  }
+
+  /** Gate-set probe for accept linearization. Targeted mode probes selected
+   *  IDs; everyone mode probes the ELIGIBLE membership — live membership
+   *  filtered by the Bot being enabled — because that is exactly what this Run
+   *  will acquire and execute. Probing the whole membership instead would
+   *  refuse a Group whose disabled members push it past the budget even though
+   *  the Run itself targets two enabled Bots. Deliberately NOT the
+   *  teardown-residue union either: that also contains bindings for Bots already
+   *  removed from the Group, and their runtime correctly outlives removal until
+   *  Topic teardown, so charging it against the accept budget would refuse an
+   *  Everyone whose actual target set is tiny. */
+  private groupMemberCandidates(
+    conversationId: string,
+    parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" },
+  ): string[] {
+    if (parsed.kind === "members") {
+      // Gate acquisition is process-lifetime state: `runLifecycleAll` creates a
+      // permanent mutex entry per supplied id and never releases them. So the
+      // wire cap bounds growth RATE but cannot bound the map — a caller can send
+      // 64 fresh unknown ids per request forever. Refuse ids that are not
+      // members right now, BEFORE any gate is taken.
+      //
+      // This is a fail-fast, not the authority: `resolveGroupMembers` still
+      // revalidates live membership inside the held gates, so a member added
+      // concurrently is either seen here (and the accept proceeds) or the
+      // pre-check simply linearizes before that commit.
+      if (parsed.botIds.length > MAX_GROUP_TARGET_MEMBERS) {
+        throw new ConversationError(
+          "invalid-target",
+          `explicit Group target selects too many members (max ${MAX_GROUP_TARGET_MEMBERS})`,
+        );
+      }
+      const live = this.state.conversations[conversationId];
+      const membership = live?.kind === "group" ? live.botIds : [];
+      // Keep the canonical codes distinct: an oversized id is malformed input
+      // (`invalid-target`), while a well-formed id that simply is not a current
+      // member keeps `group_member_not_member` so existing API and Web
+      // classification semantics do not drift. Both are refused here, before any
+      // gate is taken, so the resource bound is unaffected by the split.
+      const malformed = parsed.botIds.filter((botId) => botId.length > MAX_BOT_ID_LENGTH);
+      if (malformed.length > 0) {
+        throw new ConversationError(
+          "invalid-target",
+          `explicit Group target member exceeds the maximum id length (max ${MAX_BOT_ID_LENGTH})`,
+        );
+      }
+      const nonMember = parsed.botIds.filter((botId) => !membership.includes(botId));
+      if (nonMember.length > 0) {
+        throw new BotError(
+          "group_member_not_member",
+          `bot "${nonMember[0]}" is not a member of group "${conversationId}"`,
+        );
+      }
+      return [...parsed.botIds];
+    }
+    // ACCEPT admission uses eligible membership only. `groupTopicMemberBotIds` is the
+    // TEARDOWN sweep union (membership + member bindings + session owners), and a
+    // removed member's runtime can legitimately outlive its membership until the
+    // Topic is torn down. Charging that historical cleanup residue against this
+    // Run's budget would refuse an Everyone whose actual target set is tiny.
+    // Admission stays correct for widening without the residue: accept re-derives
+    // the live selection inside the held gates and retries when the probed set
+    // does not cover it, and updateGroup holds old ∪ new gates so it cannot
+    // commit between the probe and the durable write.
+    const conversation = this.state.conversations[conversationId];
+    const membership = conversation?.kind === "group" ? conversation.botIds : [];
+    // The budget counts what this Run will actually gate and execute: only
+    // enabled members. A disabled Bot never gets a MemberTurn, so charging it
+    // would refuse an Everyone whose real target is small. Enable/disable runs
+    // under the same lifecycle mutex, so a flip that commits before the inner
+    // resolve leaves the probed set uncovered and retries against the new
+    // eligible set; a flip that commits after simply linearizes after us.
+    const candidates = [...new Set(membership.filter((botId) => this.bots.getBot(botId).enabled))];
+    // Enforce the mutual-exclusion budget on the set that is about to be
+    // acquired, not on the eligible set computed later inside the gates: by then
+    // runLifecycleAll has already pinned every candidate's mutex, and those
+    // entries are process-lifetime. Checking here also covers the widen race —
+    // a probe that grows past the budget during acquisition is retried, and the
+    // next probe is refused before any further gate is taken.
+    if (candidates.length > MAX_GROUP_TARGET_MEMBERS) {
+      throw new ConversationError(
+        "target_too_large",
+        `explicit Group target selects more than ${MAX_GROUP_TARGET_MEMBERS} members`,
+      );
+    }
+    return candidates;
+  }
+
+  /** Resolve the durable member list inside held gates. Everyone expands to
+   *  the current eligible members — live membership filtered by the Bot being
+   *  enabled — because a disabled Bot is never executable and Group membership
+   *  deliberately tolerates disabled members. Targeted mode still rejects a
+   *  disabled/non-member/removed selection outright (the human named that Bot
+   *  explicitly); unknown selections and an empty eligible set reject. */
+  private resolveGroupMembers(
+    conversation: ConversationRecord,
+    parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" },
+  ): string[] {
+    const membership = [...conversation.botIds];
+    if (parsed.kind === "everyone") {
+      const eligible = membership.filter((botId) => this.bots.getBot(botId).enabled);
+      if (eligible.length === 0) {
+        throw new ConversationError("empty_target", "explicit Group target selects no members");
+      }
+      // Defensive invariant: the probe branch already enforced this budget on the
+      // eligible set, so this can only fire if a disabled member was enabled, or
+      // an enabled member was added, between the probe and the gate acquisition —
+      // both retry against the new eligible set.
+      if (eligible.length > MAX_GROUP_TARGET_MEMBERS) {
+        throw new ConversationError(
+          "target_too_large",
+          `explicit Group target selects more than ${MAX_GROUP_TARGET_MEMBERS} members`,
+        );
+      }
+      return eligible;
+    }
+    if (parsed.botIds.length === 0) {
+      throw new ConversationError("empty_target", "explicit Group target selects no members");
+    }
+    for (const botId of parsed.botIds) {
+      if (!membership.includes(botId)) {
+        throw new BotError("group_member_not_member", `bot "${botId}" is not a member of group "${conversation.id}"`);
+      }
+      this.bots.getBot(botId);
+    }
+    return [...parsed.botIds];
+  }
+
   private requireGroupTopic(conversationId: string, topicId: string): ConversationTopic {
     const conversation = this.requireConversation(conversationId);
     if (conversation.kind !== "group") {
@@ -566,8 +920,11 @@ export class ConversationRunService {
     }
     this.bots.assertWorkspaceRegistered(target.workspace);
     if (target.isolation !== "shared"
-      && target.isolation !== "shared-single-writer"
-      && target.isolation !== "worktree-per-member") {
+      && target.isolation !== "shared-single-writer") {
+      // worktree-per-member stays a rejected value here: PR10 provisioning is
+      // unimplemented, and materialization fails closed with
+      // `worktree_unprovisioned`. Persisting it would mint a Topic whose every
+      // Run is unexecutable (and requeues forever), so refuse it at create.
       throw new ConversationError("invalid-isolation", `unknown isolation policy "${target.isolation}"`);
     }
     // Topic cwd is not honored by member session materialization yet (the

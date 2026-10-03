@@ -1,11 +1,24 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mount } from "@vue/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import InstanceTree from "../components/InstanceTree.vue";
 import ManageInstanceDialog from "../components/ManageInstanceDialog.vue";
 import { useInstancesStore } from "../stores/instances";
+import { useGroupsStore } from "../stores/groups";
 import { useCenterTabsStore, sessionKey } from "../stores/center-tabs";
 import { loadGroupMode } from "../lib/sidebar-group-mode";
+
+const mockRpc = vi.fn();
+vi.mock("../api/client", () => ({
+  ApiError: class ApiError extends Error {
+    constructor(public code: string, public status: number) {
+      super(code);
+    }
+  },
+  api: {
+    rpc: (instanceId: string, type: string, payload?: unknown) => mockRpc(instanceId, type, payload),
+  },
+}));
 
 const sess = (alias: string, workspace: string, agent: string, archived = false) => ({
   alias, agent, workspace, transportSession: `t-${alias}`, running: false, archived,
@@ -18,6 +31,56 @@ const instance = (sessions: unknown[]) => ({
 
 const mountTree = () => mount(InstanceTree, { global: { stubs: { NewSessionDialog: true } } });
 
+describe("InstanceTree groups loading states", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    mockRpc.mockReset();
+    // Groups-mode entry fires the real loadGroups("") RPC; fail it so the
+    // store records the error state the template must render as retryable.
+    mockRpc.mockRejectedValue(new Error("connector offline"));
+  });
+  afterEach(() => localStorage.clear());
+
+  it("shows a retry affordance — never 'No groups' — while the listing is failed", async () => {
+    useGroupsStore();
+    const instances = useInstancesStore();
+    instances.instances = [instance([])] as never;
+    const w = mountTree();
+    // Groups-mode entry fires the real loadGroups("") RPC, which the
+    // beforeEach mock rejects: the store records the error state and the
+    // template must render it as retryable, never as an empty list.
+    await w.find('[data-test="instance-nav-groups"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[data-test="groups-load-error"]').exists()).toBe(true);
+    expect(w.find('[data-test="groups-retry"]').exists()).toBe(true);
+    expect(w.find('[data-test="no-groups"]').exists()).toBe(false);
+    expect(w.findAll('[data-test="group-row"]')).toHaveLength(0);
+    // Retry through the real affordance: the mock now succeeds, the store
+    // clears the failure, and the rows render.
+    mockRpc.mockResolvedValue({ groups: [
+      { id: "g1", kind: "group", title: "Release", botIds: ["a"], leadBotId: "a", createdAt: "now", updatedAt: "now" },
+    ] });
+    await w.find('[data-test="groups-retry"]').trigger("click");
+    await flushPromises();
+    expect(w.find('[data-test="groups-load-error"]').exists()).toBe(false);
+    expect(w.find('[data-test="no-groups"]').exists()).toBe(false);
+    expect(w.findAll('[data-test="group-row"]')).toHaveLength(1);
+  });
+
+  it("shows the empty text only after a successful empty listing", async () => {
+    const groups = useGroupsStore();
+    const instances = useInstancesStore();
+    instances.instances = [instance([])] as never;
+    // Successful empty listing: loaded true, no rows, no error.
+    groups.groupsLoaded["i1"] = true;
+    groups.groupsByInstance["i1"] = [];
+    const w = mountTree();
+    await w.find('[data-test="instance-nav-groups"]').trigger("click");
+    await w.vm.$nextTick();
+    expect(w.find('[data-test="groups-load-error"]').exists()).toBe(false);
+    expect(w.find('[data-test="no-groups"]').exists()).toBe(true);
+  });
+});
 describe("InstanceTree grouped rendering", () => {
   beforeEach(() => setActivePinia(createPinia()));
   afterEach(() => localStorage.clear());

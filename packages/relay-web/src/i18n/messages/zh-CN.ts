@@ -16,6 +16,7 @@ export default {
     create: "创建",
     save: "保存",
     loading: "加载中…",
+    retry: "重试",
     close: "关闭",
   },
   connection: {
@@ -41,6 +42,7 @@ export default {
     resizePanel: "拖动调整面板宽度",
     sessions: "会话",
     bots: "Bots",
+    groups: "群组",
   },
   settings: {
     title: "设置",
@@ -692,6 +694,7 @@ export default {
     },
     run: {
       failed: "运行失败",
+      memberCompleted: "已完成",
       cancelled: "运行已取消",
       indeterminate: "状态不确定",
       indeterminateHint: "因取消或超时，运行结果未确认。服务端就绪时将自动对齐状态。",
@@ -736,8 +739,54 @@ export default {
       topicRecovering: "话题仍在恢复中。请等待历史加载完成后再发送。",
       botDisabled: "Bot 已被禁用。请启用后再发送消息。",
       runInProgress: "已有运行正在进行。请等待完成或取消后再试。",
+      topicQueueFull: "该话题排队中的运行过多。请等待其中一个完成或取消后再试。",
+      targetTooLarge: "所选成员数量超过单个运行可处理的上限。请选择更小的成员子集。",
+      targetRequired: "发送前请至少选择一位成员。",
+      targetEmpty: "发送前请至少选择一位成员。",
+      targetUnknownMember: "所选的一个或多个成员已不可用。",
+      promptPendingConfirmation: "上一条消息尚未确认。请重试该消息或等待其结束后再发送新消息。",
       cancelUnknown: "取消结果未知。正在等待实例状态...",
       instanceOffline: "实例已离线",
+    },
+  },
+  group: {
+    nav: {
+      title: "群组",
+    },
+    list: {
+      empty: "该实例暂无群组。",
+      loadFailed: "群组加载失败。",
+    },
+    header: {
+      members: "{count} 名成员",
+    },
+    target: {
+      lead: "负责人",
+      everyone: "全体成员",
+      selectMembers: "选择成员",
+      memberCount: "已选 {count} 人",
+      noEligible: "该群组暂无可用成员。",
+      hint: "@名称 添加成员 · @everyone 全选",
+    },
+    run: {
+      title: "协作",
+      memberCompleted: "已完成",
+      memberWaiting: "等待执行",
+    },
+    topic: {
+      createTitle: "创建群组话题",
+      createHint: "新话题保留成员与设置，但开启全新的对话上下文。",
+      workspacePlaceholder: "选择工作区",
+      isolationLabel: "文件系统隔离",
+      isolationSingleWriter: "共享单写者（推荐）",
+      isolationShared: "共享",
+      isolationHint: "仅在成员任务可被强制证明为只读时并行执行；其他任务会串行执行。",
+    },
+    prompt: {
+      placeholder: "给所选成员发消息...（@名称、@everyone）",
+    },
+    chat: {
+      emptyHint: "在上方选择成员，然后发送消息开始一次协作。",
     },
   },
 };

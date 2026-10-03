@@ -78,7 +78,7 @@ export interface PendingInteractionState {
    * `gone` is the outcome that asserts NOTHING about who closed the window or
    * why. It exists because the authoritative open-set snapshot can only prove
    * "this request is no longer open" — it cannot distinguish accepted / declined /
-   * / cancelled / expired / withdrawn, and picking one of those from an absence
+   * cancelled / expired / withdrawn, and picking one of those from an absence
    * is exactly the "client invents terminal semantics from missing information"
    * failure this store spent several rounds removing. Use it when the only
    * evidence is absence, and reserve the named outcomes for a hub close event
@@ -282,12 +282,18 @@ function mergeMemberTurn(current: MemberTurnSummaryDto | null, incoming: MemberT
     return incoming;
   }
   if (!shouldUpdateMemberTurnState(current.state, incoming.state)) {
-    return {
-      ...incoming,
-      state: current.state,
-      startedAt: current.startedAt ?? incoming.startedAt,
-      finishedAt: current.finishedAt ?? incoming.finishedAt,
-    };
+    // Same rule as the Group store: the stored row is newer, so it stays the
+    // base and the older incoming row may only fill fields the stored row is
+    // missing — never erase proven terminal evidence.
+    const merged: MemberTurnSummaryDto = { ...current };
+    if (merged.startedAt === undefined) merged.startedAt = incoming.startedAt;
+    if (merged.finishedAt === undefined) merged.finishedAt = incoming.finishedAt;
+    if (merged.promptRequestId === undefined) merged.promptRequestId = incoming.promptRequestId;
+    if (merged.assignmentId === undefined) merged.assignmentId = incoming.assignmentId;
+    if (merged.task === undefined) merged.task = incoming.task;
+    if (merged.expectedOutput === undefined) merged.expectedOutput = incoming.expectedOutput;
+    if (merged.dependsOn === undefined) merged.dependsOn = incoming.dependsOn;
+    return merged;
   }
   return incoming;
 }
@@ -2690,7 +2696,6 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   }
 
   // Reconcile on reconnect
-
   async function reconcileOnReconnect(): Promise<void> {
     // WS events are lost while disconnected: every previously loaded Bot
     // catalog may be stale (create/update/delete, hasRuntime). Mark all

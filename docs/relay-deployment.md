@@ -162,6 +162,26 @@ sudo systemctl reload caddy   # 用 Caddy 服务托管时
 - Caddy 走 `https://` 即满足 PWA 的安全上下文要求，看板可「安装到主屏」。纯 `http://` 不会注册 Service Worker。
 - Caddy `reverse_proxy` 默认无请求体大小限制、对 WebSocket 长连接也不主动超时，看板的图片上传与长连接开箱可用；如需限制再按需加 `request_body max_size`。
 
+### Desktop ticket 与 access log
+
+开启实例桌面（RFB/VNC）后，浏览器与连接器各有一条独立 WebSocket：
+
+```text
+/desktop/observe?ticket=<browser-ticket>
+/desktop/instance?ticket=<connector-ticket>
+```
+
+ticket **必须**放在 URL query（WebSocket 无法带自定义 header），因此：
+
+- 反代若记录完整 request URI 到 access log，这两个 path 的 ticket 会被明文记录。
+- xacpx 自身的日志不会写入 ticket（连接器错误信息只保留 origin+path），此承诺仅覆盖 xacpx 自己的日志，不含反代。
+
+ticket 单次使用、60s TTL，且 upgrade 阶段即被消费，所以泄露的是一个大概率已失效的凭据；但仍应按下列做法收紧：
+
+- Caddy：对这两个 path 关闭访问日志，或只记录 path——`log` 指令配 `log_skip` 或去掉默认 `log`。
+- nginx：`access_log off;`，或自定义 `log_format` 不含 `$request_uri`。
+- 与 `/invite/<code>` 同等对待：那已经要求「在意的话在反代对 `/invite/` 路径关闭访问日志」。
+
 ## 进程托管（pm2）
 
 `xacpx-relay` 没有 `stop`/`status` 子命令（用 `Ctrl-C`/`SIGTERM` 退出），适合交给 pm2 托管常驻、开机自启、崩溃重拉。

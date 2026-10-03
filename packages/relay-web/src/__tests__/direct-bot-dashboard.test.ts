@@ -46,6 +46,7 @@ import { useInstancesStore } from "../stores/instances";
 import { useChatStore } from "../stores/chat";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useDesktopStore } from "../stores/desktop";
+import { useGroupsStore } from "../stores/groups";
 
 describe("DashboardView Direct Bot integration", () => {
   beforeEach(() => {
@@ -274,6 +275,67 @@ describe("DashboardView Direct Bot integration", () => {
 
     // Now pick the ordinary session again: DesktopTab must NOT come back on its
     // own — only an explicit desktop open may bring it back.
+    await tree.vm.$emit("select", "i1", "ordinary_session");
+    await flushPromises();
+    expect(wrapper.findComponent({ name: "DesktopTab" }).exists()).toBe(false);
+  });
+
+  it("leaves the desktop tab when switching to a Group", async () => {
+    // Same lifecycle rule as the Direct Bot regression above: onSelectGroup
+    // used to clear only the chat selection, leaving desktopTabOpen true — so
+    // GroupPane mounted underneath a stale DesktopTab (z-20 over z-10) and a
+    // later ordinary-session select silently re-mounted the desktop stream.
+    localStorage.clear();
+    sessionStorage.clear();
+    const instances = useInstancesStore();
+    instances.instances = [];
+    vi.spyOn(instances, "loadInstances").mockResolvedValue();
+
+    const groups = useGroupsStore();
+    groups.groupsByInstance["i1"] = [
+      { id: "group_1", kind: "group", title: "Release Team", botIds: ["bot_1"], leadBotId: "bot_1", createdAt: "now", updatedAt: "now" },
+    ];
+    vi.spyOn(groups, "selectGroup").mockResolvedValue();
+
+    const wrapper = mount(DashboardView, {
+      global: { plugins: [i18n], stubs: { routerLink: true } },
+    });
+    await flushPromises();
+    // Seed AFTER mount (same reason as the Direct test): mount-time
+    // loadInstances() is fetch-stubbed to an empty list.
+    instances.instances = [
+      {
+        id: "i1",
+        name: "Local",
+        online: true,
+        lastSeenAt: null,
+        capabilities: ["desktop.rfb.v1"],
+        sessions: [{ alias: "ordinary_session", agent: "codex", workspace: "repo" }],
+        sessionsLoaded: true,
+        agents: [{ name: "codex", driver: "codex" }],
+        workspaces: [{ name: "repo", cwd: "/repo" }],
+      } as never,
+    ];
+
+    // Open the desktop tab through the real control.
+    const chat = useChatStore();
+    chat.select("i1", "ordinary_session");
+    await flushPromises();
+    const toggle = wrapper.find('[data-test="toggle-desktop"]');
+    expect(toggle.exists()).toBe(true);
+    await toggle.trigger("click");
+    await flushPromises();
+    expect(wrapper.findComponent({ name: "DesktopTab" }).exists()).toBe(true);
+
+    // Switch to the Group: DesktopTab must go away.
+    const tree = wrapper.findComponent({ name: "InstanceTree" });
+    expect(tree.exists()).toBe(true);
+    await tree.vm.$emit("select-group", "i1", "group_1");
+    await flushPromises();
+    expect(wrapper.findComponent({ name: "DesktopTab" }).exists()).toBe(false);
+
+    // Now pick the ordinary session again: DesktopTab must NOT come back on
+    // its own — only an explicit desktop open may bring it back.
     await tree.vm.$emit("select", "i1", "ordinary_session");
     await flushPromises();
     expect(wrapper.findComponent({ name: "DesktopTab" }).exists()).toBe(false);

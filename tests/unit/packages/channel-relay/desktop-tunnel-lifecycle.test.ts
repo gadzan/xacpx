@@ -141,6 +141,36 @@ function collector(): { push: (p: unknown) => void; all: unknown[] } {
   return { push: (p) => all.push(p), all };
 }
 
+/**
+ * A port that is guaranteed REFUSED on loopback: bind to an OS-chosen free
+ * port on 127.0.0.1, then release it. Used by the "configured port appears in
+ * the guidance" regression instead of a hardcoded 5901, because a fixed port
+ * can be occupied on a developer or CI machine and would turn the refused-dial
+ * path into a live-RFB handshake.
+ *
+ * 5900 is re-drawn on collision: it is the default port, so a value equal to it
+ * could not demonstrate that a NON-default configured port reaches the message.
+ */
+async function pickReleasedPort(): Promise<number> {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const probe = net.createServer();
+    const port = await new Promise<number>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", () => {
+        const address = probe.address();
+        if (!address || typeof address === "string") {
+          reject(new Error("port probe address unavailable"));
+          return;
+        }
+        resolve(address.port);
+      });
+    });
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+    if (port !== 5900) return port;
+  }
+  throw new Error("could not allocate a released port that is not the 5900 default");
+}
+
 const config = (port: number, connectTimeoutMs: number) => ({
   enabled: true,
   backend: "rfb" as const,
@@ -359,5 +389,46 @@ test("a cancelled stream cannot be re-admitted while it is still pending", async
   expect(hub.upgraded.length).toBeLessThanOrEqual(1);
   runtime.closeAll("cleanup");
   rfb.close();
+  hub.close();
+});
+
+test("an unavailable probe reports the CONFIGURED port in its operator guidance", async () => {
+  // End-to-end through the real prepare path: a closed port makes the probe
+  // fail with desktop-rfb-unavailable, and the error payload the hub forwards
+  // to relay-web is where the setup banner comes from. It must name the port
+  // the operator actually configured, not a hardcoded 5900.
+  //
+  // The port is OS-allocated then RELEASED, not hardcoded to 5901: a developer
+  // or CI machine may legitimately run a VNC server on any fixed port, which
+  // would make the probe take a live-RFB handshake path instead of the refused
+  // path this regression is about. The point under test is "a configured
+  // non-default port reaches the message", not the literal digits. 5900 is
+  // re-drawn on collision so a default-port value can never sneak in.
+  const closedPort = await pickReleasedPort();
+  const hub = await startHub();
+  const runtime = new DesktopTunnelRuntime({
+    config: fastConfig(closedPort),
+    hubUrl: `ws://127.0.0.1:${hub.port}`,
+    platform: "linux",
+  });
+
+  const responses = collector();
+  await runtime.handlePrepare(prepareEnvelope("s-port", "ticket-port"), responses.push);
+
+  expect(responses.all.length).toBe(1);
+  const payload = responses.all[0] as { error?: { code: string; message: string }; streamId?: string };
+  expect(payload.error?.code).toBe("desktop-rfb-unavailable");
+  // The message must name the port that was actually probed. Substring checks
+  // are kept port-relative (not "5901"/"5900" literals) because the port is now
+  // OS-chosen: a 5-digit allocation could itself contain "5900" as digits.
+  expect(payload.error?.message).toContain(`127.0.0.1:${closedPort}`);
+  // And it must still carry the TigerVNC platform guidance that was also
+  // hardcoded to port 5900 before the fix.
+  expect(payload.error?.message).toContain("TigerVNC");
+  expect(payload.error?.message).toContain("relax_encryption");
+  // Nothing may be left reserved for a probe that never passed.
+  expect(runtime.activeStreamId).toBeNull();
+
+  runtime.closeAll("cleanup");
   hub.close();
 });
