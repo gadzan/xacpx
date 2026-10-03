@@ -614,9 +614,11 @@ export class ConversationRunService {
    * PR6 Group Topic lifecycle. Creates a Topic under a group Conversation
    * with an explicit ExecutionTarget. The workspace must be registered; the
    * isolation policy is validated against the known enum. worktree-per-member
-   * persists as a value but has no provisioning yet (PR10): callers must not
-   * assume an isolated tree exists. Direct Conversations keep resolving
-   * execution from the owning Bot profile and never take this path.
+   * is rejected at create with `invalid-isolation` (PR10 provisioning is
+   * unimplemented; materialization would fail closed with
+   * `worktree_unprovisioned`): legacy persisted rows stay readable, but no
+   * new Topic can carry it. Direct Conversations keep resolving execution
+   * from the owning Bot profile and never take this path.
    */
   async createGroupTopic(
     conversationId: string,
