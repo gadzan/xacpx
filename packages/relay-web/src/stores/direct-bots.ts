@@ -2471,9 +2471,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // Checking the fence first let the switch swallow it: the user submits on A,
       // navigates to B, the 409 lands, the fence sees a newer generation and returns
       // — so A's form stays in the open map, answerable, with no negative evidence
-      // anywhere else. The snapshot cannot help either, because this tab's
-      // subscription is scoped by the CURRENT selection and A is no longer selected.
-      // The user only discovers the truth by clicking again.
+      // anywhere else. A snapshot cannot rescue it either, because this was a pane
+      // switch and not a reconnect: no re-subscribe runs, so no authoritative open
+      // set is re-declared. The user only discovers the truth by clicking again.
       //
       // Ordering this before the fence costs nothing else: for the non-authoritative
       // failures the fence still applies, because those genuinely ARE about the
@@ -2498,18 +2498,31 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         retireInteraction(requestId, "gone");
         return;
       }
-      // Everything below IS about the pane: the user is looking at this form and
-      // needs to be told why it failed. A pane switch during the flight makes that
-      // message irrelevant — the form they are now looking at is a different one —
-      // so the stale patch is dropped here, AFTER the authoritative fact above has
-      // already been acted on.
+
+      // The RPC is over. That is a REQUEST-scoped fact, so the request's own
+      // "submit in flight" flag is cleared here, BEFORE the fence.
+      //
+      // `submitting` is not a message for the user — it is the request's lifecycle
+      // state, and it gates every future submit. Leaving it set because the pane
+      // changed wedges a form that is still perfectly valid: the user switches back
+      // to A and finds Submit / Decline / Cancel all refusing to fire, on a form
+      // nobody has closed. Only the next reconnect would clear it, which makes a
+      // transient network blip depend on a disconnect to recover.
+      patchInteraction(requestId, { submitting: false });
+
+      // What follows IS about the pane: the user is looking at this form and needs
+      // to be told why it failed. A pane switch during the flight makes that message
+      // irrelevant — the form they are now looking at is a different one — so the
+      // stale patch is dropped here, AFTER the request-scoped states above have
+      // already been settled.
+      //
+      // Any failure reaching this point is NOT authoritative about the window: the
+      // request may still be open, so it stays answerable and the user can retry.
       if (generation !== currentSelectionGeneration) return;
-      // Any other failure is NOT authoritative about the window: the request may
-      // still be open, so the form stays answerable and the user can retry.
       const code = error instanceof DirectBotRpcError && error.code === "unknown-type"
         ? "connectorOutdated"
         : "submitFailed";
-      patchInteraction(requestId, { submitting: false, errorCode: code });
+      patchInteraction(requestId, { errorCode: code });
     }
   }
 

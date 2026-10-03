@@ -1050,11 +1050,14 @@ test("an authoritative 409 during a pane switch still retires the request", asyn
   // to B, and only then does the hub's authoritative 409 land.
   //
   // The fence used to be checked first, so the newer generation returned
-  // immediately and A's form stayed in the open map — answerable, with no negative
-  // evidence anywhere. The snapshot cannot rescue it either: this tab's
-  // subscription is scoped by the CURRENT selection, and A is no longer selected,
-  // so no snapshot for A will ever arrive. The user only learns the truth by
-  // clicking again and getting a second 409.
+  // immediately and A's form stayed in the open map — answerable, and closing it
+  // would require another trip through the same race.
+  //
+  // A snapshot cannot rescue it here either, but not for a subscription reason: the
+  // Dashboard subscribes to EVERY owned instance, so A stays subscribed. What is
+  // missing is the trigger. This was a pane switch, not a reconnect, so nothing
+  // re-subscribes and no authoritative open set is ever re-declared. The next
+  // snapshot for A is one reconnect away.
   //
   // A 409 is a REQUEST-scoped fact: "this requestId no longer exists on the hub" is
   // just as true after a pane switch, so nothing about the pane may discard it.
@@ -1085,7 +1088,7 @@ test("an authoritative 409 during a pane switch still retires the request", asyn
   expect(store.terminalInteractionOutcome("req-1")).toBe("gone");
 });
 
-test("a transport failure during a pane switch stays dropped", async () => {
+test("a transport failure never wedges the form, pane switch or not", async () => {
   // The control, and the reason the fence was not simply deleted. A transport
   // failure is NOT authoritative about the window — the request may well still be
   // open — so what it really reports is "this pane's submit did not land", which a
@@ -1094,24 +1097,48 @@ test("a transport failure during a pane switch stays dropped", async () => {
   // Acting on it anyway would patch an error code onto whatever form now occupies
   // that slot: telling the user about a failure they cannot see from where they are
   // looking, or attaching it to a different form entirely.
+  // The pane must match the form's instance (`openedEvent` defaults to `inst_1`), or
+  // `pendingInteraction` is null and the submit returns before any RPC — which is a
+  // different bug, not the race under test.
   const store = useDirectBotsStore();
-  store.instanceId = "inst-A";
+  store.instanceId = "inst_1";
   store.selectedBotId = "bot_1";
   store.activeConversationId = "c1";
   store.activeTopicId = "t1";
   store.applyEvent(openedEvent(formRequest()));
   store.setInteractionAnswer("env", "prod");
 
-  let reject!: (reason: unknown) => void;
-  mockRpc.mockReturnValue(new Promise((_resolve, rejectFn) => { reject = rejectFn; }));
+  const gate = Promise.withResolvers<never>();
+  mockRpc.mockReturnValue(gate.promise);
   const submitted = store.submitInteraction("accept").catch(() => undefined);
+  expect(store.pendingInteraction!.submitting).toBe(true);
 
+  // The user navigates away, then the network fails the in-flight submit.
   store.switchTopic("t2");
-  reject(new Error("transport failed"));
+  gate.reject(new Error("transport failed"));
   await submitted;
   await flushPromises();
 
+  // Still open: no authoritative statement said otherwise.
   expect(store.requestStillHeld("req-1")).toBe(true);
+
+  // Switch back. The form must be usable again, WITHOUT a reconnect to clear it.
+  store.switchTopic("t1");
+  await flushPromises();
+  const back = store.pendingInteraction;
+  expect(back).not.toBeNull();
+
+  // `submitting` is the REQUEST's lifecycle state, not a pane message, so it was
+  // cleared by the failure even though this tab had moved on. Had it stayed set,
+  // every control would now refuse to fire — the form is permanently unanswerable
+  // until the next reconnect happens to replay it.
+  expect(back!.submitting).toBe(false);
+
+  // And a second submit really reaches the RPC.
+  mockRpc.mockClear();
+  mockRpc.mockResolvedValue({});
+  await store.submitInteraction("accept");
+  expect(mockRpc).toHaveBeenCalledTimes(1);
 });
 
 test("the owned-instance negative runs with NO pane selected", async () => {
