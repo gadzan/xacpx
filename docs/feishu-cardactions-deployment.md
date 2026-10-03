@@ -36,12 +36,11 @@ capability is gated on it (§5).
       "appId": "cli_xxxx",
       "appSecret": "sxxxx",
       "enabled": true,
-      "configured": true,
       "domain": "feishu",
       // Opt-in. Omit it and this account cannot deliver a form.
       "cardActions": {
-        "encryptKey": "<64-hex>",
-        "verificationToken": "<token>",
+        "encryptKey": "<encrypt-key-from-feishu-console>",
+        "verificationToken": "<token-from-feishu-console>",
         "host": "127.0.0.1",
         "port": 9877,
         "path": "/webhook/card"
@@ -51,12 +50,17 @@ capability is gated on it (§5).
 }
 ```
 
+`configured` is deliberately absent from the sample: it is not part of the
+operator contract. It is derived as `Boolean(appId && appSecret)`
+(`packages/channel-feishu/src/config.ts:190`) on the resolved
+`FeishuResolvedAccountConfig`. Setting it by hand has no effect.
+
 ### Field notes
 
 | Field | Required | Notes |
 |---|---|---|
-| `cardActions.encryptKey` | **yes** | New-protocol signing secret. See §4.2. |
-| `cardActions.verificationToken` | **yes** | URL-verification credential. See §4.2. |
+| `cardActions.encryptKey` | **yes** | New-protocol signing secret + decryption key. Any non-empty string; the repo does not impose a hex/length format. See §4.2. |
+| `cardActions.verificationToken` | **yes** | Legacy signing secret, challenge credential, and the second check on new-protocol actions. See §4.1. |
 | `cardActions.host` | no | Defaults to `127.0.0.1`. See §6. |
 | `cardActions.port` | **yes** | Each account owns its port; a shared port makes accounts fight over one socket. |
 | `cardActions.path` | no, recommended | Route Feishu POSTs to, e.g. `/webhook/card`. |
@@ -144,20 +148,31 @@ If step 2 renders nothing, capability is likely the issue — see §5 and §7.
 
 ---
 
-## 4. Authentication: two paths, two purposes
+## 4. Authentication: four branches
 
-### 4.1 What each credential is for
+### 4.1 What each credential does
 
-| Credential | Verifies | Used by |
+Neither credential has a single "one path each" job. They overlap by design, and
+the table below lists every production branch rather than one line per credential:
+
+| Path | Signature | Token check |
 |---|---|---|
-| `verificationToken` | that the caller is *the Feishu console you configured* | URL verification challenge |
-| `encryptKey` | that the payload was signed by Feishu (new protocol) | real card actions |
+| **URL-verification challenge** (accepted before `verifyCardRequest`) | none — it carries no signature headers | **token equality is the only credential** |
+| **real action, legacy** (no `encrypt`, no `schema`) | `sha1(timestamp + nonce + verificationToken + JSON.stringify(body))` | implicit: the token is *inside* the signed material |
+| **real action, new protocol, unencrypted** | `sha256(... + encryptKey + ...)` | **token equality as a second check**, when a token is configured |
+| **real action, new protocol, encrypted** | `sha256(... + encryptKey + ...)` over the envelope | same second check; then AES decrypt with `encryptKey` |
+
+So `verificationToken` is **not** only the challenge credential — it is the
+legacy signing secret *and* the second layer on new-protocol actions. `encryptKey`
+is the new-protocol signing secret and the decryption key. Both are required
+because dropping either leaves a branch unverifiable.
 
 ### 4.2 Why both are required
 
 They are not redundant.
 
-`verifyCardRequest` picks the signing secret **by protocol**:
+`verifyCardRequest` picks the signing secret **by protocol**
+(`card-action-host.ts:334-336`):
 
 - A callback carrying `encrypt` or `schema` is **new protocol** → verified with
   **SHA-256 over the encrypt key**.
@@ -168,25 +183,38 @@ Every button the renderer emits carries `schema: "2.0"`, so every real click is
 new protocol. That is why `encryptKey` is mandatory: it is the trust anchor for
 the path that actually carries answers.
 
-`verificationToken` is separately required because the **URL-verification
-challenge** arrives with **no signature headers at all** — neither new-protocol
-nor legacy. The echoed token is that handshake's only credential. Without it the
-channel starts, serves every click correctly, and still reports
-"not configured" in the console forever.
+`verificationToken` is required for three separate reasons — the challenge (no
+signature at all), the legacy signing secret, and the second-layer equality check
+on new-protocol actions — so removing it breaks all three.
 
 ### 4.3 Why the token-authenticated challenge is not a bypass
 
 The challenge is recognized **before** `verifyCardRequest()` runs. That is
 deliberate — it matches the official SDK's `autoChallenge`, which also runs before
 `dispatcher.invoke()`. Recognizing an early handshake message does not weaken the
-guard on anything that comes after it:
+guard on anything that comes after it.
 
-- unknown or missing `token` on the challenge → **401**
-- a real card action still must pass the full signature check; the challenge path
-  handles only `type: "url_verification"` and returns immediately after echoing
+Stated precisely, the gate is **two conditions, not three**
+(`extractUrlVerificationChallenge`, `card-action-host.ts:259-273`):
 
-So the ordering is: handshake recognized early, real actions authenticated in
-full. Not: handshake opens a hole.
+```text
+a non-empty string `challenge`
+  AND
+token === verificationToken   (constant-time)
+```
+
+There is **no `type === "url_verification"` check.** The gate does not need one:
+it only ever echoes the challenge back and returns, so a body that happens to
+carry a matching token and a `challenge` field produces an echo and nothing else.
+It cannot reach the renderer, cannot mutate state, and cannot settle an
+interaction. What keeps it safe is what it *does* (nothing), not a discriminantor
+it never reads.
+
+The guard on everything after it is unchanged:
+
+- unknown or missing `token` → **401**
+- a real card action must pass the full signature check, plus the timestamp
+  freshness window, before any payload is trusted
 
 ---
 
@@ -308,7 +336,7 @@ egress IPs.
 | Console says "verification failed" but the token is correct | TLS problem in front: plain HTTP, self-signed cert, or proxy returning a 301 |
 | Clicking a button does nothing | `encryptKey` mismatch (new-protocol signature fails), or the console is on the legacy protocol without the token |
 | Two accounts, one works, one does not | per-account `port` collision; give each its own |
-| Form renders with a field greyed out and Submit disabled | multi-select is refused, not reshaped (§8) |
+| No form appears at all and the elicitation is cancelled as unrenderable | request contains a multi-select field (§8) |
 
 ---
 
