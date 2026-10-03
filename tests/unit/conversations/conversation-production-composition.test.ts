@@ -14,6 +14,10 @@ import { createDirectConversationId } from "../../../src/domain/ids";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { SessionService } from "../../../src/sessions/session-service";
 import { createEmptyState, type AppState } from "../../../src/state/types";
+import type { ConversationRouter, RoutingDecision } from "../../../src/conversations/conversation-router-types";
+import type { Agent } from "../../../src/weixin/agent/interface";
+
+const RESTRICTED = { toolsDisabled: true, filesystemDisabled: true, terminalDisabled: true, permissionInteractionDisabled: true, messagingDisabled: true, orchestrationDisabled: true, structuredOutputOnly: true };
 
 class BarrierStateStore {
   public saved: AppState[] = [];
@@ -70,14 +74,14 @@ function createConfig(): AppConfig {
   };
 }
 
-async function compose(stateStore: BarrierStateStore) {
+async function compose(stateStore: BarrierStateStore, options: { router?: ConversationRouter; agent?: Agent } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "xacpx-compose-"));
   const state = createEmptyState();
   const config = createConfig();
   const stateMutex = new AsyncMutex();
   const sessions = new SessionService(config, stateStore, state, { stateMutex });
   const control = new ControlService({
-    agent: { chat: async () => ({ text: "ok" }) },
+    agent: options.agent ?? { chat: async () => ({ text: "ok" }) },
     sessions,
     activeTurns: { isActiveAnywhere: () => false },
     scheduled: {} as never,
@@ -104,11 +108,106 @@ async function compose(stateStore: BarrierStateStore) {
     }),
     onProductEvent: (event) => kernel.emitConversationProduct(event),
     autoKick: false,
+    ...(options.router ? { router: options.router } : {}),
     stateMutex,
   });
   kernel.bindConversationRuntime(runtime);
   return { state, sessions, control, runtime, stateMutex };
 }
+
+test("real Control automatic prompt returns zero members and same requestId replays the Run", async () => {
+  let decide!: () => void;
+  const router: ConversationRouter = { capabilityRestriction: RESTRICTED, async decide() {
+    await new Promise<void>((resolve) => { decide = resolve; });
+    return { type: "need-human", question: "Choose scope" };
+  } };
+  const { control, runtime } = await compose(new BarrierStateStore(), { router });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+  const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
+  const topic = await control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
+  const request = { conversationId: group.id, topicId: topic.id, requestId: "automatic-api", text: "review", target: { mode: "automatic" as const } };
+  const accepted = await control.promptConversation(request);
+  expect(accepted.memberTurn).toBeUndefined();
+  expect(accepted.memberTurns).toEqual([]);
+  expect(accepted.run.mode).toBe("automatic");
+  const replay = await control.promptConversation(request);
+  expect(replay.reused).toBe(true);
+  expect(replay.run.id).toBe(accepted.run.id);
+  expect(replay.memberTurn).toBeUndefined();
+  expect(replay.memberTurns).toEqual([]);
+  decide();
+  await runtime.runs.awaitRouting();
+  await control.cancelRun(accepted.run.id);
+  expect(runtime.store.getRun(accepted.run.id)?.state).toBe("cancelled");
+  await runtime.shutdown();
+});
+
+test("real automatic permission failure produces durable structured blocked-step evidence", async () => {
+  const { control, runtime } = await compose(new BarrierStateStore(), {
+    agent: { async chat() { throw Object.assign(new Error("permission blocked"), { code: "RUNTIME_PERMISSION_DENIED" }); } },
+    router: { capabilityRestriction: RESTRICTED, async decide(input) { return { type: "dispatch", mode: "single", assignments: [{ id: "write", botId: input.memberMetadata[0]!.botId, task: "write", triggerMessageIds: [] }] }; } },
+  });
+  const bot = await control.createBot({ name: "Writer", agent: "codex", workspace: "backend" });
+  const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+  const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
+  const topic = await control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
+  const accepted = await control.promptConversation({ conversationId: group.id, topicId: topic.id, requestId: "blocked-api", text: "write", target: { mode: "automatic" } });
+  await runtime.runs.awaitRouting();
+  await runtime.dispatcher.kick();
+  const turn = runtime.store.listMemberTurns(accepted.run.id)[0]!;
+  expect(turn.state).toBe("failed");
+  expect(turn.blockedReason).toBe("human-authority-unknown");
+  expect(turn.origin).toBe("router");
+  expect((await control.getRun(accepted.run.id)).memberTurns[0]?.blockedReason).toBe("human-authority-unknown");
+  await runtime.shutdown();
+});
+
+test("remove then delete during production routing fails durably and releases the Topic", async () => {
+  let calls = 0;
+  let resolveDecision!: (decision: RoutingDecision) => void;
+  let enterRouter!: () => void;
+  const entered = new Promise<void>((resolve) => { enterRouter = resolve; });
+  const decision = new Promise<RoutingDecision>((resolve) => { resolveDecision = resolve; });
+  const router: ConversationRouter = { capabilityRestriction: RESTRICTED, async decide() {
+    if (++calls > 1) return { type: "complete", reason: "successor completed" };
+    enterRouter(); return decision;
+  } };
+  const { control, runtime, state } = await compose(new BarrierStateStore(), { router });
+  try {
+    const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+    const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+    const builder = await control.createBot({ name: "Builder", agent: "codex", workspace: "backend" });
+    const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id, builder.id] });
+    const topic = await control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
+    const accepted = await control.promptConversation({ conversationId: group.id, topicId: topic.id,
+      requestId: "remove-delete-router", text: "review", target: { mode: "automatic" } });
+    await entered;
+    await control.updateGroup(group.id, { botIds: [helper.id, builder.id] });
+    await control.deleteBot(bot.id);
+    expect(state.bots[bot.id]).toBeUndefined();
+    const next = await control.promptConversation({ conversationId: group.id, topicId: topic.id,
+      requestId: "after-remove-delete", text: "next", target: { mode: "automatic" } });
+    await runtime.dispatcher.kick();
+    expect(runtime.store.getRun(next.run.id)?.state).toBe("queued");
+    resolveDecision({ type: "dispatch", mode: "single", assignments: [
+      { id: "stale", botId: bot.id, task: "review", triggerMessageIds: [] },
+    ] });
+    await runtime.runs.awaitRouting();
+    const failed = await control.getRun(accepted.run.id);
+    expect(failed.state).toBe("failed");
+    expect(failed.completionReason).toBe("router_unknown_member");
+    expect(failed.routingState).toBe("done");
+    expect(failed.memberTurns).toEqual([]);
+    expect(runtime.store.listDispatchesForRun(accepted.run.id)).toEqual([]);
+    expect(runtime.store.getRun(next.run.id)?.state).toBe("completed");
+    expect(runtime.store.getRun(next.run.id)?.completionReason).toBe("successor completed");
+    expect(calls).toBe(2);
+  } finally {
+    resolveDecision({ type: "complete", reason: "test cleanup" });
+    await runtime.shutdown();
+  }
+});
 
 test("Conversation COW snapshot then Session create keeps both domains", async () => {
   const store = new BarrierStateStore();
@@ -193,4 +292,105 @@ test("shutdown waits for in-flight createTopic persist and shares one promise", 
   await new Promise((resolve) => setTimeout(resolve, 20));
   expect(store.saved.length).toBe(writesAtShutdown);
   await expect(control.createTopic(conversationId, "later")).rejects.toMatchObject({ code: "runtime_closed" });
+});
+
+test("production composition wires a capability-proven Router and refuses an unprovable one", async () => {
+  const restricted = {
+    toolsDisabled: true,
+    filesystemDisabled: true,
+    terminalDisabled: true,
+    permissionInteractionDisabled: true,
+    messagingDisabled: true,
+    orchestrationDisabled: true,
+    structuredOutputOnly: true,
+  };
+  for (const [label, router] of [
+    ["provable", { capabilityRestriction: restricted, decide: async () => ({ type: "complete" as const, reason: "x" }) }],
+    ["unprovable", { capabilityRestriction: { ...restricted, toolsDisabled: false }, decide: async () => ({ type: "complete" as const, reason: "x" }) }],
+    ["no-decide", { capabilityRestriction: restricted }],
+  ] as const) {
+    const store = new BarrierStateStore();
+    const dir = mkdtempSync(join(tmpdir(), "xacpx-router-wire-"));
+    const state = createEmptyState();
+    const config = createConfig();
+    const stateMutex = new AsyncMutex();
+    const sessions = new SessionService(config, store, state, { stateMutex });
+    const control = new ControlService({
+      agent: { chat: async () => ({ text: "ok" }) },
+      sessions,
+      activeTurns: { isActiveAnywhere: () => false },
+      scheduled: {} as never,
+      orchestration: {} as never,
+      events: createControlEventBus(),
+      workspaces: { list: () => [] },
+    } as never);
+    const kernel = conversationKernel(control);
+    const runtime = await createConversationRuntime({
+      config,
+      state,
+      stateStore: store,
+      sessions,
+      control: kernel,
+      sqlitePath: join(dir, "conversations.sqlite"),
+      releaseOwnedSession: createProductionOwnedSessionRelease({
+        sessions,
+        transport: { async deleteSession() {}, async releaseLogicalSession() {} },
+      }),
+      onProductEvent: (event) => kernel.emitConversationProduct(event),
+      autoKick: false,
+      stateMutex,
+      ...(router === undefined ? {} : { router }),
+    });
+    kernel.bindConversationRuntime(runtime);
+    await runtime.activateAfterConsumerLock();
+    // A provable Router is accepted; everything else is dropped, so automatic
+    // mode stays unsupported rather than running a Router that could act.
+    if (label === "provable") {
+      await expect(control.promptConversation({
+        conversationId: "conversation_missing",
+        topicId: "topic_missing",
+        requestId: "req-missing",
+        text: "x",
+        target: { mode: "automatic" },
+      })).rejects.toMatchObject({ code: "conversation_not_found" });
+    }
+    await runtime.shutdown();
+  }
+});
+
+test("production composition with no Router leaves automatic mode unsupported", async () => {
+  const store = new BarrierStateStore();
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-norouter-"));
+  const state = createEmptyState();
+  const config = createConfig();
+  const stateMutex = new AsyncMutex();
+  const sessions = new SessionService(config, store, state, { stateMutex });
+  const control = new ControlService({
+    agent: { chat: async () => ({ text: "ok" }) },
+    sessions,
+    activeTurns: { isActiveAnywhere: () => false },
+    scheduled: {} as never,
+    orchestration: {} as never,
+    events: createControlEventBus(),
+    workspaces: { list: () => [] },
+  } as never);
+  const kernel = conversationKernel(control);
+  const runtime = await createConversationRuntime({
+    config,
+    state,
+    stateStore: store,
+    sessions,
+    control: kernel,
+    sqlitePath: join(dir, "conversations.sqlite"),
+    releaseOwnedSession: createProductionOwnedSessionRelease({
+      sessions,
+      transport: { async deleteSession() {}, async releaseLogicalSession() {} },
+    }),
+    onProductEvent: (event) => kernel.emitConversationProduct(event),
+    autoKick: false,
+    stateMutex,
+  });
+  kernel.bindConversationRuntime(runtime);
+  await runtime.activateAfterConsumerLock();
+  await runtime.shutdown();
 });

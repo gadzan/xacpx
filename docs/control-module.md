@@ -92,6 +92,8 @@
 | `gitCreateWorktree` | 在 daemon 管理的 `~/.xacpx/worktrees` 下创建 worktree，并注册为 workspace；同名 workspace 的检查、创建、注册与补偿按名称串行，注册失败会回滚 worktree，补偿本身失败则以 `workspace-registration-rollback-failed` 显式报告。 |
 | `get events()` | 返回注入的 `ControlEventBus` 实例，供消费者订阅事件。 |
 
+Group automatic accept/replay 支持零成员：响应包含 `memberTurns: []`，singular `memberTurn` 缺省；已有成员时才投影 singular 首项。重复 `requestId` 先返回 durable Run，再考虑当前 Router 配置与 live membership。零成员 Run 可取消、可 teardown；waiting-human 的 `finishedAt` 只在实际结束时写入。运行时 typed permission failure 的 structured `blockedReason` 会从 Control execution port 经 runner 落盘，公开 API 不允许 caller 注入来源或升级 authority。
+
 ## 注入方式
 
 `buildApp`（`src/main.ts`）在组装 `AppRuntime` 时构造 `ControlService`，挂在

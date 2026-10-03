@@ -766,6 +766,7 @@ export class TurnQueue {
       ok: result!.ok,
       ...(result!.text !== undefined ? { text: result!.text } : {}),
       ...(result!.errorMessage !== undefined ? { errorMessage: result!.errorMessage } : {}),
+      ...(result!.blockedReason ? { blockedReason: result!.blockedReason } : {}),
       ...(result!.cancelled ? { cancelled: true } : {}),
     };
   }

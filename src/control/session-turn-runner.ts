@@ -44,6 +44,7 @@ export interface TurnRequest {
 
 export interface TurnResult {
   ok: boolean;
+  blockedReason?: "human-authority-required" | "human-authority-unknown";
   text?: string;
   errorMessage?: string;
   /** Proven user-Stop / abort cancellation. Idle-timeout aborts omit this. */
@@ -447,6 +448,13 @@ export class SessionTurnRunner {
       // it distinct from a user Stop (which aborts with no reason → cancelled:true).
       const timedOut = signal.reason === TURN_IDLE_TIMEOUT_REASON;
       const errorMessage = timedOut ? "Turn timed out due to inactivity" : toErrorMessage(error);
+      // A provider's typed permission failure is evidence of a blocked
+      // non-human step. It does not prove that a human would be allowed, so
+      // preserve that uncertainty rather than guessing from error text.
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      const blockedReason = req.conversation && req.turnOrigin !== "human" && !signal.aborted
+        && (code === "RUNTIME_PERMISSION_DENIED" || code === "PERMISSION_DENIED")
+        ? "human-authority-unknown" as const : undefined;
       toolBatcher.flush();
       this.deps.events.emit({
         type: "turn-finished",
@@ -461,6 +469,7 @@ export class SessionTurnRunner {
       return {
         ok: false,
         errorMessage,
+        ...(blockedReason ? { blockedReason } : {}),
         ...(!timedOut && signal.aborted ? { cancelled: true } : {}),
         ...(internalAlias && priorTransportSession
           ? { postTurnDetection: { internalAlias, priorTransportSession } }

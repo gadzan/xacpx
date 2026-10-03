@@ -2,6 +2,7 @@ import type { BotProfileSnapshot } from "../bots/bot-types";
 import type {
   ConversationMessage,
   ConversationRun,
+  ConversationRoutingState,
   HumanIngressContext,
   MemberTurnEffect,
   MemberTurnEffectProvenance,
@@ -100,10 +101,10 @@ export interface AcceptRequestResult {
   reused: boolean;
   message: ConversationMessage;
   run: ConversationRun;
-  memberTurn: MemberTurnRecord;
-  dispatch: PendingDispatch;
-  /** Every accepted member in durable order (first entry mirrors the legacy
-   *  singular `memberTurn`/`dispatch`). Single-member accepts hold one. */
+  memberTurn?: MemberTurnRecord;
+  dispatch?: PendingDispatch;
+  /** Every durable member in order. Automatic accepts may hold zero, with
+   *  singular fields absent; later replay can include Router-created batches. */
   memberTurns: MemberTurnRecord[];
   /** One pending dispatch intent per member, same order as `memberTurns`. */
   dispatches: PendingDispatch[];
@@ -179,6 +180,7 @@ export interface FailExecutionInput {
   memberTurnId: string;
   now: string;
   reason: string;
+  blockedReason?: MemberTurnRecord["blockedReason"];
   terminalState?: Extract<ConversationRun["state"], "failed" | "cancelled" | "indeterminate">;
   /** Whole-Run human cancel path: settle the batch to its terminal outcome
    *  even on automatic Runs (which otherwise stay running for the Router). */
@@ -241,13 +243,69 @@ export interface AssertLiveDispatchForMaterializeInput extends ClaimFenceInput {
 
 export interface CancelRunResult {
   run: ConversationRun;
-  memberTurn: MemberTurnRecord;
-  dispatch: PendingDispatch;
+  memberTurn?: MemberTurnRecord;
+  dispatch?: PendingDispatch;
   alreadyTerminal: boolean;
   executionStarted: boolean;
   /** Every started-but-unsettled member at cancel time (durable order).
    *  Empty when nothing was executing. The dispatcher cancels each exactly. */
   activeMembers: MemberTurnRecord[];
+}
+
+/** One validated Router assignment, as committed durably by
+ *  `applyRoutingDecision`. Structure was validated by the Router gate;
+ *  membership/dependency/budget were validated against the live Run state. */
+export interface RoutingAssignmentInput {
+  id: string;
+  botId: string;
+  task: string;
+  expectedOutput?: string;
+  dependsOn?: string[];
+  triggerMessageIds: string[];
+  /** Accepted execution snapshot for THIS member, derived at routing time from
+   *  the live Bot profile and the Topic's ExecutionTarget (the same seam
+   *  `snapshotGroupMemberProfile` provides for explicit accepts). Required:
+   *  a router-selected member must execute against the Bot it was actually
+   *  assigned to, never the Run's snapshot carrier. */
+  profileSnapshot: BotProfileSnapshot;
+}
+
+export interface ApplyRoutingDecisionInput {
+  runId: string;
+  /** Ownership of the routing cycle, minted durably before calling Router. */
+  routingGeneration: number;
+  now: string;
+  decision:
+    | {
+        type: "dispatch";
+        mode: "single" | "parallel" | "sequential";
+        assignments: RoutingAssignmentInput[];
+      }
+    | { type: "need-human"; question: string }
+    | { type: "complete"; reason: string; synthesisBotId?: string };
+  /** Live Conversation request boundary for this Run (newest seq). Every
+   *  assignment's `triggerMessageIds` are validated against public rows of
+   *  this Conversation+Topic before any durable write. */
+  requestMessageId: string;
+}
+
+export interface ApplyRoutingDecisionResult {
+  run: ConversationRun;
+  memberTurns: MemberTurnRecord[];
+  dispatches: PendingDispatch[];
+  /** Terminal Run states applied by this call (`waiting-human` for need-human,
+   *  `completed` for complete). Absent for dispatch — that stays nonterminal. */
+  terminal?: ConversationRun["state"];
+}
+
+export interface RoutingDecisionRecord {
+  runId: string;
+  decisionType: "dispatch" | "need-human" | "complete";
+  mode?: "single" | "parallel" | "sequential";
+  question?: string;
+  reason?: string;
+  assignmentIds: string[];
+  at: string;
 }
 
 /**
@@ -287,6 +345,8 @@ export interface ConversationStore {
   listMessages(query: ListMessagesQuery): ConversationMessage[];
   getMemberTurn(memberTurnId: string): MemberTurnRecord | undefined;
   listMemberTurns(runId: string): MemberTurnRecord[];
+  /** Exact public result join using the minted durable execution identity. */
+  getMemberResult(turn: MemberTurnRecord): ConversationMessage | undefined;
   getDispatchForRun(runId: string): PendingDispatch | undefined;
   getDispatchForMemberTurn(memberTurnId: string): PendingDispatch | undefined;
   listDispatchesForRun(runId: string): PendingDispatch[];
@@ -344,7 +404,43 @@ export interface ConversationStore {
   completeExecution(input: CompleteExecutionInput): CompleteExecutionResult;
   failExecution(input: FailExecutionInput): ConversationRun;
   failClaimBeforeStart(input: FailClaimBeforeStartInput): ConversationRun;
+  /**
+   * PR8: settle a whole automatic Run to a terminal state with a durable
+   * completion reason, independent of any single member (used when routing
+   * itself fails, when the Router is rejected, or budget is exhausted).
+   * Terminal Runs and non-automatic Runs are refused.
+   */
+  failRun(runId: string, reason: string, state: "failed", now: string, routingGeneration?: number): ConversationRun;
   cancelRun(runId: string, now: string, reason?: string): CancelRunResult;
+  /**
+   * Acquire the next automatic routing generation (state must be routing).
+   * Refuses terminal/waiting/deleting Runs, unsettled members and earlier
+   * Topic owners. Decision commit owns dispatching/done transitions.
+   */
+  markRoutingState(runId: string, state: ConversationRoutingState, now: string): ConversationRun;
+  /**
+   * Commit one validated Router decision durably (plan §11.4/§11.5):
+   * `dispatch` inserts one MemberTurn + one pending dispatch per assignment in
+   * the next batch (origin `router`, orchestration provenance — never human),
+   * `need-human` settles the Run as `waiting-human`, and `complete` settles it
+   * `completed`. Rejects assignments that do not map to the Run's public
+   * transcript, unknown Bots, duplicate assignment ids, budget overruns, and
+   * a stale routing generation on ALL decision variants. Re-acquiring routing
+   * after a crash mints a new generation, fencing every older model call.
+   */
+  applyRoutingDecision(input: ApplyRoutingDecisionInput): ApplyRoutingDecisionResult;
+  /** Durable audit of each Router decision taken for this Run (audit only;
+   *  never read for scheduling decisions). */
+  listRoutingDecisions(runId: string): RoutingDecisionRecord[];
+  /**
+   * PR8: automatic Runs that durable rows prove still owe a routing decision —
+   * nonterminal, mode automatic, no other Run holding the Topic, and no
+   * unsettled member in the Run's ACTIVE batch (a batch that is still
+   * executing routes from its own settle hook, not from recovery). Consumed
+   * at activation so a crash between "Router asked" and "decision committed"
+   * re-derives from rows alone.
+   */
+  automaticRunsAwaitingRouting(): Array<{ run: ConversationRun; batchMembers: MemberTurnRecord[] }>;
   completeCancel(runId: string, memberTurnId: string, now: string, indeterminate?: boolean, forceRunTerminal?: boolean): ConversationRun;
   /** Two-phase cancel settlement: persist every member's observed physical
    *  cancel outcome as member evidence first (completed evidence, failed

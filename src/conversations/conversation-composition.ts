@@ -15,6 +15,9 @@ import type { StateStore } from "../state/state-store";
 import type { AppState } from "../state/types";
 import type { SessionTransport } from "../transport/types";
 import { ConversationDispatcher } from "./conversation-dispatcher";
+import { conversationExecutionOrigin } from "./conversation-execution";
+import { bindRouter } from "./conversation-router-gate";
+import { ConversationRouterEngine } from "./conversation-router-engine";
 import { ConversationRunService } from "./conversation-run-service";
 import { ControlConversationTurnRunner } from "./conversation-turn-runner";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
@@ -56,6 +59,12 @@ export interface CreateConversationRuntimeInput {
   authorityEpoch?: string;
   ownerId?: string;
   autoKick?: boolean;
+  /**
+   * PR8 stateless automatic Router. Only an implementation that proves its
+   * capability restriction before execution is accepted; anything else
+   * (including a permissive default) leaves automatic mode unsupported.
+   */
+  router?: unknown;
   /**
    * Daemon-wide AppState COW mutex. Must be the same instance passed to
    * SessionService / Orchestration. Do not invent a Conversation-only mutex.
@@ -104,6 +113,25 @@ export async function createConversationRuntime(
     // failure) stays parked instead of draining through a direct kick.
     runsRef?.wakePendingWork();
   });
+  // PR8 automatic Router. Built ONLY from a capability-provable implementation
+  // supplied by the wire-in: an absent router leaves `automatic` targets
+  // unsupported (`automatic_unsupported`), which preserves PR7 behavior for
+  // every deployment that has not opted in. `bindRouter` refuses any object
+  // that cannot prove its restriction up front — never a permissive default.
+  const router = bindRouter(input.router);
+  const routerEngine = router
+    ? new ConversationRouterEngine(router, {
+      store,
+      readGroup: (conversationId) => input.state.conversations[conversationId],
+      readTopic: (conversationId, topicId) => {
+        const topic = input.state.conversation_topics[topicId];
+        return topic?.conversationId === conversationId ? topic : undefined;
+      },
+      readBot: (botId) => bots.getBot(botId),
+      runLifecycleAll: (botIds, critical) => bots.runLifecycleAll(botIds, critical),
+      now: input.now ?? (() => new Date()),
+    })
+    : undefined;
   const dispatcher = new ConversationDispatcher(store, botRuntime, runner, input.sessions, {
     authorityEpoch: input.authorityEpoch ?? randomUUID(),
     ...(input.ownerId ? { ownerId: input.ownerId } : {}),
@@ -127,11 +155,19 @@ export async function createConversationRuntime(
     {
       releaseOwnedSession: input.releaseOwnedSession,
       autoKick: input.autoKick ?? true,
+      ...(routerEngine ? { routerEngine } : {}),
       ...(input.onProductEvent ? { onProductEvent: input.onProductEvent } : {}),
       ...shared,
     },
   );
   runsRef = runs;
+  // PR8 automatic continuation: the dispatcher hands a settled automatic batch
+  // back to the routing service, which owns the Router call and the durable
+  // decision. Fire-and-forget from the dispatcher's perspective — routing never
+  // blocks a dispatch settlement, and a duplicate kick is a no-op.
+  dispatcher.setAutomaticRoutingHandler((runId) => {
+    runs.trackAutomaticRouting(runId);
+  });
   let lifecycle: "open" | "stopping" | "closed" = "open";
   let activeOps = 0;
   const idleWaiters: Array<() => void> = [];

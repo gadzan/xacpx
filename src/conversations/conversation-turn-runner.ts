@@ -30,6 +30,7 @@ export interface ConversationTurnRunInput {
 
 export interface ConversationTurnRunResult {
   status: "completed" | "cancelled" | "failed";
+  blockedReason?: "human-authority-required" | "human-authority-unknown";
   text?: string;
   queueItemId?: string;
   error?: string;
@@ -276,7 +277,8 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
       return { status: "cancelled", queueItemId: result.queueItemId };
     }
     if (!result.ok) {
-      return { status: "failed", error: result.errorMessage ?? "prompt_failed", queueItemId: result.queueItemId };
+      return { status: "failed", error: result.errorMessage ?? "prompt_failed", queueItemId: result.queueItemId,
+        ...(result.blockedReason ? { blockedReason: result.blockedReason } : {}) };
     }
     return {
       status: "completed",

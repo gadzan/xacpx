@@ -51,7 +51,14 @@ export interface GroupLiveTurn {
 
 export type GroupTargetSelection =
   | { mode: "members"; botIds: string[] }
-  | { mode: "everyone" };
+  | { mode: "everyone" }
+  /** PR8 automatic routing: no human-selected member, the durable Run is
+   *  accepted with zero MemberTurns and the capability-restricted Router
+   *  decides each step. The state seam exists here; the composer affordance
+   *  that CREATES this selection is separate UX work. A server that rejects
+   *  automatic mode (`automatic_unsupported`) keeps the selection honest by
+   *  failing the prompt rather than silently downgrading it. */
+  | { mode: "automatic" };
 
 export type GroupErrorCode =
   | "connectorOutdated"
@@ -205,6 +212,21 @@ function mergeRun(current: ConversationRunDto | null, incoming: ConversationRunD
   if (!shouldUpdateRunState(current.state, incoming.state)) {
     return current;
   }
+  // PR8 routing substate and progress fields the incoming snapshot omits (an
+  // older connector, or a projection built before the field existed) must not
+  // erase the stored value: `routingState` is durable server state, not UI
+  // state, and losing it re-opens "unknown" on a Run whose routing decision
+  // is already known.
+  const merged: ConversationRunDto = { ...incoming };
+  if (merged.routingState === undefined) merged.routingState = current.routingState;
+  if (merged.activeBatch === undefined) merged.activeBatch = current.activeBatch;
+  if (merged.maxMemberTurns === undefined) merged.maxMemberTurns = current.maxMemberTurns;
+  if (merged.consumedMemberTurns === undefined) merged.consumedMemberTurns = current.consumedMemberTurns;
+  if (merged.failedBotIds === undefined) merged.failedBotIds = current.failedBotIds;
+  if (merged.unavailableBotIds === undefined) merged.unavailableBotIds = current.unavailableBotIds;
+  if (merged.startedAt === undefined) merged.startedAt = current.startedAt;
+  if (merged.finishedAt === undefined) merged.finishedAt = current.finishedAt;
+  if (merged.completionReason === undefined) merged.completionReason = current.completionReason;
   // Same-state indeterminate snapshots still carry new evidence (failedBotIds
   // union, progress, timestamps): merge monotonically instead of swapping, so
   // a thinner stored snapshot never erases a richer one.
@@ -212,12 +234,11 @@ function mergeRun(current: ConversationRunDto | null, incoming: ConversationRunD
     const union = (...lists: Array<string[] | undefined>): string[] | undefined => {
       const seen: Record<string, true> = {};
       for (const list of lists) for (const id of list ?? []) seen[id] = true;
-      const merged = Object.keys(seen);
-      return merged.length > 0 ? merged : undefined;
+      const mergedIds = Object.keys(seen);
+      return mergedIds.length > 0 ? mergedIds : undefined;
     };
     return {
-      ...incoming,
-      ...current,
+      ...merged,
       state: "indeterminate",
       completionReason: incoming.completionReason ?? current.completionReason,
       failedBotIds: union(current.failedBotIds, incoming.failedBotIds),
@@ -226,7 +247,7 @@ function mergeRun(current: ConversationRunDto | null, incoming: ConversationRunD
       finishedAt: current.finishedAt ?? incoming.finishedAt,
     };
   }
-  return incoming;
+  return merged;
 }
 
 const MEMBER_TURN_STATE_PRECEDENCE: Record<MemberTurnSummaryDto["state"], number> = {
@@ -276,6 +297,10 @@ function mergeMemberTurn(current: MemberTurnSummaryDto | null, incoming: MemberT
     if (merged.task === undefined) merged.task = incoming.task;
     if (merged.expectedOutput === undefined) merged.expectedOutput = incoming.expectedOutput;
     if (merged.dependsOn === undefined) merged.dependsOn = incoming.dependsOn;
+    // PR8 blocked-step evidence is durable server state: a stale row that
+    // omits it must not clear a turn the server marked as needing
+    // human-origin authority.
+    if (merged.blockedReason === undefined) merged.blockedReason = incoming.blockedReason;
     return merged;
   }
   return incoming;
@@ -563,7 +588,11 @@ export const useGroupsStore = defineStore("groups", () => {
   function resolveTarget(): { target: ConversationTargetDto } | { error: "targetRequired" | "targetEmpty" } {
     const selection = targetSelection.value;
     if (!selection) return { error: "targetRequired" };
+    // PR8: automatic is a first-class wire target, not an empty member list.
+    // Never synthesize `members: []` for it — that is a malformed target, not
+    // an automatic Run.
     if (selection.mode === "everyone") return { target: { mode: "everyone" } };
+    if (selection.mode === "automatic") return { target: { mode: "automatic" } };
     const deduped = [...new Set(selection.botIds)];
     if (deduped.length === 0) return { error: "targetEmpty" };
     return { target: { mode: "members", botIds: deduped } };
@@ -586,6 +615,8 @@ export const useGroupsStore = defineStore("groups", () => {
   function setTarget(selection: GroupTargetSelection): void {
     if (selection.mode === "members") {
       targetSelection.value = { mode: "members", botIds: [...new Set(selection.botIds)] };
+    } else if (selection.mode === "automatic") {
+      targetSelection.value = { mode: "automatic" };
     } else {
       targetSelection.value = { mode: "everyone" };
     }
@@ -593,7 +624,9 @@ export const useGroupsStore = defineStore("groups", () => {
 
   function toggleTargetMember(botId: string): void {
     const current = targetSelection.value;
-    if (!current || current.mode === "everyone") {
+    // Automatic and everyone both mean "no member list yet": picking a member
+    // from either is an explicit human selection and replaces it.
+    if (!current || current.mode === "everyone" || current.mode === "automatic") {
       targetSelection.value = { mode: "members", botIds: [botId] };
       return;
     }
@@ -612,9 +645,10 @@ export const useGroupsStore = defineStore("groups", () => {
       targetSelection.value = { mode: "members", botIds: [botId] };
       return;
     }
-    if (current.mode === "everyone") {
-      // Explicit mention narrows the target back to members: a Group stay in
-      // everyone mode would ignore every later `@Name`.
+    if (current.mode === "everyone" || current.mode === "automatic") {
+      // Explicit mention narrows the target back to members: staying in
+      // everyone (or letting the Router decide) would ignore every later
+      // `@Name`.
       targetSelection.value = { mode: "members", botIds: [botId] };
       return;
     }
@@ -1802,7 +1836,7 @@ export const useGroupsStore = defineStore("groups", () => {
         latestPlanRunId.value = promptOwner.id;
       } else if (acceptOverwritesOwner) {
         activeRun.value = mergeRun(activeRun.value, res.run);
-        const turns = res.memberTurns?.length ? res.memberTurns : [res.memberTurn];
+        const turns = res.memberTurns ?? (res.memberTurn ? [res.memberTurn] : []);
         memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, turns);
       }
       const adoptedRun = activeRun.value;
@@ -1826,7 +1860,7 @@ export const useGroupsStore = defineStore("groups", () => {
         if (isFreshRun) {
           const now = Date.now();
           const next: Record<string, GroupLiveTurn> = {};
-          const turns = res.memberTurns?.length ? res.memberTurns : [res.memberTurn];
+          const turns = res.memberTurns ?? (res.memberTurn ? [res.memberTurn] : []);
           for (const turn of turns) {
             next[turn.id] = {
               parts: [],

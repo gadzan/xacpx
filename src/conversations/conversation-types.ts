@@ -28,6 +28,25 @@ export type ConversationRunState =
   | "cancelled"
   | "indeterminate";
 
+/**
+ * PR8 automatic Run routing substate (design §12 / plan §11.4). Durable and
+ * per-Run, covering only `mode="automatic"` Runs; explicit Runs always read
+ * `idle` because they never route.
+ *
+ * `queued`        durable accepted, awaiting the first route
+ * `routing`       a routing decision is being computed (lease-style: the
+ *                 durable marker proves intent; a crash mid-route simply
+ *                 re-routes, because deciding has no side effects)
+ * `dispatching`   the Router committed work: durable MemberTurns exist and
+ *                 own the Run until they terminal
+ *
+ * Restart rule: any non-terminal routing state re-derives from durable
+ * evidence (no in-flight memory). `dispatching` waits for MemberTurns;
+ * `routing`/`queued` recomputes the decision. Termination only moves
+ * `routing` to `done` alongside a terminal Run state — it never reopens it.
+ */
+export type ConversationRoutingState = "queued" | "routing" | "dispatching" | "done";
+
 /** Durable MemberTurn provenance: WHO caused this turn. Distinct from the
  *  permission-interaction origin (human vs orchestration), which is derived
  *  per-dispatch from authorityEpoch + human ingress. Fresh orchestration work
@@ -116,6 +135,14 @@ export interface ConversationRun {
   state: ConversationRunState;
   completionReason?: string;
   generation: number;
+  /**
+   * PR8 automatic-Run routing substate. Automatic Runs only; explicit Runs
+   * always read absent and never route. Durable so restart behavior is derived
+   * from rows alone (see ConversationRoutingState).
+   */
+  routingState?: ConversationRoutingState;
+  /** Store-owned CAS token for automatic routing, independent of dispatch generation. */
+  routingGeneration?: number;
   /** Currently executing batch. Absent (direct legacy) means batch 1. */
   activeBatch?: number;
   maxMemberTurns: number;
@@ -177,6 +204,14 @@ export interface MemberTurnRecord {
   /** How `effect` was established. Present exactly when `effect` was
    *  explicitly declared; absent means unproven (`unknown`). */
   effectProvenance?: MemberTurnEffectProvenance;
+  /**
+   * PR8 structured blocked-step evidence for an automatic MemberTurn that
+   * cannot proceed because the next step needs human-origin authority
+   * (design §16 "[Start this step myself]"). Durable so the UX survives
+   * reconnect/restart. Never an authority upgrade: the turn keeps its
+   * orchestration origin and the human creates a NEW explicit request.
+   * Absent means the turn is not permission-blocked. */
+  blockedReason?: "human-authority-required" | "human-authority-unknown";
 }
 
 /** Server-derived authenticated human ingress. Clients cannot mint this. */
