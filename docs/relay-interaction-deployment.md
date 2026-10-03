@@ -31,7 +31,8 @@ Concretely:
 core (Direct Bot agent)
   │  needs a human decision
   ▼
-RelayChannel.requestElicitation()          packages/channel-relay/src/relay-interaction.ts
+RelayChannel.requestElicitation()        packages/channel-relay/src/channel.ts
+  │  (field/outcome helpers: packages/channel-relay/src/relay-interaction.ts)
   │  MSG.interactionRequest  (connector → hub, long-lived RPC)
   ▼
 hub registry                               packages/relay/src/interaction-registry.ts
@@ -183,7 +184,7 @@ cancellation, not an error.
 | Answer after `expiresAt` | rejected; the interaction is already gone | a 409 on submit, and the form is retired |
 | Connector withdraws | hub closes the interaction, notifies browsers | form closed as withdrawn |
 | Window expires | hub closes as expired, notifies browsers | form closed |
-| Hub loses the route (restart / lease) | **cancel**, fail-closed | a cancellation notice, not an error |
+| **Core** loses the exact human route (core restart / lease expiry / a recovered claim on the interaction) | **cancel**, fail-closed | a cancellation notice, not an error — governed by the core conversation-authority model (`authorityEpoch`), not by the hub |
 | Hub restarts with in-flight interactions | they disappear; the connector's pending RPC fails | the agent turn ends without an answer |
 
 The last two rows are the current semantics and are **not** durability. Making an
@@ -214,9 +215,18 @@ notifies a listener from **every** closer, so there is no silent path.
 |---|---|
 | Production code path exercised | yes — `packages/relay/src/interaction-registry.ts` is the shipped registry, and the responder stamp is the only place identity is added |
 | Injected / loopback transport verified | yes — the relay suites drive the real registry and a real gateway subscription over loopback |
+| **Production-shaped full chain, over loopback** | yes — `tests/unit/packages/channel-relay/relay-elicitation-browser-delivery.test.ts` drives the real `RelayChannel`, the real `RelayClient` framing, a real connector WebSocket, the real `InstanceGateway` and `InteractionRegistry`, the real `WebGateway` subscription fence, a real browser WebSocket, and the full response round trip. The M4 closure calls this the genuine full-chain coverage. |
 | Real platform round trip | **not exercised** — no live relay deployment with a real connector and a real Direct Bot agent in the authoring environment |
 
-The production-shaped chain (broker → relay channel → real RelayClient framing →
-authenticated connector socket → hub registry → real WebGateway subscription →
-browser store → response → hub stamp → connector → original broker) is a design
-requirement of the next capability, not a claim of this runbook.
+The distinction is environment, not code path. What the loopback test already
+covers is the whole production-shaped chain:
+
+```text
+RelayChannel → RelayClient → real connector WebSocket → InstanceGateway
+→ InteractionRegistry → WebGateway subscription fence → real browser WebSocket
+→ answer → hub stamp → connector → back to the channel
+```
+
+What remains unexercised is only a real deployed hub, browser, and connector
+stack — DNS, TLS, multi-process deployment, hub restart across hosts. That is a
+deployment-environment gap, not a shape gap.

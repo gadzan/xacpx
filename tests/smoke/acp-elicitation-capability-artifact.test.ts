@@ -186,6 +186,15 @@ test("relay bundle: the connector hello advertises the interaction capability it
   // resolves a deferred, so the test unblocks on the real signal rather than on a
   // guessed duration. A timing-out wait then points at "registration never
   // happened", which is the failure being tested.
+  //
+  // That wait has its own deadline because both branches of the race are
+  // permanent-pending promises when registration never happens. Without a branch
+  // of our own, that regressor fails at Bun's generic test-level timeout — a wall
+  // clock, not a diagnostic. The deadline below is bounded comfortably under the
+  // test-level timeout (5000ms) so OUR message is the one that fires, and it is
+  // cleared as soon as registration resolves, so it costs nothing on the passing
+  // path and never keeps the event loop alive.
+  const REGISTRATION_DEADLINE_MS = 2000;
   const RelayChannel = findChannelClass(requirePack("packages/channel-relay/dist/index.js"));
 
   const registration = Promise.withResolvers<readonly string[]>();
@@ -212,13 +221,40 @@ test("relay bundle: the connector hello advertises the interaction capability it
   } as never);
 
   let caps: readonly string[] | undefined;
+  // Owned by the caller rather than by the assertions, so the distinguishing
+  // message survives even though the value it guards is undefined either way.
+  let timedOut = false;
+  const deadline = new Promise<never>((_, reject) => {
+    const timer = setTimeout(() => {
+      timedOut = true;
+      reject(
+        new Error(
+          `connector registration never happened within ${REGISTRATION_DEADLINE_MS}ms`,
+        ),
+      );
+    }, REGISTRATION_DEADLINE_MS);
+    // Clear on the path we actually want to settle on; an uncleaned timer would
+    // both keep the runtime alive and, in a shared runner, fire into another
+    // test's window.
+    registration.promise.finally(() => clearTimeout(timer), () => clearTimeout(timer));
+  });
   try {
     caps = await Promise.race([
       registration.promise,
       // A bare rejection of the start path is not the assertion: the channel may
       // legitimately stop before it ever registers, which is a different failure.
       started.then(() => registration.promise),
+      deadline,
     ]);
+  } catch (error) {
+    if (!timedOut) throw error;
+    // An unresolved-start and a never-registered channel are the same observable
+    // outcome but different defects, so the message names which one we hit.
+    throw new Error(
+      `the built relay channel never reached connector registration; ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   } finally {
     // Stop the channel whichever way this ended; the assertions below are the gate.
     controller.abort();
