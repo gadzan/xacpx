@@ -175,7 +175,19 @@ test("Bot and Conversation control RPCs validate product IDs, not hidden aliases
   })).not.toBeNull();
   expect(parseControlPayload(MSG.conversationPrompt, {
     conversationId: "conversation_1", topicId: "topic_1", requestId: "req", text: "hi",
-    target: {},
+    target: { mode: "members", botIds: ["bot_1", "bot_2"] },
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, {
+    conversationId: "conversation_1", topicId: "topic_1", requestId: "req", text: "hi",
+    target: { mode: "everyone" },
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, {
+    conversationId: "conversation_1", topicId: "topic_1", requestId: "req", text: "hi",
+    target: { mode: "members", botIds: [] },
+  })).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, {
+    conversationId: "conversation_1", topicId: "topic_1", requestId: "req", text: "hi",
+    target: { mode: "members", botIds: "bot_1" },
   })).toBeNull();
   expect(parseControlPayload(MSG.conversationHistory, {
     conversationId: "conversation_1", topicId: "topic_1", afterSeq: 0, limit: 50,
@@ -206,6 +218,8 @@ test("parseControlPayload validates group RPC shapes and rejects junk isolation"
   expect(parseControlPayload(MSG.groupsUpdate, { title: "Renamed" })).toBeNull();
   expect(parseControlPayload(MSG.groupsDelete, { id: "conversation_g" })).not.toBeNull();
   expect(parseControlPayload(MSG.groupsGet, { id: "conversation_g" })).not.toBeNull();
+  expect(parseControlPayload(MSG.groupsList, {})).not.toBeNull();
+  expect(parseControlPayload(MSG.groupsList, undefined)).not.toBeNull();
   expect(parseControlPayload(MSG.groupTopicsCreate, {
     conversationId: "conversation_g", title: "Sprint 1",
     target: { workspace: "backend", isolation: "shared-single-writer" },
@@ -214,6 +228,55 @@ test("parseControlPayload validates group RPC shapes and rejects junk isolation"
     conversationId: "conversation_g", title: "Bad",
     target: { workspace: "backend", isolation: "mesh" },
   })).toBeNull();
+  // Structured target resource bounds: gate acquisition is process-lifetime
+  // state, so an oversized array or an absurd id must be refused at the wire.
+  const ids = (count: number): string[] => Array.from({ length: count }, (_, i) => `b${i}`);
+  const promptWith = (botIds: string[]) => ({
+    conversationId: "c", topicId: "t", requestId: "r", text: "x",
+    target: { mode: "members", botIds },
+  });
+  expect(parseControlPayload(MSG.conversationPrompt, promptWith(ids(64)))).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, promptWith(ids(65)))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, promptWith(["x".repeat(129)]))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, promptWith(["x".repeat(128)]))).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, promptWith([""]))).toBeNull();
+  // Duplicate member ids are ambiguous input: an explicit selection naming
+  // the same Bot twice must be refused at the wire (the server rejects it
+  // with invalid-target; the array-length bound must mean unique members).
+  expect(parseControlPayload(MSG.conversationPrompt, promptWith(["bot_a", "bot_a"]))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, promptWith(["bot_a", "bot_b", "bot_a"]))).toBeNull();
+  // The variants are a mutually exclusive union: mixed shapes are ambiguous
+  // input and must be refused, never interpreted as whichever variant the
+  // validator happens to check first (botId+mode would otherwise downgrade
+  // an `automatic` PR7 refusal into a direct execution of botId).
+  const mixed = (target: Record<string, unknown>) => ({
+    conversationId: "c", topicId: "t", requestId: "r", text: "x", target,
+  });
+  expect(parseControlPayload(MSG.conversationPrompt, mixed({ botId: "bot_a", mode: "members", botIds: ["bot_b"] }))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, mixed({ botId: "bot_a", mode: "automatic" }))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, mixed({ botId: "bot_a", botIds: ["bot_b"] }))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, mixed({ mode: "everyone", botIds: ["bot_b"] }))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, mixed({ mode: "members" }))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, mixed({ botId: "bot_a" }))).not.toBeNull();
+  // Legacy single-Bot target: same id-length bound, since the server normalizes
+  // it into a members target and the id would reach gate acquisition.
+  const singleWith = (botId: string) => ({
+    conversationId: "c", topicId: "t", requestId: "r", text: "x",
+    target: { botId },
+  });
+  expect(parseControlPayload(MSG.conversationPrompt, singleWith("x".repeat(128)))).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, singleWith("x".repeat(129)))).toBeNull();
+  expect(parseControlPayload(MSG.conversationPrompt, singleWith(""))).toBeNull();
+  // Create-time only: worktree-per-member has no provisioning, so a Topic
+  // created with it could never execute. Topic responses stay legacy-tolerant.
+  expect(parseControlPayload(MSG.groupTopicsCreate, {
+    conversationId: "conversation_g", title: "Bad",
+    target: { workspace: "backend", isolation: "worktree-per-member" },
+  })).toBeNull();
+  expect(parseControlPayload(MSG.groupTopicsCreate, {
+    conversationId: "conversation_g", title: "Good",
+    target: { workspace: "backend", isolation: "shared" },
+  })).not.toBeNull();
   expect(parseControlPayload(MSG.groupTopicsCreate, {
     conversationId: "conversation_g", title: "Bad", target: { isolation: "shared" },
   })).toBeNull();

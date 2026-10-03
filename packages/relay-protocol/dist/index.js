@@ -47,6 +47,8 @@ function isEnvelopeShape(value) {
 var STATE_SYNC_TEXT_CAP = 256 * 1024;
 var STATE_SYNC_PARTS_CAP = 1000;
 var MAX_TOOL_STEPS = 200;
+var MAX_GROUP_TARGET_MEMBERS = 64;
+var MAX_BOT_ID_LENGTH = 128;
 var REASONING_CAP = 16000;
 var RECOVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 var MAX_TERMINAL_REQUEST_ID_LENGTH = 128;
@@ -180,6 +182,7 @@ var MSG = {
   groupsUpdate: "control.groups.update",
   groupsDelete: "control.groups.delete",
   groupsGet: "control.groups.get",
+  groupsList: "control.groups.list",
   groupTopicsCreate: "control.group.topics.create",
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
@@ -270,11 +273,11 @@ function decodeCanonicalBase64(encoded) {
     const binary = globalThis.atob(encoded);
     if (globalThis.btoa(binary) !== encoded)
       return null;
-    const decoded = new Uint8Array(binary.length);
+    const decoded2 = new Uint8Array(binary.length);
     for (let i = 0;i < binary.length; i++) {
-      decoded[i] = binary.charCodeAt(i) & 255;
+      decoded2[i] = binary.charCodeAt(i) & 255;
     }
-    return decoded;
+    return decoded2;
   }
   const BufferCtor = globalThis.Buffer;
   if (!BufferCtor)
@@ -1178,7 +1181,7 @@ var validateTopicsCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.title) ? o : null;
 };
-var isIsolation = (v) => v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
+var isCreateIsolation = (v) => v === "shared" || v === "shared-single-writer";
 var validateGroupsCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description)) && (o.leadBotId === undefined || isStr(o.leadBotId)) ? o : null;
@@ -1205,12 +1208,17 @@ var validateGroupsGet = (p) => {
   const o = fields(p);
   return o && isStr(o.id) ? o : null;
 };
+var validateGroupsList = (p) => {
+  if (p !== undefined && !isObj(p))
+    return null;
+  return {};
+};
 var validateGroupTopicsCreate = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.conversationId) || !isStr(o.title))
     return null;
   const t = o.target;
-  if (!isObj(t) || !isStr(t.workspace) || t.cwd !== undefined && !isStr(t.cwd) || !isIsolation(t.isolation)) {
+  if (!isObj(t) || !isStr(t.workspace) || t.cwd !== undefined && !isStr(t.cwd) || !isCreateIsolation(t.isolation)) {
     return null;
   }
   return o;
@@ -1223,14 +1231,34 @@ var validateGroupTopicsTeardown = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.topicId) ? o : null;
 };
+var isConversationTarget = (v) => {
+  if (!isObj(v))
+    return false;
+  const hasBotId = "botId" in v;
+  const hasMode = "mode" in v;
+  const hasBotIds = "botIds" in v;
+  const hasDiscriminant = hasBotId || hasMode || hasBotIds;
+  if (!hasDiscriminant)
+    return false;
+  const mixed = hasBotId && (hasMode || hasBotIds) || hasMode && hasBotIds && v.mode !== "members";
+  if (mixed)
+    return false;
+  if (hasBotId) {
+    const botId = v.botId;
+    return typeof botId === "string" && botId.length > 0 && botId.length <= MAX_BOT_ID_LENGTH;
+  }
+  if (v.mode === "members") {
+    return Array.isArray(v.botIds) && v.botIds.length > 0 && v.botIds.length <= MAX_GROUP_TARGET_MEMBERS && new Set(v.botIds).size === v.botIds.length && v.botIds.every((id) => isStr(id) && id.length > 0 && id.length <= MAX_BOT_ID_LENGTH);
+  }
+  return v.mode === "everyone" || v.mode === "automatic";
+};
 var validateConversationPrompt = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.conversationId) || !isStr(o.topicId) || !isStr(o.requestId) || !isStr(o.text)) {
     return null;
   }
-  if (o.target !== undefined) {
-    if (!isObj(o.target) || !isStr(o.target.botId))
-      return null;
+  if (o.target !== undefined && !isConversationTarget(o.target)) {
+    return null;
   }
   return o;
 };
@@ -1545,6 +1573,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupsUpdate]: validateGroupsUpdate,
   [MSG.groupsDelete]: validateGroupsDelete,
   [MSG.groupsGet]: validateGroupsGet,
+  [MSG.groupsList]: validateGroupsList,
   [MSG.groupTopicsCreate]: validateGroupTopicsCreate,
   [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
@@ -1648,6 +1677,7 @@ export {
   DESKTOP_TICKET_TTL_MS,
   DESKTOP_WS_MAX_PAYLOAD_BYTES,
   INTERACTION_WIRE_LIMITS,
+  MAX_BOT_ID_LENGTH,
   MAX_CAPABILITIES,
   MAX_CAPABILITY_LENGTH,
   MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
@@ -1655,6 +1685,7 @@ export {
   MAX_DESKTOP_STREAM_ID_LENGTH,
   MAX_DESKTOP_TICKET_LENGTH,
   MAX_DESKTOP_WS_PATH_LENGTH,
+  MAX_GROUP_TARGET_MEMBERS,
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
   MAX_TERMINAL_COLS,

@@ -94,8 +94,10 @@ import {
   type WorkspacesRemovePayload,
 } from "./messages.js";
 import {
+  MAX_BOT_ID_LENGTH,
   MAX_DESKTOP_STREAM_ID_LENGTH,
   MAX_DESKTOP_TICKET_LENGTH,
+  MAX_GROUP_TARGET_MEMBERS,
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
@@ -455,8 +457,11 @@ const validateTopicsCreate: Validator<TopicsCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.title) ? (o as unknown as TopicsCreatePayload) : null;
 };
-const isIsolation = (v: unknown): boolean =>
-  v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
+/** Create-time only: `worktree-per-member` is refused because no provisioning
+ *  exists, so the Topic could never execute. Topic responses use the separate
+ *  legacy-tolerant `validExecutionTarget` check. */
+const isCreateIsolation = (v: unknown): boolean =>
+  v === "shared" || v === "shared-single-writer";
 const validateGroupsCreate: Validator<GroupsCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description))
@@ -480,11 +485,15 @@ const validateGroupsGet: Validator<GroupsGetPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.id) ? (o as unknown as GroupsGetPayload) : null;
 };
+const validateGroupsList: Validator<Record<string, never>> = (p) => {
+  if (p !== undefined && !isObj(p)) return null;
+  return {} as Record<string, never>;
+};
 const validateGroupTopicsCreate: Validator<GroupTopicsCreatePayload> = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.conversationId) || !isStr(o.title)) return null;
   const t = o.target;
-  if (!isObj(t) || !isStr(t.workspace) || (t.cwd !== undefined && !isStr(t.cwd)) || !isIsolation(t.isolation)) {
+  if (!isObj(t) || !isStr(t.workspace) || (t.cwd !== undefined && !isStr(t.cwd)) || !isCreateIsolation(t.isolation)) {
     return null;
   }
   return o as unknown as GroupTopicsCreatePayload;
@@ -497,13 +506,44 @@ const validateGroupTopicsTeardown: Validator<GroupTopicsTeardownPayload> = (p) =
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.topicId) ? (o as unknown as GroupTopicsTeardownPayload) : null;
 };
+const isConversationTarget = (v: unknown): boolean => {
+  if (!isObj(v)) return false;
+  // The variants are a MUTUALLY EXCLUSIVE union: a payload carrying keys from
+  // two variants (e.g. botId + mode) is ambiguous input and must be refused,
+  // never silently interpreted as whichever variant is checked first.
+  const hasBotId = "botId" in v;
+  const hasMode = "mode" in v;
+  const hasBotIds = "botIds" in v;
+  const hasDiscriminant = hasBotId || hasMode || hasBotIds;
+  if (!hasDiscriminant) return false;
+  const mixed = (hasBotId && (hasMode || hasBotIds))
+    || (hasMode && hasBotIds && v.mode !== "members");
+  if (mixed) return false;
+  // Same resource bound as the members branch: a legacy-shaped single-Bot target
+  // is normalized into a members target by the server, so an oversized id would
+  // reach gate acquisition unbounded.
+  if (hasBotId) {
+    const botId = v.botId;
+    return typeof botId === "string" && botId.length > 0 && botId.length <= MAX_BOT_ID_LENGTH;
+  }
+  if (v.mode === "members") {
+    return Array.isArray(v.botIds)
+      && v.botIds.length > 0
+      && v.botIds.length <= MAX_GROUP_TARGET_MEMBERS
+      // Duplicate ids are ambiguous input: the array-length bound must mean
+      // unique members (the server rejects duplicates with invalid-target).
+      && new Set(v.botIds).size === v.botIds.length
+      && v.botIds.every((id) => isStr(id) && id.length > 0 && id.length <= MAX_BOT_ID_LENGTH);
+  }
+  return v.mode === "everyone" || v.mode === "automatic";
+};
 const validateConversationPrompt: Validator<ConversationPromptPayload> = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.conversationId) || !isStr(o.topicId) || !isStr(o.requestId) || !isStr(o.text)) {
     return null;
   }
-  if (o.target !== undefined) {
-    if (!isObj(o.target) || !isStr(o.target.botId)) return null;
+  if (o.target !== undefined && !isConversationTarget(o.target)) {
+    return null;
   }
   return o as unknown as ConversationPromptPayload;
 };
@@ -850,6 +890,7 @@ export type ControlRpcType =
   | typeof MSG.conversationsList | typeof MSG.conversationsGet
   | typeof MSG.topicsList | typeof MSG.topicsCreate
   | typeof MSG.groupsCreate | typeof MSG.groupsUpdate | typeof MSG.groupsDelete | typeof MSG.groupsGet
+  | typeof MSG.groupsList
   | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown
   | typeof MSG.conversationPrompt | typeof MSG.conversationHistory
   | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel
@@ -926,6 +967,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupsUpdate]: validateGroupsUpdate,
   [MSG.groupsDelete]: validateGroupsDelete,
   [MSG.groupsGet]: validateGroupsGet,
+  [MSG.groupsList]: validateGroupsList,
   [MSG.groupTopicsCreate]: validateGroupTopicsCreate,
   [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,

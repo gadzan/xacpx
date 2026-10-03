@@ -8,7 +8,8 @@ import { createSourceTurnId } from "../domain/ids";
 import type { SessionService } from "../sessions/session-service";
 import { ConversationError } from "./conversation-error";
 import { conversationExecutionOrigin, conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
-import type { ClaimedWork, ConversationStore } from "./conversation-store";
+import { requestSnapshotMatches, type ClaimedWork, type ConversationStore } from "./conversation-store";
+import { isEffectConcurrencySafe } from "./conversation-filesystem-policy";
 import {
   emitConversationProductEvent,
   type ConversationProductEvent,
@@ -20,7 +21,12 @@ import type {
   ConversationTurnRunResult,
   ConversationTurnRunner,
 } from "./conversation-turn-runner";
-import { TERMINAL_MEMBER_STATES, type MemberTurnRecord } from "./conversation-types";
+import { TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES, type MemberTurnRecord, type PendingDispatch } from "./conversation-types";
+
+/** Public transcript bound for one frozen Group batch. The window is taken
+ *  newest-first immediately before the request boundary, so a Topic longer
+ *  than this still hands members the closest prior context. */
+export const PUBLIC_TRANSCRIPT_MESSAGES = 500;
 
 export interface ConversationDispatcherHooks {
   afterClaim?: (work: ClaimedWork) => Promise<void>;
@@ -47,7 +53,9 @@ const DEFAULT_LEASE_MS = 30_000;
 export class ConversationDispatcher {
   private readonly now: () => Date;
   private readonly leaseMs: number;
-  private readonly ownerId: string;
+  /** Stable per-process claim owner. Published so activation can sweep
+   *  previous-owner claims after acquiring the exclusive consumer lock. */
+  readonly ownerId: string;
   readonly authorityEpoch: string;
   private readonly hooks?: ConversationDispatcherHooks;
   private draining = false;
@@ -60,6 +68,15 @@ export class ConversationDispatcher {
   private readonly onProductEvent?: ConversationProductEventSink;
   private closed = false;
   private drainTask: Promise<void> | undefined;
+  /** Executions currently holding provider turns. Keyed by dispatch id: while
+   *  an execution is in flight its claim stays `claimed` (not requeueable) and
+   *  its sibling-visibility comes from the durable member state, which
+   *  `markExecutionStarted` sets to `running` before the provider turn begins.
+   *  The drain loop awaits the SET, not each execution, so a second member can
+   *  be claimed and started while the first is still running — subject to the
+   *  Topic isolation policy, not to drain sequencing. Entries are removed in a
+   *  `finally` so a throw can never strand the set (and with it the drain). */
+  private readonly inFlightExecutions = new Map<string, Promise<void>>();
 
   constructor(
     private readonly store: ConversationStore,
@@ -106,32 +123,256 @@ export class ConversationDispatcher {
     if (this.drainTask) {
       await this.drainTask.catch(() => undefined);
     }
+    // A failed drain rejects while provider turns it launched are still
+    // running (the hold-time failure above rejects with A in flight). The
+    // drain task no longer tracks them, so shutdown must await the in-flight
+    // set directly — otherwise a test or host that shuts down right after a
+    // drain failure leaks running executions.
+    if (this.inFlightExecutions.size > 0) {
+      await Promise.allSettled(this.inFlightExecutions.values());
+    }
+    // Retire unstarted writer-slot holds: a held claim is durably `claimed`
+    // by a dispatcher that is going away. Graceful retire is an optimization
+    // (activation's convergePreviousOwnerClaims is the correctness backstop),
+    // but without this a fast restart would fall back to lease-driven
+    // recovery: a live (unexpired) `claimed` row it can neither recover
+    // (recoverExpiredClaims only sees expired leases) nor claim (claimOne
+    // only returns `pending`) — unstarted rows into provenance-stripping
+    // recovery, started rows stalled behind the old lease instead of sealing
+    // immediately at handoff. Retire returns each hold to `pending` with
+    // owner cleared and a fresh lease window, keeping
+    // generation/authorityEpoch/humanIngress/origin/attempt verbatim, so the
+    // next consumer claims it as ordinary pending work on its first kick.
+    // Only stale_claim is swallowed per hold (already gone elsewhere); other
+    // store errors propagate — a failed retire must be visible, not silent.
+    for (const [dispatchId, work] of this.heldWriterSlotClaims) {
+      try {
+        this.store.retireHeldClaim({
+          dispatchId,
+          owner: this.ownerId,
+          generation: work.dispatch.generation,
+          now: this.now().toISOString(),
+        });
+      } catch (error) {
+        // stale_claim means the hold already resolved elsewhere (recovered,
+        // started, terminal): forget it. Any OTHER store error keeps the
+        // hold registered — the durable row may still be our live `claimed`
+        // claim, and deleting the in-memory entry would orphan it from every
+        // recovery path this process still owns. The error still propagates
+        // so shutdown fails visibly instead of reporting a clean retire.
+        if (error instanceof ConversationError && error.code === "stale_claim") {
+          this.heldWriterSlotClaims.delete(dispatchId);
+          continue;
+        }
+        throw error;
+      }
+      this.heldWriterSlotClaims.delete(dispatchId);
+    }
   }
 
   private async runDrain(): Promise<void> {
+    // Unexpected-failure capture: execute() rejections that escape its
+    // handled settlement paths must reject kick() — and therefore fail
+    // activation — after every launched execution settles. Each launch gets
+    // its own outcome cell: the settle handlers write ONLY their cell (no
+    // shared mutable error state, no clear-then-throw race window), and the
+    // drain consumes the cohort exactly once, in LAUNCH order — so the
+    // rethrown failure is deterministic and attributable, never whichever
+    // rejection happened to settle first.
+    // `rejected` is a STATUS, not a payload test: a member execution may
+    // legally reject with `undefined`, which must still propagate.
+    const cohort: Array<{
+      guard: Promise<void>;
+      outcome: { status: "pending" | "fulfilled" | "rejected"; reason?: unknown };
+    }> = [];
+    const launchExecution = (work: ClaimedWork): void => {
+      const outcome: { status: "pending" | "fulfilled" | "rejected"; reason?: unknown } = { status: "pending" };
+      // The guard never rejects (both handlers settle normally), so no
+      // `finally` child can leak an unhandled rejection; it settles only
+      // AFTER its handler ran, so awaiting every guard means every outcome
+      // cell is final.
+      const guard = this.execute(work).then(
+        () => {
+          if (this.inFlightExecutions.get(work.dispatch.id) === guard) {
+            this.inFlightExecutions.delete(work.dispatch.id);
+          }
+        },
+        (error: unknown) => {
+          outcome.status = "rejected";
+          outcome.reason = error;
+          if (this.inFlightExecutions.get(work.dispatch.id) === guard) {
+            this.inFlightExecutions.delete(work.dispatch.id);
+          }
+        },
+      );
+      this.inFlightExecutions.set(work.dispatch.id, guard);
+      cohort.push({ guard, outcome });
+    };
+    const awaitCohortInFlight = async (): Promise<void> => {
+      const launched = cohort.splice(0);
+      if (launched.length === 0) {
+        return;
+      }
+      await Promise.allSettled(launched.map((entry) => entry.guard));
+      const failure = launched.find((entry) => entry.outcome.status === "rejected");
+      if (failure) {
+        throw failure.outcome.reason;
+      }
+    };
+    // A logical drain = one global first claim, then same-Run siblings
+    // only (cohortRunId) for that PASS, until the cohort settles or a held
+    // handoff continues the SAME run without a new global claim. A pass
+    // that defers Topics on pre-start failures chains a same-scope extra
+    // pass (no wake consumed, deferrals preserved) when unrelated pending
+    // work may remain; a chained pass that claims nothing ends the drain —
+    // a failed Topic is never retried without a fresh wake.
     let seen = 0;
+    let chainedExtraPass = false;
     try {
-      while (seen !== this.wakeGeneration) {
+      while (seen !== this.wakeGeneration || chainedExtraPass) {
         if (this.closed) {
           return;
         }
-        seen = this.wakeGeneration;
-        this.deferredTopicIds.clear();
+        if (!chainedExtraPass) {
+          seen = this.wakeGeneration;
+          this.deferredTopicIds.clear();
+        }
+        chainedExtraPass = false;
+        // Cohort scope and progress are PER PASS: a held handoff is awaited
+        // inline, so the next pass starts with an empty in-flight set and a
+        // fresh global first claim.
+        // The drain itself is alive and owns every held claim: renew them
+        // BEFORE recoverExpiredClaims() runs, so a scheduling wait that
+        // outlasts one lease is never mistaken for a dead owner. Renewal
+        // keeps owner/generation/provenance; only the expiry moves. A hold
+        // that lost its race (stale owner, bumped generation, recovered
+        // elsewhere) fails the fence and is dropped from the hold set.
+        // Holds this drain already finished (dispatch no longer claimed)
+        // are dropped before renewal: renewing them would throw a visible
+        // stale_claim on a healthy drain.
+        for (const [dispatchId, work] of this.heldWriterSlotClaims) {
+          const live = this.store.getDispatchForMemberTurn(work.memberTurn.id);
+          if (!live || live.id !== dispatchId || live.state !== "claimed") {
+            this.heldWriterSlotClaims.delete(dispatchId);
+          }
+        }
+        this.renewHeldClaims();
+        // Sibling cohort for this drain: the first launch goes out globally
+        // (previous sequencing); afterwards only the SAME Run's siblings are
+        // claimable until the cohort settles. The runtime contract reserves
+        // global cross-Topic/Bot parallelism as follow-up work; PR7 needs
+        // same-batch overlap only.
+        let cohortRunId: string | undefined;
+        // True once this pass claimed anything (launched or held): the
+        // extra-pass decision below may only chain off a pass that made
+        // progress, never off an empty preview.
+        let passProgress = false;
         for (;;) {
           if (this.closed) {
             return;
           }
           this.store.recoverExpiredClaims(this.now().toISOString());
-          const claimed = this.claimOne();
+          const claimed = this.claimOne(cohortRunId);
           if (!claimed) {
             break;
           }
-          await this.execute(claimed);
+          // PR7 filesystem scheduling: a claimed Group sibling that must
+          // take the Topic single-writer slot waits while another member of
+          // the same Run is already executing. The claim is parked WITHOUT
+          // touching durable provenance (see holdClaimForWriterSlot) and the
+          // Topic deferred for this drain so the sibling finishes first. The
+          // sibling's completion persist re-wakes the drain (every terminal
+          // persistResult kicks), which starts a fresh drain with the deferred
+          // set cleared. The Run card still presents one multi-member batch.
+          if (this.mustDeferForWriterSlot(claimed)) {
+            this.holdClaimForWriterSlot(claimed);
+            passProgress = true;
+            // The held Run is parked for this drain — but only until a cohort
+            // launches. Before any launch, sequencing stays global so an
+            // unrelated Topic is still drainable (pre-PR behavior); once a
+            // cohort is in flight its scope is kept, so unrelated work waits
+            // for the next drain. Either way the held Run's own rows are
+            // excluded (its Topic is deferred for this drain).
+            if (cohortRunId === undefined) {
+              continue;
+            }
+            break;
+          }
+          // Executions of one cohort run concurrently: the drain launches
+          // each claimed sibling and keeps draining the SAME Run (cohort
+          // filter above). Sibling overlap is decided by the isolation policy,
+          // never by drain ordering. Unrelated Topics/Bots wait for the next
+          // drain: the loop awaits the SET (below), so kick() still settles
+          // only after every launched execution finishes.
+          launchExecution(claimed);
+          cohortRunId ??= claimed.run.id;
+          passProgress = true;
         }
+        // Settle launched executions, then re-check held writer-slot claims —
+        // ALWAYS, not only when something was in flight. A held sibling
+        // becomes runnable the moment its sibling's provider turn settles,
+        // and the drain executes the SAME held claim object (still ours,
+        // still human) in this drain — no re-claim, no provenance rewrite —
+        // so a two-member Run under shared-single-writer completes without
+        // an extra wake. The recheck must also run when the in-flight set is
+        // empty: a previous drain may have launched, settled, and parked a
+        // hold (or thrown mid-recheck), and nothing else will pick that hold
+        // back up — claimOne only returns `pending` rows, never our live
+        // `claimed` hold. An unexpected execution failure rethrows here,
+        // after every launched execution settled.
+        await awaitCohortInFlight();
+        // Shutdown owns unstarted holds from here: once `closed` is set, a
+        // held sibling must never start — the retire loop in shutdown()
+        // returns it to `pending` with provenance intact instead. Without
+        // this fence the recheck below launches B after shutdown began,
+        // extending shutdown by a whole provider turn (or wedging it) and
+        // bypassing retire entirely. Returning exits via `finally`
+        // (draining=false); the tail kick is already closed-guarded.
+        if (this.closed) {
+          return;
+        }
+        // The pass deferrals must not leak into the recheck (a held claim
+        // whose Topic is deferred would never re-run), but the chained
+        // extra pass needs them preserved: snapshot before the clear, and
+        // re-add them only when the chain continues.
+        const passDeferred = new Set(this.deferredTopicIds);
+        for (const work of this.heldWriterSlotClaims.values()) {
+          // A still-held sibling's Topic is NOT a failure: it must become
+          // claimable again the moment this sibling settles, and the handoff
+          // below already runs it.
+          passDeferred.delete(work.run.topicId);
+        }
+        this.deferredTopicIds.clear();
+        const held = this.recheckHeldClaims();
+        if (held) {
+          // The held handoff joins the awaited cohort instead of escaping
+          // it: awaiting here keeps the sibling inside this drain's failure
+          // propagation (an unexpected B failure rejects kick() and fails
+          // activation) AND inside its cohort scope (the next drain starts
+          // with an empty in-flight set, so its global claim cannot overlap
+          // B). A bare launch + continue would resolve kick() while B still
+          // runs — losing B's failure and reopening global claims mid-flight.
+          launchExecution(held);
+          await awaitCohortInFlight();
+          continue;
+        }
+        // A drain that deferred Topics on pre-start failures may still have
+        // unrelated pending work: chain one extra pass (no wake consumed)
+        // with the deferrals preserved. The chained pass claims only OTHER
+        // Topics, so every chain link needs fresh progress and the chain is
+        // bounded by the Topic count. A chained pass that claims nothing
+        // ends the drain — a failed Topic is never retried without a wake.
+        if (passProgress && passDeferred.size > 0) {
+          for (const topicId of passDeferred) {
+            this.deferredTopicIds.add(topicId);
+          }
+          chainedExtraPass = true;
+          continue;
+        }
+        this.deferredTopicIds.clear();
       }
     } finally {
       this.draining = false;
-      this.deferredTopicIds.clear();
     }
     if (!this.closed && seen !== this.wakeGeneration) {
       await this.kick();
@@ -158,32 +399,38 @@ export class ConversationDispatcher {
     // observed outcomes: persist fulfilled evidence first (below), then
     // rethrow so the barrier stays and retry covers only the unsettled rest.
     const fulfilled: Array<{ member: MemberTurnRecord; result: ConversationTurnCancelResult }> = [];
+    // `hasError` is a STATUS flag, never derived from the thrown value: a
+    // transport may legally reject with `undefined`.
+    let cancelFailed = false;
     let firstError: unknown;
-    for (const active of outcome.activeMembers) {
+    const cancels = outcome.activeMembers.map(async (active) => {
       const current = this.store.getMemberTurn(active.id);
       if (!current) {
-        continue;
+        return;
       }
       try {
-        fulfilled.push({
-          member: current,
-          result: await this.runner.cancel({
-            conversationId: outcome.run.conversationId,
-            topicId: outcome.run.topicId,
-            sessionAlias: current.sessionAlias ?? "",
-            queueItemId: current.queueItemId,
-            promptRequestId: current.sourceTurnId ?? "",
-          }),
+        const result = await this.runner.cancel({
+          conversationId: outcome.run.conversationId,
+          topicId: outcome.run.topicId,
+          sessionAlias: current.sessionAlias ?? "",
+          queueItemId: current.queueItemId,
+          promptRequestId: current.sourceTurnId ?? "",
         });
+        fulfilled.push({ member: current, result });
       } catch (error) {
+        cancelFailed = true;
         firstError ??= error;
       }
-    }
+    });
+    // Concurrent fan-out (one runner.cancel per active member): each cancel
+    // resolves only after its own provider turn settles, so awaiting them one
+    // by one would serialize independent transports. allSettled-style via the
+    // per-callback try/catch above — Promise.all here never rejects.
+    await Promise.all(cancels);
     // Two-phase settlement: persist ALL observed outcomes as member evidence
     // in one transaction first, then aggregate the Run once — even when a
     // sibling cancel threw. A sibling's unknown can never erase another
     // member's proven completion/failure: A=indeterminate + B=completed
-    // yields B=completed with evidence and Run=indeterminate.
     // Evidence-only when partial: with a throw pending, settle member rows
     // but skip Run aggregation/release so retry re-derives the outcome from
     // complete evidence instead of a half-persisted aggregate.
@@ -199,7 +446,7 @@ export class ConversationDispatcher {
           : {}),
         ...(entry.result.outcome === "failed" ? { reason: entry.result.error ?? "failed" } : {}),
       })),
-      ...(firstError !== undefined ? { deferRunAggregate: true } : {}),
+      ...(cancelFailed ? { deferRunAggregate: true } : {}),
     });
     for (const entry of settled.settled) {
       if (entry.outcome === "completed" && entry.message) {
@@ -208,21 +455,187 @@ export class ConversationDispatcher {
         this.emitRunAndMember(settled.run, entry.member.id);
       }
     }
-    if (firstError !== undefined) {
+    if (cancelFailed) {
       throw firstError;
     }
     await this.kick();
   }
 
-  private claimOne(): ClaimedWork | undefined {
+  private claimOne(cohortRunId?: string): ClaimedWork | undefined {
     return this.store.claimNextDispatch({
       now: this.now().toISOString(),
       owner: this.ownerId,
       leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString(),
       authorityEpoch: this.authorityEpoch,
+      ...(cohortRunId !== undefined ? { runId: cohortRunId } : {}),
       ...(this.deferredTopicIds.size > 0 ? { skipTopicIds: [...this.deferredTopicIds] } : {}),
     });
   }
+
+  /**
+   * PR7 filesystem scheduling gate. PR7 accepts carry no proven read-only
+   * capability, so every Group member is conservatively unknown and takes
+   * the Topic single-writer slot. While another member of the same Run is
+   * already executing, a newly claimed sibling defers instead of running
+   * concurrently. Started members never defer: a claim whose member already
+   * started (recovery redelivery after a crash) must execute, not park
+   * behind siblings that may themselves settle while it waits. Direct Runs
+   * are unaffected.
+   *
+   * Isolation is read from the Topic's durable ExecutionTarget. No isolation
+   * passes unproven work through: only an enforceably read-only member
+   * (`read-only` + `declared-enforced` proof) may overlap another in-flight
+   * turn — and since PR7 carries no proven capability, every PR7 member
+   * defers. `MemberTurnEffect` attaches to the assignment when callers can
+   * prove read-only; until then the effect is `undefined` (unproven), which
+   * never counts as safe.
+   */
+  private mustDeferForWriterSlot(work: ClaimedWork): boolean {
+    if (work.memberTurn.startedAt) {
+      return false;
+    }
+    if (this.runtime.conversationKind(work.run.conversationId) !== "group") {
+      return false;
+    }
+    const siblings = this.store.listMemberTurns(work.run.id);
+    const otherExecuting = siblings.filter((turn) => turn.id !== work.memberTurn.id
+      && (turn.state === "running" || turn.state === "dispatched"));
+    if (otherExecuting.length === 0) {
+      return false;
+    }
+    const isolation = this.runtime.groupTopicIsolation(work.run.conversationId, work.run.topicId);
+    return !isEffectConcurrencySafe(work.memberTurn.effect, isolation, otherExecuting.length, work.memberTurn.effectProvenance);
+  }
+
+  /** Writer-slot-held claims, keyed by dispatch id. The drain KEEPS the
+   *  ClaimedWork object across passes: the claim stays `claimed` under this
+   *  owner (durable provenance untouched), and the next pass executes the
+   *  SAME object — no re-claim, no generation bump, no provenance rewrite.
+   *  Entries are removed when executed, when the Run goes terminal, or when
+   *  the dispatch stops being ours. A sibling that never finishes leaves its
+   *  held claim parked until a later kick reaps it through the normal
+   *  pre-start fences in execute(). */
+  private readonly heldWriterSlotClaims = new Map<string, ClaimedWork>();
+  /** Extend every live held claim's lease. Called once per drain pass,
+   *  BEFORE recoverExpiredClaims(): while this drain is alive and holds the
+   *  claim object, the owner is by definition not dead, so expiry must not
+   *  trigger crash recovery. Holds that fail the fence (lost race, recovered
+   *  elsewhere, Run terminal) are dropped; the normal paths reap them. */
+  private renewHeldClaims(): void {
+    const now = this.now().toISOString();
+    const leaseExpiresAt = new Date(this.now().getTime() + this.leaseMs).toISOString();
+    for (const [dispatchId, work] of this.heldWriterSlotClaims) {
+      try {
+        const renewed = this.store.renewHeldClaim({
+          dispatchId,
+          owner: this.ownerId,
+          generation: work.dispatch.generation,
+          now,
+          leaseExpiresAt,
+        });
+        this.heldWriterSlotClaims.set(dispatchId, { ...work, dispatch: renewed });
+      } catch (error) {
+        // Only a lost race drops the hold: anything else (SQLite I/O,
+        // driver failure) must fail the drain visibly rather than silently
+        // orphan a durable claim that is still ours.
+        if (error instanceof ConversationError && error.code === "stale_claim") {
+          this.heldWriterSlotClaims.delete(dispatchId);
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  private holdClaimForWriterSlot(work: ClaimedWork): void {
+    // Register FIRST, renew second. The durable dispatch is already `claimed`
+    // by us at this point; if the renewal below throws a non-stale store
+    // error, the drain fails visibly — but the hold must already exist so
+    // the NEXT kick's per-pass renewHeldClaims() picks the claim back up
+    // instead of leaving a `claimed` row no path can see (claimOne only
+    // returns `pending`; recheck only sees registered holds). Only
+    // stale_claim removes the registration: the claim is already gone (lost
+    // race, cancelled Run), and execute()'s fences still guard the stale
+    // object if it is somehow re-read.
+    this.heldWriterSlotClaims.set(work.dispatch.id, work);
+    try {
+      const renewed = this.store.renewHeldClaim({
+        dispatchId: work.dispatch.id,
+        owner: this.ownerId,
+        generation: work.dispatch.generation,
+        now: this.now().toISOString(),
+        leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString(),
+      });
+      this.heldWriterSlotClaims.set(work.dispatch.id, { ...work, dispatch: renewed });
+    } catch (error) {
+      if (error instanceof ConversationError && error.code === "stale_claim") {
+        this.heldWriterSlotClaims.delete(work.dispatch.id);
+        return;
+      }
+      throw error;
+    }
+    this.deferredTopicIds.add(work.run.topicId);
+  }
+
+  /** Re-check held claims whose Topic is no longer deferred and whose Run
+   *  still needs them. A held claim whose sibling finished is executed
+   *  inline (same claim, same generation); a held claim whose Run went
+   *  terminal or whose dispatch is no longer ours is dropped. Returns the
+   *  claim to execute, if any.
+   *
+   *  Lease protection: every live held claim gets its lease extended here,
+   *  before the expiry check below. A serialized sibling may legitimately
+   *  wait longer than one lease (LLM turns routinely exceed 30s); without
+   *  renewal the next recoverExpiredClaims() would treat the scheduling wait
+   *  as crash recovery — clearing authorityEpoch/humanIngress, rewriting
+   *  origin to `recovery`, bumping attempt — and the member would execute
+   *  without its original human permission route. Renewal keeps the SAME
+   *  owner/generation/provenance; only the expiry moves. */
+  private recheckHeldClaims(): ClaimedWork | undefined {
+    const now = this.now().toISOString();
+    for (const [dispatchId, work] of this.heldWriterSlotClaims) {
+      if (this.deferredTopicIds.has(work.run.topicId)) {
+        continue;
+      }
+      const live = this.store.getDispatchForMemberTurn(work.memberTurn.id);
+      const run = this.store.getRun(work.run.id);
+      if (!run || (TERMINAL_RUN_STATES as readonly string[]).includes(run.state)
+        || !live || live.id !== dispatchId || live.state !== "claimed" || live.owner !== this.ownerId) {
+        this.heldWriterSlotClaims.delete(dispatchId);
+        continue;
+      }
+      // Renew first: an already-recovered held claim must NOT execute — its
+      // lease lapsed while we were not watching, so recovery owns it now.
+      // renewHeldClaim's fence rejects it (stale_claim) and we drop the hold;
+      // the normal recovery path requeues it with fresh provenance rules.
+      // Other store errors propagate: a failed renewal must not silently
+      // delete the in-memory hold while the durable claim stays intact.
+      let renewed: PendingDispatch;
+      try {
+        renewed = this.store.renewHeldClaim({
+          dispatchId,
+          owner: this.ownerId,
+          generation: live.generation,
+          now,
+          leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString(),
+        });
+      } catch (error) {
+        if (error instanceof ConversationError && error.code === "stale_claim") {
+          this.heldWriterSlotClaims.delete(dispatchId);
+          continue;
+        }
+        throw error;
+      }
+      if (this.mustDeferForWriterSlot({ ...work, dispatch: renewed })) {
+        this.deferredTopicIds.add(work.run.topicId);
+        continue;
+      }
+      this.heldWriterSlotClaims.delete(dispatchId);
+      return { ...work, dispatch: renewed };
+    }
+    return undefined;
+  }
+
 
   private async execute(work: ClaimedWork): Promise<void> {
     await this.hooks?.afterClaim?.(work);
@@ -244,30 +657,54 @@ export class ConversationDispatcher {
         throw materializeFail;
       }
       const snapshot = work.memberSnapshot ?? work.memberTurn.profileSnapshot ?? work.run.profileSnapshot;
-      const live = this.runtime.getBot(work.memberTurn.botId);
-      if (live.agent !== snapshot.execution.agent || live.workspace !== snapshot.execution.workspace) {
-        this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
+      // Unified request-snapshot contract (claim LEFT JOINs messages so a
+      // corrupted reference reaches this check instead of being silently
+      // invisible): a missing or wrong-reference request row is corrupted
+      // durable state — fail the claim terminally BEFORE execution start
+      // (no live-lookup fallback that would hand members of one batch
+      // different inputs, no indeterminate seal, no requeue loop on state
+      // that cannot heal itself). Applies to Direct and Group alike.
+      if (!requestSnapshotMatches(this.store.getMessage(work.run.requestMessageId), work.run)) {
+        const corrupted = this.store.getMessage(work.run.requestMessageId) !== undefined;
+        this.failOwnClaimBeforeStart(work, corrupted ? "request_snapshot_mismatch" : "missing_request_snapshot");
         return;
       }
+      const isGroup = this.runtime.conversationKind(work.run.conversationId) === "group";
+      if (!isGroup) {
+        const live = this.runtime.getBot(work.memberTurn.botId);
+        if (live.agent !== snapshot.execution.agent || live.workspace !== snapshot.execution.workspace) {
+          this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
+          return;
+        }
+      }
       await this.hooks?.afterAcceptedIdentityCheck?.(work);
-      const binding = await this.runtime.getOrCreateDirectSession({
-        botId: work.memberTurn.botId,
-        conversationId: work.run.conversationId,
-        topicId: work.run.topicId,
-        execution: snapshot.execution,
-        assertStillDispatchable: () => {
-          this.store.assertLiveDispatchForMaterialize({
-            dispatchId: work.dispatch.id,
-            owner: this.ownerId,
-            generation: work.dispatch.generation,
-            runId: work.run.id,
-            memberTurnId: work.memberTurn.id,
-            conversationId: work.run.conversationId,
-            topicId: work.run.topicId,
-            now: this.now().toISOString(),
-          });
-        },
-      });
+      const assertStillDispatchable = (): void => {
+        this.store.assertLiveDispatchForMaterialize({
+          dispatchId: work.dispatch.id,
+          owner: this.ownerId,
+          generation: work.dispatch.generation,
+          runId: work.run.id,
+          memberTurnId: work.memberTurn.id,
+          conversationId: work.run.conversationId,
+          topicId: work.run.topicId,
+          now: this.now().toISOString(),
+        });
+      };
+      const binding = isGroup
+        ? await this.runtime.getOrCreateGroupMemberSession({
+          botId: work.memberTurn.botId,
+          conversationId: work.run.conversationId,
+          topicId: work.run.topicId,
+          execution: snapshot.execution,
+          assertStillDispatchable,
+        })
+        : await this.runtime.getOrCreateDirectSession({
+          botId: work.memberTurn.botId,
+          conversationId: work.run.conversationId,
+          topicId: work.run.topicId,
+          execution: snapshot.execution,
+          assertStillDispatchable,
+        });
       const session = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
       if (!session || !sessionMatchesExecution(session, snapshot.execution)) {
         this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
@@ -312,7 +749,9 @@ export class ConversationDispatcher {
       }
       this.emitProduct({ type: "conversation-run-changed", run: latestRun });
       this.emitProduct({ type: "member-turn-started", run: latestRun, memberTurn: latestMember });
-      const text = composeBotTurnPromptFromSnapshot(snapshot, this.requestText(work.run.requestMessageId));
+      const text = isGroup
+        ? composeBotTurnPromptFromSnapshot(snapshot, this.frozenGroupTranscript(work))
+        : composeBotTurnPromptFromSnapshot(snapshot, this.requestText(work.run.requestMessageId));
       const result = await this.runner.run({
         conversationId: work.run.conversationId,
         topicId: work.run.topicId,
@@ -344,6 +783,14 @@ export class ConversationDispatcher {
         return;
       }
       if (isMaterializeAbandoned(error)) {
+        return;
+      }
+      if (!started && isUnsupportedTarget(error)) {
+        // A Topic whose durable target can never execute (unprovisioned
+        // worktree, unsupported cwd, missing workspace) would otherwise stay
+        // pending and requeue on every kick forever. Settle the claim
+        // terminally before the execution-start CAS fence.
+        this.failOwnClaimBeforeStart(work, error instanceof BotError ? error.code : "target_unsupported");
         return;
       }
       if (started?.startedAt) {
@@ -459,11 +906,16 @@ export class ConversationDispatcher {
         now,
       });
       this.emitTerminalProjection(completed.run, completed.memberTurn, completed.assistantMessage);
+      // A deferred writer-slot sibling may be parked on this Topic: wake the
+      // drain so it is claimed in a fresh pass. Fire-and-forget by design —
+      // persistResult is sync and drain re-entry is generation-guarded.
+      void this.kick().catch(() => {});
       return;
     }
     if (result.status === "cancelled") {
       const run = this.store.completeCancel(work.run.id, started.id, now, result.unknown === true, true);
       this.emitRunAndMember(run, started.id);
+      void this.kick().catch(() => {});
       return;
     }
     const run = this.store.failExecution({
@@ -473,6 +925,7 @@ export class ConversationDispatcher {
       reason: result.error ?? "failed",
     });
     this.emitRunAndMember(run, started.id);
+    void this.kick().catch(() => {});
   }
 
   /**
@@ -487,7 +940,6 @@ export class ConversationDispatcher {
    * state is an evidence no-op. A reconciliation/store failure is swallowed:
    * the durable indeterminate seal keeps teardown fail-closed, and nothing
    * in the provider settlement path is in a position to observe or retry
-   * the error.
    */
   reconcileLateProviderResult(input: ConversationTurnRunInput, result: ConversationTurnRunResult): void {
     try {
@@ -555,6 +1007,50 @@ export class ConversationDispatcher {
     return this.store.getMessage(messageId)?.content ?? "";
   }
 
+  /**
+   * Frozen public transcript for one parallel explicit batch. Every primary
+   * member carries `triggerMessageIds` stamped at durable accept; rendering
+   * only messages at or before that boundary (plus the request itself) keeps
+   * sibling completions from leaking into an already-selected input. Reads
+   * durable Conversation rows only — never session hidden history, Direct
+   * history, other Groups, or other Topics.
+   */
+  private frozenGroupTranscript(work: ClaimedWork): string {
+    const request = this.store.getMessage(work.run.requestMessageId);
+    // execute() validated the snapshot before start; a miss here would mean
+    // the row vanished mid-flight, and the deterministic-input contract
+    // forbids silently composing from a fallback lookup.
+    if (request === undefined || !requestSnapshotMatches(request, work.run)) {
+      throw new ConversationError("request_snapshot_mismatch", `run "${work.run.id}" lost its request snapshot`);
+    }
+    const boundary = request.seq;
+    // The window is the newest PUBLIC_TRANSCRIPT_MESSAGES messages strictly
+    // before the request boundary — never the oldest rows in the Topic. On a
+    // Topic longer than the bound, the members closest to the request are the
+    // relevant context; the tail is ahead of the boundary and is excluded
+    // anyway, and the head predates what this batch can react to.
+    const transcript = boundary === undefined
+      ? []
+      : this.store.listMessages({
+        conversationId: work.run.conversationId,
+        topicId: work.run.topicId,
+        beforeSeq: boundary,
+        limit: PUBLIC_TRANSCRIPT_MESSAGES,
+      });
+    const lines = transcript.map((message) => {
+      if (message.role === "human") {
+        return `Human: ${message.content}`;
+      }
+      const sender = message.senderBotId ? `Bot ${message.senderBotId}` : "Bot";
+      return `${sender}: ${message.content}`;
+    });
+    const requestText = request.content;
+    if (lines.length === 0) {
+      return requestText;
+    }
+    return `${lines.join("\n\n")}\n\nHuman: ${requestText}`;
+  }
+
   private resolveMaterializeFail(): Error | undefined {
     const fail = this.hooks?.failRuntimeMaterialize;
     if (!fail) {
@@ -582,5 +1078,19 @@ function isMaterializeAbandoned(error: unknown): boolean {
     || error.code === "run_not_runnable"
     || error.code === "conversation_deleting"
     || error.code === "topic_deleting"
+  ) || (error instanceof BotError
+    && (error.code === "group_member_not_member"
+      || error.code === "conversation_not_group"
+      || error.code === "bot_not_found"));
+}
+
+/** Pre-start materialization refusals that will never succeed while the
+ *  Topic's durable ExecutionTarget stays unchanged. Requeueing these spins
+ *  forever on every kick, so the claim must settle terminally instead. */
+function isUnsupportedTarget(error: unknown): boolean {
+  return error instanceof BotError && (
+    error.code === "worktree_unprovisioned"
+    || error.code === "cwd_unsupported"
+    || error.code === "workspace_not_registered"
   );
 }

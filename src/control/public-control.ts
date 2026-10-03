@@ -6,6 +6,7 @@ import type {
   ControlSessionInfo,
 } from "./control-service.js";
 import type { ConversationPromptRequestDto } from "./conversation-control-dtos.js";
+import { ConversationError } from "../conversations/conversation-error.js";
 
 export type {
   ControlExecuteCommandInput,
@@ -44,12 +45,51 @@ function isTrustedControlMethod(prop: PropertyKey): prop is TrustedControlMethod
 export function sanitizePublicConversationPrompt(
   input: ConversationPromptRequestDto,
 ): ConversationPromptRequestDto {
+  const target = input.target;
+  let sanitized: ConversationPromptRequestDto["target"];
+  if (target !== undefined) {
+    // The variants are a mutually exclusive union. A target that is present
+    // but not a well-formed single variant is NEVER laundered into whichever
+    // variant matches first and NEVER silently dropped: dropping would fail
+    // Direct open (target is optional there, so the owning bot would execute
+    // instead of the route the caller asked for) while Group merely reached
+    // `target_required`. Either way the caller's structured routing was
+    // rewritten — so reject at the boundary with the same typed code the
+    // accept path uses (botId + mode:"automatic" must not become a direct
+    // execution of botId).
+    const invalid = (): never => {
+      throw new ConversationError(
+        "invalid-target",
+        "conversation prompt target must be exactly one variant: {botId}, {mode:\"members\", botIds}, {mode:\"everyone\"}, or {mode:\"automatic\"}",
+      );
+    };
+    if (target === null || typeof target !== "object") {
+      invalid();
+    }
+    const hasBotId = "botId" in target;
+    const hasMode = "mode" in target;
+    const hasBotIds = "botIds" in target;
+    const mixed = (hasBotId && (hasMode || hasBotIds)) || (hasMode && hasBotIds && target.mode !== "members");
+    if (mixed) {
+      invalid();
+    }
+    if (hasBotId && typeof target.botId === "string") {
+      sanitized = { botId: target.botId };
+    } else if (hasMode && target.mode === "members" && hasBotIds
+      && Array.isArray(target.botIds) && target.botIds.every((entry): entry is string => typeof entry === "string")) {
+      sanitized = { mode: "members", botIds: [...target.botIds] };
+    } else if (hasMode && (target.mode === "everyone" || target.mode === "automatic")) {
+      sanitized = { mode: target.mode };
+    } else {
+      invalid();
+    }
+  }
   return {
     conversationId: input.conversationId,
     topicId: input.topicId,
     requestId: input.requestId,
     text: input.text,
-    ...(input.target?.botId ? { target: { botId: input.target.botId } } : {}),
+    ...(sanitized ? { target: sanitized } : {}),
   };
 }
 
@@ -91,7 +131,11 @@ export function asPublicControl(
         return (input: PublicControlPromptInput) => target.prompt(sanitizePublicPromptInput(input));
       }
       if (prop === "promptConversation") {
-        return (input: ConversationPromptRequestDto) =>
+        // Sanitize INSIDE the async body: a malformed target must surface as
+        // a rejected promise on every path. Throwing synchronously from the
+        // proxy would escape the caller's `.catch` and crash channel code
+        // that treats promptConversation as promise-returning.
+        return async (input: ConversationPromptRequestDto) =>
           target.promptConversation(sanitizePublicConversationPrompt(input));
       }
       if (prop === "cancelQueuedItem") {

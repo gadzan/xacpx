@@ -30,6 +30,7 @@ import type {
   ConversationDetailDto,
   ConversationHistoryResponseDto,
   ConversationPromptResponseDto,
+  ConversationTargetDto,
   ConversationRunDetailDto,
   ConversationRunDto,
   ConversationSummaryDto,
@@ -37,6 +38,7 @@ import type {
   ExecutionTargetDto,
   GroupDetailDto,
   GroupSummaryDto,
+  GroupTopicCreateTargetDto,
   TopicSummaryDto,
 } from "./dtos.js";
 
@@ -149,6 +151,7 @@ export const MSG = {
   groupsUpdate: "control.groups.update",
   groupsDelete: "control.groups.delete",
   groupsGet: "control.groups.get",
+  groupsList: "control.groups.list",
   groupTopicsCreate: "control.group.topics.create",
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
@@ -568,10 +571,13 @@ export interface GroupsGetPayload {
 export interface GroupsGetResult {
   group: GroupDetailDto;
 }
+export interface GroupsListResult {
+  groups: GroupSummaryDto[];
+}
 export interface GroupTopicsCreatePayload {
   conversationId: string;
   title: string;
-  target: ExecutionTargetDto;
+  target: GroupTopicCreateTargetDto;
 }
 export interface GroupTopicsArchivePayload {
   conversationId: string;
@@ -586,7 +592,7 @@ export interface ConversationPromptPayload {
   topicId: string;
   requestId: string;
   text: string;
-  target?: { botId: string };
+  target?: ConversationTargetDto;
 }
 export type ConversationPromptResult = ConversationPromptResponseDto;
 export interface ConversationHistoryPayload {
