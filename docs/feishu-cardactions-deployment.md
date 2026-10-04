@@ -169,16 +169,29 @@ signing secret, an **explicit** legacy token check, and the second layer on
 secret and the decryption key. Both are required, and dropping either leaves a
 branch unverifiable.
 
-The encrypted branch is the one that must be stated carefully. Its authenticity
-chain is the encrypt-key signature **plus** successful decryption — a captured
-ciphertext cannot pass, because the signature also covers a timestamp inside the
-freshness window. What it does **not** add is a second token comparison, so a
-correctly-signed encrypted envelope is accepted even if its decrypted payload
-carries no token. That asymmetry is current behaviour, verified by probe: an
-encrypted, correctly-signed, tokenless payload returns `200` and reaches the
-handler. If the design intent is that the encrypted branch also check the token,
-that is a production change to `verifyCardRequest()` plus a regression test, not
-a documentation correction.
+The encrypted branch is the one that must be stated carefully, because two
+claims that sound equivalent are not:
+
+- **What it is authenticated by:** the encrypt-key signature **plus** successful
+  decryption. There is no second token comparison.
+- **What the freshness window does:** it *bounds the age* of a replayable
+  request. It does **not** make a request single-use.
+
+`verifyCardRequest()` checks that the signed timestamp is within 1800s
+(`REQUEST_MAX_AGE_MS`), then decrypts. There is **no nonce cache and no
+used-signature cache**, so an otherwise valid captured callback — timestamp,
+nonce, signature, and encrypted body — passes host verification again for as long
+as its timestamp stays fresh. This is proven behaviour, not a theoretical
+concern: replaying one captured signed encrypted request three times yields
+`200` each time and reaches the handler three times.
+
+What keeps a duplicate from becoming a second answer is downstream, in the
+interaction state machine: the generation fence, the claimed-generation gate, and
+the first-terminal-decision-wins rule. Those limit duplicate **effects**; they do
+not make the callback single-use at the authentication layer. If single-use
+transport replay protection is wanted, that is a production design decision
+(transport-level nonce cache) plus a regression test — not something the current
+verification layer provides.
 
 ### 4.2 Why both are required
 

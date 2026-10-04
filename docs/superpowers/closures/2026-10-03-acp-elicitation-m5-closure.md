@@ -191,11 +191,21 @@ an unknown or missing payload token is a 401.
 One asymmetry is deliberate and worth stating because the earlier revision of
 this closure got it backwards: the **encrypted** new-protocol branch returns
 immediately after a successful decrypt and does **not** compare the token. Its
-authenticity chain is the encrypt-key signature plus decryption, and a captured
-ciphertext cannot pass because the signature also covers a fresh timestamp. The
-legacy branch, conversely, compares `record.token` explicitly and treats an
+authenticity chain is the encrypt-key signature plus decryption. The legacy
+branch, conversely, compares `record.token` explicitly and treats an
 unconfigured token as a rejection. Whether the encrypted branch *should* also
 compare the token is a production change, not a doc correction.
+
+A second claim must not be over-stated. The signed timestamp is checked against
+`REQUEST_MAX_AGE_MS` (1800s), which **bounds the age of a replayable request; it
+is not replay prevention.** There is no nonce cache and no used-signature cache,
+so a fully captured callback — timestamp, nonce, signature, encrypted body —
+passes host verification again while its timestamp is still fresh. Verified by
+replaying one captured signed encrypted request three times: `200` each time,
+handler reached three times. Duplicate **effects** are prevented downstream, by
+the interaction state machine's generation fence, claimed-generation gate, and
+first-terminal-decision-wins rule — not by the authentication layer. Transport
+single-use nonce replay protection is a separate production design decision.
 
 ### 3.4 Two capability notions: declared (config) and live (registry readiness)
 
