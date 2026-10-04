@@ -1051,8 +1051,11 @@ export class ConversationRunService {
   }
 
   private async cancelRunAndAbortRouting(runId: string): Promise<void> {
-    await this.dispatcher.cancelRun(runId);
+    // cancelRun seals durable state synchronously, then may await a dispatcher
+    // wake. Abort the Router before that wake waits on a successor's provider.
+    const cancellation = this.dispatcher.cancelRun(runId);
     this.routingAbortControllers.get(runId)?.abort();
+    await cancellation;
   }
 
   /**

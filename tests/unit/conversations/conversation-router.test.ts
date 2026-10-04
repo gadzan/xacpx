@@ -182,6 +182,38 @@ test("shutdown abort settlement does not start queued execution in another Topic
   reopened.close();
 });
 
+test("cancel aborts routing before waiting for a queued successor's execution", async () => {
+  const entered = deferred<void>();
+  const answer = deferred<RoutingDecision>();
+  const successorStarted = deferred<void>();
+  const successorResult = deferred<ConversationTurnRunResult>();
+  let signal: AbortSignal | undefined;
+  const harness = await createHarness({ autoKick: true, router: { capabilityRestriction: RESTRICTED,
+    async decide(_input, options) { signal = options?.signal; entered.resolve(); return answer.promise; },
+  } });
+  const { group, topic } = await createGroup(harness);
+  await harness.service.activateAfterConsumerLock();
+  const first = await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+    requestId: "cancel-before-wake", text: "review", target: { mode: "automatic" } });
+  await entered.promise;
+  harness.runner.run = async (input) => {
+    harness.runner.runs.push(input); successorStarted.resolve(); return successorResult.promise;
+  };
+  await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+    requestId: "queued-after-cancel", text: "next", target: { botId: TESTER_ID } });
+  const cancelling = harness.service.cancelRun(first.run.id);
+  try {
+    await bounded(successorStarted.promise);
+    expect(signal?.aborted).toBe(true);
+    await bounded(harness.service.awaitRouting());
+    expect(harness.store.getRun(first.run.id)?.state).toBe("cancelled");
+  } finally {
+    successorResult.resolve({ status: "completed", text: "done" });
+    answer.resolve({ type: "complete", reason: "late" });
+    await cancelling; await harness.service.awaitRouting(); harness.store.close();
+  }
+});
+
 for (const phase of ["routing-input", "decision-commit", "dispatcher", "before-start"] as const) {
   test(`missing completed assignment result rejects at ${phase} before successor execution`, async () => {
     const answer = deferred<RoutingDecision>();
