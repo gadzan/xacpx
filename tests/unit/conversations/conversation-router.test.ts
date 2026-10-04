@@ -752,7 +752,7 @@ for (const recovery of ["pre-start retry", "expired claim"] as const) {
       expect(recovered.task).toBe("RECOVERED ASSIGNMENT");
       const dispatch = harness.store.listDispatchesForRun(accepted.run.id)[0]!;
       expect(dispatch.authorityEpoch).toBeUndefined();
-      expect(dispatch.humanIngressId).toBeUndefined();
+      expect(dispatch.humanIngress).toBeUndefined();
       if (outcome === "blocked") {
         harness.runner.result = { status: "failed", error: "typed permission denied", blockedReason: "human-authority-unknown" };
       } else if (outcome === "missing task") {
