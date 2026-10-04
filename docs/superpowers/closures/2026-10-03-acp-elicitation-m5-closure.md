@@ -128,10 +128,17 @@ bundles are platform-independent JS.
 | declare form when **any** account has `cardActions` (the capability lie) | mixed-account case | `feishu bundle: a MIXED account set declares no channel-wide form capability` |
 | Discord bundle declares no form (`["form"]` → `[]`) | Discord case | `discord bundle: form capability is declared, not merely not-wrong` |
 | connector registration omits the interaction capability | relay case | `relay bundle: the connector hello advertises the interaction capability it can deliver` |
+| `createClient` is never called, so connector registration never happens | relay case | `the built relay channel never reached connector registration; connector registration never happened within 2000ms` |
 
 Each was applied to source, the affected bundle rebuilt, and the gate re-run; each
-failed exactly the case named, 5 pass / 1 fail in all three runs. The gate is
+failed exactly the case named, 5 pass / 1 fail in all four runs. The gate is
 load-bearing, not decorative.
+
+The last row exists because the relay test's two natural wait branches are both
+permanent-pending when registration never happens. Without an owned deadline,
+that regressor would die at Bun's generic test-level timeout — a wall clock, not
+a diagnostic. An explicit 2s deadline (comfortably under the 5s test timeout, and
+cleared as soon as registration resolves) reports the defect itself instead.
 
 The Discord mutation is the one that matters most for the artefact claim: an
 earlier revision of that test asserted only "every declared mode is in the allowed

@@ -79,7 +79,11 @@ export interface FeishuCardActionConfig {
   encryptKey: string;
   /**
    * The legacy (no `schema`, no `encrypt`) signing secret, and the token Feishu
-   * echoes on every callback for the host to cross-check.
+   * echoes for the host to cross-check on the legacy and new-protocol-UNencrypted
+   * branches. The new-protocol ENCRYPTED branch is verified by the encrypt-key
+   * signature plus successful decryption and does NOT compare a token — a
+   * correctly-signed encrypted envelope is accepted even if its decrypted payload
+   * carries no token (see `verifyCardRequest`).
    *
    * REQUIRED, not optional: the URL-verification challenge arrives with no
    * signature headers, so the echoed token is that handshake's only credential.

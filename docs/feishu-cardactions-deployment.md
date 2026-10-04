@@ -60,7 +60,7 @@ operator contract. It is derived as `Boolean(appId && appSecret)`
 | Field | Required | Notes |
 |---|---|---|
 | `cardActions.encryptKey` | **yes** | New-protocol signing secret + decryption key. Any non-empty string; the repo does not impose a hex/length format. See §4.2. |
-| `cardActions.verificationToken` | **yes** | Legacy signing secret, challenge credential, and the second check on new-protocol actions. See §4.1. |
+| `cardActions.verificationToken` | **yes** | Legacy signing secret, challenge credential, and the second check on **unencrypted** new-protocol actions. See §4.1. |
 | `cardActions.host` | no | Defaults to `127.0.0.1`. See §6. |
 | `cardActions.port` | **yes** | Each account owns its port; a shared port makes accounts fight over one socket. |
 | `cardActions.path` | no, recommended | Route Feishu POSTs to, e.g. `/webhook/card`. |
@@ -92,8 +92,7 @@ In your Feishu app's console:
 1. Enable the **event subscription / callback** capability.
 2. Set the **request URL** to `https://<your-host>/webhook/card`.
 3. Copy the **Encrypt Key** and **Verification Token** the console shows.
-4. Subscribe to the **card interaction** event (`card.action.trigger` and the URL
-   verification challenge).
+4. Subscribe to the **card interaction callback** (`card.action.trigger`) only.
 
 ### 3.2 Configure the account
 
@@ -108,16 +107,39 @@ mode.
 
 ### 3.4 URL verification
 
-The console immediately POSTs a `url_verification` challenge to your endpoint:
+This is **not** a second callback subscription item. It is the handshake the
+platform runs **automatically when the callback/request URL is saved**: the
+console POSTs one verification request to the endpoint, and the endpoint must echo
+the `challenge` back or the address cannot be saved and no card callback traffic
+ever arrives.
+
+Plaintext push, as the platform sends it:
 
 ```json
-{"type": "url_verification", "challenge": "..."}
+{"type": "url_verification", "challenge": "…", "token": "<verificationToken>"}
 ```
 
-The channel answers it with the echoed `challenge`. It is authenticated **solely
-by constant-time comparison of the payload's `token` against
-`cardActions.verificationToken`**, and it is recognized **before** the normal
-signature check. See §4.3 for why that is safe.
+The `token` is **required**, not incidental. The channel answers only when a
+non-empty `challenge` string is present **and** the payload's `token` matches
+`cardActions.verificationToken` in constant time
+(`extractUrlVerificationChallenge` in `card-action-host.ts`). A payload carrying
+only `type` and `challenge`, with no token, is refused with 401 — it cannot be
+echoed.
+
+With encrypted push enabled, the same handshake arrives wrapped in an `encrypt`
+envelope and with **none** of the card-action signature headers:
+
+```json
+{"encrypt": "<base64 AES envelope>"}
+```
+
+The host decrypts the envelope first, then applies the same token check to the
+unwrapped body before answering. An undecryptable body is not a handshake this
+endpoint owes an answer to; it falls through to the action path, which rejects it
+on its own signature check.
+
+The channel answers with the echoed `challenge`, and this recognition happens
+**before** the normal signature check. See §4.3 for why that is safe.
 
 The console then reports the endpoint as verified.
 
