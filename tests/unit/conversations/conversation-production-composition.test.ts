@@ -227,6 +227,40 @@ test("real automatic permission failure produces durable structured blocked-step
   await runtime.shutdown();
 });
 
+test("production Control cancel and runtime shutdown abort non-cooperative Routers and consume late rejection", async () => {
+  const calls: Array<{ signal: AbortSignal; reject: (error: Error) => void }> = [];
+  const router: ConversationRouter = { capabilityRestriction: RESTRICTED, async decide(_input, options) {
+    return new Promise<never>((_, reject) => { calls.push({ signal: options!.signal, reject }); });
+  } };
+  const { control, runtime, sqlitePath } = await compose(new BarrierStateStore(), { router });
+  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+  const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
+  const topic = await control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
+  const request = { conversationId: group.id, topicId: topic.id, text: "review", target: { mode: "automatic" as const } };
+  const first = await control.promptConversation({ ...request, requestId: "cancel-hung-provider" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await control.cancelRun(first.run.id); await runtime.runs.awaitRouting();
+  expect(calls[0]!.signal.aborted).toBe(true);
+  expect((await control.getRun(first.run.id)).state).toBe("cancelled");
+  calls[0]!.reject(new Error("late provider rejection after cancellation"));
+  const second = await control.promptConversation({ ...request, requestId: "shutdown-hung-provider" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  let timer!: ReturnType<typeof setTimeout>;
+  try {
+    await Promise.race([runtime.shutdown(), new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("production shutdown did not drain")), 1_000);
+    })]);
+  } finally { clearTimeout(timer); }
+  expect(calls[1]!.signal.aborted).toBe(true);
+  calls[1]!.reject(new Error("late provider rejection after SQLite close"));
+  await Promise.resolve(); await Promise.resolve();
+  const reopened = await SqliteConversationStore.open(sqlitePath);
+  expect(reopened.getRun(first.run.id)?.state).toBe("cancelled");
+  expect(reopened.getRun(second.run.id)).toMatchObject({ state: "failed", routingState: "done", completionReason: "router_aborted" });
+  reopened.close();
+});
+
 test("remove then delete during production routing fails durably and releases the Topic", async () => {
   let calls = 0;
   let resolveDecision!: (decision: RoutingDecision) => void;

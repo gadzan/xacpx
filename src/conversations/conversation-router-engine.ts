@@ -1,9 +1,11 @@
 import { ConversationError } from "./conversation-error";
 import { gateRoutingDecision } from "./conversation-router-gate";
+import { boundRoutingInput } from "./conversation-router-budget";
 import type { ApplyRoutingDecisionInput } from "./conversation-store";
-import { requestSnapshotMatches } from "./conversation-store";
+import { requestSnapshotMatches, requireMemberResult } from "./conversation-store";
 import {
   isRouterCapabilityRestricted,
+  MAX_ROUTER_MEMBER_METADATA,
   type ConversationRouter,
   type RoutingAssignmentRecord,
   type RoutingDecision,
@@ -27,6 +29,7 @@ import type { BotProfile } from "../bots/bot-types";
  *  longer than the bound still gives the Router the closest prior context —
  *  the same rule the dispatcher's frozen transcript uses. */
 export const ROUTER_PUBLIC_TRANSCRIPT_MESSAGES = 200;
+export const DEFAULT_ROUTER_DECISION_TIMEOUT_MS = 30_000;
 
 /** Store-level decision shape (assignments carry their accepted snapshot). */
 type RoutingDecisionStoreInput = ApplyRoutingDecisionInput["decision"];
@@ -40,6 +43,7 @@ export interface ConversationRouterEngineOptions {
   /** Revalidation and durable commit share BotService's lifecycle gates. */
   runLifecycleAll: <T>(botIds: readonly string[], critical: () => Promise<T>) => Promise<T>;
   now: () => Date;
+  decisionTimeoutMs?: number;
 }
 
 export interface RoutingAttemptOutcome {
@@ -83,13 +87,19 @@ function routingOutcomeOf(turn: MemberTurnRecord): RoutingAssignmentRecord["outc
  *    fails the Run (`failed`), never a silent partial dispatch.
  */
 export class ConversationRouterEngine {
+  private readonly decisionTimeoutMs: number;
   constructor(
     /** The configured Router. Must be `undefined` when automatic mode must
      *  be unsupported; a present RESTRICTED router is the only automatic
      *  configuration. */
     private readonly router: ConversationRouter | undefined,
     private readonly options: ConversationRouterEngineOptions,
-  ) {}
+  ) {
+    this.decisionTimeoutMs = options.decisionTimeoutMs ?? DEFAULT_ROUTER_DECISION_TIMEOUT_MS;
+    if (!Number.isSafeInteger(this.decisionTimeoutMs) || this.decisionTimeoutMs <= 0 || this.decisionTimeoutMs > 2_147_483_647) {
+      throw new ConversationError("invalid_router_timeout", "Router decision timeout must be a positive timer duration");
+    }
+  }
 
   /** True when this engine may route at all. An absent Router leaves
    *  automatic mode unsupported (callers must refuse the accept). */
@@ -109,7 +119,7 @@ export class ConversationRouterEngine {
    * service accept path and the batch-settle hook in the dispatcher) is
    * responsible for kicking the dispatcher afterwards.
    */
-  async route(runId: string): Promise<RoutingAttemptOutcome> {
+  async route(runId: string, signal?: AbortSignal): Promise<RoutingAttemptOutcome> {
     const router = this.router;
     if (!ConversationRouterEngine.isUsable(router)) {
       throw new ConversationError(
@@ -164,12 +174,14 @@ export class ConversationRouterEngine {
     }
     let raw: unknown;
     try {
-      raw = await router.decide(input);
-    } catch {
+      raw = await this.decideWithDeadline(router, input, signal);
+    } catch (error) {
       // A Router failure (model error, transport error, timeout) is an
       // unrecoverable failure of THIS Run, not a reason to spin.
-      const failed = this.failRouting(runId, "router-execution-failed", routingGeneration);
-      return { run: failed, outcome: "failed", reason: "router-execution-failed" };
+      const reason = error instanceof ConversationError && (error.code === "router_timeout" || error.code === "router_aborted")
+        ? error.code : "router-execution-failed";
+      const failed = this.failRouting(runId, reason, routingGeneration);
+      return { run: failed, outcome: "failed", reason };
     }
     const gate = gateRoutingDecision(raw, input);
     if (gate.kind === "rejected") {
@@ -181,6 +193,7 @@ export class ConversationRouterEngine {
     try {
       const selected = gate.decision.type === "dispatch" ? gate.decision.assignments.map((a) => a.botId) : [];
       const applied = await this.options.runLifecycleAll(selected, async () => {
+        if (signal?.aborted) throw new ConversationError("router_aborted", "Router attempt was aborted");
         const decision = this.attachMemberSnapshots(run, gate.decision);
         return store.applyRoutingDecision({
           runId, routingGeneration,
@@ -219,6 +232,32 @@ export class ConversationRouterEngine {
         return { run: failed, outcome: "rejected", reason };
       }
       throw error;
+    }
+  }
+
+  private async decideWithDeadline(router: ConversationRouter, input: RoutingInput, parent?: AbortSignal): Promise<RoutingDecision> {
+    const controller = new AbortController();
+    const abort = () => controller.abort(new ConversationError("router_aborted", "Router attempt was aborted"));
+    const timer = setTimeout(() => controller.abort(new ConversationError("router_timeout", "Router decision exceeded its deadline")), this.decisionTimeoutMs);
+    let rejectAbort!: () => void;
+    const aborted = new Promise<never>((_, reject) => {
+      rejectAbort = () => reject(controller.signal.reason);
+      controller.signal.addEventListener("abort", rejectAbort, { once: true });
+    });
+    parent?.addEventListener("abort", abort, { once: true });
+    if (parent?.aborted) abort();
+    try {
+      // Race owns the lifecycle even when a provider ignores its signal. The
+      // attached handlers also consume a detached provider's late rejection.
+      const provider = Promise.resolve().then(() => {
+        controller.signal.throwIfAborted();
+        return router.decide(input, { signal: controller.signal });
+      });
+      return await Promise.race([provider, aborted]);
+    } finally {
+      clearTimeout(timer);
+      parent?.removeEventListener("abort", abort);
+      controller.signal.removeEventListener("abort", rejectAbort);
     }
   }
 
@@ -275,14 +314,17 @@ export class ConversationRouterEngine {
     if (!topic?.executionTarget) {
       throw new ConversationError("execution_target_missing", `topic "${run.topicId}" has no execution target`);
     }
-    const memberMetadata: RoutingMember[] = conversation.botIds.map((botId) => {
+    const candidates: RoutingMember[] = [];
+    const disabled: RoutingMember[] = [];
+    for (const botId of conversation.botIds) {
       const bot = this.options.readBot(botId);
       // A member whose Bot row vanished mid-Run is not routable: report it
       // disabled rather than fabricating metadata.
       if (!bot) {
-        return { botId, name: botId, agent: "", workspace: topic.executionTarget!.workspace, enabled: false };
+        if (disabled.length < MAX_ROUTER_MEMBER_METADATA) disabled.push({ botId, name: botId, agent: "", workspace: topic.executionTarget.workspace, enabled: false });
+        continue;
       }
-      return {
+      const metadata: RoutingMember = {
         botId: bot.id,
         name: bot.name,
         ...(bot.role ? { role: bot.role } : {}),
@@ -292,7 +334,14 @@ export class ConversationRouterEngine {
         ...(bot.effort ? { effort: bot.effort } : {}),
         enabled: bot.enabled === true,
       };
-    });
+      if (metadata.enabled) candidates.push(metadata);
+      else if (disabled.length < MAX_ROUTER_MEMBER_METADATA) disabled.push(metadata);
+      if (candidates.length === MAX_ROUTER_MEMBER_METADATA) break;
+    }
+    const memberMetadata = conversation.botIds.length <= MAX_ROUTER_MEMBER_METADATA
+      // Keep the public Group order for ordinary snapshots.
+      ? [...candidates, ...disabled].sort((a, b) => conversation.botIds.indexOf(a.botId) - conversation.botIds.indexOf(b.botId))
+      : [...candidates, ...disabled].slice(0, MAX_ROUTER_MEMBER_METADATA);
     const memberTurns = store.listMemberTurns(run.id);
     const completedAssignments: RoutingAssignmentRecord[] = memberTurns.map((turn) => {
       const assignment: RoutingAssignmentRecord = {
@@ -311,7 +360,7 @@ export class ConversationRouterEngine {
       if (turn.state === "completed") {
         // Sequential work may build on the public result; read it from the
         // Topic, never from hidden session history.
-        assignment.result = store.getMemberResult(turn)?.content ?? "";
+        assignment.result = requireMemberResult(store, turn).content;
       }
       if (turn.state === "failed" && turn.failureReason) {
         assignment.failureReason = turn.failureReason;
@@ -323,7 +372,7 @@ export class ConversationRouterEngine {
       ...(topic.executionTarget.cwd !== undefined ? { cwd: topic.executionTarget.cwd } : {}),
       isolation: topic.executionTarget.isolation,
     };
-    return {
+    return boundRoutingInput({
       runId: run.id,
       conversationId: run.conversationId,
       topicId: run.topicId,
@@ -331,6 +380,7 @@ export class ConversationRouterEngine {
       requestMessageId: request.id,
       publicTranscript: transcript,
       memberMetadata,
+      ...(conversation.botIds.length > memberMetadata.length ? { omittedMemberCount: conversation.botIds.length - memberMetadata.length } : {}),
       runState: {
         runId: run.id,
         conversationId: run.conversationId,
@@ -345,7 +395,7 @@ export class ConversationRouterEngine {
       completedAssignments,
       remainingBudget: run.maxMemberTurns - run.consumedMemberTurns,
       executionTarget,
-    };
+    });
   }
 
   /**
@@ -384,10 +434,8 @@ export class ConversationRouterEngine {
       if (turn.state !== "completed" || !turn.assignmentId) {
         continue;
       }
-      const row = this.options.store.getMemberResult(turn);
-      if (row) {
-        publicResultOf.set(turn.assignmentId, row.id);
-      }
+      const row = requireMemberResult(this.options.store, turn);
+      publicResultOf.set(turn.assignmentId, row.id);
     }
     const assignments = decision.assignments.map((assignment) => {
       const group = this.options.readGroup(run.conversationId);

@@ -2127,4 +2127,37 @@ describe("useGroupsStore", () => {
     update({ ...thin, state: "cancelled" });
     expect(store.activeRun?.waitingQuestion).toBeUndefined();
   });
+
+  it("keeps waiting-human and its question when an earlier runs.get running response arrives late", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.groupsByInstance["inst_1"] = [GROUP];
+    const running: ConversationRunDto = {
+      id: "run_wait", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_wait", requestId: "req_wait", mode: "automatic", state: "running",
+      routingState: "routing", profileRevision: 1, createdAt: "now",
+    };
+    store.activeRun = running;
+    const detail = Promise.withResolvers<{ run: ConversationRunDetailDto }>();
+    const entered = Promise.withResolvers<void>();
+    mockRpc.mockImplementation(async (_instance: string, type: string) => {
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") return { runs: [running], activeRunId: running.id,
+        conversationId: "conversation_g", topicId: "topic_1" };
+      if (type === "control.runs.get") { entered.resolve(); return detail.promise; }
+      throw new Error(`unexpected ${type}`);
+    });
+    const loading = store.loadHistory("inst_1", "conversation_g", "topic_1");
+    await entered.promise;
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: { ...running, state: "waiting-human", routingState: "done", waitingQuestion: "Which branch?" },
+    } } as never);
+    detail.resolve({ run: { ...running, memberTurns: [] } });
+    await loading; await flushPromises();
+    expect(store.activeRun?.state).toBe("waiting-human");
+    expect(store.activeRun?.waitingQuestion).toBe("Which branch?");
+  });
 });

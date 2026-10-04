@@ -9,8 +9,9 @@ import { BotRuntimeManager } from "../../../src/bots/bot-runtime-manager";
 import type { BotProfile } from "../../../src/bots/bot-types";
 import type { AppConfig } from "../../../src/config/types";
 import { ConversationError } from "../../../src/conversations/conversation-error";
-import { ConversationDispatcher } from "../../../src/conversations/conversation-dispatcher";
+import { ConversationDispatcher, type ConversationDispatcherHooks } from "../../../src/conversations/conversation-dispatcher";
 import { ConversationRouterEngine } from "../../../src/conversations/conversation-router-engine";
+import { boundRoutingInput } from "../../../src/conversations/conversation-router-budget";
 import {
   bindRouter,
   gateRoutingDecision,
@@ -24,6 +25,7 @@ import {
   type RouterCapabilityRestriction,
   type RoutingDecision,
   type RoutingInput,
+  MAX_ROUTER_INPUT_CHARACTERS,
 } from "../../../src/conversations/conversation-router-types";
 import { ConversationRunService } from "../../../src/conversations/conversation-run-service";
 import type {
@@ -34,6 +36,7 @@ import type {
 import type { ApplyRoutingDecisionInput, RoutingAssignmentInput } from "../../../src/conversations/conversation-store";
 import type { ConversationRun } from "../../../src/conversations/conversation-types";
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
+import { createSqlDriver } from "../../../src/conversations/sql-driver";
 import { toConversationRun, toMemberTurnSummary } from "../../../src/control/conversation-control-dtos";
 import { validControlEvent } from "@ganglion/xacpx-relay-protocol";
 import { snapshotGroupMemberProfile } from "../../../src/bots/bot-types";
@@ -82,6 +85,274 @@ function deferred<T>() {
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
+
+async function bounded<T>(work: Promise<T>): Promise<T> {
+  let timer!: ReturnType<typeof setTimeout>;
+  try {
+    return await Promise.race([work, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("routing did not drain within 1s")), 1_000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
+test("a non-cooperative Router times out durably and releases its Topic successor", async () => {
+  const entered = deferred<void>();
+  const answer = deferred<RoutingDecision>();
+  let calls = 0;
+  let signal: AbortSignal | undefined;
+  const harness = await createHarness({ autoKick: false, decisionTimeoutMs: 30,
+    router: { capabilityRestriction: RESTRICTED, async decide(_input, options) {
+      if (++calls > 1) return { type: "complete", reason: "successor" };
+      signal = options?.signal; entered.resolve(); return answer.promise;
+    } },
+  });
+  const { group, topic } = await createGroup(harness);
+  const first = await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+    requestId: "hung-timeout", text: "review", target: { mode: "automatic" } });
+  await entered.promise;
+  const next = await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+    requestId: "after-timeout", text: "next", target: { mode: "automatic" } });
+  try {
+    await bounded(harness.service.awaitRouting());
+    expect(signal?.aborted).toBe(true);
+    expect(harness.store.getRun(first.run.id)).toMatchObject({ state: "failed", routingState: "done", completionReason: "router_timeout" });
+    expect(harness.store.getRun(next.run.id)).toMatchObject({ state: "completed", completionReason: "successor" });
+    answer.resolve({ type: "complete", reason: "late" });
+    await Promise.resolve(); await Promise.resolve();
+    expect(harness.store.getRun(first.run.id)?.completionReason).toBe("router_timeout");
+  } finally {
+    answer.resolve({ type: "complete", reason: "cleanup" });
+    await harness.service.awaitRouting(); harness.store.close();
+  }
+});
+
+for (const operation of ["cancel", "shutdown"] as const) {
+  test(`hung Router ${operation} drains without adapter cooperation and ignores late output`, async () => {
+    const entered = deferred<void>();
+    const answer = deferred<RoutingDecision>();
+    let signal: AbortSignal | undefined;
+    const harness = await createHarness({ autoKick: false, router: { capabilityRestriction: RESTRICTED,
+      async decide(_input, options) { signal = options?.signal; entered.resolve(); return answer.promise; },
+    } });
+    const { group, topic } = await createGroup(harness);
+    const accepted = await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+      requestId: `hung-${operation}`, text: "review", target: { mode: "automatic" } });
+    await entered.promise;
+    const action = operation === "cancel" ? harness.service.cancelRun(accepted.run.id) : harness.service.shutdown();
+    try {
+      await bounded(action.then(() => harness.service.awaitRouting()));
+      expect(signal?.aborted).toBe(true);
+      answer.resolve({ type: "dispatch", mode: "single", assignments: [
+        { id: "late", botId: BOT_ID, task: "late work", triggerMessageIds: [] },
+      ] });
+      await Promise.resolve(); await Promise.resolve();
+      const reopened = await SqliteConversationStore.open(harness.path);
+      expect(reopened.getRun(accepted.run.id)).toMatchObject({ state: operation === "cancel" ? "cancelled" : "failed", routingState: "done" });
+      expect(reopened.listMemberTurns(accepted.run.id)).toEqual([]);
+      reopened.close();
+    } finally {
+      answer.resolve({ type: "complete", reason: "cleanup" }); await action;
+      await harness.service.awaitRouting(); if (operation === "cancel") harness.store.close();
+    }
+  });
+}
+
+test("shutdown abort settlement does not start queued execution in another Topic", async () => {
+  const entered = deferred<void>();
+  const answer = deferred<RoutingDecision>();
+  const harness = await createHarness({ autoKick: true, router: { capabilityRestriction: RESTRICTED,
+    async decide() { entered.resolve(); return answer.promise; },
+  } });
+  const { group, topic } = await createGroup(harness);
+  await harness.service.activateAfterConsumerLock();
+  await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+    requestId: "shutdown-owner", text: "review", target: { mode: "automatic" } });
+  await entered.promise;
+  const otherTopic = await harness.service.createGroupTopic(group.id, "Later", {
+    workspace: "backend", isolation: "shared-single-writer",
+  });
+  const queued = harness.store.acceptRequest({ conversationId: group.id, topicId: otherTopic.id,
+    requestId: "shutdown-queued", botId: BOT_ID, content: "later", mode: "explicit",
+    profileSnapshot: snapshotGroupMemberProfile(harness.bots.getBot(BOT_ID), otherTopic.executionTarget!, NOW), now: NOW });
+  await bounded(harness.service.shutdown());
+  expect(harness.runner.runs).toEqual([]);
+  answer.resolve({ type: "complete", reason: "late" });
+  const reopened = await SqliteConversationStore.open(harness.path);
+  expect(reopened.getRun(queued.run.id)?.state).toBe("queued");
+  reopened.close();
+});
+
+for (const phase of ["routing-input", "decision-commit", "dispatcher", "before-start"] as const) {
+  test(`missing completed assignment result rejects at ${phase} before successor execution`, async () => {
+    const answer = deferred<RoutingDecision>();
+    const entered = deferred<void>();
+    let calls = 0;
+    let corrupt!: () => Promise<void>;
+    let startHooks = 0;
+    const harness = await createHarness({ autoKick: false, hooks: { async beforeExecutionStart() {
+      startHooks++;
+      if (phase === "before-start") await corrupt();
+    } }, router: { capabilityRestriction: RESTRICTED, async decide() {
+      if (++calls === 1) return { type: "dispatch", mode: "single", assignments: [
+        { id: "A", botId: BOT_ID, task: "review", triggerMessageIds: [] },
+      ] };
+      entered.resolve(); return answer.promise;
+    } } });
+    const { group, topic } = await createGroup(harness);
+    const accepted = await acceptAutomatic(harness, group.id, topic.id, `missing-result-${phase}`);
+    const prior = harness.store.listMemberTurns(accepted.run.id)[0]!;
+    harness.store.directWriteForTest("member_turns", prior.id, { source_turn_id: "source_A" });
+    harness.store.completeExecution({ runId: accepted.run.id, memberTurnId: prior.id, content: "RESULT A",
+      sourceTurn: { sessionAlias: "test", turnId: "source_A" }, now: NOW });
+    const result = harness.store.getMemberResult(harness.store.getMemberTurn(prior.id)!)!;
+    corrupt = async () => {
+      if (phase === "routing-input" || phase === "before-start") {
+        const db = await createSqlDriver(harness.path);
+        try { db.run("DELETE FROM messages WHERE id = ?", [result.id]); }
+        finally { db.close(); }
+      } else {
+        harness.store.directWriteForTest("messages", result.id, {
+          source_turn_json: phase === "dispatcher" ? "invalid JSON" : "{}",
+        });
+      }
+    };
+    const successor: RoutingDecision = { type: "dispatch", mode: "sequential", assignments: [
+      { id: "B", botId: TESTER_ID, task: "apply fix", triggerMessageIds: [], dependsOn: ["A"] },
+    ] };
+    if (phase === "routing-input") await corrupt();
+    const routing = harness.service.routeAutomaticRun(accepted.run.id, false);
+    if (phase !== "routing-input") {
+      await entered.promise;
+      if (phase === "decision-commit") await corrupt();
+      answer.resolve(successor);
+    } else answer.resolve(successor);
+    await routing;
+    if (phase === "dispatcher") await corrupt();
+    if (phase === "dispatcher" || phase === "before-start") await harness.dispatcher.kick();
+    expect(harness.runner.runs).toEqual([]);
+    expect(startHooks).toBe(phase === "before-start" ? 1 : 0);
+    if (phase === "dispatcher" || phase === "before-start") {
+      const second = harness.store.listMemberTurns(accepted.run.id)[1]!;
+      expect(second.state).toBe("failed");
+      expect(second.failureReason).toBe("member_result_missing");
+      expect(second.startedAt).toBeUndefined();
+    } else {
+      expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "failed", routingState: "done", completionReason: "member_result_missing" });
+      expect(harness.store.listMemberTurns(accepted.run.id)).toHaveLength(1);
+      expect(calls).toBe(phase === "routing-input" ? 1 : 2);
+    }
+    await harness.service.awaitRouting(); harness.store.close();
+  });
+}
+
+test("a valid empty public result remains successful dependency evidence", async () => {
+  const harness = await createHarness({ autoKick: false, router: new RecordingRouter([
+    { type: "dispatch", mode: "single", assignments: [{ id: "A", botId: BOT_ID, task: "review", triggerMessageIds: [] }] },
+    { type: "dispatch", mode: "sequential", assignments: [{ id: "B", botId: TESTER_ID, task: "apply fix", dependsOn: ["A"], triggerMessageIds: [] }] },
+    { type: "complete", reason: "done" },
+  ]) });
+  const { group, topic } = await createGroup(harness);
+  harness.runner.result = { status: "completed", text: "" };
+  const accepted = await acceptAutomatic(harness, group.id, topic.id, "empty-result");
+  await harness.dispatcher.kick(); await harness.service.awaitRouting();
+  expect(harness.router!.inputs[1]!.completedAssignments[0]!.result).toBe("");
+  await harness.dispatcher.kick(); await harness.service.awaitRouting();
+  expect(harness.runner.runs).toHaveLength(2);
+  expect(harness.runner.runs[1]!.text).toContain("Task:\napply fix");
+  expect(harness.store.getRun(accepted.run.id)?.state).toBe("completed");
+  harness.store.close();
+});
+
+test("timeout failure cannot settle a newer routing generation", async () => {
+  const entered = deferred<void>();
+  const answer = deferred<RoutingDecision>();
+  const harness = await createHarness({ autoKick: false, decisionTimeoutMs: 30,
+    router: { capabilityRestriction: RESTRICTED, async decide() { entered.resolve(); return answer.promise; } },
+  });
+  const { group, topic } = await createGroup(harness);
+  const accepted = await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+    requestId: "timeout-fence", text: "go", target: { mode: "automatic" } });
+  await entered.promise;
+  const newer = harness.store.markRoutingState(accepted.run.id, "routing", NOW);
+  const decision: Extract<RoutingDecision, { type: "dispatch" }> = { type: "dispatch", mode: "single",
+    assignments: [{ id: "new", botId: TESTER_ID, task: "new work", triggerMessageIds: [newer.requestMessageId] }] };
+  harness.store.applyRoutingDecision({ runId: newer.id, routingGeneration: newer.routingGeneration!, now: NOW,
+    requestMessageId: newer.requestMessageId, decision: harness.withSnapshots(decision, topic.executionTarget!) });
+  await bounded(harness.service.awaitRouting());
+  expect(harness.store.getRun(newer.id)).toMatchObject({ state: "running", routingState: "dispatching", routingGeneration: newer.routingGeneration });
+  answer.resolve({ type: "complete", reason: "late" });
+  harness.store.close();
+});
+
+const boundedAssignment = { id: "A", botId: BOT_ID, task: "review", triggerMessageIds: [] };
+for (const [label, assignment] of [
+  ["long assignment id", { ...boundedAssignment, id: "a".repeat(129) }],
+  ["long Bot id", { ...boundedAssignment, botId: "b".repeat(129) }],
+  ["many dependencies", { ...boundedAssignment, dependsOn: Array.from({ length: 65 }, (_, i) => `a${i}`) }],
+  ["many triggers", { ...boundedAssignment, triggerMessageIds: Array.from({ length: 65 }, (_, i) => `m${i}`) }],
+  ["long dependency", { ...boundedAssignment, dependsOn: ["d".repeat(129)] }],
+  ["long trigger", { ...boundedAssignment, triggerMessageIds: ["m".repeat(129)] }],
+  ["duplicate dependency", { ...boundedAssignment, dependsOn: ["x", "x"] }],
+  ["duplicate trigger", { ...boundedAssignment, triggerMessageIds: ["m", "m"] }],
+] as const) {
+  test(`strict Router bounds reject ${label}`, () => {
+    expect(() => parseRoutingDecision({ type: "dispatch", mode: "sequential", assignments: [assignment] })).toThrow(RoutingDecisionError);
+  });
+}
+
+test("Router input truncation is deterministic, disclosed and bounded across request, transcript and results", async () => {
+  const harness = await createHarness({ autoKick: false, router: new RecordingRouter() });
+  const { group, topic } = await createGroup(harness);
+  await acceptAutomatic(harness, group.id, topic.id, "budget-base");
+  const base = harness.router!.inputs[0]!;
+  const original: RoutingInput = { ...base, request: "Q".repeat(100_000),
+    publicTranscript: Array.from({ length: 200 }, (_, i) => ({ id: `m${i}`, seq: 200 - i, role: "bot", content: "T".repeat(3_000) })),
+    completedAssignments: Array.from({ length: 24 }, (_, i) => ({ id: `a${i}`, botId: BOT_ID, task: "review",
+      dependsOn: [], triggerMessageIds: [], outcome: "completed", result: "R".repeat(5_000), attempt: 1, batch: i + 1 })),
+  };
+  const input = boundRoutingInput(original);
+  expect(input.request.length).toBe(16_000);
+  expect(input.requestTruncated).toBe(true);
+  expect(input.publicTranscript.reduce((sum, row) => sum + row.content.length, 0)).toBe(32_000);
+  expect(input.completedAssignments.reduce((sum, row) => sum + row.result!.length, 0)).toBe(32_000);
+  expect(input.publicTranscript[0]!.contextTruncated).toBe(true);
+  expect(input.completedAssignments[23]!.contextTruncated).toBe(true);
+  expect(JSON.stringify(input).length).toBeLessThanOrEqual(MAX_ROUTER_INPUT_CHARACTERS);
+  expect(boundRoutingInput(original)).toEqual(input);
+  expect(original.request.length).toBe(100_000);
+  expect(original.completedAssignments[23]!.result!.length).toBe(5_000);
+  harness.store.close();
+});
+
+test("a large Group exposes a bounded enabled-first candidate snapshot without rejecting admission", async () => {
+  const harness = await createHarness({ autoKick: false, router: new RecordingRouter() });
+  const ids = [BOT_ID];
+  for (let i = 1; i < 300; i++) {
+    const id = `bot_candidate_${i}`;
+    harness.state.bots[id] = { ...harness.bots.getBot(BOT_ID), id, enabled: i % 3 !== 0 };
+    ids.push(id);
+  }
+  const group = await harness.bots.createGroup({ title: "Large team", botIds: ids });
+  const topic = await harness.service.createGroupTopic(group.id, "Budget", { workspace: "backend", isolation: "shared-single-writer" });
+  const accepted = await acceptAutomatic(harness, group.id, topic.id, "metadata-budget");
+  const input = harness.router!.inputs[0]!;
+  expect(input.memberMetadata).toHaveLength(128);
+  expect(input.omittedMemberCount).toBe(172);
+  expect(input.memberMetadata.every((member) => member.enabled)).toBe(true);
+  expect(input.memberMetadata.map((member) => member.botId)).toEqual(ids.filter((id) => harness.bots.getBot(id).enabled).slice(0, 128));
+  expect(harness.store.getRun(accepted.run.id)?.state).toBe("completed");
+  harness.store.close();
+});
+
+test("oversized fixed Router input fails durably before calling the adapter", async () => {
+  const harness = await createHarness({ autoKick: false, router: new RecordingRouter() });
+  const { group, topic } = await createGroup(harness);
+  harness.state.bots[BOT_ID]!.model = "m".repeat(MAX_ROUTER_INPUT_CHARACTERS + 1);
+  const accepted = await acceptAutomatic(harness, group.id, topic.id, "oversized-fixed-input");
+  expect(harness.router!.inputs).toEqual([]);
+  expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "failed", completionReason: "router_input_too_large" });
+  harness.store.close();
+});
 
 /** The ONLY pre-execution router capability proof PR8 accepts. Everything
  *  except exactly this shape must fail closed. */
@@ -170,6 +441,8 @@ async function createHarness(options: {
   router?: ConversationRouter | undefined;
   autoKick?: boolean;
   beforeGroupAcceptGatesAcquired?: () => Promise<void>;
+  decisionTimeoutMs?: number;
+  hooks?: ConversationDispatcherHooks;
 } = {}): Promise<Harness> {
   const path = join(mkdtempSync(join(tmpdir(), "xacpx-router-")), "conversation.sqlite");
   const store = await SqliteConversationStore.open(path);
@@ -198,6 +471,7 @@ async function createHarness(options: {
   const dispatcher = new ConversationDispatcher(store, runtime, runner, sessions, {
     now: () => new Date(NOW),
     ownerId: "dispatcher-a",
+    hooks: options.hooks,
     onProductEvent: (event) => {
       events.push({ type: event.type, run: "run" in event ? { id: event.run.id, state: event.run.state } : undefined });
     },
@@ -213,6 +487,7 @@ async function createHarness(options: {
       readBot: (botId) => bots.getBot(botId),
       runLifecycleAll: (botIds, critical) => bots.runLifecycleAll(botIds, critical),
       now: () => new Date(NOW),
+      decisionTimeoutMs: options.decisionTimeoutMs,
     })
     : undefined;
   const service = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, stateStore, {
@@ -540,7 +815,9 @@ test("sequential assignment input exposes the prior public result to the router"
   const { group, topic } = await createGroup(harness);
   await acceptAutomatic(harness, group.id, topic.id, "req-seq-result");
   await harness.dispatcher.kick();
+  await harness.service.awaitRouting();
   await harness.dispatcher.kick();
+  await harness.service.awaitRouting();
   expect(router.inputs).toHaveLength(3);
   const second = router.inputs[1]!;
   expect(second.completedAssignments).toHaveLength(1);
@@ -1663,7 +1940,7 @@ test("durable automatic replay precedes current Router and live policy gates", a
   harness.store.close();
 });
 
-test("activation recovery shares the pending per-run Router call and shutdown waits for it", async () => {
+test("activation recovery shares the pending per-run Router call and shutdown aborts it", async () => {
   const entered = deferred<void>();
   const answer = deferred<RoutingDecision>();
   let calls = 0;
@@ -1686,11 +1963,11 @@ test("activation recovery shares the pending per-run Router call and shutdown wa
   const shutdown = harness.service.shutdown().then(() => { closed = true; });
   await Promise.resolve();
   expect(closed).toBe(false);
-  answer.resolve({ type: "complete", reason: "done" });
-  await Promise.all([activation, replayedRoute, shutdown]);
+  await bounded(Promise.all([activation, replayedRoute, shutdown]));
+  answer.resolve({ type: "complete", reason: "late" });
   const reopened = await SqliteConversationStore.open(harness.path);
-  expect(reopened.getRun(accepted.run.id)?.state).toBe("completed");
-  expect(reopened.listRoutingDecisions(accepted.run.id)).toHaveLength(2);
+  expect(reopened.getRun(accepted.run.id)).toMatchObject({ state: "failed", completionReason: "router_aborted" });
+  expect(reopened.listRoutingDecisions(accepted.run.id)).toHaveLength(1);
   reopened.close();
 });
 
@@ -1814,6 +2091,7 @@ test("assignment ids are unique throughout the Run, in both gate and durable sto
   const { group, topic } = await createGroup(harness);
   const accepted = await acceptAutomatic(harness, group.id, topic.id, "unique-assignment");
   const turn = harness.store.listMemberTurns(accepted.run.id)[0]!;
+  harness.store.directWriteForTest("member_turns", turn.id, { source_turn_id: "exact" });
   harness.store.completeExecution({ runId: accepted.run.id, memberTurnId: turn.id, botId: BOT_ID, content: "done", sourceTurn: { sessionAlias: "test", turnId: "exact" }, now: NOW });
   const decision: Extract<RoutingDecision, { type: "dispatch" }> = { type: "dispatch", mode: "single", assignments: [{ id: "review", botId: TESTER_ID, task: "again", triggerMessageIds: [accepted.message.id] }] };
   expect(gateRoutingDecision(decision, harness.engineInput(accepted.run.id))).toMatchObject({ kind: "rejected", code: "router_assignment_duplicate" });
@@ -1881,6 +2159,7 @@ test("parallel assignments with different supplied references receive the same e
   const accepted = await acceptAutomatic(harness, group.id, topic.id, "parallel-references");
   // The next Router references a prior public result for only one assignment.
   const prior = harness.store.listMemberTurns(accepted.run.id)[0]!;
+  harness.store.directWriteForTest("member_turns", prior.id, { source_turn_id: "prior-result" });
   harness.store.completeExecution({ runId: accepted.run.id, memberTurnId: prior.id, botId: BOT_ID,
     content: "SHARED PRIOR RESULT", sourceTurn: { sessionAlias: "test", turnId: "prior-result" }, now: NOW });
   const result = harness.store.listMessages({ conversationId: group.id, topicId: topic.id, limit: 10 }).find((row) => row.role === "bot")!;

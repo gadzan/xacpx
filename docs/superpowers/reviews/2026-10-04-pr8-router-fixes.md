@@ -59,3 +59,20 @@
 自检重新核对 routing singleflight/generation fence、zero-member FIFO/cancel/replay、remove-delete commit validation、request snapshot、exact result join、bounded history、sequential context、assignment uniqueness、audit cleanup、blockedReason provenance 及旧 schema migration，相关回归均通过。profile metadata revision fence 仍未列入现有设计要求；本次不扩大 PR8 至完整 human continuation 或模型 adapter。
 
 本轮本地验证没有重跑已在原审查 HEAD 对照确认的 Windows 全量失败，也没有将其改记为通过；既有环境限制和失败记录继续有效。更新提交的 exact HEAD CI 另见 PR checks。
+
+## 全量复审：routing deadline、result integrity、Web monotonicity、I/O budgets
+
+复审基准：`67a0fe23dbe0749c4cf4975c0d4f6f067662dc3d`。依据执行方案 §21 的约 30 秒 Router deadline 与 bounded context，以及 §22 的 lifecycle、context、persistence、recovery 检查要求。
+
+| 新审查项 | 修复及验证 |
+| --- | --- |
+| Major：Router 永不 settle 阻塞 Run/Topic/shutdown | Engine 自己执行可配置的 30 秒 deadline，向 adapter 传 AbortSignal，并独立 race provider 与 abort；不要求 adapter 配合。timeout 按 generation 落盘 `failed/router_timeout`，cancel、teardown 和 shutdown 主动 abort；shutdown 在关闭 SQLite 前结算 unfinished owner 为 `router_aborted`。永不 resolve 的 provider 回归验证超时释放同 Topic 后继、cancel/shutdown 有界收敛、迟到 dispatch/complete 不可覆盖、旧 timeout 不可失败新 generation；真实 production Control cancel/runtime shutdown 还验证关闭数据库后的迟到 rejection 被消费。停机结算不会唤醒 dispatcher 启动其他排队工作，回归确认另一 Topic 的 Run 保持 queued。 |
+| Major：completed exact result 丢失被解释为空成功 | Router input、commit 和 dispatcher 共用 `requireMemberResult`，缺失 exact 成功证据记 `member_result_missing`；SQL 对非法 source JSON 安全返回缺失。Dispatcher 在 materialization 前与最后一个异步 start hook 后重验，失败不执行、不写 startedAt。回归覆盖结果行删除、source identity 损坏、非法 JSON，以及 start 前结果消失；真实空字符串结果仍正常路由并执行依赖成员。 |
+| Medium：waiting-human 被 stale running 覆盖 | Web 拒绝同一 Run 的 waiting-human → running 回退。真实延迟的 runs.get promise 在 live waiting-human/question 事件后返回，状态和 question 均保留；原 terminal settlement 行为不变。 |
+| Medium：Router I/O 只有部分边界 | Output assignment/Bot/reference ID 最长 128 字符，dependency/trigger 数组各最多 64 且拒绝重复，在 lookup 前完成 parser 检查。Input 序列化 JSON 最多 131,072 字符；request、transcript、result、历史说明及展示 metadata 采用确定性 prefix budgets 并显式标记 truncation。最多 128 个候选成员，enabled 优先且保留 Group 顺序，公开 omittedMemberCount；不增加 Group admission cap。身份和 execution 字段不截断，超预算固定结构在 adapter 调用前持久化失败。回归覆盖八类 malformed bounds、超长上下文、300-member Group 筛选与固定结构 overflow。 |
+
+旧代码先复现六项 deadline/result-integrity 回归全部失败，修复后通过。最终 focused 套件 **101 pass / 0 fail**（Router 91、production composition 10）；关联 23 文件 **606 pass / 0 fail**；Relay Web 全量 **1931 pass / 0 fail**，147 个文件。根 typecheck、全包 `bun run build:packages` 与 diff 检查通过；停机 wake guard 的最后调整后也重新完成根构建与相关回归。更新提交的 exact HEAD CI 另见 PR checks。
+
+整体自检重新检查 generation/singleflight、zero-member replay/FIFO/cancel、membership/delete lifecycle gates、request fence、exact result identity、assignment execution/context isolation、audit teardown、permission provenance、waiting question migration 及协议输出。新增 truncation 只影响 Router snapshot，不改 durable 内容或实际成员 prompt；模型调用期间仍不持有 Bot 生命周期锁。按 PR8 范围保持生产 capability gate，后续 human continuation、handoff 与 model adapter 不在本次实现中。
+
+已有本地 Windows 全量测试失败和 smoke 环境限制继续按上文记录；本轮不将这些检查报告为通过。

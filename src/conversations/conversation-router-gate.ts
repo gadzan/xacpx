@@ -222,6 +222,6 @@ export function bindRouter(router: unknown): ConversationRouter | undefined {
   }
   return {
     capabilityRestriction: candidate.capabilityRestriction,
-    decide: (input) => candidate.decide!(input),
+    decide: (input, options) => candidate.decide!(input, options),
   };
 }

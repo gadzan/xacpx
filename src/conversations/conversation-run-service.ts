@@ -117,6 +117,7 @@ export class ConversationRunService {
    *  batch-settle hook fire routing without awaiting; this set lets callers
    *  settle the pending work deterministically (tests, shutdown). */
   private readonly inFlightRouting = new Map<string, Promise<void>>();
+  private readonly routingAbortControllers = new Map<string, AbortController>();
   private readonly releaseOwnedSession: ReleaseOwnedSession;
   private readonly onProductEvent?: ConversationProductEventSink;
   private closed = false;
@@ -159,9 +160,8 @@ export class ConversationRunService {
 
   async shutdown(): Promise<void> {
     this.closed = true;
-    // Settle every in-flight automatic routing step before the dispatcher
-    // stops: a Router decision must land durably (or fail the Run) before the
-    // process can no longer persist it.
+    for (const controller of this.routingAbortControllers.values()) controller.abort();
+    // Aborted attempts settle under their generation fence before SQLite closes.
     await this.awaitRouting();
     await this.dispatcher.shutdown();
     this.store.close();
@@ -1046,8 +1046,13 @@ export class ConversationRunService {
 
   async cancelRun(runId: string): Promise<void> {
     this.assertOpen();
-    await this.dispatcher.cancelRun(runId);
+    await this.cancelRunAndAbortRouting(runId);
     this.trackReadyAutomaticRuns();
+  }
+
+  private async cancelRunAndAbortRouting(runId: string): Promise<void> {
+    await this.dispatcher.cancelRun(runId);
+    this.routingAbortControllers.get(runId)?.abort();
   }
 
   /**
@@ -1061,14 +1066,17 @@ export class ConversationRunService {
     if (existing) return existing;
     if (this.closed) return Promise.resolve();
     // Register ownership before invoking a Router, including synchronous re-entry.
-    const task = Promise.resolve().then(() => this.performAutomaticRouting(runId, kick)).finally(() => {
+    const controller = new AbortController();
+    this.routingAbortControllers.set(runId, controller);
+    const task = Promise.resolve().then(() => this.performAutomaticRouting(runId, kick, controller.signal)).finally(() => {
       if (this.inFlightRouting.get(runId) === task) this.inFlightRouting.delete(runId);
+      if (this.routingAbortControllers.get(runId) === controller) this.routingAbortControllers.delete(runId);
     });
     this.inFlightRouting.set(runId, task);
     return task;
   }
 
-  private async performAutomaticRouting(runId: string, kick: boolean): Promise<void> {
+  private async performAutomaticRouting(runId: string, kick: boolean, signal: AbortSignal): Promise<void> {
     const engine = this.routerEngine;
     if (!engine?.available) {
       const current = this.store.getRun(runId);
@@ -1081,14 +1089,14 @@ export class ConversationRunService {
       this.trackReadyAutomaticRuns();
       return;
     }
-    const outcome = await engine.route(runId);
-    if (outcome.outcome === "dispatched" && kick && this.autoKick && this.activation === "activated") {
+    const outcome = await engine.route(runId, signal);
+    if (!this.closed && outcome.outcome === "dispatched" && kick && this.autoKick && this.activation === "activated") {
       void this.dispatcher.kick().catch(() => {});
     }
     this.emitRoutingOutcome(outcome);
     if (TERMINAL_RUN_STATES.includes(outcome.run.state)) {
       this.trackReadyAutomaticRuns();
-      if (kick && this.autoKick && this.activation === "activated") void this.dispatcher.kick().catch(() => {});
+      if (!this.closed && kick && this.autoKick && this.activation === "activated") void this.dispatcher.kick().catch(() => {});
     }
   }
 
@@ -1192,7 +1200,7 @@ export class ConversationRunService {
     const runs = this.store.listRuns(conversationId);
     for (const run of runs) {
       if (run.state === "queued" || run.state === "running" || run.state === "waiting-human") {
-        await this.dispatcher.cancelRun(run.id);
+        await this.cancelRunAndAbortRouting(run.id);
       }
     }
     this.store.recoverExpiredClaims(this.now().toISOString());
@@ -1290,7 +1298,7 @@ export class ConversationRunService {
     const ghostRuns = this.store.listRuns(conversationId)
       .filter((run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human");
     for (const run of ghostRuns) {
-      await this.dispatcher.cancelRun(run.id);
+      await this.cancelRunAndAbortRouting(run.id);
     }
     this.store.recoverExpiredClaims(this.now().toISOString());
     const unsettled = this.store.listRuns(conversationId)
@@ -1865,7 +1873,7 @@ export class ConversationRunService {
     const runs = this.store.listRuns(conversationId, topicId);
     for (const run of runs) {
       if (run.state === "queued" || run.state === "running" || run.state === "waiting-human") {
-        await this.dispatcher.cancelRun(run.id);
+        await this.cancelRunAndAbortRouting(run.id);
       }
     }
     this.store.recoverExpiredClaims(this.now().toISOString());

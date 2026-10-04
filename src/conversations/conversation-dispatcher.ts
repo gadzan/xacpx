@@ -7,6 +7,7 @@ import { sessionMatchesExecution } from "../bots/bot-types";
 import { createSourceTurnId } from "../domain/ids";
 import type { SessionService } from "../sessions/session-service";
 import { ConversationError } from "./conversation-error";
+import { requireMemberResult } from "./conversation-store";
 import { conversationExecutionOrigin, conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
 import { requestSnapshotMatches, type ClaimedWork, type ConversationStore } from "./conversation-store";
 import { isEffectConcurrencySafe } from "./conversation-filesystem-policy";
@@ -687,6 +688,7 @@ export class ConversationDispatcher {
         this.failOwnClaimBeforeStart(work, "missing_assignment_task");
         return;
       }
+      if (isGroup) this.referencedTranscript(work);
       if (!isGroup) {
         const live = this.runtime.getBot(work.memberTurn.botId);
         if (live.agent !== snapshot.execution.agent || live.workspace !== snapshot.execution.workspace) {
@@ -733,6 +735,9 @@ export class ConversationDispatcher {
         this.store.cancelRun(work.run.id, this.now().toISOString());
         return;
       }
+      // Re-read exact dependency evidence after async materialization/hooks,
+      // immediately before start; corruption cannot invalidate a cached prompt.
+      const groupPrompt = isGroup ? this.groupTurnPrompt(work) : undefined;
       const sourceTurnId = createSourceTurnId();
       try {
         started = this.store.markExecutionStarted({
@@ -767,7 +772,7 @@ export class ConversationDispatcher {
       this.emitProduct({ type: "conversation-run-changed", run: latestRun });
       this.emitProduct({ type: "member-turn-started", run: latestRun, memberTurn: latestMember });
       const text = isGroup
-        ? composeBotTurnPromptFromSnapshot(snapshot, this.groupTurnPrompt(work))
+        ? composeBotTurnPromptFromSnapshot(snapshot, groupPrompt!)
         : composeBotTurnPromptFromSnapshot(snapshot, this.requestText(work.run.requestMessageId));
       const result = await this.runner.run({
         conversationId: work.run.conversationId,
@@ -795,6 +800,11 @@ export class ConversationDispatcher {
       await this.hooks?.beforeResultPersist?.(work);
       this.persistResult(work, started, result);
     } catch (error) {
+      if (!started && error instanceof ConversationError
+        && (error.code === "member_result_missing" || error.code === "trigger_message_not_found")) {
+        this.failOwnClaimBeforeStart(work, error.code);
+        return;
+      }
       if (isRuntimeRevisionMismatch(error)) {
         this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
         return;
@@ -1120,25 +1130,22 @@ export class ConversationDispatcher {
       }
       rows.set(message.id, message);
     };
-    for (const messageId of work.memberTurn.triggerMessageIds) {
-      claim(messageId);
-    }
     const dependencies = work.memberTurn.dependsOn ?? [];
     if (dependencies.length > 0) {
       // Public results of this Run's terminal dependency assignments. Exact
       // durable join: assignment id → member turn → its public message. A
-      // dependency with no completed public result contributes nothing (the
-      // claim fence already blocked non-terminal ones).
+      // completed dependency without its exact public result is corruption,
+      // not an empty successful result.
       const completed = this.store.listMemberTurns(work.run.id).filter((turn) =>
         turn.assignmentId !== undefined
         && dependencies.includes(turn.assignmentId)
         && turn.state === "completed");
       for (const turn of completed) {
-        const result = this.store.getMemberResult(turn);
-        if (result) {
-          claim(result.id);
-        }
+        claim(requireMemberResult(this.store, turn).id);
       }
+    }
+    for (const messageId of work.memberTurn.triggerMessageIds) {
+      claim(messageId);
     }
     return [...rows.values()];
   }

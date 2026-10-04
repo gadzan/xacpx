@@ -65,6 +65,8 @@ export interface CreateConversationRuntimeInput {
    * (including a permissive default) leaves automatic mode unsupported.
    */
   router?: unknown;
+  /** Engine-enforced decision deadline; adapters cannot disable it. */
+  routerDecisionTimeoutMs?: number;
   /**
    * Daemon-wide AppState COW mutex. Must be the same instance passed to
    * SessionService / Orchestration. Do not invent a Conversation-only mutex.
@@ -130,6 +132,7 @@ export async function createConversationRuntime(
       readBot: (botId) => bots.getBot(botId),
       runLifecycleAll: (botIds, critical) => bots.runLifecycleAll(botIds, critical),
       now: input.now ?? (() => new Date()),
+      decisionTimeoutMs: input.routerDecisionTimeoutMs,
     })
     : undefined;
   const dispatcher = new ConversationDispatcher(store, botRuntime, runner, input.sessions, {

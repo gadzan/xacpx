@@ -18,7 +18,8 @@ export interface ConversationRouter {
   /** The durable capability restriction this Router implementation can prove
    *  BEFORE execution. See `RouterCapabilityRestriction` / `isRouterCapabilityRestricted`. */
   readonly capabilityRestriction: RouterCapabilityRestriction;
-  decide(input: RoutingInput): Promise<RoutingDecision>;
+  /** Engine-enforced deadline/cancellation; providers should release their resources on abort. */
+  decide(input: RoutingInput, options?: { signal: AbortSignal }): Promise<RoutingDecision>;
 }
 
 /**
@@ -95,6 +96,7 @@ export interface RoutingMember {
    *  Router sees the flag so it must choose somebody else rather than have
    *  the server repair a disabled selection. */
   enabled: boolean;
+  contextTruncated?: true;
 }
 
 /** Public execution-target policy in force for this Run's Topic. */
@@ -116,12 +118,13 @@ export interface RoutingAssignmentRecord {
   dependsOn: string[];
   triggerMessageIds: string[];
   outcome: RoutingAssignmentOutcome;
-  /** Public transcript result text (completed only). */
+  /** Public result text (completed only); a bounded prefix when contextTruncated is true. */
   result?: string;
   /** Machine-readable failure reason (failed only). */
   failureReason?: string;
   attempt: number;
   batch: number;
+  contextTruncated?: true;
 }
 
 /** Current Run state projected for the Router: everything it may reason with,
@@ -141,10 +144,10 @@ export interface RoutingRunState {
 /**
  * Everything a Router call may consume, from one explicit snapshot.
  *
- * Bounds are the caller's responsibility: `publicTranscript` is a bounded
- * newest-first window of THIS Topic's public rows (never Direct, private, or
- * another Topic), `memberMetadata` is current live membership, and
- * `completedAssignments` is the durable evidence already produced by this Run.
+ * The engine bounds this snapshot before invoking an adapter. Transcript is
+ * newest-first and public-only; oversized text has explicit truncation flags.
+ * Large membership uses a disclosed candidate subset. Successful assignment
+ * evidence must exist before its text is shortened for the model.
  */
 export interface RoutingInput {
   runId: string;
@@ -152,6 +155,9 @@ export interface RoutingInput {
   topicId: string;
   /** The Run's own human request message content. */
   request: string;
+  requestTruncated?: true;
+  /** Large Groups expose a deterministic candidate subset, never a hidden admission cap. */
+  omittedMemberCount?: number;
   requestMessageId: string;
   /** Bounded public Topic transcript (newest-first, public rows only). */
   publicTranscript: Array<{
@@ -161,6 +167,7 @@ export interface RoutingInput {
     senderBotId?: string;
     content: string;
     runId?: string;
+    contextTruncated?: true;
   }>;
   memberMetadata: RoutingMember[];
   runState: RoutingRunState;
@@ -203,6 +210,15 @@ export const MAX_ROUTER_TASK_LENGTH = 8_000;
 export const MAX_ROUTER_EXPECTED_OUTPUT_LENGTH = 2_000;
 export const MAX_ROUTER_QUESTION_LENGTH = 2_000;
 export const MAX_ROUTER_REASON_LENGTH = 2_000;
+export const MAX_ROUTER_ASSIGNMENT_ID_LENGTH = 128;
+export const MAX_ROUTER_REFERENCE_ID_LENGTH = 128;
+export const MAX_ROUTER_DEPENDENCIES = 64;
+export const MAX_ROUTER_TRIGGER_MESSAGE_IDS = 64;
+export const MAX_ROUTER_INPUT_CHARACTERS = 131_072;
+export const MAX_ROUTER_MEMBER_METADATA = 128;
+export const MAX_ROUTER_REQUEST_LENGTH = 16_000;
+export const MAX_ROUTER_TRANSCRIPT_CHARACTERS = 32_000;
+export const MAX_ROUTER_RESULT_CHARACTERS = 32_000;
 
 export class RoutingDecisionError extends Error {
   constructor(readonly code: string, message: string, readonly details?: unknown) {
@@ -289,8 +305,14 @@ function parseAssignment(value: unknown): Extract<RoutingDecision, { type: "disp
   if (!isNonEmptyString(value.id)) {
     fail("router_assignment_malformed", "Router assignment requires a non-empty id");
   }
+  if (value.id.length > MAX_ROUTER_ASSIGNMENT_ID_LENGTH) {
+    fail("router_assignment_malformed", "Router assignment id exceeds its length limit");
+  }
   if (!isNonEmptyString(value.botId)) {
     fail("router_assignment_malformed", `Router assignment "${value.id}" requires a non-empty botId`);
+  }
+  if (value.botId.length > MAX_ROUTER_REFERENCE_ID_LENGTH) {
+    fail("router_assignment_malformed", "Router Bot id exceeds its length limit");
   }
   if (!isNonEmptyString(value.task)) {
     fail("router_assignment_malformed", `Router assignment "${value.id}" requires a non-empty task`);
@@ -312,8 +334,8 @@ function parseAssignment(value: unknown): Extract<RoutingDecision, { type: "disp
       );
     }
   }
-  const dependsOn = parseBotIdArray(value.dependsOn, "dependsOn");
-  const triggerMessageIds = parseBotIdArray(value.triggerMessageIds, "triggerMessageIds");
+  const dependsOn = parseReferenceIds(value.dependsOn, "dependsOn", MAX_ROUTER_DEPENDENCIES);
+  const triggerMessageIds = parseReferenceIds(value.triggerMessageIds, "triggerMessageIds", MAX_ROUTER_TRIGGER_MESSAGE_IDS);
   return {
     id: value.id,
     botId: value.botId,
@@ -349,17 +371,23 @@ function parseComplete(value: Record<string, unknown>): Extract<RoutingDecision,
   return { type: "complete", reason: value.reason };
 }
 
-function parseBotIdArray(value: unknown, field: string): string[] {
+function parseReferenceIds(value: unknown, field: string, max: number): string[] {
   if (value === undefined) {
     return [];
   }
   if (!Array.isArray(value)) {
     fail("router_assignment_malformed", `Router assignment ${field} must be an array of ids`);
   }
+  if (value.length > max) {
+    fail("router_assignment_malformed", `Router assignment ${field} exceeds its reference limit`);
+  }
+  const ids = new Set<string>();
   for (const entry of value) {
-    if (!isNonEmptyString(entry)) {
+    if (!isNonEmptyString(entry) || entry.length > MAX_ROUTER_REFERENCE_ID_LENGTH) {
       fail("router_assignment_malformed", `Router assignment ${field} must contain non-empty ids`);
     }
+    if (ids.has(entry)) fail("router_assignment_malformed", `Router assignment ${field} repeats a reference`);
+    ids.add(entry);
   }
   return [...(value as string[])];
 }

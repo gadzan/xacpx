@@ -196,6 +196,8 @@ function isActiveRunState(state: ConversationRunStateDto | undefined): boolean {
 function shouldUpdateRunState(current: ConversationRunStateDto | undefined, incoming: ConversationRunStateDto): boolean {
   if (!current) return true;
   if (current === incoming) return true;
+  // PR8 waiting-human has no same-Run resume; delayed running reads are stale.
+  if (current === "waiting-human" && incoming === "running") return false;
   // Proven terminals are evidence-final. Indeterminate is terminal for
   // SCHEDULING only — post-seal proof may still refine it (below).
   if (current === "completed" || current === "failed" || current === "cancelled") return false;

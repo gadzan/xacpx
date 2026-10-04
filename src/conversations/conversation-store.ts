@@ -1,4 +1,5 @@
 import type { BotProfileSnapshot } from "../bots/bot-types";
+import { ConversationError } from "./conversation-error";
 import type {
   ConversationMessage,
   ConversationRun,
@@ -10,6 +11,15 @@ import type {
   MemberTurnRecord,
   PendingDispatch,
 } from "./conversation-types";
+
+/** A completed assignment's successful evidence must exist; empty content is valid. */
+export function requireMemberResult(store: Pick<ConversationStore, "getMemberResult">, turn: MemberTurnRecord): ConversationMessage {
+  const result = store.getMemberResult(turn);
+  if (!result) {
+    throw new ConversationError("member_result_missing", `completed member turn "${turn.id}" lost its exact public result`);
+  }
+  return result;
+}
 
 export interface ListMessagesQuery {
   conversationId: string;

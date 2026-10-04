@@ -754,7 +754,8 @@ export class SqliteConversationStore implements ConversationStore {
     if (!turn.sourceTurnId) return undefined;
     const row = this.sqlite.get<MessageRow>(
       `SELECT * FROM messages WHERE conversation_id = ? AND topic_id = ? AND run_id = ?
-       AND role = 'bot' AND sender_bot_id = ? AND json_extract(source_turn_json, '$.turnId') = ?`,
+       AND role = 'bot' AND sender_bot_id = ?
+       AND CASE WHEN json_valid(source_turn_json) THEN json_extract(source_turn_json, '$.turnId') END = ?`,
       [turn.conversationId, turn.topicId, turn.runId, turn.botId, turn.sourceTurnId],
     );
     return row ? mapMessage(row) : undefined;
