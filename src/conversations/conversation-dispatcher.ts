@@ -683,6 +683,10 @@ export class ConversationDispatcher {
         return;
       }
       const isGroup = this.runtime.conversationKind(work.run.conversationId) === "group";
+      if (isGroup && work.memberTurn.origin === "router" && !work.memberTurn.task?.trim()) {
+        this.failOwnClaimBeforeStart(work, "missing_assignment_task");
+        return;
+      }
       if (!isGroup) {
         const live = this.runtime.getBot(work.memberTurn.botId);
         if (live.agent !== snapshot.execution.agent || live.workspace !== snapshot.execution.workspace) {
@@ -763,7 +767,7 @@ export class ConversationDispatcher {
       this.emitProduct({ type: "conversation-run-changed", run: latestRun });
       this.emitProduct({ type: "member-turn-started", run: latestRun, memberTurn: latestMember });
       const text = isGroup
-        ? composeBotTurnPromptFromSnapshot(snapshot, this.frozenGroupTranscript(work))
+        ? composeBotTurnPromptFromSnapshot(snapshot, this.groupTurnPrompt(work))
         : composeBotTurnPromptFromSnapshot(snapshot, this.requestText(work.run.requestMessageId));
       const result = await this.runner.run({
         conversationId: work.run.conversationId,
@@ -1047,6 +1051,16 @@ export class ConversationDispatcher {
 
   private requestText(messageId: string): string {
     return this.store.getMessage(messageId)?.content ?? "";
+  }
+
+  private groupTurnPrompt(work: ClaimedWork): string {
+    const context = this.frozenGroupTranscript(work);
+    if (work.memberTurn.origin !== "router") return context;
+    // Assignment instructions are per-member execution input, separate from
+    // the frozen public transcript shared by parallel siblings.
+    const expected = work.memberTurn.expectedOutput === undefined
+      ? "" : `\n\nExpected output:\n${work.memberTurn.expectedOutput}`;
+    return `Group assignment:\nTask:\n${work.memberTurn.task}${expected}\n\nPublic Group context:\n${context}`;
   }
 
   /**

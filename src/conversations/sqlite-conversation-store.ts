@@ -95,6 +95,7 @@ interface RunRow {
   mode: string;
   state: string;
   completion_reason: string | null;
+  waiting_question?: string | null;
   routing_state?: string | null;
   routing_generation?: number;
   generation: number;
@@ -426,6 +427,8 @@ function mapRun(row: RunRow): ConversationRun {
     mode,
     state: row.state as ConversationRunState,
     ...(optionalString(row.completion_reason) ? { completionReason: row.completion_reason as string } : {}),
+    ...(mode === "automatic" && row.state === "waiting-human" && optionalString(row.waiting_question)
+      ? { waitingQuestion: row.waiting_question as string } : {}),
     // PR8 automatic routing substate. Explicit Runs must NEVER read a
     // routing state: explicit behavior stays "selected members terminal →
     // Run terminal" with no reevaluation, so a leftover durable value on an
@@ -608,6 +611,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureRunAggregateColumns();
     this.ensureMemberTurnBlockedColumn();
     this.ensureRoutingDecisionTable();
+    this.ensureWaitingQuestionColumn();
     this.ensureDispatchMultiMemberShape();
   }
 
@@ -1951,9 +1955,9 @@ export class SqliteConversationStore implements ConversationStore {
         // reconnect/restart shows exactly the same blocked semantics.
         this.sqlite.run(
           `UPDATE runs SET state = 'waiting-human', completion_reason = 'needs-input',
-             finished_at = NULL, routing_state = 'done'
+             finished_at = NULL, routing_state = 'done', waiting_question = ?
            WHERE id = ?`,
-          [run.id],
+          [input.decision.question, run.id],
         );
         this.writeRoutingDecisionRow(run.id, input.decision, input.now);
         return { run: this.requireRun(run.id), memberTurns: [], dispatches: [], terminal: "waiting-human" };
@@ -2289,6 +2293,21 @@ export class SqliteConversationStore implements ConversationStore {
     if (!names.has("blocked_reason")) {
       this.sqlite.exec("ALTER TABLE member_turns ADD COLUMN blocked_reason TEXT");
     }
+  }
+
+  private ensureWaitingQuestionColumn(): void {
+    this.sqlite.transaction(() => {
+      const cols = this.sqlite.all<{ name: string }>("PRAGMA table_info(runs)");
+      if (!cols.some((col) => col.name === "waiting_question")) {
+        this.sqlite.exec("ALTER TABLE runs ADD COLUMN waiting_question TEXT");
+      }
+      // Upgrade existing PR8 waiting Runs without using audit for scheduling.
+      // Repeat on open so an interrupted older migration cannot lose the seam.
+      this.sqlite.exec(`UPDATE runs SET waiting_question = (
+        SELECT question FROM routing_decisions WHERE run_id = runs.id AND decision_type = 'need-human'
+        ORDER BY created_at DESC, rowid DESC LIMIT 1
+      ) WHERE mode = 'automatic' AND state = 'waiting-human' AND waiting_question IS NULL`);
+    });
   }
 
   /**

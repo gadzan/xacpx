@@ -218,6 +218,11 @@ function mergeRun(current: ConversationRunDto | null, incoming: ConversationRunD
   // state, and losing it re-opens "unknown" on a Run whose routing decision
   // is already known.
   const merged: ConversationRunDto = { ...incoming };
+  if (merged.mode === "automatic" && merged.state === "waiting-human" && merged.waitingQuestion === undefined) {
+    merged.waitingQuestion = current.waitingQuestion;
+  } else if (merged.mode !== "automatic" || merged.state !== "waiting-human") {
+    delete merged.waitingQuestion;
+  }
   if (merged.routingState === undefined) merged.routingState = current.routingState;
   if (merged.activeBatch === undefined) merged.activeBatch = current.activeBatch;
   if (merged.maxMemberTurns === undefined) merged.maxMemberTurns = current.maxMemberTurns;

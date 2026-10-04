@@ -699,6 +699,8 @@ function validConversationRun(value: unknown): boolean {
       || (Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")))
     && typeof c.createdAt === "string"
     && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt)
+    && (c.waitingQuestion === undefined || (c.mode === "automatic" && c.state === "waiting-human"
+      && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0))
     && (c.activeBatch === undefined || typeof c.activeBatch === "number")
     // PR8: automatic-Run routing substate. Absent on explicit Runs; present
     // exactly on automatic ones. Validated as the durable vocabulary so a

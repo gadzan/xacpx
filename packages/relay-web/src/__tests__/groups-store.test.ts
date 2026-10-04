@@ -2105,4 +2105,26 @@ describe("useGroupsStore", () => {
     } as never);
     expect(store.activeRun?.routingState).toBe("dispatching");
   });
+
+  it("preserves the waiting question for a thin reconnect and clears it on settlement", () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const waiting: ConversationRunDto = {
+      id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "waiting-human",
+      routingState: "done", waitingQuestion: "Which branch ships?", profileRevision: 1, createdAt: "now",
+    };
+    const update = (run: ConversationRunDto) => store.applyEvent({ kind: "control-event",
+      instanceId: "inst_1", event: { type: "conversation-run-changed", run } } as never);
+    store.activeRun = waiting;
+    const thin = { ...waiting };
+    delete thin.waitingQuestion;
+    update(thin);
+    expect(store.activeRun?.waitingQuestion).toBe("Which branch ships?");
+    update({ ...thin, state: "cancelled" });
+    expect(store.activeRun?.waitingQuestion).toBeUndefined();
+  });
 });

@@ -43,3 +43,19 @@
 新增五项回归：真实 Control remove + delete + stale dispatch 链路，断言 failed/done、无 MemberTurn/dispatch、awaitRouting 收敛，且同 Topic 后续 automatic Run 自动完成；两个 BotError code 各验证当前 owner 持久化失败、旧 owner 不影响新 generation。Router 主 harness 同步改用生产 `bots.getBot()`，避免用 undefined-reader 掩盖异常类型。
 
 相关 Conversation/Control Bridge/protocol/permissions 套件 **578 pass / 0 fail**（23 个文件，Conversation 347 项）；增强后的 Router + production composition focused 套件 **73 pass / 0 fail**（Router 65、composition 8）；根 typecheck 与根构建通过。完整微信 smoke 的环境限制仍沿用上轮记录。
+
+## 全量复审：assignment execution、waiting question、automatic admission
+
+复审基准：`5edad408777636d198c6bdff98e2696c2e033fb1`。依据设计 §12/§13 和执行方案 PR8 §11：具体 assignment 必须进入成员执行输入，并行成员共享的是 public snapshot，不是整个 prompt；need-human 必须有可恢复的产品数据；automatic accept 持久化零成员，由后续 decision budget 约束实际分派。
+
+| 新审查项 | 修复及验证 |
+| --- | --- |
+| Blocker：task / expectedOutput 没有进入执行 | Dispatcher 在 router-origin Group prompt 中加入独立 assignment envelope；Task 与可选 Expected output 从该 MemberTurn 读取，public context 独立。真实 runner 验证各自 task、输出要求、无 sibling task、同一 public context；顺序成员同时收到自己的 task 与精确 dependency result；explicit prompt 保持原行为。真实 production Agent.chat 验证指令穿过 Control/queue/runner，来源仍是 orchestration。损坏的缺 task assignment 在 start 前失败。 |
+| Medium：need-human question 不公开 | 同一 routing transaction 写 Run.waiting_question 与 audit；automatic waiting-human DTO 投影 waitingQuestion，贯通 Control detail/replay、Relay event validator、Web merge。真实 Control 验证事件和重新打开后的值；旧版 audit-only SQLite schema 在 production restart 后迁移并通过 Control 恢复。取消后不再投影 question，薄 waiting snapshot 保留已有值。 |
+| Medium：automatic 误用 64 target cap | Admission 仅获取并重验一个 carrier 的生命周期锁，carrier 改变时重新获取；不为整个 enabled membership 加锁，不使用 explicit/everyone cap。静态 65 enabled 与 64 enabled + acquisition 期间并发 enable 两种情况均由 Router 选择同一个非 carrier 成员并完成，仅创建一个 MemberTurn；carrier 被 disable 的边界验证重试。explicit/everyone 原上限继续有效。 |
+
+先用旧代码复现 task / question 缺失及静态 65-member 拒绝；并发 enable 用例在旧代码通过而静态状态失败，证实原 cap 行为不一致。最终验证：相关 23 文件 **584 pass / 0 fail**；Router + production composition **79 pass / 0 fail**；Relay Web 全量 147 文件 **1930 pass / 0 fail**；根 TypeScript typecheck、全包 `bun run build:packages`、`git diff --check` 通过，协议 JS 与声明同步重生成。
+
+自检重新核对 routing singleflight/generation fence、zero-member FIFO/cancel/replay、remove-delete commit validation、request snapshot、exact result join、bounded history、sequential context、assignment uniqueness、audit cleanup、blockedReason provenance 及旧 schema migration，相关回归均通过。profile metadata revision fence 仍未列入现有设计要求；本次不扩大 PR8 至完整 human continuation 或模型 adapter。
+
+本轮本地验证没有重跑已在原审查 HEAD 对照确认的 Windows 全量失败，也没有将其改记为通过；既有环境限制和失败记录继续有效。更新提交的 exact HEAD CI 另见 PR checks。

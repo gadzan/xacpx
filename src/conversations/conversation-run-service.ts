@@ -359,11 +359,14 @@ export class ConversationRunService {
         if (this.store.isConversationDeleting(input.conversationId) || this.store.isTopicDeleting(input.topicId)) {
           throw new ConversationError("conversation_deleting", "conversation is deleting");
         }
-        // Automatic Runs hold no human-selected members: `selected` is always
-        // empty for `automatic`, so the widen check below is trivially
-        // satisfied and the probe gate set is the whole eligible membership
-        // (the Router may name any of them).
-        const selected = parsed.kind === "automatic" ? [] : this.resolveGroupMembers(live, parsed);
+        // Automatic admission snapshots only a carrier, never a MemberTurn.
+        // Re-derive it under the probed gate and retry if its identity changed.
+        const selected = parsed.kind === "automatic"
+          ? this.groupEligibleMembers(live).slice(0, 1)
+          : this.resolveGroupMembers(live, parsed);
+        if (parsed.kind === "automatic" && selected.length === 0) {
+          throw new ConversationError("empty_target", "Group has no eligible member for automatic routing");
+        }
         // Widen detection: `selected` is re-derived from live membership
         // inside the held gates. Targeted mode holds exactly its selection,
         // so this is trivially covered; everyone mode retries when live
@@ -401,21 +404,13 @@ export class ConversationRunService {
         // zero members and `mode: "automatic"` carries the 24-turn budget
         // default. Routing begins only after this transaction commits.
         if (parsed.kind === "automatic") {
-          const [firstEligibleId] = this.groupEligibleMembers(live);
-          if (!firstEligibleId) {
-            throw new ConversationError("empty_target", "Group has no eligible member for automatic routing");
-          }
-          const carrier = this.bots.getBot(firstEligibleId);
-          if (!carrier.enabled) {
-            throw new BotError("bot_disabled", `bot "${firstEligibleId}" is disabled`);
-          }
           return this.store.acceptRequest({
             conversationId: input.conversationId,
             topicId: input.topicId,
             requestId: input.requestId,
-            botId: firstEligibleId,
+            botId: selected[0]!,
             content: input.text,
-            profileSnapshot: snapshotGroupMemberProfile(carrier, target, timestamp),
+            profileSnapshot: snapshots[0]!,
             mode: "automatic",
             members: [],
             now: timestamp,
@@ -881,6 +876,19 @@ export class ConversationRunService {
     conversationId: string,
     parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" } | { kind: "automatic" },
   ): string[] {
+    if (parsed.kind === "automatic") {
+      const conversation = this.requireConversation(conversationId);
+      if (conversation.kind !== "group") {
+        throw new ConversationError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
+      }
+      const carrier = this.groupEligibleMembers(conversation)[0];
+      if (!carrier) {
+        throw new ConversationError("empty_target", "Group has no enabled member for automatic routing");
+      }
+      // The explicit/everyone cap bounds selected dispatch members. An
+      // automatic Run owns zero members until a budgeted Router decision.
+      return [carrier];
+    }
     if (parsed.kind === "members") {
       // Gate acquisition is process-lifetime state: `runLifecycleAll` creates a
       // permanent mutex entry per supplied id and never releases them. So the
@@ -930,9 +938,6 @@ export class ConversationRunService {
     // the live selection inside the held gates and retries when the probed set
     // does not cover it, and updateGroup holds old ∪ new gates so it cannot
     // commit between the probe and the durable write.
-    //
-    // `automatic` probes the SAME eligible membership: the Router may name any
-    // of them, so admission must hold gates for exactly that set.
     const conversation = this.state.conversations[conversationId];
     const membership = conversation?.kind === "group" ? conversation.botIds : [];
     // The budget counts what this Run will actually gate and execute: only
@@ -953,11 +958,6 @@ export class ConversationRunService {
         "target_too_large",
         `explicit Group target selects more than ${MAX_GROUP_TARGET_MEMBERS} members`,
       );
-    }
-    if (parsed.kind === "automatic" && candidates.length === 0) {
-      // An automatic Run whose Group has no executable member can never route:
-      // refuse at admission rather than admit a Run that can only fail.
-      throw new ConversationError("empty_target", "Group has no enabled member for automatic routing");
     }
     return candidates;
   }

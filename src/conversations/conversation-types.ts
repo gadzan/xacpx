@@ -134,6 +134,8 @@ export interface ConversationRun {
   mode: ConversationRunMode;
   state: ConversationRunState;
   completionReason?: string;
+  /** Durable Router question, projected only for automatic waiting-human Runs. */
+  waitingQuestion?: string;
   generation: number;
   /**
    * PR8 automatic-Run routing substate. Automatic Runs only; explicit Runs

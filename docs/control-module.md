@@ -94,6 +94,8 @@
 
 Group automatic accept/replay 支持零成员：响应包含 `memberTurns: []`，singular `memberTurn` 缺省；已有成员时才投影 singular 首项。重复 `requestId` 先返回 durable Run，再考虑当前 Router 配置与 live membership。零成员 Run 可取消、可 teardown；waiting-human 的 `finishedAt` 只在实际结束时写入。运行时 typed permission failure 的 structured `blockedReason` 会从 Control execution port 经 runner 落盘，公开 API 不允许 caller 注入来源或升级 authority。
 
+Automatic waiting-human Run 的可选 `waitingQuestion` 通过 Run DTO/detail、列表及 `conversation-run-changed` 事件公开，重新连接与数据库重开后仍可读取。Run 结束时不再投影该字段；此 seam 不提供回答或 resume 操作。Automatic admission 不受 explicit/everyone 的 64 成员 target 上限限制，仍由 Router decision 的剩余 MemberTurn budget 约束实际分派。
+
 ## 注入方式
 
 `buildApp`（`src/main.ts`）在组装 `AppRuntime` 时构造 `ControlService`，挂在

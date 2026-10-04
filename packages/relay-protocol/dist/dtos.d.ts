@@ -381,6 +381,8 @@ export interface ConversationRunDto {
      * (explicit Runs never route); absent on older wire shapes.
      */
     routingState?: "queued" | "routing" | "dispatching" | "done";
+    /** Durable Router question while an automatic Run waits for human input. */
+    waitingQuestion?: string;
     createdAt: string;
     startedAt?: string;
     finishedAt?: string;

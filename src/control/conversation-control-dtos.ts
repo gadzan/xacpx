@@ -157,6 +157,7 @@ export interface ConversationRunDto {
    * durable so the presentation survives reconnect/restart.
    */
   routingState?: ConversationRun["routingState"];
+  waitingQuestion?: string;
   maxMemberTurns: number;
   consumedMemberTurns: number;
   failedBotIds: string[];
@@ -389,6 +390,8 @@ export function toConversationRun(run: ConversationRun): ConversationRunDto {
     ...(run.mode === "automatic" && run.routingState !== undefined
       ? { routingState: run.routingState }
       : {}),
+    ...(run.mode === "automatic" && run.state === "waiting-human" && run.waitingQuestion !== undefined
+      ? { waitingQuestion: run.waitingQuestion } : {}),
     ...(run.activeBatch !== undefined ? { activeBatch: run.activeBatch } : {}),
     maxMemberTurns: run.maxMemberTurns,
     consumedMemberTurns: run.consumedMemberTurns,

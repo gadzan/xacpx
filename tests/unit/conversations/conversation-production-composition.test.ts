@@ -5,7 +5,11 @@ import { expect, test } from "bun:test";
 
 import type { AppConfig } from "../../../src/config/types";
 import { ControlService, conversationKernel } from "../../../src/control/control-service";
-import { createControlEventBus } from "../../../src/control/control-event-bus";
+import { createControlEventBus, type ControlEvent } from "../../../src/control/control-event-bus";
+import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
+import { createSqlDriver } from "../../../src/conversations/sql-driver";
+import { toConversationRun } from "../../../src/control/conversation-control-dtos";
+import { validControlEvent } from "@ganglion/xacpx-relay-protocol";
 import {
   createConversationRuntime,
   createProductionOwnedSessionRelease,
@@ -74,19 +78,23 @@ function createConfig(): AppConfig {
   };
 }
 
-async function compose(stateStore: BarrierStateStore, options: { router?: ConversationRouter; agent?: Agent } = {}) {
+async function compose(stateStore: BarrierStateStore, options: {
+  router?: ConversationRouter; agent?: Agent; state?: AppState; sqlitePath?: string;
+} = {}) {
   const dir = mkdtempSync(join(tmpdir(), "xacpx-compose-"));
-  const state = createEmptyState();
+  const state = options.state ?? createEmptyState();
+  const sqlitePath = options.sqlitePath ?? join(dir, "conversations.sqlite");
   const config = createConfig();
   const stateMutex = new AsyncMutex();
   const sessions = new SessionService(config, stateStore, state, { stateMutex });
+  const events = createControlEventBus();
   const control = new ControlService({
     agent: options.agent ?? { chat: async () => ({ text: "ok" }) },
     sessions,
     activeTurns: { isActiveAnywhere: () => false },
     scheduled: {} as never,
     orchestration: {} as never,
-    events: createControlEventBus(),
+    events,
     workspaces: {
       list: () => [{ name: "backend", cwd: "/tmp/backend" }],
       create: async () => ({ name: "backend", cwd: "/tmp/backend" }),
@@ -101,7 +109,7 @@ async function compose(stateStore: BarrierStateStore, options: { router?: Conver
     stateStore,
     sessions,
     control: kernel,
-    sqlitePath: join(dir, "conversations.sqlite"),
+    sqlitePath,
     releaseOwnedSession: createProductionOwnedSessionRelease({
       sessions,
       transport: { async deleteSession() {}, async releaseLogicalSession() {} },
@@ -112,7 +120,7 @@ async function compose(stateStore: BarrierStateStore, options: { router?: Conver
     stateMutex,
   });
   kernel.bindConversationRuntime(runtime);
-  return { state, sessions, control, runtime, stateMutex };
+  return { state, sessions, control, runtime, stateMutex, events, sqlitePath };
 }
 
 test("real Control automatic prompt returns zero members and same requestId replays the Run", async () => {
@@ -121,7 +129,9 @@ test("real Control automatic prompt returns zero members and same requestId repl
     await new Promise<void>((resolve) => { decide = resolve; });
     return { type: "need-human", question: "Choose scope" };
   } };
-  const { control, runtime } = await compose(new BarrierStateStore(), { router });
+  const { control, runtime, events, sqlitePath } = await compose(new BarrierStateStore(), { router });
+  const observed: ControlEvent[] = [];
+  const unsubscribe = events.subscribe((event) => { observed.push(event); });
   const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
   const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
   const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
@@ -138,15 +148,66 @@ test("real Control automatic prompt returns zero members and same requestId repl
   expect(replay.memberTurns).toEqual([]);
   decide();
   await runtime.runs.awaitRouting();
+  const detail = await control.getRun(accepted.run.id);
+  expect(detail.waitingQuestion).toBe("Choose scope");
+  const changed = observed.find((event) => event.type === "conversation-run-changed"
+    && event.run.id === accepted.run.id && event.run.state === "waiting-human");
+  expect(changed?.type === "conversation-run-changed" && changed.run.waitingQuestion).toBe("Choose scope");
+  expect(validControlEvent(changed)).toBe(true);
+  if (changed?.type === "conversation-run-changed") {
+    expect(validControlEvent({ ...changed, run: { ...changed.run, waitingQuestion: 42 } })).toBe(false);
+    expect(validControlEvent({ ...changed, run: { ...changed.run, state: "cancelled" } })).toBe(false);
+  }
+  const reopened = await SqliteConversationStore.open(sqlitePath);
+  expect(toConversationRun(reopened.getRun(accepted.run.id)!).waitingQuestion).toBe("Choose scope");
+  reopened.close();
   await control.cancelRun(accepted.run.id);
+  expect((await control.getRun(accepted.run.id)).waitingQuestion).toBeUndefined();
+  unsubscribe();
   expect(runtime.store.getRun(accepted.run.id)?.state).toBe("cancelled");
   await runtime.shutdown();
 });
 
+test("legacy audit-only waiting question is available through Control after restart", async () => {
+  const stateStore = new BarrierStateStore();
+  const router: ConversationRouter = { capabilityRestriction: RESTRICTED,
+    async decide() { return { type: "need-human", question: "Which branch ships?" }; } };
+  const first = await compose(stateStore, { router });
+  const bot = await first.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  const helper = await first.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+  const group = await first.control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
+  const topic = await first.control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
+  const accepted = await first.control.promptConversation({ conversationId: group.id, topicId: topic.id,
+    requestId: "legacy-waiting", text: "ship", target: { mode: "automatic" } });
+  await first.runtime.runs.awaitRouting();
+  await first.runtime.shutdown();
+  // Reproduce the exact previous schema: question exists only in audit.
+  const legacy = await createSqlDriver(first.sqlitePath);
+  legacy.exec("ALTER TABLE runs DROP COLUMN waiting_question");
+  legacy.close();
+  const restored = await compose(stateStore, { router, state: first.state, sqlitePath: first.sqlitePath });
+  try {
+    const detail = await restored.control.getRun(accepted.run.id);
+    expect(detail.state).toBe("waiting-human");
+    expect(detail.waitingQuestion).toBe("Which branch ships?");
+    const replay = await restored.control.promptConversation({ conversationId: group.id, topicId: topic.id,
+      requestId: "legacy-waiting", text: "ship", target: { mode: "automatic" } });
+    expect(replay.reused).toBe(true);
+    expect(replay.run.waitingQuestion).toBe("Which branch ships?");
+    await restored.control.cancelRun(accepted.run.id);
+    expect((await restored.control.getRun(accepted.run.id)).waitingQuestion).toBeUndefined();
+  } finally { await restored.runtime.shutdown(); }
+});
+
 test("real automatic permission failure produces durable structured blocked-step evidence", async () => {
+  const executed: string[] = [];
   const { control, runtime } = await compose(new BarrierStateStore(), {
-    agent: { async chat() { throw Object.assign(new Error("permission blocked"), { code: "RUNTIME_PERMISSION_DENIED" }); } },
-    router: { capabilityRestriction: RESTRICTED, async decide(input) { return { type: "dispatch", mode: "single", assignments: [{ id: "write", botId: input.memberMetadata[0]!.botId, task: "write", triggerMessageIds: [] }] }; } },
+    agent: { async chat(request) {
+      executed.push(request.text);
+      expect(request.metadata?.origin).toBe("orchestration");
+      throw Object.assign(new Error("permission blocked"), { code: "RUNTIME_PERMISSION_DENIED" });
+    } },
+    router: { capabilityRestriction: RESTRICTED, async decide(input) { return { type: "dispatch", mode: "single", assignments: [{ id: "write", botId: input.memberMetadata[0]!.botId, task: "write", expectedOutput: "patch summary", triggerMessageIds: [] }] }; } },
   });
   const bot = await control.createBot({ name: "Writer", agent: "codex", workspace: "backend" });
   const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
@@ -155,6 +216,9 @@ test("real automatic permission failure produces durable structured blocked-step
   const accepted = await control.promptConversation({ conversationId: group.id, topicId: topic.id, requestId: "blocked-api", text: "write", target: { mode: "automatic" } });
   await runtime.runs.awaitRouting();
   await runtime.dispatcher.kick();
+  expect(executed).toHaveLength(1);
+  expect(executed[0]).toContain("Task:\nwrite");
+  expect(executed[0]).toContain("Expected output:\npatch summary");
   const turn = runtime.store.listMemberTurns(accepted.run.id)[0]!;
   expect(turn.state).toBe("failed");
   expect(turn.blockedReason).toBe("human-authority-unknown");

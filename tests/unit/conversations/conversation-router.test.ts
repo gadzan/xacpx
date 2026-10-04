@@ -169,6 +169,7 @@ interface Harness {
 async function createHarness(options: {
   router?: ConversationRouter | undefined;
   autoKick?: boolean;
+  beforeGroupAcceptGatesAcquired?: () => Promise<void>;
 } = {}): Promise<Harness> {
   const path = join(mkdtempSync(join(tmpdir(), "xacpx-router-")), "conversation.sqlite");
   const store = await SqliteConversationStore.open(path);
@@ -218,6 +219,7 @@ async function createHarness(options: {
     now: () => new Date(NOW),
     stateMutex,
     autoKick: options.autoKick ?? true,
+    beforeGroupAcceptGatesAcquired: options.beforeGroupAcceptGatesAcquired,
     releaseOwnedSession,
     onProductEvent: (event) => {
       events.push({ type: event.type, run: "run" in event ? { id: event.run.id, state: event.run.state } : undefined });
@@ -909,14 +911,107 @@ test("router-selected member turns carry orchestration provenance only", async (
 });
 
 // ---------------------------------------------------------------------------
+test("explicit Group execution retains its original prompt without an assignment envelope", async () => {
+  const harness = await createHarness({ autoKick: false });
+  const { group, topic } = await createGroup(harness);
+  await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+    requestId: "explicit-input", text: "EXPLICIT HUMAN WORK", target: { botId: BOT_ID } });
+  await harness.dispatcher.kick();
+  const text = harness.runner.runs[0]!.text;
+  expect(text.endsWith("EXPLICIT HUMAN WORK")).toBe(true);
+  expect(text).not.toContain("Group assignment:");
+  expect(text).not.toContain("Public Group context:");
+  harness.store.close();
+});
+
+test("automatic admission retries when its probed carrier is disabled before acquisition", async () => {
+  let harness!: Harness;
+  let acquisitions = 0;
+  const router = new RecordingRouter([{ type: "need-human", question: "scope?" }]);
+  harness = await createHarness({ router, autoKick: false, beforeGroupAcceptGatesAcquired: async () => {
+    if (++acquisitions === 1) await harness.bots.updateBot(BOT_ID, { enabled: false });
+  } });
+  const { group, topic } = await createGroup(harness);
+  const accepted = await acceptAutomatic(harness, group.id, topic.id, "changed-carrier");
+  expect(acquisitions).toBe(2);
+  expect(accepted.run.profileSnapshot.presentation.name).toBe(harness.bots.getBot(TESTER_ID).name);
+  expect(accepted.memberTurns).toEqual([]);
+  expect(router.inputs[0]!.memberMetadata.find((member) => member.botId === BOT_ID)?.enabled).toBe(false);
+  harness.store.close();
+});
+
+test("a corrupt router assignment without a task fails before runner execution", async () => {
+  const harness = await createHarness({ autoKick: false, router: new RecordingRouter([
+    { type: "dispatch", mode: "single", assignments: [
+      { id: "review", botId: BOT_ID, task: "review", triggerMessageIds: [] },
+    ] },
+  ]) });
+  const { group, topic } = await createGroup(harness);
+  const accepted = await acceptAutomatic(harness, group.id, topic.id, "corrupt-task");
+  const turn = harness.store.listMemberTurns(accepted.run.id)[0]!;
+  harness.store.directWriteForTest("member_turns", turn.id, { task: null });
+  await harness.dispatcher.kick();
+  await harness.service.awaitRouting();
+  expect(harness.runner.runs).toEqual([]);
+  const failed = harness.store.getMemberTurn(turn.id)!;
+  expect(failed.state).toBe("failed");
+  expect(failed.failureReason).toBe("missing_assignment_task");
+  expect(failed.startedAt).toBeUndefined();
+  harness.store.close();
+});
+
+for (const concurrentEnable of [false, true]) {
+  test(`automatic admission routes one member of 65 enabled Bots (${concurrentEnable ? "concurrent enable" : "static"})`, async () => {
+    let harness!: Harness;
+    let enabled = false;
+    const router = new RecordingRouter([
+      { type: "dispatch", mode: "single", assignments: [
+        { id: "review", botId: "bot_large_64", task: "review only", triggerMessageIds: [] },
+      ] }, { type: "complete", reason: "reviewed" },
+    ]);
+    harness = await createHarness({ router, autoKick: false,
+      beforeGroupAcceptGatesAcquired: async () => {
+        if (concurrentEnable && !enabled) {
+          enabled = true;
+          await harness.bots.updateBot("bot_large_64", { enabled: true });
+        }
+      },
+    });
+    const ids = [BOT_ID];
+    for (let i = 1; i < 65; i++) {
+      const id = `bot_large_${i}`;
+      harness.state.bots[id] = { ...harness.bots.getBot(BOT_ID), id,
+        enabled: !concurrentEnable || i !== 64 };
+      ids.push(id);
+    }
+    const group = await harness.bots.createGroup({ title: "Large team", botIds: ids });
+    const topic = await harness.service.createGroupTopic(group.id, "Review", {
+      workspace: "backend", isolation: "shared-single-writer",
+    });
+    const accepted = await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+      requestId: "large-team", text: "review", target: { mode: "automatic" } });
+    expect(accepted.memberTurns).toEqual([]);
+    expect(accepted.run.maxMemberTurns).toBe(24);
+    await harness.service.awaitRouting();
+    expect(router.inputs[0]!.memberMetadata).toHaveLength(65);
+    expect(router.inputs[0]!.memberMetadata.every((member) => member.enabled)).toBe(true);
+    expect(harness.store.listMemberTurns(accepted.run.id).map((turn) => turn.botId)).toEqual(["bot_large_64"]);
+    await harness.dispatcher.kick();
+    await harness.service.awaitRouting();
+    expect(harness.runner.runs).toHaveLength(1);
+    expect(harness.store.getRun(accepted.run.id)?.state).toBe("completed");
+    harness.store.close();
+  });
+}
+
 // §13.1 — parallel batch uses one identical frozen public snapshot
 // ---------------------------------------------------------------------------
 
 test("parallel batch members receive the identical frozen public snapshot", async () => {
   const router = new RecordingRouter([
     { type: "dispatch", mode: "parallel", assignments: [
-      { id: "a", botId: BOT_ID, task: "review", triggerMessageIds: [] },
-      { id: "b", botId: TESTER_ID, task: "test", triggerMessageIds: [] },
+      { id: "a", botId: BOT_ID, task: "review the diff", expectedOutput: "review findings", triggerMessageIds: [] },
+      { id: "b", botId: TESTER_ID, task: "run the tests", expectedOutput: "test report", triggerMessageIds: [] },
     ] },
     { type: "complete", reason: "done" },
   ]);
@@ -935,7 +1030,8 @@ test("parallel batch members receive the identical frozen public snapshot", asyn
   const inbound = await harness.dispatcher.kick()
     .then(() => harness.runner.runs);
   expect(inbound.length).toBe(2);
-  const transcriptOf = (text: string) => text.slice(text.indexOf("\n\n", text.indexOf("\n\n") + 2));
+  const transcriptOf = (text: string) => text.split("Public Group context:\n")[1];
+  expect(transcriptOf(inbound[0]!.text)).toBeDefined();
   for (const call of inbound) {
     expect(transcriptOf(call.text)).toBe(transcriptOf(inbound[0]!.text));
   }
@@ -944,6 +1040,16 @@ test("parallel batch members receive the identical frozen public snapshot", asyn
   for (const call of inbound) {
     expect(call.text).not.toContain("done");
   }
+  const review = inbound.find((call) => call.botId === BOT_ID)!.text;
+  const tests = inbound.find((call) => call.botId === TESTER_ID)!.text;
+  expect(review).toContain("Task:\nreview the diff");
+  expect(review).toContain("Expected output:\nreview findings");
+  expect(review).not.toContain("run the tests");
+  expect(review).not.toContain("test report");
+  expect(tests).toContain("Task:\nrun the tests");
+  expect(tests).toContain("Expected output:\ntest report");
+  expect(tests).not.toContain("review the diff");
+  expect(tests).not.toContain("review findings");
   harness.store.close();
 });
 
@@ -1008,6 +1114,8 @@ test("sequential assignment sees the earlier public result in its transcript", a
   expect(turns[1]!.state).toBe("completed");
   const secondPrompt = harness.runner.runs.find((call) => call.memberTurnId === turns[1]!.id)!.text;
   expect(secondPrompt).toContain("SEQ RESULT FROM A");
+  expect(secondPrompt).toContain("Task:\nfix");
+  expect(secondPrompt).not.toContain("Task:\nreview");
   harness.store.close();
 });
 
