@@ -2,7 +2,7 @@ import { ConversationError } from "./conversation-error";
 import { gateRoutingDecision } from "./conversation-router-gate";
 import { boundRoutingInput } from "./conversation-router-budget";
 import type { ApplyRoutingDecisionInput } from "./conversation-store";
-import { requestSnapshotMatches, requireMemberResult } from "./conversation-store";
+import { isRunCancelling, requestSnapshotMatches, requireMemberResult } from "./conversation-store";
 import {
   isRouterCapabilityRestricted,
   MAX_ROUTER_MEMBER_METADATA,
@@ -151,6 +151,7 @@ export class ConversationRouterEngine {
       return { run, outcome: "skipped", reason: `run_${run.state}` };
     }
     if (isRouterShutdown(signal)) return { run, outcome: "skipped", reason: "router_shutdown" };
+    if (isRunCancelling(run)) return { run, outcome: "skipped", reason: "run_cancelling" };
     let routingGeneration: number;
     // A Run with zero remaining budget is terminated by budget, not routed:
     // `maxMemberTurns` is a loop guard, not a completion definition, so this
@@ -242,8 +243,8 @@ export class ConversationRouterEngine {
         if (isRouterShutdown(signal) && error === signal.reason) {
           return { run: current ?? run, outcome: "skipped", reason: "router_shutdown" };
         }
-        if (reason === "routing_batch_active" || reason === "stale_routing_attempt") {
-          // Another drain already committed a batch for this Run; nothing to do.
+        if (reason === "routing_batch_active" || reason === "stale_routing_attempt" || reason === "run_cancelling") {
+          // Routing ownership, batch activity or cancel intent supersedes this attempt.
           return { run: current ?? run, outcome: "skipped", reason };
         }
         // A domain rejection must settle this attempt durably, including a

@@ -36,7 +36,7 @@ import type {
   SettleCancelBatchResult,
   SettledCancelMember,
 } from "./conversation-store";
-import { MAX_AUTOMATIC_MEMBER_TURNS, MAX_QUEUED_RUNS_PER_TOPIC, requestSnapshotMatches } from "./conversation-store";
+import { MAX_AUTOMATIC_MEMBER_TURNS, MAX_QUEUED_RUNS_PER_TOPIC, isRunCancelling, requestSnapshotMatches } from "./conversation-store";
 import {
   conversationExecutionOrigin,
   parseHumanIngress,
@@ -907,6 +907,22 @@ export class SqliteConversationStore implements ConversationStore {
           outcome: "requeued",
         });
       }
+      // A late proof or partial cancel fan-out may have finished every member
+      // before the old consumer died, leaving no claimed row to converge.
+      // Settle that durable intent from evidence before any new consumer kick.
+      const cancellations = this.sqlite.all<RunRow>(
+        "SELECT * FROM runs WHERE state IN ('queued', 'running') AND completion_reason IS NOT NULL",
+      );
+      for (const row of cancellations) {
+        const run = mapRun(row);
+        if (!isRunCancelling(run)) continue;
+        const batchMembers = this.listMemberTurns(run.id).filter((turn) => turn.batch === (run.activeBatch ?? 1));
+        if (batchMembers.length === 0 || batchMembers.some((turn) => !TERMINAL_MEMBER_STATES.includes(turn.state))) continue;
+        const anchor = batchMembers.find((turn) => turn.state === "indeterminate")
+          ?? batchMembers.find((turn) => turn.state === "failed") ?? batchMembers[0]!;
+        this.aggregateRunAfterMemberTerminal(run.id, anchor.id, now,
+          anchor.state === "indeterminate" ? "started_result_unknown" : anchor.failureReason, true);
+      }
       return converged;
     });
   }
@@ -990,6 +1006,7 @@ export class SqliteConversationStore implements ConversationStore {
          LEFT JOIN messages msg ON msg.id = r.request_message_id
          WHERE d.state = 'pending'
            AND r.state IN ('queued', 'running')
+           AND r.completion_reason IS NULL
            AND m.started_at IS NULL
            AND m.state IN ('queued', 'dispatched')
            AND NOT EXISTS (
@@ -1214,7 +1231,7 @@ export class SqliteConversationStore implements ConversationStore {
       this.requireLiveUnstartedClaim(input);
       const run = this.requireRun(input.runId);
       const member = this.requireMemberTurn(input.memberTurnId);
-      if (TERMINAL_RUN_STATES.includes(run.state) || TERMINAL_MEMBER_STATES.includes(member.state)) {
+      if (TERMINAL_RUN_STATES.includes(run.state) || isRunCancelling(run) || TERMINAL_MEMBER_STATES.includes(member.state)) {
         throw new ConversationError("run_not_runnable", `run "${input.runId}" is ${run.state}`);
       }
       this.sqlite.run(
@@ -1261,7 +1278,7 @@ export class SqliteConversationStore implements ConversationStore {
       if (run.conversationId !== input.conversationId || run.topicId !== input.topicId) {
         throw new ConversationError("stale_claim", `dispatch "${input.dispatchId}" does not match conversation scope`);
       }
-      if (TERMINAL_RUN_STATES.includes(run.state) || TERMINAL_MEMBER_STATES.includes(member.state)) {
+      if (TERMINAL_RUN_STATES.includes(run.state) || isRunCancelling(run) || TERMINAL_MEMBER_STATES.includes(member.state)) {
         throw new ConversationError("run_not_runnable", `run "${input.runId}" is ${run.state}`);
       }
     });
@@ -1742,7 +1759,9 @@ export class SqliteConversationStore implements ConversationStore {
         // Nothing executing: the whole Run terminals now via the aggregate,
         // forced even on automatic Runs (human cancel ends the Run; the
         // Router never resumes a cancelled Run).
-        const aggregateAnchor = settled.find((turn) => TERMINAL_MEMBER_STATES.includes(turn.state)) ?? settled[0]!;
+        const currentBatch = settled.filter((turn) => turn.batch === (run.activeBatch ?? 1));
+        const aggregateAnchor = currentBatch.find((turn) => TERMINAL_MEMBER_STATES.includes(turn.state))
+          ?? currentBatch[0] ?? settled[0]!;
         const terminal = this.aggregateRunAfterMemberTerminal(runId, aggregateAnchor.id, now, reason, true);
         return {
           run: terminal,
@@ -1780,6 +1799,7 @@ export class SqliteConversationStore implements ConversationStore {
         // (idempotent, and a late Router failure cannot overwrite a cancel).
         return run;
       }
+      if (isRunCancelling(run)) return run;
       if (routingGeneration !== undefined
         && (run.routingGeneration !== routingGeneration || run.routingState !== "routing")) {
         return run;
@@ -1815,6 +1835,9 @@ export class SqliteConversationStore implements ConversationStore {
       // transition may resurrect scheduling (cancel/indeterminate/complete).
       if (TERMINAL_RUN_STATES.includes(run.state)) {
         throw new ConversationError("run_terminal", `run "${runId}" is ${run.state}; routing is sealed`);
+      }
+      if (isRunCancelling(run)) {
+        throw new ConversationError("run_cancelling", `run "${runId}" has durable cancel intent`);
       }
       if (run.state === "waiting-human") {
         throw new ConversationError("routing_invalid_transition", "waiting-human requires a new human request");
@@ -1856,6 +1879,9 @@ export class SqliteConversationStore implements ConversationStore {
         // explicit error — never a resurrection. Late Router output is a
         // durable audit row at most (see below, guarded by Run state).
         throw new ConversationError("run_terminal", `run "${run.id}" is ${run.state}; routing is sealed`);
+      }
+      if (isRunCancelling(run)) {
+        throw new ConversationError("run_cancelling", `run "${run.id}" has durable cancel intent`);
       }
       if (run.routingState !== "routing" || run.routingGeneration !== input.routingGeneration) {
         throw new ConversationError("stale_routing_attempt", `run "${run.id}" routing ownership changed`);
@@ -1943,7 +1969,8 @@ export class SqliteConversationStore implements ConversationStore {
           dispatches.push(this.requireDispatch(dispatchId));
         }
         this.sqlite.run(
-          `UPDATE runs SET state = 'running', routing_state = 'dispatching', active_batch = ?, started_at = COALESCE(started_at, ?)
+          `UPDATE runs SET state = 'running', routing_state = 'dispatching', active_batch = ?,
+             failed_bot_ids_json = '[]', unavailable_bot_ids_json = '[]', started_at = COALESCE(started_at, ?)
            WHERE id = ?`,
           [nextBatch, input.now, run.id],
         );
@@ -1993,7 +2020,7 @@ export class SqliteConversationStore implements ConversationStore {
   automaticRunsAwaitingRouting(): Array<{ run: ConversationRun; batchMembers: MemberTurnRecord[] }> {
     const rows = this.sqlite.all<RunRow>(
       `SELECT * FROM runs
-       WHERE mode = 'automatic' AND state IN ('queued', 'running')
+       WHERE mode = 'automatic' AND state IN ('queued', 'running') AND completion_reason IS NULL
          AND NOT EXISTS (
            SELECT 1 FROM conversation_lifecycle c
            WHERE c.conversation_id = runs.conversation_id AND c.state = 'deleting'
@@ -2854,7 +2881,7 @@ export class SqliteConversationStore implements ConversationStore {
     // (two members may share the same terminal state; the lookup would
     // attribute the second event to the first member and drop a failedBotId).
     const member = this.requireMemberTurn(memberTurnId);
-    if (member.state === "failed") {
+    if (member.batch === batch && member.state === "failed") {
       const current = new Set(run.failedBotIds);
       current.add(member.botId);
       this.sqlite.run(`UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`, [JSON.stringify([...current]), runId]);
@@ -2898,7 +2925,7 @@ export class SqliteConversationStore implements ConversationStore {
       }
       return this.requireRun(runId);
     }
-    if (run.mode === "automatic" && !forceRunTerminal) {
+    if (run.mode === "automatic" && !forceRunTerminal && !isRunCancelling(run)) {
       // Batch settled but the Run is not done: PR8 Router decides the next
       // step from durable MemberTurns. (Indeterminate already sealed above,
       // in either mode, so only non-indeterminate batches reach here.)

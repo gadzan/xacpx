@@ -50,6 +50,7 @@ import {
   type ConversationProductEventSink,
 } from "./conversation-product-events";
 import type { AcceptRequestResult, ConversationStore, ListMessagesQuery } from "./conversation-store";
+import { isRunCancelling } from "./conversation-store";
 import type {
   ConversationMessage,
   ConversationRecord,
@@ -1087,7 +1088,7 @@ export class ConversationRunService {
     const engine = this.routerEngine;
     if (!engine?.available) {
       const current = this.store.getRun(runId);
-      if (!current || current.mode !== "automatic" || TERMINAL_RUN_STATES.includes(current.state)) return;
+      if (!current || current.mode !== "automatic" || TERMINAL_RUN_STATES.includes(current.state) || isRunCancelling(current)) return;
       // No Router configured: automatic Runs were never admissible, so a
       // surviving one (config removed after accept) must fail closed rather
       // than sit nonterminal forever.

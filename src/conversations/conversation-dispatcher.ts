@@ -7,7 +7,7 @@ import { sessionMatchesExecution } from "../bots/bot-types";
 import { createSourceTurnId } from "../domain/ids";
 import type { SessionService } from "../sessions/session-service";
 import { ConversationError } from "./conversation-error";
-import { requireMemberResult } from "./conversation-store";
+import { isRunCancelling, requireMemberResult } from "./conversation-store";
 import { conversationExecutionOrigin, conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
 import { requestSnapshotMatches, type ClaimedWork, type ConversationStore } from "./conversation-store";
 import { isEffectConcurrencySafe } from "./conversation-filesystem-policy";
@@ -763,6 +763,7 @@ export class ConversationDispatcher {
       if (
         !latestRun
         || latestRun.state !== "running"
+        || isRunCancelling(latestRun)
         || !latestMember
         || latestMember.state !== "running"
         || latestMember.sourceTurnId !== sourceTurnId

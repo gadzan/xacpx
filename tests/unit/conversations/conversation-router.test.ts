@@ -28,9 +28,11 @@ import {
   MAX_ROUTER_INPUT_CHARACTERS,
 } from "../../../src/conversations/conversation-router-types";
 import { ConversationRunService } from "../../../src/conversations/conversation-run-service";
+import { ControlConversationTurnRunner } from "../../../src/conversations/conversation-turn-runner";
 import type {
   ConversationTurnRunInput,
   ConversationTurnRunResult,
+  ConversationTurnCancelResult,
   ConversationTurnRunner,
 } from "../../../src/conversations/conversation-turn-runner";
 import type { ApplyRoutingDecisionInput, RoutingAssignmentInput } from "../../../src/conversations/conversation-store";
@@ -38,6 +40,7 @@ import type { ConversationRun } from "../../../src/conversations/conversation-ty
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
 import { createSqlDriver } from "../../../src/conversations/sql-driver";
 import { toConversationRun, toMemberTurnSummary } from "../../../src/control/conversation-control-dtos";
+import type { ControlPromptResult } from "../../../src/control/control-service";
 import { validControlEvent } from "@ganglion/xacpx-relay-protocol";
 import { snapshotGroupMemberProfile } from "../../../src/bots/bot-types";
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
@@ -310,6 +313,167 @@ test("cancel aborts routing before waiting for a queued successor's execution", 
   }
 });
 
+for (const status of ["completed", "failed"] as const) {
+  test(`natural ${status} while physical cancel waits cannot start another automatic batch`, async () => {
+    const entered = deferred<void>();
+    const result = deferred<ConversationTurnRunResult>();
+    const cancelEntered = deferred<void>();
+    const cancelResult = deferred<ConversationTurnCancelResult>();
+    const router = new RecordingRouter([
+      { type: "dispatch", mode: "single", assignments: [{ id: "before-cancel", botId: BOT_ID, task: "first", triggerMessageIds: [] }] },
+      { type: "dispatch", mode: "single", assignments: [{ id: "after-cancel", botId: TESTER_ID, task: "must not start", triggerMessageIds: [] }] },
+    ]);
+    const harness = await createHarness({ autoKick: true, router });
+    const { group, topic } = await createGroup(harness);
+    harness.runner.run = async (input) => {
+      harness.runner.runs.push(input);
+      if (harness.runner.runs.length === 1) { entered.resolve(); return result.promise; }
+      return { status: "completed", text: "unexpected new execution" };
+    };
+    harness.runner.cancel = async () => { cancelEntered.resolve(); return cancelResult.promise; };
+    await harness.service.activateAfterConsumerLock();
+    const accepted = await acceptAutomatic(harness, group.id, topic.id, `natural-${status}-during-cancel`);
+    const drain = harness.dispatcher.kick();
+    await entered.promise;
+    const cancellation = harness.service.cancelRun(accepted.run.id);
+    await cancelEntered.promise;
+    expect(harness.store.getRun(accepted.run.id)?.completionReason).toBe("cancelled");
+    result.resolve(status === "completed" ? { status, text: "natural result" } : { status, error: "natural failure" });
+    try {
+      await bounded(drain); await bounded(harness.service.awaitRouting());
+      expect(harness.runner.runs).toHaveLength(1);
+      expect(router.inputs).toHaveLength(1);
+      expect(harness.store.listMemberTurns(accepted.run.id)).toHaveLength(1);
+      expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: status, routingState: "done", activeBatch: 1, consumedMemberTurns: 1 });
+    } finally {
+      cancelResult.resolve(status === "completed" ? { outcome: "completed", text: "natural result" } : { outcome: "failed", error: "natural failure" });
+      await cancellation; await drain; await harness.service.awaitRouting(); harness.store.close();
+    }
+  });
+}
+
+test("the real Control runner cannot admit work while its untracked cancellation settles", async () => {
+  const started = deferred<void>();
+  const resumeStart = deferred<void>();
+  const provider = deferred<ControlPromptResult>();
+  let admissions = 0;
+  const executionRunner = new ControlConversationTurnRunner({
+    async promptImmediate() { admissions++; return provider.promise; },
+    cancelTurnForPromptRequest() { return false; },
+    cancelQueuedConversationItem() { return { cancelled: false }; },
+  });
+  const router = new RecordingRouter([{ type: "dispatch", mode: "single", assignments: [
+    { id: "first", botId: BOT_ID, task: "must not start after Stop", triggerMessageIds: [] },
+  ] }]);
+  const harness = await createHarness({ autoKick: false, executionRunner, router,
+    hooks: { async afterExecutionStart() { started.resolve(); await resumeStart.promise; } },
+  });
+  const { group, topic } = await createGroup(harness);
+  const accepted = await acceptAutomatic(harness, group.id, topic.id, "real-cancel-before-provider");
+  const drain = harness.dispatcher.kick();
+  await started.promise;
+  const cancellation = harness.service.cancelRun(accepted.run.id);
+  // The production runner has no tracked execution yet. Its async unknown
+  // outcome competes with the dispatcher's newly released continuation.
+  resumeStart.resolve();
+  try {
+    await bounded(cancellation); await bounded(drain); await bounded(harness.service.awaitRouting());
+    expect(admissions).toBe(0);
+    expect(router.inputs).toHaveLength(1);
+    expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "indeterminate", routingState: "done" });
+  } finally {
+    provider.resolve({ ok: true, text: "cleanup proof" });
+    await cancellation; await drain; await harness.service.awaitRouting(); harness.store.close();
+  }
+});
+
+test("durable cancel intent prevents first provider admission after the execution-start hook", async () => {
+  const started = deferred<void>();
+  const resumeStart = deferred<void>();
+  const cancelEntered = deferred<void>();
+  const finishCancel = deferred<ConversationTurnCancelResult>();
+  const harness = await createHarness({ autoKick: false,
+    router: new RecordingRouter([{ type: "dispatch", mode: "single", assignments: [
+      { id: "first", botId: BOT_ID, task: "must not start after Stop", triggerMessageIds: [] },
+    ] }]), hooks: { async afterExecutionStart() { started.resolve(); await resumeStart.promise; } },
+  });
+  const { group, topic } = await createGroup(harness);
+  harness.runner.cancel = async () => { cancelEntered.resolve(); return finishCancel.promise; };
+  const accepted = await acceptAutomatic(harness, group.id, topic.id, "cancel-before-provider");
+  const drain = harness.dispatcher.kick();
+  await started.promise;
+  const cancellation = harness.service.cancelRun(accepted.run.id);
+  await cancelEntered.promise;
+  resumeStart.resolve();
+  try {
+    await bounded(drain);
+    expect(harness.runner.runs).toEqual([]);
+    expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "running", completionReason: "cancelled" });
+  } finally {
+    finishCancel.resolve({ outcome: "cancelled" });
+    await cancellation; await harness.service.awaitRouting();
+    expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "cancelled", routingState: "done" });
+    harness.store.close();
+  }
+});
+
+for (const phase of ["started orphan", "cancel evidence", "late evidence"] as const) {
+  test(`activation settles durable cancel intent with ${phase} before advancing its Topic`, async () => {
+    const harness = await createHarness({ autoKick: false, router: new RecordingRouter([
+      { type: "dispatch", mode: "single", assignments: [{ id: "first", botId: BOT_ID, task: "first", triggerMessageIds: [] }] },
+    ]) });
+    const { group, topic } = await createGroup(harness);
+    const accepted = await acceptAutomatic(harness, group.id, topic.id, `cancel-recovery-${phase}`);
+    const claim = harness.store.claimNextDispatch({ owner: "dead-owner", authorityEpoch: "old",
+      now: NOW, leaseExpiresAt: "2026-09-15T12:05:00.000Z" })!;
+    const started = harness.store.markExecutionStarted({ dispatchId: claim.dispatch.id, owner: "dead-owner",
+      generation: claim.dispatch.generation, runId: accepted.run.id, memberTurnId: claim.memberTurn.id,
+      sessionAlias: "old-provider", logicalSessionId: "old-session", sourceTurnId: "old-source", now: NOW });
+    const cancellation = harness.store.cancelRun(accepted.run.id, NOW);
+    expect(cancellation.activeMembers.map(({ id }) => id)).toEqual([started.id]);
+    const sourceTurn = { sessionAlias: "old-provider", turnId: "old-source" };
+    if (phase === "cancel evidence") {
+      harness.store.settleCancelBatch({ runId: accepted.run.id, now: NOW, deferRunAggregate: true,
+        outcomes: [{ memberTurnId: started.id, outcome: "completed", content: "proven result", sourceTurn }] });
+    } else if (phase === "late evidence") {
+      harness.store.reconcileLateResult({ runId: accepted.run.id, memberTurnId: started.id, outcome: "completed",
+        content: "proven result", sourceTurn, now: NOW });
+    }
+    expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "running", completionReason: "cancelled" });
+    expect(harness.store.automaticRunsAwaitingRouting()).toEqual([]);
+    expect(() => harness.store.markRoutingState(accepted.run.id, "routing", NOW)).toThrow(/cancel intent/);
+    const dispatch: Extract<RoutingDecision, { type: "dispatch" }> = { type: "dispatch", mode: "single",
+      assignments: [{ id: "forbidden", botId: TESTER_ID, task: "must not start", triggerMessageIds: [accepted.message.id] }] };
+    for (const decision of [harness.withSnapshots(dispatch, topic.executionTarget!),
+      { type: "complete" as const, reason: "must not complete" }, { type: "need-human" as const, question: "must not park" }]) {
+      expect(() => harness.store.applyRoutingDecision({ runId: accepted.run.id, routingGeneration: 1,
+        requestMessageId: accepted.message.id, decision, now: NOW })).toThrow(/cancel intent/);
+    }
+    expect(harness.store.failRun(accepted.run.id, "router_timeout", "failed", NOW, 1).state).toBe("running");
+    const successor = await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+      requestId: `after-cancel-recovery-${phase}`, text: "successor", target: { mode: "automatic" } });
+    harness.store.close();
+    const reopened = await SqliteConversationStore.open(harness.path);
+    const router = new RecordingRouter([{ type: "complete", reason: "successor finished" }]);
+    const runner = new FakeRunner();
+    const dispatcher = new ConversationDispatcher(reopened, harness.runtime, runner, harness.sessions, { now: harness.nowFn, ownerId: "new-owner" });
+    const engine = new ConversationRouterEngine(bindRouter(router), { store: reopened,
+      readGroup: (id) => harness.state.conversations[id], readTopic: (_id, id) => harness.state.conversation_topics[id],
+      readBot: (id) => harness.bots.getBot(id), runLifecycleAll: (ids, critical) => harness.bots.runLifecycleAll(ids, critical), now: harness.nowFn });
+    const service = new ConversationRunService(reopened, harness.bots, harness.runtime, dispatcher, harness.sessions,
+      harness.state, harness.stateStore, { now: harness.nowFn, autoKick: false, routerEngine: engine });
+    dispatcher.setAutomaticRoutingHandler((id) => service.trackAutomaticRouting(id));
+    try {
+      await bounded(service.activateAfterConsumerLock()); await service.awaitRouting();
+      expect(reopened.getRun(accepted.run.id)).toMatchObject({ state: phase === "started orphan" ? "indeterminate" : "completed",
+        routingState: "done", consumedMemberTurns: 1 });
+      expect(reopened.getRun(successor.run.id)).toMatchObject({ state: "completed", completionReason: "successor finished" });
+      expect(router.inputs.map(({ runId }) => runId)).toEqual([successor.run.id]);
+      expect(runner.runs).toEqual([]);
+    } finally { await service.shutdown(); }
+  });
+}
+
 for (const phase of ["routing-input", "decision-commit", "dispatcher", "before-start"] as const) {
   test(`missing completed assignment result rejects at ${phase} before successor execution`, async () => {
     const answer = deferred<RoutingDecision>();
@@ -454,6 +618,32 @@ test("Router input truncation is deterministic, disclosed and bounded across req
   harness.store.close();
 });
 
+for (const order of ["ascending", "descending", "mixed"] as const) {
+  test(`transcript character budget prioritizes newest seq and preserves ${order} input order`, async () => {
+    const harness = await createHarness({ autoKick: false, router: new RecordingRouter() });
+    const { group, topic } = await createGroup(harness);
+    await acceptAutomatic(harness, group.id, topic.id, `transcript-budget-${order}`);
+    const rows: RoutingInput["publicTranscript"] = Array.from({ length: 200 }, (_, i) => ({
+      id: `message-${301 + i}`, seq: 301 + i, role: "bot", content: `context-${301 + i}:`.padEnd(3_000, "T"),
+    }));
+    const transcript = order === "descending" ? rows.toReversed()
+      : order === "mixed" ? [...rows.slice(0, 100), ...rows.slice(100).toReversed()] : rows;
+    const original: RoutingInput = { ...harness.router!.inputs[0]!, publicTranscript: transcript };
+    const before = structuredClone(original);
+    const input = boundRoutingInput(original);
+    expect(input.publicTranscript.map(({ seq }) => seq)).toEqual(transcript.map(({ seq }) => seq));
+    expect(input.publicTranscript.filter(({ content }) => content.length > 0).map(({ seq }) => seq).toSorted((a, b) => a - b))
+      .toEqual(Array.from({ length: 16 }, (_, i) => 485 + i));
+    expect(input.publicTranscript.find(({ seq }) => seq === 500)?.content).toBe(rows[199]!.content.slice(0, 2_000));
+    expect(input.publicTranscript.find(({ seq }) => seq === 301)?.content).toBe("");
+    expect(input.publicTranscript.every(({ contextTruncated }) => contextTruncated === true)).toBe(true);
+    expect(input.publicTranscript.reduce((sum, row) => sum + row.content.length, 0)).toBe(32_000);
+    expect(JSON.stringify(input).length).toBeLessThanOrEqual(MAX_ROUTER_INPUT_CHARACTERS);
+    expect(original).toEqual(before);
+    harness.store.close();
+  });
+}
+
 test("a large Group exposes a bounded enabled-first candidate snapshot without rejecting admission", async () => {
   const harness = await createHarness({ autoKick: false, router: new RecordingRouter() });
   const ids = [BOT_ID];
@@ -538,7 +728,7 @@ class FakeRunner implements ConversationTurnRunner {
     this.runs.push(input);
     return this.result;
   }
-  async cancel() {
+  async cancel(): Promise<ConversationTurnCancelResult> {
     return { outcome: "cancelled" as const };
   }
 }
@@ -574,6 +764,7 @@ async function createHarness(options: {
   beforeRoutingCommitGatesAcquired?: () => void;
   decisionTimeoutMs?: number;
   hooks?: ConversationDispatcherHooks;
+  executionRunner?: ConversationTurnRunner;
 } = {}): Promise<Harness> {
   const path = join(mkdtempSync(join(tmpdir(), "xacpx-router-")), "conversation.sqlite");
   const store = await SqliteConversationStore.open(path);
@@ -599,7 +790,7 @@ async function createHarness(options: {
   });
   const runner = new FakeRunner();
   const events: Harness["events"] = [];
-  const dispatcher = new ConversationDispatcher(store, runtime, runner, sessions, {
+  const dispatcher = new ConversationDispatcher(store, runtime, options.executionRunner ?? runner, sessions, {
     now: () => new Date(NOW),
     ownerId: "dispatcher-a",
     hooks: options.hooks,
@@ -2253,11 +2444,11 @@ for (const change of ["remove", "disable"] as const) {
 }
 
 
-test("Router uses the nearest 200 public rows on a long Topic", async () => {
+test("Router uses the nearest 200 public rows and retains the latest text on a long Topic", async () => {
   const harness = await createHarness({ router: new RecordingRouter(), autoKick: false });
   const { group, topic } = await createGroup(harness);
   for (let index = 1; index <= 500; index++) {
-    const entry = await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id, requestId: `history-${index}`, text: `context-${index}`, target: { botId: BOT_ID } });
+    const entry = await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id, requestId: `history-${index}`, text: `context-${index}:`.padEnd(3_000, "T"), target: { botId: BOT_ID } });
     harness.store.cancelRun(entry.run.id, NOW);
   }
   const accepted = await acceptAutomatic(harness, group.id, topic.id, "latest-window");
@@ -2265,8 +2456,70 @@ test("Router uses the nearest 200 public rows on a long Topic", async () => {
   expect(input.publicTranscript).toHaveLength(200);
   expect(input.publicTranscript[0]?.seq).toBe(500);
   expect(input.publicTranscript[199]?.seq).toBe(301);
+  expect(input.publicTranscript[0]?.content).toBe("context-500:".padEnd(2_000, "T"));
+  expect(input.publicTranscript[15]?.seq).toBe(485);
+  expect(input.publicTranscript[15]?.content.length).toBe(2_000);
+  expect(input.publicTranscript[16]?.content).toBe("");
+  expect(input.publicTranscript[199]?.content).toBe("");
+  expect(input.publicTranscript.reduce((sum, row) => sum + row.content.length, 0)).toBe(32_000);
+  expect(input.publicTranscript.every(({ contextTruncated }) => contextTruncated === true)).toBe(true);
+  expect(harness.store.getMessage(input.publicTranscript[199]!.id)?.content.length).toBe(3_000);
   expect(input.publicTranscript.some((row) => row.id === accepted.message.id)).toBe(false);
   harness.store.close();
+});
+
+test("a new automatic batch resets current aggregates while retaining failed assignment history", async () => {
+  const router = new RecordingRouter([
+    { type: "dispatch", mode: "single", assignments: [{ id: "failed-review", botId: BOT_ID, task: "review", triggerMessageIds: [] }] },
+    { type: "dispatch", mode: "single", assignments: [{ id: "retry-review", botId: BOT_ID, task: "retry review", triggerMessageIds: [] }] },
+    { type: "complete", reason: "retry succeeded" },
+  ]);
+  const harness = await createHarness({ autoKick: false, router });
+  const { group, topic } = await createGroup(harness);
+  const accepted = await acceptAutomatic(harness, group.id, topic.id, "retry-aggregate");
+  // unavailableBotIds is a reserved current-batch aggregate, seeded here
+  // to verify that the same durable dispatch boundary clears both lists.
+  harness.store.directWriteForTest("runs", accepted.run.id, { unavailable_bot_ids_json: JSON.stringify([TESTER_ID]) });
+  harness.runner.result = { status: "failed", error: "first assignment failed" };
+  await harness.dispatcher.kick(); await harness.service.awaitRouting();
+  expect(router.inputs[1]?.runState.failedBotIds).toEqual([BOT_ID]);
+  expect(router.inputs[1]?.completedAssignments[0]).toMatchObject({ id: "failed-review", outcome: "failed", failureReason: "first assignment failed" });
+  expect(harness.store.getRun(accepted.run.id)).toMatchObject({ activeBatch: 2, consumedMemberTurns: 1, failedBotIds: [], unavailableBotIds: [] });
+  harness.runner.result = { status: "completed", text: "retry succeeded" };
+  await harness.dispatcher.kick(); await harness.service.awaitRouting();
+  expect(router.inputs[2]?.runState.failedBotIds).toEqual([]);
+  expect(router.inputs[2]?.completedAssignments.map(({ id, batch, outcome }) => ({ id, batch, outcome }))).toEqual([
+    { id: "failed-review", batch: 1, outcome: "failed" }, { id: "retry-review", batch: 2, outcome: "completed" },
+  ]);
+  expect(router.inputs[2]?.completedAssignments[1]?.result).toBe("retry succeeded");
+  harness.store.close();
+  const reopened = await SqliteConversationStore.open(harness.path);
+  try {
+    expect(toConversationRun(reopened.getRun(accepted.run.id)!)).toMatchObject({ state: "completed", activeBatch: 2,
+      consumedMemberTurns: 2, failedBotIds: [], unavailableBotIds: [] });
+    expect(reopened.listMemberTurns(accepted.run.id).map(({ state }) => state)).toEqual(["failed", "completed"]);
+  } finally { reopened.close(); }
+});
+
+test("cancelling a queued retry does not reimport a historical failed Bot aggregate", async () => {
+  const harness = await createHarness({ autoKick: false, router: new RecordingRouter([
+    { type: "dispatch", mode: "single", assignments: [{ id: "failed-A", botId: BOT_ID, task: "first", triggerMessageIds: [] }] },
+    { type: "dispatch", mode: "single", assignments: [{ id: "queued-B", botId: TESTER_ID, task: "second", triggerMessageIds: [] }] },
+  ]) });
+  const { group, topic } = await createGroup(harness);
+  const accepted = await acceptAutomatic(harness, group.id, topic.id, "cancel-retry-aggregate");
+  harness.runner.result = { status: "failed", error: "historical failure" };
+  await harness.dispatcher.kick(); await harness.service.awaitRouting();
+  expect(harness.store.getRun(accepted.run.id)).toMatchObject({ activeBatch: 2, failedBotIds: [] });
+  await harness.service.cancelRun(accepted.run.id);
+  try {
+    expect(toConversationRun(harness.store.getRun(accepted.run.id)!)).toMatchObject({
+      state: "cancelled", activeBatch: 2, routingState: "done", failedBotIds: [],
+    });
+    expect(harness.store.listMemberTurns(accepted.run.id).map(({ batch, state }) => ({ batch, state }))).toEqual([
+      { batch: 1, state: "failed" }, { batch: 2, state: "cancelled" },
+    ]);
+  } finally { harness.store.close(); }
 });
 
 test("same Bot in multiple batches keeps exact results and dependency references", async () => {

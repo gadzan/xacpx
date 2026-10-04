@@ -1,5 +1,7 @@
 # PR #371 审查修复与自检
 
+后续基于 `424aed66` 的审查、顺序前提核验、批次/Web 修复和取消竞态自检见 [2026-10-05 修复记录](2026-10-05-pr371-review-fixes.md)。下文按各轮基准保留历史验证结果。
+
 审查基准：`e57a8bef9838e0f8f3fe042aec919b67f07c7526`。实现依据：[Group 设计](../specs/2026-09-15-bots-group-conversations-design.md)、[分阶段执行方案 PR8](../plans/2026-09-15-bots-group-conversations-phased-implementation-plan.md)。实际运行契约见 [Conversation runtime](../../conversation-runtime.md)。
 
 ## 审查项闭环

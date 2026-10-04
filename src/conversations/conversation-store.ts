@@ -12,6 +12,11 @@ import type {
   PendingDispatch,
 } from "./conversation-types";
 
+/** A completion reason on runnable work is durable cancel intent, not routing work. */
+export function isRunCancelling(run: ConversationRun): boolean {
+  return (run.state === "queued" || run.state === "running") && run.completionReason !== undefined;
+}
+
 /** A completed assignment's successful evidence must exist; empty content is valid. */
 export function requireMemberResult(store: Pick<ConversationStore, "getMemberResult">, turn: MemberTurnRecord): ConversationMessage {
   const result = store.getMemberResult(turn);
@@ -375,7 +380,8 @@ export interface ConversationStore {
    *  converges in the same transaction (unproven side effects — never
    *  re-executed); members of terminal Runs finish their dispatch (already
    *  finished business, identical to the normal recovery path). Returns one
-   *  entry per converged row. */
+   *  entry per converged row. Pending cancellation with an already-settled
+   *  batch also classifies here, before the new consumer resumes scheduling. */
   convergePreviousOwnerClaims(owner: string, now: string): RecoveredClaim[];
   /** Retire `claimed` dispatches whose owner can no longer be alive, WITHOUT
    *  touching provenance — the unstarted-only seam of

@@ -310,7 +310,22 @@ function mergeMemberTurn(current: MemberTurnSummaryDto | null, incoming: MemberT
     if (merged.blockedReason === undefined) merged.blockedReason = incoming.blockedReason;
     return merged;
   }
-  return incoming;
+  const merged: MemberTurnSummaryDto = { ...incoming };
+  if (merged.memberIndex === undefined) merged.memberIndex = current.memberIndex;
+  if (merged.startedAt === undefined) merged.startedAt = current.startedAt;
+  if (merged.finishedAt === undefined) merged.finishedAt = current.finishedAt;
+  if (merged.promptRequestId === undefined) merged.promptRequestId = current.promptRequestId;
+  if (merged.assignmentId === undefined) merged.assignmentId = current.assignmentId;
+  if (merged.task === undefined) merged.task = current.task;
+  if (merged.expectedOutput === undefined) merged.expectedOutput = current.expectedOutput;
+  if (merged.dependsOn === undefined) merged.dependsOn = current.dependsOn;
+  // Thin same-state snapshots do not revoke durable evidence. On a real
+  // state transition, failure evidence belongs to the incoming outcome.
+  if (current.state === incoming.state) {
+    if (merged.failureReason === undefined) merged.failureReason = current.failureReason;
+    if (merged.blockedReason === undefined) merged.blockedReason = current.blockedReason;
+  }
+  return merged;
 }
 
 function mergeMemberTurns(

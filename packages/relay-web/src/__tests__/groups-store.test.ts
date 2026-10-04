@@ -552,6 +552,58 @@ describe("useGroupsStore", () => {
     expect(kept?.promptRequestId).toBe("sturn_a");
   });
 
+  it("preserves assignment and failure evidence from a same-state thin member snapshot", () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const run: ConversationRunDto = { id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "failed", profileRevision: 1, createdAt: "now" };
+    store.activeRun = run;
+    const thin: MemberTurnSummaryDto = { id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      botId: "bot_a", batch: 1, attempt: 1, origin: "router", state: "failed", createdAt: "now" };
+    const rich: MemberTurnSummaryDto = { ...thin, assignmentId: "write", task: "apply patch", expectedOutput: "patch summary",
+      dependsOn: ["review"], memberIndex: 0, promptRequestId: "sturn_a", startedAt: "then", finishedAt: "later",
+      failureReason: "permission denied", blockedReason: "human-authority-unknown" };
+    const update = (memberTurn: MemberTurnSummaryDto) => store.applyEvent({ kind: "control-event", instanceId: "inst_1",
+      event: { type: "member-turn-finished", run, memberTurn } } as never);
+    update(rich); update(thin);
+    expect(store.memberTurnsById[thin.id]).toEqual(rich);
+    // Explicit optional values remain authoritative, including empty arrays
+    // and strings; omission is the only reason to retain the stored value.
+    update({ ...thin, task: "revised task", expectedOutput: "", dependsOn: [], failureReason: "typed denial",
+      blockedReason: "human-authority-required" });
+    expect(store.memberTurnsById[thin.id]).toMatchObject({ assignmentId: "write", task: "revised task",
+      expectedOutput: "", dependsOn: [], failureReason: "typed denial", blockedReason: "human-authority-required" });
+  });
+
+  for (const outcome of ["completed", "failed"] as const) {
+    it(`keeps assignment metadata without carrying old failure evidence into ${outcome} proof`, () => {
+      const store = useGroupsStore();
+      store.instanceId = "inst_1";
+      store.selectedGroupId = "conversation_g";
+      store.activeConversationId = "conversation_g";
+      store.activeTopicId = "topic_1";
+      const run: ConversationRunDto = { id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "indeterminate", profileRevision: 1, createdAt: "now" };
+      store.activeRun = run;
+      const prior: MemberTurnSummaryDto = { id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_a", batch: 1, attempt: 1, origin: "router", state: "indeterminate", createdAt: "now",
+        assignmentId: "write", task: "apply patch", expectedOutput: "patch summary", dependsOn: ["review"],
+        promptRequestId: "sturn_a", startedAt: "then", failureReason: "old unknown result", blockedReason: "human-authority-unknown" };
+      store.memberTurnsById = { turn_a: prior };
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: { type: "member-turn-finished", run,
+        memberTurn: { id: prior.id, runId: run.id, conversationId: run.conversationId, topicId: run.topicId,
+          botId: prior.botId, batch: 1, attempt: 1, origin: "router", state: outcome, createdAt: "now", finishedAt: "later" },
+      } } as never);
+      expect(store.memberTurnsById[prior.id]).toMatchObject({ state: outcome, assignmentId: "write", task: "apply patch",
+        expectedOutput: "patch summary", dependsOn: ["review"], promptRequestId: "sturn_a", startedAt: "then", finishedAt: "later" });
+      expect(store.memberTurnsById[prior.id]?.failureReason).toBeUndefined();
+      expect(store.memberTurnsById[prior.id]?.blockedReason).toBeUndefined();
+    });
+  }
+
   it("refines indeterminate member evidence when post-seal proof arrives via events", async () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";

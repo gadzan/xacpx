@@ -20,11 +20,16 @@ export function boundRoutingInput(input: RoutingInput): RoutingInput {
   }
   const request = prefix(input.request, MAX_ROUTER_REQUEST_LENGTH);
   let transcriptLeft = MAX_ROUTER_TRANSCRIPT_CHARACTERS;
-  const publicTranscript = input.publicTranscript.map((row) => {
+  const publicTranscript = [...input.publicTranscript];
+  // Recency is carried by seq, not by the caller's array order. Allocate
+  // newest-first, then leave each row in its original presentation position.
+  const newestFirst = input.publicTranscript.map((row, index) => ({ row, index }))
+    .sort((a, b) => b.row.seq - a.row.seq);
+  for (const { row, index } of newestFirst) {
     const content = prefix(row.content, Math.min(2_000, transcriptLeft));
     transcriptLeft -= content.length;
-    return { ...row, content, ...(content !== row.content ? { contextTruncated: true as const } : {}) };
-  });
+    publicTranscript[index] = { ...row, content, ...(content !== row.content ? { contextTruncated: true as const } : {}) };
+  }
   let resultLeft = MAX_ROUTER_RESULT_CHARACTERS;
   const completedAssignments = input.completedAssignments.map((assignment) => {
     const task = prefix(assignment.task, 1_000);
