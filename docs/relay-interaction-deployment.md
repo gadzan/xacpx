@@ -132,8 +132,12 @@ hub reachable from connector
 ```
 
 - [ ] The connector's `transport.command`/`bridge` settings point at the hub.
-- [ ] The browser connects over **WSS**; a plain `ws://` through a public network
-      exposes the same unauthenticated-surface problem as the Feishu callback.
+- [ ] The browser connects over **WSS** on any untrusted network. `/ws` is
+      **authenticated** at upgrade by the `xrelay_session` cookie — an upgrade
+      with no resolvable account is destroyed (`packages/relay/src/server.ts`
+      upgrade handler) — but plain `ws://` provides **no transport
+      confidentiality or integrity**, so the session cookie and the interaction
+      traffic itself are exposed to a network attacker.
 - [ ] The instance and the browser belong to the **same account**. The hub checks
       ownership on both the open and the answer; a mismatch is rejected, not
       silently proxied.

@@ -153,19 +153,32 @@ If step 2 renders nothing, capability is likely the issue — see §5 and §7.
 ### 4.1 What each credential does
 
 Neither credential has a single "one path each" job. They overlap by design, and
-the table below lists every production branch rather than one line per credential:
+the table below lists every production branch — signature *and* whether a token
+comparison happens after it — exactly as `verifyCardRequest()` implements them:
 
-| Path | Signature | Token check |
+| Path | Signature / decrypt | `verificationToken` payload equality |
 |---|---|---|
-| **URL-verification challenge** (accepted before `verifyCardRequest`) | none — it carries no signature headers | **token equality is the only credential** |
-| **real action, legacy** (no `encrypt`, no `schema`) | `sha1(timestamp + nonce + verificationToken + JSON.stringify(body))` | implicit: the token is *inside* the signed material |
-| **real action, new protocol, unencrypted** | `sha256(... + encryptKey + ...)` | **token equality as a second check**, when a token is configured |
-| **real action, new protocol, encrypted** | `sha256(... + encryptKey + ...)` over the envelope | same second check; then AES decrypt with `encryptKey` |
+| **URL-verification challenge** (accepted before `verifyCardRequest`) | none — it carries no signature headers | **yes, and it is the only credential** |
+| **real action, legacy** (no `encrypt`, no `schema`) | `sha1(timestamp + nonce + verificationToken + JSON.stringify(body))` | **yes, an explicit `record.token` comparison.** Required, not optional: an unconfigured token is itself a rejection on this branch |
+| **real action, new protocol, unencrypted** | `sha256(... + encryptKey + ...)` | **yes, an explicit `record.token` comparison**, but only when a token is configured — an empty one skips the check rather than failing |
+| **real action, new protocol, encrypted** | `sha256(... + encryptKey + ...)` over the envelope, then AES decrypt with `encryptKey` | **no.** This branch returns immediately after a successful decrypt and never reads the token |
 
-So `verificationToken` is **not** only the challenge credential — it is the
-legacy signing secret *and* the second layer on new-protocol actions. `encryptKey`
-is the new-protocol signing secret and the decryption key. Both are required
-because dropping either leaves a branch unverifiable.
+So `verificationToken` is **not** only the challenge credential. It is the legacy
+signing secret, an **explicit** legacy token check, and the second layer on
+**unencrypted** new-protocol actions. `encryptKey` is the new-protocol signing
+secret and the decryption key. Both are required, and dropping either leaves a
+branch unverifiable.
+
+The encrypted branch is the one that must be stated carefully. Its authenticity
+chain is the encrypt-key signature **plus** successful decryption — a captured
+ciphertext cannot pass, because the signature also covers a timestamp inside the
+freshness window. What it does **not** add is a second token comparison, so a
+correctly-signed encrypted envelope is accepted even if its decrypted payload
+carries no token. That asymmetry is current behaviour, verified by probe: an
+encrypted, correctly-signed, tokenless payload returns `200` and reaches the
+handler. If the design intent is that the encrypted branch also check the token,
+that is a production change to `verifyCardRequest()` plus a regression test, not
+a documentation correction.
 
 ### 4.2 Why both are required
 
@@ -184,8 +197,9 @@ new protocol. That is why `encryptKey` is mandatory: it is the trust anchor for
 the path that actually carries answers.
 
 `verificationToken` is required for three separate reasons — the challenge (no
-signature at all), the legacy signing secret, and the second-layer equality check
-on new-protocol actions — so removing it breaks all three.
+signature at all), the legacy signing secret with its explicit token check, and
+the second-layer check on **unencrypted** new-protocol actions — so removing it
+breaks all three.
 
 ### 4.3 Why the token-authenticated challenge is not a bypass
 
@@ -207,14 +221,15 @@ There is **no `type === "url_verification"` check.** The gate does not need one:
 it only ever echoes the challenge back and returns, so a body that happens to
 carry a matching token and a `challenge` field produces an echo and nothing else.
 It cannot reach the renderer, cannot mutate state, and cannot settle an
-interaction. What keeps it safe is what it *does* (nothing), not a discriminantor
+interaction. What keeps it safe is what it *does* (nothing), not a discriminator
 it never reads.
 
-The guard on everything after it is unchanged:
-
-- unknown or missing `token` → **401**
-- a real card action must pass the full signature check, plus the timestamp
-  freshness window, before any payload is trusted
+The guard on everything after it is unchanged. A real card action must pass the
+signature check and the timestamp freshness window before any payload is
+trusted — and on the legacy and new-protocol-unencrypted branches, an unknown or
+missing **payload** token is a 401 as well. Note the scope: that token rule does
+not apply to the encrypted branch, which authenticates through the encrypt-key
+signature plus successful decryption alone (§4.1).
 
 ---
 

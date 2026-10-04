@@ -161,17 +161,20 @@ access-control layer.
 ### 3.2 `encryptKey` AND `verificationToken` are both required
 
 Not redundant. `verifyCardRequest` picks the signing secret by protocol
-(`config.ts:56-66`): a new-protocol callback (carrying `encrypt` or `schema`) is
-verified with **SHA-256 over the encrypt key**, and a legacy push (no `schema`, no
-`encrypt`) with **SHA-1 over the token**. Every button the renderer emits carries
-`schema: "2.0"`, so every real click is new-protocol, which is why the key is
-mandatory.
+(`card-action-host.ts:334-336`): a new-protocol callback (carrying `encrypt` or
+`schema`) is verified with **SHA-256 over the encrypt key**, and a legacy push
+(no `schema`, no `encrypt`) with **SHA-1 over the token**. Every button the
+renderer emits carries `schema: "2.0"`, so every real click is new-protocol,
+which is why the key is mandatory.
 
-The token is separately required because the **URL-verification challenge** —
-which Feishu POSTs when the endpoint is first configured — arrives with **no
-signature headers at all**. The echoed token is that handshake's only credential,
-so a config missing it starts, serves every click, and still never finishes being
-configured.
+The token is separately required for three branches: the **URL-verification
+challenge** arrives with **no signature headers at all** and its echoed token is
+the only credential; it is the legacy signing secret; and it is compared
+explicitly on the legacy and new-protocol-**unencrypted** branches.
+
+`config.ts` holds the *configuration* contract for these credentials, not
+`verifyCardRequest`; the verification logic lives in `card-action-host.ts`. The
+deployment runbook carries the full four-branch table.
 
 ### 3.3 Two authentication paths, deliberately
 
@@ -180,9 +183,19 @@ equality** against `verificationToken`, and is recognized **before**
 `verifyCardRequest()` runs. That matches the official SDK's `autoChallenge`, which
 runs before `dispatcher.invoke()`.
 
-Real card actions take the opposite path: they must pass the full signature check.
-Recognizing the challenge by token does **not** open a bypass for real actions —
-unknown or missing token → 401.
+Real card actions take the opposite path: they must pass the full signature check,
+plus the timestamp freshness window. Recognizing the challenge by token does
+**not** open a bypass for real actions — on the legacy and unencrypted branches
+an unknown or missing payload token is a 401.
+
+One asymmetry is deliberate and worth stating because the earlier revision of
+this closure got it backwards: the **encrypted** new-protocol branch returns
+immediately after a successful decrypt and does **not** compare the token. Its
+authenticity chain is the encrypt-key signature plus decryption, and a captured
+ciphertext cannot pass because the signature also covers a fresh timestamp. The
+legacy branch, conversely, compares `record.token` explicitly and treats an
+unconfigured token as a rejection. Whether the encrypted branch *should* also
+compare the token is a production change, not a doc correction.
 
 ### 3.4 Two capability notions: declared (config) and live (registry readiness)
 
