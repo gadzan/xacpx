@@ -147,7 +147,14 @@ for (const operation of ["cancel", "shutdown"] as const) {
       ] });
       await Promise.resolve(); await Promise.resolve();
       const reopened = await SqliteConversationStore.open(harness.path);
-      expect(reopened.getRun(accepted.run.id)).toMatchObject({ state: operation === "cancel" ? "cancelled" : "failed", routingState: "done" });
+      expect(reopened.getRun(accepted.run.id)).toMatchObject(operation === "cancel"
+        ? { state: "cancelled", routingState: "done" }
+        : { state: "running", routingState: "routing" });
+      if (operation === "shutdown") {
+        expect(reopened.getRun(accepted.run.id)?.completionReason).toBeUndefined();
+        expect(reopened.getRun(accepted.run.id)?.finishedAt).toBeUndefined();
+        expect(reopened.automaticRunsAwaitingRouting().map(({ run }) => run.id)).toContain(accepted.run.id);
+      }
       expect(reopened.listMemberTurns(accepted.run.id)).toEqual([]);
       reopened.close();
     } finally {
@@ -156,6 +163,56 @@ for (const operation of ["cancel", "shutdown"] as const) {
     }
   });
 }
+
+for (const operation of ["cancel", "shutdown"] as const) {
+  test(`routing ${operation} drains while the selected Bot lifecycle gate is held`, async () => {
+    const commitEntered = deferred<void>();
+    const gateHeld = deferred<void>();
+    const releaseGate = deferred<void>();
+    const harness = await createHarness({ autoKick: false,
+      beforeRoutingCommitGatesAcquired: () => commitEntered.resolve(),
+      router: new RecordingRouter([{ type: "dispatch", mode: "single", assignments: [
+        { id: "selected", botId: TESTER_ID, task: "test", triggerMessageIds: [] },
+      ] }]),
+    });
+    const { group, topic } = await createGroup(harness);
+    const holding = harness.bots.runLifecycle(TESTER_ID, async () => {
+      gateHeld.resolve(); await releaseGate.promise;
+    });
+    await gateHeld.promise;
+    const accepted = await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+      requestId: `held-gate-${operation}`, text: "review", target: { mode: "automatic" } });
+    await commitEntered.promise;
+    try {
+      await bounded(operation === "shutdown" ? harness.service.shutdown() : harness.service.cancelRun(accepted.run.id));
+      await bounded(harness.service.awaitRouting());
+      // A detached acquisition must be sealed before touching a closed store.
+      releaseGate.resolve(); await holding;
+      await Promise.resolve(); await Promise.resolve();
+      const reopened = await SqliteConversationStore.open(harness.path);
+      try {
+        expect(reopened.getRun(accepted.run.id)).toMatchObject(operation === "shutdown"
+          ? { state: "running", routingState: "routing" }
+          : { state: "cancelled", routingState: "done" });
+        expect(reopened.listMemberTurns(accepted.run.id)).toEqual([]);
+        expect(reopened.listRoutingDecisions(accepted.run.id)).toEqual([]);
+      } finally { reopened.close(); }
+    } finally {
+      releaseGate.resolve(); await holding;
+      if (operation === "cancel") harness.store.close();
+    }
+  });
+}
+
+test("an adapter error cannot impersonate the service shutdown abort reason", async () => {
+  const harness = await createHarness({ autoKick: false,
+    router: new RecordingRouter([new ConversationError("router_shutdown", "adapter error")]),
+  });
+  const { group, topic } = await createGroup(harness);
+  const accepted = await acceptAutomatic(harness, group.id, topic.id, "shutdown-error-spoof");
+  expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "failed", routingState: "done", completionReason: "router-execution-failed" });
+  harness.store.close();
+});
 
 test("shutdown abort settlement does not start queued execution in another Topic", async () => {
   const entered = deferred<void>();
@@ -180,6 +237,45 @@ test("shutdown abort settlement does not start queued execution in another Topic
   const reopened = await SqliteConversationStore.open(harness.path);
   expect(reopened.getRun(queued.run.id)?.state).toBe("queued");
   reopened.close();
+});
+
+test("shutdown stops new dispatch when an already active member settles", async () => {
+  const routingEntered = deferred<void>();
+  const routingAnswer = deferred<RoutingDecision>();
+  const runnerEntered = deferred<void>();
+  const runnerAnswer = deferred<ConversationTurnRunResult>();
+  const harness = await createHarness({ autoKick: false, router: { capabilityRestriction: RESTRICTED,
+    async decide() { routingEntered.resolve(); return routingAnswer.promise; },
+  } });
+  const { group, topic } = await createGroup(harness);
+  const activeTopic = await harness.service.createGroupTopic(group.id, "Active", { workspace: "backend", isolation: "shared-single-writer" });
+  const queuedTopic = await harness.service.createGroupTopic(group.id, "Queued", { workspace: "backend", isolation: "shared-single-writer" });
+  harness.runner.run = async (input) => {
+    harness.runner.runs.push(input);
+    if (harness.runner.runs.length === 1) { runnerEntered.resolve(); return runnerAnswer.promise; }
+    return { status: "completed", text: "unexpected successor" };
+  };
+  const active = await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: activeTopic.id,
+    requestId: "shutdown-active", text: "active", target: { botId: TESTER_ID } });
+  const drain = harness.dispatcher.kick();
+  await runnerEntered.promise;
+  const routing = await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+    requestId: "shutdown-routing", text: "routing", target: { mode: "automatic" } });
+  await routingEntered.promise;
+  const queued = await harness.service.acceptGroupPrompt({ conversationId: group.id, topicId: queuedTopic.id,
+    requestId: "shutdown-successor", text: "queued", target: { botId: BUILDER_ID } });
+  const shutdown = harness.service.shutdown();
+  runnerAnswer.resolve({ status: "completed", text: "settled active" });
+  await bounded(shutdown); await drain;
+  routingAnswer.resolve({ type: "complete", reason: "late" });
+  expect(harness.runner.runs).toHaveLength(1);
+  const reopened = await SqliteConversationStore.open(harness.path);
+  try {
+    expect(reopened.getRun(active.run.id)?.state).toBe("completed");
+    expect(reopened.getRun(routing.run.id)).toMatchObject({ state: "running", routingState: "routing" });
+    expect(reopened.getRun(queued.run.id)?.state).toBe("queued");
+    expect(reopened.listMemberTurns(queued.run.id)[0]?.startedAt).toBeUndefined();
+  } finally { reopened.close(); }
 });
 
 test("cancel aborts routing before waiting for a queued successor's execution", async () => {
@@ -273,7 +369,9 @@ for (const phase of ["routing-input", "decision-commit", "dispatcher", "before-s
       expect(harness.store.listMemberTurns(accepted.run.id)).toHaveLength(1);
       expect(calls).toBe(phase === "routing-input" ? 1 : 2);
     }
-    await harness.service.awaitRouting(); harness.store.close();
+    await harness.service.awaitRouting();
+    expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "failed", routingState: "done", completionReason: "member_result_missing" });
+    harness.store.close();
   });
 }
 
@@ -473,6 +571,7 @@ async function createHarness(options: {
   router?: ConversationRouter | undefined;
   autoKick?: boolean;
   beforeGroupAcceptGatesAcquired?: () => Promise<void>;
+  beforeRoutingCommitGatesAcquired?: () => void;
   decisionTimeoutMs?: number;
   hooks?: ConversationDispatcherHooks;
 } = {}): Promise<Harness> {
@@ -517,7 +616,10 @@ async function createHarness(options: {
         return topic?.conversationId === conversationId ? topic : undefined;
       },
       readBot: (botId) => bots.getBot(botId),
-      runLifecycleAll: (botIds, critical) => bots.runLifecycleAll(botIds, critical),
+      runLifecycleAll: (botIds, critical) => {
+        options.beforeRoutingCommitGatesAcquired?.();
+        return bots.runLifecycleAll(botIds, critical);
+      },
       now: () => new Date(NOW),
       decisionTimeoutMs: options.decisionTimeoutMs,
     })
@@ -594,6 +696,92 @@ class RecordingRouter implements ConversationRouter {
       throw next;
     }
     return next as RoutingDecision;
+  }
+}
+
+test("a final pre-start rejection routes its failed assignment and releases the next Topic Run", async () => {
+  const router = new RecordingRouter([
+    { type: "dispatch", mode: "single", assignments: [{ id: "A", botId: BOT_ID, task: "review", triggerMessageIds: [] }] },
+    { type: "complete", reason: "handled pre-start failure" },
+    { type: "complete", reason: "successor finished" },
+  ]);
+  const harness = await createHarness({ autoKick: false, router });
+  const { group, topic } = await createGroup(harness);
+  const first = await acceptAutomatic(harness, group.id, topic.id, "pre-start-owner");
+  const next = await acceptAutomatic(harness, group.id, topic.id, "pre-start-successor");
+  expect(router.inputs).toHaveLength(1);
+  // Agent edits are legal before the first runtime binding materializes.
+  await harness.bots.updateBot(BOT_ID, { agent: "claude" });
+  await harness.dispatcher.kick(); await harness.service.awaitRouting();
+  const member = harness.store.listMemberTurns(first.run.id)[0]!;
+  expect(member).toMatchObject({ state: "failed", failureReason: "runtime_revision_mismatch" });
+  expect(member.startedAt).toBeUndefined();
+  expect(harness.runner.runs).toEqual([]);
+  expect(router.inputs[1]?.completedAssignments[0]).toMatchObject({ id: "A", outcome: "failed", failureReason: "runtime_revision_mismatch" });
+  expect(harness.store.getRun(first.run.id)).toMatchObject({ state: "completed", completionReason: "handled pre-start failure" });
+  expect(harness.store.getRun(next.run.id)).toMatchObject({ state: "completed", completionReason: "successor finished" });
+  harness.store.close();
+});
+
+for (const recovery of ["pre-start retry", "expired claim"] as const) {
+  for (const outcome of ["completed", "blocked", "missing task"] as const) {
+    test(`automatic ${recovery} preserves assignment and permission semantics for ${outcome}`, async () => {
+      let failOnce = true;
+      const harness = await createHarness({ autoKick: false,
+        router: new RecordingRouter([
+          { type: "dispatch", mode: "single", assignments: [{ id: "A", botId: BOT_ID,
+            task: "RECOVERED ASSIGNMENT", expectedOutput: "RECOVERED OUTPUT", triggerMessageIds: [] }] },
+          { type: "complete", reason: "handled recovered assignment" },
+        ]),
+        ...(recovery === "pre-start retry" ? { hooks: { failRuntimeMaterialize() {
+          if (failOnce) { failOnce = false; return new Error("transient materialization failure"); }
+        } } } : {}),
+      });
+      const { group, topic } = await createGroup(harness);
+      const accepted = await acceptAutomatic(harness, group.id, topic.id, `recovery-${recovery}-${outcome}`);
+      if (recovery === "pre-start retry") {
+        await harness.dispatcher.kick();
+      } else {
+        const claim = harness.store.claimNextDispatch({ owner: "dead-dispatcher", authorityEpoch: "expired",
+          now: "2026-09-15T11:59:00.000Z", leaseExpiresAt: "2026-09-15T11:59:30.000Z" });
+        expect(claim).toBeDefined();
+        harness.store.recoverExpiredClaims(NOW);
+      }
+      const recovered = harness.store.listMemberTurns(accepted.run.id)[0]!;
+      expect(recovered.origin).toBe("recovery");
+      expect(recovered.task).toBe("RECOVERED ASSIGNMENT");
+      const dispatch = harness.store.listDispatchesForRun(accepted.run.id)[0]!;
+      expect(dispatch.authorityEpoch).toBeUndefined();
+      expect(dispatch.humanIngressId).toBeUndefined();
+      if (outcome === "blocked") {
+        harness.runner.result = { status: "failed", error: "typed permission denied", blockedReason: "human-authority-unknown" };
+      } else if (outcome === "missing task") {
+        harness.store.directWriteForTest("member_turns", recovered.id, { task: null });
+      }
+      await harness.dispatcher.kick(); await harness.service.awaitRouting();
+      const member = harness.store.getMemberTurn(recovered.id)!;
+      if (outcome === "missing task") {
+        expect(member).toMatchObject({ state: "failed", failureReason: "missing_assignment_task" });
+        expect(member.startedAt).toBeUndefined();
+        expect(harness.runner.runs).toEqual([]);
+      } else {
+        expect(harness.runner.runs).toHaveLength(1);
+        const call = harness.runner.runs[0]!;
+        expect(call.text).toContain("Task:\nRECOVERED ASSIGNMENT");
+        expect(call.text).toContain("Expected output:\nRECOVERED OUTPUT");
+        expect(call.executionOrigin).toBe("orchestration");
+        expect(call.permissionRoute).toBeUndefined();
+        expect(member.state).toBe(outcome === "completed" ? "completed" : "failed");
+      }
+      harness.store.close();
+      const reopened = await SqliteConversationStore.open(harness.path);
+      try {
+        const durable = reopened.getMemberTurn(recovered.id)!;
+        expect(durable.origin).toBe("recovery");
+        expect(toMemberTurnSummary(durable).blockedReason).toBe(outcome === "blocked" ? "human-authority-unknown" : undefined);
+        expect(reopened.getRun(accepted.run.id)?.state).toBe("completed");
+      } finally { reopened.close(); }
+    });
   }
 }
 
@@ -824,6 +1012,7 @@ test("router input is rebuilt from durable state on every decide call (no hidden
   // Let the dispatcher execute the dispatched batch; the batch-settle hook
   // then routes again, and the Router's second decision completes the Run.
   await harness.dispatcher.kick();
+  await harness.service.awaitRouting();
   const run = harness.store.getRun(accepted.run.id)!;
   expect(run.state).toBe("completed");
   expect(run.routingState).toBe("done");
@@ -1183,6 +1372,7 @@ test("automatic completes by planned work then a router complete, without leftov
   const { group, topic } = await createGroup(harness);
   const accepted = await acceptAutomatic(harness, group.id, topic.id, "req-parallel");
   await harness.dispatcher.kick();
+  await harness.service.awaitRouting();
   const members = harness.store.listMemberTurns(accepted.run.id);
   expect(members.map((turn) => turn.assignmentId)).toEqual(["a", "b"]);
   expect(members.map((turn) => turn.origin)).toEqual(["router", "router"]);
@@ -1205,6 +1395,7 @@ test("router-selected member turns carry orchestration provenance only", async (
   // inherit it, and the Router decision must not mint human authority.
   await acceptAutomatic(harness, group.id, topic.id, "req-provenance");
   await harness.dispatcher.kick();
+  await harness.service.awaitRouting();
   for (const run of harness.runner.runs) {
     expect(run.executionOrigin).toBe("orchestration");
     expect(run.permissionRoute).toBeUndefined();
@@ -1998,7 +2189,10 @@ test("activation recovery shares the pending per-run Router call and shutdown ab
   await bounded(Promise.all([activation, replayedRoute, shutdown]));
   answer.resolve({ type: "complete", reason: "late" });
   const reopened = await SqliteConversationStore.open(harness.path);
-  expect(reopened.getRun(accepted.run.id)).toMatchObject({ state: "failed", completionReason: "router_aborted" });
+  expect(reopened.getRun(accepted.run.id)).toMatchObject({ state: "running", routingState: "routing", consumedMemberTurns: 1 });
+  expect(reopened.getRun(accepted.run.id)?.completionReason).toBeUndefined();
+  expect(reopened.getRun(accepted.run.id)?.finishedAt).toBeUndefined();
+  expect(reopened.automaticRunsAwaitingRouting().map(({ run }) => run.id)).toContain(accepted.run.id);
   expect(reopened.listRoutingDecisions(accepted.run.id)).toHaveLength(1);
   reopened.close();
 });

@@ -684,7 +684,7 @@ export class ConversationDispatcher {
         return;
       }
       const isGroup = this.runtime.conversationKind(work.run.conversationId) === "group";
-      if (isGroup && work.memberTurn.origin === "router" && !work.memberTurn.task?.trim()) {
+      if (isGroup && work.run.mode === "automatic" && !work.memberTurn.task?.trim()) {
         this.failOwnClaimBeforeStart(work, "missing_assignment_task");
         return;
       }
@@ -850,6 +850,7 @@ export class ConversationDispatcher {
       const run = this.store.getRun(work.run.id);
       if (run) {
         this.emitRunAndMember(run, work.memberTurn.id);
+        this.maybeRouteAutomatic(run);
       }
     } catch (error) {
       if (error instanceof ConversationError && error.code === "stale_claim") {
@@ -956,7 +957,7 @@ export class ConversationDispatcher {
       memberTurnId: started.id,
       now,
       reason: result.error ?? "failed",
-      ...(started.origin === "router" && result.blockedReason ? { blockedReason: result.blockedReason } : {}),
+      ...(work.run.mode === "automatic" && result.blockedReason ? { blockedReason: result.blockedReason } : {}),
     });
     this.emitRunAndMember(run, started.id);
     this.maybeRouteAutomatic(run);
@@ -1065,7 +1066,8 @@ export class ConversationDispatcher {
 
   private groupTurnPrompt(work: ClaimedWork): string {
     const context = this.frozenGroupTranscript(work);
-    if (work.memberTurn.origin !== "router") return context;
+    if (work.run.mode !== "automatic") return context;
+    // Recovery changes execution provenance, not the durable assignment.
     // Assignment instructions are per-member execution input, separate from
     // the frozen public transcript shared by parallel siblings.
     const expected = work.memberTurn.expectedOutput === undefined

@@ -199,67 +199,124 @@ test("legacy audit-only waiting question is available through Control after rest
   } finally { await restored.runtime.shutdown(); }
 });
 
-test("real automatic permission failure produces durable structured blocked-step evidence", async () => {
-  const executed: string[] = [];
-  const { control, runtime } = await compose(new BarrierStateStore(), {
-    agent: { async chat(request) {
-      executed.push(request.text);
-      expect(request.metadata?.origin).toBe("orchestration");
-      throw Object.assign(new Error("permission blocked"), { code: "RUNTIME_PERMISSION_DENIED" });
-    } },
-    router: { capabilityRestriction: RESTRICTED, async decide(input) { return { type: "dispatch", mode: "single", assignments: [{ id: "write", botId: input.memberMetadata[0]!.botId, task: "write", expectedOutput: "patch summary", triggerMessageIds: [] }] }; } },
+for (const recovered of [false, true]) {
+  test(`real automatic permission failure produces durable structured blocked-step evidence${recovered ? " after claim recovery" : ""}`, async () => {
+    const executed: string[] = [];
+    const { control, runtime } = await compose(new BarrierStateStore(), {
+      agent: { async chat(request) {
+        executed.push(request.text);
+        expect(request.metadata?.origin).toBe("orchestration");
+        throw Object.assign(new Error("permission blocked"), { code: "RUNTIME_PERMISSION_DENIED" });
+      } },
+      router: { capabilityRestriction: RESTRICTED, async decide(input) { return { type: "dispatch", mode: "single", assignments: [{ id: "write", botId: input.memberMetadata[0]!.botId, task: "write", expectedOutput: "patch summary", triggerMessageIds: [] }] }; } },
+    });
+    const bot = await control.createBot({ name: "Writer", agent: "codex", workspace: "backend" });
+    const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+    const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
+    const topic = await control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
+    const accepted = await control.promptConversation({ conversationId: group.id, topicId: topic.id, requestId: "blocked-api", text: "write", target: { mode: "automatic" } });
+    await runtime.runs.awaitRouting();
+    if (recovered) {
+      const claim = runtime.store.claimNextDispatch({ owner: "dead-consumer", authorityEpoch: "expired",
+        now: "2026-09-15T11:59:00.000Z", leaseExpiresAt: "2026-09-15T11:59:30.000Z" });
+      expect(claim).toBeDefined();
+    }
+    await runtime.dispatcher.kick();
+    expect(executed).toHaveLength(1);
+    expect(executed[0]).toContain("Task:\nwrite");
+    expect(executed[0]).toContain("Expected output:\npatch summary");
+    const turn = runtime.store.listMemberTurns(accepted.run.id)[0]!;
+    expect(turn.state).toBe("failed");
+    expect(turn.blockedReason).toBe("human-authority-unknown");
+    expect(turn.origin).toBe(recovered ? "recovery" : "router");
+    expect((await control.getRun(accepted.run.id)).memberTurns[0]?.blockedReason).toBe("human-authority-unknown");
+    await runtime.shutdown();
   });
-  const bot = await control.createBot({ name: "Writer", agent: "codex", workspace: "backend" });
-  const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
-  const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
-  const topic = await control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
-  const accepted = await control.promptConversation({ conversationId: group.id, topicId: topic.id, requestId: "blocked-api", text: "write", target: { mode: "automatic" } });
-  await runtime.runs.awaitRouting();
-  await runtime.dispatcher.kick();
-  expect(executed).toHaveLength(1);
-  expect(executed[0]).toContain("Task:\nwrite");
-  expect(executed[0]).toContain("Expected output:\npatch summary");
-  const turn = runtime.store.listMemberTurns(accepted.run.id)[0]!;
-  expect(turn.state).toBe("failed");
-  expect(turn.blockedReason).toBe("human-authority-unknown");
-  expect(turn.origin).toBe("router");
-  expect((await control.getRun(accepted.run.id)).memberTurns[0]?.blockedReason).toBe("human-authority-unknown");
-  await runtime.shutdown();
-});
+}
 
-test("production Control cancel and runtime shutdown abort non-cooperative Routers and consume late rejection", async () => {
-  const calls: Array<{ signal: AbortSignal; reject: (error: Error) => void }> = [];
-  const router: ConversationRouter = { capabilityRestriction: RESTRICTED, async decide(_input, options) {
-    return new Promise<never>((_, reject) => { calls.push({ signal: options!.signal, reject }); });
-  } };
-  const { control, runtime, sqlitePath } = await compose(new BarrierStateStore(), { router });
-  const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
-  const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
-  const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
-  const topic = await control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
-  const request = { conversationId: group.id, topicId: topic.id, text: "review", target: { mode: "automatic" as const } };
-  const first = await control.promptConversation({ ...request, requestId: "cancel-hung-provider" });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  await control.cancelRun(first.run.id); await runtime.runs.awaitRouting();
-  expect(calls[0]!.signal.aborted).toBe(true);
-  expect((await control.getRun(first.run.id)).state).toBe("cancelled");
-  calls[0]!.reject(new Error("late provider rejection after cancellation"));
-  const second = await control.promptConversation({ ...request, requestId: "shutdown-hung-provider" });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  let timer!: ReturnType<typeof setTimeout>;
-  try {
-    await Promise.race([runtime.shutdown(), new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error("production shutdown did not drain")), 1_000);
-    })]);
-  } finally { clearTimeout(timer); }
-  expect(calls[1]!.signal.aborted).toBe(true);
-  calls[1]!.reject(new Error("late provider rejection after SQLite close"));
-  await Promise.resolve(); await Promise.resolve();
-  const reopened = await SqliteConversationStore.open(sqlitePath);
-  expect(reopened.getRun(first.run.id)?.state).toBe("cancelled");
-  expect(reopened.getRun(second.run.id)).toMatchObject({ state: "failed", routingState: "done", completionReason: "router_aborted" });
-  reopened.close();
-});
+for (const lateOutput of ["resolve", "reject"] as const) {
+  test(`production shutdown preserves routing for activation recovery and ignores late ${lateOutput}`, async () => {
+    const withCompletedBatch = lateOutput === "reject";
+    const calls: Array<{ signal: AbortSignal; resolve: (decision: RoutingDecision) => void; reject: (error: Error) => void }> = [];
+    const router: ConversationRouter = { capabilityRestriction: RESTRICTED, async decide(_input, options) {
+      if (withCompletedBatch && calls.length === 1 && _input.completedAssignments.length === 0) {
+        return { type: "dispatch", mode: "single", assignments: [{ id: "before-shutdown", botId: _input.memberMetadata[0]!.botId,
+          task: "review before restart", triggerMessageIds: [] }] };
+      }
+      return new Promise<RoutingDecision>((resolve, reject) => { calls.push({ signal: options!.signal, resolve, reject }); });
+    } };
+    const stateStore = new BarrierStateStore();
+    const { control, runtime, sqlitePath, state } = await compose(stateStore, { router });
+    const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+    const helper = await control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+    const group = await control.createGroup({ title: "Team", botIds: [bot.id, helper.id] });
+    const topic = await control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
+    const request = { conversationId: group.id, topicId: topic.id, text: "review", target: { mode: "automatic" as const } };
+    const first = await control.promptConversation({ ...request, requestId: "cancel-hung-provider" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await control.cancelRun(first.run.id); await runtime.runs.awaitRouting();
+    expect(calls[0]!.signal.aborted).toBe(true);
+    expect((await control.getRun(first.run.id)).state).toBe("cancelled");
+    calls[0]!.reject(new Error("late provider rejection after cancellation"));
+    const second = await control.promptConversation({ ...request, requestId: "shutdown-hung-provider" });
+    if (withCompletedBatch) {
+      await runtime.runs.awaitRouting();
+      await runtime.dispatcher.kick();
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const generation = runtime.store.getRun(second.run.id)!.routingGeneration!;
+    let timer!: ReturnType<typeof setTimeout>;
+    try {
+      await Promise.race([runtime.shutdown(), new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("production shutdown did not drain")), 1_000);
+      })]);
+    } finally { clearTimeout(timer); }
+    expect(calls[1]!.signal.aborted).toBe(true);
+    const reopened = await SqliteConversationStore.open(sqlitePath);
+    expect(reopened.getRun(first.run.id)?.state).toBe("cancelled");
+    expect(reopened.getRun(second.run.id)).toMatchObject({ state: "running", routingState: "routing", routingGeneration: generation,
+      consumedMemberTurns: withCompletedBatch ? 1 : 0 });
+    expect(reopened.getRun(second.run.id)?.completionReason).toBeUndefined();
+    expect(reopened.getRun(second.run.id)?.finishedAt).toBeUndefined();
+    expect(reopened.automaticRunsAwaitingRouting().map(({ run }) => run.id)).toContain(second.run.id);
+    reopened.close();
+    let enterRecovery!: () => void;
+    const recoveryEntered = new Promise<void>((resolve) => { enterRecovery = resolve; });
+    let finishRecovery!: (decision: RoutingDecision) => void;
+    const decision = new Promise<RoutingDecision>((resolve) => { finishRecovery = resolve; });
+    let recoveryCalls = 0;
+    const restored = await compose(stateStore, { state: structuredClone(state), sqlitePath, router: {
+      capabilityRestriction: RESTRICTED, async decide(input) {
+        recoveryCalls++;
+        expect(input.runId).toBe(second.run.id);
+        expect(input.completedAssignments).toHaveLength(withCompletedBatch ? 1 : 0);
+        if (withCompletedBatch) expect(input.completedAssignments[0]!.result).toBe("ok");
+        enterRecovery(); return decision;
+      },
+    } });
+    const activation = restored.runtime.activateAfterConsumerLock();
+    try {
+      await recoveryEntered;
+      const resumedGeneration = restored.runtime.store.getRun(second.run.id)!.routingGeneration!;
+      expect(resumedGeneration).toBeGreaterThan(generation);
+      if (lateOutput === "resolve") calls[1]!.resolve({ type: "dispatch", mode: "single", assignments: [
+        { id: "stale-shutdown", botId: bot.id, task: "stale work", triggerMessageIds: [] },
+      ] });
+      else calls[1]!.reject(new Error("late provider rejection after SQLite close"));
+      await Promise.resolve(); await Promise.resolve();
+      expect(restored.runtime.store.getRun(second.run.id)).toMatchObject({ state: "running", routingState: "routing", routingGeneration: resumedGeneration });
+      expect(restored.runtime.store.listMemberTurns(second.run.id)).toHaveLength(withCompletedBatch ? 1 : 0);
+      finishRecovery({ type: "complete", reason: "recovered after shutdown" });
+      await activation; await restored.runtime.runs.awaitRouting();
+      expect(recoveryCalls).toBe(1);
+      expect(await restored.control.getRun(second.run.id)).toMatchObject({ state: "completed", completionReason: "recovered after shutdown" });
+      expect((await restored.control.getRun(first.run.id)).state).toBe("cancelled");
+    } finally {
+      finishRecovery({ type: "complete", reason: "cleanup" });
+      await activation; await restored.runtime.shutdown();
+    }
+  });
+}
 
 test("remove then delete during production routing fails durably and releases the Topic", async () => {
   let calls = 0;

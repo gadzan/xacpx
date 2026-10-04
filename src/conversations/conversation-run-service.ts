@@ -160,8 +160,12 @@ export class ConversationRunService {
 
   async shutdown(): Promise<void> {
     this.closed = true;
-    for (const controller of this.routingAbortControllers.values()) controller.abort();
-    // Aborted attempts settle under their generation fence before SQLite closes.
+    this.dispatcher.stop();
+    for (const controller of this.routingAbortControllers.values()) {
+      controller.abort(new ConversationError("router_shutdown", "Conversation consumer is shutting down"));
+    }
+    // Drain local attempts without failing resumable routing work. Activation
+    // will recompute uncommitted decisions under a new generation.
     await this.awaitRouting();
     await this.dispatcher.shutdown();
     this.store.close();

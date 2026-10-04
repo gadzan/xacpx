@@ -72,6 +72,14 @@ function routingOutcomeOf(turn: MemberTurnRecord): RoutingAssignmentRecord["outc
   }
 }
 
+function isRouterShutdown(signal?: AbortSignal): signal is AbortSignal & { readonly reason: ConversationError } {
+  return signal?.aborted === true && signal.reason instanceof ConversationError && signal.reason.code === "router_shutdown";
+}
+
+function routingAbortReason(signal?: AbortSignal): ConversationError {
+  return isRouterShutdown(signal) ? signal.reason : new ConversationError("router_aborted", "Router attempt was aborted");
+}
+
 /**
  * PR8 automatic-Run router engine (design §12–§14, plan §11).
  *
@@ -142,6 +150,7 @@ export class ConversationRouterEngine {
       // late Router output must not resurrect scheduling.
       return { run, outcome: "skipped", reason: `run_${run.state}` };
     }
+    if (isRouterShutdown(signal)) return { run, outcome: "skipped", reason: "router_shutdown" };
     let routingGeneration: number;
     // A Run with zero remaining budget is terminated by budget, not routed:
     // `maxMemberTurns` is a loop guard, not a completion definition, so this
@@ -174,14 +183,22 @@ export class ConversationRouterEngine {
     }
     let raw: unknown;
     try {
-      raw = await this.decideWithDeadline(router, input, signal);
+      raw = await this.withRoutingAbort((attemptSignal) => router.decide(input, { signal: attemptSignal }), signal, this.decisionTimeoutMs);
     } catch (error) {
+      if (isRouterShutdown(signal) && error === signal.reason) {
+        // The side-effect-free decision was interrupted by this consumer's
+        // shutdown. Preserve durable work for activation under a new generation.
+        return { run: store.getRun(runId) ?? run, outcome: "skipped", reason: "router_shutdown" };
+      }
       // A Router failure (model error, transport error, timeout) is an
       // unrecoverable failure of THIS Run, not a reason to spin.
       const reason = error instanceof ConversationError && (error.code === "router_timeout" || error.code === "router_aborted")
         ? error.code : "router-execution-failed";
       const failed = this.failRouting(runId, reason, routingGeneration);
       return { run: failed, outcome: "failed", reason };
+    }
+    if (isRouterShutdown(signal)) {
+      return { run: store.getRun(runId) ?? run, outcome: "skipped", reason: "router_shutdown" };
     }
     const gate = gateRoutingDecision(raw, input);
     if (gate.kind === "rejected") {
@@ -192,8 +209,8 @@ export class ConversationRouterEngine {
     }
     try {
       const selected = gate.decision.type === "dispatch" ? gate.decision.assignments.map((a) => a.botId) : [];
-      const applied = await this.options.runLifecycleAll(selected, async () => {
-        if (signal?.aborted) throw new ConversationError("router_aborted", "Router attempt was aborted");
+      const applied = await this.withRoutingAbort(() => this.options.runLifecycleAll(selected, async () => {
+        if (signal?.aborted) throw routingAbortReason(signal);
         const decision = this.attachMemberSnapshots(run, gate.decision);
         return store.applyRoutingDecision({
           runId, routingGeneration,
@@ -201,7 +218,7 @@ export class ConversationRouterEngine {
           decision,
           requestMessageId: run.requestMessageId,
         });
-      });
+      }), signal);
       if (applied.terminal) {
         return {
           run: applied.run,
@@ -222,6 +239,9 @@ export class ConversationRouterEngine {
           || current.state === "cancelled" || current.state === "indeterminate")) {
           return { run: current, outcome: "skipped", reason: current.state };
         }
+        if (isRouterShutdown(signal) && error === signal.reason) {
+          return { run: current ?? run, outcome: "skipped", reason: "router_shutdown" };
+        }
         if (reason === "routing_batch_active" || reason === "stale_routing_attempt") {
           // Another drain already committed a batch for this Run; nothing to do.
           return { run: current ?? run, outcome: "skipped", reason };
@@ -235,10 +255,11 @@ export class ConversationRouterEngine {
     }
   }
 
-  private async decideWithDeadline(router: ConversationRouter, input: RoutingInput, parent?: AbortSignal): Promise<RoutingDecision> {
+  private async withRoutingAbort<T>(work: (signal: AbortSignal) => Promise<T>, parent?: AbortSignal, timeoutMs?: number): Promise<T> {
     const controller = new AbortController();
-    const abort = () => controller.abort(new ConversationError("router_aborted", "Router attempt was aborted"));
-    const timer = setTimeout(() => controller.abort(new ConversationError("router_timeout", "Router decision exceeded its deadline")), this.decisionTimeoutMs);
+    const abort = () => controller.abort(routingAbortReason(parent));
+    const timer = timeoutMs === undefined ? undefined
+      : setTimeout(() => controller.abort(new ConversationError("router_timeout", "Router decision exceeded its deadline")), timeoutMs);
     let rejectAbort!: () => void;
     const aborted = new Promise<never>((_, reject) => {
       rejectAbort = () => reject(controller.signal.reason);
@@ -251,11 +272,11 @@ export class ConversationRouterEngine {
       // attached handlers also consume a detached provider's late rejection.
       const provider = Promise.resolve().then(() => {
         controller.signal.throwIfAborted();
-        return router.decide(input, { signal: controller.signal });
+        return work(controller.signal);
       });
       return await Promise.race([provider, aborted]);
     } finally {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       parent?.removeEventListener("abort", abort);
       controller.signal.removeEventListener("abort", rejectAbort);
     }

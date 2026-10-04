@@ -2805,7 +2805,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.sqlite.run(
       `UPDATE member_turns SET state = ?, finished_at = ?, failure_reason = ?, blocked_reason = ? WHERE id = ?`,
       [state, input.now, state === "failed" ? (input.reason ?? "failed") : null,
-        member.origin === "router" ? input.blockedReason ?? null : null, input.memberTurnId],
+        run.mode === "automatic" ? input.blockedReason ?? null : null, input.memberTurnId],
     );
     this.sqlite.run(
       `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,

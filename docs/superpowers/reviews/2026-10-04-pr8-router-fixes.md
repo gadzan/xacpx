@@ -76,3 +76,19 @@
 整体自检重新检查 generation/singleflight、zero-member replay/FIFO/cancel、membership/delete lifecycle gates、request fence、exact result identity、assignment execution/context isolation、audit teardown、permission provenance、waiting question migration 及协议输出。新增 truncation 只影响 Router snapshot，不改 durable 内容或实际成员 prompt；模型调用期间仍不持有 Bot 生命周期锁。按 PR8 范围保持生产 capability gate，后续 human continuation、handoff 与 model adapter 不在本次实现中。
 
 已有本地 Windows 全量测试失败和 smoke 环境限制继续按上文记录；本轮不将这些检查报告为通过。
+
+## Focused 复审及独立全量审查：graceful shutdown 与 recovery
+
+复审基准：`458694e890a4982c97d94c181985c6737b5453f4`。上一节中 shutdown 写 `failed/router_aborted` 的实现与 PR8 的无副作用 Router 恢复模型冲突，本轮修正该语义；以 [Conversation runtime](../../conversation-runtime.md) 的当前契约为准。
+
+| 审查项 | 修复及验证 |
+| --- | --- |
+| Major：正常停机永久失败安全可重算的 Router work | shutdown 使用独立 `router_shutdown` abort reason，仅停止本进程调用；保留 running/routing，完成成员、结果与预算不变。生产 Control/runtime 回归验证 hung Router 有界停机、reopen + activate 取得新 generation 并完成；旧 provider resolve/reject 不影响新 owner。普通 timeout 仍 failed/router_timeout，human cancel 仍 cancelled。只有该 signal 的同一 reason 对象触发恢复语义，adapter 错误不能伪装停机。 |
+| 生命周期 gate acquisition 阻塞停机 | 已完成模型调用、等待所选 Bot lifecycle gate 的 attempt 同样 race parent abort；晚到 critical 在访问 store 前检查 signal。真实持锁回归验证 shutdown/cancel 在释放 Bot gate 前收敛，关闭数据库后释放旧 gate 也不创建 MemberTurn/audit 或产生迟到数据库访问。 |
+| Major：pre-start terminal failure 不唤醒 automatic routing | `failOwnClaimBeforeStart` 使用既有 durable batch-settle eligibility 唤醒 Router。合法 Bot agent 修改导致 runtime revision rejection 后，Router 看到 failed assignment 并完成 Run，同 Topic 后续 Run 自动前进。completed exact result 损坏的四阶段回归也确认整个 Run 最终 failed/done，不只失败 MemberTurn。 |
+| Major：recovery 丢失 assignment 指令；Medium：blockedReason 丢失 | assignment 的 Task/Expected output、缺 task 校验和 blockedReason 持久化按 durable automatic Run mode 识别，不依赖会变为 recovery 的 execution origin。两种恢复来源（pre-start retry、expired claim）各覆盖正常执行、typed permission failure、缺 task；reopen 验证 durable DTO，执行来源仍为 orchestration，human route/authority 不被恢复。真实 production permission producer 增加 expired-claim → Control detail 回归。 |
+| Major：停机等待期间 active member settlement 启动 queued Topic | shutdown 入口先 stop dispatcher，再 drain routing 和已在执行的成员。三 Topic 回归确认活跃成员结果正常落盘、Router Run 留可恢复状态、另一个 queued Topic 不调用 runner。 |
+
+按用户要求派遣三个独立子代理，从 `origin/main` 全量 diff 重新审查 Router/Run/SQLite、dispatcher/execution/recovery、Control/Relay/Web/protocol，阅读设计和 PR8 执行方案，分别独立复现并复核问题。各范围最终均无未闭环 finding；详情见 [独立审查记录](2026-10-04-pr371-full-review.md)。
+
+本轮 focused **115 pass / 0 fail**；关联 Conversation/Control Bridge/protocol/permissions 套件 **620 pass / 0 fail**（23 个文件）；根 TypeScript typecheck、根 `bun run build` 和 `git diff --check` 通过。最终 exact HEAD 的 CI 见 PR checks。既有 Windows 全量失败和需要真实微信的 smoke 限制保持原记录，不改记为通过。
