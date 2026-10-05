@@ -1088,7 +1088,7 @@ test("handlePromptWithSession still prompts a product-owned session on a Direct 
     undefined,
     trustedConversation,
   );
-  expect(prompted).toEqual(["prompted"]);
+  expect(prompted).toEqual(["brt_owned"]);
   expect(res.text).toBe("assistant-reply");
 });
 
@@ -1113,7 +1113,7 @@ test("handlePrompt still prompts a product-owned session on a Direct Bot isolati
     undefined,
     trustedConversation,
   );
-  expect(prompted).toEqual(["prompted"]);
+  expect(prompted).toEqual(["brt_owned"]);
   expect(res.text).toBe("assistant-reply");
 });
 
