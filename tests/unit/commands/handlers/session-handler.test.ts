@@ -1014,6 +1014,14 @@ test("handlePromptWithSession mints an interaction id only for explicit human or
   expect(absentSeen).toEqual([undefined]);
 });
 
+const trustedConversation = {
+  conversationId: "conversation_1",
+  topicId: "topic_1",
+  botId: "bot_x",
+  runId: "run_1",
+  memberTurnId: "mturn_1",
+};
+
 function makeHiddenOwnedPromptContext(prompted: string[]) {
   const session = {
     alias: "brt_owned",
@@ -1027,7 +1035,13 @@ function makeHiddenOwnedPromptContext(prompted: string[]) {
     sessions: {
       getLogicalSessionRecord: () => ({
         alias: "brt_owned",
-        owner: { kind: "bot-direct", bindingId: "bind_x", botId: "bot_x" },
+        owner: {
+          kind: "bot-direct",
+          bindingId: "bind_x",
+          botId: "bot_x",
+          conversationId: "conversation_1",
+          topicId: "topic_1",
+        },
       }),
       getCurrentSession: async () => session,
     },
@@ -1052,7 +1066,25 @@ test("handlePromptWithSession still prompts a product-owned session on a Direct 
   // sessionHiddenOwned as the assistant reply and the agent never runs.
   const prompted: string[] = [];
   const { session, context } = makeHiddenOwnedPromptContext(prompted);
-  const res = await handlePromptWithSession(context, session, "bot:conversation_1:topic_1", "hello");
+  const res = await handlePromptWithSession(
+    context,
+    session,
+    "bot:conversation_1:topic_1",
+    "hello",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    trustedConversation,
+  );
   expect(prompted).toEqual(["prompted"]);
   expect(res.text).toBe("assistant-reply");
 });
@@ -1060,9 +1092,60 @@ test("handlePromptWithSession still prompts a product-owned session on a Direct 
 test("handlePrompt still prompts a product-owned session on a Direct Bot isolation key", async () => {
   const prompted: string[] = [];
   const { context } = makeHiddenOwnedPromptContext(prompted);
-  const res = await handlePrompt(context, "bot:conversation_1:topic_1", "hello");
+  const res = await handlePrompt(
+    context,
+    "bot:conversation_1:topic_1",
+    "hello",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    trustedConversation,
+  );
   expect(prompted).toEqual(["prompted"]);
   expect(res.text).toBe("assistant-reply");
+});
+
+test("handlePrompt refuses a hidden session when an ordinary caller reuses a real Direct Bot isolation key", async () => {
+  const prompted: string[] = [];
+  const { context } = makeHiddenOwnedPromptContext(prompted);
+  const res = await handlePrompt(context, "bot:conversation_1:topic_1", "hello");
+  expect(prompted).toEqual([]);
+  expect(res.text).toBe(t().session.sessionHiddenOwned("brt_owned"));
+});
+
+test("handlePromptWithSession refuses trusted correlation that does not match the isolation key", async () => {
+  const prompted: string[] = [];
+  const { session, context } = makeHiddenOwnedPromptContext(prompted);
+  const res = await handlePromptWithSession(
+    context,
+    session,
+    "bot:conversation_1:topic_other",
+    "hello",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    trustedConversation,
+  );
+  expect(prompted).toEqual([]);
+  expect(res.text).toBe(t().session.sessionHiddenOwned("brt_owned"));
 });
 
 test("handlePromptWithSession still refuses a product-owned session on an ordinary chat key", async () => {
