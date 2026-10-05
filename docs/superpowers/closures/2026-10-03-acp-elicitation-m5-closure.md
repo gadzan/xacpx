@@ -166,9 +166,10 @@ hole, and the channel bundles are platform-independent JS.
 | Discord bundle declares no form (`["form"]` → `[]`) | Discord case | `discord bundle: form capability is declared, not merely not-wrong` |
 | connector registration omits the interaction capability | relay case | `relay bundle: the connector hello advertises the interaction capability it can deliver` |
 | `createClient` is never called, so connector registration never happens | relay case | `the built relay channel never reached connector registration; connector registration never happened within 2000ms` |
+| built Feishu `apiVersion: 1` → `2` | **all four Feishu cases** | `uses unsupported apiVersion 2; supported: 1; install a compatible plugin version` |
 | built Feishu `default.channels` set to `[]`, named `FeishuChannel` export left intact | **all four Feishu cases** | `registers no channel of type "feishu" (found: none)` — 4 fail / 2 pass |
 | built Discord `default.channels` set to `[]` | discord case | `discord bundle: form capability is declared, not merely not-wrong` |
-| built Feishu `apiVersion: 1` → `2` | **all four Feishu cases** | `uses unsupported apiVersion 2; supported: 1; install a compatible plugin version` |
+| built Feishu `Channel.requestElicitation` → `undefined` | **the two form-capable Feishu cases** (`EVERY inbound account`, `never declares URL mode`) — the two negative cases (`NO cardActions`, `MIXED`) deliberately do **not** assert it, since they prove the absence of form rather than its delivery | 4 pass / 2 fail |
 | built Feishu plugin `name` → a non-matching package name | **all four Feishu cases** | `declared name does not match the installed package name` |
 
 The last three rows are why the gate resolves channels through

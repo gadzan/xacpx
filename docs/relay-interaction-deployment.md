@@ -123,9 +123,12 @@ transport, and deliberately not split into a separate flag that could rot: the
 capability **is** the implementation.
 
 The permission half is deliberately **absent**: the wire carries the kind, but
-nothing renders it. `interactionPermissionV1` does not exist in the repo, and
-creating it before a renderer exists would be exactly the backwards order the
-M5 discipline forbids.
+nothing renders it. `RELAY_CAPABILITIES` has **no**
+`interactionPermissionV1` member, so nothing can advertise
+`interaction.permission.v1` from this package. The identifier is referenced by
+tests and closures precisely to assert that it stays `undefined` — the capability
+is deliberately not defined, not merely unused. Defining it before a renderer
+exists would be exactly the backwards order the M5 discipline forbids.
 
 `relay-protocol`'s built bundle is protected by `assert:relay-protocol`
 (`package.json`), which fails the build if the barrel is tree-shaken empty — a
