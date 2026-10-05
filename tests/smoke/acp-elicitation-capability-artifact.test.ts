@@ -62,10 +62,18 @@ const ROOT = join(import.meta.dir, "..", "..");
 
 /**
  * The shape a built channel's runtime must expose for this probe.
+ *
+ * `requestElicitation` is here because `MessageChannelRegistry.supportedElicitationModes()`
+ * is a two-part predicate: it skips any channel whose `requestElicitation` is not a
+ * function, THEN reads `elicitationModes` (and excludes `failedStartupChannels`).
+ * A gate that checks only the declaration would stay green on a runtime that
+ * declares `form` but cannot deliver it — which core reports as no form support at
+ * all. See the assertion at the bottom of each positive case.
  */
 interface ChannelRuntimeLike {
   readonly id: string;
   readonly elicitationModes: readonly string[];
+  readonly requestElicitation?: unknown;
 }
 
 /**
@@ -203,6 +211,11 @@ test("feishu bundle: an account set where EVERY inbound account has cardActions 
     },
   );
   expect(allCapable.elicitationModes).toEqual(["form"]);
+  // The implementation half of core's predicate: `supportedElicitationModes()`
+  // skips a channel with no `requestElicitation` before it ever reads the
+  // declaration above, so a bundle that declares form but cannot deliver it is
+  // reported as no form support at all.
+  expect(typeof allCapable.requestElicitation).toBe("function");
 });
 
 test("feishu bundle never declares URL mode", async () => {
@@ -224,6 +237,9 @@ test("feishu bundle never declares URL mode", async () => {
   // by reading an empty list.
   expect(withForm.elicitationModes).toEqual(["form"]);
   expect(withForm.elicitationModes).not.toContain("url");
+  // Same implementation half as the all-capable case: the declaration is only
+  // truthful if this runtime can actually deliver.
+  expect(typeof withForm.requestElicitation).toBe("function");
 });
 
 test("relay bundle: the connector hello advertises the interaction capability it can deliver", async () => {
@@ -332,6 +348,16 @@ test("relay bundle: the connector hello advertises the interaction capability it
   // can be resolved here, and then every one would fail at runtime.
   expect(RELAY_CAPABILITIES.interactionPermissionV1).toBeUndefined();
   expect(caps ?? []).not.toContain("interaction.permission.v1");
+
+  // The implementation half, and a SEPARATE fact from the handshake above. Core's
+  // predicate (`MessageChannelRegistry.supportedElicitationModes`) skips any channel
+  // whose `requestElicitation` is not a function, before it reads `elicitationModes`
+  // and before it considers what the connector advertises. So a bundle whose hello
+  // correctly advertises form but whose runtime cannot deliver it would still be
+  // reported as no form support — the capability would be advertised to the hub and
+  // denied by core. Assert both halves.
+  expect(typeof channel.requestElicitation).toBe("function");
+  expect(channel.elicitationModes).toContain("form");
 });
 
 test("discord bundle: form capability is declared, not merely not-wrong", async () => {
@@ -351,4 +377,7 @@ test("discord bundle: form capability is declared, not merely not-wrong", async 
     { type: "discord", token: "t" },
   );
   expect(channel.elicitationModes).toEqual(["form"]);
+  // Core's predicate skips a channel with no `requestElicitation` before reading
+  // the declaration, so `["form"]` alone would not make this channel deliverable.
+  expect(typeof channel.requestElicitation).toBe("function");
 });

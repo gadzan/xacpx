@@ -91,10 +91,22 @@ different questions and belong to different trust domains.
 
 `expiresAt` is when answering stops being legal. The window is re-checked on
 **every** answer, so a late answer is rejected rather than applied to a turn that
-already moved on. The hub also keeps a separate transport reserve
-(`timeoutMs` vs `answerWindowMs`) so a decision made in time can still travel
-back — the two are deliberately not derived from each other, so the clocks cannot
-drift.
+already moved on.
+
+The transport reserve IS derived, not independent
+(`packages/relay/src/gateway/instance-gateway.ts`):
+
+```ts
+answerWindowMs = parsed.expiresAt - now
+timeoutMs      = answerWindowMs + REQUEST_RESPONSE_RESERVE_MS   // 15_000ms
+```
+
+The invariant that must not drift is what each clock decides, not their
+independence: `answerWindowMs` governs whether the human's answer is still
+**legal**, while the reserve only keeps the call open long enough for a decision
+made inside the window to **travel**. The reserve extends transport lifetime, not
+the legal answer window — so a decision arriving after `expiresAt` is still
+rejected, however much reserve remains.
 
 ---
 
@@ -131,7 +143,12 @@ hub reachable from connector
   → browser subscribed to the right instance
 ```
 
-- [ ] The connector's `transport.command`/`bridge` settings point at the hub.
+- [ ] Configure channel-relay with the Hub URL, pairwise: `xacpx channel add relay --url wss://<hub> --token <pairing-token>`.
+      The connector's config is `url` + `pairingToken` (plus an optional `--name`) —
+      nothing under `transport.command`/`acpx-bridge`, which is the **xacpx ↔ acpx runtime
+      transport** and has no bearing on where the connector points.
+- [ ] The instance has a stored instance credential **or** an initial pairing token;
+      `channel.start()` refuses to run with neither.
 - [ ] The browser connects over **WSS** on any untrusted network. `/ws` is
       **authenticated** at upgrade by the `xrelay_session` cookie — an upgrade
       with no resolvable account is destroyed (`packages/relay/src/server.ts`

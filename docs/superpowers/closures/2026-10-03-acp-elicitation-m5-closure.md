@@ -1,9 +1,15 @@
 # Milestone: M5 Release Hardening — Closure
 
 **Milestone:** M5 Release Hardening (deployment/release evidence + capability truthfulness)
-**Base:** `origin/main` @ `85d653e7`
+**Base when authored:** `origin/main` @ `85d653e7`
+**Base at merge time:** `origin/main` @ `6e7aa2ba` (contains #371, landed after this closure was written)
 **Date:** 2026-10-03
 **Status:** see *Verdict* below.
+
+> Rows below that name `85d653e7` are statements about the tree the milestone was
+> authored against. Where later `main` changes that fact, the current-state wording
+> is given alongside rather than silently rewritten, so this document stays
+> readable as a historical snapshot of what M5 closed *and* accurate about now.
 
 ---
 
@@ -65,7 +71,7 @@ Four dispositions, exactly as the working agreement requires.
 | Reconnect authoritative open-set snapshot | the whole `interaction-snapshot` work; PR #369, unmerged at this base | M4 closure addenda; PR #369 |
 | Relay Permission renderer | transport carries the kind; nothing renders it | §6 below |
 | Durable interaction across hub restart | needs a full caller-chain resume design | §6 below |
-| `waiting-human` Run state, for **interaction / Direct-Bot authority** | on this PR's base (`85d653e7`) the elicitation path never writes it; automatic Group Router, landed later in #371, writes it for routing questions | §6 below |
+| `waiting-human` Run state, for **interaction / Direct-Bot authority** | on this PR's base (`85d653e7`) the elicitation path never wrote it; the current base already contains Group Router `waiting-human` for automatic routing | §6 below |
 | ACP URL-mode elicitation | core contract is deliberately `form`-only | §6 below |
 
 ### 1.4 Out of scope for M5 (per the original roadmap and the working agreement)
@@ -368,9 +374,9 @@ the level of the durable boundary, not by patching the interaction path.
 
 | Deferred | Why | Blocked on |
 |---|---|---|
-| Relay Permission renderer | The wire already carries `kind: "permission"` and the registry stores the payload for replay (`packages/relay/src/interaction-registry.ts:109`), but `InteractionRequestDto.permission` is marked *"Reserved; M3 does not implement it"* (`packages/relay-protocol/src/dtos.ts:905-911`) and `relay-web` has **no** permission branch — both the live-open and snapshot paths bail on any non-elicitation kind | a renderer + capability `interactionPermissionV1` before any advertisement |
+| Relay Permission renderer | The wire already carries `kind: "permission"` and the registry stores the payload for replay (`packages/relay/src/interaction-registry.ts:109`), but `InteractionRequestDto.permission` is marked *"Reserved; M3 does not implement it"* (`packages/relay-protocol/src/dtos.ts:905-911`) and `relay-web` has **no** permission branch. Current base `6e7aa2ba`'s live interaction-opened/replay path does not render permission. If PR #369's future authoritative snapshot path lands, it must preserve the same kind fence | a renderer + capability `interactionPermissionV1` before any advertisement |
 | Durable interaction across hub restart | Persisting the hub registry alone is fake durability: the connector's pending RPC also dies, so nothing is waiting for the answer | a full caller-chain resume design |
-| `waiting-human` Run state for **interaction / Direct-Bot authority** | On this PR's base (`85d653e7`) the ACP elicitation path never writes it: read in ≥8 places (`src/conversations/conversation-run-service.ts:568,573,692,970,1067,1073,1643,1650`), never written — the M3 readiness doc predicted exactly this (B4). Automatic Group Router, landed later in #371, now writes it for routing questions, with `waitingQuestion` persisted and projected through Control/Relay/Web. The deferred part of this row is the elicitation/Direct-Bot authority semantics, not the Run state's existence | a design driven by authoritative open-interaction state |
+| `waiting-human` Run state for **interaction / Direct-Bot authority** | On this PR's authoring base (`85d653e7`) the ACP elicitation path never wrote it: read in ≥8 places (`src/conversations/conversation-run-service.ts:568,573,692,970,1067,1073,1643,1650`), never written — the M3 readiness doc predicted exactly this (B4). **Current base `6e7aa2ba` already contains Group Router `waiting-human`** for automatic routing, with `waitingQuestion` persisted and projected through Control/Relay/Web. What remains deferred here is specifically the ACP interaction / Direct-Bot waiting-human authority semantics | a design driven by authoritative open-interaction state |
 | ACP URL-mode | `ChannelElicitationMode` is `"form"` only, and the declaration comment says why (`src/interactions/elicitation-types.ts:221`): ACP defines `form | url`, but there is no URL dispatch, no `elicitationId`, no `elicitation/complete`, and no consent-before-navigation implementation. Widening the union would advertise a capability core cannot deliver | an ACP-conformant URL contract: target-host display, consent before navigation, `elicitationId`, `elicitation/complete`, per-channel capability proof |
 
 Each is a capability of its own, each starts only once the renderer and authority
