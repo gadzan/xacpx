@@ -478,6 +478,9 @@ export interface ConversationStore {
    * re-derives from rows alone.
    */
   automaticRunsAwaitingRouting(): Array<{ run: ConversationRun; batchMembers: MemberTurnRecord[] }>;
+  /** Known cancellation with forceRunTerminal persists whole-Run intent and
+   *  cancels never-started siblings atomically; admitted siblings drain their
+   *  evidence without resuming automatic routing. Unknown always seals. */
   completeCancel(runId: string, memberTurnId: string, now: string, indeterminate?: boolean, forceRunTerminal?: boolean, sourceTurnId?: string): ConversationRun;
   /** Two-phase cancel settlement: persist every member's observed physical
    *  cancel outcome as member evidence first (completed evidence, failed

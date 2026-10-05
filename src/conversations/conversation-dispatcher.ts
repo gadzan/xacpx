@@ -970,8 +970,14 @@ export class ConversationDispatcher {
       return;
     }
     if (result.status === "cancelled" || result.unknown) {
+      const unstartedSiblings = !result.unknown ? this.store.listMemberTurns(work.run.id)
+        .filter((member) => !member.startedAt && !TERMINAL_MEMBER_STATES.includes(member.state)) : [];
       const run = this.store.completeCancel(work.run.id, started.id, now, result.unknown === true, true, started.sourceTurnId);
       this.emitRunAndMember(run, started.id);
+      for (const sibling of unstartedSiblings) {
+        const memberTurn = this.store.getMemberTurn(sibling.id);
+        if (memberTurn?.state === "cancelled") this.emitProduct({ type: "member-turn-finished", run, memberTurn });
+      }
       this.maybeRouteAutomatic(run);
       void this.kick().catch(() => {});
       return;

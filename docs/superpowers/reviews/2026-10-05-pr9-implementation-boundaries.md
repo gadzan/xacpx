@@ -259,8 +259,45 @@ target stays pending rather than starting during shutdown. The third verifies
 capability revocation, closed admission and shared shutdown failure after an
 injected Run-drain failure.
 
+## Automatic multi-member cancellation follow-up (2026-10-06)
+
+Review of exact HEAD `8c36dbce47d428aae8c36b1cfc453cdddb0c4787` identified
+one Medium: the provider cancellation's force-terminal flag was lost when a
+sibling remained active. Cancelled-first settlement could resume the Router,
+while cancelled-last settlement stopped the same batch. Cancellation also
+unconditionally reported human-cancelled despite no human Stop or local abort.
+
+Known execution cancellation now writes whole-Run intent in the same
+transaction as its member outcome. Never-started siblings become cancelled
+with completed dispatches, including a claimed sibling waiting for the writer
+slot. Already-started siblings drain and retain their actual evidence. The
+durable marker fences routing, handoff, claim/start and recovery independently
+of settlement order; the dispatcher projects the newly cancelled siblings.
+The final cancelled reason is execution-cancelled unless human Stop was
+requested while the Run remained live. Existing outcome precedence is retained.
+
+The additive internal `runs.cancellation_reason` column retains provenance
+across an indeterminate seal and later exact evidence. It has no public DTO or
+request field. Upgrade preserves legacy live human cancellation intent and
+does not reset PR9 budgets. Legacy terminal evidence without provenance keeps
+its existing human-cancelled fallback; no unavailable historical source is
+inferred.
+
+Nine new regressions cover both real ConsoleAgent → CommandRouter → transport
+settlement orders (with no local abort), the normal serialized-writer path,
+claimed/pending sibling fences and idempotent replay after reopen, unknown and
+late completed/failed proof with execution or human provenance, and legacy
+column upgrade without budget refill. The three production-path cases failed
+on the reviewed HEAD. Both order cases admit actual provider calls using the
+existing host-supplied enforced-read-only capability seam; model-created
+assignments do not gain this proof. The serialized-writer case uses ordinary
+production assignment metadata and confirms no sibling provider start or
+second Router call. Native Node SQLite also passes five order/provenance/upgrade
+scenarios.
+
 ## Validation and residual limits
 
+- Automatic multi-member cancellation follow-up: **809** Conversation/Session/Control/MCP/wire DTO tests passed across 31 files, including nine new regressions. Native Node SQLite passed five additional cancellation order/provenance/migration scenarios. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
 - Shutdown ordering follow-up: **800** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including the three new shutdown cases. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
 - Runtime terminal-evidence follow-up: **797** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including both new red-to-green real ConsoleAgent transport cases. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
 - Second full review: **795** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including **549** Conversation tests across 17 files. The four handoff/budget/retired/full-queue files have **137** passing cases; six additional quarantine-start cases pass.

@@ -1693,7 +1693,7 @@ export class SqliteConversationStore implements ConversationStore {
       terminalState: indeterminate ? "indeterminate" : "cancelled",
       // Unknown side effects always seal the Run: no sibling may start after
       // unproven execution, in either mode. Plain cancelled defers to the
-      // caller (whole-run cancel passes force=true; see persistCancelOutcome).
+      // caller; force=true persists whole-Run intent before siblings settle.
       forceRunTerminalOnSettle: forceRunTerminal || indeterminate,
     });
   }
@@ -1875,6 +1875,11 @@ export class SqliteConversationStore implements ConversationStore {
     return this.sqlite.transaction(() => {
       const run = this.requireRun(runId);
       const members = this.listMemberTurns(runId);
+      if (!TERMINAL_RUN_STATES.includes(run.state)) {
+        // A real human Stop supersedes a prior execution cancellation while
+        // the Run is still live. Keep this provenance across an unknown seal.
+        this.sqlite.run("UPDATE runs SET cancellation_reason = 'human-cancelled' WHERE id = ?", [runId]);
+      }
       const member = members[0];
       if (!member) {
         if (run.mode !== "automatic") {
@@ -1917,21 +1922,7 @@ export class SqliteConversationStore implements ConversationStore {
       // dispatch can escape the cancel: queued/dispatched members become
       // cancelled and their dispatch intents complete. Started members stay
       // for the dispatcher to cancel exactly (per-active turn below).
-      const activeMembers: MemberTurnRecord[] = [];
-      for (const turn of members) {
-        if (TERMINAL_MEMBER_STATES.includes(turn.state)) {
-          continue;
-        }
-        if (turn.startedAt) {
-          activeMembers.push(turn);
-          continue;
-        }
-        this.sqlite.run(
-          `UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ? AND finished_at IS NULL`,
-          [now, turn.id],
-        );
-        this.finishDispatchForMemberTurn(turn.id, now);
-      }
+      this.cancelUnstartedMembers(runId, now);
       const settled = this.listMemberTurns(runId);
       const stillActive = settled.filter(
         (turn) => Boolean(turn.startedAt) && !TERMINAL_MEMBER_STATES.includes(turn.state),
@@ -2427,6 +2418,17 @@ export class SqliteConversationStore implements ConversationStore {
       ensure("member_turns", "handoff_invocation_id", "TEXT");
       ensure("runs", "quarantined_bot_ids_json", "TEXT NOT NULL DEFAULT '[]'");
       ensure("runs", "budget_exhausted", "INTEGER NOT NULL DEFAULT 0");
+      const cancellationUpgrade = !this.sqlite.all<{ name: string }>("PRAGMA table_info(runs)")
+        .some((column) => column.name === "cancellation_reason");
+      ensure("runs", "cancellation_reason", "TEXT CHECK (cancellation_reason IN ('human-cancelled', 'execution-cancelled'))");
+      if (cancellationUpgrade) {
+        // Before this column, cancelRun was the sole writer of live intent.
+        // Preserve that human provenance if a provider cancellation arrives
+        // during the migrated fan-out. Do not infer lost terminal intent.
+        this.sqlite.run(`UPDATE runs SET cancellation_reason = 'human-cancelled'
+          WHERE (state IN ('queued', 'running') AND completion_reason IS NOT NULL)
+             OR completion_reason = 'human-cancelled'`);
+      }
       this.sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_invocation ON member_turns
         (handoff_source_turn_id, handoff_invocation_id) WHERE handoff_source_turn_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_envelope ON messages (json_extract(handoff_json, '$.memberTurnId')) WHERE handoff_json IS NOT NULL;
@@ -3072,6 +3074,19 @@ export class SqliteConversationStore implements ConversationStore {
       [input.runId],
     );
     this.finishDispatchForMemberTurn(input.memberTurnId, input.now);
+    if (state === "cancelled") {
+      // Provenance survives an indeterminate seal, whose completion_reason
+      // must describe the unknown outcome instead of its cancellation source.
+      this.sqlite.run(`UPDATE runs SET cancellation_reason = COALESCE(cancellation_reason, 'execution-cancelled') WHERE id = ?`, [run.id]);
+      if (input.forceRunTerminalOnSettle) {
+        // The first observed execution cancellation fences the whole Run in
+        // the SAME transaction as member evidence. Later sibling completion
+        // cannot forget an in-memory force flag and re-enter the Router.
+        // Existing human cancellation intent/provenance takes precedence.
+        this.sqlite.run(`UPDATE runs SET completion_reason = COALESCE(completion_reason, 'execution-cancelled') WHERE id = ?`, [run.id]);
+        this.cancelUnstartedMembers(run.id, input.now);
+      }
+    }
     return this.aggregateRunAfterMemberTerminal(
       input.runId,
       input.memberTurnId,
@@ -3081,12 +3096,20 @@ export class SqliteConversationStore implements ConversationStore {
     );
   }
 
+  private cancelUnstartedMembers(runId: string, now: string): void {
+    for (const member of this.listMemberTurns(runId)) {
+      if (member.startedAt || TERMINAL_MEMBER_STATES.includes(member.state)) continue;
+      this.sqlite.run("UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?", [now, member.id]);
+      this.finishDispatchForMemberTurn(member.id, now);
+    }
+  }
+
   /**
    * Aggregate Run lifecycle after one MemberTurn reaches a terminal state.
    * Member completion terminals only the member; explicit Runs terminal when
    * no member of the active batch is still runnable (no Router follows).
    * Automatic batch settle stays running for the PR8 Router — UNLESS
-   * forceRunTerminal is set (whole-Run human cancel path), in which case the
+   * forceRunTerminal is set or durable cancel intent exists, in which case the
    * settled batch aggregates to its terminal outcome exactly like explicit.
    * Indeterminate (unproven side effects) always seals the Run in EITHER
    * mode — even with runnable siblings — and settles every still-runnable
@@ -3156,8 +3179,8 @@ export class SqliteConversationStore implements ConversationStore {
     }
     if (terminal.length < batchMembers.length) {
       // Intermediate state: one member terminal, siblings still runnable.
-      // The Run stays non-terminal (running) so claimNextDispatch keeps
-      // serving the batch; PR8 Router continues from this durable state.
+      // The Run stays non-terminal while admitted siblings drain. Durable
+      // cancel intent fences new work; otherwise dispatch serves the batch.
       if (run.state === "queued") {
         this.sqlite.run(`UPDATE runs SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?`, [now, runId]);
       }
@@ -3193,12 +3216,11 @@ export class SqliteConversationStore implements ConversationStore {
    * (e.g. runtime_revision_mismatch on direct drift).
    *
    * Precedence: indeterminate (unproven side effects) > failed > cancelled >
-   * completed. A completed+cancelled mix is a HUMAN STOP whose proven
-   * completions keep their evidence: no member actually failed, so the Run
-   * classifies as cancelled (human-cancelled), never execution-failed. The
-   * cancelled branch always writes the canonical human-cancelled reason —
-   * memberReason is a caller echo ("cancelled") that must not leak into the
-   * durable completionReason.
+   * completed. A completed+cancelled mix keeps proven completion evidence
+   * and classifies as cancelled. Cancellation provenance distinguishes
+   * human Stop from execution cancellation independently of settle order
+   * and of an intervening indeterminate seal. Legacy rows keep their prior
+   * human-cancelled classification when provenance is unavailable.
    */
   private classifySettledBatch(
     runId: string,
@@ -3230,9 +3252,11 @@ export class SqliteConversationStore implements ConversationStore {
     }
     const cancelled = batchMembers.filter((turn) => turn.state === "cancelled");
     if (cancelled.length > 0) {
+      const reason = this.sqlite.get<{ cancellation_reason: string | null }>(
+        "SELECT cancellation_reason FROM runs WHERE id = ?", [runId])?.cancellation_reason ?? "human-cancelled";
       this.sqlite.run(
         `UPDATE runs SET state = 'cancelled', completion_reason = ?, routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
-        ["human-cancelled", now, runId],
+        [reason, now, runId],
       );
       return this.requireRun(runId);
     }
