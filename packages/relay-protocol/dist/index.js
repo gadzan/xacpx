@@ -47,6 +47,8 @@ function isEnvelopeShape(value) {
 var STATE_SYNC_TEXT_CAP = 256 * 1024;
 var STATE_SYNC_PARTS_CAP = 1000;
 var MAX_TOOL_STEPS = 200;
+var MAX_GROUP_TARGET_MEMBERS = 64;
+var MAX_BOT_ID_LENGTH = 128;
 var REASONING_CAP = 16000;
 var RECOVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 var MAX_TERMINAL_REQUEST_ID_LENGTH = 128;
@@ -180,6 +182,7 @@ var MSG = {
   groupsUpdate: "control.groups.update",
   groupsDelete: "control.groups.delete",
   groupsGet: "control.groups.get",
+  groupsList: "control.groups.list",
   groupTopicsCreate: "control.group.topics.create",
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
@@ -680,13 +683,13 @@ function validConversationRun(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && (c.mode === "explicit" || c.mode === "automatic") && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number") && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number") && (c.failedBotIds === undefined || Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")) && (c.unavailableBotIds === undefined || Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")) && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt) && (c.activeBatch === undefined || typeof c.activeBatch === "number");
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && (c.mode === "explicit" || c.mode === "automatic") && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number") && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number") && (c.failedBotIds === undefined || Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")) && (c.unavailableBotIds === undefined || Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")) && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt) && (c.waitingQuestion === undefined || c.mode === "automatic" && c.state === "waiting-human" && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0) && (c.activeBatch === undefined || typeof c.activeBatch === "number") && (c.routingState === undefined || c.routingState === "queued" || c.routingState === "routing" || c.routingState === "dispatching" || c.routingState === "done");
 }
 function validMemberTurnSummary(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && optNonNegInt(c.memberIndex) && typeof c.attempt === "number" && (c.origin === "human-explicit" || c.origin === "human" || c.origin === "router" || c.origin === "handoff" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput) && optStrArr(c.dependsOn) && optStr(c.failureReason);
+  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && optNonNegInt(c.memberIndex) && typeof c.attempt === "number" && (c.origin === "human-explicit" || c.origin === "human" || c.origin === "router" || c.origin === "handoff" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput) && optStrArr(c.dependsOn) && optStr(c.failureReason) && (c.blockedReason === undefined || c.blockedReason === "human-authority-required" || c.blockedReason === "human-authority-unknown");
 }
 function validInteractionOpenShape(c) {
   return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validInteractionRequest(c.interaction);
@@ -1192,7 +1195,7 @@ var validateTopicsCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.title) ? o : null;
 };
-var isIsolation = (v) => v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
+var isCreateIsolation = (v) => v === "shared" || v === "shared-single-writer";
 var validateGroupsCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description)) && (o.leadBotId === undefined || isStr(o.leadBotId)) ? o : null;
@@ -1219,12 +1222,17 @@ var validateGroupsGet = (p) => {
   const o = fields(p);
   return o && isStr(o.id) ? o : null;
 };
+var validateGroupsList = (p) => {
+  if (p !== undefined && !isObj(p))
+    return null;
+  return {};
+};
 var validateGroupTopicsCreate = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.conversationId) || !isStr(o.title))
     return null;
   const t = o.target;
-  if (!isObj(t) || !isStr(t.workspace) || t.cwd !== undefined && !isStr(t.cwd) || !isIsolation(t.isolation)) {
+  if (!isObj(t) || !isStr(t.workspace) || t.cwd !== undefined && !isStr(t.cwd) || !isCreateIsolation(t.isolation)) {
     return null;
   }
   return o;
@@ -1237,14 +1245,34 @@ var validateGroupTopicsTeardown = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.topicId) ? o : null;
 };
+var isConversationTarget = (v) => {
+  if (!isObj(v))
+    return false;
+  const hasBotId = "botId" in v;
+  const hasMode = "mode" in v;
+  const hasBotIds = "botIds" in v;
+  const hasDiscriminant = hasBotId || hasMode || hasBotIds;
+  if (!hasDiscriminant)
+    return false;
+  const mixed = hasBotId && (hasMode || hasBotIds) || hasMode && hasBotIds && v.mode !== "members";
+  if (mixed)
+    return false;
+  if (hasBotId) {
+    const botId = v.botId;
+    return typeof botId === "string" && botId.length > 0 && botId.length <= MAX_BOT_ID_LENGTH;
+  }
+  if (v.mode === "members") {
+    return Array.isArray(v.botIds) && v.botIds.length > 0 && v.botIds.length <= MAX_GROUP_TARGET_MEMBERS && new Set(v.botIds).size === v.botIds.length && v.botIds.every((id) => isStr(id) && id.length > 0 && id.length <= MAX_BOT_ID_LENGTH);
+  }
+  return v.mode === "everyone" || v.mode === "automatic";
+};
 var validateConversationPrompt = (p) => {
   const o = fields(p);
   if (!o || !isStr(o.conversationId) || !isStr(o.topicId) || !isStr(o.requestId) || !isStr(o.text)) {
     return null;
   }
-  if (o.target !== undefined) {
-    if (!isObj(o.target) || !isStr(o.target.botId))
-      return null;
+  if (o.target !== undefined && !isConversationTarget(o.target)) {
+    return null;
   }
   return o;
 };
@@ -1559,6 +1587,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupsUpdate]: validateGroupsUpdate,
   [MSG.groupsDelete]: validateGroupsDelete,
   [MSG.groupsGet]: validateGroupsGet,
+  [MSG.groupsList]: validateGroupsList,
   [MSG.groupTopicsCreate]: validateGroupTopicsCreate,
   [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
@@ -1662,6 +1691,7 @@ export {
   DESKTOP_TICKET_TTL_MS,
   DESKTOP_WS_MAX_PAYLOAD_BYTES,
   INTERACTION_WIRE_LIMITS,
+  MAX_BOT_ID_LENGTH,
   MAX_CAPABILITIES,
   MAX_CAPABILITY_LENGTH,
   MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
@@ -1669,6 +1699,7 @@ export {
   MAX_DESKTOP_STREAM_ID_LENGTH,
   MAX_DESKTOP_TICKET_LENGTH,
   MAX_DESKTOP_WS_PATH_LENGTH,
+  MAX_GROUP_TARGET_MEMBERS,
   MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
   MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
   MAX_TERMINAL_COLS,
