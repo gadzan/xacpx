@@ -1014,6 +1014,73 @@ test("handlePromptWithSession mints an interaction id only for explicit human or
   expect(absentSeen).toEqual([undefined]);
 });
 
+function makeHiddenOwnedPromptContext(prompted: string[]) {
+  const session = {
+    alias: "brt_owned",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "sess-1",
+    archived: false,
+    replyMode: "final" as const,
+  } as unknown as ResolvedSession;
+  const context = {
+    sessions: {
+      getLogicalSessionRecord: () => ({
+        alias: "brt_owned",
+        owner: { kind: "bot-direct", bindingId: "bind_x", botId: "bot_x" },
+      }),
+      getCurrentSession: async () => session,
+    },
+    lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
+    interaction: {
+      promptTransportSession: async () => {
+        prompted.push("prompted");
+        return { text: "assistant-reply" };
+      },
+    },
+    recovery: {},
+    config: undefined as unknown as AppConfig,
+    logger: { info: async () => {}, warn: async () => {}, error: async () => {}, debug: async () => {} },
+  } as unknown as SessionHandlerContext;
+  return { session, context };
+}
+
+test("handlePromptWithSession still prompts a product-owned session on a Direct Bot isolation key", async () => {
+  // Production ConsoleAgent → CommandRouter reaches this seam with a live
+  // SessionService (getLogicalSessionRecord sees bot-direct / group-member).
+  // The ordinary-session fence must not swallow the turn: that returns
+  // sessionHiddenOwned as the assistant reply and the agent never runs.
+  const prompted: string[] = [];
+  const { session, context } = makeHiddenOwnedPromptContext(prompted);
+  const res = await handlePromptWithSession(context, session, "bot:conversation_1:topic_1", "hello");
+  expect(prompted).toEqual(["prompted"]);
+  expect(res.text).toBe("assistant-reply");
+});
+
+test("handlePrompt still prompts a product-owned session on a Direct Bot isolation key", async () => {
+  const prompted: string[] = [];
+  const { context } = makeHiddenOwnedPromptContext(prompted);
+  const res = await handlePrompt(context, "bot:conversation_1:topic_1", "hello");
+  expect(prompted).toEqual(["prompted"]);
+  expect(res.text).toBe("assistant-reply");
+});
+
+test("handlePromptWithSession still refuses a product-owned session on an ordinary chat key", async () => {
+  const prompted: string[] = [];
+  const { session, context } = makeHiddenOwnedPromptContext(prompted);
+  const res = await handlePromptWithSession(context, session, "weixin:a:u", "hello");
+  expect(prompted).toEqual([]);
+  expect(res.text).toBe(t().session.sessionHiddenOwned("brt_owned"));
+});
+
+test("handlePromptWithSession keeps the hidden-session fence on a malformed bot isolation key", async () => {
+  const prompted: string[] = [];
+  const { session, context } = makeHiddenOwnedPromptContext(prompted);
+  const res = await handlePromptWithSession(context, session, "bot:garbage", "hello");
+  expect(prompted).toEqual([]);
+  expect(res.text).toBe(t().session.sessionHiddenOwned("brt_owned"));
+});
+
 test("handleSessionRemove refuses product-owned sessions without physical teardown", async () => {
   const removed: string[] = [];
   const context = {

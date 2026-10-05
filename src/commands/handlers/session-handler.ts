@@ -27,6 +27,7 @@ import { resolvePermissionTurnRoute } from "../../permissions/permission-turn-ro
 import { resolveElicitationTurnRoute } from "../../interactions/elicitation-turn-route.js";
 import type { TurnInteractionContext } from "../../interactions/turn-interaction-registry";
 import { getGlobalElicitationBroker } from "../../interactions/elicitation-interaction-broker.js";
+import { parseDirectConversationChatKey } from "../../domain/ids";
 import { isHiddenProductSessionOwner } from "../../state/types";
 
 export interface SessionHandlerContext extends CommandRouterContext {
@@ -189,6 +190,20 @@ function rejectHiddenOwnedSession(context: SessionHandlerContext, alias: string)
     return { text: t().session.sessionHiddenOwned(toDisplaySessionAlias(alias)) };
   }
   return undefined;
+}
+
+/**
+ * Direct Bot / Group turns isolate on `bot:<conversationId>:<topicId>` and
+ * bind the product-owned hidden session on purpose (ConversationExecutionPort
+ * → ConsoleAgent → CommandRouter). The ordinary-session fence must not fire
+ * on that key: it would return `sessionHiddenOwned` as the assistant reply
+ * and the agent would never run.
+ *
+ * Well-formed isolation keys only. A prefix-only `bot:garbage` is not a
+ * Conversation address, so it keeps the fence.
+ */
+function isAuthorizedConversationPrompt(chatKey: string): boolean {
+  return parseDirectConversationChatKey(chatKey) !== undefined;
 }
 
 export async function handleSessions(context: SessionHandlerContext, chatKey: string): Promise<RouterResponse> {
@@ -1260,9 +1275,11 @@ export async function handlePromptWithSession(
   onUsage?: (usage: PromptUsage) => void | Promise<void>,
   onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
 ): Promise<RouterResponse> {
-  const hidden = rejectHiddenOwnedSession(context, session.alias);
-  if (hidden) {
-    return hidden;
+  if (!isAuthorizedConversationPrompt(chatKey)) {
+    const hidden = rejectHiddenOwnedSession(context, session.alias);
+    if (hidden) {
+      return hidden;
+    }
   }
   try {
     return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
