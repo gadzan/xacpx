@@ -1,6 +1,6 @@
 # Conversation runtime (Direct + Group persistence and lifecycle)
 
-Direct and Group Conversation execution is durable. Relay Web Group UX (explicit routing) and the stateless automatic ConversationRouter (PR8) are part of this contract; external channel Conversation bindings and public/private handoff remain out of scope.
+Direct and Group Conversation execution is durable. Relay Web Group UX, the stateless automatic ConversationRouter (PR8), and public structured handoff with bounded recovery (PR9) are part of this contract. External channel Conversation bindings and private handoff remain out of scope.
 
 ## Store ownership
 
@@ -40,13 +40,13 @@ accept transaction commits request + pending dispatch
   Startup handoff after the exclusive consumer lock: the lock IS explicit process-death evidence — the previous dispatcher is proven gone — so `activateAfterConsumerLock()` converges foreign `claimed` rows immediately via `convergePreviousOwnerClaims()` instead of waiting out their old lease:
 
   - claimed, **never started** → `pending` with owner cleared, provenance verbatim (orderly handoff, never the recovery rewrite)
-  - claimed, **started**, completion unproven → `indeterminate` (MemberTurn and Run, `started_result_unknown`); **never** blindly replayed
+  - claimed, **started**, completion unproven → bounded enforced-read-only retry under the PR9 policy below, otherwise `indeterminate` (MemberTurn and Run, `started_result_unknown`); **never** blindly replayed
   - members of terminal Runs → dispatch finished (already finished business)
 
   Lease-expiry reclaim (no lock held, e.g. mid-process drain):
 
   - claimed, **never started** → requeue (`pending`, generation++); safe to dispatch again
-  - claimed, **started**, completion unproven → `indeterminate` (MemberTurn and Run); **never** blindly replayed
+  - claimed, **started**, completion unproven → bounded enforced-read-only retry under the PR9 policy below, otherwise `indeterminate` (MemberTurn and Run); **never** blindly replayed
 
   Execution start is that same fence plus run/member still runnable. A stale worker whose claim was recovered must not call the underlying runner.
 
@@ -208,9 +208,9 @@ Commit-time revalidation checks Group membership before reading the selected Bot
 
 Automatic admission locks and snapshots one enabled member as the zero-member Run's carrier; it does not expand an explicit target or apply its 64-member cap to Group membership. The carrier is revalidated under its lifecycle gate, with acquisition retried if the eligible carrier changes. Other members may enable concurrently. Router-selected members still acquire their own lifecycle gates at decision commit, and the decision must fit the Run's remaining turn budget.
 
-`failedBotIds` and `unavailableBotIds` describe the active batch. A settled batch retains its aggregates for the next Router input; committing a new dispatch batch atomically resets both lists alongside `activeBatch`. Settlement and cancellation aggregate only active-batch members. Run-wide assignment history, exact results and consumed turn budget remain intact, so historical failure evidence does not appear as a current-batch failure after a successful retry or cancellation of a queued retry.
+`failedBotIds` and `unavailableBotIds` describe the active batch. A settled batch retains its aggregates for the next Router input; committing a new dispatch batch atomically resets both lists alongside `activeBatch`. Settlement and cancellation aggregate only active-batch members. PR9 separately retains monotonic Run-wide `quarantinedBotIds`; clearing batch aggregates cannot make a failed Bot eligible again in that Run. Assignment history, exact results and consumed turn budget remain intact.
 
-Automatic Group execution prepends a server-generated assignment envelope with `Task:` and optional `Expected output:` to a separately delimited `Public Group context:`. Assignment semantics follow the durable Run mode, including when a pre-start requeue or expired claim changes execution provenance from `router` to `recovery`; task validation and blocked-step evidence remain active after recovery. Each Bot receives its own durable assignment instructions; parallel siblings retain identical public context without seeing each other's tasks. Sequential successors receive their own assignment plus exact dependency results. Explicit Group prompts retain their existing composition and authority.
+Group execution with a durable assignment prepends a server-generated envelope with `Task:` and optional `Expected output:` to a separately delimited `Public Group context:`. Assignment semantics follow durable assignment identity, including when provenance changes from `router` or `handoff` to `recovery`; task validation and blocked-step evidence remain active after recovery. Each Bot receives its own assignment instructions; parallel Router siblings retain identical public context without seeing each other's tasks. Sequential successors receive their own assignment plus exact dependency results. Initial explicit Group prompts retain their existing composition and authority.
 
 An automatic `waiting-human` Run exposes the durable question as optional `waitingQuestion` in Control Run DTOs/detail, Relay events and reconnect reads. The waiting transition writes this field atomically with its audit row. Existing waiting Runs are backfilled from their last committed need-human audit decision during migration. The projection omits it once the Run leaves waiting-human; no answer/resume UI is implied.
 
@@ -290,6 +290,48 @@ Idempotent `requestId` retries reuse the durable accept result and do not re-emi
 
 ## Out of scope
 
-Public/private member-to-member handoff (`group_send`), handoff recovery, external channel Conversation bindings, and the full blocked-permission "Start this step myself" product flow (PR8 stores the durable domain seam only). Automatic Router ships in PR8 as described below.
+Private member-to-member handoff, external channel Conversation bindings (PR10), cross-account routing, and the full blocked-permission "Start this step myself" product flow. PR9 preserves structured blocked-step evidence; a future continuation must create a new explicit human request rather than promote an existing assignment.
+
+## Public structured handoff (PR9)
+
+`group_send({ to, task, expectedOutput? })` is available only on a currently executing Group member's xacpx MCP launch. Input is strict: no sender, scope, Run, origin, authority, or idempotency fields. Bot IDs are at most 128 characters, task 16,000, expected output 8,000; empty/whitespace-only, NUL, unknown fields and malformed values reject before durable work. Public member metadata supplies canonical Bot IDs without hidden Bot instructions.
+
+`GroupHandoffService` binds a private random capability after the durable execution-start fence, carrying the exact sender MemberTurn/sourceTurn/dispatch owner/generation. The core-private Control execution port passes it through TurnQueue/Chat metadata into immutable MCP launch identity. A Group launch exposes only `group_send`; it does not register an external orchestration coordinator. The capability is never a tool argument, prompt body or public event/DTO. Return, shutdown and replacement execution revoke old capabilities. Public Control callers cannot set one. Local IPC retains the same-OS-user trust boundary; an execution capability is not an OS sandbox.
+
+The real ConsoleAgent/CommandRouter path retains the ordinary hidden-session guard. `SessionTurnRunner` stamps the metadata object's identity in a core-private WeakMap with exact Group/Bot/Topic/session/logical-session scope. Only that object and matching owned session may use the Group execution path. A serialized/copied object or caller-supplied token string has no bypass authority. The private Control submit binds the exact alias and preserves the existing coordinator route; ordinary and Direct paths are unchanged.
+
+Runner settlement revokes the WeakMap route in `finally`; retaining even the original metadata object cannot launch a later owned prompt.
+
+Sender and target lifecycle gates cover current membership, enabled target, active Topic, Conversation deleting barrier and exact runtime/session ownership. The synchronous SQLite transaction then proves the sender is running under the live claim, the Run is running without cancel intent, and the target is not quarantined. No await separates final lifecycle reads from this write.
+
+That transaction appends one public `system` message with sender Bot/Run and structured `handoff` metadata (`senderMemberTurnId`, `to`, `assignmentId`, `memberTurnId`, `task`, `expectedOutput?`), one existing MemberTurn with `origin: "handoff"`, and one pending dispatch. It extends the current Run/batch, with no new human Run or handoff runner. Public history and `conversation-message` expose the envelope to the user and Group. Events notify committed rows; reconnect reads history and deduplicates by message ID.
+
+Target references freeze the sender's legal public references, the Run's own request, completed exact public results of this Run and the envelope at acceptance. The dispatcher adds only legal dependency evidence and the pre-request public Topic baseline. Direct/private/other-Topic data, future sibling output, unrelated queued requests and sender hidden model state cannot enter through a widened sequence window. Task and expected output always reach the actual runner.
+
+### Idempotency and budget
+
+The durable key is `(sender sourceTurnId, host MCP invocationId)`. The MCP host stamps JSON-RPC request identity separately from model arguments, retaining number/string type. Retransmission returns the original receipt without another envelope, assignment, dispatch, event, wake or debit; changed arguments under that key fail `handoff_idempotency_conflict`. Names, aliases, content equality and latest-Bot-result lookup never define identity. A fresh invocation ID represents fresh work, even when text matches. Clients must retain invocation identity when retransmitting a lost response; model reissue under a new ID is not a retransmission. A revoked capability cannot accept work or impersonate a later execution. After daemon restart committed assignments recover from SQLite; the retired caller cannot replay side effects.
+
+Every accepted MemberTurn reserves one slot. A started safe retry reserves another through `recovery_attempts`: allocated work is the Run's MemberTurn count plus retired recovery attempts. Router/handoff commits and retries check this same durable limit. Explicit Groups reserve at least 24 total slots (or the initial member count when larger); initial execution behavior is unchanged. Idempotent replay and not-started redispatch consume no extra slot. Handoff budget rejection commits `budget_exhausted`; accepted work settles, then the Run fails with `budget-exhausted`, even if the sender caught the tool error. Restart cannot reset this flag or the allocation count.
+
+### Permission, filesystem, failure and recovery
+
+Handoff work is `handoff`/orchestration-equivalent; retry and failover work is `recovery`/orchestration. Neither has `authorityEpoch` or `humanIngress`, including when a human started the sender. Human-only permission actions fail closed with durable `blockedReason`. Physical start uses the existing filesystem scheduler: unknown effects are potential writers, shared-tree writers serialize, and only `read-only` plus `declared-enforced` can overlap. Same-Bot assignments serialize within a Run to protect the owned Topic session. Acceptance proves durable queuing, not physical start.
+
+Known member failure adds Run-wide quarantine without disabling the global Bot or deleting healthy results. Router metadata marks quarantine unavailable; commit/start independently recheck it. Automatic failover uses the existing stateless Router, remaining budget, assignment/dispatch rows and `origin: "recovery"`. Explicit Runs settle all accepted work without invoking the Router. Quarantine has no automatic same-Run release path; a later independent Run can use the enabled Bot again.
+
+Pending/not-started claims may redispatch through existing fences. A started unknown execution gets **at most one** automatic retry, only for a Group MemberTurn with `effect: "read-only"`, `effectProvenance: "declared-enforced"`, remaining budget, no cancel/delete barrier and no committed downstream handoff from that attempt. A filesystem read-only proof does not prove replaying committed orchestration safe. Model declarations alone never grant the enforced proof; current Router/handoff-created work has `unknown` effect and does not qualify.
+
+Safe retry audits the retired sourceTurn/generation, requeues the same MemberTurn/assignment as `recovery`, increments attempt, clears old physical-start identity and strips authority. Task, expected output, dependencies, exact references, blocked reason, execution snapshot, effect/proof and filesystem policy survive. New start mints a new sourceTurn/capability. Retired success, failure and physical cancel evidence cannot settle the new attempt. A second unknown attempt, absent proof, exhausted budget or potential writer becomes `indeterminate` and seals scheduling. Late exact evidence can reconcile outcome under existing rules without restarting work.
+
+On the real ConsoleAgent path, a typed `RUNTIME_PERMISSION_DENIED` / `PERMISSION_DENIED` is propagated as known failure with blocked evidence. Other transport throws after execution-start, including rejection with `undefined`, are carried as an explicit unknown outcome through SessionTurnRunner/TurnQueue/Conversation runner and seal `indeterminate`. They cannot become a successful assistant error message or a failed assignment eligible for blind failover.
+
+Human cancel uses existing durable intent, generations and exact physical cancel. Cancel/delete blocks fresh handoff, retry and Router commits; pending targets cannot start, active targets receive cancel and late tool/evidence cannot revive scheduling. A live original execution can replay an already committed receipt after cancel without new work. Old∪new membership lifecycle gates refuse removing accepted active/pending members; corrupted external removal/deletion fails durably before target start.
+
+### Additive migration and crash windows
+
+Open adds `messages.handoff_json`, `member_turns.handoff_source_turn_id` / `handoff_invocation_id`, `runs.quarantined_bot_ids_json` (default `[]`) / `budget_exhausted` (default 0), unique partial indexes for invocation/envelope identity, and `recovery_attempts` keyed by `(member_turn_id, source_turn_id)`. PR8 rows retain defaults and Direct behavior; no second task table exists. Verified Topic/Group teardown deletes attempt audit with dispatch/member/Run/message rows.
+
+Pre-commit failure leaves no handoff rows. Commit before response/start leaves one recoverable assignment/envelope. Claim without start evidence requeues; started unknown effects seal the Run, including pending downstream work. Result commit before notification remains discoverable through history, with exact source joins preventing duplicate append. Tests cover rollback, restart/claim windows, retired evidence, cancel/lifecycle races, same-Bot assignments, mixed-schema reopen, permission refusal, budget loops and Web replay.
 
 **Follow-up before Direct Bot product release:** global dispatcher parallelism (more than one claimed execution in flight across Topics/Bots) is not part of this contract. Keep the current drain/claim sequencing until that work is designed. The drain launches the first claim globally, then admits only same-Run siblings concurrently (Topic isolation decides overlap); unrelated Topics/Bots wait for the next pass, after the cohort settles. A pass that defers Topics on pre-start failure takes at most chained extra passes with the deferrals preserved — never a retry without progress. An unexpected execution failure that escapes the handled settlement paths rejects the drain (and therefore fails activation) after every launched execution settles; it is never swallowed into a successful kick.

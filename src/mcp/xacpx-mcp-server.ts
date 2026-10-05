@@ -27,6 +27,7 @@ import { resolveDefaultOrchestrationEndpoint } from "./resolve-endpoint";
 import { canConnectToEndpoint } from "../orchestration/endpoint-probe";
 import { buildXacpxMcpToolRegistry } from "./xacpx-mcp-tools";
 import { createOrchestrationTransport, type XacpxMcpTransport } from "./xacpx-mcp-transport";
+import { GROUP_EXECUTION_PREFIX } from "../conversations/group-handoff";
 
 const TASK_OPTIONS_CACHE_LIMIT = 1_000;
 const TASKS_LIST_PAGE_SIZE = 100;
@@ -99,7 +100,9 @@ export function createXacpxMcpServer(options: XacpxMcpServerOptions): Server {
           requests: { tools: { call: {} } },
         },
       },
-      instructions: XACPX_MCP_SERVER_INSTRUCTIONS,
+      instructions: options.sourceHandle?.startsWith(GROUP_EXECUTION_PREFIX)
+        ? "Use group_send to publicly assign a concrete downstream task to another current Group Bot. Sender, Run and permission provenance are bound by the runtime. Acceptance is durable; execution follows the Topic filesystem scheduler."
+        : XACPX_MCP_SERVER_INSTRUCTIONS,
       taskStore: createXacpxTaskStore(async () => await getToolState(), taskOptionsById, watchTasksById),
     },
   );
@@ -146,7 +149,7 @@ export function createXacpxMcpServer(options: XacpxMcpServerOptions): Server {
     };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult | CreateTaskResult> => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra): Promise<CallToolResult | CreateTaskResult> => {
     const toolMap = (await getToolState()).toolMap;
     const tool = toolMap.get(request.params.name);
     if (!tool) {
@@ -182,7 +185,7 @@ export function createXacpxMcpServer(options: XacpxMcpServerOptions): Server {
       });
     }
 
-    return await tool.handler(parsed.data);
+    return await tool.handler(parsed.data, { invocationId: `${typeof extra.requestId}:${String(extra.requestId)}` });
   });
 
   // The SDK's default tasks/result handler waits until a task is terminal.

@@ -28,6 +28,7 @@ import { resolveElicitationTurnRoute } from "../../interactions/elicitation-turn
 import type { TurnInteractionContext } from "../../interactions/turn-interaction-registry";
 import { getGlobalElicitationBroker } from "../../interactions/elicitation-interaction-broker.js";
 import { isHiddenProductSessionOwner } from "../../state/types";
+import { GroupExecutionOutcomeUnknownError, matchesGroupExecutionMetadata } from "../../conversations/group-execution-metadata";
 
 export interface SessionHandlerContext extends CommandRouterContext {
   lifecycle: SessionLifecycleOps;
@@ -1003,6 +1004,12 @@ async function promptWithSession(
     }
   }
   const effectiveReplyMode = resolveEffectiveReplyMode(context.config, chatKey, session.replyMode);
+  if (metadata?.groupExecutionToken) {
+    const owned = context.sessions.getLogicalSessionRecord(session.alias);
+    if (!matchesGroupExecutionMetadata(metadata, owned)) throw new Error("Group MCP capability requires a trusted owned Group execution");
+    session.mcpCoordinatorSession = metadata.groupExecutionToken;
+    session.mcpSourceHandle = metadata.groupExecutionToken;
+  }
   // Ensure the session carries the resolved value so downstream transports
   // see "verbose" instead of undefined and format tool-call progress correctly.
   if (!session.replyMode) session.replyMode = effectiveReplyMode;
@@ -1261,12 +1268,19 @@ export async function handlePromptWithSession(
   onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
 ): Promise<RouterResponse> {
   const hidden = rejectHiddenOwnedSession(context, session.alias);
-  if (hidden) {
+  if (hidden && !matchesGroupExecutionMetadata(metadata, context.sessions.getLogicalSessionRecord?.(session.alias))) {
     return hidden;
   }
   try {
     return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
   } catch (error) {
+    if (matchesGroupExecutionMetadata(metadata, context.sessions.getLogicalSessionRecord?.(session.alias))) {
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      // A typed permission refusal is a known blocked step. A generic transport
+      // throw after execution-start cannot prove absence of side effects.
+      if (code === "RUNTIME_PERMISSION_DENIED" || code === "PERMISSION_DENIED") throw error;
+      throw new GroupExecutionOutcomeUnknownError(error);
+    }
     if (error instanceof AcpxQueueOverflowError) {
       const confirmed = error.cleanup?.ownerTerminationSucceeded === true;
       await context.logger.warn(

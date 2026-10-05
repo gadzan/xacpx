@@ -394,6 +394,8 @@ export interface ControlPromptInput {
 
 export interface ControlPromptResult {
   ok: boolean;
+  /** Core Group transport failed without proven terminal evidence. */
+  unknown?: boolean;
   /** Structured execution evidence, produced from typed runtime permission failures. */
   blockedReason?: "human-authority-required" | "human-authority-unknown";
   text?: string;
@@ -1402,6 +1404,7 @@ export class ControlService {
     input: ControlPromptInput & {
       executionOrigin?: PermissionInteractionOrigin;
       conversation?: ConversationTurnCorrelation;
+      groupExecutionToken?: string;
       permissionChatKey?: string;
       senderName?: string;
     },
@@ -1456,6 +1459,9 @@ export class ControlService {
           : {}),
         ...(input.abortSignal !== undefined ? { abortSignal: input.abortSignal } : {}),
         ...(input.conversation !== undefined ? { conversation: input.conversation } : {}),
+        ...(trustedConversationExecution && input.groupExecutionToken ? {
+          groupExecutionToken: input.groupExecutionToken, boundSessionAlias: internalAlias, preserveCoordinatorRoute: true,
+        } : {}),
         ...(input.permissionChatKey !== undefined ? { permissionChatKey: input.permissionChatKey } : {}),
         ...(input.senderName !== undefined ? { senderName: input.senderName } : {}),
       });

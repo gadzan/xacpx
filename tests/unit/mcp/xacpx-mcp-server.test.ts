@@ -17,6 +17,30 @@ import { createMemoryTransport } from "../../../src/mcp/xacpx-mcp-transport";
 import type { OrchestrationTaskRecord } from "../../../src/orchestration/orchestration-types";
 import { AgentMessagingError } from "../../../src/orchestration/agent-messaging-error";
 
+test("Group MCP advertises only public group_send and derives trusted invocation identity", async () => {
+  const calls: unknown[] = [];
+  const token = "group-execution:trusted-launch";
+  const transport = createMemoryTransport(async () => { throw new Error("Group cannot delegate"); });
+  transport.groupSend = async (input) => { calls.push(input); return { runId: "run", assignmentId: "assignment", memberTurnId: "member", messageId: "message" }; };
+  const server = createXacpxMcpServer({ transport, coordinatorSession: token, sourceHandle: token });
+  const client = new Client({ name: "group-test", version: "1" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(b); await client.connect(a);
+    const list = await client.listTools();
+    expect(list.tools.map((tool) => tool.name)).toEqual(["group_send"]);
+    expect(Object.keys(list.tools[0]!.inputSchema.properties!)).toEqual(["to", "task", "expectedOutput"]);
+    expect(list.tools[0]!.inputSchema.additionalProperties).toBe(false);
+    await expect(client.callTool({ name: "group_send", arguments: { to: "bot_b", task: "task", from: "bot_spoof" } })).rejects.toBeDefined();
+    expect(calls).toHaveLength(0);
+    const result = await client.callTool({ name: "group_send", arguments: { to: "bot_b", task: "task", expectedOutput: "output" } });
+    expect(result.isError).not.toBe(true);
+    expect(calls).toEqual([{ executionToken: token, invocationId: expect.stringMatching(/^number:\d+$/), args: { to: "bot_b", task: "task", expectedOutput: "output" } }]);
+    await expect(client.callTool({ name: "agent_send", arguments: { to: "any", message: "private" } })).rejects.toBeDefined();
+    expect(JSON.stringify(result)).not.toContain(token);
+  } finally { await client.close(); await server.close(); }
+});
+
 test("lists 13 MCP tools and hides coordinator/source identity from input schemas", async () => {
   const transport = createMemoryTransport(
     async () => ({ taskId: "task-1", status: "needs_confirmation" }),

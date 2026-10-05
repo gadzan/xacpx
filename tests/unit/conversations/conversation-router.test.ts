@@ -2471,7 +2471,7 @@ test("Router uses the nearest 200 public rows and retains the latest text on a l
 test("a new automatic batch resets current aggregates while retaining failed assignment history", async () => {
   const router = new RecordingRouter([
     { type: "dispatch", mode: "single", assignments: [{ id: "failed-review", botId: BOT_ID, task: "review", triggerMessageIds: [] }] },
-    { type: "dispatch", mode: "single", assignments: [{ id: "retry-review", botId: BOT_ID, task: "retry review", triggerMessageIds: [] }] },
+    { type: "dispatch", mode: "single", assignments: [{ id: "retry-review", botId: TESTER_ID, task: "retry review", triggerMessageIds: [] }] },
     { type: "complete", reason: "retry succeeded" },
   ]);
   const harness = await createHarness({ autoKick: false, router });

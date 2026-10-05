@@ -88,6 +88,7 @@ export interface PeerInterruptEvent {
 }
 
 export interface SubmitParams {
+  groupExecutionToken?: string;
   chatKey: string;
   sessionAlias: string;
   boundSessionAlias?: string;
@@ -710,6 +711,7 @@ export class TurnQueue {
           chatKey: params.chatKey,
           sessionAlias: params.sessionAlias,
           boundSessionAlias: params.boundSessionAlias,
+          ...(params.groupExecutionToken ? { groupExecutionToken: params.groupExecutionToken } : {}),
           text: params.text,
           senderId: params.senderId,
           turnOrigin: params.turnOrigin,
@@ -767,6 +769,7 @@ export class TurnQueue {
       ...(result!.text !== undefined ? { text: result!.text } : {}),
       ...(result!.errorMessage !== undefined ? { errorMessage: result!.errorMessage } : {}),
       ...(result!.blockedReason ? { blockedReason: result!.blockedReason } : {}),
+      ...(result!.unknown ? { unknown: true } : {}),
       ...(result!.cancelled ? { cancelled: true } : {}),
     };
   }

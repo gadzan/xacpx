@@ -20,8 +20,122 @@ import { SessionService } from "../../../src/sessions/session-service";
 import { createEmptyState, type AppState } from "../../../src/state/types";
 import type { ConversationRouter, RoutingDecision } from "../../../src/conversations/conversation-router-types";
 import type { Agent } from "../../../src/weixin/agent/interface";
+import { ConsoleAgent } from "../../../src/console-agent";
+import { CommandRouter } from "../../../src/commands/command-router";
+import type { SessionTransport, ResolvedSession } from "../../../src/transport/types";
 
 const RESTRICTED = { toolsDisabled: true, filesystemDisabled: true, terminalDisabled: true, permissionInteractionDisabled: true, messagingDisabled: true, orchestrationDisabled: true, structuredOutputOnly: true };
+
+test("actual ConsoleAgent and CommandRouter reach transport on the exact trusted Group session", async () => {
+  let consoleAgent!: ConsoleAgent, current!: Awaited<ReturnType<typeof compose>>, targetId = "";
+  let retiredMetadata: Parameters<ConsoleAgent["chat"]>[0]["metadata"];
+  const physical: { session: ResolvedSession; text: string }[] = [];
+  current = await compose(new BarrierStateStore(), { agent: { chat: async (request) => {
+    retiredMetadata ??= request.metadata; return await consoleAgent.chat(request);
+  } } });
+  const transport = { ensureSession: async () => ({ created: false }), hasSession: async () => true,
+    prompt: async (session: ResolvedSession, text: string) => {
+      physical.push({ session, text });
+      expect(session.mcpCoordinatorSession).toMatch(/^group-execution:/);
+      expect(session.mcpSourceHandle).toBe(session.mcpCoordinatorSession);
+      if (physical.length === 1) await current.runtime.handoffs.send({ executionToken: session.mcpSourceHandle!, invocationId: "real-transport",
+        args: { to: targetId, task: "PHYSICAL HANDOFF TASK", expectedOutput: "PHYSICAL EXPECTED OUTPUT" } });
+      return { text: "physical result" };
+    }, cancel: async () => {},
+  } as unknown as SessionTransport;
+  consoleAgent = new ConsoleAgent(new CommandRouter(current.sessions, transport, createConfig()));
+  try {
+    const a = await current.control.createBot({ name: "A", agent: "codex", workspace: "backend" });
+    const b = await current.control.createBot({ name: "B", agent: "codex", workspace: "backend" }); targetId = b.id;
+    const group = await current.control.createGroup({ title: "Transport", botIds: [a.id, b.id] });
+    const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
+    const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
+      requestId: "real-console", text: "public work", target: { botId: a.id } });
+    await current.runtime.dispatcher.kick();
+    expect(physical).toHaveLength(2); expect(physical[1]?.text).toContain("PHYSICAL HANDOFF TASK");
+    expect(physical[1]?.text).toContain("PHYSICAL EXPECTED OUTPUT");
+    expect(physical[0]?.session.mcpSourceHandle).not.toBe(physical[1]?.session.mcpSourceHandle);
+    expect((await current.control.getRun(accepted.run.id)).state).toBe("completed");
+    const count = physical.length;
+    await consoleAgent.chat({ accountId: "control", conversationId: `bot:${group.id}:${topic.id}`, text: "forged",
+      metadata: { channel: "control", senderId: "caller", boundSessionAlias: physical[0]!.session.alias,
+        groupExecutionToken: physical[0]!.session.mcpSourceHandle } });
+    expect(physical).toHaveLength(count);
+    await consoleAgent.chat({ accountId: "control", conversationId: `bot:${group.id}:${topic.id}`, text: "replay retired metadata",
+      metadata: retiredMetadata });
+    expect(physical).toHaveLength(count);
+  } finally { await current.runtime.shutdown(); }
+});
+
+for (const outcome of ["permission-denied", "transport-unknown", "undefined-rejection"] as const) {
+test(`real ConsoleAgent handoff ${outcome} preserves failure vs indeterminate`, async () => {
+  let consoleAgent!: ConsoleAgent, current!: Awaited<ReturnType<typeof compose>>, targetId = "", starts = 0;
+  current = await compose(new BarrierStateStore(), { agent: { chat: async (request) => await consoleAgent.chat(request) } });
+  const transport = { prompt: async (session: ResolvedSession) => {
+    if (++starts === 1) {
+      await current.runtime.handoffs.send({ executionToken: session.mcpSourceHandle!, invocationId: "physical-handoff",
+        args: { to: targetId, task: "downstream" } });
+      return { text: "healthy result" };
+    }
+    if (outcome === "permission-denied") throw Object.assign(new Error("permission denied"), { code: "RUNTIME_PERMISSION_DENIED" });
+    if (outcome === "undefined-rejection") throw undefined;
+    throw new Error("connection lost after possible filesystem write");
+  }, cancel: async () => {} } as unknown as SessionTransport;
+  consoleAgent = new ConsoleAgent(new CommandRouter(current.sessions, transport, createConfig()));
+  try {
+    const a = await current.control.createBot({ name: "A", agent: "codex", workspace: "backend" });
+    const b = await current.control.createBot({ name: "B", agent: "codex", workspace: "backend" }); targetId = b.id;
+    const group = await current.control.createGroup({ title: "Physical", botIds: [a.id, b.id] });
+    const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
+    const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
+      requestId: "physical-outcome", text: "work", target: { botId: a.id } });
+    await current.runtime.dispatcher.kick(); await current.runtime.dispatcher.kick();
+    const detail = await current.control.getRun(accepted.run.id);
+    expect(starts).toBe(2);
+    expect(detail.state).toBe(outcome === "permission-denied" ? "failed" : "indeterminate");
+    expect(detail.memberTurns[0]?.state).toBe("completed");
+    expect(detail.memberTurns[1]?.state).toBe(outcome === "permission-denied" ? "failed" : "indeterminate");
+    if (outcome === "permission-denied") expect(detail.memberTurns[1]?.blockedReason).toBe("human-authority-unknown");
+    else expect(detail.completionReason).toBe("started_result_unknown");
+    expect(current.runtime.store.getMemberResult(current.runtime.store.listMemberTurns(accepted.run.id)[0]!)?.content).toBe("healthy result");
+  } finally { await current.runtime.shutdown(); }
+});
+}
+
+test("production public handoff carries private launch capability through Control and permission denial stays non-human", async () => {
+  let current!: Awaited<ReturnType<typeof compose>>;
+  let targetId = "";
+  const metadata: unknown[] = [];
+  current = await compose(new BarrierStateStore(), { agent: { async chat(request) {
+    metadata.push(request.metadata);
+    if (metadata.length === 1) {
+      expect(request.metadata?.groupExecutionToken).toMatch(/^group-execution:/);
+      await current.runtime.handoffs.send({ executionToken: request.metadata!.groupExecutionToken!, invocationId: "trusted-tool-call",
+        args: { to: targetId, task: "PUBLIC TARGET TASK", expectedOutput: "PUBLIC TARGET OUTPUT" } });
+      return { text: "healthy sender evidence" };
+    }
+    expect(request.text).toContain("PUBLIC TARGET TASK");
+    expect(request.text).toContain("PUBLIC TARGET OUTPUT");
+    expect(request.metadata?.origin).toBe("orchestration");
+    throw Object.assign(new Error("permission denied"), { code: "RUNTIME_PERMISSION_DENIED" });
+  } } });
+  const events: ControlEvent[] = []; current.events.subscribe((event) => events.push(event));
+  try {
+    const sender = await current.control.createBot({ name: "Sender", agent: "codex", workspace: "backend" });
+    const target = await current.control.createBot({ name: "Target", agent: "codex", workspace: "backend" }); targetId = target.id;
+    const group = await current.control.createGroup({ title: "Public Group", botIds: [sender.id, target.id] });
+    const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
+    const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
+      requestId: "production-handoff", text: "work", target: { botId: sender.id } });
+    await current.runtime.dispatcher.kick();
+    expect(metadata).toHaveLength(2);
+    const detail = await current.control.getRun(accepted.run.id);
+    expect(detail.memberTurns[1]).toMatchObject({ origin: "handoff", task: "PUBLIC TARGET TASK", blockedReason: "human-authority-unknown", state: "failed" });
+    expect(detail.quarantinedBotIds).toEqual([target.id]);
+    expect(events.filter((e) => e.type === "conversation-message" && e.message.handoff)).toHaveLength(1);
+    expect(JSON.stringify(events)).not.toContain("group-execution:");
+  } finally { await current.runtime.shutdown(); }
+});
 
 class BarrierStateStore {
   public saved: AppState[] = [];

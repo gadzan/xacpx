@@ -10,6 +10,19 @@ import { AgentMessagingError } from "../../../src/orchestration/agent-messaging-
 import { OrchestrationServer } from "../../../src/orchestration/orchestration-server";
 import { skipIfLocalIpcUnavailable } from "../../helpers/ipc-capability";
 
+test("Group handoff IPC forwards trusted launch identity separately and rejects extra runtime fields", async () => {
+  const groupSend = mock(async () => ({ runId: "run", assignmentId: "assignment", memberTurnId: "target", messageId: "message" }));
+  const server = new OrchestrationServer(resolveOrchestrationEndpoint("/tmp/pr9-ipc-test"), makeServerHandlers(), { groupSend });
+  const params = { executionToken: "group-execution:one", invocationId: "number:7", args: { to: "bot_b", task: "work" } };
+  const call = async (input: unknown) => JSON.parse(await server.handleLine(JSON.stringify({ id: "req", method: "conversation.group_send", params: input })));
+  expect(await call(params)).toMatchObject({ ok: true, result: { runId: "run", assignmentId: "assignment" } });
+  expect(groupSend).toHaveBeenCalledWith(params);
+  for (const invalid of [{ ...params, senderBotId: "spoof" }, { ...params, executionToken: "x".repeat(129) }, { ...params, invocationId: "" }]) {
+    expect((await call(invalid)).ok).toBe(false);
+  }
+  expect(groupSend).toHaveBeenCalledTimes(1);
+});
+
 test("agent.list forwards only the trusted sender binding to Agent Messaging", async () => {
   const endpoint = resolveOrchestrationEndpoint("/tmp/weacpx-orch-server-test");
   const listReachable = mock(async () => [

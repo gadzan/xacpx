@@ -1855,6 +1855,11 @@ export async function buildApp(
     orchestrationEndpoint,
     orchestration,
     {
+      groupSend: async (invocation) => await conversations.withOperation(async () => {
+        const receipt = await conversations.handoffs.send(invocation);
+        return { runId: receipt.run.id, assignmentId: receipt.memberTurn.assignmentId!,
+          memberTurnId: receipt.memberTurn.id, messageId: receipt.message.id };
+      }),
       agentMessaging,
       onSocketHardenError: (error) => {
         void logger.error(

@@ -17,6 +17,8 @@
 
 ## 文件
 
+PR9 公开 handoff 走 execution-bound `group_send({to, task, expectedOutput?})` MCP primitive，不是公共 Control 方法。`groupExecutionToken` 只在 core-private execution port、TurnQueue 和 Chat metadata 内传递，不进入 public prompt、事件或 DTO。公开消息 DTO 可携带 `handoff`（sender MemberTurn、target、assignment/MemberTurn ID、task/expectedOutput）；Run DTO 可携带单调累计的 `quarantinedBotIds`，不修改全局 Bot profile。约束见 [Conversation runtime](conversation-runtime.md#public-structured-handoff-pr9)。
+
 - **`src/control/control-service.ts`** — 门面主体：sessions / scheduler /
   orchestration / prompt / executeCommand。导出类型：`ControlServiceDeps`、
   `ControlSessionInfo`、`ControlPromptInput`、`ControlPromptResult`、

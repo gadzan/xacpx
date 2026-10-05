@@ -583,7 +583,19 @@ function validConversationMessage(value: unknown): boolean {
     && (c.role === "human" || c.role === "bot" || c.role === "system")
     && typeof c.content === "string"
     && typeof c.createdAt === "string"
-    && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId);
+    && optStr(c.senderBotId) && optStr(c.replyTo) && optStr(c.runId) && optStr(c.promptRequestId)
+    && (c.handoff === undefined || (c.role === "system" && typeof c.runId === "string"
+      && typeof c.senderBotId === "string" && validPublicHandoff(c.handoff)));
+}
+
+function validPublicHandoff(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const h = value as Record<string, unknown>;
+  return Object.keys(h).every((key) => ["senderMemberTurnId", "to", "assignmentId", "memberTurnId", "task", "expectedOutput"].includes(key))
+    && isBoundedStr(h.senderMemberTurnId, 128) && isBoundedStr(h.to, 128)
+    && isBoundedStr(h.assignmentId, 128) && isBoundedStr(h.memberTurnId, 128)
+    && isBoundedStr(h.task, 16_000)
+    && (h.expectedOutput === undefined || isBoundedStr(h.expectedOutput, 8_000));
 }
 
 /** An optional product id: absent, or a non-empty string (mirrors `optProductId`). */
@@ -697,6 +709,8 @@ function validConversationRun(value: unknown): boolean {
       || (Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")))
     && (c.unavailableBotIds === undefined
       || (Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")))
+    && (c.quarantinedBotIds === undefined
+      || (Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))))
     && typeof c.createdAt === "string"
     && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt)
     && (c.waitingQuestion === undefined || (c.mode === "automatic" && c.state === "waiting-human"

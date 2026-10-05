@@ -21,6 +21,7 @@ import { ConversationRouterEngine } from "./conversation-router-engine";
 import { ConversationRunService } from "./conversation-run-service";
 import { ControlConversationTurnRunner } from "./conversation-turn-runner";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
+import { GroupHandoffService } from "./group-handoff";
 
 export function resolveConversationStorePath(configPath: string): string {
   return join(resolveRuntimeDirFromConfigPath(configPath), "conversations.sqlite");
@@ -32,6 +33,7 @@ export interface ConversationRuntime {
   botRuntime: BotRuntimeManager;
   dispatcher: ConversationDispatcher;
   runs: ConversationRunService;
+  handoffs: GroupHandoffService;
   authorityEpoch: string;
   kick(): Promise<void>;
   /**
@@ -164,6 +166,9 @@ export async function createConversationRuntime(
     },
   );
   runsRef = runs;
+  const handoffs = new GroupHandoffService({ store, bots, state: input.state, now: input.now,
+    onProductEvent: input.onProductEvent, wake: () => runs.wakePendingWork() });
+  dispatcher.setHandoffService(handoffs);
   // PR8 automatic continuation: the dispatcher hands a settled automatic batch
   // back to the routing service, which owns the Router call and the durable
   // decision. Fire-and-forget from the dispatcher's perspective — routing never
@@ -205,6 +210,7 @@ export async function createConversationRuntime(
     botRuntime,
     dispatcher,
     runs,
+    handoffs,
     authorityEpoch: dispatcher.authorityEpoch,
     kick: () => dispatcher.kick(),
     activateAfterConsumerLock: () => runs.activateAfterConsumerLock(),
@@ -217,6 +223,7 @@ export async function createConversationRuntime(
             return;
           }
           lifecycle = "stopping";
+          handoffs.close();
           await waitIdle();
           bots.close();
           await runs.shutdown();

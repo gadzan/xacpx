@@ -7,6 +7,7 @@ import type { ResolvedSession } from "../../../../src/transport/types";
 import type { SessionHandlerContext } from "../../../../src/commands/handlers/session-handler";
 import type { SessionRecoveryOps } from "../../../../src/commands/router-types";
 import type { AppConfig } from "../../../../src/config/types";
+import { bindGroupExecutionMetadata } from "../../../../src/conversations/group-execution-metadata";
 
 beforeEach(() => {
   setLocale("zh");
@@ -1040,4 +1041,33 @@ test("handleSessionRemove refuses product-owned sessions without physical teardo
   const res = await handleSessionRemove(context, "weixin:a:u", "brt_owned");
   expect(res.text).toBe(t().session.sessionHiddenOwned("brt_owned"));
   expect(removed).toEqual([]);
+});
+
+test("Group execution capability becomes MCP launch identity only on an owned Group session", async () => {
+  let seen: ResolvedSession | undefined;
+  const owned = { alias: "owned", logical_session_id: "logical", owner: { kind: "group-member", botId: "bot", conversationId: "group", topicId: "topic" } };
+  const context = { sessions: { getLogicalSessionRecord: () => owned },
+    lifecycle: { checkTransportSession: async () => true }, interaction: {
+      promptTransportSession: async (session: ResolvedSession) => { seen = session; return { text: "ok" }; },
+    }, recovery: {}, config: undefined, logger: { info: async () => {}, warn: async () => {}, error: async () => {}, debug: async () => {} },
+  } as unknown as SessionHandlerContext;
+  const session = { alias: "owned", agent: "codex", workspace: "backend", transportSession: "physical", archived: false, replyMode: "final" } as ResolvedSession;
+  const metadata = { channel: "control", senderId: "bot", origin: "orchestration", groupExecutionToken: "group-execution:one", preserveCoordinatorRoute: true } as const;
+  // String-shaped caller metadata has no permission to address hidden sessions.
+  await handlePromptWithSession(context, session, "bot:group:topic", "work",
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, metadata);
+  expect(seen).toBeUndefined();
+  bindGroupExecutionMetadata(metadata, { sessionAlias: "owned", logicalSessionId: "logical", executionToken: metadata.groupExecutionToken,
+    botId: "bot", conversationId: "group", topicId: "topic", runId: "run", memberTurnId: "member" });
+  await handlePromptWithSession(context, session, "bot:group:topic", "work",
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, metadata);
+  expect(seen).toMatchObject({ mcpCoordinatorSession: "group-execution:one", mcpSourceHandle: "group-execution:one" });
+  seen = undefined;
+  await handlePromptWithSession(context, session, "bot:group:topic", "work",
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, { ...metadata });
+  expect(seen).toBeUndefined();
+  const directContext = { ...context, sessions: { getLogicalSessionRecord: () => ({ owner: { kind: "bot-direct" } }) } } as unknown as SessionHandlerContext;
+  await handlePromptWithSession(directContext, session, "bot:direct:topic", "work",
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, metadata);
+  expect(seen).toBeUndefined();
 });

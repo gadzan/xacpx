@@ -944,6 +944,10 @@ Clicking creates a new explicit human request referencing the blocked assignment
 
 # 12. PR 9 — Public handoff and recovery
 
+**Status:** implemented and self-reviewed on `codex/group-public-handoff-recovery`; awaiting PR review. Built from merged PR8 (`6e7aa2ba4c27f6c4c375d5bc4bd4124decc20647`). Local focused validation passed; Windows broad-suite baseline failures are reproduced and documented. PR9 is not authorized to merge without review.
+
+Runtime contract/schema: [Conversation runtime](../../conversation-runtime.md#public-structured-handoff-pr9). Execution chain/self-review: [PR9 boundaries](../reviews/2026-10-05-pr9-implementation-boundaries.md).
+
 ## Objective
 
 Continue collaboration across members without name parsing and recover safely from member failure/interruption.

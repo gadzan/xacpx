@@ -231,6 +231,11 @@ function mergeRun(current: ConversationRunDto | null, incoming: ConversationRunD
   if (merged.consumedMemberTurns === undefined) merged.consumedMemberTurns = current.consumedMemberTurns;
   if (merged.failedBotIds === undefined) merged.failedBotIds = current.failedBotIds;
   if (merged.unavailableBotIds === undefined) merged.unavailableBotIds = current.unavailableBotIds;
+  // Run quarantine only grows. A delayed pre-failure snapshot cannot restore
+  // an unavailable member; the global Bot catalog remains independent.
+  if (current.quarantinedBotIds || incoming.quarantinedBotIds) {
+    merged.quarantinedBotIds = [...new Set([...(current.quarantinedBotIds ?? []), ...(incoming.quarantinedBotIds ?? [])])];
+  }
   if (merged.startedAt === undefined) merged.startedAt = current.startedAt;
   if (merged.finishedAt === undefined) merged.finishedAt = current.finishedAt;
   if (merged.completionReason === undefined) merged.completionReason = current.completionReason;

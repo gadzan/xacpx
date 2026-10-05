@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { ControlServiceDeps } from "./control-service";
 import type { ConversationTurnCorrelation } from "./conversation-control-dtos";
+import { bindGroupExecutionMetadata, GroupExecutionOutcomeUnknownError } from "../conversations/group-execution-metadata";
 import type { ScheduledOrigin } from "./control-event-bus";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { ToolUseEvent } from "../channels/types";
@@ -16,6 +17,7 @@ import {
 } from "./turn-support";
 
 export interface TurnRequest {
+  groupExecutionToken?: string;
   chatKey: string;
   sessionAlias: string;
   boundSessionAlias?: string;
@@ -44,6 +46,8 @@ export interface TurnRequest {
 
 export interface TurnResult {
   ok: boolean;
+  /** Core Group transport failed without proven terminal evidence. */
+  unknown?: boolean;
   blockedReason?: "human-authority-required" | "human-authority-unknown";
   text?: string;
   errorMessage?: string;
@@ -343,22 +347,25 @@ export class SessionTurnRunner {
         });
       },
     }, (event) => event.toolCallId, (event) => event.status, (event) => toolEventPayloadSize(event));
+    let releaseGroupMetadata: (() => void) | undefined;
     try {
+      const metadata = {
+        ...buildControlMetadata(req.senderId, req.isOwner, req.boundSessionAlias, req.preserveCoordinatorRoute, req.turnOrigin),
+        ...(req.permissionChatKey ? { permissionChatKey: req.permissionChatKey } : {}),
+        ...(req.senderName ? { senderName: req.senderName } : {}),
+        ...(req.groupExecutionToken ? { groupExecutionToken: req.groupExecutionToken } : {}),
+      };
+      if (req.groupExecutionToken && req.conversation && req.boundSessionAlias) {
+        const owned = this.deps.sessions.getLogicalSessionRecord?.(req.boundSessionAlias);
+        if (!owned?.logical_session_id) throw new Error("Group execution lost its logical session identity");
+        releaseGroupMetadata = bindGroupExecutionMetadata(metadata, { ...req.conversation, sessionAlias: req.boundSessionAlias,
+          logicalSessionId: owned.logical_session_id, executionToken: req.groupExecutionToken });
+      }
       const response = await this.deps.agent.chat({
         accountId: req.accountId ?? "control",
         conversationId: req.chatKey,
         text: chatText,
-        metadata: {
-          ...buildControlMetadata(
-            req.senderId,
-            req.isOwner,
-            req.boundSessionAlias,
-            req.preserveCoordinatorRoute,
-            req.turnOrigin,
-          ),
-          ...(req.permissionChatKey ? { permissionChatKey: req.permissionChatKey } : {}),
-          ...(req.senderName ? { senderName: req.senderName } : {}),
-        },
+        metadata,
         abortSignal: signal,
         ...(chatMedia.length > 0 ? { media: chatMedia } : {}),
         reply: async (chunk) => {
@@ -469,12 +476,15 @@ export class SessionTurnRunner {
       return {
         ok: false,
         errorMessage,
+        ...(error instanceof GroupExecutionOutcomeUnknownError ? { unknown: true } : {}),
         ...(blockedReason ? { blockedReason } : {}),
         ...(!timedOut && signal.aborted ? { cancelled: true } : {}),
         ...(internalAlias && priorTransportSession
           ? { postTurnDetection: { internalAlias, priorTransportSession } }
           : {}),
       };
+    } finally {
+      releaseGroupMetadata?.();
     }
     // NB: no `finally` doing the post-turn `sessions-changed` getSession here — that compare
     // is deliberately the caller's job (see TurnResult.postTurnDetection), so it runs after

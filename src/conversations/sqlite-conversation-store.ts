@@ -9,6 +9,9 @@ import type { BotProfileSnapshot } from "../bots/bot-types";
 import { ConversationError } from "./conversation-error";
 import type {
   AcceptMemberInput,
+  AcceptPublicHandoffInput,
+  GroupSendInput,
+  PublicHandoffReceipt,
   AcceptRequestInput,
   AcceptRequestResult,
   AssertLiveDispatchForMaterializeInput,
@@ -57,6 +60,7 @@ import type {
 } from "./conversation-types";
 import { ACTIVE_RUN_STATES, TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 import { createSqlDriver, isSqliteUniqueViolation, type SqlDriver } from "./sql-driver";
+import { parseGroupSend } from "./group-handoff";
 
 export interface ConversationIdFactory {
   messageId: () => string;
@@ -74,6 +78,7 @@ export interface SqliteConversationStoreOptions {
 }
 
 interface MessageRow {
+  handoff_json?: string | null;
   id: string;
   conversation_id: string;
   topic_id: string;
@@ -87,6 +92,7 @@ interface MessageRow {
 }
 
 interface RunRow {
+  quarantined_bot_ids_json?: string | null;
   id: string;
   conversation_id: string;
   topic_id: string;
@@ -410,6 +416,7 @@ function mapMessage(row: MessageRow): ConversationMessage {
     role: row.role as ConversationMessage["role"],
     ...(optionalString(row.sender_bot_id) ? { senderBotId: row.sender_bot_id as string } : {}),
     content: row.content,
+    ...(row.handoff_json ? { handoff: JSON.parse(row.handoff_json) as ConversationMessage["handoff"] } : {}),
     ...(optionalString(row.run_id) ? { runId: row.run_id as string } : {}),
     createdAt: row.created_at,
     ...(sourceTurn ? { sourceTurn } : {}),
@@ -445,6 +452,8 @@ function mapRun(row: RunRow): ConversationRun {
     consumedMemberTurns: Number(row.consumed_member_turns),
     failedBotIds: parseBotIds(row.failed_bot_ids_json),
     unavailableBotIds: parseBotIds(row.unavailable_bot_ids_json),
+    ...(row.quarantined_bot_ids_json && parseBotIds(row.quarantined_bot_ids_json).length > 0
+      ? { quarantinedBotIds: parseBotIds(row.quarantined_bot_ids_json) } : {}),
     profileRevision: Number(row.profile_revision),
     profileSnapshot: parseSnapshot(row.profile_snapshot_json),
     createdAt: row.created_at,
@@ -613,6 +622,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureRoutingDecisionTable();
     this.ensureWaitingQuestionColumn();
     this.ensureDispatchMultiMemberShape();
+    this.ensurePublicHandoffSchema();
   }
 
   private assertOpen(): void {
@@ -673,6 +683,109 @@ export class SqliteConversationStore implements ConversationStore {
       }
       throw error;
     }
+  }
+
+  getPublicHandoff(sourceTurnId: string, invocationId: string, args: GroupSendInput): PublicHandoffReceipt | undefined {
+    const row = this.sqlite.get<MemberTurnRow>(
+      "SELECT * FROM member_turns WHERE handoff_source_turn_id = ? AND handoff_invocation_id = ?", [sourceTurnId, invocationId]);
+    if (!row) return undefined;
+    const memberTurn = mapMemberTurn(row);
+    if (memberTurn.botId !== args.to || memberTurn.task !== args.task || memberTurn.expectedOutput !== args.expectedOutput) {
+      throw new ConversationError("handoff_idempotency_conflict", "runtime invocation was already committed with different arguments");
+    }
+    const message = this.sqlite.get<MessageRow>(
+      `SELECT * FROM messages WHERE json_extract(handoff_json, '$.memberTurnId') = ?
+        AND conversation_id = ? AND topic_id = ? AND run_id = ? AND role = 'system'`,
+      [memberTurn.id, memberTurn.conversationId, memberTurn.topicId, memberTurn.runId]);
+    if (!message) throw new ConversationError("handoff_envelope_missing", "durable handoff lost its public envelope");
+    const publicMessage = mapMessage(message);
+    const envelope = publicMessage.handoff;
+    const sender = envelope ? this.getMemberTurn(envelope.senderMemberTurnId) : undefined;
+    if (!envelope || envelope.assignmentId !== memberTurn.assignmentId || envelope.to !== memberTurn.botId
+      || envelope.task !== memberTurn.task || envelope.expectedOutput !== memberTurn.expectedOutput
+      || !sender || sender.runId !== memberTurn.runId || sender.sourceTurnId !== sourceTurnId
+      || sender.conversationId !== memberTurn.conversationId || sender.topicId !== memberTurn.topicId
+      || publicMessage.senderBotId !== sender.botId) {
+      throw new ConversationError("handoff_envelope_mismatch", "durable handoff public identity is corrupt");
+    }
+    return { reused: true, run: this.requireRun(memberTurn.runId), memberTurn, message: publicMessage };
+  }
+
+  acceptPublicHandoff(input: AcceptPublicHandoffInput): PublicHandoffReceipt {
+    const args = parseGroupSend(input.args);
+    return this.sqlite.transaction(() => {
+      const prior = this.getPublicHandoff(input.sourceTurnId, input.invocationId, args);
+      if (prior) return prior;
+      const sender = this.requireMemberTurn(input.senderMemberTurnId);
+      const run = this.requireRun(sender.runId);
+      this.assertAcceptable(run.conversationId, run.topicId);
+      const dispatch = this.requireDispatch(input.dispatchId);
+      if (sender.state !== "running" || sender.sourceTurnId !== input.sourceTurnId
+        || dispatch.runId !== run.id || dispatch.memberTurnId !== sender.id || dispatch.state !== "claimed"
+        || dispatch.owner !== input.owner || dispatch.generation !== input.generation) {
+        throw new ConversationError("stale_group_execution", "handoff sender is no longer the live execution");
+      }
+      if (run.state !== "running" || isRunCancelling(run)) {
+        throw new ConversationError("run_not_runnable", "Run cannot accept handoff work");
+      }
+      if (run.quarantinedBotIds?.includes(args.to)) {
+        throw new ConversationError("handoff_quarantined_member", "target is unavailable for this Run");
+      }
+      const members = this.listMemberTurns(run.id);
+      if (this.allocatedWork(run.id) >= run.maxMemberTurns) {
+        // Keep the active physical execution intact. The failed tool call is
+        // durable Run intent; settlement gives budget exhaustion a stable reason.
+        this.sqlite.run("UPDATE runs SET budget_exhausted = 1 WHERE id = ?", [run.id]);
+        return undefined;
+      }
+      const memberTurnId = this.ids.memberTurnId();
+      const assignmentId = `handoff_${memberTurnId}`;
+      const messageId = this.ids.messageId();
+      const envelope = { senderMemberTurnId: sender.id, to: args.to, assignmentId, memberTurnId,
+        task: args.task, ...(args.expectedOutput !== undefined ? { expectedOutput: args.expectedOutput } : {}) };
+      const triggerIds = new Set([run.requestMessageId, ...sender.triggerMessageIds]);
+      const request = this.requireMessage(run.requestMessageId);
+      if (!requestSnapshotMatches(request, run)) {
+        throw new ConversationError("request_snapshot_mismatch", "handoff lost its exact human request snapshot");
+      }
+      for (const turn of members.filter((turn) => turn.state === "completed")) {
+        const result = this.getMemberResult(turn);
+        if (!result) throw new ConversationError("member_result_missing", "handoff lost completed public evidence");
+        triggerIds.add(result.id);
+      }
+      // Completed, in-scope evidence only. No max-seq extension can absorb a
+      // later human Run or a future sibling result.
+      for (const id of triggerIds) {
+        const message = this.requireMessage(id);
+        if (message.conversationId !== run.conversationId || message.topicId !== run.topicId
+          || (message.seq > request.seq && message.runId !== run.id)) {
+          throw new ConversationError("trigger_message_not_found", "handoff context is outside the Topic");
+        }
+      }
+      triggerIds.add(messageId);
+      const seq = this.allocateSeq(run.conversationId, run.topicId);
+      const content = `Public handoff: ${sender.botId} → ${args.to}\nRun: ${run.id}\nTask:\n${args.task}`
+        + (args.expectedOutput === undefined ? "" : `\nExpected output:\n${args.expectedOutput}`);
+      this.sqlite.run(`INSERT INTO messages (id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, created_at, handoff_json)
+        VALUES (?, ?, ?, ?, 'system', ?, ?, ?, ?, ?)`,
+        [messageId, run.conversationId, run.topicId, seq, sender.botId, content, run.id, input.now, JSON.stringify(envelope)]);
+      this.sqlite.run(`INSERT INTO member_turns (id, run_id, conversation_id, topic_id, bot_id, batch, member_index, attempt,
+        origin, state, trigger_message_ids_json, profile_snapshot_json, created_at, assignment_id, task, expected_output,
+        depends_on_json, effect, handoff_source_turn_id, handoff_invocation_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'handoff', 'queued', ?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?)`,
+        [memberTurnId, run.id, run.conversationId, run.topicId, args.to, run.activeBatch ?? 1,
+          Math.max(-1, ...members.filter((turn) => turn.batch === (run.activeBatch ?? 1)).map((turn) => turn.memberIndex)) + 1,
+          JSON.stringify([...triggerIds]), JSON.stringify(input.profileSnapshot), input.now, assignmentId, args.task,
+          args.expectedOutput ?? null, JSON.stringify(sender.dependsOn ?? []), input.sourceTurnId, input.invocationId]);
+      this.sqlite.run(`INSERT INTO pending_dispatches (id, run_id, member_turn_id, generation, state, created_at)
+        VALUES (?, ?, ?, ?, 'pending', ?)`, [this.ids.dispatchId(), run.id, memberTurnId, run.generation, input.now]);
+      return { reused: false, run: this.requireRun(run.id), memberTurn: this.requireMemberTurn(memberTurnId), message: this.requireMessage(messageId) };
+    }) ?? (() => { throw new ConversationError("budget-exhausted", "Run work budget is exhausted"); })();
+  }
+
+  private allocatedWork(runId: string): number {
+    return this.listMemberTurns(runId).length + Number(this.sqlite.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM recovery_attempts WHERE run_id = ?", [runId])?.n ?? 0);
   }
 
   getRun(runId: string): ConversationRun | undefined {
@@ -805,6 +918,11 @@ export class SqliteConversationStore implements ConversationStore {
           continue;
         }
         if (member.startedAt) {
+          if (this.retryEnforcedReadOnly(row, member, run, now)) {
+            recovered.push({ dispatch: this.requireDispatch(row.id), run: this.requireRun(run.id),
+              memberTurn: this.requireMemberTurn(member.id), outcome: "requeued" });
+            continue;
+          }
           const alreadyCounted = Boolean(member.finishedAt);
           this.sqlite.run(
             `UPDATE member_turns SET state = 'indeterminate', finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
@@ -868,6 +986,11 @@ export class SqliteConversationStore implements ConversationStore {
           continue;
         }
         if (member.startedAt) {
+          if (this.retryEnforcedReadOnly(row, member, run, now)) {
+            converged.push({ dispatch: this.requireDispatch(row.id), run: this.requireRun(run.id),
+              memberTurn: this.requireMemberTurn(member.id), outcome: "requeued" });
+            continue;
+          }
           // Crash-after-start under the consumer lock: the previous owner is
           // proven gone, so seal immediately through the same started branch
           // as lease recovery — never wait out the old lease, never
@@ -985,6 +1108,28 @@ export class SqliteConversationStore implements ConversationStore {
     this.sqlite.run(`UPDATE runs SET state = 'queued', started_at = NULL WHERE id = ?`, [runId]);
   }
 
+  /** Only pre-execution enforced capability proves retry safety. At most one
+   * started retry per assignment; not-started redelivery never spends again. */
+  private retryEnforcedReadOnly(row: DispatchRow, member: MemberTurnRecord, run: ConversationRun, now: string): boolean {
+    if (run.conversationId === createDirectConversationId(member.botId) || isRunCancelling(run)
+      || member.effect !== "read-only" || member.effectProvenance !== "declared-enforced"
+      || !member.sourceTurnId || TERMINAL_MEMBER_STATES.includes(member.state)
+      || this.allocatedWork(run.id) >= run.maxMemberTurns
+      // A read-only filesystem capability does not prove that repeating
+      // orchestration after a committed downstream handoff is safe.
+      || this.sqlite.get("SELECT 1 FROM member_turns WHERE handoff_source_turn_id = ?", [member.sourceTurnId])
+      || this.sqlite.get("SELECT 1 FROM recovery_attempts WHERE member_turn_id = ?", [member.id])) return false;
+    if (this.isConversationDeleting(run.conversationId) || this.isTopicDeleting(run.topicId)) return false;
+    this.sqlite.run(`INSERT INTO recovery_attempts (member_turn_id, run_id, source_turn_id, generation, created_at)
+      VALUES (?, ?, ?, ?, ?)`, [member.id, run.id, member.sourceTurnId, row.generation, now]);
+    this.sqlite.run(`UPDATE member_turns SET state = 'queued', origin = 'recovery', attempt = attempt + 1,
+      started_at = NULL, finished_at = NULL, source_turn_id = NULL, queue_item_id = NULL WHERE id = ?`, [member.id]);
+    this.sqlite.run(`UPDATE pending_dispatches SET state = 'pending', generation = generation + 1,
+      owner = NULL, claimed_at = NULL, lease_expires_at = NULL, authority_epoch = NULL, human_ingress = NULL WHERE id = ?`, [row.id]);
+    this.sqlite.run("UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?", [run.id]);
+    return true;
+  }
+
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined {
     return this.sqlite.transaction(() => {
       const skipTopicIds = input.skipTopicIds ?? [];
@@ -1009,6 +1154,11 @@ export class SqliteConversationStore implements ConversationStore {
            AND r.completion_reason IS NULL
            AND m.started_at IS NULL
            AND m.state IN ('queued', 'dispatched')
+           AND NOT EXISTS (
+             SELECT 1 FROM member_turns same_bot WHERE same_bot.run_id = m.run_id
+               AND same_bot.bot_id = m.bot_id AND same_bot.id <> m.id
+               AND same_bot.state IN ('running', 'dispatched')
+           )
            AND NOT EXISTS (
              SELECT 1 FROM conversation_lifecycle c
              WHERE c.conversation_id = r.conversation_id AND c.state = 'deleting'
@@ -1306,6 +1456,10 @@ export class SqliteConversationStore implements ConversationStore {
       // turn id pointing at another turn's session would otherwise write a
       // transcript row that misattributes provenance. Unstarted members carry
       // no identity yet, so there is nothing to join against — skip there.
+      if (input.sourceTurn.turnId && this.sqlite.get(
+        "SELECT 1 FROM recovery_attempts WHERE member_turn_id = ? AND source_turn_id = ?", [member.id, input.sourceTurn.turnId])) {
+        throw new ConversationError("source_turn_mismatch", "result belongs to a retired recovery attempt");
+      }
       if (
         (member.sessionAlias !== undefined && input.sourceTurn.sessionAlias !== member.sessionAlias)
         || (member.sourceTurnId !== undefined && input.sourceTurn.turnId !== member.sourceTurnId)
@@ -1503,10 +1657,11 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
-  completeCancel(runId: string, memberTurnId: string, now: string, indeterminate = false, forceRunTerminal = false): ConversationRun {
+  completeCancel(runId: string, memberTurnId: string, now: string, indeterminate = false, forceRunTerminal = false, sourceTurnId?: string): ConversationRun {
     return this.failExecution({
       runId,
       memberTurnId,
+      sourceTurnId: sourceTurnId ?? this.requireMemberTurn(memberTurnId).sourceTurnId,
       now,
       reason: indeterminate ? "started_result_unknown" : "cancelled",
       terminalState: indeterminate ? "indeterminate" : "cancelled",
@@ -1899,7 +2054,7 @@ export class SqliteConversationStore implements ConversationStore {
         // Budget guardrail (design §14.2): a Router decision may never push
         // the Run past its member-turn budget. Budget exhaustion is an
         // explicit completion reason, not a silent truncation.
-        const consumed = run.consumedMemberTurns + input.decision.assignments.length;
+        const consumed = this.allocatedWork(run.id) + input.decision.assignments.length;
         if (consumed > run.maxMemberTurns) {
           this.sqlite.run(
             `UPDATE runs SET state = 'failed', completion_reason = 'budget-exhausted',
@@ -1916,6 +2071,9 @@ export class SqliteConversationStore implements ConversationStore {
         // cannot fabricate or borrow context.
         this.assertAssignmentsMapToTranscript(run, input.decision.assignments, input.requestMessageId);
         const distinctIds = new Set(input.decision.assignments.map((assignment) => assignment.id));
+        if (input.decision.assignments.some((assignment) => run.quarantinedBotIds?.includes(assignment.botId))) {
+          throw new ConversationError("router_unavailable_member", "Bot is quarantined for this Run");
+        }
         if (distinctIds.size !== input.decision.assignments.length
           || members.some((turn) => turn.assignmentId && distinctIds.has(turn.assignmentId))) {
           throw new ConversationError(
@@ -1935,7 +2093,7 @@ export class SqliteConversationStore implements ConversationStore {
                queue_item_id, batch, member_index, attempt, origin, state, trigger_message_ids_json, profile_snapshot_json,
                created_at, started_at, finished_at,
                effect, effect_provenance, assignment_id, task, expected_output, depends_on_json
-             ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 1, 'router', 'queued', ?, ?, ?, NULL, NULL, 'unknown', NULL, ?, ?, ?, ?)`,
+             ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, 1, ?, 'queued', ?, ?, ?, NULL, NULL, 'unknown', NULL, ?, ?, ?, ?)`,
             [
               memberTurnId,
               run.id,
@@ -1944,6 +2102,7 @@ export class SqliteConversationStore implements ConversationStore {
               assignment.botId,
               nextBatch,
               index,
+              run.quarantinedBotIds?.length ? "recovery" : "router",
               JSON.stringify(assignment.triggerMessageIds),
               // Router-selected members carry the snapshot derived at routing
               // time from the live Bot profile + this Topic's ExecutionTarget,
@@ -2186,6 +2345,8 @@ export class SqliteConversationStore implements ConversationStore {
         "DELETE FROM routing_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
         [conversationId, topicId],
       );
+      this.sqlite.run("DELETE FROM recovery_attempts WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
+        [conversationId, topicId]);
       this.sqlite.run(
         "DELETE FROM runs WHERE conversation_id = ? AND topic_id = ?",
         [conversationId, topicId],
@@ -2223,6 +2384,25 @@ export class SqliteConversationStore implements ConversationStore {
     }
     this.db.close();
     this.closed = true;
+  }
+
+  private ensurePublicHandoffSchema(): void {
+    const ensure = (table: string, name: string, sqlType: string): void => {
+      if (!this.sqlite.all<{ name: string }>(`PRAGMA table_info(${table})`).some((column) => column.name === name)) {
+        this.sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${sqlType}`);
+      }
+    };
+    ensure("messages", "handoff_json", "TEXT");
+    ensure("member_turns", "handoff_source_turn_id", "TEXT");
+    ensure("member_turns", "handoff_invocation_id", "TEXT");
+    ensure("runs", "quarantined_bot_ids_json", "TEXT NOT NULL DEFAULT '[]'");
+    ensure("runs", "budget_exhausted", "INTEGER NOT NULL DEFAULT 0");
+    this.sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_invocation ON member_turns
+      (handoff_source_turn_id, handoff_invocation_id) WHERE handoff_source_turn_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_envelope ON messages (json_extract(handoff_json, '$.memberTurnId')) WHERE handoff_json IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS recovery_attempts (
+        member_turn_id TEXT NOT NULL, run_id TEXT NOT NULL, source_turn_id TEXT NOT NULL,
+        generation INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(member_turn_id, source_turn_id));`);
   }
 
   private ensureDispatchAuthorityEpochColumn(): void {
@@ -2787,6 +2967,13 @@ export class SqliteConversationStore implements ConversationStore {
 
   private applyFailExecution(input: FailExecutionInput): ConversationRun {
     const run = this.requireRun(input.runId);
+    const attempt = this.requireMemberTurn(input.memberTurnId);
+    const recovered = this.sqlite.get("SELECT 1 FROM recovery_attempts WHERE member_turn_id = ?", [attempt.id]);
+    if ((input.sourceTurnId !== undefined && (input.sourceTurnId !== attempt.sourceTurnId
+      || this.sqlite.get("SELECT 1 FROM recovery_attempts WHERE member_turn_id = ? AND source_turn_id = ?", [attempt.id, input.sourceTurnId])))
+      || (recovered && attempt.startedAt && input.sourceTurnId === undefined)) {
+      throw new ConversationError("stale_source_turn", "failure evidence does not name the current physical attempt");
+    }
     if (run.state === "indeterminate") {
       const sealed = this.requireMemberTurn(input.memberTurnId);
       if (
@@ -2832,7 +3019,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.sqlite.run(
       `UPDATE member_turns SET state = ?, finished_at = ?, failure_reason = ?, blocked_reason = ? WHERE id = ?`,
       [state, input.now, state === "failed" ? (input.reason ?? "failed") : null,
-        run.mode === "automatic" ? input.blockedReason ?? null : null, input.memberTurnId],
+        member.origin !== "human-explicit" ? input.blockedReason ?? null : null, input.memberTurnId],
     );
     this.sqlite.run(
       `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
@@ -2885,6 +3072,11 @@ export class SqliteConversationStore implements ConversationStore {
       const current = new Set(run.failedBotIds);
       current.add(member.botId);
       this.sqlite.run(`UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`, [JSON.stringify([...current]), runId]);
+      if (run.conversationId !== createDirectConversationId(member.botId)) {
+        const quarantine = new Set(run.quarantinedBotIds ?? []);
+        quarantine.add(member.botId);
+        this.sqlite.run("UPDATE runs SET quarantined_bot_ids_json = ? WHERE id = ?", [JSON.stringify([...quarantine]), runId]);
+      }
     }
     const batchIndeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
     if (batchIndeterminate.length > 0) {
@@ -2923,6 +3115,12 @@ export class SqliteConversationStore implements ConversationStore {
       if (run.state === "queued") {
         this.sqlite.run(`UPDATE runs SET state = 'running', started_at = COALESCE(started_at, ?) WHERE id = ?`, [now, runId]);
       }
+      return this.requireRun(runId);
+    }
+    if (!isRunCancelling(run) && this.sqlite.get<{ budget_exhausted: number }>(
+      "SELECT budget_exhausted FROM runs WHERE id = ?", [runId])?.budget_exhausted === 1) {
+      this.sqlite.run(`UPDATE runs SET state = 'failed', completion_reason = 'budget-exhausted', finished_at = ?,
+        routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END WHERE id = ?`, [now, runId]);
       return this.requireRun(runId);
     }
     if (run.mode === "automatic" && !forceRunTerminal && !isRunCancelling(run)) {

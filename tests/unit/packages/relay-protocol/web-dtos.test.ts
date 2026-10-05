@@ -20,6 +20,22 @@ import {
   type WebServerEvent,
 } from "../../../../packages/relay-protocol/src/index";
 
+test("public handoff wire envelope is bounded, public, and rejects forged private metadata", () => {
+  const message = { id: "message", conversationId: "group", topicId: "topic", seq: 2, role: "system",
+    senderBotId: "sender", runId: "run", content: "public task", createdAt: "now",
+    handoff: { senderMemberTurnId: "sender-turn", to: "target", assignmentId: "assignment", memberTurnId: "target-turn",
+      task: "task", expectedOutput: "result" } };
+  const valid = (value: unknown) => validControlEvent({ type: "conversation-message", message: value });
+  expect(valid(message)).toBe(true);
+  for (const patch of [{ role: "bot" }, { senderBotId: undefined }, { runId: undefined },
+    { handoff: { ...message.handoff, task: "x".repeat(16_001) } },
+    { handoff: { ...message.handoff, expectedOutput: "x".repeat(8_001) } },
+    { handoff: { ...message.handoff, authorityEpoch: "human" } },
+    { handoff: { ...message.handoff, visibility: "private" } }, { handoff: [] }]) {
+    expect(valid({ ...message, ...patch })).toBe(false);
+  }
+});
+
 test("webEventEnvelope wraps an event and round-trips through encode/decode", () => {
   const event: WebServerEvent = {
     kind: "control-event",

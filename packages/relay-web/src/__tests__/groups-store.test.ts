@@ -2158,6 +2158,54 @@ describe("useGroupsStore", () => {
     expect(store.activeRun?.routingState).toBe("dispatching");
   });
 
+  it("PR9: Run quarantine survives thin and stale reconnects without disabling the global Bot", () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const run: ConversationRunDto = { id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "running",
+      routingState: "dispatching", profileRevision: 1, createdAt: "now", quarantinedBotIds: ["bot_a"] };
+    store.activeRun = run;
+    for (const quarantine of [undefined, [], ["bot_b"]]) {
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "conversation-run-changed", run: { ...run, quarantinedBotIds: quarantine },
+      } } as never);
+      expect(store.activeRun?.quarantinedBotIds).toContain("bot_a");
+    }
+    expect(store.activeRun?.quarantinedBotIds).toEqual(["bot_a", "bot_b"]);
+    expect(BOTS.every((bot) => bot.enabled)).toBe(true);
+  });
+
+  it("PR9: public handoff is visible once after replay and history reconnect", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const message: ConversationHistoryResponseDto["messages"][number] = {
+      id: "handoff_1", conversationId: "conversation_g", topicId: "topic_1", seq: 2,
+      role: "system", senderBotId: "bot_a", runId: "run_1", createdAt: "now",
+      content: "Public handoff: bot_a → bot_b\nRun: run_1\nTask: Review patch\nExpected output: Findings",
+      handoff: { senderMemberTurnId: "turn_a", to: "bot_b", assignmentId: "assignment_b",
+        memberTurnId: "turn_b", task: "Review patch", expectedOutput: "Findings" },
+    };
+    const event = { kind: "control-event", instanceId: "inst_1", event: { type: "conversation-message", message } } as never;
+    store.applyEvent(event); store.applyEvent(event);
+    mockRpc.mockImplementation(async (_instance: string, type: string) => {
+      if (type === "control.conversation.history") return historyWith([message]);
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_1" };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.loadHistory();
+    store.applyEvent(event);
+    expect(store.messages).toHaveLength(1);
+    expect(store.messages[0]?.handoff).toEqual(message.handoff);
+    const wrapper = mount(GroupTranscript, { props: { bots: BOTS }, global: { plugins: [i18n] } });
+    expect(wrapper.text()).toContain("Public handoff: bot_a → bot_b");
+    expect(wrapper.text()).toContain("Review patch"); expect(wrapper.text()).toContain("Findings");
+    wrapper.unmount();
+  });
+
   it("preserves the waiting question for a thin reconnect and clears it on settlement", () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";

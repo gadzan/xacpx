@@ -13,6 +13,8 @@ export interface ConversationTurnRunInput {
   memberTurnId: string;
   sessionAlias: string;
   logicalSessionId: string;
+  /** Private launch capability; never projected onto product events. */
+  groupExecutionToken?: string;
   text: string;
   /**
    * Server-derived execution provenance from the durable MemberTurn after claim.
@@ -83,6 +85,7 @@ interface TrackedExecution {
 }
 
 function cancelResultFromRun(result: ConversationTurnRunResult): ConversationTurnCancelResult {
+  if (result.unknown) return { outcome: "unknown" };
   if (result.status === "completed") {
     return { outcome: "completed", ...(result.text !== undefined ? { text: result.text } : {}) };
   }
@@ -144,6 +147,7 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
     const chatKey = directConversationChatKey(input.conversationId, input.topicId);
     const permission = input.executionOrigin === "human" ? input.permissionRoute : undefined;
     const provider = this.control.promptImmediate({
+      ...(input.groupExecutionToken ? { groupExecutionToken: input.groupExecutionToken } : {}),
       chatKey,
       sessionAlias: input.sessionAlias,
       text: input.text,
@@ -270,6 +274,7 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
   }
 
   private mapPromptResult(result: ControlPromptResult): ConversationTurnRunResult {
+    if (result.unknown) return { status: "cancelled", unknown: true, error: result.errorMessage };
     if (result.queued) {
       return { status: "failed", error: "turn_queued_unexpectedly", queueItemId: result.queueItemId };
     }

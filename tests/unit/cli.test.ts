@@ -1428,6 +1428,16 @@ test("mcp-stdio workspace-only identity resolution does not require MCP roots", 
   expect(registrations).toEqual([{ coordinatorSession: "external_claude-code:backend", workspace: "backend" }]);
 });
 
+test("Group MCP launch retains its private execution identity without registering an orchestration coordinator", async () => {
+  const token = "group-execution:physical-turn";
+  const resolver = createMcpStdioIdentityResolver({ parsedCoordinatorSession: token, sourceHandle: token,
+    config: { workspaces: {} }, state: { sessions: {} }, client: {
+      registerExternalCoordinator: async () => { throw new Error("Group execution must not register a controller"); },
+    } });
+  expect(await resolver({ clientName: "Codex", listRoots: async () => { throw new Error("must not infer roots"); } }))
+    .toEqual({ coordinatorSession: token, sourceHandle: token });
+});
+
 test("mcp-stdio identity resolution without workspace does not require MCP roots", async () => {
   const registrations: unknown[] = [];
   const resolver = createMcpStdioIdentityResolver({

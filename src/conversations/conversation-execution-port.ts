@@ -12,6 +12,7 @@ import type { PermissionInteractionOrigin } from "../permissions/permission-type
 export interface ConversationExecutionPromptInput {
   chatKey: string;
   sessionAlias: string;
+  groupExecutionToken?: string;
   text: string;
   accountId?: string;
   senderId: string;

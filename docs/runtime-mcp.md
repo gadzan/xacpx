@@ -8,3 +8,5 @@
 - **Convergence:** MCP descendants are children of the Runtime worker, so `worker-eof`/`terminateProcessTree` convergence (handle-bound, `creationDate` fenced) reaps them together on TTL/`freeWarm`/`shutdown`/host-crash. No bare-PID kill.
 
 See `src/bridge/engine/runtime/runtime-worker-main.ts` and `tests/unit/bridge/engine/runtime/runtime-engine-mcp.test.ts` for gates.
+
+PR9 Group executions use a private `group-execution:` capability as both launch identities. It derives from a live MemberTurn/sourceTurn/claim, passes only through the core-private Conversation execution port, and is revoked at execution settlement/shutdown. Identity changes rotate the existing worker/queue owner; old MCP processes cannot borrow the next turn's authority. This launch exposes only `group_send({to, task, expectedOutput?})`; the host supplies invocation identity separately. It does not register an external orchestration coordinator. The daemon rechecks runtime ownership, membership, Run state, quarantine and budget before commit. See [Conversation runtime](conversation-runtime.md#public-structured-handoff-pr9) for idempotency/recovery and the same-OS-user IPC trust boundary.

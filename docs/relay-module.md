@@ -2,6 +2,8 @@
 
 自托管多实例遥控枢纽。设计 spec：docs/superpowers/specs/2026-06-13-relay-hub-design.md。
 
+Group PR9：Conversation history/message event 透传公开 `handoff` envelope，Run DTO 增加可选 `quarantinedBotIds`。relay-protocol 验证 envelope 只用于携带 sender/Run 的公开 system message，字段和长度严格限定；Web 按 message ID 去重重放，并单调合并当前 Run quarantine，薄/旧快照不能解除隔离。无新增 Group admission、external binding 或 channel mapping；执行绑定 token 不出现在 wire DTO。契约见 [Conversation runtime](conversation-runtime.md#public-structured-handoff-pr9)。
+
 ## 服务端（@ganglion/xacpx-relay）
 
 - 运行时：Node >= 22.13（node:sqlite）或 Bun >= 1.2（bun:sqlite），SqlDriver 适配层自动选择。

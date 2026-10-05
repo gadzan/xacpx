@@ -125,6 +125,7 @@ export interface ConversationDetailDto extends ConversationSummaryDto {
 }
 
 export interface ConversationMessageDto {
+  handoff?: ConversationMessage["handoff"];
   id: string;
   conversationId: string;
   topicId: string;
@@ -140,6 +141,7 @@ export interface ConversationMessageDto {
 }
 
 export interface ConversationRunDto {
+  quarantinedBotIds?: string[];
   id: string;
   conversationId: string;
   topicId: string;
@@ -367,6 +369,7 @@ export function toConversationMessage(message: ConversationMessage): Conversatio
     seq: message.seq,
     role: message.role,
     content: message.content,
+    ...(message.handoff ? { handoff: { ...message.handoff } } : {}),
     createdAt: message.createdAt,
     ...(message.senderBotId ? { senderBotId: message.senderBotId } : {}),
     ...(message.replyTo ? { replyTo: message.replyTo } : {}),
@@ -397,6 +400,7 @@ export function toConversationRun(run: ConversationRun): ConversationRunDto {
     consumedMemberTurns: run.consumedMemberTurns,
     failedBotIds: [...run.failedBotIds],
     unavailableBotIds: [...run.unavailableBotIds],
+    ...(run.quarantinedBotIds ? { quarantinedBotIds: [...run.quarantinedBotIds] } : {}),
     createdAt: run.createdAt,
     ...(run.completionReason ? { completionReason: run.completionReason } : {}),
     ...(run.startedAt ? { startedAt: run.startedAt } : {}),
