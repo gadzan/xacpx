@@ -102,7 +102,74 @@ PR374 review identified three gaps, now covered by regressions:
   request fail before provider start; Router commit rejects the same reference
   before creating any MemberTurn or dispatch. Healthy sender evidence survives.
 
+## Full-review follow-up
+
+The user requested independent full reviews. Durable/recovery and
+runtime/lifecycle/Control/Relay/Web reviews completed; identity review confirmed
+the MCP-to-IPC binding chain. An active cross-process identity experiment was
+blocked by automatic safety review for possible cybersecurity risk before any
+script or token read. Identity conclusions below rely on source inspection and
+existing legal-interface tests, not an executed cross-process experiment.
+
+Four confirmed Medium findings were repaired:
+
+- `mapRun` decodes quarantine once with a strict parser. Malformed syntax,
+  scalar/object/null JSON, mixed element types and empty raw fields throw
+  `run_corrupt`. No quarantined member becomes eligible through a fallback.
+  Tests cover handoff without work/debit, Router before model decision,
+  execution-start rollback, and owner/lease recovery after reopen.
+- Handoff checks current membership and target Bot existence before entering
+  the permanent per-Bot lifecycle gate registry. Final gated checks remain
+  authoritative. A 256-distinct-invalid-target regression proves no gate entry
+  or budget debit, then confirms a valid target still commits. Stale membership
+  without a Bot also rejects before allocation; existing removal/deletion races
+  now occur after the unlocked precheck.
+- Normal settlement and sealed late-proof classification share durable budget
+  rejection handling. Unknown evidence remains `indeterminate`; proof removing
+  every unknown outcome cannot erase `budget-exhausted`. Live human cancel
+  retains the existing priority. No heuristic derives human authority from a
+  cancelled sibling, and no marker/schema changes were added. Fifteen tests
+  cover four proof entry points, completed/failed proof, reopen, consumption,
+  cancellation and pending-sibling unknown evidence.
+- Relay Web orders MemberTurn snapshots by `attempt` before same-attempt state
+  precedence. New attempts clear retired source/start/finish/failure evidence
+  while retaining assignment/task/dependencies; old attempts cannot overwrite
+  a new source or reset its live trace through started/finished events.
+  Thirteen regressions include thin legacy rows and reconnect discovery.
+
+New regression tests were run against the unfixed implementation: the first
+26 quarantine/lock tests, eight late-proof cases, and twelve Web cases failed.
+The fixes made those tests pass; two restart/claim and seven additional
+late-proof/cancel/unknown cases complete the new 56-case coverage.
+
+Identity is scoped explicitly. `buildXacpxMcpServerSpec` puts the execution
+capability in launch arguments. The IPC server passes no socket peer identity
+to `dispatch`; it validates the bearer-named execution, not its presenting
+process. The private metadata WeakMap protects the in-daemon hidden-session
+route only. PR8's `docs/external-mcp.md` already trusts **any process running
+as the daemon's OS user**, which includes same-user member subprocesses.
+The bound tool rejects model identity arguments and retired tokens; it does
+not protect mutually untrusted terminal-capable Bots that can obtain each
+other's live capabilities. This stronger isolation requirement remains a
+review decision, not a claimed security fix. Docs/comments no longer promise
+that an old process cannot obtain another live token.
+
+Ordinary output/tool/thought events have MemberTurn correlation without a
+per-attempt source field. Arbitrarily reordered cross-attempt stream frames
+would require a wider wire change. Production currently grants no enforced
+read-only proof to model-created assignments, so started retries are not
+enabled on that path; this is recorded as a residual seam, not a confirmed
+current production finding.
+
 ## Validation and residual limits
+
+- Latest full-review follow-up: **107** handoff/recovery tests plus **15** budget late-proof tests; **528** Conversation tests across 14 files, all passed.
+- Session handler, Control turn runner/queue, all MCP tests and wire DTO sweep: **246** passed across 13 files. Including the orchestration server gives **281 passed / 1 failed** across 14 files; its Windows-only `socket chmod failure is non-fatal and reported` failure matches the previously recorded clean-main baseline.
+- Final combined Conversation/Session/Control/MCP/wire DTO run after package builds: **774** passed across 27 files.
+- Latest Relay Web full suite: **1,949** passed across 147 files; Group store: **71** passed. Independent runtime/lifecycle/runner/API/filesystem review checks: **249** passed across 5 files.
+- Native Node SQLite follow-up passed malformed quarantine read/claim/reopen and completed/failed late proof with a persistent exhausted budget. Actual PR8 migration/rollback/audit checks also passed on the current source. Latest typecheck, all-package build, acpx import policy and diff checks passed; exact-HEAD CI is tracked in the PR/report.
+
+Earlier phase validation (before the full-review follow-up):
 
 - Handoff/recovery file: 79 passing tests; Conversation suite: 485 passing tests. Review remediation adds 18 cases.
 - Final Conversation + Session handler + abort + MCP server + wire DTO sweep: 600 passing tests across 17 files.

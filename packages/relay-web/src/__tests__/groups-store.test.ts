@@ -552,6 +552,111 @@ describe("useGroupsStore", () => {
     expect(kept?.promptRequestId).toBe("sturn_a");
   });
 
+  describe("PR9 recovery attempt reconciliation", () => {
+    function setup() {
+      const store = useGroupsStore();
+      store.instanceId = "inst_1";
+      store.selectedGroupId = store.activeConversationId = "conversation_g";
+      store.activeTopicId = "topic_1";
+      const run: ConversationRunDto = { id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" };
+      const member: MemberTurnSummaryDto = { id: "turn_a", runId: run.id, conversationId: run.conversationId,
+        topicId: run.topicId, botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "handoff", state: "running",
+        createdAt: "now", assignmentId: "assignment_a", task: "Review patch", expectedOutput: "Findings", dependsOn: [],
+        promptRequestId: "old_source", startedAt: "old_start" };
+      store.activeRun = run;
+      store.memberTurnsById = { [member.id]: member };
+      const load = async (incoming: MemberTurnSummaryDto) => {
+        mockRpc.mockImplementation(async (_instance: string, type: string) => {
+          if (type === "control.runs.list") return { runs: [run], activeRunId: run.id,
+            conversationId: run.conversationId, topicId: run.topicId };
+          if (type === "control.runs.get") return { run: { ...run, memberTurns: [incoming] } };
+          throw new Error(`unexpected ${type}`);
+        });
+        await store.retryDiscovery();
+        await flushPromises();
+      };
+      return { store, run, member, load };
+    }
+
+    for (const state of ["queued", "dispatched"] as const) {
+      it(`accepts a higher attempt ${state} detail without inheriting retired execution identity`, async () => {
+        const { store, member, load } = setup();
+        store.memberTurnsById[member.id] = { ...member, finishedAt: "old_finish",
+          failureReason: "old failure", blockedReason: "human-authority-unknown" };
+        const incoming: MemberTurnSummaryDto = { id: member.id, runId: member.runId, conversationId: member.conversationId,
+          topicId: member.topicId, botId: member.botId, batch: member.batch, attempt: 2, origin: "recovery", state, createdAt: "now" };
+        await load(incoming);
+        expect(store.memberTurnsById[member.id]).toMatchObject({ attempt: 2, origin: "recovery", state,
+          assignmentId: member.assignmentId, task: member.task, expectedOutput: member.expectedOutput, dependsOn: [] });
+        for (const field of ["promptRequestId", "startedAt", "finishedAt", "failureReason", "blockedReason"] as const) {
+          expect(store.memberTurnsById[member.id]?.[field]).toBeUndefined();
+        }
+      });
+    }
+
+    for (const state of ["queued", "dispatched", "running", "completed", "failed", "cancelled", "indeterminate"] as const) {
+      it(`rejects older attempt ${state} events without changing the current Run or live trace`, () => {
+        const { store, run, member } = setup();
+        const current: MemberTurnSummaryDto = { ...member, attempt: 2, origin: "recovery", promptRequestId: "new_source", startedAt: "new_start" };
+        store.memberTurnsById = { [member.id]: current };
+        const live = { parts: [{ type: "text" as const, text: "New attempt output" }],
+          status: "streaming" as const, startedAt: 123, revision: 1 };
+        store.liveTurnsByMember = { [member.id]: live };
+        const stale = { ...member, state, task: "stale task", failureReason: "stale failure", finishedAt: "stale_finish" };
+        for (const type of ["member-turn-started", "member-turn-finished"] as const) {
+          store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+            type, run: { ...run, state: "failed", failedBotIds: [member.botId] }, memberTurn: stale,
+          } } as never);
+          expect(store.memberTurnsById[member.id]).toEqual(current);
+          expect(store.activeRun).toEqual(run);
+          expect(store.liveTurnsByMember[member.id]).toEqual(live);
+        }
+      });
+    }
+
+    it("rejects an older same-state detail after the new attempt has started", async () => {
+      const { store, member, load } = setup();
+      const current = { ...member, attempt: 2, origin: "recovery" as const, promptRequestId: "new_source", startedAt: "new_start" };
+      store.memberTurnsById = { [member.id]: current };
+      await load({ ...member, task: "stale task" });
+      expect(store.memberTurnsById[member.id]).toEqual(current);
+    });
+
+    it("keeps state and evidence monotonic within the same recovery attempt", async () => {
+      const { store, member, load } = setup();
+      const current = { ...member, attempt: 2, origin: "recovery" as const, state: "failed" as const,
+        promptRequestId: "new_source", startedAt: "new_start", failureReason: "new failure", finishedAt: "new_finish" };
+      store.memberTurnsById = { [member.id]: current };
+      await load({ ...member, attempt: 2, origin: "recovery", state: "queued" });
+      expect(store.memberTurnsById[member.id]).toEqual(current);
+    });
+
+    it("keeps legacy thin details compatible without erasing a known attempt", async () => {
+      const { store, member, load } = setup();
+      const current = { ...member, attempt: 2, origin: "recovery" as const, promptRequestId: "new_source", startedAt: "new_start" };
+      store.memberTurnsById = { [member.id]: current };
+      const thin = { ...current } as Partial<MemberTurnSummaryDto>;
+      delete thin.attempt;
+      delete thin.promptRequestId;
+      delete thin.startedAt;
+      await load(thin as MemberTurnSummaryDto);
+      expect(store.memberTurnsById[member.id]).toEqual(current);
+    });
+
+    it("recognizes a new attempt when the cached legacy row omitted attempt", async () => {
+      const { store, member, load } = setup();
+      const legacy = { ...member } as Partial<MemberTurnSummaryDto>;
+      delete legacy.attempt;
+      store.memberTurnsById = { [member.id]: legacy as MemberTurnSummaryDto };
+      const incoming = { ...member, attempt: 2, origin: "recovery" as const, state: "queued" as const };
+      delete incoming.promptRequestId;
+      delete incoming.startedAt;
+      await load(incoming);
+      expect(store.memberTurnsById[member.id]).toEqual(incoming);
+    });
+  });
+
   it("preserves assignment and failure evidence from a same-state thin member snapshot", () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";

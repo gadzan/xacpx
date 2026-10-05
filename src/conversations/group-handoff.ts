@@ -41,7 +41,8 @@ export interface GroupSendInvocation {
 type ExecutionBinding = Omit<AcceptPublicHandoffInput, "args" | "profileSnapshot" | "now" | "invocationId">;
 
 /** Each capability names ONE physical execution, not a reusable session alias.
- * Old processes/tools cannot acquire a later execution's identity. */
+ * A retired token cannot authorize a later execution. IPC trusts the OS user;
+ * this bearer capability does not authenticate the presenting process. */
 export class GroupHandoffService {
   private readonly executions = new Map<string, ExecutionBinding>();
   private closed = false;
@@ -87,9 +88,18 @@ export class GroupHandoffService {
     // even if cancellation/membership changed after the original commit.
     const prior = this.options.store.getPublicHandoff(binding.sourceTurnId, input.invocationId, args);
     if (prior) return prior;
-    await this.options.beforeCommitGates?.();
     const sender = this.options.store.getMemberTurn(binding.senderMemberTurnId);
     if (!sender) throw new ConversationError("group_execution_unknown", "sender execution disappeared");
+    // Reject arbitrary target IDs before the permanent per-Bot gate registry
+    // sees them. These unlocked reads are only an allocation guard; the
+    // authoritative membership/existence checks still run inside the gates.
+    const candidateGroup = this.options.state.conversations[sender.conversationId];
+    if (!candidateGroup || candidateGroup.kind !== "group"
+      || !candidateGroup.botIds.includes(sender.botId) || !candidateGroup.botIds.includes(args.to)) {
+      throw new ConversationError("handoff_not_member", "sender and target must be current Group members");
+    }
+    this.options.bots.getBot(args.to);
+    await this.options.beforeCommitGates?.();
     const receipt = await this.options.bots.runLifecycleAll([sender.botId, args.to], async () => {
       if (this.closed || this.executions.get(input.executionToken) !== binding) {
         throw new ConversationError("group_execution_unknown", "sender execution ended");

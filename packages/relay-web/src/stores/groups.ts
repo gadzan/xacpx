@@ -289,9 +289,29 @@ function shouldUpdateMemberTurnState(
   return MEMBER_TURN_STATE_PRECEDENCE[incoming] >= MEMBER_TURN_STATE_PRECEDENCE[current];
 }
 
+/** Recovery reuses a MemberTurn ID. Attempt order precedes state order; an
+ * older connector's omitted attempt is a thin snapshot of the known attempt. */
+function memberAttemptOrder(current: MemberTurnSummaryDto, incoming: MemberTurnSummaryDto): number {
+  return (incoming.attempt ?? current.attempt ?? 1) - (current.attempt ?? 1);
+}
+
 function mergeMemberTurn(current: MemberTurnSummaryDto | null, incoming: MemberTurnSummaryDto): MemberTurnSummaryDto {
   if (!current || current.id !== incoming.id) {
     return incoming;
+  }
+  const attemptOrder = memberAttemptOrder(current, incoming);
+  if (attemptOrder < 0) return current;
+  if (attemptOrder > 0) {
+    // A new attempt may return to queued/dispatched. Execution evidence belongs
+    // to that attempt only; preserve the durable assignment, never an old
+    // source identity, start/finish timestamp or terminal failure evidence.
+    const merged: MemberTurnSummaryDto = { ...incoming };
+    if (merged.memberIndex === undefined) merged.memberIndex = current.memberIndex;
+    if (merged.assignmentId === undefined) merged.assignmentId = current.assignmentId;
+    if (merged.task === undefined) merged.task = current.task;
+    if (merged.expectedOutput === undefined) merged.expectedOutput = current.expectedOutput;
+    if (merged.dependsOn === undefined) merged.dependsOn = current.dependsOn;
+    return merged;
   }
   if (!shouldUpdateMemberTurnState(current.state, incoming.state)) {
     // The stored row is newer than the incoming one (typically a terminal row
@@ -316,6 +336,7 @@ function mergeMemberTurn(current: MemberTurnSummaryDto | null, incoming: MemberT
     return merged;
   }
   const merged: MemberTurnSummaryDto = { ...incoming };
+  if (merged.attempt === undefined) merged.attempt = current.attempt;
   if (merged.memberIndex === undefined) merged.memberIndex = current.memberIndex;
   if (merged.startedAt === undefined) merged.startedAt = current.startedAt;
   if (merged.finishedAt === undefined) merged.finishedAt = current.finishedAt;
@@ -2559,6 +2580,8 @@ export const useGroupsStore = defineStore("groups", () => {
     }
     if (e.type === "member-turn-started") {
       const { run, memberTurn } = e;
+      const priorMember = memberTurnsById.value[memberTurn.id];
+      if (priorMember && memberAttemptOrder(priorMember, memberTurn) < 0) return;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
         if (
           (activeRun.value && activeRun.value.id === run.id) ||
@@ -2612,6 +2635,8 @@ export const useGroupsStore = defineStore("groups", () => {
 
     if (e.type === "member-turn-finished") {
       const { run, memberTurn } = e;
+      const priorMember = memberTurnsById.value[memberTurn.id];
+      if (priorMember && memberAttemptOrder(priorMember, memberTurn) < 0) return;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
         if (activeRun.value && activeRun.value.id !== run.id) {
           return;

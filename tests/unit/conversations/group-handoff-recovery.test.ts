@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { BotService } from "../../../src/bots/bot-service";
 import { BotRuntimeManager } from "../../../src/bots/bot-runtime-manager";
 import { snapshotGroupMemberProfile } from "../../../src/bots/bot-types";
@@ -222,6 +222,103 @@ test("public handoff cannot bypass Run quarantine or change global Bot enabled s
     expect(h.bots.getBot(B).enabled).toBe(true); expect(h.store.listMemberTurns(input.runId)).toHaveLength(1);
   }); h.store.close();
 });
+
+for (const corrupt of ["{", "null", "{}", "true", '"bot_b"', '["bot_b",17]', "", " "]) {
+  test(`corrupt quarantine rejects handoff without work or budget debit: ${JSON.stringify(corrupt)}`, async () => {
+    const { h } = await scenario(async (input, h) => {
+      const before = h.store.getRun(input.runId)!;
+      h.store.directWriteForTest("runs", input.runId, { quarantined_bot_ids_json: corrupt });
+      try { await expect(h.send(input)).rejects.toMatchObject({ code: "run_corrupt" }); }
+      finally { h.store.directWriteForTest("runs", input.runId, { quarantined_bot_ids_json: JSON.stringify([B]) }); }
+      expect(h.store.listMemberTurns(input.runId)).toHaveLength(1);
+      expect(h.store.getRun(input.runId)?.consumedMemberTurns).toBe(before.consumedMemberTurns);
+      expect(h.bots.getBot(B).enabled).toBe(true);
+      expect(h.store.listMessages({ conversationId: h.group.id, topicId: h.topic.id, limit: 100 }).filter((m) => m.handoff)).toHaveLength(0);
+    }); h.store.close();
+  });
+
+  test(`corrupt quarantine blocks Router before a model decision: ${JSON.stringify(corrupt)}`, async () => {
+    let decisions = 0;
+    const h = await harness({ router: { capabilityRestriction: RESTRICTED, async decide() {
+      decisions++; return { type: "dispatch", mode: "single", assignments: [{ id: "B", botId: B, task: "unsafe", triggerMessageIds: [] }] };
+    } } });
+    try {
+      const accepted = h.store.acceptRequest({ conversationId: h.group.id, topicId: h.topic.id,
+        requestId: "automatic", botId: A, content: "request", mode: "automatic", members: [], now: NOW,
+        profileSnapshot: snapshotGroupMemberProfile(h.bots.getBot(A), h.topic.executionTarget!, NOW) });
+      h.store.directWriteForTest("runs", accepted.run.id, { quarantined_bot_ids_json: corrupt });
+      await expect(h.engine!.route(accepted.run.id)).rejects.toMatchObject({ code: "run_corrupt" });
+      expect(decisions).toBe(0); expect(h.calls).toHaveLength(0);
+      expect(h.store.listMemberTurns(accepted.run.id)).toHaveLength(0);
+    } finally { h.store.close(); }
+  });
+
+  test(`corrupt quarantine blocks the durable execution-start fence: ${JSON.stringify(corrupt)}`, async () => {
+    const h = await harness();
+    try {
+      const accepted = await h.accept();
+      const claim = h.store.claimNextDispatch({ owner: "test", authorityEpoch: "human-epoch", now: NOW, leaseExpiresAt: LEASE })!;
+      h.store.directWriteForTest("runs", accepted.run.id, { quarantined_bot_ids_json: corrupt });
+      expect(() => h.store.markExecutionStarted({ dispatchId: claim.dispatch.id, owner: "test", generation: claim.dispatch.generation,
+        runId: accepted.run.id, memberTurnId: accepted.memberTurn!.id, sessionAlias: "must-not-start",
+        logicalSessionId: "logical", sourceTurnId: "source", now: NOW })).toThrow("malformed quarantine");
+      expect(h.store.getMemberTurn(accepted.memberTurn!.id)?.startedAt).toBeUndefined();
+      expect(h.store.getMemberTurn(accepted.memberTurn!.id)?.sourceTurnId).toBeUndefined();
+      expect(h.calls).toHaveLength(0);
+    } finally { h.store.close(); }
+  });
+}
+
+test("distinct nonmember targets never enter lifecycle gates or spend Run budget", async () => {
+  const { h } = await scenario(async (input, h) => {
+    const gate = spyOn(h.bots, "runLifecycleAll");
+    try {
+      const before = h.store.getRun(input.runId)!;
+      for (let i = 0; i < 256; i++) {
+        await expect(h.send(input, `invalid-${i}`, { to: `bot_nonmember_${i}`, task: "task" }))
+          .rejects.toMatchObject({ code: "handoff_not_member" });
+      }
+      expect(gate).not.toHaveBeenCalled();
+      expect(h.store.listMemberTurns(input.runId)).toHaveLength(1);
+      expect(h.store.getRun(input.runId)?.consumedMemberTurns).toBe(before.consumedMemberTurns);
+      await h.send(input, "valid-target");
+      expect(gate).toHaveBeenCalledTimes(1);
+      expect(gate.mock.calls[0]?.[0]).toEqual([A, B]);
+    } finally { gate.mockRestore(); }
+  }); h.store.close();
+});
+
+test("a missing target Bot cannot allocate a lifecycle gate through stale membership", async () => {
+  const { h } = await scenario(async (input, h) => {
+    const gate = spyOn(h.bots, "runLifecycleAll"), target = h.state.bots[B]!;
+    delete h.state.bots[B];
+    try {
+      await expect(h.send(input)).rejects.toMatchObject({ code: "bot_not_found" });
+      expect(gate).not.toHaveBeenCalled(); expect(h.store.listMemberTurns(input.runId)).toHaveLength(1);
+    } finally { h.state.bots[B] = target; gate.mockRestore(); }
+  }); h.store.close();
+});
+
+for (const recovery of ["owner", "lease"] as const) {
+  test(`corrupt quarantine survives restart and blocks ${recovery} claim recovery`, async () => {
+    const h = await harness();
+    const accepted = await h.accept();
+    const claim = h.store.claimNextDispatch({ owner: "old-owner", authorityEpoch: "human-epoch", now: NOW, leaseExpiresAt: LEASE })!;
+    h.store.directWriteForTest("runs", accepted.run.id, { quarantined_bot_ids_json: "[" });
+    h.store.close();
+    const reopened = await SqliteConversationStore.open(h.path);
+    try {
+      expect(() => reopened.getRun(accepted.run.id)).toThrow("malformed quarantine");
+      expect(() => recovery === "owner" ? reopened.convergePreviousOwnerClaims("new-owner", EXPIRED)
+        : reopened.recoverExpiredClaims(EXPIRED)).toThrow("malformed quarantine");
+      expect(reopened.getDispatchForMemberTurn(accepted.memberTurn!.id)).toMatchObject({
+        state: claim.dispatch.state, generation: claim.dispatch.generation, owner: claim.dispatch.owner,
+      });
+      expect(reopened.getMemberTurn(accepted.memberTurn!.id)?.startedAt).toBeUndefined();
+      expect(h.calls).toHaveLength(0);
+    } finally { reopened.close(); }
+  });
+}
 
 for (const status of ["completed", "failed"] as const) {
 test(`explicit unknown evidence dominates a contradictory ${status} runner label`, async () => {

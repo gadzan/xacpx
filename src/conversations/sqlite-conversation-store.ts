@@ -425,6 +425,7 @@ function mapMessage(row: MessageRow): ConversationMessage {
 
 function mapRun(row: RunRow): ConversationRun {
   const mode = row.mode === "automatic" ? "automatic" : "explicit";
+  const quarantinedBotIds = parseQuarantinedBotIds(row.quarantined_bot_ids_json);
   return {
     id: row.id,
     conversationId: row.conversation_id,
@@ -452,8 +453,7 @@ function mapRun(row: RunRow): ConversationRun {
     consumedMemberTurns: Number(row.consumed_member_turns),
     failedBotIds: parseBotIds(row.failed_bot_ids_json),
     unavailableBotIds: parseBotIds(row.unavailable_bot_ids_json),
-    ...(row.quarantined_bot_ids_json && parseBotIds(row.quarantined_bot_ids_json).length > 0
-      ? { quarantinedBotIds: parseBotIds(row.quarantined_bot_ids_json) } : {}),
+    ...(quarantinedBotIds.length > 0 ? { quarantinedBotIds } : {}),
     profileRevision: Number(row.profile_revision),
     profileSnapshot: parseSnapshot(row.profile_snapshot_json),
     createdAt: row.created_at,
@@ -472,6 +472,24 @@ function parseBotIds(json: string | null | undefined): string[] {
   } catch {
     return [];
   }
+}
+
+function parseQuarantinedBotIds(json: string | null | undefined): string[] {
+  // Migration supplies NOT NULL '[]' before Run reads. Quarantine is a
+  // scheduling fence: corruption must never restore a Bot's eligibility.
+  let parsed: unknown;
+  if (typeof json !== "string") {
+    throw new ConversationError("run_corrupt", "Run has malformed quarantine state");
+  }
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw new ConversationError("run_corrupt", "Run has malformed quarantine state");
+  }
+  if (!Array.isArray(parsed) || !parsed.every((entry) => typeof entry === "string")) {
+    throw new ConversationError("run_corrupt", "Run has malformed quarantine state");
+  }
+  return parsed;
 }
 
 function parseDependsOn(json: string | null | undefined): string[] {
@@ -3133,12 +3151,8 @@ export class SqliteConversationStore implements ConversationStore {
       }
       return this.requireRun(runId);
     }
-    if (!isRunCancelling(run) && this.sqlite.get<{ budget_exhausted: number }>(
-      "SELECT budget_exhausted FROM runs WHERE id = ?", [runId])?.budget_exhausted === 1) {
-      this.sqlite.run(`UPDATE runs SET state = 'failed', completion_reason = 'budget-exhausted', finished_at = ?,
-        routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END WHERE id = ?`, [now, runId]);
-      return this.requireRun(runId);
-    }
+    const exhausted = this.settleExhaustedBudget(run, now);
+    if (exhausted) return exhausted;
     if (run.mode === "automatic" && !forceRunTerminal && !isRunCancelling(run)) {
       // Batch settled but the Run is not done: PR8 Router decides the next
       // step from durable MemberTurns. (Indeterminate already sealed above,
@@ -3150,6 +3164,14 @@ export class SqliteConversationStore implements ConversationStore {
       return this.requireRun(runId);
     }
     return this.classifySettledBatch(runId, batchMembers, now, memberReason);
+  }
+
+  private settleExhaustedBudget(run: ConversationRun, now: string): ConversationRun | undefined {
+    if (isRunCancelling(run) || this.sqlite.get<{ budget_exhausted: number }>(
+      "SELECT budget_exhausted FROM runs WHERE id = ?", [run.id])?.budget_exhausted !== 1) return undefined;
+    this.sqlite.run(`UPDATE runs SET state = 'failed', completion_reason = 'budget-exhausted', finished_at = ?,
+      routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END WHERE id = ?`, [now, run.id]);
+    return this.requireRun(run.id);
   }
 
   /**
@@ -3181,6 +3203,10 @@ export class SqliteConversationStore implements ConversationStore {
       );
       return this.requireRun(runId);
     }
+    // Late proof can remove an indeterminate seal, but cannot erase the
+    // durable budget rejection that normal batch settlement also observes.
+    const exhausted = this.settleExhaustedBudget(this.requireRun(runId), now);
+    if (exhausted) return exhausted;
     const failed = batchMembers.filter((turn) => turn.state === "failed");
     if (failed.length > 0) {
       const reason = batchMembers.length === 1 ? (memberReason ?? "execution-failed") : "execution-failed";
