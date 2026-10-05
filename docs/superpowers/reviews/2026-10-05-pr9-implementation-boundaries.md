@@ -234,8 +234,34 @@ local abort. They verify failed/quarantine versus cancelled/no-quarantine,
 terminal dispatches, the healthy sender result, and SQLite reopen. Existing
 permission, generic transport-error and undefined-rejection cases still pass.
 
+## Shutdown ordering follow-up (2026-10-06)
+
+Review of exact HEAD `e4bbfe9bcb528dc07418358322ea740af2211835` identified
+one Medium: shutdown revoked Group handoff capabilities before awaiting entered
+operation leases. A `group_send` waiting on a real Bot lifecycle mutex could
+then fail `group_execution_unknown` solely because shutdown cleared its token.
+The same premature close could fail capability binding after durable start,
+manufacturing a `started_result_unknown` seal without a provider outcome.
+
+Shutdown now marks the runtime stopping, awaits entered leases, closes Bot
+mutations and drains the Run service/dispatcher, then closes the handoff
+service in `finally`. New public operations still fail at entry. Entered
+handoffs retain their capability through commit, and already-started executions
+retain the ability to bind and finish. A failed drain still revokes handoff
+capabilities while propagating its original failure.
+
+Three regression cases cover this contract. Two fail on the reviewed HEAD:
+an entered leased send waits on the actual Bot lifecycle gate and commits before
+shutdown returns; and shutdown begins from the production member-started
+projection between durable start and capability binding, without a fault hook.
+Both preserve durable evidence after reopen. The first also proves the committed
+target stays pending rather than starting during shutdown. The third verifies
+capability revocation, closed admission and shared shutdown failure after an
+injected Run-drain failure.
+
 ## Validation and residual limits
 
+- Shutdown ordering follow-up: **800** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including the three new shutdown cases. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
 - Runtime terminal-evidence follow-up: **797** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including both new red-to-green real ConsoleAgent transport cases. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
 - Second full review: **795** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including **549** Conversation tests across 17 files. The four handoff/budget/retired/full-queue files have **137** passing cases; six additional quarantine-start cases pass.
 - Relay Web: **1,957** passed across 147 files, including **79** Group store/trace cases. The independent execution/lifecycle/runner/filesystem/Control sweep has **291** passes across six files.

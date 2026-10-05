@@ -223,11 +223,16 @@ export async function createConversationRuntime(
             return;
           }
           lifecycle = "stopping";
-          handoffs.close();
-          await waitIdle();
-          bots.close();
-          await runs.shutdown();
-          lifecycle = "closed";
+          try {
+            await waitIdle();
+            bots.close();
+            await runs.shutdown();
+          } finally {
+            // Entered operations and already-started executions retain their
+            // capabilities until their drain; failed shutdown still revokes.
+            handoffs.close();
+            lifecycle = "closed";
+          }
         })();
       }
       return shutdownWork;

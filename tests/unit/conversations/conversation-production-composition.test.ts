@@ -1,7 +1,7 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 
 import type { AppConfig } from "../../../src/config/types";
 import { ControlService, conversationKernel } from "../../../src/control/control-service";
@@ -591,6 +591,152 @@ test("shutdown waits for in-flight createTopic persist and shares one promise", 
   await new Promise((resolve) => setTimeout(resolve, 20));
   expect(store.saved.length).toBe(writesAtShutdown);
   await expect(control.createTopic(conversationId, "later")).rejects.toMatchObject({ code: "runtime_closed" });
+});
+
+function shutdownBarrier() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+test("shutdown lets an entered group_send commit through a real Bot lifecycle gate", async () => {
+  const providerEntered = shutdownBarrier(), finishProvider = shutdownBarrier();
+  const gateEntered = shutdownBarrier(), releaseGate = shutdownBarrier();
+  let executionToken = "", starts = 0;
+  const current = await compose(new BarrierStateStore(), { agent: { async chat(request) {
+    starts++;
+    executionToken = request.metadata!.groupExecutionToken!;
+    providerEntered.resolve();
+    await finishProvider.promise;
+    return { text: "healthy sender during shutdown" };
+  } } });
+  let drain: Promise<void> | undefined, gate: Promise<void> | undefined;
+  let operation: ReturnType<typeof current.runtime.handoffs.send> | undefined;
+  let shutdown: Promise<void> | undefined;
+  const gates = spyOn(current.runtime.bots, "runLifecycleAll");
+  try {
+    const sender = await current.control.createBot({ name: "Sender", agent: "codex", workspace: "backend" });
+    const target = await current.control.createBot({ name: "Target", agent: "codex", workspace: "backend" });
+    const group = await current.control.createGroup({ title: "Shutdown lease", botIds: [sender.id, target.id] });
+    const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
+    const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
+      requestId: "shutdown-handoff", text: "work", target: { botId: sender.id } });
+    drain = current.runtime.dispatcher.kick();
+    await providerEntered.promise;
+    gate = current.runtime.bots.runLifecycle(target.id, async () => {
+      gateEntered.resolve();
+      await releaseGate.promise;
+    });
+    await gateEntered.promise;
+    gates.mockClear();
+    operation = current.runtime.withOperation(() => current.runtime.handoffs.send({ executionToken,
+      invocationId: "entered-before-stop", args: { to: target.id, task: "durable handoff at shutdown" } }));
+    // Observe the original method; its real mutex remains held, without a
+    // beforeCommit fault hook or a replacement lifecycle-gate implementation.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(gates.mock.calls.some(([ids]) => ids.includes(sender.id) && ids.includes(target.id))).toBe(true);
+    let shutdownDone = false;
+    shutdown = current.runtime.shutdown();
+    void shutdown.then(() => { shutdownDone = true; });
+    expect(current.runtime.shutdown()).toBe(shutdown);
+    await expect(current.runtime.withOperation(async () => {
+      throw new Error("a new operation entered during stopping");
+    })).rejects.toMatchObject({ code: "runtime_closed" });
+    expect(shutdownDone).toBe(false);
+    releaseGate.resolve();
+    const receipt = await operation;
+    expect(receipt.reused).toBe(false);
+    expect(receipt.memberTurn).toMatchObject({ runId: accepted.run.id, botId: target.id, origin: "handoff", state: "queued" });
+    expect(current.runtime.store.getMessage(receipt.message.id)?.handoff?.memberTurnId).toBe(receipt.memberTurn.id);
+    expect(shutdownDone).toBe(false);
+    finishProvider.resolve();
+    await drain;
+    await shutdown;
+    expect(shutdownDone).toBe(true);
+    expect(starts).toBe(1);
+    const reopened = await SqliteConversationStore.open(current.sqlitePath);
+    try {
+      const members = reopened.listMemberTurns(accepted.run.id);
+      expect(members.map((member) => member.state)).toEqual(["completed", "queued"]);
+      expect(reopened.getMemberResult(members[0]!)?.content).toBe("healthy sender during shutdown");
+      expect(reopened.getDispatchForMemberTurn(receipt.memberTurn.id)?.state).toBe("pending");
+      expect(reopened.listMessages({ conversationId: group.id, topicId: topic.id, limit: 100 })
+        .filter((message) => message.handoff)).toHaveLength(1);
+    } finally { reopened.close(); }
+    await expect(current.runtime.handoffs.send({ executionToken, invocationId: "after-stop",
+      args: { to: target.id, task: "late" } })).rejects.toMatchObject({ code: "runtime_closed" });
+  } finally {
+    releaseGate.resolve(); finishProvider.resolve();
+    await Promise.allSettled([operation, gate, drain].filter((work) => work !== undefined));
+    await (shutdown ?? current.runtime.shutdown());
+    gates.mockRestore();
+  }
+});
+
+test("shutdown between durable execution-start and capability bind does not manufacture unknown outcome", async () => {
+  const providerEntered = shutdownBarrier(), finishProvider = shutdownBarrier();
+  let starts = 0, executionToken = "";
+  const current = await compose(new BarrierStateStore(), { agent: { async chat(request) {
+    starts++;
+    executionToken = request.metadata!.groupExecutionToken!;
+    providerEntered.resolve();
+    await finishProvider.promise;
+    return { text: "started execution drained normally" };
+  } } });
+  let shutdown: Promise<void> | undefined, drain: Promise<void> | undefined;
+  const unsubscribe = current.events.subscribe((event) => {
+    // This synchronous production projection is after the durable start and
+    // before bindExecution, so stop is deterministic without a fault hook.
+    if (event.type === "member-turn-started") shutdown = current.runtime.shutdown();
+  });
+  try {
+    const sender = await current.control.createBot({ name: "Sender", agent: "codex", workspace: "backend" });
+    const target = await current.control.createBot({ name: "Target", agent: "codex", workspace: "backend" });
+    const group = await current.control.createGroup({ title: "Start-bind shutdown", botIds: [sender.id, target.id] });
+    const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
+    const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
+      requestId: "shutdown-start-bind", text: "work", target: { botId: sender.id } });
+    drain = current.runtime.dispatcher.kick();
+    expect(await Promise.race([providerEntered.promise.then(() => "provider"), drain.then(() => "drained")])).toBe("provider");
+    expect(shutdown).toBeDefined();
+    expect(current.runtime.handoffs.memberContext(executionToken)).toContain(sender.id);
+    finishProvider.resolve();
+    await drain;
+    await shutdown;
+    expect(starts).toBe(1);
+    const reopened = await SqliteConversationStore.open(current.sqlitePath);
+    try {
+      expect(reopened.getRun(accepted.run.id)).toMatchObject({ state: "completed", consumedMemberTurns: 1 });
+      const member = reopened.listMemberTurns(accepted.run.id)[0]!;
+      expect(member).toMatchObject({ state: "completed" });
+      expect(member.failureReason).toBeUndefined();
+      expect(reopened.getMemberResult(member)?.content).toBe("started execution drained normally");
+    } finally { reopened.close(); }
+    expect(() => current.runtime.handoffs.bindExecution({ senderMemberTurnId: "retired", sourceTurnId: "retired",
+      dispatchId: "retired", owner: "retired", generation: 1 })).toThrow(expect.objectContaining({ code: "runtime_closed" }));
+  } finally {
+    finishProvider.resolve();
+    await drain;
+    await (shutdown ?? current.runtime.shutdown());
+    unsubscribe();
+  }
+});
+
+test("shutdown revokes handoff capabilities even when the Run drain fails", async () => {
+  const { runtime } = await compose(new BarrierStateStore());
+  const failure = new Error("injected Run shutdown failure");
+  const shutdownRuns = spyOn(runtime.runs, "shutdown").mockRejectedValue(failure);
+  try {
+    const shutdown = runtime.shutdown();
+    await expect(shutdown).rejects.toBe(failure);
+    expect(runtime.shutdown()).toBe(shutdown);
+    expect(() => runtime.handoffs.bindExecution({ senderMemberTurnId: "retired", sourceTurnId: "retired",
+      dispatchId: "retired", owner: "retired", generation: 1 })).toThrow(expect.objectContaining({ code: "runtime_closed" }));
+    await expect(runtime.withOperation(async () => "late")).rejects.toMatchObject({ code: "runtime_closed" });
+  } finally {
+    shutdownRuns.mockRestore();
+    await runtime.runs.shutdown();
+  }
 });
 
 test("production composition wires a capability-proven Router and refuses an unprovable one", async () => {
