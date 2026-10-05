@@ -1,5 +1,5 @@
 import { expect, test, beforeEach } from "bun:test";
-import { handleCancel, handlePrompt, handlePromptWithSession, handleReplyModeShow, handleSessionAttach, handleSessionRemove, handleSessionUse, handleSessions } from "../../../../src/commands/handlers/session-handler";
+import { handleCancel, handlePrompt, handlePromptWithSession, handleReplyModeShow, handleSessionAttach, handleSessionRemove, handleSessionReset, handleSessionUse, handleSessions } from "../../../../src/commands/handlers/session-handler";
 import { setLocale, t } from "../../../../src/i18n";
 import { AcpxQueueOverflowError } from "../../../../src/transport/acpx-queue-overflow";
 import { renderTransportError, tryRecoverMissingSession, queueOverflowTipText } from "../../../../src/commands/handlers/session-recovery-handler";
@@ -1107,7 +1107,7 @@ test("handlePrompt still prompts a product-owned session on a Direct Bot isolati
     undefined,
     undefined,
     undefined,
-    undefined,
+    { boundSessionAlias: "brt_owned" } as never,
     undefined,
     undefined,
     undefined,
@@ -1115,6 +1115,30 @@ test("handlePrompt still prompts a product-owned session on a Direct Bot isolati
   );
   expect(prompted).toEqual(["brt_owned"]);
   expect(res.text).toBe("assistant-reply");
+});
+
+test("handlePrompt rejects trusted Conversation execution without an exact bound session", async () => {
+  const prompted: string[] = [];
+  const { context } = makeHiddenOwnedPromptContext(prompted);
+  await expect(handlePrompt(
+    context,
+    "bot:conversation_1:topic_1",
+    "hello",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    trustedConversation,
+  )).rejects.toThrow("trusted Conversation execution missing bound session target");
+  expect(prompted).toEqual([]);
 });
 
 test("handlePrompt uses the bound Conversation session even when current_session was overwritten", async () => {
@@ -1151,6 +1175,37 @@ test("handlePrompt uses the bound Conversation session even when current_session
 
   expect(prompted).toEqual(["brt_owned"]);
   expect(res.text).toBe("assistant-reply");
+});
+
+
+test("trusted Conversation /clear checks the bound hidden session, not an overwritten current_session", async () => {
+  let resets = 0;
+  const prompted: string[] = [];
+  const { session, context } = makeHiddenOwnedPromptContext(prompted);
+  const ordinary = {
+    alias: "relay:ordinary",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "ordinary-session",
+    archived: false,
+    replyMode: "final" as const,
+  } as unknown as ResolvedSession;
+  (context.sessions as any).getCurrentSession = async () => ordinary;
+  (context.sessions as any).getResolvedSessionByInternalAlias = (alias: string) =>
+    alias === "brt_owned" ? session : ordinary;
+  (context.lifecycle as any).resetCurrentSession = async () => {
+    resets += 1;
+    return { text: "reset" };
+  };
+
+  const res = await handleSessionReset(
+    context,
+    "bot:conversation_1:topic_1",
+    "brt_owned",
+  );
+
+  expect(res.text).toBe(t().session.sessionHiddenOwned("brt_owned"));
+  expect(resets).toBe(0);
 });
 
 
