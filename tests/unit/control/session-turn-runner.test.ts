@@ -37,11 +37,16 @@ function makeRunner(
 
 const REQ = { chatKey: "c", sessionAlias: "s", text: "hi", senderId: "u" };
 
-test("trusted Conversation correlation survives SessionTurnRunner -> ConsoleAgent and ordinary bot keys do not acquire it", async () => {
-  const seen: unknown[] = [];
+test("trusted Conversation correlation pins the Router to the resolved session and ordinary bot keys do not acquire it", async () => {
+  const seen: Array<{ trusted: unknown; boundSessionAlias: unknown }> = [];
+  const used: Array<[string, string]> = [];
   const consoleAgent = new ConsoleAgent({
     handle: async (...args: unknown[]) => {
-      seen.push(args[14]);
+      const metadata = args[6] as { boundSessionAlias?: string } | undefined;
+      seen.push({
+        trusted: args[14],
+        boundSessionAlias: metadata?.boundSessionAlias,
+      });
       return { text: "ok" };
     },
   });
@@ -49,9 +54,11 @@ test("trusted Conversation correlation survives SessionTurnRunner -> ConsoleAgen
   const runner = new SessionTurnRunner({
     agent: consoleAgent,
     sessions: {
-      resolveAliasForChat: async (_c: string, a: string) => a,
+      resolveAliasForChat: async () => "brt_internal_owned",
       getSession: async () => ({ transportSession: "t", replyMode: "stream" }),
-      useSession: async () => {},
+      useSession: async (chatKey: string, alias: string) => {
+        used.push([chatKey, alias]);
+      },
     },
     events,
     uploadStore: { root: "/tmp/uploads" },
@@ -81,7 +88,55 @@ test("trusted Conversation correlation survives SessionTurnRunner -> ConsoleAgen
     text: "ordinary",
   });
 
-  expect(seen).toEqual([correlation, undefined]);
+  expect(seen).toEqual([
+    { trusted: correlation, boundSessionAlias: "brt_internal_owned" },
+    { trusted: undefined, boundSessionAlias: undefined },
+  ]);
+  // Preserve the existing Conversation lifecycle side effect: pinning the
+  // Router target must not silently turn off useSession/current-session updates.
+  expect(used).toEqual([["bot:conversation_1:topic_1", "brt_owned"]]);
+});
+
+test("trusted Conversation execution fails closed when its exact session alias cannot be resolved", async () => {
+  let chats = 0;
+  const runner = new SessionTurnRunner({
+    agent: {
+      chat: async () => {
+        chats += 1;
+        return { text: "must-not-run" };
+      },
+    },
+    sessions: {
+      resolveAliasForChat: async () => {
+        throw new Error("session resolution failed");
+      },
+      getSession: async () => null,
+      useSession: async () => {},
+    },
+    events: createControlEventBus(),
+    uploadStore: { root: "/tmp/uploads" },
+  } as never);
+
+  const result = await runner.run(
+    {
+      chatKey: "bot:conversation_1:topic_1",
+      sessionAlias: "brt_owned",
+      text: "trusted",
+      senderId: "bot-conversation",
+      turnOrigin: "human",
+      conversation: {
+        conversationId: "conversation_1",
+        topicId: "topic_1",
+        botId: "bot_1",
+        runId: "run_1",
+        memberTurnId: "mturn_1",
+      },
+    },
+    new AbortController().signal,
+  );
+
+  expect(result).toEqual({ ok: false, errorMessage: "session resolution failed" });
+  expect(chats).toBe(0);
 });
 
 test("onActivity is invoked on each agent event", async () => {
