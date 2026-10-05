@@ -4,10 +4,12 @@ import type { ConversationTurnCorrelation } from "./conversation-control-dtos";
 import type { ScheduledOrigin } from "./control-event-bus";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { ToolUseEvent } from "../channels/types";
+import type { ChatRequest } from "../weixin/agent/interface.js";
 import { ToolEventBatcher } from "./tool-event-batcher";
 import type { AgentMessageCompletion } from "../orchestration/agent-messaging-types";
 import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
 import { buildPeerCompletionPrompt } from "../orchestration/agent-message-completion";
+import { markTrustedConversationAgentRequest } from "../conversations/trusted-conversation-agent-request";
 import {
   toErrorMessage,
   buildControlMetadata,
@@ -343,7 +345,7 @@ export class SessionTurnRunner {
       },
     }, (event) => event.toolCallId, (event) => event.status, (event) => toolEventPayloadSize(event));
     try {
-      const response = await this.deps.agent.chat({
+      const chatRequest: ChatRequest = {
         accountId: req.accountId ?? "control",
         conversationId: req.chatKey,
         text: chatText,
@@ -411,7 +413,11 @@ export class SessionTurnRunner {
             ...(req.conversation ? { conversation: req.conversation } : {}),
           });
         },
-      });
+      };
+      if (req.conversation) {
+        markTrustedConversationAgentRequest(chatRequest, req.conversation);
+      }
+      const response = await this.deps.agent.chat(chatRequest);
       if (response.text && !response.silent) {
         emitChunk(response.text);
       }
