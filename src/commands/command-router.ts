@@ -12,6 +12,7 @@ import { resolveSessionAgentCommandFromIndex, type SessionAgentCommandResolver }
 import { parseCommand } from "./parse-command";
 import { authorizeCommandForChat, renderCommandAccessDenied, withEffectiveOwner } from "./command-policy";
 import type { ChatRequestMetadata } from "../weixin/agent/interface";
+import type { ConversationTurnCorrelation } from "../control/conversation-control-dtos";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import { isRestartRequiredTransportChange } from "../config/transport-topology.js";
 import { handlePermissionAutoSet, handlePermissionAutoStatus, handlePermissionModeSet, handlePermissionStatus } from "./handlers/permission-handler";
@@ -172,6 +173,7 @@ export class CommandRouter {
     onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
     onUsage?: (usage: PromptUsage) => void | Promise<void>,
     onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
+    trustedConversationExecution?: ConversationTurnCorrelation,
   ): Promise<RouterResponse> {
     const startedAt = Date.now();
     let command = parseCommand(input);
@@ -490,6 +492,7 @@ export class CommandRouter {
             onPlan,
             onUsage,
             onCommands,
+            trustedConversationExecution,
           );
         }
       }
