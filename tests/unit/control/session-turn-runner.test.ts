@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { SessionTurnRunner } from "../../../src/control/session-turn-runner";
 import { TURN_IDLE_TIMEOUT_REASON } from "../../../src/control/turn-support";
 import { ConsoleAgent } from "../../../src/console-agent";
+import { CommandRouter } from "../../../src/commands/command-router";
 import {
   createControlEventBus,
   type ControlEvent,
@@ -95,6 +96,86 @@ test("trusted Conversation correlation pins the Router to the resolved session a
   // Preserve the existing Conversation lifecycle side effect: pinning the
   // Router target must not silently turn off useSession/current-session updates.
   expect(used).toEqual([["bot:conversation_1:topic_1", "brt_owned"]]);
+});
+
+test("trusted Group member turn reaches the hidden member session through the production agent/router seam", async () => {
+  const alias = "brt_group_bind_group_1_topic_1_bot_1";
+  const session = {
+    alias,
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "group-session-1",
+    archived: false,
+    replyMode: "final" as const,
+  };
+  const used: Array<[string, string]> = [];
+  const prompted: Array<{ alias: string; text: string }> = [];
+  const sessions = {
+    resolveAliasForChat: async (_chatKey: string, requestedAlias: string) => {
+      expect(requestedAlias).toBe(alias);
+      return alias;
+    },
+    getSession: async (requestedAlias: string) => requestedAlias === alias ? session : null,
+    useSession: async (chatKey: string, requestedAlias: string) => {
+      used.push([chatKey, requestedAlias]);
+      return session;
+    },
+    getResolvedSessionByInternalAlias: (requestedAlias: string) =>
+      requestedAlias === alias ? session : null,
+    getLogicalSessionRecord: (requestedAlias: string) => requestedAlias === alias
+      ? {
+          ...session,
+          owner: {
+            kind: "group-member" as const,
+            bindingId: "bind_group_1_topic_1_bot_1",
+            botId: "bot_1",
+            conversationId: "group_1",
+            topicId: "topic_1",
+          },
+        }
+      : undefined,
+  };
+  const transport = {
+    hasSession: async () => true,
+    prompt: async (target: { alias: string }, text: string) => {
+      prompted.push({ alias: target.alias, text });
+      return { text: "group-reply" };
+    },
+    ensureSession: async () => {},
+    tailSessionHistory: async () => ({ text: "" }),
+    setMode: async () => {},
+    cancel: async () => ({ cancelled: true, message: "cancelled" }),
+  };
+  const commandRouter = new CommandRouter(sessions as never, transport as never);
+  const consoleAgent = new ConsoleAgent(commandRouter);
+  const runner = new SessionTurnRunner({
+    agent: consoleAgent,
+    sessions,
+    events: createControlEventBus(),
+    uploadStore: { root: "/tmp/uploads" },
+  } as never);
+
+  const result = await runner.run(
+    {
+      chatKey: "bot:group_1:topic_1",
+      sessionAlias: alias,
+      text: "group member prompt",
+      senderId: "bot-conversation",
+      turnOrigin: "orchestration",
+      conversation: {
+        conversationId: "group_1",
+        topicId: "topic_1",
+        botId: "bot_1",
+        runId: "run_group_1",
+        memberTurnId: "mturn_group_1",
+      },
+    },
+    new AbortController().signal,
+  );
+
+  expect(result).toEqual({ ok: true, text: "group-reply" });
+  expect(prompted).toEqual([{ alias, text: "group member prompt" }]);
+  expect(used).toEqual([["bot:group_1:topic_1", alias]]);
 });
 
 test("trusted Conversation execution fails closed when its exact session alias cannot be resolved", async () => {
