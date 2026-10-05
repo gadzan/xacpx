@@ -8,17 +8,19 @@
  * tracked `dist` can silently change.
  *
  * This loads each channel's PRODUCTION bundle (`dist/index.js` under each
- * package, the file the plugin loader consumes) and resolves the channel the way
- * `loadConfiguredPlugins()` does:
+ * package, the file the plugin loader consumes) and resolves the channel by the
+ * same chain `loadConfiguredPlugins()` uses:
  *
  *   import(module) → validateWeacpxPlugin() → plugin.channels[] → factory()
  *
  * NOT by scanning exports for a `*Channel` class and `new`-ing it. That shortcut
- * skips the default export, the channel definition, and the factory wiring — the
- * three layers whose breakage leaves a bundle that imports cleanly but registers
- * nothing at install time. The mutation that proves it matters: setting the built
- * Feishu bundle's `default.channels` to `[]` while keeping the named class export
- * passes every test under the shortcut and fails four of them here.
+ * skips the default export, the channel definition, the factory wiring, and the
+ * plugin validator — the layers whose breakage leaves a bundle that imports
+ * cleanly but registers nothing at install time. The mutations that prove it
+ * matters: setting the built Feishu bundle's `default.channels` to `[]` while
+ * keeping the named class export passes every test under the shortcut; so does a
+ * wrong `apiVersion` or a `name` that does not match the installed package. All
+ * three fail here.
  *
  * It then asserts what the resolved runtime declares:
  *
@@ -54,6 +56,7 @@ import { join } from "node:path";
 import { expect, test } from "bun:test";
 
 import { RELAY_CAPABILITIES } from "../../packages/relay-protocol/src/index";
+import { validateWeacpxPlugin } from "../../src/plugins/validate-plugin";
 
 const ROOT = join(import.meta.dir, "..", "..");
 
@@ -63,29 +66,6 @@ const ROOT = join(import.meta.dir, "..", "..");
 interface ChannelRuntimeLike {
   readonly id: string;
   readonly elicitationModes: readonly string[];
-}
-
-/**
- * The production plugin entry a built bundle must expose: `default` carrying a
- * `channels` array whose entries each carry a `factory`.
- *
- * This mirrors `loadConfiguredPlugins()` (src/plugins/plugin-loader.ts):
- *
- *   import(module) → validateWeacpxPlugin() → plugin.channels[] → registerChannelPlugin()
- *   → channel.factory(options, deps)
- *
- * Reaching a channel through its exported CLASS NAME instead would skip the
- * default export, the channel definition, and the factory wiring — the three
- * layers whose breakage makes a bundle that imports cleanly unable to register
- * anything in production. See `channelFrom()` for why that matters.
- */
-interface ChannelPluginDefinitionLike {
-  type: string;
-  factory: (options: unknown, deps: unknown) => ChannelRuntimeLike;
-}
-
-interface BuiltPluginLike {
-  channels?: readonly ChannelPluginDefinitionLike[];
 }
 
 /**
@@ -105,7 +85,7 @@ const CARD_ACTIONS = {
 };
 
 /**
- * Resolve a built channel the way production does — through the plugin entry,
+ * Resolve a built channel the way production does — through `validateWeacpxPlugin`,
  * the channel definition, and its factory.
  *
  * A previous revision of this gate located the runtime by scanning bundle exports
@@ -114,29 +94,38 @@ const CARD_ACTIONS = {
  * (or whose factory was wired wrong) stayed fully green while being unable to
  * register anything at install time.
  *
- * The specific tool call is `options`, the first factory argument: the same config
- * object `ChannelFactory` receives when a plugin account is constructed.
+ * Reading `default` directly would still not be enough. Production runs the module
+ * through `validateWeacpxPlugin()` first, which rejects:
+ *
+ *   - a missing/unusable default export
+ *   - an `apiVersion` (or min/compatible version ceiling) it cannot load
+ *   - a plugin `name` that does not match the installed package name
+ *   - a `channels` that is not an array, a duplicate channel `type`, or an entry
+ *     with a non-callable factory or a mismatched `cliProvider.type`
+ *
+ * Any of those makes the plugin unloadable, so they are checked by the real
+ * validator here rather than reimplemented. The package name below must match the
+ * `name` each bundle's default export declares.
  */
 async function channelFrom(
   rel: string,
   type: string,
+  packageName: string,
   options: unknown,
   deps: unknown = {},
 ): Promise<ChannelRuntimeLike> {
   const pack = requirePack(rel);
-  const plugin = (pack as { default?: BuiltPluginLike }).default;
-  if (plugin === undefined || typeof plugin !== "object") {
-    throw new Error(`${rel} has no default export — a bundle that cannot be imported as a plugin`);
-  }
-  const definition = (plugin.channels ?? []).find((entry) => entry.type === type);
+  // No `currentXacpxVersion` override: the default is `readVersion()`, i.e. the
+  // real core version this checkout builds, which is exactly the comparison the
+  // validator performs at install time. An explicit pin here would only let a
+  // bundle's version floor go unsatisfied in production while passing here.
+  const plugin = validateWeacpxPlugin(pack, packageName);
+  const definition = plugin.channels.find((entry) => entry.type === type);
   if (definition === undefined) {
     throw new Error(
-      `${rel} default export registers no channel of type "${type}" ` +
-        `(found: ${(plugin.channels ?? []).map((c) => c.type).join(", ") || "none"})`,
+      `${rel} registers no channel of type "${type}" ` +
+        `(found: ${plugin.channels.map((c) => c.type).join(", ") || "none"})`,
     );
-  }
-  if (typeof definition.factory !== "function") {
-    throw new Error(`${rel} channel "${type}" has a non-callable factory`);
   }
   return definition.factory(options, deps);
 }
@@ -161,6 +150,7 @@ test("feishu bundle: an account set with NO cardActions declares no form capabil
   const noCardActions = await channelFrom(
     "packages/channel-feishu/dist/index.js",
     "feishu",
+    "@ganglion/xacpx-channel-feishu",
     {
       type: "feishu",
       accounts: {
@@ -180,6 +170,7 @@ test("feishu bundle: a MIXED account set declares no channel-wide form capabilit
   const mixed = await channelFrom(
     "packages/channel-feishu/dist/index.js",
     "feishu",
+    "@ganglion/xacpx-channel-feishu",
     {
       type: "feishu",
       accounts: {
@@ -202,6 +193,7 @@ test("feishu bundle: an account set where EVERY inbound account has cardActions 
   const allCapable = await channelFrom(
     "packages/channel-feishu/dist/index.js",
     "feishu",
+    "@ganglion/xacpx-channel-feishu",
     {
       type: "feishu",
       accounts: {
@@ -220,6 +212,7 @@ test("feishu bundle never declares URL mode", async () => {
   const withForm = await channelFrom(
     "packages/channel-feishu/dist/index.js",
     "feishu",
+    "@ganglion/xacpx-channel-feishu",
     {
       type: "feishu",
       accounts: {
@@ -266,6 +259,7 @@ test("relay bundle: the connector hello advertises the interaction capability it
   const channel = await channelFrom(
     "packages/channel-relay/dist/index.js",
     "relay",
+    "@ganglion/xacpx-channel-relay",
     { url: "ws://h:1", pairingToken: "t" },
     {
       credentialStore: { load: () => null, save: () => {}, clear: () => {} },
@@ -353,6 +347,7 @@ test("discord bundle: form capability is declared, not merely not-wrong", async 
   const channel = await channelFrom(
     "packages/channel-discord/dist/index.js",
     "discord",
+    "@ganglion/xacpx-channel-discord",
     { type: "discord", token: "t" },
   );
   expect(channel.elicitationModes).toEqual(["form"]);

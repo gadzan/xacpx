@@ -119,7 +119,7 @@ jobs:
       # the source, not the shipped artifact, and a bundler, a tree-shake or a
       # stale tracked dist can silently change what an artifact declares.
       #
-      # Not duplicated on macOS: one enforced gate closes the hole, and the
+      # Not duplicated on macOS: one automatically running gate closes the hole, and the
       # channel bundles are platform-independent JS.
       #
       # The probe refuses to pass on source: a missing bundle throws rather than

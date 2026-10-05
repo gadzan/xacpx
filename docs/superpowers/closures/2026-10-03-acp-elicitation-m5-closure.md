@@ -44,7 +44,7 @@ Four dispositions, exactly as the working agreement requires.
 | Feishu mixed-account capability gating | `packages/channel-feishu/src/channel.ts:129-140` (`inboundOnlyAccounts`) |
 | Discord / channel-relay capability declarations | `packages/channel-discord/src/channel.ts`, `packages/channel-relay/src/channel.ts:262-273` |
 | Feishu multi-select fail-closed (no reshaping) | `packages/channel-feishu/src/elicitation-limits.ts:66` + tests |
-| **Built-artifact capability gate** (this closure) | `tests/smoke/acp-elicitation-capability-artifact.test.ts`, 6/6 pass, enforced in CI after `Build (all packages)` |
+| **Built-artifact capability gate** (this closure) | `tests/smoke/acp-elicitation-capability-artifact.test.ts`, 6/6 pass, runs automatically in CI after `Build (all packages)` — an automatic CI check, not a merge-enforced gate (see §2.1) |
 | **Feishu deployment runbook** (this closure) | `docs/feishu-cardactions-deployment.md` |
 | **Relay interaction runbook** (this closure) | `docs/relay-interaction-deployment.md` |
 | Tracked `dist` hygiene for `relay-protocol` | `assert:relay-protocol` in `package.json:52` |
@@ -92,18 +92,26 @@ and resolves each channel **through the plugin entry**, not through an exported
 class name:
 
 ```text
-import(module) → default export → channels[] → definition.factory(options, deps)
+import(module) → validateWeacpxPlugin(pack, packageName) → channels[] → factory(options, deps)
 ```
 
-This matters. An earlier revision of this gate scanned bundle exports for a
-function named `*Channel` and constructed it directly, which skips the default
-export, the channel definition, and the factory wiring. The mutation that exposed
-it: setting the built Feishu bundle's `default.channels` to `[]` while keeping the
-named `FeishuChannel` export left **all six tests green** on a bundle that cannot
-register a Feishu channel at install time. The same mutation now fails four cases
-with `registers no channel of type "feishu"`. Driving `RelayChannel.start()`
-likewise comes from the factory's product, so the registration it exercises is the
-shipped one.
+This matters, and it took two rounds to get right. An earlier revision of this
+gate scanned bundle exports for a function named `*Channel` and constructed it
+directly, skipping the default export, the channel definition, and the factory
+wiring. Setting the built Feishu bundle's `default.channels` to `[]` while keeping
+the named `FeishuChannel` export left **all six tests green** on a bundle that
+cannot register a Feishu channel at install time. Replacing the class lookup with
+a direct read of `default` was still not enough: the mutations that invert
+`apiVersion` or set a plugin `name` that does not match the installed package
+passed, because nothing ran the validator. The gate now calls the real
+`validateWeacpxPlugin()`, so apiVersion, the version floor, the plugin name, the
+`channels` shape, duplicate types, factory presence, and `cliProvider.type` are all
+enforced by the shipped validator rather than by a stand-in.
+
+Driving `RelayChannel.start()` likewise comes from the factory's product, so the
+registration it exercises is the shipped one. No `currentXacpxVersion` is passed
+to the validator: the default is `readVersion()`, the real core version of this
+checkout, which is the comparison performed at install time.
 
 It then asserts:
 
@@ -154,12 +162,16 @@ hole, and the channel bundles are platform-independent JS.
 | `createClient` is never called, so connector registration never happens | relay case | `the built relay channel never reached connector registration; connector registration never happened within 2000ms` |
 | built Feishu `default.channels` set to `[]`, named `FeishuChannel` export left intact | **all four Feishu cases** | `registers no channel of type "feishu" (found: none)` — 4 fail / 2 pass |
 | built Discord `default.channels` set to `[]` | discord case | `discord bundle: form capability is declared, not merely not-wrong` |
+| built Feishu `apiVersion: 1` → `2` | **all four Feishu cases** | `uses unsupported apiVersion 2; supported: 1; install a compatible plugin version` |
+| built Feishu plugin `name` → a non-matching package name | **all four Feishu cases** | `declared name does not match the installed package name` |
 
-The last two rows are the reason the gate resolves channels through the plugin
-entry rather than by exported class name. Under the previous class-name lookup the
-two mutations above **passed every test**, because the shortcut never touched the
-default export, the `channels` array, or the factory — the exact wiring whose
-breakage leaves a bundle that imports cleanly but registers nothing in production.
+The last three rows are why the gate resolves channels through
+`validateWeacpxPlugin()` rather than by the module's `default`, and the
+empty-`channels` rows why it goes through `channels[]`/`factory`. Under the
+original class-name lookup — and under a hand-rolled read of `default` — every one
+of these passes, because none of them touches the exported class name. They target
+precisely the surface whose breakage leaves a bundle that imports cleanly and
+registers nothing in production.
 
 Each was applied to source, the affected bundle rebuilt, and the gate re-run; each
 failed exactly the case named. The gate is load-bearing, not decorative.
