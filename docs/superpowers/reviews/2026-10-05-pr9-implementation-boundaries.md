@@ -161,12 +161,70 @@ read-only proof to model-created assignments, so started retries are not
 enabled on that path; this is recorded as a residual seam, not a confirmed
 current production finding.
 
+## Second independent full review
+
+The second review starts from `a9370c5330203502631a8fdc6180fdfeff2b3feb`
+and covers the entire PR again across durable state/recovery,
+execution/lifecycle/transports, and MCP/IPC/Control/Relay/Web. Identity inspection
+uses source and legal interface tests within the documented OS-user boundary.
+
+- Late reconciliation now rejects an audited retired source even when a safe
+  retry has cleared its current source. A sibling can seal that queued retry
+  before it starts; an old success or failure must not prove this unstarted
+  attempt or falsely complete the Run. Sealed reconciliation also requires an
+  actual start. Ten regressions cover retired/current completed and failed
+  proof, reopen, unchanged durable rows and missing-source unstarted evidence;
+  six cases failed before the fix. Current exact retry proof remains accepted.
+- Runtime materialization and execution-start transactions re-read valid
+  quarantine membership after awaited work. `member_quarantined` settles the
+  claimed target as a durable pre-start failure, preserving healthy sender
+  evidence and spending no additional reservation. Six regressions cover both
+  fences, async hooks, reopen and eligible members. Two original reproduction
+  cases failed before the fix. Normal single-consumer same-Bot scheduling has
+  not been shown to create this race; this closes the durable revalidation
+  contract under controlled state restoration.
+- Web merges retire the member's live/output/completeness/truncation caches
+  and its old source cache when the durable attempt increases, including
+  discovery and reconnect paths without a start event. Four regressions cover
+  queued detail, new start/finish, same-attempt updates and old truncation.
+- A full Topic's 64-Run admission cap no longer prevents handoff inside an
+  already admitted Run. Handoff retains deletion, execution identity and
+  work-budget fences; fresh requests retain the cap. Five regressions cover
+  replay/reopen, both deletion barriers, budget exhaustion, dispatch before
+  later Runs and freeing exactly one admission slot; three failed before the
+  fix. No admission limit was raised.
+- Transcript trace lookup requires an exact source when the message provides
+  one, within its Conversation/Topic/Run. Thin detail cannot replace a later
+  assignment's canonical result with an earlier trace from the same Bot.
+  Legacy messages without a source use only a unique same-Bot candidate.
+  Four mounted public history/RPC regressions cover both rejection paths,
+  exact trace rendering and compatible unambiguous legacy rendering; two
+  failed before the fix.
+
+These five confirmed Medium findings add 29 regressions. Fifteen reproduction
+cases failed against the unfixed implementation. Pending detail RPCs cannot
+refill retired trace caches: trace writes are synchronous snapshot/turn events,
+and every asynchronous member detail merge uses the same attempt fence.
+
+The old enforced-read-only worker settlement catch can reject a drain after
+an external concurrent recovery retires its source. No normal production
+entry point was found: model assignments receive no enforced proof, and the
+single consumer waits for its active cohort before recovering again. This
+remains a restricted seam, not a confirmed production finding.
+
 ## Validation and residual limits
 
-- Latest full-review follow-up: **107** handoff/recovery tests plus **15** budget late-proof tests; **528** Conversation tests across 14 files, all passed.
+- Second full review: **795** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including **549** Conversation tests across 17 files. The four handoff/budget/retired/full-queue files have **137** passing cases; six additional quarantine-start cases pass.
+- Relay Web: **1,957** passed across 147 files, including **79** Group store/trace cases. The independent execution/lifecycle/runner/filesystem/Control sweep has **291** passes across six files.
+- Bun and native Node SQLite each passed the same nine retired-proof/full-queue scenarios. Root typecheck, Web vue-tsc, acpx import policy and diff checks passed. The MCP/IPC/DTO independent sweep has **178 passed / 1 failed**, retaining the same Windows named-pipe/Unix-chmod baseline below.
+- All-package build and pinned real-acpx compatibility (**13 passed**, three files) passed on the second-review source. Exact-HEAD Linux/macOS/Web CI is tracked in the PR/report. No real WeChat Group smoke or live-provider retransmission was run.
+
+First full-review checkpoint (`a9370c5`):
+
+- **107** handoff/recovery tests plus **15** budget late-proof tests; **528** Conversation tests across 14 files, all passed.
 - Session handler, Control turn runner/queue, all MCP tests and wire DTO sweep: **246** passed across 13 files. Including the orchestration server gives **281 passed / 1 failed** across 14 files; its Windows-only `socket chmod failure is non-fatal and reported` failure matches the previously recorded clean-main baseline.
 - Final combined Conversation/Session/Control/MCP/wire DTO run after package builds: **774** passed across 27 files.
-- Latest Relay Web full suite: **1,949** passed across 147 files; Group store: **71** passed. Independent runtime/lifecycle/runner/API/filesystem review checks: **249** passed across 5 files.
+- Relay Web full suite: **1,949** passed across 147 files; Group store: **71** passed. Independent runtime/lifecycle/runner/API/filesystem review checks: **249** passed across 5 files.
 - Native Node SQLite follow-up passed malformed quarantine read/claim/reopen and completed/failed late proof with a persistent exhausted budget. Actual PR8 migration/rollback/audit checks also passed on the current source. Latest typecheck, all-package build, acpx import policy and diff checks passed; exact-HEAD CI is tracked in the PR/report.
 
 Earlier phase validation (before the full-review follow-up):

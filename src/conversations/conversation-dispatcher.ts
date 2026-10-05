@@ -820,7 +820,8 @@ export class ConversationDispatcher {
         return;
       }
       if (!started && error instanceof ConversationError
-        && (error.code === "member_result_missing" || error.code === "trigger_message_not_found")) {
+        && (error.code === "member_result_missing" || error.code === "trigger_message_not_found"
+          || error.code === "member_quarantined")) {
         this.failOwnClaimBeforeStart(work, error.code);
         return;
       }

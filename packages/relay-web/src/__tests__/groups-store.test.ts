@@ -595,6 +595,105 @@ describe("useGroupsStore", () => {
       });
     }
 
+    it("retires execution traces when a higher attempt is discovered through detail", async () => {
+      const { store, run, member, load } = setup();
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a",
+        conversation: { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
+          memberTurnId: member.id, botId: member.botId }, chunk: "Retired attempt output",
+      } } as never);
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", ok: false,
+        conversation: { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
+          memberTurnId: member.id, botId: member.botId },
+      } } as never);
+      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "Retired attempt output" }]);
+
+      const incoming = { ...member, attempt: 2, origin: "recovery" as const, state: "queued" as const };
+      delete incoming.promptRequestId;
+      delete incoming.startedAt;
+      await load(incoming);
+      expect(store.liveTurnForMember(member.id)).toBeNull();
+      expect(store.runParts[member.id]).toBeUndefined();
+      expect(store.completeRunParts[member.id]).toBeUndefined();
+    });
+
+    it("a new attempt start cannot expose a completed trace from the retired execution", () => {
+      const { store, run, member } = setup();
+      const conversation = { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
+        memberTurnId: member.id, botId: member.botId };
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation,
+        chunk: "Retired attempt output",
+      } } as never);
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, ok: false,
+      } } as never);
+
+      const incoming = { ...member, attempt: 2, origin: "recovery" as const,
+        promptRequestId: "new_source", startedAt: "2026-10-05T00:00:00.000Z" };
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "member-turn-started", run, memberTurn: incoming,
+      } } as never);
+      expect(store.completeRunParts[member.id]).toBeUndefined();
+      expect(store.liveTurnForMember(member.id)?.parts).toEqual([]);
+
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation,
+        chunk: "New attempt output",
+      } } as never);
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, ok: true,
+      } } as never);
+      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "New attempt output" }]);
+    });
+
+    it("keeps a completed trace through same-attempt detail and accepts late same-attempt output", async () => {
+      const { store, run, member, load } = setup();
+      const conversation = { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
+        memberTurnId: member.id, botId: member.botId };
+      const output = (chunk: string) => store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, chunk,
+      } } as never);
+      const finish = () => store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, ok: true,
+      } } as never);
+      output("Same attempt output");
+      finish();
+      await load({ ...member });
+      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "Same attempt output" }]);
+      output(" plus final evidence");
+      finish();
+      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "Same attempt output plus final evidence" }]);
+    });
+
+    it("new attempt completion does not inherit a retired truncated snapshot flag", async () => {
+      const { store, run, member } = setup();
+      mockRpc.mockImplementation(async (_instance: string, type: string) => {
+        if (type === "control.runs.get") return { run: { ...run, memberTurns: [member] } };
+        throw new Error(`unexpected ${type}`);
+      });
+      const conversation = { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
+        memberTurnId: member.id, botId: member.botId };
+      store.applyEvent({ kind: "state-snapshot", instanceId: "inst_1", turns: [{
+        instanceId: "inst_1", sessionAlias: "owned_a", conversation, truncated: true,
+        parts: [{ type: "text", text: "Retired truncated output" }], status: "working", startedAt: 1,
+      }] } as never);
+      await flushPromises();
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "member-turn-started", run, memberTurn: { ...member, attempt: 2, origin: "recovery",
+          promptRequestId: "new_source", startedAt: "2026-10-05T00:00:00.000Z" },
+      } } as never);
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation,
+        chunk: "New complete output",
+      } } as never);
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, ok: true,
+      } } as never);
+      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "New complete output" }]);
+    });
+
     for (const state of ["queued", "dispatched", "running", "completed", "failed", "cancelled", "indeterminate"] as const) {
       it(`rejects older attempt ${state} events without changing the current Run or live trace`, () => {
         const { store, run, member } = setup();
@@ -1087,6 +1186,78 @@ describe("useGroupsStore", () => {
     const liveB = store.liveTurnsByMember["turn_b"];
     expect(liveA?.parts).toEqual([{ type: "text", text: "alpha work" }]);
     expect(liveB?.parts).toEqual([{ type: "text", text: "beta work" }]);
+  });
+
+  describe("PR9 repeated Bot assignment trace joins", () => {
+    async function setup(includeSecondMember: boolean, promptRequestId?: string) {
+      const store = useGroupsStore();
+      store.instanceId = "inst_1";
+      store.selectedGroupId = store.activeConversationId = "conversation_g";
+      store.activeTopicId = "topic_1";
+      const run: ConversationRunDto = { id: "run_repeat", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_repeat", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" };
+      store.activeRun = run;
+      const seedTrace = (id: string, source: string, text: string) => {
+        const member: MemberTurnSummaryDto = { id, runId: run.id, conversationId: run.conversationId,
+          topicId: run.topicId, botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "handoff", state: "running",
+          promptRequestId: source, createdAt: "now", startedAt: "2026-10-05T00:00:00.000Z" };
+        const conversation = { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
+          memberTurnId: id, botId: member.botId };
+        store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+          type: "member-turn-started", run, memberTurn: member,
+        } } as never);
+        store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+          type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, chunk: text,
+        } } as never);
+        store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+          type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, ok: true,
+        } } as never);
+        store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+          type: "member-turn-finished", run, memberTurn: { ...member, state: "completed" },
+        } } as never);
+      };
+      seedTrace("first_a", "source_first", "First assignment trace");
+      if (includeSecondMember) seedTrace("second_a", "source_second", "Second assignment trace");
+      mockRpc.mockImplementation(async (_instance: string, type: string) => {
+        if (type === "control.conversation.history") return historyWith([{ id: "msg_second", conversationId: run.conversationId,
+          topicId: run.topicId, runId: run.id, seq: 1, role: "bot", senderBotId: "bot_a", content: "Canonical second answer",
+          ...(promptRequestId ? { promptRequestId } : {}), createdAt: "2026-10-05T00:00:00.000Z" }]);
+        if (type === "control.runs.list") return { runs: [run], activeRunId: run.id };
+        if (type === "control.runs.get") return { run: { ...run, memberTurns: Object.values(store.memberTurnsById) } };
+        throw new Error(`unexpected ${type}`);
+      });
+      await store.loadHistory("inst_1", run.conversationId, run.topicId);
+      const wrapper = mount(GroupTranscript, { props: { bots: BOTS }, global: { plugins: [i18n] } });
+      return { wrapper, row: wrapper.find('[data-message-id="msg_second"]') };
+    }
+
+    it("uses canonical history text when an exact source has no matching local MemberTurn", async () => {
+      const { wrapper, row } = await setup(false, "source_second");
+      expect(row.text()).toContain("Canonical second answer");
+      expect(row.text()).not.toContain("First assignment trace");
+      wrapper.unmount();
+    });
+
+    it("does not guess a legacy source among multiple assignments of the same Bot", async () => {
+      const { wrapper, row } = await setup(true);
+      expect(row.text()).toContain("Canonical second answer");
+      expect(row.text()).not.toContain("First assignment trace");
+      expect(row.text()).not.toContain("Second assignment trace");
+      wrapper.unmount();
+    });
+
+    it("joins a repeated Bot's exact source to its own completed trace", async () => {
+      const { wrapper, row } = await setup(true, "source_second");
+      expect(row.text()).toContain("Second assignment trace");
+      expect(row.text()).not.toContain("First assignment trace");
+      wrapper.unmount();
+    });
+
+    it("keeps unambiguous legacy history trace joins compatible", async () => {
+      const { wrapper, row } = await setup(false);
+      expect(row.text()).toContain("First assignment trace");
+      wrapper.unmount();
+    });
   });
 
   it("retries an uncertain prompt with the frozen target, not the current one", async () => {

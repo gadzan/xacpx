@@ -737,7 +737,9 @@ export class SqliteConversationStore implements ConversationStore {
       if (prior) return prior;
       const sender = this.requireMemberTurn(input.senderMemberTurnId);
       const run = this.requireRun(sender.runId);
-      this.assertAcceptable(run.conversationId, run.topicId);
+      // Extending this admitted Run creates no new queued Run. Keep delete
+      // barriers, while its own durable work budget bounds new assignments.
+      this.assertLifecycleAcceptable(run.conversationId, run.topicId);
       const dispatch = this.requireDispatch(input.dispatchId);
       if (sender.state !== "running" || sender.sourceTurnId !== input.sourceTurnId
         || dispatch.runId !== run.id || dispatch.memberTurnId !== sender.id || dispatch.state !== "claimed"
@@ -1402,6 +1404,9 @@ export class SqliteConversationStore implements ConversationStore {
       if (TERMINAL_RUN_STATES.includes(run.state) || isRunCancelling(run) || TERMINAL_MEMBER_STATES.includes(member.state)) {
         throw new ConversationError("run_not_runnable", `run "${input.runId}" is ${run.state}`);
       }
+      if (run.quarantinedBotIds?.includes(member.botId)) {
+        throw new ConversationError("member_quarantined", "Bot is quarantined for this Run");
+      }
       this.sqlite.run(
         `UPDATE member_turns
          SET state = 'running',
@@ -1448,6 +1453,9 @@ export class SqliteConversationStore implements ConversationStore {
       }
       if (TERMINAL_RUN_STATES.includes(run.state) || isRunCancelling(run) || TERMINAL_MEMBER_STATES.includes(member.state)) {
         throw new ConversationError("run_not_runnable", `run "${input.runId}" is ${run.state}`);
+      }
+      if (run.quarantinedBotIds?.includes(member.botId)) {
+        throw new ConversationError("member_quarantined", "Bot is quarantined for this Run");
       }
     });
   }
@@ -2693,13 +2701,17 @@ export class SqliteConversationStore implements ConversationStore {
     }
   }
 
-  private assertAcceptable(conversationId: string, topicId: string): void {
+  private assertLifecycleAcceptable(conversationId: string, topicId: string): void {
     if (this.isConversationDeleting(conversationId)) {
       throw new ConversationError("conversation_deleting", `conversation "${conversationId}" is deleting`);
     }
     if (this.isTopicDeleting(topicId)) {
       throw new ConversationError("topic_deleting", `topic "${topicId}" is deleting`);
     }
+  }
+
+  private assertAcceptable(conversationId: string, topicId: string): void {
+    this.assertLifecycleAcceptable(conversationId, topicId);
     // §21 bounded queue: nonterminal Runs (active + queued) per Topic are
     // capped so a public Conversation cannot grow SQLite unboundedly with
     // fresh requestIds. One-active-Run-per-Topic dispatch serialization is
@@ -3269,6 +3281,13 @@ export class SqliteConversationStore implements ConversationStore {
           `member turn "${member.id}" does not belong to run "${run.id}"`,
         );
       }
+      // A safe retry clears the current source until its new start. The old
+      // physical attempt remains retired even if a sibling seals that queued
+      // retry before it starts; absent current identity cannot authorize it.
+      if (input.sourceTurn.turnId && this.sqlite.get(
+        "SELECT 1 FROM recovery_attempts WHERE member_turn_id = ? AND source_turn_id = ?", [member.id, input.sourceTurn.turnId])) {
+        throw new ConversationError("source_turn_mismatch", "result belongs to a retired recovery attempt");
+      }
       if (
         (member.sessionAlias !== undefined && input.sourceTurn.sessionAlias !== member.sessionAlias)
         || (member.sourceTurnId !== undefined && input.sourceTurn.turnId !== member.sourceTurnId)
@@ -3366,7 +3385,7 @@ export class SqliteConversationStore implements ConversationStore {
       // stay sealed (late completion never resurrects a cancel the user
       // requested); live Runs and already-proven members have nothing to
       // reconcile. No dispatch, progress, or scheduling state changes.
-      if (run.state !== "indeterminate" || member.state !== "indeterminate") {
+      if (run.state !== "indeterminate" || member.state !== "indeterminate" || !member.startedAt) {
         return { run, memberTurn: member, reconciled: false };
       }
       const evidence = this.persistSealedMemberEvidence({
