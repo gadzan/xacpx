@@ -172,13 +172,14 @@ hole, and the channel bundles are platform-independent JS.
 | built Feishu `Channel.requestElicitation` → `undefined` | **the two form-capable Feishu cases** (`EVERY inbound account`, `never declares URL mode`) — the two negative cases (`NO cardActions`, `MIXED`) deliberately do **not** assert it, since they prove the absence of form rather than its delivery | 4 pass / 2 fail |
 | built Feishu plugin `name` → a non-matching package name | **all four Feishu cases** | `declared name does not match the installed package name` |
 
-The last three rows are why the gate resolves channels through
-`validateWeacpxPlugin()` rather than by the module's `default`, and the
-empty-`channels` rows why it goes through `channels[]`/`factory`. Under the
-original class-name lookup — and under a hand-rolled read of `default` — every one
-of these passes, because none of them touches the exported class name. They target
-precisely the surface whose breakage leaves a bundle that imports cleanly and
-registers nothing in production.
+The rows target three different surfaces, and grouping them by what each proves is
+the useful reading:
+
+| Surface | Rows | What a pass there proves |
+|---|---|---|
+| plugin validator | `apiVersion: 1` → `2`; plugin `name` → non-matching package | the bundle is loadable by the shipped `validateWeacpxPlugin`, which class-name lookup and a hand-rolled `default` read both skip |
+| `channels[]` / `factory` wiring | Feishu and Discord `default.channels` → `[]` | the channel is actually registered through the plugin entry, not merely exported |
+| implementation half | `Channel.requestElicitation` → `undefined` | core's predicate finds a delivery path, not only a declaration |
 
 Each was applied to source, the affected bundle rebuilt, and the gate re-run; each
 failed exactly the case named. The gate is load-bearing, not decorative.

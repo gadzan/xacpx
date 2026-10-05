@@ -363,8 +363,6 @@ test("terminal disabled omits capabilities and still starts chat client", async 
   expect(capturedCaps ?? []).not.toContain("terminal.rmux.recovery.v1");
   expect(capturedCaps ?? []).not.toContain("terminal.multi-view.v1");
   expect(capturedCaps ?? []).toContain("interaction.elicitation.form.v1");
-  controller.abort();
-  await started;
 });
 
 test("valid owner + corrupt terminals.json does not advertise terminal capabilities or create shells", async () => {
