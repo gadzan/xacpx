@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { SessionTurnRunner } from "../../../src/control/session-turn-runner";
 import { TURN_IDLE_TIMEOUT_REASON } from "../../../src/control/turn-support";
+import { ConsoleAgent } from "../../../src/console-agent";
 import {
   createControlEventBus,
   type ControlEvent,
@@ -35,6 +36,53 @@ function makeRunner(
 }
 
 const REQ = { chatKey: "c", sessionAlias: "s", text: "hi", senderId: "u" };
+
+test("trusted Conversation correlation survives SessionTurnRunner -> ConsoleAgent and ordinary bot keys do not acquire it", async () => {
+  const seen: unknown[] = [];
+  const consoleAgent = new ConsoleAgent({
+    handle: async (...args: unknown[]) => {
+      seen.push(args[14]);
+      return { text: "ok" };
+    },
+  });
+  const events = createControlEventBus();
+  const runner = new SessionTurnRunner({
+    agent: consoleAgent,
+    sessions: {
+      resolveAliasForChat: async (_c: string, a: string) => a,
+      getSession: async () => ({ transportSession: "t", replyMode: "stream" }),
+      useSession: async () => {},
+    },
+    events,
+    uploadStore: { root: "/tmp/uploads" },
+  } as never);
+  const correlation = {
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    botId: "bot_1",
+    runId: "run_1",
+    memberTurnId: "mturn_1",
+  };
+
+  await runner.run(
+    {
+      chatKey: "bot:conversation_1:topic_1",
+      sessionAlias: "brt_owned",
+      text: "trusted",
+      senderId: "bot-conversation",
+      turnOrigin: "human",
+      conversation: correlation,
+    },
+    new AbortController().signal,
+  );
+  await consoleAgent.chat({
+    accountId: "control",
+    conversationId: "bot:conversation_1:topic_1",
+    text: "ordinary",
+  });
+
+  expect(seen).toEqual([correlation, undefined]);
+});
 
 test("onActivity is invoked on each agent event", async () => {
   let calls = 0;
