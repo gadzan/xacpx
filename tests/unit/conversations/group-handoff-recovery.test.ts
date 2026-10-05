@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
@@ -21,6 +21,7 @@ import { createStrictOwnedSessionRelease } from "../../../src/sessions/owned-ses
 import { createEmptyState, type AppState } from "../../../src/state/types";
 import { toConversationMessage, toConversationRun } from "../../../src/control/conversation-control-dtos";
 import { validControlEvent } from "@ganglion/xacpx-relay-protocol";
+import { createDirectConversationId } from "../../../src/domain/ids";
 
 const NOW = "2026-10-05T00:00:00.000Z";
 const LEASE = "2026-10-05T00:01:00.000Z", EXPIRED = "2026-10-05T00:02:00.000Z";
@@ -30,8 +31,13 @@ const RESTRICTED = { toolsDisabled: true, filesystemDisabled: true, terminalDisa
 
 async function harness(options: { onRun?: (input: ConversationTurnRunInput) => Promise<ConversationTurnRunResult>;
   onCancel?: (input: ConversationTurnCancelInput) => Promise<ConversationTurnCancelResult>;
-  beforeCommitGates?: () => Promise<void>; router?: ConversationRouter } = {}) {
+  beforeCommitGates?: () => Promise<void>; router?: ConversationRouter; pr8Fixture?: "queued" | "claimed" } = {}) {
   const path = join(mkdtempSync(join(tmpdir(), "xacpx-pr9-")), "conversations.sqlite");
+  if (options.pr8Fixture) {
+    const db = await createSqlDriver(path);
+    try { db.exec(readFileSync(join(import.meta.dir, "fixtures", `pr8-explicit-${options.pr8Fixture}.sql`), "utf8")); }
+    finally { db.close(); }
+  }
   const store = await SqliteConversationStore.open(path);
   const state = createEmptyState();
   const config = { agents: { codex: { driver: "codex" } }, workspaces: { backend: { cwd: tmpdir() } },
@@ -56,12 +62,16 @@ async function harness(options: { onRun?: (input: ConversationTurnRunInput) => P
     readGroup: (id) => state.conversations[id], readTopic: (_id, id) => state.conversation_topics[id], readBot: (id) => bots.getBot(id),
     runLifecycleAll: (ids, critical) => bots.runLifecycleAll(ids, critical), now: () => new Date(NOW) }) : undefined;
   const service = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, stateStore,
-    { stateMutex, releaseOwnedSession, autoKick: false, routerEngine: engine });
+    { stateMutex, releaseOwnedSession, autoKick: false, routerEngine: engine,
+      ...(options.pr8Fixture ? { createTopicId: () => "topic_pr8_explicit" } : {}) });
   const handoffs = new GroupHandoffService({ store, bots, state, beforeCommitGates: options.beforeCommitGates,
     onProductEvent: (event) => events.push(event), wake: () => { void dispatcher.kick(); } });
   dispatcher.setHandoffService(handoffs);
   dispatcher.setAutomaticRoutingHandler((id) => service.trackAutomaticRouting(id));
   const group = await bots.createGroup({ title: "PR9", botIds: [A, B, C] });
+  if (options.pr8Fixture) {
+    delete state.conversations[group.id]; group.id = "conversation_pr8_explicit"; state.conversations[group.id] = group;
+  }
   const topic = await service.createGroupTopic(group.id, "Public", { workspace: "backend", isolation: "shared-single-writer" });
   const accept = async (requestId = "human-request") => await service.acceptGroupPrompt({ conversationId: group.id,
     topicId: topic.id, requestId, text: "INITIAL HUMAN REQUEST", target: { botId: A },
@@ -586,7 +596,161 @@ test("recovery retry budget and task survive restart before redispatch", async (
   } finally { reopened.close(); }
 });
 
-test("migration backfills PR8 database and teardown removes handoff/recovery ownership", async () => {
+for (const pr8Fixture of ["queued", "claimed"] as const) {
+  test(`real PR8 ${pr8Fixture} explicit Run migrates budget and executes its first handoff`, async () => {
+    let h!: Harness;
+    h = await harness({ pr8Fixture, onRun: async (input) => {
+      if (input.botId === A) await h.send(input);
+      return { status: "completed", text: `upgraded ${input.botId}` };
+    } });
+    try {
+      expect(h.store.listMemberTurns("run_pr8_explicit")).toHaveLength(1);
+      expect(h.store.getRun("run_pr8_explicit")?.maxMemberTurns).toBe(24);
+      await h.service.activateAfterConsumerLock();
+      expect(h.calls.map((input) => input.botId)).toEqual([A, B]);
+      expect(h.calls[0]?.text).toContain("PR8 HUMAN REQUEST");
+      expect(h.calls[1]?.text).toContain("HANDOFF TASK");
+      expect(h.store.getRun("run_pr8_explicit")).toMatchObject({ state: "completed", consumedMemberTurns: 2 });
+      expect(h.store.getRun("run_pr8_explicit")?.completionReason).not.toBe("budget-exhausted");
+      expect(h.store.listMessages({ conversationId: h.group.id, topicId: h.topic.id, limit: 100 }).filter((m) => m.handoff)).toHaveLength(1);
+    } finally { h.store.close(); }
+  });
+}
+
+async function realPr8Database() {
+  const path = join(mkdtempSync(join(tmpdir(), "xacpx-pr8-upgrade-")), "conversations.sqlite");
+  const db = await createSqlDriver(path);
+  db.exec(readFileSync(join(import.meta.dir, "fixtures", "pr8-explicit-queued.sql"), "utf8"));
+  expect(db.get<{ max_member_turns: number }>("SELECT max_member_turns FROM runs")?.max_member_turns).toBe(1);
+  expect(db.all<{ name: string }>("PRAGMA table_info(runs)").some((c) => c.name === "budget_exhausted")).toBe(false);
+  return { path, db };
+}
+
+for (const state of ["queued", "running", "waiting-human", "completed", "failed", "cancelled", "indeterminate"] as const) {
+  test(`PR8 explicit budget migration handles ${state} without reopening sealed work`, async () => {
+    const { path, db } = await realPr8Database();
+    db.run("UPDATE runs SET state = ?", [state]); db.close();
+    const store = await SqliteConversationStore.open(path);
+    try {
+      expect(store.getRun("run_pr8_explicit")?.state).toBe(state);
+      expect(store.getRun("run_pr8_explicit")?.maxMemberTurns).toBe(["queued", "running", "waiting-human"].includes(state) ? 24 : 1);
+    } finally { store.close(); }
+  });
+}
+
+for (const variant of ["larger", "automatic", "direct"] as const) {
+  test(`PR8 migration preserves ${variant} budget`, async () => {
+    const { path, db } = await realPr8Database();
+    if (variant === "larger") db.run("UPDATE runs SET max_member_turns = 64");
+    if (variant === "automatic") db.run("UPDATE runs SET mode = 'automatic', max_member_turns = 2");
+    if (variant === "direct") db.run("UPDATE runs SET conversation_id = ?", [createDirectConversationId(A)]);
+    db.close(); const store = await SqliteConversationStore.open(path);
+    try { expect(store.getRun("run_pr8_explicit")?.maxMemberTurns).toBe(variant === "larger" ? 64 : variant === "automatic" ? 2 : 1); }
+    finally { store.close(); }
+  });
+}
+
+test("PR9 schema reopen never replenishes a migrated Run budget or consumption", async () => {
+  const { path, db } = await realPr8Database(); db.close();
+  const migrated = await SqliteConversationStore.open(path);
+  expect(migrated.getRun("run_pr8_explicit")?.maxMemberTurns).toBe(24); migrated.close();
+  const updated = await createSqlDriver(path);
+  updated.run("UPDATE runs SET max_member_turns = 2, consumed_member_turns = 1, budget_exhausted = 1"); updated.close();
+  const reopened = await SqliteConversationStore.open(path);
+  try { expect(reopened.getRun("run_pr8_explicit")).toMatchObject({ maxMemberTurns: 2, consumedMemberTurns: 1 }); }
+  finally { reopened.close(); }
+  const inspect = await createSqlDriver(path);
+  try { expect(inspect.get<{ budget_exhausted: number }>("SELECT budget_exhausted FROM runs")?.budget_exhausted).toBe(1); }
+  finally { inspect.close(); }
+});
+
+test("PR8 budget backfill failure rolls back the PR9 schema marker before retry", async () => {
+  const { path, db } = await realPr8Database();
+  db.exec("CREATE TRIGGER fail_budget_upgrade BEFORE UPDATE OF max_member_turns ON runs BEGIN SELECT RAISE(ABORT, 'upgrade interrupted'); END;");
+  db.close(); await expect(SqliteConversationStore.open(path)).rejects.toThrow("upgrade interrupted");
+  const inspect = await createSqlDriver(path);
+  try {
+    expect(inspect.all<{ name: string }>("PRAGMA table_info(runs)").some((c) => c.name === "budget_exhausted")).toBe(false);
+    expect(inspect.get("SELECT name FROM sqlite_master WHERE name = 'recovery_attempts'")).toBeUndefined();
+    inspect.exec("DROP TRIGGER fail_budget_upgrade");
+  } finally { inspect.close(); }
+  const retried = await SqliteConversationStore.open(path);
+  try { expect(retried.getRun("run_pr8_explicit")?.maxMemberTurns).toBe(24); }
+  finally { retried.close(); }
+});
+
+test("ghost-topic Group teardown removes recovery attempt audit before deleting its root", async () => {
+  const { h, accepted } = await startedStore("read-only", true);
+  try {
+    expect(h.store.convergePreviousOwnerClaims("new-owner", EXPIRED)[0]?.outcome).toBe("requeued");
+    const inspect = await createSqlDriver(h.path);
+    try { expect(inspect.get<{ n: number }>("SELECT COUNT(*) AS n FROM recovery_attempts")?.n).toBe(1); }
+    finally { inspect.close(); }
+    delete h.state.conversation_topics[h.topic.id];
+    await h.service.teardownGroupConversation(h.group.id);
+    expect(h.state.conversations[h.group.id]).toBeUndefined();
+    expect(h.store.getRun(accepted.run.id)).toBeUndefined(); expect(h.store.hasDurableGroupWork(h.group.id)).toBe(false);
+    const after = await createSqlDriver(h.path);
+    try { expect(after.get<{ n: number }>("SELECT COUNT(*) AS n FROM recovery_attempts")?.n).toBe(0); }
+    finally { after.close(); }
+    expect(h.calls).toHaveLength(0);
+  } finally { h.store.close(); }
+});
+
+test("a corrupted handoff trigger borrowing a later Run fails before target provider start", async () => {
+  let h!: Harness;
+  h = await harness({ onRun: async (input) => {
+    if (input.botId === A) {
+      const receipt = await h.send(input);
+      const later = await h.accept("later-human-request");
+      h.store.directWriteForTest("member_turns", receipt.memberTurn.id, { trigger_message_ids_json: JSON.stringify([later.message.id]) });
+      // Keep Run B queued so the corruption check counts only Run A calls.
+      await h.service.cancelRun(later.run.id);
+    }
+    return { status: "completed", text: "healthy sender" };
+  } });
+  try {
+    const accepted = await h.accept(); await h.dispatcher.kick();
+    expect(h.calls.filter((input) => input.runId === accepted.run.id && input.botId === B)).toHaveLength(0);
+    const target = h.store.listMemberTurns(accepted.run.id).find((turn) => turn.botId === B)!;
+    expect(target.startedAt).toBeUndefined(); expect(target.state).toBe("failed");
+    expect(target.failureReason).toBe("trigger_message_not_found");
+    expect(h.store.getMemberResult(h.store.listMemberTurns(accepted.run.id)[0]!)?.content).toBe("healthy sender");
+  } finally { h.store.close(); }
+});
+
+test("a corrupted explicit trigger borrowing a later Run starts no provider", async () => {
+  const h = await harness();
+  try {
+    const current = await h.accept(), later = await h.accept("later-human-request");
+    h.store.directWriteForTest("member_turns", current.memberTurn!.id, { trigger_message_ids_json: JSON.stringify([later.message.id]) });
+    await h.service.cancelRun(later.run.id); await h.dispatcher.kick();
+    expect(h.calls).toHaveLength(0);
+    expect(h.store.getMemberTurn(current.memberTurn!.id)).toMatchObject({ state: "failed", failureReason: "trigger_message_not_found" });
+    expect(h.store.getMemberTurn(current.memberTurn!.id)?.startedAt).toBeUndefined();
+  } finally { h.store.close(); }
+});
+
+test("Router durable commit rejects a later same-Topic Run trigger before creating work", async () => {
+  const h = await harness();
+  try {
+    const current = h.store.acceptRequest({ conversationId: h.group.id, topicId: h.topic.id,
+      requestId: "automatic", botId: A, content: "current request", mode: "automatic", members: [], now: NOW,
+      profileSnapshot: snapshotGroupMemberProfile(h.bots.getBot(A), h.topic.executionTarget!, NOW) });
+    const later = await h.accept("later-human-request");
+    const routing = h.store.markRoutingState(current.run.id, "routing", NOW);
+    expect(() => h.store.applyRoutingDecision({ runId: routing.id, requestMessageId: current.message.id,
+      routingGeneration: routing.routingGeneration, now: NOW,
+      decision: { type: "dispatch", mode: "single", assignments: [{ id: "assignment", botId: A, task: "must not start",
+        triggerMessageIds: [current.message.id, later.message.id],
+        profileSnapshot: snapshotGroupMemberProfile(h.bots.getBot(A), h.topic.executionTarget!, NOW) }] },
+    })).toThrow("outside this run's topic");
+    expect(h.store.listMemberTurns(current.run.id)).toHaveLength(0);
+    expect(h.store.listDispatchesForRun(current.run.id)).toHaveLength(0); expect(h.calls).toHaveLength(0);
+  } finally { h.store.close(); }
+});
+
+test("mixed PR9 column migration and Topic teardown preserve accepted ownership", async () => {
   const h = await harness(); const accepted = await h.accept(); h.store.close();
   const db = await createSqlDriver(h.path);
   db.exec("DROP INDEX idx_handoff_invocation; DROP INDEX idx_handoff_envelope; ALTER TABLE messages DROP COLUMN handoff_json; ALTER TABLE member_turns DROP COLUMN handoff_source_turn_id; ALTER TABLE member_turns DROP COLUMN handoff_invocation_id; ALTER TABLE runs DROP COLUMN quarantined_bot_ids_json; ALTER TABLE runs DROP COLUMN budget_exhausted; DROP TABLE recovery_attempts;");

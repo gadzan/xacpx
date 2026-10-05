@@ -9,7 +9,7 @@ import type { SessionService } from "../sessions/session-service";
 import { ConversationError } from "./conversation-error";
 import { isRunCancelling, requireMemberResult } from "./conversation-store";
 import { conversationExecutionOrigin, conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
-import { requestSnapshotMatches, type ClaimedWork, type ConversationStore } from "./conversation-store";
+import { publicMessageMatchesRunScope, requestSnapshotMatches, type ClaimedWork, type ConversationStore } from "./conversation-store";
 import { isEffectConcurrencySafe } from "./conversation-filesystem-policy";
 import type { GroupHandoffService } from "./group-handoff";
 import {
@@ -1179,12 +1179,11 @@ export class ConversationDispatcher {
     return [...rows.values()];
   }
 
-  /** Durable public message lookup scoped to this Run's Conversation+Topic. */
+  /** Durable lookup revalidates the request boundary as well as Topic scope. */
   private getMessageInScope(messageId: string, work: ClaimedWork) {
     const message = this.store.getMessage(messageId);
-    if (!message
-      || message.conversationId !== work.run.conversationId
-      || message.topicId !== work.run.topicId) {
+    const request = this.store.getMessage(work.run.requestMessageId);
+    if (!publicMessageMatchesRunScope(message, work.run, request)) {
       return undefined;
     }
     return message;

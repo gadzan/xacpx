@@ -39,7 +39,7 @@ import type {
   SettleCancelBatchResult,
   SettledCancelMember,
 } from "./conversation-store";
-import { MAX_AUTOMATIC_MEMBER_TURNS, MAX_QUEUED_RUNS_PER_TOPIC, isRunCancelling, requestSnapshotMatches } from "./conversation-store";
+import { MAX_AUTOMATIC_MEMBER_TURNS, MAX_QUEUED_RUNS_PER_TOPIC, isRunCancelling, publicMessageMatchesRunScope, requestSnapshotMatches } from "./conversation-store";
 import {
   conversationExecutionOrigin,
   parseHumanIngress,
@@ -638,7 +638,8 @@ export class SqliteConversationStore implements ConversationStore {
 
   static async open(path: string, options?: SqliteConversationStoreOptions): Promise<SqliteConversationStore> {
     const db = await createSqlDriver(path);
-    return new SqliteConversationStore(db, options);
+    try { return new SqliteConversationStore(db, options); }
+    catch (error) { db.close(); throw error; }
   }
 
 
@@ -757,8 +758,7 @@ export class SqliteConversationStore implements ConversationStore {
       // later human Run or a future sibling result.
       for (const id of triggerIds) {
         const message = this.requireMessage(id);
-        if (message.conversationId !== run.conversationId || message.topicId !== run.topicId
-          || (message.seq > request.seq && message.runId !== run.id)) {
+        if (!publicMessageMatchesRunScope(message, run, request)) {
           throw new ConversationError("trigger_message_not_found", "handoff context is outside the Topic");
         }
       }
@@ -2231,12 +2231,11 @@ export class SqliteConversationStore implements ConversationStore {
     assignments: readonly RoutingAssignmentInput[],
     requestMessageId: string,
   ): void {
+    const request = this.getMessage(run.requestMessageId);
     for (const assignment of assignments) {
       for (const messageId of assignment.triggerMessageIds) {
         const message = this.getMessage(messageId);
-        if (!message
-          || message.conversationId !== run.conversationId
-          || message.topicId !== run.topicId) {
+        if (!publicMessageMatchesRunScope(message, run, request)) {
           throw new ConversationError(
             "routing_message_not_found",
             `routing assignment "${assignment.id}" references message "${messageId}" outside this run's topic`,
@@ -2371,6 +2370,7 @@ export class SqliteConversationStore implements ConversationStore {
       this.sqlite.run("DELETE FROM member_turns WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM messages WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM routing_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
+      this.sqlite.run("DELETE FROM recovery_attempts WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
       this.sqlite.run("DELETE FROM runs WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM topic_seq WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM topic_lifecycle WHERE conversation_id = ?", [conversationId]);
@@ -2387,22 +2387,38 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   private ensurePublicHandoffSchema(): void {
-    const ensure = (table: string, name: string, sqlType: string): void => {
-      if (!this.sqlite.all<{ name: string }>(`PRAGMA table_info(${table})`).some((column) => column.name === name)) {
-        this.sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${sqlType}`);
+    // The marker and backfill share one transaction: interrupted upgrades must
+    // retry, and subsequent PR9 opens must never replenish a bounded budget.
+    this.sqlite.transaction(() => {
+      const upgrade = !this.sqlite.all<{ name: string }>("PRAGMA table_info(runs)").some((column) => column.name === "budget_exhausted");
+      const ensure = (table: string, name: string, sqlType: string): void => {
+        if (!this.sqlite.all<{ name: string }>(`PRAGMA table_info(${table})`).some((column) => column.name === name)) {
+          this.sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${sqlType}`);
+        }
+      };
+      ensure("messages", "handoff_json", "TEXT");
+      ensure("member_turns", "handoff_source_turn_id", "TEXT");
+      ensure("member_turns", "handoff_invocation_id", "TEXT");
+      ensure("runs", "quarantined_bot_ids_json", "TEXT NOT NULL DEFAULT '[]'");
+      ensure("runs", "budget_exhausted", "INTEGER NOT NULL DEFAULT 0");
+      this.sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_invocation ON member_turns
+        (handoff_source_turn_id, handoff_invocation_id) WHERE handoff_source_turn_id IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_envelope ON messages (json_extract(handoff_json, '$.memberTurnId')) WHERE handoff_json IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS recovery_attempts (
+          member_turn_id TEXT NOT NULL, run_id TEXT NOT NULL, source_turn_id TEXT NOT NULL,
+          generation INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(member_turn_id, source_turn_id));`);
+      if (upgrade) {
+        const oldRuns = this.sqlite.all<{ id: string; conversation_id: string }>(
+          "SELECT id, conversation_id FROM runs WHERE mode = 'explicit' AND state IN ('queued', 'running', 'waiting-human') AND max_member_turns < ?",
+          [MAX_AUTOMATIC_MEMBER_TURNS]);
+        for (const run of oldRuns) {
+          const member = this.sqlite.get<{ bot_id: string }>("SELECT bot_id FROM member_turns WHERE run_id = ? ORDER BY member_index LIMIT 1", [run.id]);
+          // Direct has no Group handoff primitive; preserve its original budget.
+          if (member && run.conversation_id === createDirectConversationId(member.bot_id)) continue;
+          this.sqlite.run("UPDATE runs SET max_member_turns = MAX(max_member_turns, ?) WHERE id = ?", [MAX_AUTOMATIC_MEMBER_TURNS, run.id]);
+        }
       }
-    };
-    ensure("messages", "handoff_json", "TEXT");
-    ensure("member_turns", "handoff_source_turn_id", "TEXT");
-    ensure("member_turns", "handoff_invocation_id", "TEXT");
-    ensure("runs", "quarantined_bot_ids_json", "TEXT NOT NULL DEFAULT '[]'");
-    ensure("runs", "budget_exhausted", "INTEGER NOT NULL DEFAULT 0");
-    this.sqlite.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_invocation ON member_turns
-      (handoff_source_turn_id, handoff_invocation_id) WHERE handoff_source_turn_id IS NOT NULL;
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_envelope ON messages (json_extract(handoff_json, '$.memberTurnId')) WHERE handoff_json IS NOT NULL;
-      CREATE TABLE IF NOT EXISTS recovery_attempts (
-        member_turn_id TEXT NOT NULL, run_id TEXT NOT NULL, source_turn_id TEXT NOT NULL,
-        generation INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(member_turn_id, source_turn_id));`);
+    });
   }
 
   private ensureDispatchAuthorityEpochColumn(): void {

@@ -80,13 +80,35 @@ Group capability. Capability checks now short-circuit before that lookup. The
 existing ordinary Router golden fixture passes without changing its recording;
 the trusted Group error/permission/sentinel integration cases remain covered.
 
+PR374 review identified three gaps, now covered by regressions:
+
+- PR8 in-flight explicit Group Runs retained their one-member budget. Real
+  queued and claimed-not-started SQL fixtures were generated from unmodified
+  PR8 source at the base commit, rather than stripping PR9 columns from a new
+  Run. Their first recovered `group_send` completes. First schema upgrade now
+  raises only nonterminal explicit Group budgets to at least 24, retaining
+  larger budgets and preserving Direct/automatic/terminal rows. Marker and
+  backfill commit atomically under the SQLite writer lock; interrupted
+  migration rolls back and retries, and later opens never refill the budget
+  or reset consumption. Failed store construction closes its SQLite handle.
+- Group teardown for missing-Topic Runs now removes `recovery_attempts` inside
+  the same transaction before deleting their Runs. The real ghost-topic
+  `teardownGroupConversation` regression checks the audit table directly after
+  the Group root disappears.
+- Router commit, handoff commit and dispatcher consumption share
+  `publicMessageMatchesRunScope`: a valid exact human request plus exact
+  Conversation/Topic and pre-request sequence or current-Run identity.
+  Corrupt explicit and handoff trigger rows borrowing a later Run's human
+  request fail before provider start; Router commit rejects the same reference
+  before creating any MemberTurn or dispatch. Healthy sender evidence survives.
+
 ## Validation and residual limits
 
-- Handoff/recovery file: 61 passing tests; Conversation suite: 467 passing tests.
-- Final Conversation + Session handler + abort + MCP server + wire DTO sweep: 582 passing tests across 17 files.
+- Handoff/recovery file: 79 passing tests; Conversation suite: 485 passing tests. Review remediation adds 18 cases.
+- Final Conversation + Session handler + abort + MCP server + wire DTO sweep: 600 passing tests across 17 files.
 - The existing ordinary Router pre-aborted golden test passes locally without changing its recording. Initial Linux/macOS CI failed only at that regression; the final exact-HEAD CI status is recorded in the PR/report.
 - Relay Web: 1,936 passing tests across 147 files (includes two new public envelope/reconnect/quarantine cases).
-- Extended affected sweep: 189 files, 2,811 passed, 55 failed, 1 skipped. This snapshot preceded the final five additional handoff identity/unknown cases; those are covered in the final 582-test sweep. Every one of the 55 failure names reproduced on clean merged main `6e7aa2ba4c27f6c4c375d5bc4bd4124decc20647` under Windows/Bun 1.4.2/Node 24.21.0. Comparison found zero PR-only failures. The original ordinary hidden-session test added here failed during development and was fixed; it passes in the final sweep and is not counted as baseline.
+- Extended affected sweep: 189 files, 2,811 passed, 55 failed, 1 skipped. This snapshot preceded the final five additional handoff identity/unknown cases; those are covered in the final 600-test sweep. Every one of the 55 failure names reproduced on clean merged main `6e7aa2ba4c27f6c4c375d5bc4bd4124decc20647` under Windows/Bun 1.4.2/Node 24.21.0. Comparison found zero PR-only failures. The original ordinary hidden-session test added here failed during development and was fixed; it passes in the final sweep and is not counted as baseline.
 - `npm test` stops at the existing Hermes Linux file-URL fixture on Windows; the clean merged-main run fails at the same test. Other baseline failures concern golden fixture paths, Windows home/worktree path expectations, Unix chmod assumptions, IPC/terminal lock timing, RMUX probe fixtures and adapter-registry CLI expectations. They are not reported as green.
 - `bunx tsc --noEmit`, `bun run build:packages`, final root `bun run build`, acpx import policy and `git diff --check`: passed. All-package build includes Web vue-tsc, protocol declarations/runtime export assertions, relay bundle and channel packages.
 - Pinned real-acpx compatibility: 13 passing tests. Release-boundary command fails before executing on Windows (`spawnSync bun` ENOENT); the same clean-main command reproduces this limitation. Linux CI owns its execution.

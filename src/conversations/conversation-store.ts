@@ -112,6 +112,22 @@ export function requestSnapshotMatches(
     && message.runId === run.id;
 }
 
+/** Public trigger boundary shared by Router/handoff commit and execution.
+ * Later Topic messages are legal only by exact current-Run identity; a
+ * queued sibling Run's human request must never become this Run's context. */
+export function publicMessageMatchesRunScope(
+  message: ConversationMessage | undefined,
+  run: ConversationRun,
+  request: ConversationMessage | undefined,
+): message is ConversationMessage {
+  return requestSnapshotMatches(request, run)
+    && request?.id === run.requestMessageId
+    && message !== undefined
+    && message.conversationId === run.conversationId
+    && message.topicId === run.topicId
+    && (message.seq <= request.seq || message.runId === run.id);
+}
+
 export interface AcceptRequestResult {
   reused: boolean;
   message: ConversationMessage;
