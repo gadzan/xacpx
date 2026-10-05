@@ -11,6 +11,7 @@ import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import type { PerfSpan } from "../../perf/perf-tracer";
 import type { HelpTopicMetadata } from "../help/help-types";
 import type { ChatRequestMetadata } from "../../weixin/agent/interface";
+import type { ConversationTurnCorrelation } from "../../control/conversation-control-dtos";
 import { buildCoordinatorPrompt } from "../../orchestration/build-coordinator-prompt";
 import { stableCoordinatorSession } from "../../orchestration/coordinator-identity";
 import { toDisplaySessionAlias, getChannelIdFromChatKey, scopeDisplayAliasToInternal, resolveSessionAliasForInput } from "../../channels/channel-scope";
@@ -193,17 +194,33 @@ function rejectHiddenOwnedSession(context: SessionHandlerContext, alias: string)
 }
 
 /**
- * Direct Bot / Group turns isolate on `bot:<conversationId>:<topicId>` and
- * bind the product-owned hidden session on purpose (ConversationExecutionPort
- * → ConsoleAgent → CommandRouter). The ordinary-session fence must not fire
- * on that key: it would return `sessionHiddenOwned` as the assistant reply
- * and the agent would never run.
- *
- * Well-formed isolation keys only. A prefix-only `bot:garbage` is not a
- * Conversation address, so it keeps the fence.
+ * Conversation-owned sessions are reachable only when the core-private
+ * Conversation execution path proves this exact turn. The `bot:<c>:<t>`
+ * isolation key is routing data, not authority: public Control/channel callers
+ * can supply the same string.
  */
-function isAuthorizedConversationPrompt(chatKey: string): boolean {
-  return parseDirectConversationChatKey(chatKey) !== undefined;
+function isAuthorizedConversationPrompt(
+  context: SessionHandlerContext,
+  session: ResolvedSession,
+  chatKey: string,
+  trusted: ConversationTurnCorrelation | undefined,
+): boolean {
+  if (!trusted) return false;
+  const parsed = parseDirectConversationChatKey(chatKey);
+  if (
+    !parsed
+    || parsed.conversationId !== trusted.conversationId
+    || parsed.topicId !== trusted.topicId
+  ) {
+    return false;
+  }
+  const owner = context.sessions.getLogicalSessionRecord?.(session.alias)?.owner;
+  if (owner?.kind !== "bot-direct" && owner?.kind !== "group-member") {
+    return false;
+  }
+  return (owner.botId === undefined || owner.botId === trusted.botId)
+    && (owner.conversationId === undefined || owner.conversationId === trusted.conversationId)
+    && (owner.topicId === undefined || owner.topicId === trusted.topicId);
 }
 
 export async function handleSessions(context: SessionHandlerContext, chatKey: string): Promise<RouterResponse> {
@@ -1274,8 +1291,9 @@ export async function handlePromptWithSession(
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   onUsage?: (usage: PromptUsage) => void | Promise<void>,
   onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
+  trustedConversationExecution?: ConversationTurnCorrelation,
 ): Promise<RouterResponse> {
-  if (!isAuthorizedConversationPrompt(chatKey)) {
+  if (!isAuthorizedConversationPrompt(context, session, chatKey, trustedConversationExecution)) {
     const hidden = rejectHiddenOwnedSession(context, session.alias);
     if (hidden) {
       return hidden;
@@ -1333,6 +1351,7 @@ export async function handlePrompt(
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   onUsage?: (usage: PromptUsage) => void | Promise<void>,
   onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
+  trustedConversationExecution?: ConversationTurnCorrelation,
 ): Promise<RouterResponse> {
   const session = metadata?.boundSessionAlias
     ? context.sessions.getResolvedSessionByInternalAlias(metadata.boundSessionAlias)
@@ -1341,7 +1360,7 @@ export async function handlePrompt(
     return { text: t().session.noCurrent };
   }
 
-  return await handlePromptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
+  return await handlePromptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands, trustedConversationExecution);
 }
 
 function toCoordinatorRouteChatMetadata(
