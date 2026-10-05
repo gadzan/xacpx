@@ -43,12 +43,14 @@ function assertSessionKeyMatchesAlias(key: string, session: LogicalSession): voi
 }
 import { ConversationError } from "./conversation-error";
 import type { ConversationDispatcher } from "./conversation-dispatcher";
+import type { ConversationRouterEngine, RoutingAttemptOutcome } from "./conversation-router-engine";
 import { parseHumanIngress } from "./conversation-execution";
 import {
   emitConversationProductEvent,
   type ConversationProductEventSink,
 } from "./conversation-product-events";
 import type { AcceptRequestResult, ConversationStore, ListMessagesQuery } from "./conversation-store";
+import { isRunCancelling } from "./conversation-store";
 import type {
   ConversationMessage,
   ConversationRecord,
@@ -59,6 +61,7 @@ import type {
   MemberTurnRecord,
   WorkspaceIsolationPolicy,
 } from "./conversation-types";
+import { TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 
 export interface ConversationRunServiceOptions {
   now?: () => Date;
@@ -76,6 +79,10 @@ export interface ConversationRunServiceOptions {
   beforeTeardownFinalize?: () => Promise<void>;
   afterTeardownMarkedDeleting?: () => Promise<void>;
   autoKick?: boolean;
+  /** PR8 stateless automatic Router. Absent disables automatic mode entirely
+   *  (`automatic_unsupported`), which keeps the PR7 behavior for every
+   *  deployment that has not opted in. */
+  routerEngine?: ConversationRouterEngine;
   /** Verified physical+logical release. Required; never LogicalSession-only. */
   releaseOwnedSession: ReleaseOwnedSession;
   onProductEvent?: ConversationProductEventSink;
@@ -101,9 +108,17 @@ export class ConversationRunService {
   private readonly beforeTeardownFinalize?: () => Promise<void>;
   private readonly afterTeardownMarkedDeleting?: () => Promise<void>;
   private readonly autoKick: boolean;
+  /** Present only when a capability-provable Router is configured; automatic
+   *  mode is unsupported without it (fail closed). */
+  private readonly routerEngine?: ConversationRouterEngine;
   /** `pending` until the first successful post-lock kick; `unavailable` is sticky
    *  fail-closed after that kick throws so accept cannot pile up unconsumed work. */
   private activation: "pending" | "activated" | "unavailable" = "pending";
+  /** Automatic routing steps currently in flight. The accept path and the
+   *  batch-settle hook fire routing without awaiting; this set lets callers
+   *  settle the pending work deterministically (tests, shutdown). */
+  private readonly inFlightRouting = new Map<string, Promise<void>>();
+  private readonly routingAbortControllers = new Map<string, AbortController>();
   private readonly releaseOwnedSession: ReleaseOwnedSession;
   private readonly onProductEvent?: ConversationProductEventSink;
   private closed = false;
@@ -127,6 +142,7 @@ export class ConversationRunService {
     this.beforeTeardownFinalize = options.beforeTeardownFinalize;
     this.afterTeardownMarkedDeleting = options.afterTeardownMarkedDeleting;
     this.autoKick = options.autoKick ?? true;
+    this.routerEngine = options.routerEngine;
     this.releaseOwnedSession = options.releaseOwnedSession;
     this.onProductEvent = options.onProductEvent;
     this.bots.setConversationWork(this.store);
@@ -145,6 +161,13 @@ export class ConversationRunService {
 
   async shutdown(): Promise<void> {
     this.closed = true;
+    this.dispatcher.stop();
+    for (const controller of this.routingAbortControllers.values()) {
+      controller.abort(new ConversationError("router_shutdown", "Conversation consumer is shutting down"));
+    }
+    // Drain local attempts without failing resumable routing work. Activation
+    // will recompute uncommitted decisions under a new generation.
+    await this.awaitRouting();
     await this.dispatcher.shutdown();
     this.store.close();
   }
@@ -174,11 +197,19 @@ export class ConversationRunService {
       // dispatch. The lock is stronger death evidence than lease expiry.
       this.store.convergePreviousOwnerClaims(this.dispatcher.ownerId, this.now().toISOString());
       await this.dispatcher.kick();
+      // PR8 crash recovery for automatic Runs: a Run that died between
+      // "Router asked" and "decision committed" restarts with a durable
+      // routing state but no in-process memory. Re-ask every automatic Run
+      // that durable rows prove still owes a decision, AFTER the dispatcher
+      // drain settles prior batches — so a recovered batch terminal is what
+      // triggers the next decision, exactly like a live one.
+      await this.recoverRoutableAutomaticRuns();
     } catch (error) {
       this.activation = "unavailable";
       throw error;
     }
     this.activation = "activated";
+    if (this.autoKick && !this.closed) void this.dispatcher.kick().catch(() => {});
   }
 
   isConsumerActivated(): boolean {
@@ -201,6 +232,17 @@ export class ConversationRunService {
         "Conversation consumer failed to activate; new work is not accepted",
       );
     }
+  }
+
+  /**
+   * PR8: automatic mode is available only with a configured Router. The
+   * Router's OWN capability restriction is not re-checked here: the engine
+   * refuses an unprovable Router at routing time, and `bindRouter` only
+   * returns capability-restricted implementations, so a configured engine
+   * means a configured+provable Router in practice. Both layers fail closed.
+   */
+  private routerAvailable(): boolean {
+    return this.routerEngine?.available === true;
   }
 
   async acceptDirectPrompt(input: {
@@ -272,7 +314,13 @@ export class ConversationRunService {
    *  live set widens beyond held gates. Per-member snapshots use
    *  snapshotGroupMemberProfile (Topic workspace wins); disabled/missing
    *  members fail closed at accept, and dispatch re-checks authoritatively.
-   *  `automatic` mode is rejected (PR8).
+   *
+   *  PR8 `automatic` mode: accepted with ZERO members — no human selected
+   *  anyone, so the durable Run carries no MemberTurn and the Router decides
+   *  the first batch. Automatic mode is available only when a Router whose
+   *  capability restriction is PROVABLE before execution is configured;
+   *  otherwise accept fails closed with `automatic_unsupported` (never a
+   *  partially-routed Run).
    */
   async acceptGroupPrompt(input: {
     conversationId: string;
@@ -283,19 +331,22 @@ export class ConversationRunService {
     humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
     this.assertAccepting();
+    // Durable replay precedes mutable Router/configuration and live-state gates.
+    const alreadyAccepted = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
+    if (alreadyAccepted) return alreadyAccepted;
     const conversation = this.requireConversation(input.conversationId);
     if (conversation.kind !== "group") {
       throw new ConversationError("conversation_not_group", `conversation "${input.conversationId}" is not a Group`);
     }
     const parsed = this.parseGroupTarget(input.target, conversation);
-    // Durable idempotency first: a retry of an already-accepted request must
-    // return the original Run even when current live state (membership,
-    // Topic status, deletion) would reject the request. Direct prompt has the
-    // same precedence (`getAcceptedRequest` before live checks) — the Web
-    // relies on it to survive a lost response with `currentDraftRequestId`.
-    const alreadyAccepted = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
-    if (alreadyAccepted) {
-      return alreadyAccepted;
+    // PR8 capability gate, BEFORE any durable write: automatic mode requires
+    // a Router that can prove its capability restriction up front. An
+    // unprovable configuration is unsupported, never "accepted and hoped".
+    if (parsed.kind === "automatic" && !this.routerAvailable()) {
+      throw new ConversationError(
+        "automatic_unsupported",
+        "automatic Group routing requires a capability-restricted Router, which is not configured",
+      );
     }
     for (;;) {
       const probeIds = this.groupMemberCandidates(input.conversationId, parsed);
@@ -313,7 +364,14 @@ export class ConversationRunService {
         if (this.store.isConversationDeleting(input.conversationId) || this.store.isTopicDeleting(input.topicId)) {
           throw new ConversationError("conversation_deleting", "conversation is deleting");
         }
-        const selected = this.resolveGroupMembers(live, parsed);
+        // Automatic admission snapshots only a carrier, never a MemberTurn.
+        // Re-derive it under the probed gate and retry if its identity changed.
+        const selected = parsed.kind === "automatic"
+          ? this.groupEligibleMembers(live).slice(0, 1)
+          : this.resolveGroupMembers(live, parsed);
+        if (parsed.kind === "automatic" && selected.length === 0) {
+          throw new ConversationError("empty_target", "Group has no eligible member for automatic routing");
+        }
         // Widen detection: `selected` is re-derived from live membership
         // inside the held gates. Targeted mode holds exactly its selection,
         // so this is trivially covered; everyone mode retries when live
@@ -344,6 +402,28 @@ export class ConversationRunService {
         });
         await this.beforeAcceptPersist?.();
         const humanIngress = parseHumanIngress(input.humanIngress);
+        // Automatic Runs are accepted with the FIRST eligible member as the
+        // durable snapshot carrier (the Run's own execution identity) but with
+        // NO MemberTurn: no human selected anyone, so nothing may execute
+        // until the Router decides. `members: []` means the durable Run owns
+        // zero members and `mode: "automatic"` carries the 24-turn budget
+        // default. Routing begins only after this transaction commits.
+        if (parsed.kind === "automatic") {
+          return this.store.acceptRequest({
+            conversationId: input.conversationId,
+            topicId: input.topicId,
+            requestId: input.requestId,
+            botId: selected[0]!,
+            content: input.text,
+            profileSnapshot: snapshots[0]!,
+            mode: "automatic",
+            members: [],
+            now: timestamp,
+            ...(humanIngress
+              ? { authorityEpoch: this.dispatcher.authorityEpoch, humanIngress }
+              : {}),
+          });
+        }
         const [firstId, ...restIds] = selected;
         const [firstSnapshot, ...restSnapshots] = snapshots;
         if (!firstId || !firstSnapshot) {
@@ -383,6 +463,14 @@ export class ConversationRunService {
         }
         if (this.autoKick && this.activation === "activated") {
           void this.dispatcher.kick();
+        }
+        // PR8: an automatic Run's first dispatch decision is the Router's.
+        // Routed AFTER the accept transaction commits and after the accept
+        // projection, so a Router failure surfaces as a Run-level failure the
+        // client can see — never as a half-accepted request. `reused` replays
+        // do not re-route: the durable Run already carries its outcome.
+        if (accepted.run.mode === "automatic" && !accepted.reused) {
+          this.trackRouting(accepted.run.id, /* kick */ true);
         }
         return accepted;
       }
@@ -724,11 +812,13 @@ export class ConversationRunService {
 
   /** Normalize the wire target into an explicit selection. Legacy Direct
    *  `{ botId }` on a Group path selects that single member. `automatic`
-   *  is rejected: PR7 ships explicit routing only. */
+   *  selects nobody: the Router decides the first batch, so the parsed target
+   *  carries no members (and the accept path requires a capability-restricted
+   *  Router before admitting it). */
   private parseGroupTarget(
     target: { botId: string } | { mode: "members"; botIds: string[] } | { mode: "everyone" } | { mode: "automatic" } | undefined,
     conversation: ConversationRecord,
-  ): { kind: "members"; botIds: string[] } | { kind: "everyone" } {
+  ): { kind: "members"; botIds: string[] } | { kind: "everyone" } | { kind: "automatic" } {
     if (!target) {
       throw new ConversationError("target_required", "explicit Group prompt requires a target");
     }
@@ -769,6 +859,11 @@ export class ConversationRunService {
     if (target.mode === "everyone") {
       return { kind: "everyone" };
     }
+    if (target.mode === "automatic") {
+      // Capability gating happens in acceptGroupPrompt (before any durable
+      // write); here the target is simply "no human selection".
+      return { kind: "automatic" };
+    }
     throw new ConversationError("automatic_unsupported", "automatic Group routing is not available in this release");
   }
 
@@ -784,8 +879,21 @@ export class ConversationRunService {
    *  Everyone whose actual target set is tiny. */
   private groupMemberCandidates(
     conversationId: string,
-    parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" },
+    parsed: { kind: "members"; botIds: string[] } | { kind: "everyone" } | { kind: "automatic" },
   ): string[] {
+    if (parsed.kind === "automatic") {
+      const conversation = this.requireConversation(conversationId);
+      if (conversation.kind !== "group") {
+        throw new ConversationError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
+      }
+      const carrier = this.groupEligibleMembers(conversation)[0];
+      if (!carrier) {
+        throw new ConversationError("empty_target", "Group has no enabled member for automatic routing");
+      }
+      // The explicit/everyone cap bounds selected dispatch members. An
+      // automatic Run owns zero members until a budgeted Router decision.
+      return [carrier];
+    }
     if (parsed.kind === "members") {
       // Gate acquisition is process-lifetime state: `runLifecycleAll` creates a
       // permanent mutex entry per supplied id and never releases them. So the
@@ -943,7 +1051,139 @@ export class ConversationRunService {
 
   async cancelRun(runId: string): Promise<void> {
     this.assertOpen();
-    await this.dispatcher.cancelRun(runId);
+    await this.cancelRunAndAbortRouting(runId);
+    this.trackReadyAutomaticRuns();
+  }
+
+  private async cancelRunAndAbortRouting(runId: string): Promise<void> {
+    // cancelRun seals durable state synchronously, then may await a dispatcher
+    // wake. Abort the Router before that wake waits on a successor's provider.
+    const cancellation = this.dispatcher.cancelRun(runId);
+    this.routingAbortControllers.get(runId)?.abort();
+    await cancellation;
+  }
+
+  /**
+   * PR8: take one automatic routing step for a Run. Callable from the accept
+   * path (first decision) and from the batch-settle hook (subsequent
+   * decisions). Expected model/input failures are recorded with the attempt
+   * fence; unexpected infrastructure failures propagate to activation.
+   */
+  routeAutomaticRun(runId: string, kick: boolean): Promise<void> {
+    const existing = this.inFlightRouting.get(runId);
+    if (existing) return existing;
+    if (this.closed) return Promise.resolve();
+    // Register ownership before invoking a Router, including synchronous re-entry.
+    const controller = new AbortController();
+    this.routingAbortControllers.set(runId, controller);
+    const task = Promise.resolve().then(() => this.performAutomaticRouting(runId, kick, controller.signal)).finally(() => {
+      if (this.inFlightRouting.get(runId) === task) this.inFlightRouting.delete(runId);
+      if (this.routingAbortControllers.get(runId) === controller) this.routingAbortControllers.delete(runId);
+    });
+    this.inFlightRouting.set(runId, task);
+    return task;
+  }
+
+  private async performAutomaticRouting(runId: string, kick: boolean, signal: AbortSignal): Promise<void> {
+    const engine = this.routerEngine;
+    if (!engine?.available) {
+      const current = this.store.getRun(runId);
+      if (!current || current.mode !== "automatic" || TERMINAL_RUN_STATES.includes(current.state) || isRunCancelling(current)) return;
+      // No Router configured: automatic Runs were never admissible, so a
+      // surviving one (config removed after accept) must fail closed rather
+      // than sit nonterminal forever.
+      const failed = this.store.failRun(runId, "automatic_unsupported", "failed", this.now().toISOString());
+      this.emitRoutingOutcome({ run: failed, outcome: "failed", reason: "automatic_unsupported" });
+      this.trackReadyAutomaticRuns();
+      return;
+    }
+    const outcome = await engine.route(runId, signal);
+    if (!this.closed && outcome.outcome === "dispatched" && kick && this.autoKick && this.activation === "activated") {
+      void this.dispatcher.kick().catch(() => {});
+    }
+    this.emitRoutingOutcome(outcome);
+    if (TERMINAL_RUN_STATES.includes(outcome.run.state)) {
+      this.trackReadyAutomaticRuns();
+      if (!this.closed && kick && this.autoKick && this.activation === "activated") void this.dispatcher.kick().catch(() => {});
+    }
+  }
+
+  private trackReadyAutomaticRuns(): void {
+    if (this.closed) return;
+    for (const { run } of this.store.automaticRunsAwaitingRouting()) this.trackRouting(run.id, true);
+  }
+
+  /**
+   * PR8 crash recovery for automatic Runs (plan §11.4 restart rule).
+   *
+   * The store's `automaticRunsAwaitingRouting` already applies the durable
+   * predicates: automatic, nonterminal, no Topic-blocking active Run, and no
+   * unsettled member in the ACTIVE batch. Everything left still owes a
+   * decision that no in-process memory can supply. Decisions are settled
+   * sequentially so a restart behaves exactly like the live loop.
+   */
+  private async recoverRoutableAutomaticRuns(): Promise<void> {
+    for (const { run } of this.store.automaticRunsAwaitingRouting()) {
+      if (TERMINAL_RUN_STATES.includes(run.state)) {
+        continue;
+      }
+      await this.routeAutomaticRun(run.id, /* kick */ false);
+    }
+  }
+
+  /**
+   * Fire-and-forget automatic routing, tracked so `awaitRouting()` and
+   * shutdown can settle it deterministically.
+   */
+  trackAutomaticRouting(runId: string): void {
+    this.trackRouting(runId, /* kick */ true);
+  }
+
+  /**
+   * Fire-and-forget automatic routing, tracked so `awaitRouting()` and
+   * shutdown can settle it deterministically.
+   */
+  private trackRouting(runId: string, kick: boolean): void {
+    if (this.closed) return;
+    void this.routeAutomaticRun(runId, kick).catch(() => {});
+  }
+
+  /**
+   * Await every in-flight automatic routing step. The accept path and the
+   * batch-settle hook fire routing without awaiting it, so tests (and any
+   * caller that needs a deterministic durable outcome) can settle the pending
+   * set before asserting.
+   */
+  async awaitRouting(): Promise<void> {
+    for (;;) {
+      const pending = [...this.inFlightRouting.values()];
+      if (pending.length === 0) {
+        return;
+      }
+      await Promise.allSettled(pending);
+    }
+  }
+
+  /** Current eligible Group membership: live membership with enabled Bots.
+   *  Automatic accepts use this to establish the Run's accepted execution
+   *  identity; no member is selected for execution. */
+  private groupEligibleMembers(conversation: ConversationRecord): string[] {
+    return [...new Set(conversation.botIds.filter((botId) => this.bots.getBot(botId).enabled))];
+  }
+
+  /** Project the routing outcome to Web/Relay exactly like any other Run
+   *  change: one run event (state/completion reason) plus member events for
+   *  newly dispatched turns. */
+  private emitRoutingOutcome(outcome: {
+    run: ConversationRun;
+    outcome: "dispatched" | "need-human" | "complete" | "rejected" | "failed" | "skipped";
+    reason?: string;
+    memberTurns?: MemberTurnRecord[];
+  }): void {
+    emitConversationProductEvent(this.onProductEvent, { type: "conversation-run-changed", run: outcome.run });
+    for (const memberTurn of outcome.memberTurns ?? []) {
+      emitConversationProductEvent(this.onProductEvent, { type: "member-turn-started", run: outcome.run, memberTurn });
+    }
   }
 
   async teardownDirectConversation(botId: string): Promise<void> {
@@ -968,7 +1208,7 @@ export class ConversationRunService {
     const runs = this.store.listRuns(conversationId);
     for (const run of runs) {
       if (run.state === "queued" || run.state === "running" || run.state === "waiting-human") {
-        await this.dispatcher.cancelRun(run.id);
+        await this.cancelRunAndAbortRouting(run.id);
       }
     }
     this.store.recoverExpiredClaims(this.now().toISOString());
@@ -1066,7 +1306,7 @@ export class ConversationRunService {
     const ghostRuns = this.store.listRuns(conversationId)
       .filter((run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human");
     for (const run of ghostRuns) {
-      await this.dispatcher.cancelRun(run.id);
+      await this.cancelRunAndAbortRouting(run.id);
     }
     this.store.recoverExpiredClaims(this.now().toISOString());
     const unsettled = this.store.listRuns(conversationId)
@@ -1641,7 +1881,7 @@ export class ConversationRunService {
     const runs = this.store.listRuns(conversationId, topicId);
     for (const run of runs) {
       if (run.state === "queued" || run.state === "running" || run.state === "waiting-human") {
-        await this.dispatcher.cancelRun(run.id);
+        await this.cancelRunAndAbortRouting(run.id);
       }
     }
     this.store.recoverExpiredClaims(this.now().toISOString());

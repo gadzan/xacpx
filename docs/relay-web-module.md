@@ -734,6 +734,8 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 ## 阶段范围边界
 
+Group store 的 MemberTurn 合并保留已收到的 durable assignment 与执行关联字段。同状态的薄 event/detail/reconnect snapshot 缺省 optional 字段时保留已有值，明确提供的值（包括空数组）可以更新；拒绝的旧状态仅补缺失 metadata。合法状态前进仍以新状态的 failure/blocked evidence 为准，`indeterminate` 收到成功或失败证明时不会继承旧状态的失败原因。
+
 - **阶段三**交付登录 + 实例/会话树 + 对话流。
 - **阶段四**补齐：右栏任务面板（定时/编排）、设置页（实例接入 token/保留摘要）、notice toast、
   连接恢复徽标、NUL-key 流式缓冲加固。

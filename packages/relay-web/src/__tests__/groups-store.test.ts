@@ -552,6 +552,58 @@ describe("useGroupsStore", () => {
     expect(kept?.promptRequestId).toBe("sturn_a");
   });
 
+  it("preserves assignment and failure evidence from a same-state thin member snapshot", () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const run: ConversationRunDto = { id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "failed", profileRevision: 1, createdAt: "now" };
+    store.activeRun = run;
+    const thin: MemberTurnSummaryDto = { id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      botId: "bot_a", batch: 1, attempt: 1, origin: "router", state: "failed", createdAt: "now" };
+    const rich: MemberTurnSummaryDto = { ...thin, assignmentId: "write", task: "apply patch", expectedOutput: "patch summary",
+      dependsOn: ["review"], memberIndex: 0, promptRequestId: "sturn_a", startedAt: "then", finishedAt: "later",
+      failureReason: "permission denied", blockedReason: "human-authority-unknown" };
+    const update = (memberTurn: MemberTurnSummaryDto) => store.applyEvent({ kind: "control-event", instanceId: "inst_1",
+      event: { type: "member-turn-finished", run, memberTurn } } as never);
+    update(rich); update(thin);
+    expect(store.memberTurnsById[thin.id]).toEqual(rich);
+    // Explicit optional values remain authoritative, including empty arrays
+    // and strings; omission is the only reason to retain the stored value.
+    update({ ...thin, task: "revised task", expectedOutput: "", dependsOn: [], failureReason: "typed denial",
+      blockedReason: "human-authority-required" });
+    expect(store.memberTurnsById[thin.id]).toMatchObject({ assignmentId: "write", task: "revised task",
+      expectedOutput: "", dependsOn: [], failureReason: "typed denial", blockedReason: "human-authority-required" });
+  });
+
+  for (const outcome of ["completed", "failed"] as const) {
+    it(`keeps assignment metadata without carrying old failure evidence into ${outcome} proof`, () => {
+      const store = useGroupsStore();
+      store.instanceId = "inst_1";
+      store.selectedGroupId = "conversation_g";
+      store.activeConversationId = "conversation_g";
+      store.activeTopicId = "topic_1";
+      const run: ConversationRunDto = { id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "indeterminate", profileRevision: 1, createdAt: "now" };
+      store.activeRun = run;
+      const prior: MemberTurnSummaryDto = { id: "turn_a", runId: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        botId: "bot_a", batch: 1, attempt: 1, origin: "router", state: "indeterminate", createdAt: "now",
+        assignmentId: "write", task: "apply patch", expectedOutput: "patch summary", dependsOn: ["review"],
+        promptRequestId: "sturn_a", startedAt: "then", failureReason: "old unknown result", blockedReason: "human-authority-unknown" };
+      store.memberTurnsById = { turn_a: prior };
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: { type: "member-turn-finished", run,
+        memberTurn: { id: prior.id, runId: run.id, conversationId: run.conversationId, topicId: run.topicId,
+          botId: prior.botId, batch: 1, attempt: 1, origin: "router", state: outcome, createdAt: "now", finishedAt: "later" },
+      } } as never);
+      expect(store.memberTurnsById[prior.id]).toMatchObject({ state: outcome, assignmentId: "write", task: "apply patch",
+        expectedOutput: "patch summary", dependsOn: ["review"], promptRequestId: "sturn_a", startedAt: "then", finishedAt: "later" });
+      expect(store.memberTurnsById[prior.id]?.failureReason).toBeUndefined();
+      expect(store.memberTurnsById[prior.id]?.blockedReason).toBeUndefined();
+    });
+  }
+
   it("refines indeterminate member evidence when post-seal proof arrives via events", async () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";
@@ -2025,5 +2077,139 @@ describe("useGroupsStore", () => {
     await flushPromises();
     expect(store.currentTopics).toEqual([]);
     expect(store.activeTopicId).toBeNull();
+  });
+
+  it("PR8: automatic selection resolves to the automatic wire target", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.topicReady = true;
+    store.setTarget({ mode: "automatic" });
+    expect(store.targetSelection).toEqual({ mode: "automatic" });
+    expect(store.targetResolvable).toBe(true);
+
+    const promptResponse: ConversationPromptResponseDto = {
+      reused: false,
+      conversationId: "conversation_g",
+      topicId: "topic_1",
+      requestId: "req_automatic",
+      message: {
+        id: "msg_a", conversationId: "conversation_g", topicId: "topic_1", seq: 1,
+        role: "human", content: "ship it", createdAt: "now",
+      },
+      run: {
+        id: "run_a", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_a", requestId: "req_automatic", mode: "automatic", state: "running",
+        routingState: "dispatching", profileRevision: 1, createdAt: "now",
+      },
+      // An automatic accept carries ZERO members: the Router decides the
+      // first batch, so there is no human-selected memberTurn to project.
+      memberTurns: [],
+      activeRunId: "run_a",
+    };
+    mockRpc.mockResolvedValueOnce(promptResponse);
+    await store.sendPrompt("ship it");
+    expect(mockRpc).toHaveBeenLastCalledWith("inst_1", "control.conversation.prompt", expect.objectContaining({
+      target: { mode: "automatic" },
+    }));
+    // The automatic Run's routing substate is projected verbatim.
+    expect(store.activeRun?.routingState).toBe("dispatching");
+    expect(store.memberTurns).toEqual([]);
+  });
+
+  it("PR8: picking a member replaces an automatic selection", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.groupsByInstance["inst_1"] = [GROUP];
+    store.groupDetails["inst_1:conversation_g"] = { ...GROUP, topics: [] };
+    store.setTarget({ mode: "automatic" });
+    expect(store.targetSelection).toEqual({ mode: "automatic" });
+    store.toggleTargetMember("bot_a");
+    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+    // An explicit mention also narrows back: the Router may not keep deciding
+    // after a human names somebody.
+    store.setTarget({ mode: "automatic" });
+    store.mentionBot("bot_b");
+    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+  });
+
+  it("PR8: mergeRun keeps a stored routingState when a thinner snapshot omits it", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const baseRun: ConversationRunDto = {
+      id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "running",
+      routingState: "dispatching", profileRevision: 1, createdAt: "now",
+    };
+    store.activeRun = baseRun;
+    const thinner: ConversationRunDto = { ...baseRun, consumedMemberTurns: undefined };
+    delete (thinner as Partial<ConversationRunDto>).routingState;
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: { type: "conversation-run-changed", run: thinner },
+    } as never);
+    expect(store.activeRun?.routingState).toBe("dispatching");
+  });
+
+  it("preserves the waiting question for a thin reconnect and clears it on settlement", () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const waiting: ConversationRunDto = {
+      id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "waiting-human",
+      routingState: "done", waitingQuestion: "Which branch ships?", profileRevision: 1, createdAt: "now",
+    };
+    const update = (run: ConversationRunDto) => store.applyEvent({ kind: "control-event",
+      instanceId: "inst_1", event: { type: "conversation-run-changed", run } } as never);
+    store.activeRun = waiting;
+    const thin = { ...waiting };
+    delete thin.waitingQuestion;
+    update(thin);
+    expect(store.activeRun?.waitingQuestion).toBe("Which branch ships?");
+    update({ ...thin, state: "cancelled" });
+    expect(store.activeRun?.waitingQuestion).toBeUndefined();
+  });
+
+  it("keeps waiting-human and its question when an earlier runs.get running response arrives late", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    store.groupsByInstance["inst_1"] = [GROUP];
+    const running: ConversationRunDto = {
+      id: "run_wait", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_wait", requestId: "req_wait", mode: "automatic", state: "running",
+      routingState: "routing", profileRevision: 1, createdAt: "now",
+    };
+    store.activeRun = running;
+    const detail = Promise.withResolvers<{ run: ConversationRunDetailDto }>();
+    const entered = Promise.withResolvers<void>();
+    mockRpc.mockImplementation(async (_instance: string, type: string) => {
+      if (type === "control.conversation.history") return historyWith([]);
+      if (type === "control.runs.list") return { runs: [running], activeRunId: running.id,
+        conversationId: "conversation_g", topicId: "topic_1" };
+      if (type === "control.runs.get") { entered.resolve(); return detail.promise; }
+      throw new Error(`unexpected ${type}`);
+    });
+    const loading = store.loadHistory("inst_1", "conversation_g", "topic_1");
+    await entered.promise;
+    store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+      type: "conversation-run-changed", run: { ...running, state: "waiting-human", routingState: "done", waitingQuestion: "Which branch?" },
+    } } as never);
+    detail.resolve({ run: { ...running, memberTurns: [] } });
+    await loading; await flushPromises();
+    expect(store.activeRun?.state).toBe("waiting-human");
+    expect(store.activeRun?.waitingQuestion).toBe("Which branch?");
   });
 });
