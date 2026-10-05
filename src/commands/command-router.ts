@@ -331,9 +331,13 @@ export class CommandRouter {
           // web UI. The clean "Session … has been reset" confirmation is still returned as the
           // turn result, and the dashboard refreshes the row via the sessions-changed event.
           // Other channels (no GUI) keep the live progress feedback.
+          if (trustedConversationExecution && !metadata?.boundSessionAlias) {
+            throw new Error("trusted Conversation execution missing bound session target");
+          }
           return await handleSessionReset(
             this.createSessionHandlerContext(metadata?.channel === "control" ? undefined : reply, perfSpan),
             chatKey,
+            trustedConversationExecution ? metadata?.boundSessionAlias : undefined,
           );
         case "session.tail":
           return await handleSessionTail(this.createSessionHandlerContext(undefined, perfSpan), chatKey, command.lines);
