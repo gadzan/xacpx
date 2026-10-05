@@ -1,5 +1,7 @@
 import type { ChatRequest, ChatResponse, WechatAgent } from "./wechat-types";
 import type { ChatRequestMetadata } from "./weixin/agent/interface";
+import type { ConversationTurnCorrelation } from "./control/conversation-control-dtos";
+import { consumeTrustedConversationAgentRequest } from "./conversations/trusted-conversation-agent-request";
 import type { AppLogger } from "./logging/app-logger";
 import { createNoopAppLogger } from "./logging/app-logger";
 import { normalizeMediaArray } from "./channels/media-types.js";
@@ -25,6 +27,7 @@ interface RouterLike {
     onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
     onUsage?: (usage: PromptUsage) => void | Promise<void>,
     onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
+    trustedConversationExecution?: ConversationTurnCorrelation,
   ): Promise<ChatResponse>;
   clearSession?: (chatKey: string) => Promise<void>;
 }
@@ -57,6 +60,7 @@ export class ConsoleAgent implements WechatAgent {
     })) : undefined;
 
     request.perfSpan?.mark("agent.dispatched");
+    const trustedConversationExecution = consumeTrustedConversationAgentRequest(request);
     return await this.router.handle(
       request.conversationId,
       request.text,
@@ -72,6 +76,7 @@ export class ConsoleAgent implements WechatAgent {
       request.onPlan,
       request.onUsage,
       request.onCommands,
+      trustedConversationExecution,
     );
   }
 

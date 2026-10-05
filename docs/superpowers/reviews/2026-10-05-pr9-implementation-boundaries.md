@@ -295,9 +295,18 @@ production assignment metadata and confirms no sibling provider start or
 second Router call. Native Node SQLite also passes five order/provenance/upgrade
 scenarios.
 
+During this follow-up, main advanced to `66a59a5583fdbc796ae13300f3ad844957608b3e`
+by merging PR #373's Direct/Group production invocation fix. This branch
+integrates that commit, resolving the two Session-handler/turn-runner conflicts
+by retaining main's exact bound target and one-shot ChatRequest authority,
+plus PR9's per-execution Group metadata/capability binding and Runtime outcome
+classification. The real Group chain now additionally verifies that cloning
+or replaying a request with still-live Group metadata cannot launch another
+provider turn. Main's Direct/Group/clear/ordinary-session regressions pass.
+
 ## Validation and residual limits
 
-- Automatic multi-member cancellation follow-up: **809** Conversation/Session/Control/MCP/wire DTO tests passed across 31 files, including nine new regressions. Native Node SQLite passed five additional cancellation order/provenance/migration scenarios. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
+- Automatic multi-member cancellation follow-up, after integrating main's PR #373 fix: **913** Conversation/Session/Control/MCP/wire DTO tests passed across 33 files, including nine new regressions and the expanded CommandRouter/Control prompt coverage. Native Node SQLite passed five additional cancellation order/provenance/migration scenarios. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Before main integration, the 31-file sweep passed **809** cases. Exact new-HEAD CI is tracked in the PR/report.
 - Shutdown ordering follow-up: **800** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including the three new shutdown cases. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
 - Runtime terminal-evidence follow-up: **797** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including both new red-to-green real ConsoleAgent transport cases. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
 - Second full review: **795** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including **549** Conversation tests across 17 files. The four handoff/budget/retired/full-queue files have **137** passing cases; six additional quarantine-start cases pass.

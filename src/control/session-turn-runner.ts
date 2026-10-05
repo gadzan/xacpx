@@ -5,10 +5,12 @@ import { bindGroupExecutionMetadata, GroupExecutionOutcomeUnknownError } from ".
 import type { ScheduledOrigin } from "./control-event-bus";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { ToolUseEvent } from "../channels/types";
+import type { ChatRequest } from "../weixin/agent/interface.js";
 import { ToolEventBatcher } from "./tool-event-batcher";
 import type { AgentMessageCompletion } from "../orchestration/agent-messaging-types";
 import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
 import { buildPeerCompletionPrompt } from "../orchestration/agent-message-completion";
+import { markTrustedConversationAgentRequest } from "../conversations/trusted-conversation-agent-request";
 import {
   toErrorMessage,
   buildControlMetadata,
@@ -198,8 +200,14 @@ export class SessionTurnRunner {
       const prior = await this.deps.sessions.getSession(internalAlias);
       wasArchived = prior?.archived === true;
       priorTransportSession = prior?.transportSession;
-    } catch {
-      /* best-effort: a detection failure just means no badge refresh */
+    } catch (error) {
+      // Trusted Conversation execution must carry an exact resolved session
+      // identity into the Router. A routing failure here cannot safely fall
+      // back to the mutable chat current_session.
+      if (req.conversation && !internalAlias) {
+        return { ok: false, errorMessage: toErrorMessage(error) };
+      }
+      /* best-effort: a post-resolution detection failure just means no badge refresh */
     }
     if (req.allowRestoreArchived === false && wasArchived) {
       return { ok: false, errorMessage: "session-archived" };
@@ -350,7 +358,7 @@ export class SessionTurnRunner {
     let releaseGroupMetadata: (() => void) | undefined;
     try {
       const metadata = {
-        ...buildControlMetadata(req.senderId, req.isOwner, req.boundSessionAlias, req.preserveCoordinatorRoute, req.turnOrigin),
+        ...buildControlMetadata(req.senderId, req.isOwner, req.boundSessionAlias ?? (req.conversation ? internalAlias : undefined), req.preserveCoordinatorRoute, req.turnOrigin),
         ...(req.permissionChatKey ? { permissionChatKey: req.permissionChatKey } : {}),
         ...(req.senderName ? { senderName: req.senderName } : {}),
         ...(req.groupExecutionToken ? { groupExecutionToken: req.groupExecutionToken } : {}),
@@ -361,7 +369,7 @@ export class SessionTurnRunner {
         releaseGroupMetadata = bindGroupExecutionMetadata(metadata, { ...req.conversation, sessionAlias: req.boundSessionAlias,
           logicalSessionId: owned.logical_session_id, executionToken: req.groupExecutionToken });
       }
-      const response = await this.deps.agent.chat({
+      const chatRequest: ChatRequest = {
         accountId: req.accountId ?? "control",
         conversationId: req.chatKey,
         text: chatText,
@@ -419,7 +427,11 @@ export class SessionTurnRunner {
             ...(req.conversation ? { conversation: req.conversation } : {}),
           });
         },
-      });
+      };
+      if (req.conversation) {
+        markTrustedConversationAgentRequest(chatRequest, req.conversation);
+      }
+      const response = await this.deps.agent.chat(chatRequest);
       if (response.text && !response.silent) {
         emitChunk(response.text);
       }

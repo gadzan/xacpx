@@ -304,6 +304,8 @@ The sender guarantee applies to the bound MCP tool interface: model arguments ca
 
 The real ConsoleAgent/CommandRouter path retains the ordinary hidden-session guard. `SessionTurnRunner` stamps the metadata object's identity in a core-private WeakMap with exact Group/Bot/Topic/session/logical-session scope. Only that object and matching owned session may use the Group execution path. A serialized/copied object or caller-supplied token string has no bypass authority. The private Control submit binds the exact alias and preserves the existing coordinator route; ordinary and Direct paths are unchanged.
 
+The Conversation execution path also requires core-private, one-shot `ChatRequest` provenance consumed by ConsoleAgent, with correlation checked against the exact bound session owner. Group launch metadata adds its capability binding to this common Conversation gate. A cloned or replayed request cannot use still-live Group metadata to bypass the gate, and mutable `current_session` cannot retarget the trusted execution.
+
 Runner settlement revokes the WeakMap route in `finally`; retaining even the original metadata object cannot launch a later owned prompt.
 
 Before acquiring target lifecycle gates, handoff checks current Group membership and target Bot existence without allocating locks. Invalid target IDs cannot grow the per-Bot gate registry. Sender and target lifecycle gates then revalidate current membership, enabled target, active Topic, Conversation deleting barrier and exact runtime/session ownership. The synchronous SQLite transaction proves the sender is running under the live claim, the Run is running without cancel intent, and the target is not quarantined. No await separates final lifecycle reads from this write.

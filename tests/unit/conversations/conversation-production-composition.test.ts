@@ -32,7 +32,19 @@ test("actual ConsoleAgent and CommandRouter reach transport on the exact trusted
   let retiredMetadata: Parameters<ConsoleAgent["chat"]>[0]["metadata"];
   const physical: { session: ResolvedSession; text: string }[] = [];
   current = await compose(new BarrierStateStore(), { agent: { chat: async (request) => {
-    retiredMetadata ??= request.metadata; return await consoleAgent.chat(request);
+    retiredMetadata ??= request.metadata;
+    const before = physical.length;
+    // Even a clone retaining the exact live Group metadata lacks the core's
+    // one-shot ChatRequest provenance, imported from the main fix.
+    await consoleAgent.chat({ ...request });
+    expect(physical).toHaveLength(before);
+    const response = await consoleAgent.chat(request);
+    const after = physical.length;
+    // Metadata is still live until this Agent call returns, but the request
+    // authority has already been consumed and cannot launch again.
+    await consoleAgent.chat(request);
+    expect(physical).toHaveLength(after);
+    return response;
   } } });
   const transport = { ensureSession: async () => ({ created: false }), hasSession: async () => true,
     prompt: async (session: ResolvedSession, text: string) => {
