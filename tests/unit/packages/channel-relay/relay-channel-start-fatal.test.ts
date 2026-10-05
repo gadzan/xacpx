@@ -63,6 +63,39 @@ function startInput(abortSignal: AbortSignal): unknown {
   };
 }
 
+/**
+ * The options the built channel hands to `createClient` — read through a single
+ * validated seam rather than inline-cast at each call site, because every test
+ * here reaches the `onFatal` handler through it.
+ */
+type ClientOptions = { onFatal?: (reason: RelayFatalReason) => void };
+
+/** A stub client that does nothing but stand in for the real `RelayClient`. */
+function inertClient(): unknown {
+  return {
+    start: () => {},
+    stop: () => {},
+    sendEvent: () => {},
+    isReady: () => false,
+    sendRequest: () => new Promise<never>(() => {}),
+  };
+}
+
+/**
+ * A `createClient` that fires the given fatal reason through the handler the
+ * channel itself installed — the same call the real `RelayClient` makes, so the
+ * tests drive production wiring rather than a private hook.
+ */
+function fatalOnCreateClient(reason: RelayFatalReason): (opts: unknown) => unknown {
+  // Unchecked cast is deliberate: this is the DI boundary where a stub stands
+  // in for `RelayClientOptions`, which is not exported from the package.
+  return (opts: unknown) => {
+    const handler = (opts as ClientOptions).onFatal;
+    queueMicrotask(() => handler?.(reason));
+    return inertClient();
+  };
+}
+
 /** Resolve with how a start() settled, or throw if it never settles. */
 async function settle(started: Promise<void>, ms = 2000): Promise<"resolved" | "rejected"> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -95,17 +128,7 @@ test("start() rejects when the connector reports a terminal failure", async () =
     { url: "ws://h:1", pairingToken: "t" },
     {
       credentialStore: new MemoryCredentialStore(),
-      createClient: (opts: unknown) => {
-        const handler = (opts as { onFatal?: (reason: RelayFatalReason) => void }).onFatal;
-        queueMicrotask(() => handler?.("handshake-rejected"));
-        return {
-          start: () => {},
-          stop: () => {},
-          sendEvent: () => {},
-          isReady: () => false,
-          sendRequest: () => new Promise<never>(() => {}),
-        } as never;
-      },
+      createClient: fatalOnCreateClient("handshake-rejected"),
     },
   );
 
@@ -133,14 +156,7 @@ test("a clean shutdown still resolves start() and is not mistaken for a fatal", 
     { url: "ws://h:1", pairingToken: "t" },
     {
       credentialStore: new MemoryCredentialStore(),
-      createClient: () =>
-        ({
-          start: () => {},
-          stop: () => {},
-          sendEvent: () => {},
-          isReady: () => false,
-          sendRequest: () => new Promise<never>(() => {}),
-        }) as never,
+      createClient: () => inertClient(),
     },
   );
 
@@ -153,3 +169,41 @@ test("a clean shutdown still resolves start() and is not mistaken for a fatal", 
 
   expect(await settle(started)).toBe("resolved");
 });
+
+test("the fatal teardown uses a stop reason core's channel contract defines", async () => {
+  // The reason is not cosmetic: `MessageChannelRuntime.stop?(reason?)` is typed
+  // `ChannelStopReason = "shutdown" | "disabled" | "removed" | "logout"`, so the
+  // published plugin contract has exactly four members. Passing anything else
+  // compiles now only because this package keeps its own local mirror of that
+  // union — and the Linux CI leg catches it at `tsc -p
+  // packages/channel-relay/tsconfig.json`, which is emitted declaration output,
+  // so the error is "Argument of type '"error"' is not assignable" rather than
+  // anything that names the contract.
+  //
+  // Pinned here so a future teardown reason cannot silently invent a fifth
+  // member. The failing reason must still exist: it is what `start()` throws
+  // with, and the registry reads it off `failedStartupChannels`.
+  const stopped: Array<string | undefined> = [];
+  const channel = new RelayChannel(
+    { url: "ws://h:1", pairingToken: "t" },
+    {
+      credentialStore: new MemoryCredentialStore(),
+      createClient: fatalOnCreateClient("protocol-error"),
+    },
+  );
+
+  const originalStop = channel.stop.bind(channel);
+  channel.stop = async (reason?: "shutdown") => {
+    stopped.push(reason);
+    await originalStop(reason);
+  };
+
+  await expect(
+    channel.start(startInput(new AbortController().signal) as never),
+  ).rejects.toThrow(/protocol-error/);
+
+  // Exactly one teardown, and its reason is a contract member. The fatal cause
+  // itself travels in the thrown error, never as a fabricated stop reason.
+  expect(stopped).toEqual(["shutdown"]);
+});
+

@@ -461,7 +461,11 @@ export class RelayChannel implements MessageChannelRuntime {
     }
     await startedSettled;
     if (fatalError !== null) {
-      await this.stop("error").catch(() => {});
+      // `shutdown` is core's own name for the startup-error cleanup path — there
+      // is no `error` member in `ChannelStopReason`, and inventing one would
+      // break the published plugin contract. The thrown `fatalError` below is
+      // what carries the terminal cause to the registry.
+      await this.stop("shutdown").catch(() => {});
       throw fatalError;
     }
     await this.stop("shutdown");
