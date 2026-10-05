@@ -65,10 +65,11 @@ effect proof; current new assignments remain potential writers.
 
 The real transport path also revealed that ordinary-session error rendering
 would turn a transport failure into a successful assistant error message.
-Trusted Group execution now propagates typed permission refusal as a durable
-blocked failure, and carries other throws (including `undefined`) as unknown
-outcome through the existing runner to the indeterminate seal. Real Router
-integration tests cover all three cases and retain the healthy sender result.
+Trusted Group execution propagates Runtime terminal failure and cancellation,
+including typed permission refusal as a durable blocked failure. Unclassified
+throws (including `undefined`) remain unknown outcomes through the existing
+runner to the indeterminate seal. Real ConsoleAgent/CommandRouter integration
+tests cover these outcomes and retain the healthy sender result.
 
 The WeakMap route is released in the runner's `finally`; retaining the original
 metadata object after settlement cannot start another owned prompt. Explicit
@@ -212,8 +213,30 @@ entry point was found: model assignments receive no enforced proof, and the
 single consumer waits for its active cohort before recovering again. This
 remains a restricted seam, not a confirmed production finding.
 
+## Runtime terminal-evidence follow-up
+
+Review of exact HEAD `686dcb2faece706f468740da0fb3bdbdaf9fc6da` identified
+one remaining Medium: the trusted Group handler preserved permission refusal
+but wrapped Runtime's terminal `RUNTIME_TURN_FAILED` and
+`RUNTIME_TURN_CANCELLED` in an unknown-outcome error. Both could seal the Run
+as indeterminate despite provider terminal evidence.
+
+The handler now passes all three Runtime terminal codes through, retaining the
+legacy `PERMISSION_DENIED` alias. Control also marks the trusted Group's typed
+Runtime cancellation in both its result and turn-finished event even without
+a local abort; otherwise merely forwarding the error would classify it as a
+failure. Idle timeout and ordinary/Direct cancellation behavior are unchanged.
+
+Two regression cases failed on the reviewed HEAD and pass after this fix.
+They use the real ConsoleAgent → CommandRouter → transport → Control →
+Conversation dispatcher chain with injected typed transport errors and no
+local abort. They verify failed/quarantine versus cancelled/no-quarantine,
+terminal dispatches, the healthy sender result, and SQLite reopen. Existing
+permission, generic transport-error and undefined-rejection cases still pass.
+
 ## Validation and residual limits
 
+- Runtime terminal-evidence follow-up: **797** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including both new red-to-green real ConsoleAgent transport cases. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
 - Second full review: **795** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including **549** Conversation tests across 17 files. The four handoff/budget/retired/full-queue files have **137** passing cases; six additional quarantine-start cases pass.
 - Relay Web: **1,957** passed across 147 files, including **79** Group store/trace cases. The independent execution/lifecycle/runner/filesystem/Control sweep has **291** passes across six files.
 - Bun and native Node SQLite each passed the same nine retired-proof/full-queue scenarios. Root typecheck, Web vue-tsc, acpx import policy and diff checks passed. The MCP/IPC/DTO independent sweep has **178 passed / 1 failed**, retaining the same Windows named-pipe/Unix-chmod baseline below.

@@ -67,10 +67,16 @@ test("actual ConsoleAgent and CommandRouter reach transport on the exact trusted
   } finally { await current.runtime.shutdown(); }
 });
 
-for (const outcome of ["permission-denied", "transport-unknown", "undefined-rejection"] as const) {
+for (const outcome of ["permission-denied", "runtime-failed", "runtime-cancelled", "transport-unknown", "undefined-rejection"] as const) {
 test(`real ConsoleAgent handoff ${outcome} preserves failure vs indeterminate`, async () => {
   let consoleAgent!: ConsoleAgent, current!: Awaited<ReturnType<typeof compose>>, targetId = "", starts = 0;
-  current = await compose(new BarrierStateStore(), { agent: { chat: async (request) => await consoleAgent.chat(request) } });
+  const signals: AbortSignal[] = [];
+  current = await compose(new BarrierStateStore(), { agent: { chat: async (request) => {
+    if (request.abortSignal) signals.push(request.abortSignal);
+    return await consoleAgent.chat(request);
+  } } });
+  const events: ControlEvent[] = [];
+  current.events.subscribe((event) => events.push(event));
   const transport = { prompt: async (session: ResolvedSession) => {
     if (++starts === 1) {
       await current.runtime.handoffs.send({ executionToken: session.mcpSourceHandle!, invocationId: "physical-handoff",
@@ -78,6 +84,12 @@ test(`real ConsoleAgent handoff ${outcome} preserves failure vs indeterminate`, 
       return { text: "healthy result" };
     }
     if (outcome === "permission-denied") throw Object.assign(new Error("permission denied"), { code: "RUNTIME_PERMISSION_DENIED" });
+    // No cancellation/permission text or local abort may supply the evidence.
+    if (outcome === "runtime-failed" || outcome === "runtime-cancelled") {
+      throw Object.assign(new Error("provider terminal evidence"), {
+        code: outcome === "runtime-failed" ? "RUNTIME_TURN_FAILED" : "RUNTIME_TURN_CANCELLED",
+      });
+    }
     if (outcome === "undefined-rejection") throw undefined;
     throw new Error("connection lost after possible filesystem write");
   }, cancel: async () => {} } as unknown as SessionTransport;
@@ -91,12 +103,30 @@ test(`real ConsoleAgent handoff ${outcome} preserves failure vs indeterminate`, 
       requestId: "physical-outcome", text: "work", target: { botId: a.id } });
     await current.runtime.dispatcher.kick(); await current.runtime.dispatcher.kick();
     const detail = await current.control.getRun(accepted.run.id);
+    const expectedState = outcome === "runtime-cancelled" ? "cancelled"
+      : outcome === "permission-denied" || outcome === "runtime-failed" ? "failed" : "indeterminate";
     expect(starts).toBe(2);
-    expect(detail.state).toBe(outcome === "permission-denied" ? "failed" : "indeterminate");
+    expect(detail.state).toBe(expectedState);
     expect(detail.memberTurns[0]?.state).toBe("completed");
-    expect(detail.memberTurns[1]?.state).toBe(outcome === "permission-denied" ? "failed" : "indeterminate");
+    expect(detail.memberTurns[1]?.state).toBe(expectedState);
     if (outcome === "permission-denied") expect(detail.memberTurns[1]?.blockedReason).toBe("human-authority-unknown");
-    else expect(detail.completionReason).toBe("started_result_unknown");
+    else if (expectedState === "indeterminate") expect(detail.completionReason).toBe("started_result_unknown");
+    if (outcome === "runtime-failed" || outcome === "runtime-cancelled") {
+      expect(signals).toHaveLength(2);
+      expect(signals.every((signal) => !signal.aborted)).toBe(true);
+      expect(detail.quarantinedBotIds ?? []).toEqual(outcome === "runtime-failed" ? [targetId] : []);
+      expect(detail.memberTurns[1]?.blockedReason).toBeUndefined();
+      const finished = events.find((event) => event.type === "turn-finished" && event.conversation?.botId === targetId);
+      expect(finished).toMatchObject({ type: "turn-finished", ok: false, errorMessage: "provider terminal evidence" });
+      expect(finished && "cancelled" in finished ? finished.cancelled : undefined)
+        .toBe(outcome === "runtime-cancelled" ? true : undefined);
+      expect(current.runtime.store.getDispatchForMemberTurn(detail.memberTurns[1]!.id)?.state).toBe("completed");
+      const reopened = await SqliteConversationStore.open(current.sqlitePath);
+      try {
+        expect(reopened.getRun(accepted.run.id)?.state).toBe(expectedState);
+        expect(reopened.getMemberTurn(detail.memberTurns[1]!.id)?.state).toBe(expectedState);
+      } finally { reopened.close(); }
+    }
     expect(current.runtime.store.getMemberResult(current.runtime.store.listMemberTurns(accepted.run.id)[0]!)?.content).toBe("healthy result");
   } finally { await current.runtime.shutdown(); }
 });

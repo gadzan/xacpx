@@ -51,7 +51,7 @@ export interface TurnResult {
   blockedReason?: "human-authority-required" | "human-authority-unknown";
   text?: string;
   errorMessage?: string;
-  /** Proven user-Stop / abort cancellation. Idle-timeout aborts omit this. */
+  /** Proven abort or typed Group Runtime cancellation. Idle-timeout aborts omit this. */
   cancelled?: boolean;
   // Inputs for the post-turn `sessions-changed` detection (a transport session that moved
   // during the turn — archived-restore or `/clear`). The CALLER performs the getSession
@@ -459,6 +459,8 @@ export class SessionTurnRunner {
       // non-human step. It does not prove that a human would be allowed, so
       // preserve that uncertainty rather than guessing from error text.
       const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      const cancelled = !timedOut && (signal.aborted
+        || (!!req.groupExecutionToken && code === "RUNTIME_TURN_CANCELLED"));
       const blockedReason = req.conversation && req.turnOrigin !== "human" && !signal.aborted
         && (code === "RUNTIME_PERMISSION_DENIED" || code === "PERMISSION_DENIED")
         ? "human-authority-unknown" as const : undefined;
@@ -469,7 +471,7 @@ export class SessionTurnRunner {
         sessionAlias: req.sessionAlias,
         ok: false,
         errorMessage,
-        ...(!timedOut && signal.aborted ? { cancelled: true } : {}),
+        ...(cancelled ? { cancelled: true } : {}),
         ...(req.peerOrigin ? { peerOrigin: req.peerOrigin } : {}),
         ...(req.conversation ? { conversation: req.conversation } : {}),
       });
@@ -478,7 +480,7 @@ export class SessionTurnRunner {
         errorMessage,
         ...(error instanceof GroupExecutionOutcomeUnknownError ? { unknown: true } : {}),
         ...(blockedReason ? { blockedReason } : {}),
-        ...(!timedOut && signal.aborted ? { cancelled: true } : {}),
+        ...(cancelled ? { cancelled: true } : {}),
         ...(internalAlias && priorTransportSession
           ? { postTurnDetection: { internalAlias, priorTransportSession } }
           : {}),

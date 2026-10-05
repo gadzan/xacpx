@@ -1276,9 +1276,10 @@ export async function handlePromptWithSession(
   } catch (error) {
     if (metadata?.groupExecutionToken && matchesGroupExecutionMetadata(metadata, context.sessions.getLogicalSessionRecord?.(session.alias))) {
       const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
-      // A typed permission refusal is a known blocked step. A generic transport
-      // throw after execution-start cannot prove absence of side effects.
-      if (code === "RUNTIME_PERMISSION_DENIED" || code === "PERMISSION_DENIED") throw error;
+      // Runtime reports failure, cancellation and permission refusal as
+      // terminal evidence. Other throws cannot prove absence of side effects.
+      if (code === "RUNTIME_TURN_FAILED" || code === "RUNTIME_TURN_CANCELLED"
+        || code === "RUNTIME_PERMISSION_DENIED" || code === "PERMISSION_DENIED") throw error;
       throw new GroupExecutionOutcomeUnknownError(error);
     }
     if (error instanceof AcpxQueueOverflowError) {
