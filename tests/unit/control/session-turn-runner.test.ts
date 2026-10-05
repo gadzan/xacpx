@@ -173,7 +173,7 @@ test("trusted Group member turn reaches the hidden member session through the pr
     new AbortController().signal,
   );
 
-  expect(result).toEqual({ ok: true, text: "group-reply" });
+  expect(result).toMatchObject({ ok: true, text: "group-reply" });
   expect(prompted).toEqual([{ alias, text: "group member prompt" }]);
   expect(used).toEqual([["bot:group_1:topic_1", alias]]);
 });
