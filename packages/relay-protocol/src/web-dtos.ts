@@ -1,5 +1,5 @@
 import { RELAY_PROTOCOL_VERSION, type RelayEnvelope } from "./envelope.js";
-import type { AgentAddressDto, AgentCommandDto, ControlEventDto, ConversationTurnCorrelationDto, PeerMessageHistoryEntry, PeerTurnOriginDto, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, ToolStepKind, ToolStepStatus, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCommandDto, ControlEventDto, ConversationTurnCorrelationDto, InteractionRequestDto, InteractionSnapshotDto, PeerMessageHistoryEntry, PeerTurnOriginDto, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, ToolStepKind, ToolStepStatus, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import {
   MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
   MAX_DESKTOP_REQUEST_ID_LENGTH,
@@ -171,6 +171,10 @@ export type WebServerEvent =
   | { kind: "instance-status"; instanceId: string; online: boolean }
   | { kind: "control-event"; instanceId: string; event: ControlEventDto }
   | ({ kind: "state-snapshot"; instanceId: string } & InstanceStateSnapshotDto)
+  | ({
+      kind: "interaction-snapshot";
+      instanceId: string;
+    } & InteractionSnapshotDto)
   | { kind: "notice"; instanceId: string; notice: InstanceNoticePayload }
   | {
       kind: "turn-completion";
@@ -289,6 +293,7 @@ const WEB_EVENT_KINDS = new Set([
   "instance-status",
   "control-event",
   "state-snapshot",
+  "interaction-snapshot",
   "notice",
   "turn-completion",
   "agent-directory",
@@ -738,6 +743,31 @@ function validMemberTurnSummary(value: unknown): boolean {
       || c.blockedReason === "human-authority-unknown");
 }
 
+/**
+ * The wire shape of ONE open interaction, wherever it appears.
+ *
+ * A live `interaction-opened` control-event and an entry of the authoritative
+ * `interaction-snapshot` are the same fact delivered by two routes, so both go
+ * through this ONE helper. It was two hand-written checks before, and they had
+ * already drifted — the snapshot required bounded `chatKey`/`sessionAlias` while
+ * the live event required only `typeof === "string"`, which is the convention
+ * every other control event uses for those fields.
+ *
+ * The drift is exactly what this removes: a snapshot entry could be rejected by
+ * a rule its live twin never faced, and any field added to one wire path later
+ * would silently be missing from the other. One function means the two paths
+ * cannot disagree about what an open interaction is.
+ *
+ * `chatKey`/`sessionAlias` stay unbounded to match the rest of the file. Bounding
+ * only these would rightly refuse every existing real client whose keys exceed
+ * the cap; the per-field bounds belong to the request itself.
+ */
+function validInteractionOpenShape(c: Record<string, unknown>): boolean {
+  return typeof c.chatKey === "string"
+    && typeof c.sessionAlias === "string"
+    && validInteractionRequest(c.interaction);
+}
+
 /** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.
  *  The switch is compile-time exhaustive over ControlEventDto["type"] (see the `never`
  *  check in `default`), mirroring CONTROL_EVENT_TYPE_MAP above. */
@@ -829,8 +859,7 @@ export function validControlEvent(e: unknown): boolean {
     case "interaction-opened":
       // The request must itself validate: a form that failed protocol validation
       // must never reach a renderer, and the guard here is the last one before web.
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
-        && validInteractionRequest(c.interaction);
+      return validInteractionOpenShape(c);
     case "interaction-closed":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string"
         && typeof c.requestId === "string" && c.requestId.length > 0
@@ -1013,6 +1042,32 @@ export function parseWebServerEvent(envelope: RelayEnvelope): WebServerEvent | n
   if (candidate.kind === "instance-status" && typeof candidate.online !== "boolean") return null;
   if (candidate.kind === "control-event" && !validControlEvent(candidate.event)) return null;
   if (candidate.kind === "state-snapshot" && !validStateSnapshot(candidate)) return null;
+  // The authoritative open set. Every entry is a full `interactionRequest`
+  // frame, so it goes through the SAME validator the live path uses — a snapshot
+  // that could smuggle a shape the open path rejects would let a reconnect
+  // resurrect a form the hub would never have accepted in the first place.
+  if (candidate.kind === "interaction-snapshot") {
+    const entries = (candidate as Record<string, unknown>).interactions;
+    if (!Array.isArray(entries)) return null;
+    // Every entry carries its routing fields plus a full interaction request, and
+    // both halves are checked by the SAME `validInteractionOpenShape` the live
+    // `interaction-opened` control event goes through — not a near-copy of it.
+    // Those two checks had already drifted apart (one bounded `chatKey`, the
+    // other did not), and a near-copy would drift again the moment a field is
+    // added to one wire path. One helper is what makes the two routes provably
+    // agree on what an open interaction is.
+    //
+    // THIS file's own mirror validator, not the control-RPC one: the boundary
+    // isolation above is the point, and a snapshot that could smuggle a shape the
+    // live open path rejects would let a reconnect resurrect a form the hub never
+    // should have accepted in the first place.
+    return entries.every((entry) => {
+      if (typeof entry !== "object" || entry === null) return false;
+      return validInteractionOpenShape(entry as Record<string, unknown>);
+    })
+      ? (payload as WebServerEvent)
+      : null;
+  }
   if (candidate.kind === "notice" && !validNotice(candidate.notice)) return null;
   if (candidate.kind === "turn-completion") {
     return isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)

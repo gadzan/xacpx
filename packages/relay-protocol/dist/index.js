@@ -311,6 +311,7 @@ var WEB_EVENT_KINDS = new Set([
   "instance-status",
   "control-event",
   "state-snapshot",
+  "interaction-snapshot",
   "notice",
   "turn-completion",
   "agent-directory",
@@ -690,6 +691,9 @@ function validMemberTurnSummary(value) {
   const c = value;
   return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && optNonNegInt(c.memberIndex) && typeof c.attempt === "number" && (c.origin === "human-explicit" || c.origin === "human" || c.origin === "router" || c.origin === "handoff" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput) && optStrArr(c.dependsOn) && optStr(c.failureReason) && (c.blockedReason === undefined || c.blockedReason === "human-authority-required" || c.blockedReason === "human-authority-unknown");
 }
+function validInteractionOpenShape(c) {
+  return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validInteractionRequest(c.interaction);
+}
 function validControlEvent(e) {
   if (typeof e !== "object" || e === null)
     return false;
@@ -744,7 +748,7 @@ function validControlEvent(e) {
     case "member-turn-finished":
       return validConversationRun(c.run) && validMemberTurnSummary(c.memberTurn);
     case "interaction-opened":
-      return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validInteractionRequest(c.interaction);
+      return validInteractionOpenShape(c);
     case "interaction-closed":
       return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && typeof c.requestId === "string" && c.requestId.length > 0 && (c.reason === "resolved" || c.reason === "withdrawn" || c.reason === "expired");
     default: {
@@ -855,6 +859,16 @@ function parseWebServerEvent(envelope) {
     return null;
   if (candidate.kind === "state-snapshot" && !validStateSnapshot(candidate))
     return null;
+  if (candidate.kind === "interaction-snapshot") {
+    const entries = candidate.interactions;
+    if (!Array.isArray(entries))
+      return null;
+    return entries.every((entry) => {
+      if (typeof entry !== "object" || entry === null)
+        return false;
+      return validInteractionOpenShape(entry);
+    }) ? payload : null;
+  }
   if (candidate.kind === "notice" && !validNotice(candidate.notice))
     return null;
   if (candidate.kind === "turn-completion") {

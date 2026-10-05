@@ -7,6 +7,7 @@ import type {
 } from "@ganglion/xacpx-relay-protocol";
 
 const mockRpc = vi.fn();
+const mockApiGet = vi.fn();
 vi.mock("../api/client", () => ({
   ApiError: class ApiError extends Error {
     constructor(public code: string, public status: number) {
@@ -15,6 +16,7 @@ vi.mock("../api/client", () => ({
   },
   api: {
     rpc: (instanceId: string, type: string, payload?: unknown) => mockRpc(instanceId, type, payload),
+    get: (path: string) => mockApiGet(path),
   },
 }));
 
@@ -31,6 +33,11 @@ describe("useDirectBotsStore interactions", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     mockRpc.mockReset();
+    mockApiGet.mockReset();
+    // The owned-instance list defaults to "everything you already hold is still
+    // owned", so a test that is not about instance deletion is not silently
+    // retired by a stale mock.
+    mockApiGet.mockResolvedValue({ instances: [] });
   });
 
   function formRequest(overrides: Partial<InteractionRequestDto> = {}): InteractionRequestDto {
@@ -287,10 +294,17 @@ describe("useDirectBotsStore interactions", () => {
     //
     // The distinction the store draws is WHICH error. A `gone` is the hub's
     // authoritative statement that the request no longer exists, so the form is
-    // retired as `withdrawn` (not `cancelled` — the user chose nothing, something
-    // else consumed it). A transport failure is NOT authoritative, so the form
-    // stays open and answerable — the important half, since otherwise a network
-    // blip would destroy a live form.
+    // retired with the NEUTRAL `gone` — not `withdrawn`, and not `cancelled`. A
+    // transport failure is NOT authoritative, so the form stays open and answerable
+    // — the important half, since otherwise a network blip would destroy a live form.
+    //
+    // Why `gone` and not `withdrawn`: a 409 carries exactly as much information as a
+    // snapshot omission — the request is no longer open, and nothing about who or
+    // why. It may have been accepted from another tab, declined, cancelled,
+    // withdrawn or expired. `withdrawn` asserts nobody chose anything, which is
+    // false in the most common case: someone else answered it, and this tab would
+    // then tell the user "Closed before an answer arrived" about a question that
+    // had already been answered.
     //
     // This test previously asserted `outcome` stayed null, which pinned the bug:
     // the comment said "instead of staying up forever" while the assertion
@@ -301,7 +315,10 @@ describe("useDirectBotsStore interactions", () => {
     store.setInteractionAnswer("env", "prod");
     await store.submitInteraction("accept");
     expect(store.pendingInteraction!.errorCode).toBe("interactionGone");
-    expect(store.pendingInteraction!.outcome).toBe("withdrawn");
+    expect(store.terminalInteractionOutcome("req-1")).toBe("gone");
+    // The named outcomes are reserved for a cause the hub actually named.
+    expect(store.terminalInteractionOutcome("req-1")).not.toBe("withdrawn");
+    expect(store.terminalInteractionOutcome("req-1")).not.toBe("cancelled");
     // And it is out of the OPEN set, so no further submit can be attempted.
     expect(store.requestStillHeld("req-1")).toBe(false);
     expect(store.terminalInteractionCount).toBe(1);
@@ -467,6 +484,9 @@ describe("useDirectBotsStore interactions", () => {
     store.activeConversationId = "c1";
     store.activeTopicId = "t1";
     store.activeRun = null;
+    // Both instances are still owned, so the instance-set reconcile has nothing
+    // to say: this test is about Run state, not ownership.
+    mockApiGet.mockResolvedValue({ instances: [{ id: "inst-A" }, { id: "inst-B" }] });
     await store.reconcileOnReconnect();
     await flushPromises();
     // B's form is still held OPEN by the store: nothing this tab can see has
@@ -478,10 +498,19 @@ describe("useDirectBotsStore interactions", () => {
     expect(store.requestStillHeld("req-1")).toBe(true);
   });
 
-  it("reconcile drops the CURRENT pane's form when its own turn is gone", async () => {
-    // The control for the test above, and the case that must still work: the form
-    // that belongs to the turn actually on screen, whose run has completed while
-    // disconnected, is genuinely unanswerable.
+  it("reconcile does NOT retire a form on Run state alone", async () => {
+    // Run state used to be a second authority over interaction liveness: a form
+    // whose owning turn had no live Run was retired as `withdrawn`, on the theory
+    // that a finished turn cannot still be waiting on a human.
+    //
+    // That was wrong twice over. `activeRun` is the selected pane's single Run
+    // while the map is account-wide, so a background form was retired without
+    // anything authoritative saying so. And it now runs AFTER the authoritative
+    // open-set snapshot has proven the request open — so a weaker heuristic could
+    // undo, one microtask later, a fact the hub had just settled.
+    //
+    // The hub is the only authority over the window. A completed Run is not
+    // evidence of a closed interaction, so the form stays answerable.
     const store = useDirectBotsStore();
     mockRpc.mockResolvedValue({ run: { id: "run_1", state: "completed", conversationId: "c1", topicId: "t1", requestMessageId: "m1", mode: "explicit", profileRevision: 1, createdAt: "now", memberTurns: [] } });
     store.applyEvent(openedEvent(formRequest(), "inst-A"));
@@ -489,6 +518,7 @@ describe("useDirectBotsStore interactions", () => {
     store.selectedBotId = "bot_1";
     store.activeConversationId = "c1";
     store.activeTopicId = "t1";
+    // The turn on screen finished while this tab was disconnected...
     store.activeRun = {
       id: "run_1",
       conversationId: "c1",
@@ -500,9 +530,41 @@ describe("useDirectBotsStore interactions", () => {
       profileRevision: 1,
       createdAt: "now",
     };
+    mockApiGet.mockResolvedValue({ instances: [{ id: "inst-A" }] });
     await store.reconcileOnReconnect();
     await flushPromises();
-    expect(store.pendingInteraction!.outcome).toBe("withdrawn");
+    // ...and the form is STILL open, because the hub has not said otherwise.
+    // Only expiry (part of the request itself) or an interaction authority can
+    // close it.
+    expect(store.pendingInteraction!.outcome).toBeNull();
+    expect(store.requestStillHeld("req-1")).toBe(true);
+    expect(store.terminalInteractionCount).toBe(0);
+  });
+
+  it("reconcile keeps a form whose turn is still live", async () => {
+    const store = useDirectBotsStore();
+    mockRpc.mockResolvedValue({ run: { id: "run_1", state: "waiting-human", conversationId: "c1", topicId: "t1", requestMessageId: "m1", mode: "explicit", profileRevision: 1, createdAt: "now", memberTurns: [] } });
+    store.applyEvent(openedEvent(formRequest()));
+    store.instanceId = "inst_1";
+    store.selectedBotId = "bot_1";
+    store.activeConversationId = "c1";
+    store.activeTopicId = "t1";
+    store.activeRun = {
+      id: "run_1",
+      conversationId: "c1",
+      topicId: "t1",
+      requestMessageId: "m1",
+      requestId: "rq1",
+      mode: "explicit",
+      state: "waiting-human",
+      profileRevision: 1,
+      createdAt: "now",
+    };
+    mockApiGet.mockResolvedValue({ instances: [{ id: "inst_1" }] });
+    await store.reconcileOnReconnect();
+    await flushPromises();
+    // The turn is still waiting on this human, so the form is still answerable.
+    expect(store.pendingInteraction!.outcome).toBeNull();
   });
 
   it("a locally expired window is withdrawn, never reported as cancelled", async () => {
@@ -520,6 +582,7 @@ describe("useDirectBotsStore interactions", () => {
     store.activeRun = null;
     // The window closed while disconnected.
     store.pendingInteraction!.request.expiresAt = Date.now() - 1;
+    mockApiGet.mockResolvedValue({ instances: [{ id: "inst-A" }] });
     await store.reconcileOnReconnect();
     await flushPromises();
     expect(store.pendingInteraction!.outcome).toBe("withdrawn");
@@ -545,36 +608,11 @@ describe("useDirectBotsStore interactions", () => {
       profileRevision: 1,
       createdAt: "now",
     };
+    mockApiGet.mockResolvedValue({ instances: [{ id: "inst_1" }] });
     await store.reconcileOnReconnect();
     await flushPromises();
     // The turn is still waiting on this human, so the form is still answerable.
     expect(store.pendingInteraction!.outcome).toBeNull();
-  });
-
-  it("reconcile drops a form whose turn is gone", async () => {
-    const store = useDirectBotsStore();
-    mockRpc.mockResolvedValue({ run: { id: "run_1", state: "completed", conversationId: "c1", topicId: "t1", requestMessageId: "m1", mode: "explicit", profileRevision: 1, createdAt: "now", memberTurns: [] } });
-    store.applyEvent(openedEvent(formRequest()));
-    store.instanceId = "inst_1";
-    store.selectedBotId = "bot_1";
-    store.activeConversationId = "c1";
-    store.activeTopicId = "t1";
-    store.activeRun = {
-      id: "run_1",
-      conversationId: "c1",
-      topicId: "t1",
-      requestMessageId: "m1",
-      requestId: "rq1",
-      mode: "explicit",
-      state: "waiting-human",
-      profileRevision: 1,
-      createdAt: "now",
-    };
-    await store.reconcileOnReconnect();
-    await flushPromises();
-    // The turn completed while disconnected: a form with no live turn cannot be
-    // answered, so it is withdrawn rather than left inviting a submit.
-    expect(store.pendingInteraction!.outcome).toBe("withdrawn");
   });
 
   it("a replayed interaction-opened keeps the user's draft while taking the hub's request", () => {
@@ -768,4 +806,391 @@ test("an uncorrelated form is reachable on the account-wide surface", () => {
   expect(store.pendingInteraction).not.toBeNull();
 });
 
+// The authoritative open-set snapshot, on the client.
+//
+// The hub replays `interaction-opened` for everything it still holds and then
+// declares the set COMPLETE with `interaction-snapshot`. These three cases are why
+// the boundary matters: replay alone is positive-only, so a tab that was
+// disconnected while an interaction was answered elsewhere receives neither an
+// open nor a close, and could not tell "I have everything" from "I am missing an
+// event".
+
+/** One entry of an interaction snapshot, in the wire shape. */
+function snapshotEntry(
+  requestId: string,
+  instanceId: string,
+  over: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    chatKey: "bot:c1:t1",
+    sessionAlias: "review",
+    interaction: {
+      requestId,
+      kind: "elicitation",
+      conversation: { conversationId: "c1", topicId: "t1" },
+      expiresAt: Date.now() + 60_000,
+      elicitation: {
+        mode: "form",
+        message: "Which region?",
+        fields: [{ kind: "text", key: "env", title: "Env", required: true }],
+        agent: { name: "codex" },
+      },
+      ...over,
+    },
+  };
+}
+
+test("a snapshot OMITTING a locally-held form retires it", () => {
+  // THE reconnect case this whole protocol change exists for.
+  //
+  // Another tab answered this interaction while this one was disconnected. The hub
+  // deleted it, so the authoritative set does not contain it. Before the snapshot,
+  // nothing told this tab that: no close event arrived (it was disconnected), the
+  // replay is positive-only, and the form stayed displayed until the user
+  // happened to click it and get a 409.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst-A";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  store.applyEvent(openedEvent(formRequest(), "inst-A"));
+  expect(store.requestStillHeld("req-1")).toBe(true);
+
+  // The hub's snapshot for this instance, listing a DIFFERENT interaction.
+  store.applyEvent({
+    kind: "interaction-snapshot",
+    instanceId: "inst-A",
+    interactions: [snapshotEntry("req-other", "inst-A")],
+  } as never);
+
+  // The stale form is closed, and closed with the NEUTRAL outcome.
+  //
+  // `gone`, not `withdrawn`: the snapshot proves the window is no longer open and
+  // nothing else. `withdrawn` asserts nobody chose anything, but an absence cannot
+  // support that claim — the real cause may be that another tab accepted, or
+  // declined, or timed out, all indistinguishable from here. Claiming a reason the
+  // hub never sent is exactly the "client invents terminal semantics" failure this
+  // store spent several rounds removing.
+  expect(store.requestStillHeld("req-1")).toBe(false);
+  expect(store.terminalInteractionCount).toBe(1);
+  expect(store.terminalInteractionOutcome("req-1")).toBe("gone");
+  expect(store.terminalInteractionOutcome("req-1")).not.toBe("withdrawn");
+  expect(store.terminalInteractionOutcome("req-1")).not.toBe("cancelled");
 });
+
+test("a snapshot that still contains a locally-held form keeps its draft", () => {
+  // A reconnect must not cost the user their in-progress answers. The snapshot is
+  // authoritative about the WINDOW, not about what the user typed, so a merge
+  // takes the server's metadata and keeps the local answers.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst-A";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  store.applyEvent(openedEvent(formRequest(), "inst-A"));
+  store.setInteractionAnswer("env", "prod-half-typed" as never);
+
+  store.applyEvent({
+    kind: "interaction-snapshot",
+    instanceId: "inst-A",
+    // The same requestId, with the hub's own (possibly refreshed) metadata.
+    interactions: [snapshotEntry("req-1", "inst-A")],
+  } as never);
+
+  // Still open, and the draft survived.
+  expect(store.requestStillHeld("req-1")).toBe(true);
+  expect(store.terminalInteractionCount).toBe(0);
+  const held = store.pendingInteraction;
+  expect(held!.answers["env"]).toBe("prod-half-typed");
+});
+
+test("a snapshot COLD-OPENS a form this tab had never seen", () => {
+  // The other half of the boundary: a form that opened while this tab was
+  // disconnected must be reachable after the fact, without a page reload.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst-A";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+
+  store.applyEvent({
+    kind: "interaction-snapshot",
+    instanceId: "inst-A",
+    interactions: [snapshotEntry("req-cold", "inst-A")],
+  } as never);
+
+  expect(store.requestStillHeld("req-cold")).toBe(true);
+  // And it is visible in the pane it belongs to, carrying the routing the entry
+  // supplied rather than anything this tab invented.
+  const held = store.pendingInteraction;
+  expect(held!.instanceId).toBe("inst-A");
+  expect(held!.request.requestId).toBe("req-cold");
+});
+
+test("a snapshot never touches another instance's forms", () => {
+  // The store is account-wide, and an omissive signal is only meaningful for the
+  // instance it covers. Reconciling A must not conclude anything about B, or a
+  // snapshot for A would delete B's live forms.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst-A";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  store.applyEvent(openedEvent(formRequest({ requestId: "req-b" }), "inst-B"));
+  expect(store.requestStillHeld("req-b")).toBe(true);
+
+  // A snapshot for A that names only A's own interaction.
+  store.applyEvent({
+    kind: "interaction-snapshot",
+    instanceId: "inst-A",
+    interactions: [snapshotEntry("req-a", "inst-A")],
+  } as never);
+
+  // B's form is untouched: still held, still open.
+  expect(store.requestStillHeld("req-b")).toBe(true);
+  expect(store.terminalInteractionCount).toBe(0);
+});
+
+test("a snapshot for another instance does not open a form into this pane", () => {
+  // Scoping runs both ways: A's snapshot must not make B's form visible in A's
+  // pane, which would be the mirror-image isolation failure.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst-A";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+
+  store.applyEvent({
+    kind: "interaction-snapshot",
+    instanceId: "inst-B",
+    interactions: [snapshotEntry("req-b", "inst-B")],
+  } as never);
+
+  // Stored (so switching to B's pane finds it, per the arrival rule) but not shown
+  // in A's pane.
+  expect(store.requestStillHeld("req-b")).toBe(true);
+  expect(store.pendingInteraction).toBeNull();
+});
+
+// The instance-set negative.
+//
+// The snapshot is authoritative per instance, and its scope is the set the browser
+// is still ALLOWED to ask about. Delete an instance while a tab is disconnected and
+// the ownership filter drops it on reconnect, so it never receives an
+// `interaction-snapshot` for that instance again: the tab holds a pending
+// interaction with no open, no close, and no snapshot — and no timer — so it stays
+// until the user clicks and gets a 409.
+//
+// That is the same "no negative evidence, so keep it" failure the snapshot closed,
+// one level up: what went missing is not one request but the instance that owned
+// the set the request would have been proven absent from.
+
+test("an instance deleted while disconnected retires its forms, not the others'", async () => {
+  const store = useDirectBotsStore();
+  // Two instances, each holding an open form.
+  store.applyEvent(openedEvent(formRequest({ requestId: "req-a" }), "inst-A"));
+  store.applyEvent(openedEvent(formRequest({ requestId: "req-b" }), "inst-B"));
+  expect(store.requestStillHeld("req-a")).toBe(true);
+  expect(store.requestStillHeld("req-b")).toBe(true);
+
+  store.instanceId = "inst-B";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  store.activeRun = null;
+  mockRpc.mockResolvedValue({ run: undefined });
+  // The authoritative owned set no longer contains inst-A.
+  mockApiGet.mockResolvedValue({ instances: [{ id: "inst-B" }] });
+
+  await store.reconcileOwnedInstanceNegative();
+  await flushPromises();
+
+  // A is gone with the neutral outcome — absence proves only that this request can
+  // no longer continue under this account, never who or why.
+  expect(store.requestStillHeld("req-a")).toBe(false);
+  expect(store.terminalInteractionOutcome("req-a")).toBe("gone");
+  // B is UNTOUCHED: the reconcile is scoped per instance, so one instance's
+  // removal must never reach another's live form.
+  expect(store.requestStillHeld("req-b")).toBe(true);
+  expect(store.terminalInteractionCount).toBe(1);
+});
+
+test("a failed instance list retires nothing", async () => {
+  // The mirror case, and the one that makes the check safe to add at all. A failed
+  // `/api/instances` says nothing about which instances were deleted — offline,
+  // expired session, 503 all look identical. Retiring on it would let a transient
+  // error destroy live forms, which is strictly worse than the bug being fixed.
+  const store = useDirectBotsStore();
+  store.applyEvent(openedEvent(formRequest({ requestId: "req-a" }), "inst-A"));
+  store.applyEvent(openedEvent(formRequest({ requestId: "req-b" }), "inst-B"));
+
+  store.instanceId = "inst-A";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  store.activeRun = null;
+  mockRpc.mockResolvedValue({ run: undefined });
+  mockApiGet.mockRejectedValue(new Error("network down"));
+
+  await store.reconcileOwnedInstanceNegative();
+  await flushPromises();
+
+  // Both survive: no evidence, no conclusion.
+  expect(store.requestStillHeld("req-a")).toBe(true);
+  expect(store.requestStillHeld("req-b")).toBe(true);
+  expect(store.terminalInteractionCount).toBe(0);
+});
+
+// Two races where an AUTHORITATIVE fact was swallowed by the pane's generation
+// fence. Both are the same mistake: a fact scoped to a request or to the whole
+// account being treated as if it belonged to the currently selected pane.
+
+test("an authoritative 409 during a pane switch still retires the request", async () => {
+  // The real race. The user submits on pane A, the RPC is in flight, they navigate
+  // to B, and only then does the hub's authoritative 409 land.
+  //
+  // The fence used to be checked first, so the newer generation returned
+  // immediately and A's form stayed in the open map — answerable, and closing it
+  // would require another trip through the same race.
+  //
+  // A snapshot cannot rescue it here either, but not for a subscription reason: the
+  // Dashboard subscribes to EVERY owned instance, so A stays subscribed. What is
+  // missing is the trigger. This was a pane switch, not a reconnect, so nothing
+  // re-subscribes and no authoritative open set is ever re-declared. The next
+  // snapshot for A is one reconnect away.
+  //
+  // A 409 is a REQUEST-scoped fact: "this requestId no longer exists on the hub" is
+  // just as true after a pane switch, so nothing about the pane may discard it.
+  const store = useDirectBotsStore();
+  // The pane is the instance the form was opened on, so the submit can be issued.
+  // (A mismatched pane would make `pendingInteraction` null and the submit would
+  // return before any RPC — not the race under test.)
+  store.instanceId = "inst_1";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  // Same construction as the non-race 409 test above, so the only variable here is
+  // the pane switch.
+  mockRpc.mockResolvedValue({ error: { code: "interaction-gone", message: "gone" } });
+  store.applyEvent(openedEvent(formRequest()));
+  store.setInteractionAnswer("env", "prod");
+
+  const submitted = store.submitInteraction("accept");
+
+  // The user navigates to another topic of the SAME instance while the submit is in
+  // flight, which is what changes the pane generation.
+  store.switchTopic("t2");
+
+  await submitted;
+  await flushPromises();
+
+  expect(store.requestStillHeld("req-1")).toBe(false);
+  expect(store.terminalInteractionOutcome("req-1")).toBe("gone");
+});
+
+test("a transport failure never wedges the form, pane switch or not", async () => {
+  // The control, and the reason the fence was not simply deleted. A transport
+  // failure is NOT authoritative about the window — the request may well still be
+  // open — so what it really reports is "this pane's submit did not land", which a
+  // pane switch does invalidate.
+  //
+  // Acting on it anyway would patch an error code onto whatever form now occupies
+  // that slot: telling the user about a failure they cannot see from where they are
+  // looking, or attaching it to a different form entirely.
+  // The pane must match the form's instance (`openedEvent` defaults to `inst_1`), or
+  // `pendingInteraction` is null and the submit returns before any RPC — which is a
+  // different bug, not the race under test.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst_1";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  store.applyEvent(openedEvent(formRequest()));
+  store.setInteractionAnswer("env", "prod");
+
+  const gate = Promise.withResolvers<never>();
+  mockRpc.mockReturnValue(gate.promise);
+  const submitted = store.submitInteraction("accept").catch(() => undefined);
+  expect(store.pendingInteraction!.submitting).toBe(true);
+
+  // The user navigates away, then the network fails the in-flight submit.
+  store.switchTopic("t2");
+  gate.reject(new Error("transport failed"));
+  await submitted;
+  await flushPromises();
+
+  // Still open: no authoritative statement said otherwise.
+  expect(store.requestStillHeld("req-1")).toBe(true);
+
+  // Switch back. The form must be usable again, WITHOUT a reconnect to clear it.
+  store.switchTopic("t1");
+  await flushPromises();
+  const back = store.pendingInteraction;
+  expect(back).not.toBeNull();
+
+  // `submitting` is the REQUEST's lifecycle state, not a pane message, so it was
+  // cleared by the failure even though this tab had moved on. Had it stayed set,
+  // every control would now refuse to fire — the form is permanently unanswerable
+  // until the next reconnect happens to replay it.
+  expect(back!.submitting).toBe(false);
+
+  // And a second submit really reaches the RPC.
+  mockRpc.mockClear();
+  mockRpc.mockResolvedValue({});
+  await store.submitInteraction("accept");
+  expect(mockRpc).toHaveBeenCalledTimes(1);
+});
+
+test("the owned-instance negative runs with NO pane selected", async () => {
+  // The instance negative used to sit after `if (!iId) return`, so with nothing
+  // selected the reconcile returned before it ever ran.
+  //
+  // That is exactly when a background form is most exposed: it is off-screen, it is
+  // the only thing keeping the instance alive in the store, and nothing else will
+  // ever look at it. `/api/instances` is an ACCOUNT-wide authority with no pane to
+  // depend on, so a pane's absence must not suppress it.
+  const store = useDirectBotsStore();
+  store.applyEvent(openedEvent(formRequest({ requestId: "req-bg" }), "inst-A"));
+  expect(store.requestStillHeld("req-bg")).toBe(true);
+
+  store.instanceId = "";
+  store.selectedBotId = "";
+  mockRpc.mockResolvedValue({ run: undefined });
+  mockApiGet.mockResolvedValue({ instances: [] });
+
+  // Called directly, not through the pane reconcile: with no selection at all,
+  // `reconcileOnReconnect` returns early and would never reach the check.
+  await store.reconcileOwnedInstanceNegative();
+  await flushPromises();
+
+  expect(store.requestStillHeld("req-bg")).toBe(false);
+  expect(store.terminalInteractionOutcome("req-bg")).toBe("gone");
+});
+
+test("the owned-instance negative survives a pane switch during its fetch", async () => {
+  // The other half of the same fence problem. The list request is in flight, the
+  // user changes pane, and the retirement loop used to abort on the generation
+  // mismatch — discarding a conclusion about the ACCOUNT that had not changed.
+  const store = useDirectBotsStore();
+  store.instanceId = "inst-B";
+  store.selectedBotId = "bot_1";
+  store.activeConversationId = "c1";
+  store.activeTopicId = "t1";
+  store.applyEvent(openedEvent(formRequest({ requestId: "req-a" }), "inst-A"));
+  store.applyEvent(openedEvent(formRequest({ requestId: "req-b" }), "inst-B"));
+  mockRpc.mockResolvedValue({ run: undefined });
+
+  const listGate = Promise.withResolvers<{ instances: Array<{ id: string }> }>();
+  mockApiGet.mockReturnValue(listGate.promise);
+  const reconcile = store.reconcileOwnedInstanceNegative();
+
+  store.switchTopic("t2");
+
+  listGate.resolve({ instances: [{ id: "inst-B" }] });
+  await reconcile;
+  await flushPromises();
+
+  expect(store.requestStillHeld("req-a")).toBe(false);
+  expect(store.terminalInteractionOutcome("req-a")).toBe("gone");
+  expect(store.requestStillHeld("req-b")).toBe(true);
+});});

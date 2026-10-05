@@ -720,6 +720,9 @@ export default {
       declined: "You declined to answer.",
       cancelled: "Cancelled.",
       withdrawn: "Closed before an answer arrived.",
+      // Neutral: the hub proved the window is no longer open but not who closed
+      // it or why, so the notice must not claim a reason.
+      gone: "This request is no longer available.",
       requiredMissing: "Still needed: {fields}",
       requestedBy: "Asked by",
       pattern: "Expected format",

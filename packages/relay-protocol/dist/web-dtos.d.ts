@@ -1,5 +1,5 @@
 import { type RelayEnvelope } from "./envelope.js";
-import type { AgentCommandDto, ControlEventDto, ConversationTurnCorrelationDto, PeerMessageHistoryEntry, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
+import type { AgentCommandDto, ControlEventDto, ConversationTurnCorrelationDto, InteractionSnapshotDto, PeerMessageHistoryEntry, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
 import type { DesktopSecurityKind, InstanceNoticePayload, TerminalRole } from "./messages.js";
 /** Envelope `type` for every relay→web push. */
 export declare const WEB_EVENT_TYPE = "web.event";
@@ -151,7 +151,10 @@ export type WebServerEvent = {
 } | ({
     kind: "state-snapshot";
     instanceId: string;
-} & InstanceStateSnapshotDto) | {
+} & InstanceStateSnapshotDto) | ({
+    kind: "interaction-snapshot";
+    instanceId: string;
+} & InteractionSnapshotDto) | {
     kind: "notice";
     instanceId: string;
     notice: InstanceNoticePayload;
