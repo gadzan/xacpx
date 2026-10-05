@@ -110,6 +110,23 @@ jobs:
       - name: Build (all packages)
         run: bun run build:packages
 
+      # ACP elicitation capability gate on the BUILT artifact.
+      #
+      # Runs here, and only here, because this is the one leg that has already
+      # produced the channel bundles this probe consumes — `build:packages`
+      # emits `packages/channel-*/dist/index.js`, the file the plugin loader
+      # actually loads. Asserting `elicitationModes` in a source unit test pins
+      # the source, not the shipped artifact, and a bundler, a tree-shake or a
+      # stale tracked dist can silently change what an artifact declares.
+      #
+      # Not duplicated on macOS: one automatically running gate closes the hole, and the
+      # channel bundles are platform-independent JS.
+      #
+      # The probe refuses to pass on source: a missing bundle throws rather than
+      # reading `undefined` and reporting success.
+      - name: ACP elicitation built-artifact capability
+        run: bun test tests/smoke/acp-elicitation-capability-artifact.test.ts
+
       # Release-boundary gate: packs the repo and drives a real plan turn
       # through the PACKED bridge (prompt.plan wire events), so a stale acpx
       # pin or a dropped prompt.plan mapping fails here instead of in users'

@@ -619,6 +619,74 @@ test("handleSessionAttach refuses an existing alias without touching its row", a
   expect(calls).not.toContain("attach");
 });
 
+test("handlePromptWithSession binds ONLY the permission broker on an ordinary channel turn", async () => {
+  // The M5 truthfulness half of the Direct Bot test above.
+  //
+  // An ordinary channel turn has a permission route and NO elicitation route.
+  // Binding the elicitation broker to the permission route's address would give it
+  // a trusted-looking route, its channel-wide capability check would pass, and the
+  // request would reach a renderer that can only refuse it as
+  // `unsupported-route` — the agent told a human was asked when no human ever saw
+  // the question. So exactly ONE broker is bound here, and it is permission's.
+  const { setGlobalElicitationBroker, resetGlobalElicitationBrokerForTests } = await import("../../../../src/interactions/elicitation-interaction-broker.js");
+  const { resetGlobalPermissionBrokerForTests, setGlobalPermissionBroker } = await import("../../../../src/permissions/permission-interaction-broker.js");
+  resetGlobalPermissionBrokerForTests();
+  resetGlobalElicitationBrokerForTests();
+
+  const bound: Array<Record<string, unknown>> = [];
+  const fakeBroker = {
+    bindTurn: (ctx: Record<string, unknown>) => {
+      bound.push(ctx);
+      return () => {};
+    },
+  };
+  setGlobalElicitationBroker(fakeBroker as never);
+  setGlobalPermissionBroker(fakeBroker as never);
+
+  const session = {
+    alias: "review",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "sess-1",
+    archived: false,
+    replyMode: "final" as const,
+  } as unknown as ResolvedSession;
+
+  const makeContext = () => ({
+    sessions: {},
+    lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
+    interaction: {
+      promptTransportSession: async () => ({ text: "ok" }),
+    },
+    recovery: {},
+    config: undefined as unknown as AppConfig,
+    logger: { info: async () => {}, warn: async () => {}, error: async () => {}, debug: async () => {} },
+    quota: undefined,
+    orchestration: undefined,
+  }) as unknown as SessionHandlerContext;
+
+  await handlePromptWithSession(
+    makeContext(), session, "relay:acct-9", "hi",
+    undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    // An ordinary Relay session turn: human, private destination, but the
+    // isolation key is the account-wide ingress key, not a Direct Conversation
+    // product key.
+    {
+      channel: "relay",
+      senderId: "relay:acct-9",
+      origin: "human",
+      permissionChatKey: "relay:acct-9",
+      chatType: "direct",
+    } as never,
+  );
+
+  // Exactly one bind, and it is the permission route. If this ever binds twice,
+  // the second address is the elicitation broker holding an ordinary-turn key it
+  // must not have — which is the bug this test exists to catch.
+  expect(bound.length).toBe(1);
+  expect(bound[0]!.chatKey).toBe("relay:acct-9");
+});
+
 test("handleSessionAttach drops its fresh row when post-persist setup fails", async () => {
   const calls: string[] = [];
   const context = {

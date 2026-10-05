@@ -296,8 +296,11 @@ function extractUrlVerificationChallenge(
  *
  * Two layers must both hold for a new-protocol callback:
  *
- *   1. The request signature above. It is what makes the body a FRESH send from
- *      Feishu rather than a captured ciphertext replayed later.
+ *   1. The request signature above. It authenticates the signed request under
+ *      the configured secret, while the timestamp check bounds how old an
+ *      accepted replay may be. Neither makes the request single-use: there is
+ *      no nonce or used-signature cache, so a fully captured request passes
+ *      again for as long as its timestamp stays fresh.
  *   2. The `encrypt` envelope decrypts under `encryptKey` (encrypted pushes only).
  *
  * The decrypted body's `operator.open_id` is promoted to the ACP

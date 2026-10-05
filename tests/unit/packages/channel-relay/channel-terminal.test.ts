@@ -304,26 +304,58 @@ test("stop(disabled) terminates RMUX after durable reaping", async () => {
 });
 
 test("terminal disabled omits capabilities and still starts chat client", async () => {
-  let capturedCaps: string[] | undefined;
+  // The wait here is a real signal, not a guessed duration. `createClient` resolves
+  // a deferred once the built channel has assembled its capability list, so the
+  // assertions below run against the registration that actually happened. The
+  // previous `await Bun.sleep(10)` was a race: under load the registration had not
+  // happened yet and `capturedCaps` was still `undefined`, which failed this test
+  // for a reason unrelated to what it checks. The deadline is owned (2s, well
+  // under Bun's 5s test timeout) and cleared as soon as registration resolves, so
+  // "registration never happened" reports itself instead of surfacing as a
+  // wall-clock timeout.
+  const registration = Promise.withResolvers<string[] | undefined>();
+  const deadlineMs = 2000;
   const fakeClient = {
     start: () => {},
     stop: () => {},
     sendEvent: () => {},
   };
+  const controller = new AbortController();
   const channel = new RelayChannel(
     { url: "ws://h:1", pairingToken: "t" },
     {
       credentialStore: new MemoryCredentialStore(),
       createClient: (opts) => {
-        capturedCaps = opts.capabilities;
+        registration.resolve(opts.capabilities);
         return fakeClient as never;
       },
     },
   );
-  const controller = new AbortController();
   const { input } = makeStartInput({ abortSignal: controller.signal });
   const started = channel.start(input as never);
-  await Bun.sleep(10);
+  let capturedCaps: string[] | undefined;
+  let timedOut = false;
+  const deadline = new Promise<never>((_, reject) => {
+    const timer = setTimeout(() => {
+      timedOut = true;
+      reject(new Error(`connector registration never happened within ${deadlineMs}ms`));
+    }, deadlineMs);
+    registration.promise.finally(
+      () => clearTimeout(timer),
+      () => clearTimeout(timer),
+    );
+  });
+  try {
+    capturedCaps = await Promise.race([registration.promise, deadline]);
+  } catch (error) {
+    if (!timedOut) throw error;
+    throw new Error(
+      `relay channel never reached connector registration: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  } finally {
+    controller.abort();
+    await started.catch(() => {});
+  }
   // No TERMINAL capabilities: the runtime is disabled, so nothing terminal-shaped
   // is advertised. The interaction capability is separate and unrelated to the
   // terminal runtime — it is declared because the channel can render a form over
@@ -331,8 +363,6 @@ test("terminal disabled omits capabilities and still starts chat client", async 
   expect(capturedCaps ?? []).not.toContain("terminal.rmux.recovery.v1");
   expect(capturedCaps ?? []).not.toContain("terminal.multi-view.v1");
   expect(capturedCaps ?? []).toContain("interaction.elicitation.form.v1");
-  controller.abort();
-  await started;
 });
 
 test("valid owner + corrupt terminals.json does not advertise terminal capabilities or create shells", async () => {

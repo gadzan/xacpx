@@ -228,3 +228,51 @@ describe("exact-turn route: Direct Bot elicitation (M3) + chatType privacy (#360
     expect(elic!.chatKey).toBe("bot:conv-1:topic-1");
   });
 });
+
+/**
+ * The M5 truthfulness half of the same seam.
+ *
+ * An ordinary (non-Direct-Conversation) turn must produce NO elicitation route, and
+ * the caller must not substitute the permission route for it. Substituting is the
+ * bug this pins: the permission route for an ordinary turn is the account-wide
+ * ingress key (`relay:<accountId>`), which the elicitation broker would happily
+ * bind as a trusted route. Its capability check then passes on the channel's
+ * channel-wide `["form"]` declaration, the request reaches a renderer that can
+ * only refuse it as `unsupported-route`, and the agent is told a human was asked
+ * when no human ever saw the question.
+ *
+ * So `undefined` has to stay `undefined` all the way through the caller.
+ */
+describe("ordinary turns have no elicitation route to fall back on", () => {
+  test("an ordinary channel turn resolves NO elicitation route", () => {
+    const route = resolveElicitationTurnRoute({
+      // The isolation key an ordinary Relay session turn carries.
+      isolationChatKey: "relay:acct-9",
+      origin: "human",
+      metadata: botMetadata({ chatType: "direct" }),
+    });
+    expect(route).toBeUndefined();
+  });
+
+  test("a group isolation key resolves NO elicitation route", () => {
+    const route = resolveElicitationTurnRoute({
+      isolationChatKey: "wx:group-7",
+      origin: "human",
+      metadata: botMetadata({ chatType: "group" }),
+    });
+    expect(route).toBeUndefined();
+  });
+
+  test("the permission resolver still resolves for those same turns", () => {
+    // The asymmetry is the point. Permission MUST keep working for ordinary turns
+    // — it is the only route an ordinary turn has — so the fix cannot be "resolve
+    // nothing for non-bot keys". Only the elicitation route is withheld.
+    const perm = resolvePermissionTurnRoute({
+      isolationChatKey: "relay:acct-9",
+      origin: "human",
+      metadata: botMetadata({ chatType: "direct" }),
+    });
+    expect(perm).toBeDefined();
+    expect(perm!.chatKey).toBe("relay:acct-42");
+  });
+});
