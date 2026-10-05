@@ -1033,22 +1033,25 @@ function makeHiddenOwnedPromptContext(prompted: string[]) {
   } as unknown as ResolvedSession;
   const context = {
     sessions: {
-      getLogicalSessionRecord: () => ({
-        alias: "brt_owned",
-        owner: {
-          kind: "bot-direct",
-          bindingId: "bind_x",
-          botId: "bot_x",
-          conversationId: "conversation_1",
-          topicId: "topic_1",
-        },
-      }),
+      getLogicalSessionRecord: (alias: string) => alias === "brt_owned"
+        ? {
+            alias: "brt_owned",
+            owner: {
+              kind: "bot-direct",
+              bindingId: "bind_x",
+              botId: "bot_x",
+              conversationId: "conversation_1",
+              topicId: "topic_1",
+            },
+          }
+        : { alias },
+      getResolvedSessionByInternalAlias: (alias: string) => alias === "brt_owned" ? session : null,
       getCurrentSession: async () => session,
     },
     lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
     interaction: {
-      promptTransportSession: async () => {
-        prompted.push("prompted");
+      promptTransportSession: async (target: ResolvedSession) => {
+        prompted.push(target.alias);
         return { text: "assistant-reply" };
       },
     },
@@ -1114,6 +1117,43 @@ test("handlePrompt still prompts a product-owned session on a Direct Bot isolati
   expect(res.text).toBe("assistant-reply");
 });
 
+test("handlePrompt uses the bound Conversation session even when current_session was overwritten", async () => {
+  const prompted: string[] = [];
+  const { context } = makeHiddenOwnedPromptContext(prompted);
+  const ordinary = {
+    alias: "relay:ordinary",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "ordinary-session",
+    archived: false,
+    replyMode: "final" as const,
+  } as unknown as ResolvedSession;
+  (context.sessions as any).getCurrentSession = async () => ordinary;
+
+  const res = await handlePrompt(
+    context,
+    "bot:conversation_1:topic_1",
+    "hello",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { boundSessionAlias: "brt_owned" } as never,
+    undefined,
+    undefined,
+    undefined,
+    trustedConversation,
+  );
+
+  expect(prompted).toEqual(["brt_owned"]);
+  expect(res.text).toBe("assistant-reply");
+});
+
+
 test("handlePrompt refuses a hidden session when an ordinary caller reuses a real Direct Bot isolation key", async () => {
   const prompted: string[] = [];
   const { context } = makeHiddenOwnedPromptContext(prompted);
@@ -1122,10 +1162,10 @@ test("handlePrompt refuses a hidden session when an ordinary caller reuses a rea
   expect(res.text).toBe(t().session.sessionHiddenOwned("brt_owned"));
 });
 
-test("handlePromptWithSession refuses trusted correlation that does not match the isolation key", async () => {
+test("handlePromptWithSession fails closed when trusted correlation does not match the isolation key", async () => {
   const prompted: string[] = [];
   const { session, context } = makeHiddenOwnedPromptContext(prompted);
-  const res = await handlePromptWithSession(
+  await expect(handlePromptWithSession(
     context,
     session,
     "bot:conversation_1:topic_other",
@@ -1143,9 +1183,42 @@ test("handlePromptWithSession refuses trusted correlation that does not match th
     undefined,
     undefined,
     trustedConversation,
-  );
+  )).rejects.toThrow('trusted Conversation execution target mismatch for session "brt_owned"');
   expect(prompted).toEqual([]);
-  expect(res.text).toBe(t().session.sessionHiddenOwned("brt_owned"));
+});
+
+test("handlePromptWithSession fails closed instead of downgrading trusted execution onto an ordinary session", async () => {
+  const prompted: string[] = [];
+  const { context } = makeHiddenOwnedPromptContext(prompted);
+  const ordinary = {
+    alias: "relay:ordinary",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "ordinary-session",
+    archived: false,
+    replyMode: "final" as const,
+  } as unknown as ResolvedSession;
+
+  await expect(handlePromptWithSession(
+    context,
+    ordinary,
+    "bot:conversation_1:topic_1",
+    "hello",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    trustedConversation,
+  )).rejects.toThrow('trusted Conversation execution target mismatch for session "relay:ordinary"');
+  expect(prompted).toEqual([]);
 });
 
 test("handlePromptWithSession still refuses a product-owned session on an ordinary chat key", async () => {
