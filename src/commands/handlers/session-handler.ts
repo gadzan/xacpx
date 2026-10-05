@@ -1293,7 +1293,11 @@ export async function handlePromptWithSession(
   onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
   trustedConversationExecution?: ConversationTurnCorrelation,
 ): Promise<RouterResponse> {
-  if (!isAuthorizedConversationPrompt(context, session, chatKey, trustedConversationExecution)) {
+  if (trustedConversationExecution) {
+    if (!isAuthorizedConversationPrompt(context, session, chatKey, trustedConversationExecution)) {
+      throw new Error(`trusted Conversation execution target mismatch for session "${session.alias}"`);
+    }
+  } else {
     const hidden = rejectHiddenOwnedSession(context, session.alias);
     if (hidden) {
       return hidden;
