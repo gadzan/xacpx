@@ -815,12 +815,24 @@ export async function handleCancel(
   }
 }
 
-export async function handleSessionReset(context: SessionHandlerContext, chatKey: string): Promise<RouterResponse> {
-  const session = await context.sessions.getCurrentSession(chatKey);
+export async function handleSessionReset(
+  context: SessionHandlerContext,
+  chatKey: string,
+  trustedSessionAlias?: string,
+): Promise<RouterResponse> {
+  const session = trustedSessionAlias
+    ? context.sessions.getResolvedSessionByInternalAlias(trustedSessionAlias)
+    : await context.sessions.getCurrentSession(chatKey);
+  if (trustedSessionAlias && !session) {
+    throw new Error("trusted Conversation execution missing bound session target");
+  }
   if (session) {
     const hidden = rejectHiddenOwnedSession(context, session.alias);
     if (hidden) {
       return hidden;
+    }
+    if (trustedSessionAlias) {
+      throw new Error(`trusted Conversation execution target mismatch for session "${session.alias}"`);
     }
   }
   return await context.lifecycle.resetCurrentSession(chatKey);
