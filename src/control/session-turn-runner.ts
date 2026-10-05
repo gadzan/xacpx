@@ -195,8 +195,14 @@ export class SessionTurnRunner {
       const prior = await this.deps.sessions.getSession(internalAlias);
       wasArchived = prior?.archived === true;
       priorTransportSession = prior?.transportSession;
-    } catch {
-      /* best-effort: a detection failure just means no badge refresh */
+    } catch (error) {
+      // Trusted Conversation execution must carry an exact resolved session
+      // identity into the Router. A routing failure here cannot safely fall
+      // back to the mutable chat current_session.
+      if (req.conversation && !internalAlias) {
+        return { ok: false, errorMessage: toErrorMessage(error) };
+      }
+      /* best-effort: a post-resolution detection failure just means no badge refresh */
     }
     if (req.allowRestoreArchived === false && wasArchived) {
       return { ok: false, errorMessage: "session-archived" };
@@ -353,7 +359,7 @@ export class SessionTurnRunner {
           ...buildControlMetadata(
             req.senderId,
             req.isOwner,
-            req.boundSessionAlias,
+            req.boundSessionAlias ?? (req.conversation ? internalAlias : undefined),
             req.preserveCoordinatorRoute,
             req.turnOrigin,
           ),
