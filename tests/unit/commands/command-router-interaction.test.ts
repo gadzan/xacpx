@@ -1,6 +1,7 @@
 import { beforeEach, expect, mock, test } from "bun:test";
 import { setLocale } from "../../../src/i18n";
 import { CommandRouter } from "../../../src/commands/command-router";
+import { createBotDirectOwner } from "../../../src/state/types";
 import type { EnsureSessionProgress, ResolvedSession } from "../../../src/transport/types";
 import type { SessionAgentCommandResolver } from "./command-router-test-support";
 import {
@@ -146,6 +147,61 @@ test("control-channel /clear still resets the session instead of passing through
   expect(after?.transportSession.startsWith("backend:web:reset-")).toBe(true);
   expect(reply.text).not.toContain("agent:web:/clear");
 });
+
+test("trusted Conversation /clear cannot reset a current session overwritten by the same bot chatKey", async () => {
+  const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());
+  const transport = createTransport();
+  const router = new CommandRouter(sessions, transport);
+  const chatKey = "bot:conversation_1:topic_1";
+
+  await sessions.createSession("brt_owned", "codex", "backend", {
+    owner: createBotDirectOwner({
+      bindingId: "bind_x",
+      botId: "bot_x",
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+    }),
+  });
+  await sessions.createSession("relay:ordinary", "codex", "backend");
+  await sessions.useSession(chatKey, "ordinary");
+  const before = await sessions.getCurrentSession(chatKey);
+
+  const reply = await router.handle(
+    chatKey,
+    "/clear",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      channel: "control",
+      chatType: "direct",
+      senderId: "relay:acct",
+      isOwner: true,
+      boundSessionAlias: "brt_owned",
+    },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    {
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      botId: "bot_x",
+      runId: "run_1",
+      memberTurnId: "mturn_1",
+    },
+  );
+  const after = await sessions.getCurrentSession(chatKey);
+
+  expect(reply.text).toContain("brt_owned");
+  expect(after?.alias).toBe("relay:ordinary");
+  expect(after?.transportSession).toBe(before?.transportSession);
+});
+
 
 test("control-channel /clear keeps a native session native end-to-end", async () => {
   const sessions = new SessionService(createConfig(), new MemoryStateStore(), createEmptyState());

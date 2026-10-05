@@ -11,6 +11,7 @@ import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import type { PerfSpan } from "../../perf/perf-tracer";
 import type { HelpTopicMetadata } from "../help/help-types";
 import type { ChatRequestMetadata } from "../../weixin/agent/interface";
+import type { ConversationTurnCorrelation } from "../../control/conversation-control-dtos";
 import { buildCoordinatorPrompt } from "../../orchestration/build-coordinator-prompt";
 import { stableCoordinatorSession } from "../../orchestration/coordinator-identity";
 import { toDisplaySessionAlias, getChannelIdFromChatKey, scopeDisplayAliasToInternal, resolveSessionAliasForInput } from "../../channels/channel-scope";
@@ -27,6 +28,7 @@ import { resolvePermissionTurnRoute } from "../../permissions/permission-turn-ro
 import { resolveElicitationTurnRoute } from "../../interactions/elicitation-turn-route.js";
 import type { TurnInteractionContext } from "../../interactions/turn-interaction-registry";
 import { getGlobalElicitationBroker } from "../../interactions/elicitation-interaction-broker.js";
+import { parseDirectConversationChatKey } from "../../domain/ids";
 import { isHiddenProductSessionOwner } from "../../state/types";
 
 export interface SessionHandlerContext extends CommandRouterContext {
@@ -189,6 +191,36 @@ function rejectHiddenOwnedSession(context: SessionHandlerContext, alias: string)
     return { text: t().session.sessionHiddenOwned(toDisplaySessionAlias(alias)) };
   }
   return undefined;
+}
+
+/**
+ * Conversation-owned sessions are reachable only when the core-private
+ * Conversation execution path proves this exact turn. The `bot:<c>:<t>`
+ * isolation key is routing data, not authority: public Control/channel callers
+ * can supply the same string.
+ */
+function isAuthorizedConversationPrompt(
+  context: SessionHandlerContext,
+  session: ResolvedSession,
+  chatKey: string,
+  trusted: ConversationTurnCorrelation | undefined,
+): boolean {
+  if (!trusted) return false;
+  const parsed = parseDirectConversationChatKey(chatKey);
+  if (
+    !parsed
+    || parsed.conversationId !== trusted.conversationId
+    || parsed.topicId !== trusted.topicId
+  ) {
+    return false;
+  }
+  const owner = context.sessions.getLogicalSessionRecord?.(session.alias)?.owner;
+  if (owner?.kind !== "bot-direct" && owner?.kind !== "group-member") {
+    return false;
+  }
+  return (owner.botId === undefined || owner.botId === trusted.botId)
+    && (owner.conversationId === undefined || owner.conversationId === trusted.conversationId)
+    && (owner.topicId === undefined || owner.topicId === trusted.topicId);
 }
 
 export async function handleSessions(context: SessionHandlerContext, chatKey: string): Promise<RouterResponse> {
@@ -783,12 +815,24 @@ export async function handleCancel(
   }
 }
 
-export async function handleSessionReset(context: SessionHandlerContext, chatKey: string): Promise<RouterResponse> {
-  const session = await context.sessions.getCurrentSession(chatKey);
+export async function handleSessionReset(
+  context: SessionHandlerContext,
+  chatKey: string,
+  trustedSessionAlias?: string,
+): Promise<RouterResponse> {
+  const session = trustedSessionAlias
+    ? context.sessions.getResolvedSessionByInternalAlias(trustedSessionAlias)
+    : await context.sessions.getCurrentSession(chatKey);
+  if (trustedSessionAlias && !session) {
+    throw new Error("trusted Conversation execution missing bound session target");
+  }
   if (session) {
     const hidden = rejectHiddenOwnedSession(context, session.alias);
     if (hidden) {
       return hidden;
+    }
+    if (trustedSessionAlias) {
+      throw new Error(`trusted Conversation execution target mismatch for session "${session.alias}"`);
     }
   }
   return await context.lifecycle.resetCurrentSession(chatKey);
@@ -1259,10 +1303,17 @@ export async function handlePromptWithSession(
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   onUsage?: (usage: PromptUsage) => void | Promise<void>,
   onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
+  trustedConversationExecution?: ConversationTurnCorrelation,
 ): Promise<RouterResponse> {
-  const hidden = rejectHiddenOwnedSession(context, session.alias);
-  if (hidden) {
-    return hidden;
+  if (trustedConversationExecution) {
+    if (!isAuthorizedConversationPrompt(context, session, chatKey, trustedConversationExecution)) {
+      throw new Error(`trusted Conversation execution target mismatch for session "${session.alias}"`);
+    }
+  } else {
+    const hidden = rejectHiddenOwnedSession(context, session.alias);
+    if (hidden) {
+      return hidden;
+    }
   }
   try {
     return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
@@ -1316,7 +1367,11 @@ export async function handlePrompt(
   onPlan?: (entries: PlanEntry[]) => void | Promise<void>,
   onUsage?: (usage: PromptUsage) => void | Promise<void>,
   onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
+  trustedConversationExecution?: ConversationTurnCorrelation,
 ): Promise<RouterResponse> {
+  if (trustedConversationExecution && !metadata?.boundSessionAlias) {
+    throw new Error("trusted Conversation execution missing bound session target");
+  }
   const session = metadata?.boundSessionAlias
     ? context.sessions.getResolvedSessionByInternalAlias(metadata.boundSessionAlias)
     : await context.sessions.getCurrentSession(chatKey);
@@ -1324,7 +1379,7 @@ export async function handlePrompt(
     return { text: t().session.noCurrent };
   }
 
-  return await handlePromptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
+  return await handlePromptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands, trustedConversationExecution);
 }
 
 function toCoordinatorRouteChatMetadata(

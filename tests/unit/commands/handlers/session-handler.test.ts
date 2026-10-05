@@ -1,5 +1,5 @@
 import { expect, test, beforeEach } from "bun:test";
-import { handleCancel, handlePrompt, handlePromptWithSession, handleReplyModeShow, handleSessionAttach, handleSessionRemove, handleSessionUse, handleSessions } from "../../../../src/commands/handlers/session-handler";
+import { handleCancel, handlePrompt, handlePromptWithSession, handleReplyModeShow, handleSessionAttach, handleSessionRemove, handleSessionReset, handleSessionUse, handleSessions } from "../../../../src/commands/handlers/session-handler";
 import { setLocale, t } from "../../../../src/i18n";
 import { AcpxQueueOverflowError } from "../../../../src/transport/acpx-queue-overflow";
 import { renderTransportError, tryRecoverMissingSession, queueOverflowTipText } from "../../../../src/commands/handlers/session-recovery-handler";
@@ -1012,6 +1012,284 @@ test("handlePromptWithSession mints an interaction id only for explicit human or
     { channel: "discord", senderId: "user-A" } as never,
   );
   expect(absentSeen).toEqual([undefined]);
+});
+
+const trustedConversation = {
+  conversationId: "conversation_1",
+  topicId: "topic_1",
+  botId: "bot_x",
+  runId: "run_1",
+  memberTurnId: "mturn_1",
+};
+
+function makeHiddenOwnedPromptContext(prompted: string[]) {
+  const session = {
+    alias: "brt_owned",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "sess-1",
+    archived: false,
+    replyMode: "final" as const,
+  } as unknown as ResolvedSession;
+  const context = {
+    sessions: {
+      getLogicalSessionRecord: (alias: string) => alias === "brt_owned"
+        ? {
+            alias: "brt_owned",
+            owner: {
+              kind: "bot-direct",
+              bindingId: "bind_x",
+              botId: "bot_x",
+              conversationId: "conversation_1",
+              topicId: "topic_1",
+            },
+          }
+        : { alias },
+      getResolvedSessionByInternalAlias: (alias: string) => alias === "brt_owned" ? session : null,
+      getCurrentSession: async () => session,
+    },
+    lifecycle: { checkTransportSession: async () => true, ensureTransportSession: async () => {} },
+    interaction: {
+      promptTransportSession: async (target: ResolvedSession) => {
+        prompted.push(target.alias);
+        return { text: "assistant-reply" };
+      },
+    },
+    recovery: {},
+    config: undefined as unknown as AppConfig,
+    logger: { info: async () => {}, warn: async () => {}, error: async () => {}, debug: async () => {} },
+  } as unknown as SessionHandlerContext;
+  return { session, context };
+}
+
+test("handlePromptWithSession still prompts a product-owned session on a Direct Bot isolation key", async () => {
+  // Production ConsoleAgent → CommandRouter reaches this seam with a live
+  // SessionService (getLogicalSessionRecord sees bot-direct / group-member).
+  // The ordinary-session fence must not swallow the turn: that returns
+  // sessionHiddenOwned as the assistant reply and the agent never runs.
+  const prompted: string[] = [];
+  const { session, context } = makeHiddenOwnedPromptContext(prompted);
+  const res = await handlePromptWithSession(
+    context,
+    session,
+    "bot:conversation_1:topic_1",
+    "hello",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    trustedConversation,
+  );
+  expect(prompted).toEqual(["brt_owned"]);
+  expect(res.text).toBe("assistant-reply");
+});
+
+test("handlePrompt still prompts a product-owned session on a Direct Bot isolation key", async () => {
+  const prompted: string[] = [];
+  const { context } = makeHiddenOwnedPromptContext(prompted);
+  const res = await handlePrompt(
+    context,
+    "bot:conversation_1:topic_1",
+    "hello",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { boundSessionAlias: "brt_owned" } as never,
+    undefined,
+    undefined,
+    undefined,
+    trustedConversation,
+  );
+  expect(prompted).toEqual(["brt_owned"]);
+  expect(res.text).toBe("assistant-reply");
+});
+
+test("handlePrompt rejects trusted Conversation execution without an exact bound session", async () => {
+  const prompted: string[] = [];
+  const { context } = makeHiddenOwnedPromptContext(prompted);
+  await expect(handlePrompt(
+    context,
+    "bot:conversation_1:topic_1",
+    "hello",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    trustedConversation,
+  )).rejects.toThrow("trusted Conversation execution missing bound session target");
+  expect(prompted).toEqual([]);
+});
+
+test("handlePrompt uses the bound Conversation session even when current_session was overwritten", async () => {
+  const prompted: string[] = [];
+  const { context } = makeHiddenOwnedPromptContext(prompted);
+  const ordinary = {
+    alias: "relay:ordinary",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "ordinary-session",
+    archived: false,
+    replyMode: "final" as const,
+  } as unknown as ResolvedSession;
+  (context.sessions as any).getCurrentSession = async () => ordinary;
+
+  const res = await handlePrompt(
+    context,
+    "bot:conversation_1:topic_1",
+    "hello",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { boundSessionAlias: "brt_owned" } as never,
+    undefined,
+    undefined,
+    undefined,
+    trustedConversation,
+  );
+
+  expect(prompted).toEqual(["brt_owned"]);
+  expect(res.text).toBe("assistant-reply");
+});
+
+
+test("trusted Conversation /clear checks the bound hidden session, not an overwritten current_session", async () => {
+  let resets = 0;
+  const prompted: string[] = [];
+  const { session, context } = makeHiddenOwnedPromptContext(prompted);
+  const ordinary = {
+    alias: "relay:ordinary",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "ordinary-session",
+    archived: false,
+    replyMode: "final" as const,
+  } as unknown as ResolvedSession;
+  (context.sessions as any).getCurrentSession = async () => ordinary;
+  (context.sessions as any).getResolvedSessionByInternalAlias = (alias: string) =>
+    alias === "brt_owned" ? session : ordinary;
+  (context.lifecycle as any).resetCurrentSession = async () => {
+    resets += 1;
+    return { text: "reset" };
+  };
+
+  const res = await handleSessionReset(
+    context,
+    "bot:conversation_1:topic_1",
+    "brt_owned",
+  );
+
+  expect(res.text).toBe(t().session.sessionHiddenOwned("brt_owned"));
+  expect(resets).toBe(0);
+});
+
+
+test("handlePrompt refuses a hidden session when an ordinary caller reuses a real Direct Bot isolation key", async () => {
+  const prompted: string[] = [];
+  const { context } = makeHiddenOwnedPromptContext(prompted);
+  const res = await handlePrompt(context, "bot:conversation_1:topic_1", "hello");
+  expect(prompted).toEqual([]);
+  expect(res.text).toBe(t().session.sessionHiddenOwned("brt_owned"));
+});
+
+test("handlePromptWithSession fails closed when trusted correlation does not match the isolation key", async () => {
+  const prompted: string[] = [];
+  const { session, context } = makeHiddenOwnedPromptContext(prompted);
+  await expect(handlePromptWithSession(
+    context,
+    session,
+    "bot:conversation_1:topic_other",
+    "hello",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    trustedConversation,
+  )).rejects.toThrow('trusted Conversation execution target mismatch for session "brt_owned"');
+  expect(prompted).toEqual([]);
+});
+
+test("handlePromptWithSession fails closed instead of downgrading trusted execution onto an ordinary session", async () => {
+  const prompted: string[] = [];
+  const { context } = makeHiddenOwnedPromptContext(prompted);
+  const ordinary = {
+    alias: "relay:ordinary",
+    agent: "codex",
+    workspace: "backend",
+    transportSession: "ordinary-session",
+    archived: false,
+    replyMode: "final" as const,
+  } as unknown as ResolvedSession;
+
+  await expect(handlePromptWithSession(
+    context,
+    ordinary,
+    "bot:conversation_1:topic_1",
+    "hello",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    trustedConversation,
+  )).rejects.toThrow('trusted Conversation execution target mismatch for session "relay:ordinary"');
+  expect(prompted).toEqual([]);
+});
+
+test("handlePromptWithSession still refuses a product-owned session on an ordinary chat key", async () => {
+  const prompted: string[] = [];
+  const { session, context } = makeHiddenOwnedPromptContext(prompted);
+  const res = await handlePromptWithSession(context, session, "weixin:a:u", "hello");
+  expect(prompted).toEqual([]);
+  expect(res.text).toBe(t().session.sessionHiddenOwned("brt_owned"));
+});
+
+test("handlePromptWithSession keeps the hidden-session fence on a malformed bot isolation key", async () => {
+  const prompted: string[] = [];
+  const { session, context } = makeHiddenOwnedPromptContext(prompted);
+  const res = await handlePromptWithSession(context, session, "bot:garbage", "hello");
+  expect(prompted).toEqual([]);
+  expect(res.text).toBe(t().session.sessionHiddenOwned("brt_owned"));
 });
 
 test("handleSessionRemove refuses product-owned sessions without physical teardown", async () => {

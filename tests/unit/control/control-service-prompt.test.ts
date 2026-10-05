@@ -33,6 +33,7 @@ function makeControl(
         throw new Error("unused");
       },
       removeSession: async () => ({ wasActive: false }),
+      resolveAliasForChat: async (_chatKey: string, alias: string) => alias,
       useSession: async (chatKey: string, alias: string) => {
         if (alias === "missing") throw new Error("unknown session");
         used.push(`${chatKey}:${alias}`);
@@ -143,6 +144,7 @@ test("promptImmediate fail-closes to orchestration unless executionOrigin is hum
     channel: "control",
     chatType: "direct",
     senderId: "bot-conversation",
+    boundSessionAlias: "backend",
     origin: "human",
   });
 });
