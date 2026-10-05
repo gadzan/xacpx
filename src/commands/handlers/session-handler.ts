@@ -1268,13 +1268,13 @@ export async function handlePromptWithSession(
   onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
 ): Promise<RouterResponse> {
   const hidden = rejectHiddenOwnedSession(context, session.alias);
-  if (hidden && !matchesGroupExecutionMetadata(metadata, context.sessions.getLogicalSessionRecord?.(session.alias))) {
+  if (hidden && !(metadata?.groupExecutionToken && matchesGroupExecutionMetadata(metadata, context.sessions.getLogicalSessionRecord?.(session.alias)))) {
     return hidden;
   }
   try {
     return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
   } catch (error) {
-    if (matchesGroupExecutionMetadata(metadata, context.sessions.getLogicalSessionRecord?.(session.alias))) {
+    if (metadata?.groupExecutionToken && matchesGroupExecutionMetadata(metadata, context.sessions.getLogicalSessionRecord?.(session.alias))) {
       const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
       // A typed permission refusal is a known blocked step. A generic transport
       // throw after execution-start cannot prove absence of side effects.
