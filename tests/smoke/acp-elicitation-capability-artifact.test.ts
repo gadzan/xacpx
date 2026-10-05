@@ -8,7 +8,19 @@
  * tracked `dist` can silently change.
  *
  * This loads each channel's PRODUCTION bundle (`dist/index.js` under each
- * package, the file the plugin loader consumes) and asserts what it declares:
+ * package, the file the plugin loader consumes) and resolves the channel the way
+ * `loadConfiguredPlugins()` does:
+ *
+ *   import(module) → validateWeacpxPlugin() → plugin.channels[] → factory()
+ *
+ * NOT by scanning exports for a `*Channel` class and `new`-ing it. That shortcut
+ * skips the default export, the channel definition, and the factory wiring — the
+ * three layers whose breakage leaves a bundle that imports cleanly but registers
+ * nothing at install time. The mutation that proves it matters: setting the built
+ * Feishu bundle's `default.channels` to `[]` while keeping the named class export
+ * passes every test under the shortcut and fails four of them here.
+ *
+ * It then asserts what the resolved runtime declares:
  *
  *   - Feishu with no `cardActions` on any account      -> no form capability
  *   - Feishu with a mixed account set (one lacks it)   -> no form capability
@@ -46,16 +58,34 @@ import { RELAY_CAPABILITIES } from "../../packages/relay-protocol/src/index";
 const ROOT = join(import.meta.dir, "..", "..");
 
 /**
- * The shape a built channel bundle's runtime class must have for this probe.
- *
- * Kept as the declared contract of the probe, not as an assertion about the object:
- * the class is found by NAME at runtime, and the declared members are the ones this
- * probe reads. Anything the bundle does not expose makes the probe throw rather
- * than silently read `undefined` and pass.
+ * The shape a built channel's runtime must expose for this probe.
  */
 interface ChannelRuntimeLike {
   readonly id: string;
   readonly elicitationModes: readonly string[];
+}
+
+/**
+ * The production plugin entry a built bundle must expose: `default` carrying a
+ * `channels` array whose entries each carry a `factory`.
+ *
+ * This mirrors `loadConfiguredPlugins()` (src/plugins/plugin-loader.ts):
+ *
+ *   import(module) → validateWeacpxPlugin() → plugin.channels[] → registerChannelPlugin()
+ *   → channel.factory(options, deps)
+ *
+ * Reaching a channel through its exported CLASS NAME instead would skip the
+ * default export, the channel definition, and the factory wiring — the three
+ * layers whose breakage makes a bundle that imports cleanly unable to register
+ * anything in production. See `channelFrom()` for why that matters.
+ */
+interface ChannelPluginDefinitionLike {
+  type: string;
+  factory: (options: unknown, deps: unknown) => ChannelRuntimeLike;
+}
+
+interface BuiltPluginLike {
+  channels?: readonly ChannelPluginDefinitionLike[];
 }
 
 /**
@@ -74,16 +104,41 @@ const CARD_ACTIONS = {
   path: "/webhook/card",
 };
 
-/** Find the channel runtime class a bundle exports, by exported name. */
-function findChannelClass(mod: Record<string, unknown>): new (options: unknown) => ChannelRuntimeLike {
-  for (const value of Object.values(mod)) {
-    if (typeof value !== "function") continue;
-    const name = (value as { name?: unknown }).name;
-    if (typeof name === "string" && name.endsWith("Channel")) {
-      return value as new (options: unknown) => ChannelRuntimeLike;
-    }
+/**
+ * Resolve a built channel the way production does — through the plugin entry,
+ * the channel definition, and its factory.
+ *
+ * A previous revision of this gate located the runtime by scanning bundle exports
+ * for a function named `*Channel` and `new`-ing it directly. That bypassed every
+ * layer production actually walks, so a bundle whose `default.channels` was empty
+ * (or whose factory was wired wrong) stayed fully green while being unable to
+ * register anything at install time.
+ *
+ * The specific tool call is `options`, the first factory argument: the same config
+ * object `ChannelFactory` receives when a plugin account is constructed.
+ */
+async function channelFrom(
+  rel: string,
+  type: string,
+  options: unknown,
+  deps: unknown = {},
+): Promise<ChannelRuntimeLike> {
+  const pack = requirePack(rel);
+  const plugin = (pack as { default?: BuiltPluginLike }).default;
+  if (plugin === undefined || typeof plugin !== "object") {
+    throw new Error(`${rel} has no default export — a bundle that cannot be imported as a plugin`);
   }
-  throw new Error("no *Channel export found in the bundle");
+  const definition = (plugin.channels ?? []).find((entry) => entry.type === type);
+  if (definition === undefined) {
+    throw new Error(
+      `${rel} default export registers no channel of type "${type}" ` +
+        `(found: ${(plugin.channels ?? []).map((c) => c.type).join(", ") || "none"})`,
+    );
+  }
+  if (typeof definition.factory !== "function") {
+    throw new Error(`${rel} channel "${type}" has a non-callable factory`);
+  }
+  return definition.factory(options, deps);
 }
 
 /** Load a built channel bundle the way the plugin loader does. */
@@ -98,73 +153,80 @@ function requirePack(rel: string): Record<string, unknown> {
   return require(full) as Record<string, unknown>;
 }
 
-/** The built channel's runtime, constructed with no options (defaults). */
-function channelFrom(rel: string): ChannelRuntimeLike {
-  return new (findChannelClass(requirePack(rel)))({});
-}
-
-test("feishu bundle: an account set with NO cardActions declares no form capability", () => {
+test("feishu bundle: an account set with NO cardActions declares no form capability", async () => {
   // Without `cardActions` the card-callback listener never starts, so there is no
   // path for a human's answer to arrive. The WS client still starts and the channel
   // still receives messages, which is exactly why the old unconditional declaration
   // was a lie rather than a harmless default.
-  const FeishuChannel = findChannelClass(requirePack("packages/channel-feishu/dist/index.js"));
-  const noCardActions = new FeishuChannel({
-    type: "feishu",
-    accounts: {
-      a1: { appId: "cli_x", appSecret: "s", enabled: true, configured: true },
-      a2: { appId: "cli_y", appSecret: "s", enabled: true, configured: true },
+  const noCardActions = await channelFrom(
+    "packages/channel-feishu/dist/index.js",
+    "feishu",
+    {
+      type: "feishu",
+      accounts: {
+        a1: { appId: "cli_x", appSecret: "s", enabled: true, configured: true },
+        a2: { appId: "cli_y", appSecret: "s", enabled: true, configured: true },
+      },
     },
-  });
+  );
   expect(noCardActions.elicitationModes).toEqual([]);
 });
 
-test("feishu bundle: a MIXED account set declares no channel-wide form capability", () => {
+test("feishu bundle: a MIXED account set declares no channel-wide form capability", async () => {
   // The dangerous configuration. One account can deliver a form, another cannot,
   // and the plugin contract has no route-scoped capability — `elicitationModes` is
   // one answer for the whole channel. Declaring form here means every request routed
   // to the listener-less account fails closed at "no card-callback channel".
-  const FeishuChannel = findChannelClass(requirePack("packages/channel-feishu/dist/index.js"));
-  const mixed = new FeishuChannel({
-    type: "feishu",
-    accounts: {
-      a1: {
-        appId: "cli_x",
-        appSecret: "s",
-        enabled: true,
-        configured: true,
-        cardActions: CARD_ACTIONS,
+  const mixed = await channelFrom(
+    "packages/channel-feishu/dist/index.js",
+    "feishu",
+    {
+      type: "feishu",
+      accounts: {
+        a1: {
+          appId: "cli_x",
+          appSecret: "s",
+          enabled: true,
+          configured: true,
+          cardActions: CARD_ACTIONS,
+        },
+        // a2 has no `cardActions`: inbound-capable, answer-incapable.
+        a2: { appId: "cli_y", appSecret: "s", enabled: true, configured: true },
       },
-      // a2 has no `cardActions`: inbound-capable, answer-incapable.
-      a2: { appId: "cli_y", appSecret: "s", enabled: true, configured: true },
     },
-  });
+  );
   expect(mixed.elicitationModes).toEqual([]);
 });
 
-test("feishu bundle: an account set where EVERY inbound account has cardActions declares form", () => {
-  const FeishuChannel = findChannelClass(requirePack("packages/channel-feishu/dist/index.js"));
-  const allCapable = new FeishuChannel({
-    type: "feishu",
-    accounts: {
-      a1: { appId: "cli_x", appSecret: "s", enabled: true, configured: true, cardActions: CARD_ACTIONS },
-      a2: { appId: "cli_y", appSecret: "s", enabled: true, configured: true, cardActions: CARD_ACTIONS },
+test("feishu bundle: an account set where EVERY inbound account has cardActions declares form", async () => {
+  const allCapable = await channelFrom(
+    "packages/channel-feishu/dist/index.js",
+    "feishu",
+    {
+      type: "feishu",
+      accounts: {
+        a1: { appId: "cli_x", appSecret: "s", enabled: true, configured: true, cardActions: CARD_ACTIONS },
+        a2: { appId: "cli_y", appSecret: "s", enabled: true, configured: true, cardActions: CARD_ACTIONS },
+      },
     },
-  });
+  );
   expect(allCapable.elicitationModes).toEqual(["form"]);
 });
 
-test("feishu bundle never declares URL mode", () => {
+test("feishu bundle never declares URL mode", async () => {
   // The plugin-facing union is `"form"` only. URL mode would advertise a capability
   // core cannot deliver: there is no URL dispatch, no `elicitationId`, no
   // `elicitation/complete`, and no consent-before-navigation step.
-  const FeishuChannel = findChannelClass(requirePack("packages/channel-feishu/dist/index.js"));
-  const withForm = new FeishuChannel({
-    type: "feishu",
-    accounts: {
-      a1: { appId: "cli_x", appSecret: "s", enabled: true, configured: true, cardActions: CARD_ACTIONS },
+  const withForm = await channelFrom(
+    "packages/channel-feishu/dist/index.js",
+    "feishu",
+    {
+      type: "feishu",
+      accounts: {
+        a1: { appId: "cli_x", appSecret: "s", enabled: true, configured: true, cardActions: CARD_ACTIONS },
+      },
     },
-  });
+  );
   // Asserted on the configuration that DOES declare form, so the probe cannot pass
   // by reading an empty list.
   expect(withForm.elicitationModes).toEqual(["form"]);
@@ -195,11 +257,15 @@ test("relay bundle: the connector hello advertises the interaction capability it
   // cleared as soon as registration resolves, so it costs nothing on the passing
   // path and never keeps the event loop alive.
   const REGISTRATION_DEADLINE_MS = 2000;
-  const RelayChannel = findChannelClass(requirePack("packages/channel-relay/dist/index.js"));
-
   const registration = Promise.withResolvers<readonly string[]>();
   const fakeClient = { start: () => {}, stop: () => {}, sendEvent: () => {} };
-  const channel = new RelayChannel(
+  // Through the plugin entry, not the exported class: `start()` is the production
+  // path and the factory is what production calls to obtain the channel at all.
+  // The deps are the second factory argument — exactly what `ChannelFactory`
+  // receives from `registerChannelPlugin`'s registry in a real install.
+  const channel = await channelFrom(
+    "packages/channel-relay/dist/index.js",
+    "relay",
     { url: "ws://h:1", pairingToken: "t" },
     {
       credentialStore: { load: () => null, save: () => {}, clear: () => {} },
@@ -274,14 +340,20 @@ test("relay bundle: the connector hello advertises the interaction capability it
   expect(caps ?? []).not.toContain("interaction.permission.v1");
 });
 
-test("discord bundle: form capability is declared, not merely not-wrong", () => {
+test("discord bundle: form capability is declared, not merely not-wrong", async () => {
   // Discord renders in an existing authenticated DM surface, so its bundle must
   // declare form. The previous version asserted only "every declared mode is in
   // the allowed set" and "url is absent" — both of which pass on
   // `elicitationModes = []`. An empty array is exactly what a bundle that was
   // tree-shaken, or built from a stale tracked dist, would produce, so that shape
-  // of assertion could not detect the failure it was written for.
-  const DiscordChannel = findChannelClass(requirePack("packages/channel-discord/dist/index.js"));
-  const channel = new DiscordChannel({ type: "discord", token: "t" });
+  // of assertion could not detect the failure it was written for. `toEqual` can.
+  //
+  // Resolved through the plugin entry and factory, so an empty `channels` array or
+  // a wrong `type` in the bundle fails here instead of silently passing.
+  const channel = await channelFrom(
+    "packages/channel-discord/dist/index.js",
+    "discord",
+    { type: "discord", token: "t" },
+  );
   expect(channel.elicitationModes).toEqual(["form"]);
 });

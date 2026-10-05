@@ -65,7 +65,7 @@ Four dispositions, exactly as the working agreement requires.
 | Reconnect authoritative open-set snapshot | the whole `interaction-snapshot` work; PR #369, unmerged at this base | M4 closure addenda; PR #369 |
 | Relay Permission renderer | transport carries the kind; nothing renders it | §6 below |
 | Durable interaction across hub restart | needs a full caller-chain resume design | §6 below |
-| `waiting-human` Run state | read but never written; product semantics deferred | §6 below |
+| `waiting-human` Run state, for **interaction / Direct-Bot authority** | on this PR's base (`85d653e7`) the elicitation path never writes it; automatic Group Router, landed later in #371, writes it for routing questions | §6 below |
 | ACP URL-mode elicitation | core contract is deliberately `form`-only | §6 below |
 
 ### 1.4 Out of scope for M5 (per the original roadmap and the working agreement)
@@ -88,7 +88,24 @@ can silently change.
 
 `tests/smoke/acp-elicitation-capability-artifact.test.ts` loads the production
 bundles (`packages/channel-*/dist/index.js`, the file the plugin loader consumes)
-and asserts:
+and resolves each channel **through the plugin entry**, not through an exported
+class name:
+
+```text
+import(module) → default export → channels[] → definition.factory(options, deps)
+```
+
+This matters. An earlier revision of this gate scanned bundle exports for a
+function named `*Channel` and constructed it directly, which skips the default
+export, the channel definition, and the factory wiring. The mutation that exposed
+it: setting the built Feishu bundle's `default.channels` to `[]` while keeping the
+named `FeishuChannel` export left **all six tests green** on a bundle that cannot
+register a Feishu channel at install time. The same mutation now fails four cases
+with `registers no channel of type "feishu"`. Driving `RelayChannel.start()`
+likewise comes from the factory's product, so the registration it exercises is the
+shipped one.
+
+It then asserts:
 
 | Case | Assertion |
 |---|---|
@@ -110,16 +127,22 @@ deferred that `createClient` resolves rather than polling, so a timeout means
 **It refuses to pass on source.** If `dist/index.js` is missing, the probe throws
 rather than silently reading `undefined` — a gate that cannot fail is not a gate.
 
-### 2.1 It is enforced, not manual
+### 2.1 It runs automatically in CI
 
 The Linux leg of `.github/workflows/test.yml` runs this probe **after
 `Build (all packages)`**, which is the step that produces the bundles it consumes.
-Without that, the gate could be green locally and skipped in CI entirely — the
-exact gap between "asserted in a built artifact" and "asserted in a built artifact,
-by the thing that decides whether a PR merges".
+Without that, the gate could be green locally and skipped in CI entirely.
 
-Not duplicated on macOS: one enforced gate closes the hole, and the channel
-bundles are platform-independent JS.
+**What that does and does not buy, stated precisely.** This is an automatically
+running CI check, not a merge-enforced gate. The repository has no active branch
+protection: `main` reports `protected: false`, the single branch ruleset named
+`main` has `enforcement: "disabled"`, and there is no required status check. A red
+result on this job does not by itself block a merge — the repo only gains that
+property if a ruleset is enabled with this check required, which is a
+repository-policy decision outside this PR's scope and not claimed as done here.
+
+Not duplicated on macOS: one automatically running gate closes the visibility
+hole, and the channel bundles are platform-independent JS.
 
 ### 2.2 Mutation proof
 
@@ -129,25 +152,39 @@ bundles are platform-independent JS.
 | Discord bundle declares no form (`["form"]` → `[]`) | Discord case | `discord bundle: form capability is declared, not merely not-wrong` |
 | connector registration omits the interaction capability | relay case | `relay bundle: the connector hello advertises the interaction capability it can deliver` |
 | `createClient` is never called, so connector registration never happens | relay case | `the built relay channel never reached connector registration; connector registration never happened within 2000ms` |
+| built Feishu `default.channels` set to `[]`, named `FeishuChannel` export left intact | **all four Feishu cases** | `registers no channel of type "feishu" (found: none)` — 4 fail / 2 pass |
+| built Discord `default.channels` set to `[]` | discord case | `discord bundle: form capability is declared, not merely not-wrong` |
+
+The last two rows are the reason the gate resolves channels through the plugin
+entry rather than by exported class name. Under the previous class-name lookup the
+two mutations above **passed every test**, because the shortcut never touched the
+default export, the `channels` array, or the factory — the exact wiring whose
+breakage leaves a bundle that imports cleanly but registers nothing in production.
 
 Each was applied to source, the affected bundle rebuilt, and the gate re-run; each
-failed exactly the case named, 5 pass / 1 fail in all four runs. The gate is
-load-bearing, not decorative.
+failed exactly the case named. The gate is load-bearing, not decorative.
 
-The last row exists because the relay test's two natural wait branches are both
-permanent-pending when registration never happens. Without an owned deadline,
-that regressor would die at Bun's generic test-level timeout — a wall clock, not
-a diagnostic. An explicit 2s deadline (comfortably under the 5s test timeout, and
-cleared as soon as registration resolves) reports the defect itself instead.
+The registration-deadline row exists because the relay test's two natural wait
+branches are both permanent-pending when registration never happens. Without an
+owned deadline, that regressor would die at Bun's generic test-level timeout — a
+wall clock, not a diagnostic. An explicit 2s deadline (comfortably under the 5s
+test timeout, and cleared as soon as registration resolves) reports the defect
+itself instead.
 
 The Discord mutation is the one that matters most for the artefact claim: an
 earlier revision of that test asserted only "every declared mode is in the allowed
 set" and "url is absent", both of which hold on an empty array — so a
 tree-shaken or stale bundle would have passed. `toEqual(["form"])` cannot.
 
-Each mutation script asserted its target count was exactly 1, that the write
-changed the file, and that the target string was gone before any test ran — the
-discipline this milestone's earlier rounds repeatedly had to relearn.
+The empty-`channels` mutations matter most for the wiring claim: they would defeat
+a gate that resolves a channel any way other than through the production plugin
+entry, which is how this gate was first written and why it was rewritten.
+
+The source-level mutations each asserted their target count was exactly 1, that
+the write changed the file, and that the target string was gone before any test
+ran — the discipline this milestone's earlier rounds repeatedly had to relearn. The
+two `default.channels` mutations were applied directly to the built bundle, since
+the wiring they target only exists there.
 
 ---
 
@@ -321,7 +358,7 @@ the level of the durable boundary, not by patching the interaction path.
 |---|---|---|
 | Relay Permission renderer | The wire already carries `kind: "permission"` and the registry stores the payload for replay (`packages/relay/src/interaction-registry.ts:109`), but `InteractionRequestDto.permission` is marked *"Reserved; M3 does not implement it"* (`packages/relay-protocol/src/dtos.ts:905-911`) and `relay-web` has **no** permission branch — both the live-open and snapshot paths bail on any non-elicitation kind | a renderer + capability `interactionPermissionV1` before any advertisement |
 | Durable interaction across hub restart | Persisting the hub registry alone is fake durability: the connector's pending RPC also dies, so nothing is waiting for the answer | a full caller-chain resume design |
-| `waiting-human` Run state | Read in ≥8 places (`src/conversations/conversation-run-service.ts:568,573,692,970,1067,1073,1643,1650`), **never written** — the M3 readiness doc predicted exactly this (B4) | a design, then implementation; must be driven by authoritative open-interaction state |
+| `waiting-human` Run state for **interaction / Direct-Bot authority** | On this PR's base (`85d653e7`) the ACP elicitation path never writes it: read in ≥8 places (`src/conversations/conversation-run-service.ts:568,573,692,970,1067,1073,1643,1650`), never written — the M3 readiness doc predicted exactly this (B4). Automatic Group Router, landed later in #371, now writes it for routing questions, with `waitingQuestion` persisted and projected through Control/Relay/Web. The deferred part of this row is the elicitation/Direct-Bot authority semantics, not the Run state's existence | a design driven by authoritative open-interaction state |
 | ACP URL-mode | `ChannelElicitationMode` is `"form"` only, and the declaration comment says why (`src/interactions/elicitation-types.ts:221`): ACP defines `form | url`, but there is no URL dispatch, no `elicitationId`, no `elicitation/complete`, and no consent-before-navigation implementation. Widening the union would advertise a capability core cannot deliver | an ACP-conformant URL contract: target-host display, consent before navigation, `elicitationId`, `elicitation/complete`, per-channel capability proof |
 
 Each is a capability of its own, each starts only once the renderer and authority
