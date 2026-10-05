@@ -1369,6 +1369,9 @@ export async function handlePrompt(
   onCommands?: (commands: AgentCommand[]) => void | Promise<void>,
   trustedConversationExecution?: ConversationTurnCorrelation,
 ): Promise<RouterResponse> {
+  if (trustedConversationExecution && !metadata?.boundSessionAlias) {
+    throw new Error("trusted Conversation execution missing bound session target");
+  }
   const session = metadata?.boundSessionAlias
     ? context.sessions.getResolvedSessionByInternalAlias(metadata.boundSessionAlias)
     : await context.sessions.getCurrentSession(chatKey);
