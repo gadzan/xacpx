@@ -13,6 +13,16 @@ import type { AppLogger } from "xacpx/plugin-api";
 
 import type { CredentialStore, RelayCredential } from "./credential-store.js";
 
+/**
+ * Why the connector gave up permanently. Every member is a state reconnecting
+ * cannot resolve, which is what makes it fatal rather than a disconnect.
+ */
+export type RelayFatalReason =
+  | "no-credentials"
+  | "handshake-rejected"
+  | "protocol-error"
+  | "version-mismatch";
+
 export interface RelayClientOptions {
   url: string;
   credentialStore: Pick<CredentialStore, "load" | "save" | "clear">;
@@ -30,6 +40,17 @@ export interface RelayClientOptions {
   ) => void;
   onEvent?: (envelope: RelayEnvelope) => void;
   onReady?: () => void;
+  /**
+   * Fired when the connector has stopped for a reason that will NOT be fixed by
+   * reconnecting: no credential and no pairing token, a handshake the hub
+   * rejected (stale credential / used or expired pairing token), or a protocol or
+   * version mismatch. Operator action is required, so the caller needs to know
+   * this start attempt ended terminally rather than transiently.
+   *
+   * Distinct from `onDisconnected`, which is the ordinary case: a dropped socket
+   * that the client will retry on its own.
+   */
+  onFatal?: (reason: RelayFatalReason) => void;
   /**
    * Fired when an authenticated hub socket drops (before reconnect). Used to
    * bulk-detach viewer attachments without releasing RMUX owner leases.
@@ -106,6 +127,32 @@ export class RelayClient {
     this.stopped = true;
     this.socket?.close();
     this.socket = null;
+  }
+
+  /**
+   * Stop permanently and tell the caller so this can fail a startup.
+   *
+   * `stop()` alone cannot carry the distinction: `RelayChannel.start()` waits on
+   * the daemon's abort signal, and `MessageChannelRegistry` only records a channel
+   * in `failedStartupChannels` when `start()` rejects. A connector that quietly
+   * gave up on a stale credential therefore left the registry believing a form
+   * channel was live, and the declared-vs-live audit had nothing to see. Routing
+   * the fatal signal out through `onFatal` lets `start()` reject and lets that
+   * existing machinery work.
+   */
+  private fatal(reason: RelayFatalReason): void {
+    this.stopped = true;
+    this.socket?.close();
+    this.socket = null;
+    try {
+      this.options.onFatal?.(reason);
+    } catch (err) {
+      void this.options.logger?.error(
+        "relay.fatal_handler_failed",
+        `onFatal threw: ${err instanceof Error ? err.message : String(err)}`,
+        {},
+      );
+    }
   }
 
   sendEvent(
@@ -299,8 +346,7 @@ export class RelayClient {
       "relay channel has neither credential nor pairing token",
       {},
     );
-    this.stopped = true;
-    socket.close();
+    this.fatal("no-credentials");
   }
 
   private handleMessage(socket: WebSocket, raw: string): void {
@@ -313,8 +359,7 @@ export class RelayClient {
       );
       if (decoded.error === "version-mismatch") {
         // Relay is newer than this connector; reconnecting cannot help. Operator must upgrade.
-        this.stopped = true;
-        socket.close();
+        this.fatal("version-mismatch");
       }
       return;
     }
@@ -331,8 +376,7 @@ export class RelayClient {
         {},
       );
       // Fatal: relay rejected our protocol. Operator action required.
-      this.stopped = true;
-      socket.close();
+      this.fatal("protocol-error");
       return;
     }
 
@@ -363,8 +407,7 @@ export class RelayClient {
           },
         );
         // Fatal: stale credential or used/expired pairing token — operator action required.
-        this.stopped = true;
-        socket.close();
+        this.fatal("handshake-rejected");
         return;
       }
       if (envelope.type === MSG.instanceRegister) {

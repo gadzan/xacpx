@@ -150,8 +150,12 @@ hub reachable from connector
       The connector's config is `url` + `pairingToken` (plus an optional `--name`) —
       nothing under `transport.command`/`acpx-bridge`, which is the **xacpx ↔ acpx runtime
       transport** and has no bearing on where the connector points.
-- [ ] The instance has a stored instance credential **or** an initial pairing token;
-      `channel.start()` refuses to run with neither.
+- [ ] The instance has a stored instance credential **or** an initial pairing token.
+      `channel.start()` reports a terminal failure when neither is present: the
+      connector stops rather than reconnecting forever, `start()` rejects, and the
+      registry records the channel so the declared-vs-live audit can see it. The
+      same applies to a handshake the hub rejects (stale credential, or a pairing
+      token already used or expired) and to a protocol/version mismatch.
 - [ ] The browser connects over **WSS** on any untrusted network. `/ws` is
       **authenticated** at upgrade by the `xrelay_session` cookie — an upgrade
       with no resolvable account is destroyed (`packages/relay/src/server.ts`

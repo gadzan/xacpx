@@ -2,7 +2,7 @@
 
 **Milestone:** M5 Release Hardening (deployment/release evidence + capability truthfulness)
 **Base when authored:** `origin/main` @ `85d653e7`
-**Base at merge time:** `origin/main` @ `6e7aa2ba` (contains #371, landed after this closure was written)
+**Base at final review:** `origin/main` @ `6e7aa2ba` (contains #371, landed after this closure was written)
 **Date:** 2026-10-03
 **Status:** see *Verdict* below.
 
@@ -10,6 +10,8 @@
 > authored against. Where later `main` changes that fact, the current-state wording
 > is given alongside rather than silently rewritten, so this document stays
 > readable as a historical snapshot of what M5 closed *and* accurate about now.
+> The merge-time base is deliberately not recorded here: this PR is still open, so
+> recording one would be writing a fact that has not happened yet.
 
 ---
 
@@ -93,12 +95,14 @@ wiring** — exactly the parts a bundler, a tree-shake, or a stale tracked `dist
 can silently change.
 
 `tests/smoke/acp-elicitation-capability-artifact.test.ts` loads the production
-bundles (`packages/channel-*/dist/index.js`, the file the plugin loader consumes)
-and resolves each channel **through the plugin entry**, not through an exported
-class name:
+bundles **by package name** (`createRequire(<repo root>/package.json).resolve`),
+which is the same basis `loadConfiguredPlugins()` uses — a broken `main`/
+`exports` therefore fails here instead of being invisible — runs them through
+`validateWeacpxPlugin(pack, packageName)`, and resolves each channel through
+`channels[]` → `factory(options, deps)`:
 
 ```text
-import(module) → validateWeacpxPlugin(pack, packageName) → channels[] → factory(options, deps)
+resolve(packageName) → import(resolved entry) → validateWeacpxPlugin(pack, name) → channels[] → factory()
 ```
 
 This matters, and it took two rounds to get right. An earlier revision of this
@@ -106,18 +110,30 @@ gate scanned bundle exports for a function named `*Channel` and constructed it
 directly, skipping the default export, the channel definition, and the factory
 wiring. Setting the built Feishu bundle's `default.channels` to `[]` while keeping
 the named `FeishuChannel` export left **all six tests green** on a bundle that
-cannot register a Feishu channel at install time. Replacing the class lookup with
-a direct read of `default` was still not enough: the mutations that invert
-`apiVersion` or set a plugin `name` that does not match the installed package
-passed, because nothing ran the validator. The gate now calls the real
-`validateWeacpxPlugin()`, so apiVersion, the version floor, the plugin name, the
-`channels` shape, duplicate types, factory presence, and `cliProvider.type` are all
-enforced by the shipped validator rather than by a stand-in.
+cannot register a Feishu channel at install time. Reading `default` directly was
+still not enough: inverting `apiVersion` or setting a plugin `name` that does not
+match the installed package passed, because nothing ran the validator. The gate now
+calls the real `validateWeacpxPlugin()`, so apiVersion, the version floor, the
+plugin name, the `channels` shape, duplicate types, factory presence, and
+`cliProvider.type` are all enforced by the shipped validator rather than by a
+stand-in.
 
-Driving `RelayChannel.start()` likewise comes from the factory's product, so the
-registration it exercises is the shipped one. No `currentXacpxVersion` is passed
-to the validator: the default is `readVersion()`, the real core version of this
-checkout, which is the comparison performed at install time.
+**What this gate does and does not establish.** It verifies three things about the
+SHIPPED artifact: it resolves as an installable package, it passes production
+plugin validation, and the runtime it produces satisfies the STRUCTURAL half of
+core's capability predicate (`elicitationModes` declared AND `requestElicitation`
+present as a function). It does NOT verify built-artifact DELIVERABILITY: a body
+that unconditionally throws satisfies the same structural check, and no
+bundle-level smoke can tell that from a real implementation, because every
+renderer's response to an unstarted channel is also a throw. Driving a real
+end-to-end delivery needs a hub, a browser and a network, which is what
+`tests/unit/packages/channel-relay/relay-channel-elicitation.test.ts` does at unit
+level against source. Calling this a deliverability gate would overclaim, so it is
+recorded as a built declaration/registration/structural-predicate gate.
+
+No `currentXacpxVersion` is passed to the validator: the default is
+`readVersion()`, the real core version of this checkout, which is the comparison
+performed at install time.
 
 It then asserts:
 
@@ -181,8 +197,12 @@ the useful reading:
 | `channels[]` / `factory` wiring | Feishu and Discord `default.channels` → `[]` | the channel is actually registered through the plugin entry, not merely exported |
 | implementation half | `Channel.requestElicitation` → `undefined` | core's predicate finds a delivery path, not only a declaration |
 
-Each was applied to source, the affected bundle rebuilt, and the gate re-run; each
-failed exactly the case named. The gate is load-bearing, not decorative.
+Each mutation was applied where the defect it targets actually lives — to source
+for source-level defects, and directly to the built bundle for the wiring and
+compiled-code mutations, since `default.channels`, `apiVersion` and
+`requestElicitation` only exist there. In every case the affected artifact was
+rebuilt or restored and the gate re-run, and each change turned exactly the named
+case red. The gate is load-bearing, not decorative.
 
 The registration-deadline row exists because the relay test's two natural wait
 branches are both permanent-pending when registration never happens. Without an
@@ -200,11 +220,12 @@ The empty-`channels` mutations matter most for the wiring claim: they would defe
 a gate that resolves a channel any way other than through the production plugin
 entry, which is how this gate was first written and why it was rewritten.
 
-The source-level mutations each asserted their target count was exactly 1, that
-the write changed the file, and that the target string was gone before any test
-ran — the discipline this milestone's earlier rounds repeatedly had to relearn. The
-two `default.channels` mutations were applied directly to the built bundle, since
-the wiring they target only exists there.
+The source-level mutations each asserted their target count was exactly 1, that the
+write changed the file, and that the target string was gone before any test ran —
+the discipline this milestone's earlier rounds repeatedly had to relearn. The
+bundle-level mutations (empty `channels`, `apiVersion`, plugin `name`,
+`requestElicitation`) were likewise verified present-or-absent in the artifact
+before the gate ran, since the wiring they target only exists there.
 
 ---
 

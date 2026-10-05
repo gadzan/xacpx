@@ -34,6 +34,7 @@ import { coreHomeDir } from "xacpx/plugin-api";
 type ChannelStopReason = "shutdown" | "disabled" | "removed" | "logout";
 
 import { parseRelayChannelConfig, type RelayChannelConfig } from "./config.js";
+import type { TerminalViewerEvent } from "./terminal/terminal-runtime.js";
 import { parseRelayInteractionOutcome, relayFieldsFrom } from "./relay-interaction.js";
 import {
   CredentialStore,
@@ -298,6 +299,14 @@ export class RelayChannel implements MessageChannelRuntime {
       bridge(envelope, respond);
     };
 
+    // Declared before the client is created so the `onFatal` closure below and the
+    // wait at the end of this method share the same slot.
+    let fatalError: Error | null = null;
+    let resolveStarted: () => void = () => {};
+    const startedSettled = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+
     const client = (
       this.deps.createClient ?? ((options) => new RelayClient(options))
     )({
@@ -356,6 +365,20 @@ export class RelayChannel implements MessageChannelRuntime {
         this.desktop?.closeAll("control-disconnected");
       },
       logger: input.logger,
+      onFatal: (reason) => {
+        // A terminal connector failure must fail this start, because
+        // `MessageChannelRegistry` only records a channel in
+        // `failedStartupChannels` when `start()` rejects — and that record is the
+        // only thing the declared-vs-live capability audit can read. Without it a
+        // relay channel whose credential is stale keeps its advertised form
+        // capability forever while every `requestElicitation` fails, which is the
+        // capability lie M5 exists to stop.
+        //
+        // Deliberately NOT used for ordinary disconnects: those keep their own
+        // reconnect path and must not be reported as a failed startup.
+        fatalError ??= new Error(`relay channel stopped: ${reason}`);
+        resolveStarted();
+      },
       onReady: () => {
         // Ordinary Session liveness only. Hidden bot-direct aliases are
         // intentionally absent from listSessions; Conversation-correlated
@@ -426,24 +449,27 @@ export class RelayChannel implements MessageChannelRuntime {
     });
     client.start(input.abortSignal);
 
-    await new Promise<void>((resolve) => {
-      if (input.abortSignal.aborted) {
-        resolve();
-        return;
-      }
-      input.abortSignal.addEventListener("abort", () => resolve(), {
+    // The wait is a race between the daemon's shutdown signal and a terminal
+    // connector failure. Resolving on the latter is what makes the failure visible
+    // to the registry's readiness audit (see `onFatal` above).
+    if (input.abortSignal.aborted) {
+      resolveStarted();
+    } else {
+      input.abortSignal.addEventListener("abort", () => resolveStarted(), {
         once: true,
       });
-    });
+    }
+    await startedSettled;
+    if (fatalError !== null) {
+      await this.stop("error").catch(() => {});
+      throw fatalError;
+    }
     await this.stop("shutdown");
   }
 
   /** Mutable slot filled after client construction so runtime events reach the hub. */
   private viewerPublish:
-    | ((
-        event: import("./terminal/terminal-runtime.js").TerminalViewerEvent,
-        onFlush?: (error?: Error) => void,
-      ) => void)
+    | ((event: TerminalViewerEvent, onFlush?: (error?: Error) => void) => void)
     | null = null;
 
   async stop(reason: ChannelStopReason = "shutdown"): Promise<void> {

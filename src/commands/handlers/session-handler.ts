@@ -1205,11 +1205,32 @@ async function promptWithSession(
         chatKey: permissionRoute?.chatKey ?? route.chatKey,
         ...chatType,
       };
-      const elicitationTurnContext: TurnInteractionContext = {
-        ...shared,
-        chatKey: elicitationRoute?.chatKey ?? route.chatKey,
-        ...chatType,
-      };
+      // NO fallback to `route.chatKey` for elicitation, and the asymmetry with
+      // the permission context above is deliberate.
+      //
+      // `resolveElicitationTurnRoute` refuses every non-`bot:` isolation key, so
+      // `elicitationRoute === undefined` means precisely "this turn has no
+      // surface that can render a form". Falling back to `route.chatKey` — which
+      // for an ordinary channel turn is the permission route, e.g.
+      // `relay:<accountId>` — re-opened the exact hole that resolver closes: the
+      // broker binds a trusted-looking route, its capability check passes on the
+      // channel's channel-wide declaration, and the elicitation reaches a renderer
+      // that can only refuse it as `unsupported-route`. The agent is then told a
+      // human was asked when no human ever saw the question.
+      //
+      // Binding no elicitation route at all makes the broker cancel with
+      // `missing interaction route` BEFORE the channel is consulted, which is the
+      // same fail-closed shape the broker already uses for every other
+      // unroutable turn. The channel's own route guard stays as the
+      // defence-in-depth backstop for callers that bypass this path.
+      const elicitationTurnContext: TurnInteractionContext | undefined =
+        elicitationRoute === undefined
+          ? undefined
+          : {
+              ...shared,
+              chatKey: elicitationRoute.chatKey,
+              ...chatType,
+            };
       let disposePermission: (() => void) | undefined;
       let disposeElicitation: (() => void) | undefined;
       try {
@@ -1223,7 +1244,14 @@ async function promptWithSession(
         // because the registry keys routes by (interactionId, kind) — two
         // different kinds never collide, which is what lets the production
         // shared registry hold both addresses without either being lost.
-        disposeElicitation = getGlobalElicitationBroker()?.bindTurn(elicitationTurnContext, abortSignal);
+        //
+        // Skipped entirely when the turn has no elicitation route, which is not
+        // an error: it means this turn cannot render a form, and the broker will
+        // cancel the request as unroutable.
+        disposeElicitation =
+          elicitationTurnContext === undefined
+            ? undefined
+            : getGlobalElicitationBroker()?.bindTurn(elicitationTurnContext, abortSignal);
       } catch {
         disposeElicitation = undefined;
       }

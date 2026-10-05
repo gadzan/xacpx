@@ -51,6 +51,7 @@
  *   bun run build:packages
  *   bun test tests/smoke/acp-elicitation-capability-artifact.test.ts
  */
+import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "bun:test";
@@ -59,6 +60,14 @@ import { RELAY_CAPABILITIES } from "../../packages/relay-protocol/src/index";
 import { validateWeacpxPlugin } from "../../src/plugins/validate-plugin";
 
 const ROOT = join(import.meta.dir, "..", "..");
+
+/**
+ * A `require` rooted at the REPO root, which is what `createRequire(pluginHome/package.json)`
+ * approximates in production: resolution runs from a package.json, not from this
+ * test file's directory. Using this repo's root package.json keeps the gate on the
+ * same resolution basis the plugin loader has when it loads a linked plugin.
+ */
+const requires = createRequire(join(ROOT, "package.json"));
 
 /**
  * The shape a built channel's runtime must expose for this probe.
@@ -73,7 +82,7 @@ const ROOT = join(import.meta.dir, "..", "..");
 interface ChannelRuntimeLike {
   readonly id: string;
   readonly elicitationModes: readonly string[];
-  readonly requestElicitation?: unknown;
+  readonly requestElicitation?: (request: unknown) => Promise<unknown>;
 }
 
 /**
@@ -116,13 +125,12 @@ const CARD_ACTIONS = {
  * `name` each bundle's default export declares.
  */
 async function channelFrom(
-  rel: string,
-  type: string,
   packageName: string,
+  type: string,
   options: unknown,
   deps: unknown = {},
 ): Promise<ChannelRuntimeLike> {
-  const pack = requirePack(rel);
+  const pack = requirePack(packageName);
   // No `currentXacpxVersion` override: the default is `readVersion()`, i.e. the
   // real core version this checkout builds, which is exactly the comparison the
   // validator performs at install time. An explicit pin here would only let a
@@ -131,23 +139,53 @@ async function channelFrom(
   const definition = plugin.channels.find((entry) => entry.type === type);
   if (definition === undefined) {
     throw new Error(
-      `${rel} registers no channel of type "${type}" ` +
+      `${packageName} registers no channel of type "${type}" ` +
         `(found: ${plugin.channels.map((c) => c.type).join(", ") || "none"})`,
     );
   }
-  return definition.factory(options, deps);
+  const runtime = definition.factory(options, deps);
+  // NOTE ON WHAT THIS CANNOT PROVE
+  //
+  // A structural check is all a bundle-level smoke can honestly do about the
+  // implementation half. `typeof requestElicitation === "function"` is also true
+  // for a body that unconditionally throws, and there is no way to tell that from
+  // here: every real renderer's response to an unstarted channel is ALSO a throw
+  // (the documented fail-closed refusal), so "it throws" cannot separate a stub
+  // from a working implementation. Driving a real end-to-end delivery needs a hub,
+  // a browser, and a network — which is exactly what `relay-channel-elicitation.test.ts`
+  // does at unit level against source, and what no built-artifact smoke can do.
+  //
+  // So the closure claims what is actually verified — built declaration, built
+  // registration, and the STRUCTURAL half of core's predicate — and explicitly
+  // does not claim built-artifact deliverability.
+  return runtime;
 }
 
-/** Load a built channel bundle the way the plugin loader does. */
-function requirePack(rel: string): Record<string, unknown> {
-  const full = join(ROOT, rel);
-  if (!existsSync(full)) {
+/**
+ * Load a built channel bundle the way the plugin loader resolves it: by PACKAGE
+ * NAME, not by a path into the working tree.
+ *
+ * `loadConfiguredPlugins()` does `createRequire(pluginHome/package.json).resolve(packageName)`
+ * and then dynamic-imports the resolved entry. That resolution reads each package's
+ * `main`/`exports`, so a bundle whose entry pointer is wrong — or whose dist is
+ * missing — fails to load in production even though the file on disk is fine.
+ *
+ * Reading `join(ROOT, "packages/.../dist/index.js")` directly skips that step
+ * entirely: it would stay green on a package that cannot be installed. Resolving
+ * by name here means this gate fails for the same reason production would.
+ *
+ * The name still throws (rather than silently passing on source) when the package
+ * cannot be resolved at all, because this gate is about the SHIPPED artifact.
+ */
+function requirePack(packageName: string): Record<string, unknown> {
+  const resolved = requires.resolve(packageName);
+  if (!existsSync(resolved)) {
     throw new Error(
-      `${rel} is missing — run \`bun run build:channel-*\` first. ` +
+      `${packageName} resolves to ${resolved}, which does not exist — run \`bun run build:packages\` first. ` +
       `This gate is about the SHIPPED artifact, so it refuses to pass on source.`,
     );
   }
-  return require(full) as Record<string, unknown>;
+  return require(resolved) as Record<string, unknown>;
 }
 
 test("feishu bundle: an account set with NO cardActions declares no form capability", async () => {
@@ -156,9 +194,8 @@ test("feishu bundle: an account set with NO cardActions declares no form capabil
   // still receives messages, which is exactly why the old unconditional declaration
   // was a lie rather than a harmless default.
   const noCardActions = await channelFrom(
-    "packages/channel-feishu/dist/index.js",
-    "feishu",
     "@ganglion/xacpx-channel-feishu",
+    "feishu",
     {
       type: "feishu",
       accounts: {
@@ -176,9 +213,8 @@ test("feishu bundle: a MIXED account set declares no channel-wide form capabilit
   // one answer for the whole channel. Declaring form here means every request routed
   // to the listener-less account fails closed at "no card-callback channel".
   const mixed = await channelFrom(
-    "packages/channel-feishu/dist/index.js",
-    "feishu",
     "@ganglion/xacpx-channel-feishu",
+    "feishu",
     {
       type: "feishu",
       accounts: {
@@ -199,9 +235,8 @@ test("feishu bundle: a MIXED account set declares no channel-wide form capabilit
 
 test("feishu bundle: an account set where EVERY inbound account has cardActions declares form", async () => {
   const allCapable = await channelFrom(
-    "packages/channel-feishu/dist/index.js",
-    "feishu",
     "@ganglion/xacpx-channel-feishu",
+    "feishu",
     {
       type: "feishu",
       accounts: {
@@ -223,9 +258,8 @@ test("feishu bundle never declares URL mode", async () => {
   // core cannot deliver: there is no URL dispatch, no `elicitationId`, no
   // `elicitation/complete`, and no consent-before-navigation step.
   const withForm = await channelFrom(
-    "packages/channel-feishu/dist/index.js",
-    "feishu",
     "@ganglion/xacpx-channel-feishu",
+    "feishu",
     {
       type: "feishu",
       accounts: {
@@ -273,9 +307,8 @@ test("relay bundle: the connector hello advertises the interaction capability it
   // The deps are the second factory argument — exactly what `ChannelFactory`
   // receives from `registerChannelPlugin`'s registry in a real install.
   const channel = await channelFrom(
-    "packages/channel-relay/dist/index.js",
-    "relay",
     "@ganglion/xacpx-channel-relay",
+    "relay",
     { url: "ws://h:1", pairingToken: "t" },
     {
       credentialStore: { load: () => null, save: () => {}, clear: () => {} },
@@ -371,9 +404,8 @@ test("discord bundle: form capability is declared, not merely not-wrong", async 
   // Resolved through the plugin entry and factory, so an empty `channels` array or
   // a wrong `type` in the bundle fails here instead of silently passing.
   const channel = await channelFrom(
-    "packages/channel-discord/dist/index.js",
-    "discord",
     "@ganglion/xacpx-channel-discord",
+    "discord",
     { type: "discord", token: "t" },
   );
   expect(channel.elicitationModes).toEqual(["form"]);
