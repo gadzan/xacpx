@@ -320,3 +320,14 @@ agent 必须对 `~/.xacpx/runtime/uploads/` 目录下的路径有**文件系统�
   `ChannelStartInput.sessionResources` 注入）— 逻辑会话不可变 ID + archive/remove/restore
   生命周期。Relay RMUX 终端只绑定 catalog descriptor（cwd/alias），浏览器 payload 不得带 cwd。
   详见 `docs/superpowers/specs/2026-08-10-relay-web-rmux-terminal-design.md`。
+
+## External Conversation bindings
+
+`bindConversation({ chatKey, conversationId, topicId? })`,
+`listConversationBindings()` and `unbindConversation(chatKey)` manage durable
+channel bindings. The authenticated Relay RPC equivalents are
+`control.conversation.bindings.set`, `.list`, and `.delete`. Set returns
+`{binding}`; list returns `{bindings}`; delete returns `{ok:true}`.
+These management calls grant no human execution authority.
+See [Conversation runtime](conversation-runtime.md#external-channel-bindings-pr10)
+for admission, exact chat/thread keys, target addressing and replay semantics.

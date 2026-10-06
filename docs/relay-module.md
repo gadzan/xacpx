@@ -425,3 +425,13 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
   3. `node packages/relay/dist/cli.js start --db /tmp/relay.db`
   4. 另一终端：dry-run 或真实 xacpx 安装 channel-relay、channel add（用上面的访问令牌）、restart，
      然后 curl `POST /api/login` 用同一访问令牌换 cookie + `POST /api/instances/<id>/rpc {"type":"control.sessions.list"}` 验证。
+
+## External Conversation binding management
+
+Authenticated instance Control RPC exposes `control.conversation.bindings.list`
+(`{}` → `{bindings}`), `.set` (`{chatKey, conversationId, topicId?}` → `{binding}`)
+and `.delete` (`{chatKey}` → `{ok:true}`). These are instance-owner management
+operations. They configure exact external channel routes and cannot supply
+human ingress or execution capabilities. Actual messages still pass the external
+adapter's own admission before reaching the existing Conversation dispatcher.
+See [Conversation runtime](conversation-runtime.md#external-channel-bindings-pr10).

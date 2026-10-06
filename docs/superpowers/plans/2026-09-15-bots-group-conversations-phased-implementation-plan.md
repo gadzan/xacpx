@@ -1038,6 +1038,16 @@ Map admitted channel chats/threads onto the same Conversation domain.
 
 ## 13.1 Binding model
 
+Implementation seam: the durable binding and platform-message receipt tables
+live in `conversations.sqlite`. Public Control/Relay supports list/set/delete;
+the registry wraps only channel ingress Agents. Discord/Feishu/Weixin adapters
+carry stable message identity plus explicit authenticated-human facts. Group
+bindings require an active Topic; Direct may use its deterministic default.
+Leading exact member addresses resolve once to canonical Bot IDs before normal
+Run acceptance. Replays retain the original Run across rebinding and teardown
+retains receipt tombstones. Replies/Stop use the existing Run/result/cancel chain.
+Real platform smoke and durable outbound delivery are separate validation work.
+
 ```ts
 interface ConversationBinding {
   chatKey: string;

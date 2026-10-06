@@ -441,6 +441,8 @@ export async function handleWeixinMessageTurn(
     // chat route. Built-in WeChat is direct unless the message carries group_id.
     metadata: {
       channel: "weixin",
+      ...(full.message_id ? { channelMessageId: String(full.message_id) } : {}),
+      authenticatedHuman: Boolean(full.from_user_id),
       chatType: full.group_id ? "group" : "direct",
       ...(full.from_user_id ? { senderId: full.from_user_id } : {}),
       ...(full.group_id ? { groupId: full.group_id } : {}),

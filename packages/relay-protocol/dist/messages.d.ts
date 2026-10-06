@@ -105,6 +105,9 @@ export declare const MSG: {
     readonly groupTopicsArchive: "control.group.topics.archive";
     readonly groupTopicsTeardown: "control.group.topics.teardown";
     readonly conversationPrompt: "control.conversation.prompt";
+    readonly conversationBindingsList: "control.conversation.bindings.list";
+    readonly conversationBindingsSet: "control.conversation.bindings.set";
+    readonly conversationBindingsDelete: "control.conversation.bindings.delete";
     readonly conversationHistory: "control.conversation.history";
     readonly runsGet: "control.runs.get";
     readonly runsList: "control.runs.list";

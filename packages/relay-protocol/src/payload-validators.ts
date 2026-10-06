@@ -547,6 +547,18 @@ const validateConversationPrompt: Validator<ConversationPromptPayload> = (p) => 
   }
   return o as unknown as ConversationPromptPayload;
 };
+const validateConversationBinding: Validator<{ chatKey: string; conversationId: string; topicId?: string }> = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.chatKey, 2048) && isBoundedStr(o.conversationId, 2048)
+    && (o.topicId === undefined || isBoundedStr(o.topicId, 2048))
+    ? { chatKey: o.chatKey as string, conversationId: o.conversationId as string,
+      ...(o.topicId !== undefined ? { topicId: o.topicId as string } : {}) } : null;
+};
+const validateConversationBindingDelete: Validator<{ chatKey: string }> = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.chatKey, 2048) ? { chatKey: o.chatKey as string } : null;
+};
+const validateConversationBindingsList: Validator<Record<string, never>> = (p) => fields(p) ? {} : null;
 const validateConversationHistory: Validator<ConversationHistoryPayload> = (p) => {
   const o = fields(p);
   if (!o) return null;
@@ -893,6 +905,7 @@ export type ControlRpcType =
   | typeof MSG.groupsList
   | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown
   | typeof MSG.conversationPrompt | typeof MSG.conversationHistory
+  | typeof MSG.conversationBindingsList | typeof MSG.conversationBindingsSet | typeof MSG.conversationBindingsDelete
   | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel
   | typeof MSG.interactionRequest | typeof MSG.interactionRespond
   | typeof MSG.interactionWithdraw;
@@ -972,6 +985,9 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
   [MSG.conversationPrompt]: validateConversationPrompt,
+  [MSG.conversationBindingsList]: validateConversationBindingsList,
+  [MSG.conversationBindingsSet]: validateConversationBinding,
+  [MSG.conversationBindingsDelete]: validateConversationBindingDelete,
   [MSG.conversationHistory]: validateConversationHistory,
   [MSG.runsGet]: validateRunsGet,
   [MSG.runsList]: validateRunsList,

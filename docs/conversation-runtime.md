@@ -351,3 +351,45 @@ The additive `runs.cancellation_reason` column preserves cancellation provenance
 Pre-commit failure leaves no handoff rows. Commit before response/start leaves one recoverable assignment/envelope. Claim without start evidence requeues; started unknown effects seal the Run, including pending downstream work. Result commit before notification remains discoverable through history, with exact source joins preventing duplicate append. Tests cover rollback, restart/claim windows, retired evidence, cancel/lifecycle races, same-Bot assignments, mixed-schema reopen, permission refusal, budget loops and Web replay.
 
 **Follow-up before Direct Bot product release:** global dispatcher parallelism (more than one claimed execution in flight across Topics/Bots) is not part of this contract. Keep the current drain/claim sequencing until that work is designed. The drain launches the first claim globally, then admits only same-Run siblings concurrently (Topic isolation decides overlap); unrelated Topics/Bots wait for the next pass, after the cohort settles. A pass that defers Topics on pre-start failure takes at most chained extra passes with the deferrals preserved — never a retry without progress. An unexpected execution failure that escapes the handled settlement paths rejects the drain (and therefore fails activation) after every launched execution settles; it is never swallowed into a successful kick.
+
+## External channel bindings (PR10)
+
+An admitted channel chat may bind to one Conversation and Topic through
+`bindConversation({chatKey, conversationId, topicId?})`; `listConversationBindings()`
+and `unbindConversation(chatKey)` manage the same durable mapping. Group bindings
+require an active Topic; Direct bindings may omit the deterministic default Topic.
+Bindings live in `conversations.sqlite`, survive restarts, and are removed when
+their Topic or Conversation is torn down. Discord channels and threads, Feishu
+chats and threads, and Weixin chats use exact chat keys: no parent inheritance.
+An unused Direct binding also keeps Bot deletion closed until it is unbound;
+creating the binding revalidates through the Bot lifecycle gate.
+Other channel plugins can implement the same ingress metadata contract; Relay
+keeps its existing structured Conversation API instead of this text adapter.
+
+Only the channel-scoped agent supplied by the registry routes bound messages.
+The adapter must first authenticate/admit the event, then supply explicit human
+origin, sender/account identity and a stable platform message id. Scheduled, peer,
+model-generated and provenance-unknown input cannot create a bound human Run.
+The metadata contract is `channel`, `channelMessageId`, `origin: "human"`,
+`authenticatedHuman: true`, and `senderId`; `accountId` comes from ChatRequest.
+Discord proves human origin with `author.bot === false`; Feishu requires the
+platform's `sender_type === "user"`. Missing sender type does not qualify.
+Known console commands keep their command path. Bound media is rejected until
+Conversation requests support attachments; it never falls back to a Session.
+
+Adapters may supply a structured `conversationTarget`. Otherwise a leading
+`@Name ` or `@{Name with spaces} ` selects an exact, unique current Group member.
+Unknown/ambiguous names fail closed. With no selection the Group lead is used;
+missing lead fails closed. Direct requests always target their owning Bot.
+
+Platform-message receipts and Run acceptance commit in one SQLite transaction.
+Retries replay the original Run even after rebinding; different sender/content/
+target for the same source is rejected. Teardown retains a receipt tombstone so
+old messages cannot create new work after rebinding. Receipts grant no permission
+authority on replay or recovery. The channel returns the settled Run's public
+Bot results through its existing delivery path. Stop cancels that exact Run;
+waiting for settlement holds no runtime operation lease. There is no durable
+outbound-delivery claim: provider-result retransmission and channel delivery
+exactly-once remain separate validation work.
+Daemon-triggered channel abort does not acquire human Stop provenance: queued
+work remains subject to the existing shutdown/recovery rules.

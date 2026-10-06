@@ -49,7 +49,7 @@ import {
   emitConversationProductEvent,
   type ConversationProductEventSink,
 } from "./conversation-product-events";
-import type { AcceptRequestResult, ConversationStore, ListMessagesQuery } from "./conversation-store";
+import type { AcceptRequestInput, AcceptRequestResult, ConversationStore, ListMessagesQuery } from "./conversation-store";
 import { isRunCancelling, MAX_AUTOMATIC_MEMBER_TURNS } from "./conversation-store";
 import type {
   ConversationMessage,
@@ -246,6 +246,8 @@ export class ConversationRunService {
   }
 
   async acceptDirectPrompt(input: {
+    channelAbortSignal?: AbortSignal;
+    externalRequest?: AcceptRequestInput["externalRequest"];
     botId: string;
     requestId: string;
     content: string;
@@ -265,6 +267,7 @@ export class ConversationRunService {
       const topicId = input.topicId ?? planned.topic.id;
       const existing = this.store.getAcceptedRequest(conversationId, topicId, input.requestId);
       if (existing) {
+        if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
         return existing;
       }
       if (!bot.enabled) {
@@ -281,8 +284,10 @@ export class ConversationRunService {
       }
       const snapshot = snapshotBotProfile(bot, timestamp);
       await this.beforeAcceptPersist?.();
+      if (input.channelAbortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel request stopped before acceptance");
       const humanIngress = parseHumanIngress(input.humanIngress);
       const created = this.store.acceptRequest({
+        ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
         conversationId,
         topicId,
         requestId: input.requestId,
@@ -323,6 +328,8 @@ export class ConversationRunService {
    *  partially-routed Run).
    */
   async acceptGroupPrompt(input: {
+    channelAbortSignal?: AbortSignal;
+    externalRequest?: AcceptRequestInput["externalRequest"];
     conversationId: string;
     topicId: string;
     requestId: string;
@@ -333,7 +340,10 @@ export class ConversationRunService {
     this.assertAccepting();
     // Durable replay precedes mutable Router/configuration and live-state gates.
     const alreadyAccepted = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
-    if (alreadyAccepted) return alreadyAccepted;
+    if (alreadyAccepted) {
+      if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
+      return alreadyAccepted;
+    }
     const conversation = this.requireConversation(input.conversationId);
     if (conversation.kind !== "group") {
       throw new ConversationError("conversation_not_group", `conversation "${input.conversationId}" is not a Group`);
@@ -386,6 +396,7 @@ export class ConversationRunService {
         }
         const existing = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
         if (existing) {
+          if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
           return existing;
         }
         const timestamp = this.now().toISOString();
@@ -401,6 +412,7 @@ export class ConversationRunService {
           return snapshotGroupMemberProfile(bot, target, timestamp);
         });
         await this.beforeAcceptPersist?.();
+        if (input.channelAbortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel request stopped before acceptance");
         const humanIngress = parseHumanIngress(input.humanIngress);
         // Automatic Runs are accepted with the FIRST eligible member as the
         // durable snapshot carrier (the Run's own execution identity) but with
@@ -410,6 +422,7 @@ export class ConversationRunService {
         // default. Routing begins only after this transaction commits.
         if (parsed.kind === "automatic") {
           return this.store.acceptRequest({
+            ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
             conversationId: input.conversationId,
             topicId: input.topicId,
             requestId: input.requestId,
@@ -434,6 +447,7 @@ export class ConversationRunService {
         // shared-single-writer. Persisted explicitly (not omitted) so a later
         // caller that CAN prove read-only has a visible seam to extend.
         const created = this.store.acceptRequest({
+          ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
           conversationId: input.conversationId,
           topicId: input.topicId,
           requestId: input.requestId,
@@ -482,6 +496,8 @@ export class ConversationRunService {
 
 
   async acceptConversationPrompt(input: {
+    channelAbortSignal?: AbortSignal;
+    externalRequest?: AcceptRequestInput["externalRequest"];
     conversationId: string;
     topicId: string;
     requestId: string;
@@ -494,6 +510,8 @@ export class ConversationRunService {
     const conversation = this.requireConversation(input.conversationId);
     if (conversation.kind === "group") {
       return this.acceptGroupPrompt({
+        ...(input.channelAbortSignal ? { channelAbortSignal: input.channelAbortSignal } : {}),
+        ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
         conversationId: input.conversationId,
         topicId: input.topicId,
         requestId: input.requestId,
@@ -522,6 +540,8 @@ export class ConversationRunService {
       );
     }
     return this.acceptDirectPrompt({
+      ...(input.channelAbortSignal ? { channelAbortSignal: input.channelAbortSignal } : {}),
+      ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
       botId,
       requestId: input.requestId,
       content: input.text,

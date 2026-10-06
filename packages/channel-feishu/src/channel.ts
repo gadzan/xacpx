@@ -1007,6 +1007,7 @@ export class FeishuChannel implements MessageChannelRuntime {
         accountId,
         chatId,
         chatType: event.message.chat_type,
+        authenticatedHuman: event.sender.sender_type === "user",
         chatKey,
         queueKey,
         messageId,
@@ -1215,6 +1216,7 @@ export class FeishuChannel implements MessageChannelRuntime {
     accountId: string;
     chatId: string;
     chatType: string | undefined;
+    authenticatedHuman: boolean;
     chatKey: string;
     queueKey: string;
     messageId: string;
@@ -1283,8 +1285,10 @@ export class FeishuChannel implements MessageChannelRuntime {
           replyContextToken: messageId,
           metadata: {
             ...buildFeishuRouteMetadata({ chatType, senderOpenId: active.senderOpenId, chatId, senderIsOwner: active.senderIsOwner }),
+            channelMessageId: messageId,
+            authenticatedHuman: input.authenticatedHuman,
             ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
-            origin: "human" as const,
+            ...(input.authenticatedHuman ? { origin: "human" as const } : {}),
           },
           reply: safeReply,
           // Only consume the structured tool-event side-channel when we actually

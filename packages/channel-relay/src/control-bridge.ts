@@ -1104,6 +1104,23 @@ async function dispatchControlRequest(
       }
       return await control.promptConversation(publicInput);
     }
+    case MSG.conversationBindingsList: {
+      if (!parseControlPayload(MSG.conversationBindingsList, payload ?? {})) {
+        return errorPayload("invalid-payload", `${MSG.conversationBindingsList}: malformed payload`);
+      }
+      return { bindings: control.listConversationBindings() };
+    }
+    case MSG.conversationBindingsSet: {
+      const input = parseControlPayload(MSG.conversationBindingsSet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.conversationBindingsSet}: malformed payload`);
+      return { binding: await control.bindConversation(input) };
+    }
+    case MSG.conversationBindingsDelete: {
+      const input = parseControlPayload(MSG.conversationBindingsDelete, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.conversationBindingsDelete}: malformed payload`);
+      await control.unbindConversation(input.chatKey);
+      return { ok: true };
+    }
     case MSG.conversationHistory: {
       const input = parseControlPayload(MSG.conversationHistory, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.conversationHistory}: malformed payload`);

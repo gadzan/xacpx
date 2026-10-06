@@ -22,6 +22,7 @@ import { ConversationRunService } from "./conversation-run-service";
 import { ControlConversationTurnRunner } from "./conversation-turn-runner";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
 import { GroupHandoffService } from "./group-handoff";
+import { ConversationBindingService } from "./conversation-bindings";
 
 export function resolveConversationStorePath(configPath: string): string {
   return join(resolveRuntimeDirFromConfigPath(configPath), "conversations.sqlite");
@@ -34,6 +35,7 @@ export interface ConversationRuntime {
   dispatcher: ConversationDispatcher;
   runs: ConversationRunService;
   handoffs: GroupHandoffService;
+  bindings: ConversationBindingService;
   authorityEpoch: string;
   kick(): Promise<void>;
   /**
@@ -211,6 +213,7 @@ export async function createConversationRuntime(
     dispatcher,
     runs,
     handoffs,
+    bindings: new ConversationBindingService(store, runs, bots),
     authorityEpoch: dispatcher.authorityEpoch,
     kick: () => dispatcher.kick(),
     activateAfterConsumerLock: () => runs.activateAfterConsumerLock(),

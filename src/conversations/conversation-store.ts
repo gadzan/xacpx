@@ -59,6 +59,8 @@ export interface AcceptMemberInput {
 }
 
 export interface AcceptRequestInput {
+  /** Core channel ingress receipt, atomically committed with the accepted Run. */
+  externalRequest?: { key: string; fingerprint: string };
   conversationId: string;
   topicId: string;
   requestId: string;

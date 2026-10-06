@@ -68,6 +68,12 @@ export interface ChatRequest {
 }
 
 export interface ChatRequestMetadata {
+  /** Stable id from an admitted platform event, never synthesized from time. */
+  channelMessageId?: string;
+  /** Adapter proved this admitted platform sender is a human (not a bot/app). */
+  authenticatedHuman?: boolean;
+  /** Explicit target supplied by the authenticated channel interaction. */
+  conversationTarget?: import("../../control/conversation-control-dtos.js").ConversationTarget;
   /** Core-private execution capability, passed only by the Conversation runner. */
   groupExecutionToken?: string;
   channel?: string;

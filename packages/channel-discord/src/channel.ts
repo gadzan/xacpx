@@ -2154,6 +2154,7 @@ export class DiscordChannel implements MessageChannelRuntime {
           abortController,
           boundAlias,
           route,
+          authenticatedHuman: msg.author.bot === false,
         }),
       boundAlias,
     );
@@ -2431,6 +2432,7 @@ export class DiscordChannel implements MessageChannelRuntime {
     abortController: AbortController;
     boundAlias?: string;
     route: DiscordRoute;
+    authenticatedHuman: boolean;
   }): Promise<void> {
     const { runtime, accountId, channelId, guildId, chatKey, queueKey, messageId, requestText, media, active, abortController, boundAlias } = input;
     let turnStatus: "done" | "error" | "skipped" = "skipped";
@@ -2530,11 +2532,13 @@ export class DiscordChannel implements MessageChannelRuntime {
           replyContextToken: messageId,
           metadata: {
             channel: "discord",
+            channelMessageId: messageId,
+            authenticatedHuman: input.authenticatedHuman,
             chatType: input.route.kind === "dm" ? "direct" : "group",
             senderId: active.senderId,
             groupId: guildId,
             ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
-            origin: "human" as const,
+            origin: input.authenticatedHuman ? "human" as const : "peer" as const,
           },
           reply: safeReply,
           onToolEvent,
