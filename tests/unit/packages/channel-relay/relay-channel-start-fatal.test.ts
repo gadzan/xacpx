@@ -118,10 +118,16 @@ async function settle(started: Promise<void>, ms = 2000): Promise<"resolved" | "
   }
 }
 
-test("no credentials rejects start() even when the hub is unreachable", async () => {
+test("RelayClient reports no-credentials before creating a socket", () => {
   // The fail-fast half, driven through the REAL `RelayClient` rather than a seam:
   // the whole point is where the check sits relative to the network, which is the
   // client's own behaviour. `createSocket` is never expected to be called at all.
+  //
+  // Named for what it proves: `start()` returns void, so nothing here rejects.
+  // What is asserted is (a) `onFatal` fires synchronously with start(), and (b) no
+  // socket was ever requested. The other half of the chain — that a fatal reason
+  // makes `RelayChannel.start()` REJECT — is proven separately by the test below,
+  // through the channel's own `createClient` seam.
   //
   // With neither a stored credential nor a pairing token the connector can never
   // authenticate, so this is a permanent LOCAL configuration error — it must not
