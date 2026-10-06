@@ -382,6 +382,7 @@ Called when the orchestration service sends text to the channel hosting the coor
 ```ts
 export interface ChannelStartInput {
   agent: ChatAgent;
+  routeConversation?: (request: ChatRequest) => ChatAgent | undefined;
   abortSignal: AbortSignal;
   quota: OutboundQuota;
   logger: AppLogger;
@@ -394,7 +395,8 @@ export interface ChannelStartInput {
 
 | Field | Purpose |
 | --- | --- |
-| `agent` | The xacpx router entry point. After you receive a text message, call `agent.handle(chatKey, text)` to feed it into the command router. |
+| `agent` | The ordinary Session/command router entry point: `await agent.chat(request)` returns a `ChatResponse` and may also use `request.reply`. |
+| `routeConversation?` | After admission, call this before current-Session lookup, active tracking or Session lane selection. A returned Agent handles the turn on an independent Conversation executor, with no Session alias or foreground/background-result hooks. Undefined preserves Session dispatch. Supply exact channel/account/chatKey/platform-message identity; the full chat request must carry authenticated-human metadata. See [Conversation bindings](./conversation-runtime.md#external-channel-bindings-pr10). |
 | `abortSignal` | The daemon shutdown signal. Listen for the `aborted` event and stop all long-lived connections and timers. |
 | `quota` | Outbound rate/total quota; see the next section. |
 | `logger` | Structured logger; see [§7](#7-application-logging-applogger). |
@@ -402,7 +404,10 @@ export interface ChannelStartInput {
 | `coreVersion?` | xacpx core version string, for channels that need it (e.g. command-sync metadata). |
 | `locale?` | Active runtime language (`"en"` \| `"zh"`, type `Locale`), resolved from `config.language`. Use it to localize your channel's output. See [§5.1](#51-internationalization-i18n). |
 
-The `ChatAgent` interface itself is internal, but the `MessageChannelRuntime` contract only requires you to `await agent.handle(chatKey, text)` for inbound text. It returns no data; the agent calls your send methods within its own callback chain.
+`ChatRequest` / `ChatResponse` are exported from `xacpx/plugin-api`. Deliver the
+selected Agent's response through the channel's normal reply mechanism. Scheduled
+turns retain the ordinary Agent. The selector only chooses the path; binding and
+authority are revalidated when the selected Agent accepts the complete request.
 
 > **Important**: Your channel must hold a reference to `agent` / `quota` / `logger` until `stop()` / `logout()` or `abortSignal` fires. They are not passed again after `start()` returns.
 

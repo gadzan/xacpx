@@ -63,6 +63,7 @@ export class YuanbaoChannel implements MessageChannelRuntime {
   private readonly config: YuanbaoChannelConfig;
   private gateway: YuanbaoGateway | null = null;
   private agent: ChannelStartInput["agent"] | null = null;
+  private routeConversation: ChannelStartInput["routeConversation"];
   private quota: ChannelStartInput["quota"] | null = null;
   private logger: ChannelStartInput["logger"] | null = null;
   private abortSignal: AbortSignal | null = null;
@@ -72,6 +73,7 @@ export class YuanbaoChannel implements MessageChannelRuntime {
   // prompt so `/use` / `/ss` / `/cancel` / `/stop` switch the foreground
   // session in real time instead of queuing behind the in-flight turn.
   private readonly executor: ConversationExecutor = createConversationExecutor();
+  private readonly conversationExecutor: ConversationExecutor = createConversationExecutor();
   private readonly dedup = new MessageDedup();
   private readonly replyQuoteSent = new ReplyQuoteCache();
   private readonly groupHistory: GroupHistoryStore;
@@ -114,6 +116,7 @@ export class YuanbaoChannel implements MessageChannelRuntime {
   async start(input: ChannelStartInput): Promise<void> {
     setChannelLocale(input.locale ?? "en");
     this.agent = input.agent;
+    this.routeConversation = input.routeConversation;
     this.quota = input.quota;
     this.logger = input.logger;
     this.abortSignal = input.abortSignal;
@@ -457,8 +460,10 @@ export class YuanbaoChannel implements MessageChannelRuntime {
     // commands never bind — they act on whatever the chat resolves to when they
     // run, and switch/cancel commands take the control lane so they preempt a
     // running prompt for real-time switching.
+    const conversationAgent = this.routeConversation?.({ accountId: account.accountId, conversationId: chatKey,
+      text: promptText, metadata: { channel: "yuanbao", ...(messageId ? { channelMessageId: messageId } : {}) } });
     const isSlash = extracted.text.trim().startsWith("/");
-    const boundAlias = isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
+    const boundAlias = conversationAgent || isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
     const sessionKey = boundAlias ?? "__chat__";
     const lane = resolveTurnLane(extracted.text);
     // Foreground predicate, evaluated at SEND time: a turn is foreground only
@@ -472,7 +477,7 @@ export class YuanbaoChannel implements MessageChannelRuntime {
     if (boundAlias) this.activeTurns?.markActive(chatKey, boundAlias);
 
     try {
-      await this.executor.run(chatKey, lane, async () => {
+      await (conversationAgent ? this.conversationExecutor : this.executor).run(chatKey, lane, async () => {
         if (!this.agent || !this.quota || !this.gateway || !this.logger) return;
         if (this.isAborted()) return;
         this.quota.onInbound(chatKey);
@@ -491,7 +496,7 @@ export class YuanbaoChannel implements MessageChannelRuntime {
         try {
           heartbeat.start();
           const subagentNotices = new SubagentNoticeTracker();
-          const response = await this.agent.chat({
+          const response = await (conversationAgent ?? this.agent).chat({
             accountId: account.accountId,
             conversationId: chatKey,
             text: promptText,

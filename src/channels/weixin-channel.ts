@@ -99,6 +99,7 @@ export class WeixinChannel implements MessageChannelRuntime {
     const sessions = input.sessions;
 
     await weixinStart(input.agent, {
+      ...(input.routeConversation ? { routeConversation: input.routeConversation } : {}),
       abortSignal: input.abortSignal,
       ...(this.mediaStore ? { mediaStore: this.mediaStore } : {}),
       ...(this.allowedMediaRoots.length > 0 ? { allowedMediaRoots: this.allowedMediaRoots } : {}),

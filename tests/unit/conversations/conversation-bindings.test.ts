@@ -7,7 +7,7 @@ import { snapshotBotProfile } from "../../../src/bots/bot-types";
 import { ControlService, conversationKernel } from "../../../src/control/control-service";
 import { createControlEventBus } from "../../../src/control/control-event-bus";
 import { createConversationRuntime } from "../../../src/conversations/conversation-composition";
-import { createConversationChannelAgent } from "../../../src/channels/conversation-channel-agent";
+import { createConversationChannelRouter } from "../../../src/channels/conversation-channel-router";
 import { MessageChannelRegistry } from "../../../src/channels/channel-registry";
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
 import { createSqlDriver } from "../../../src/conversations/sql-driver";
@@ -40,9 +40,11 @@ async function compose(options: { state?: AppState; path?: string; agent?: Agent
   const daemon = new AbortController();
   let delegated = 0;
   const normalAgent = { chat: async () => { delegated++; return { text: "ordinary" }; }, isKnownCommand: (text: string) => text === "/help" };
-  const agent = createConversationChannelAgent("discord", normalAgent, runtime, events, daemon.signal);
+  const route = createConversationChannelRouter("discord", normalAgent, runtime, events, daemon.signal);
+  // Unit-level ingress fixture; real adapters select before Session binding.
+  const agent: Agent = { chat: (input) => (route(input) ?? normalAgent).chat(input) };
   const close = async () => { daemon.abort(); await runtime.shutdown(); };
-  return { state, path, control, runtime, events, daemon, agent, close, normalAgent, delegated: () => delegated };
+  return { state, path, control, runtime, events, daemon, agent, route, sessions, close, normalAgent, delegated: () => delegated };
 }
 
 function request(text = "work", messageId = "m1", chatKey = "discord:default:g:channel"): ChatRequest {
@@ -358,6 +360,134 @@ const quota = { onInbound() {}, reserveMidSegment: () => true, reserveFinal: () 
   finalRemaining: () => 4, hasPendingFinal: () => false, drainPendingFinalUpToBudget: () => [],
   prependPendingFinal() {}, enqueuePendingFinal() {}, clearPendingFinal() {} };
 
+test("a held acceptance serializes only its route; other channels and binding management progress", async () => {
+  const current = await compose(); let release = () => {};
+  try {
+    const { group: g, topic, bots } = await group(current);
+    let entered = false;
+    const held = current.runtime.bots.runLifecycle(bots[0]!.id, async () => {
+      entered = true; await new Promise<void>((resolve) => { release = resolve; });
+    });
+    await waitFor(() => entered);
+    const accepted = current.runtime.bindings.accept("discord", request());
+    await waitFor(() => (current.runtime.bindings as any).gates.get(request().conversationId)?.users === 1);
+    let unbound = false;
+    const sameRoute = current.control.unbindConversation(request().conversationId).then(() => { unbound = true; });
+    const otherBot = await current.control.createBot({ name: "Independent", agent: "codex", workspace: "backend" });
+    let progressed = false;
+    const unrelated = (async () => {
+      for (const channelId of ["discord", "feishu", "weixin"]) {
+        const input = request("ordinary", "m2", `${channelId}:default:other`);
+        input.metadata!.channel = channelId;
+        expect(await current.runtime.bindings.accept(channelId, input)).toBeUndefined();
+      }
+      await current.control.bindConversation({ chatKey: "feishu:default:other", conversationId: createDirectConversationId(otherBot.id) });
+      await current.control.unbindConversation("feishu:default:other");
+      progressed = true;
+    })();
+    await waitFor(() => progressed);
+    expect(unbound).toBe(false);
+    expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(0);
+    release(); await held; expect(await accepted).toBeDefined(); await sameRoute; await unrelated;
+    expect(unbound).toBe(true);
+    expect((current.runtime.bindings as any).gates.size).toBe(0);
+  } finally { release(); await current.close(); }
+});
+
+test("early route selection keeps replay/tombstones out of Session and fails closed after unbind", async () => {
+  const current = await compose();
+  try {
+    const { group: g, topic } = await group(current);
+    const selected = current.route(request())!;
+    await current.control.unbindConversation(request().conversationId);
+    await expect(selected.chat(request())).rejects.toMatchObject({ code: "binding_changed" });
+    expect(current.delegated()).toBe(0);
+    await current.control.bindConversation({ chatKey: request().conversationId, conversationId: g.id, topicId: topic.id });
+    const response = current.agent.chat(request());
+    await waitFor(() => current.runtime.store.listRuns(g.id, topic.id).length === 1);
+    await current.runtime.dispatcher.kick(); await response;
+    await current.control.unbindConversation(request().conversationId);
+    expect(current.route(request())).toBeDefined();
+    expect((await current.agent.chat(request())).text).toContain("provider result");
+    expect(current.delegated()).toBe(0);
+    await current.control.teardownGroupTopic(g.id, topic.id);
+    expect(current.route(request())).toBeDefined();
+    await expect(current.agent.chat(request())).rejects.toMatchObject({ code: "external_request_retired" });
+    expect(current.delegated()).toBe(0);
+    expect(current.route(request("new", "new-message", "discord:default:unbound"))).toBeUndefined();
+  } finally { await current.close(); }
+});
+
+for (const platform of ["discord", "feishu"] as const) {
+  test(`actual ${platform} bound Conversation bypasses Session A lane and never stores its result after /use B`, async () => {
+    const current = await compose();
+    const sent: string[] = []; const active: string[] = []; const background: string[] = [];
+    let sessionReads = 0;
+    const peek = current.sessions.peekCurrentSessionAlias.bind(current.sessions);
+    current.sessions.peekCurrentSessionAlias = (key) => { sessionReads++; return peek(key); };
+    let finishOrdinary = () => {}; let ordinaryStarted = false;
+    const chatKey = platform === "discord" ? "discord:default:dm:dm" : "feishu:default:chat";
+    let emit: (id: string, text: string) => Promise<void> | void = () => {};
+    const channel = platform === "discord"
+      ? new DiscordChannel({ token: "x", dmPolicy: "open", guildPolicy: "disabled", requireMention: false,
+        typingIndicator: false, enableAutocomplete: false }, { logger: logger as never, identifyStaggerMs: 0,
+        createClient: () => ({
+          start: async (input: any) => { emit = (id, text) => input.handlers.onMessage({ id, content: text,
+            channelId: "dm", guildId: null, author: { id: "human", bot: false }, createdTimestamp: Date.now() });
+            return { botUserId: "bot" }; },
+          probeBot: async () => ({ botUserId: "bot" }), startTyping: async () => () => {},
+          sendMessage: async (_: unknown, body: any) => { sent.push(body.content ?? ""); return { messageId: `s${sent.length}` }; },
+          editMessage: async () => {}, deleteMessage: async () => {}, destroy: async () => {}, addReaction: async () => {},
+        }) as never })
+      : new FeishuChannel({ appId: "app", appSecret: "secret", domain: "feishu", dmPolicy: "open",
+        requireMention: false, textMessageFormat: "text", replyMode: "static" }, { createClient: () => ({
+          sdk: { im: { message: {
+            reply: async (body: unknown) => { sent.push(JSON.stringify(body)); return { data: { message_id: "reply", chat_id: "chat" } }; },
+            create: async (body: unknown) => { sent.push(JSON.stringify(body)); return { data: { message_id: "reply", chat_id: "chat" } }; },
+          } } }, probeBot: async () => ({ botOpenId: "bot" }), stop: () => {},
+          startWS: async (input: any) => { emit = (id, text) => input.handlers["im.message.receive_v1"]({
+            sender: { sender_id: { open_id: "human" }, sender_type: "user" },
+            message: { message_id: id, chat_id: "chat", chat_type: "p2p", message_type: "text",
+              content: JSON.stringify({ text }), create_time: String(Date.now()) },
+          }); },
+        }) as never });
+    const registry = new MessageChannelRegistry([channel]); let startup: Promise<void> | undefined;
+    const normalAgent: Agent = { isKnownCommand: (text) => text.startsWith("/use "), chat: async (input) => {
+      if (input.text === "/use B") { await current.sessions.useSession(chatKey, "B"); return { text: "switched" }; }
+      expect(input.metadata?.boundSessionAlias).toBe("A"); ordinaryStarted = true;
+      await new Promise<void>((resolve) => { finishOrdinary = resolve; }); return { text: "ordinary finished" };
+    } };
+    const storeBackground = current.sessions.setBackgroundResult.bind(current.sessions);
+    current.sessions.setBackgroundResult = async (...args) => { background.push(args[1]); await storeBackground(...args); };
+    try {
+      await current.sessions.createSession("A", "codex", "backend"); await current.sessions.createSession("B", "codex", "backend");
+      await current.sessions.useSession(chatKey, "A");
+      startup = registry.startAll({ agent: normalAgent, logger, quota, abortSignal: current.daemon.signal,
+        sessions: current.sessions, activeTurns: { markActive: (_: string, alias: string) => active.push(alias), markInactive() {} } } as never,
+        (id, agent) => createConversationChannelRouter(id, agent, current.runtime, current.events, current.daemon.signal));
+      startup.catch(() => {}); await waitFor(() => platform === "discord" ? (channel as any).accounts.size > 0 : true);
+      await Bun.sleep(10);
+      const ordinary = emit("ordinary", "hold Session A"); await waitFor(() => ordinaryStarted);
+      expect(active).toEqual(["A"]); active.length = 0;
+      const readsBeforeConversation = sessionReads;
+      const { group: g, topic } = await group(current);
+      await current.control.bindConversation({ chatKey, conversationId: g.id, topicId: topic.id });
+      const conversation = emit("conversation", "work");
+      await waitFor(() => current.runtime.store.listRuns(g.id, topic.id).length === 1);
+      expect(sessionReads).toBe(readsBeforeConversation);
+      expect(active).toEqual([]); expect(background).toEqual([]);
+      await emit("switch", "/use B"); await waitFor(() => current.sessions.peekCurrentSessionAlias(chatKey) === "B");
+      await current.runtime.dispatcher.kick(); await conversation;
+      await waitFor(() => sent.some((text) => text.includes("provider result")));
+      expect(background).toEqual([]); expect(active).toEqual([]);
+      expect(sent.filter((text) => text.includes("provider result"))).toHaveLength(1);
+      // Only the genuine Session turn may later produce a Session completion.
+      finishOrdinary(); await ordinary;
+      await waitFor(() => background.length === 1); expect(background).toEqual(["A"]);
+    } finally { finishOrdinary(); await current.close(); await registry.stopAll(); await startup; }
+  });
+}
+
 test("actual Discord admission precedes binding lookup; admitted human DM reaches provider, allowed bot does not", async () => {
   const current = await compose();
   let onMessage: ((message: unknown) => void) | undefined;
@@ -380,7 +510,7 @@ test("actual Discord admission precedes binding lookup; admitted human DM reache
     const { group: g, topic } = await group(current);
     await current.control.bindConversation({ chatKey: "discord:default:dm:dm", conversationId: g.id, topicId: topic.id });
     startup = registry.startAll({ agent: current.normalAgent, logger, quota, abortSignal: current.daemon.signal } as never,
-      (id, agent) => createConversationChannelAgent(id, agent, current.runtime, current.events, current.daemon.signal));
+      (id, agent) => createConversationChannelRouter(id, agent, current.runtime, current.events, current.daemon.signal));
     startup.catch(() => {});
     await waitFor(() => Boolean(onMessage)); await Bun.sleep(5);
     expect(onMessage).toBeDefined();
@@ -418,7 +548,7 @@ test("actual Feishu admission and explicit sender type fence bound thread human 
     const { group: g, topic } = await group(current);
     await current.control.bindConversation({ chatKey: "feishu:default:chat:thread:thread", conversationId: g.id, topicId: topic.id });
     await registry.startAll({ agent: current.normalAgent, logger, quota, abortSignal: current.daemon.signal } as never,
-      (id, agent) => createConversationChannelAgent(id, agent, current.runtime, current.events, current.daemon.signal));
+      (id, agent) => createConversationChannelRouter(id, agent, current.runtime, current.events, current.daemon.signal));
     const emit = (id: string, senderId: string, senderType?: string) => handlers["im.message.receive_v1"]!({
       sender: { sender_id: { open_id: senderId }, ...(senderType ? { sender_type: senderType } : {}) },
       message: { message_id: id, chat_id: "chat", chat_type: "p2p", thread_id: "thread", message_type: "text",

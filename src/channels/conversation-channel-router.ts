@@ -3,16 +3,13 @@ import type { ConversationRuntime } from "../conversations/conversation-composit
 import type { ControlEventBus } from "../control/control-event-bus";
 import { ConversationError } from "../conversations/conversation-error";
 
-/** Wrap channel ingress only. Never wrap the provider/ConsoleAgent globally. */
-export function createConversationChannelAgent(channelId: string, agent: Agent,
-  runtime: ConversationRuntime, events: ControlEventBus, daemonSignal: AbortSignal): Agent {
-  return {
-    ...(agent.isKnownCommand ? { isKnownCommand: agent.isKnownCommand.bind(agent) } : {}),
-    ...(agent.clearSession ? { clearSession: agent.clearSession.bind(agent) } : {}),
+/** Select before Session binding. The ordinary Agent is never wrapped. */
+export function createConversationChannelRouter(channelId: string, agent: Agent,
+  runtime: ConversationRuntime, events: ControlEventBus, daemonSignal: AbortSignal): (request: ChatRequest) => Agent | undefined {
+  const conversationAgent: Agent = {
     async chat(request: ChatRequest): Promise<ChatResponse> {
-      if (agent.isKnownCommand?.(request.text) || request.metadata?.origin === "scheduled") return agent.chat(request);
       const accepted = await runtime.withOperation(() => runtime.bindings.accept(channelId, request, daemonSignal));
-      if (!accepted) return agent.chat(request);
+      if (!accepted) throw new ConversationError("binding_changed", "selected Conversation binding is no longer available");
       // The acceptance lease is released before waiting. Shutdown must be able
       // to drain/cancel the dispatcher while this channel waits for settlement.
       return new Promise<ChatResponse>((resolve, reject) => {
@@ -60,5 +57,17 @@ export function createConversationChannelAgent(channelId: string, agent: Agent,
         else inspect();
       });
     },
+  };
+  return (request) => {
+    if (agent.isKnownCommand?.(request.text) || request.metadata?.origin === "scheduled") return undefined;
+    try {
+      runtime.assertOpen();
+      return runtime.bindings.hasRoute(channelId, request) ? conversationAgent : undefined;
+    }
+    catch (error) {
+      // Corrupt/retired routing must stay out of ordinary Session lifecycle,
+      // while the adapter's existing error delivery and cleanup still apply.
+      return { chat: async () => { throw error; } };
+    }
   };
 }

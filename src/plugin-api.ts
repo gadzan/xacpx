@@ -90,7 +90,7 @@ export { toDisplaySessionAlias } from "./channels/channel-scope.js";
 export { isDirectConversationChatKey, parseDirectConversationChatKey } from "./domain/ids.js";
 export type { SessionService } from "./sessions/session-service.js";
 export type { BackgroundResult } from "./state/types.js";
-export type { ChatRequestMetadata } from "./weixin/agent/interface.js";
+export type { Agent as ChatAgent, ChatRequest, ChatResponse, ChatRequestMetadata } from "./weixin/agent/interface.js";
 
 // Localization: the resolved runtime locale and its type, so channel plugins can
 // select language for their own per-package string catalogs. Plugins keep their

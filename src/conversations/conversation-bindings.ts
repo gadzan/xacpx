@@ -28,11 +28,34 @@ function validateChatKey(chatKey: unknown): asserts chatKey is string {
 }
 
 export class ConversationBindingService {
-  private readonly gate = new AsyncMutex();
+  private readonly gates = new Map<string, { mutex: AsyncMutex; users: number }>();
   constructor(private readonly store: SqliteConversationStore,
     private readonly runs: ConversationRunService, private readonly bots: BotService) {}
 
   list(): Array<Required<ConversationBinding>> { return this.store.listConversationBindings(); }
+
+  private async withRoute<T>(chatKey: string, operation: () => Promise<T>): Promise<T> {
+    let gate = this.gates.get(chatKey);
+    if (!gate) { gate = { mutex: new AsyncMutex(), users: 0 }; this.gates.set(chatKey, gate); }
+    gate.users++;
+    try { return await gate.mutex.run(operation); }
+    finally { if (--gate.users === 0) this.gates.delete(chatKey); }
+  }
+
+  /** Cheap dispatch selection, before any ordinary Session lifecycle begins. */
+  hasRoute(channelId: string, request: ChatRequest): boolean {
+    if (this.store.getConversationBinding(request.conversationId)) return true;
+    const key = this.sourceKey(channelId, request);
+    return key !== undefined && this.store.hasExternalRequest(key);
+  }
+
+  private sourceKey(channelId: string, request: ChatRequest): string | undefined {
+    const metadata = request.metadata;
+    if (metadata?.channel !== channelId || !request.conversationId.startsWith(`${channelId}:`)
+      || !nonempty(request.accountId) || !nonempty(metadata.channelMessageId)) return undefined;
+    return createHash("sha256").update(JSON.stringify(
+      [channelId, request.accountId, request.conversationId, metadata.channelMessageId])).digest("hex");
+  }
 
   async bind(input: ConversationBinding): Promise<Required<ConversationBinding>> {
     validateChatKey(input?.chatKey);
@@ -41,7 +64,7 @@ export class ConversationBindingService {
     }
     input = { chatKey: input.chatKey, conversationId: input.conversationId,
       ...(input.topicId !== undefined ? { topicId: input.topicId } : {}) };
-    return this.gate.run(async () => {
+    return this.withRoute(input.chatKey, async () => {
       const group = this.runs.listGroups().find((item) => item.id === input.conversationId);
       const botIds = group?.botIds ?? this.runs.getConversation(input.conversationId).botIds;
       return this.bots.runLifecycleAll(botIds, async () => {
@@ -61,12 +84,12 @@ export class ConversationBindingService {
 
   async unbind(chatKey: string): Promise<void> {
     validateChatKey(chatKey);
-    await this.gate.run(async () => this.store.removeConversationBinding(chatKey));
+    await this.withRoute(chatKey, async () => this.store.removeConversationBinding(chatKey));
   }
 
-  /** Called only by the registry's channel agent AFTER adapter admission. */
+  /** Called by a selected Conversation Agent, never the ordinary Session Agent. */
   async accept(channelId: string, request: ChatRequest, shutdownSignal?: AbortSignal): Promise<AcceptRequestResult | undefined> {
-    return this.gate.run(async () => {
+    return this.withRoute(request.conversationId, async () => {
       const binding = this.store.getConversationBinding(request.conversationId);
       const metadata = request.metadata;
       // Nonhuman events cannot enter target parsing or create human authority.
@@ -84,7 +107,7 @@ export class ConversationBindingService {
       const explicitTarget = sanitizePublicConversationPrompt({ conversationId: "", topicId: "", requestId: "",
         text: request.text, ...(metadata.conversationTarget !== undefined ? { target: metadata.conversationTarget } : {}) }).target;
       const externalRequest = {
-        key: hash([channelId, request.accountId, request.conversationId, metadata.channelMessageId]),
+        key: this.sourceKey(channelId, request)!,
         fingerprint: hash([metadata.senderId, request.text, explicitTarget ?? null, request.media ?? null]),
       };
       const replay = this.store.getExternalRequest(externalRequest);

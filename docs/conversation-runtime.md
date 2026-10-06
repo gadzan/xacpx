@@ -1,6 +1,6 @@
 # Conversation runtime (Direct + Group persistence and lifecycle)
 
-Direct and Group Conversation execution is durable. Relay Web Group UX, the stateless automatic ConversationRouter (PR8), and public structured handoff with bounded recovery (PR9) are part of this contract. External channel Conversation bindings and private handoff remain out of scope.
+Direct and Group Conversation execution is durable. Relay Web Group UX, the stateless automatic ConversationRouter (PR8), public structured handoff with bounded recovery (PR9), and external channel bindings (PR10) are part of this contract. Private handoff remains out of scope.
 
 ## Store ownership
 
@@ -292,7 +292,7 @@ Shutdown first marks the runtime stopping to reject new operation leases, then w
 
 ## Out of scope
 
-Private member-to-member handoff, external channel Conversation bindings (PR10), cross-account routing, and the full blocked-permission "Start this step myself" product flow. PR9 preserves structured blocked-step evidence; a future continuation must create a new explicit human request rather than promote an existing assignment.
+Private member-to-member handoff, cross-account routing, and the full blocked-permission "Start this step myself" product flow. PR9 preserves structured blocked-step evidence; a future continuation must create a new explicit human request rather than promote an existing assignment.
 
 ## Public structured handoff (PR9)
 
@@ -365,9 +365,20 @@ An unused Direct binding also keeps Bot deletion closed until it is unbound;
 creating the binding revalidates through the Bot lifecycle gate.
 Other channel plugins can implement the same ingress metadata contract; Relay
 keeps its existing structured Conversation API instead of this text adapter.
+The bundled Yuanbao adapter also selects before Session lifecycle; its current
+gateway does not prove authenticated-human origin, so bound input remains
+fail-closed rather than entering an ordinary Session.
 
-Only the channel-scoped agent supplied by the registry routes bound messages.
-The adapter must first authenticate/admit the event, then supply explicit human
+The registry supplies an optional `routeConversation` ingress selector. After
+authentication/admission, adapters call it before reading the current Session,
+marking a Session active, or choosing its executor lane. A selected Conversation
+uses its own executor and Agent, without Session foreground/background hooks.
+Selection checks bindings and receipt existence synchronously; acceptance then
+revalidates under a mutex keyed by external chatKey. Bind/unbind/accept for one
+route serialize, while unrelated routes and ordinary unbound traffic remain
+independent. Unused mutex entries are removed. If a selected binding disappears
+before acceptance, the request fails closed instead of falling back to Session.
+The adapter supplies explicit human
 origin, sender/account identity and a stable platform message id. Scheduled, peer,
 model-generated and provenance-unknown input cannot create a bound human Run.
 The metadata contract is `channel`, `channelMessageId`, `origin: "human"`,
@@ -388,6 +399,8 @@ target for the same source is rejected. Teardown retains a receipt tombstone so
 old messages cannot create new work after rebinding. Receipts grant no permission
 authority on replay or recovery. The channel returns the settled Run's public
 Bot results through its existing delivery path. Stop cancels that exact Run;
+Weixin tracks bound turns with separate abort controllers: a bare `/stop` or
+`/cancel` interrupts those turns without cancelling the foreground Session.
 waiting for settlement holds no runtime operation lease. There is no durable
 outbound-delivery claim: provider-result retransmission and channel delivery
 exactly-once remain separate validation work.

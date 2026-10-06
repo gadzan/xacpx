@@ -724,6 +724,10 @@ export class SqliteConversationStore implements ConversationStore {
     }
   }
 
+  hasExternalRequest(key: string): boolean {
+    return this.sqlite.get("SELECT 1 FROM external_conversation_requests WHERE source_key = ?", [key]) !== undefined;
+  }
+
   getExternalRequest(input: { key: string; fingerprint: string }): AcceptRequestResult | undefined {
     const row = this.sqlite.get<{ fingerprint: string; run_id: string; conversation_id: string; topic_id: string }>(
       "SELECT * FROM external_conversation_requests WHERE source_key = ?", [input.key]);

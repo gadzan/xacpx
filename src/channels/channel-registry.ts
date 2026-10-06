@@ -107,13 +107,13 @@ export class MessageChannelRegistry {
     }
   }
 
-  async startAll(input: ChannelStartInput, createChannelAgent?: (id: string, agent: Agent) => Agent): Promise<void> {
+  async startAll(input: ChannelStartInput, createConversationRoute?: (id: string, agent: Agent) => ChannelStartInput["routeConversation"]): Promise<void> {
     const entries = [...this.channels.entries()];
     const outcomes = await Promise.allSettled(
       entries.map(async ([id, channel]) => {
         let failed = false;
         try {
-          await channel.start(createChannelAgent ? { ...input, agent: createChannelAgent(id, input.agent) } : input);
+          await channel.start(createConversationRoute ? { ...input, routeConversation: createConversationRoute(id, input.agent) } : input);
         } catch (error) {
           failed = true;
           const message =

@@ -10,7 +10,7 @@ import { XACPX_CORE_VERSION } from "./version.js";
 import { getLocale } from "./i18n/index.js";
 import { asPublicControl } from "./control/public-control.js";
 import { conversationKernel } from "./control/control-service.js";
-import { createConversationChannelAgent } from "./channels/conversation-channel-agent.js";
+import { createConversationChannelRouter } from "./channels/conversation-channel-router.js";
 import type { Agent } from "./weixin/agent/interface.js";
 
 interface DaemonLifecycle {
@@ -20,7 +20,7 @@ interface DaemonLifecycle {
 }
 
 interface ChannelRegistry {
-  startAll(input: ChannelStartInput, createChannelAgent?: (id: string, agent: Agent) => Agent): Promise<void>;
+  startAll(input: ChannelStartInput, createConversationRoute?: (id: string, agent: Agent) => ChannelStartInput["routeConversation"]): Promise<void>;
   stopAll?(reason?: "shutdown" | "disabled" | "removed" | "logout"): void | Promise<void>;
   /**
    * Live interaction-capability reads. Optional so existing test doubles that
@@ -319,8 +319,8 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
           conversationKernel(controlService).promptConversationFromHumanIngress(input, ingress)
         : undefined,
     }, (id, agent) => conversationRuntime && controlService && id !== "relay"
-      ? createConversationChannelAgent(id, agent, conversationRuntime, controlService.events, shutdownController.signal)
-      : agent);
+      ? createConversationChannelRouter(id, agent, conversationRuntime, controlService.events, shutdownController.signal)
+      : undefined);
     // Observe rejections immediately so a channel failure cannot become an
     // unhandled rejection while the scheduler startup path is still running.
     channelStartPromise.catch(() => {});

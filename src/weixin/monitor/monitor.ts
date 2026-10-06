@@ -32,6 +32,7 @@ export type MonitorWeixinOpts = {
   token?: string;
   accountId: string;
   agent: Agent;
+  routeConversation?: import("../../channels/types.js").ChannelStartInput["routeConversation"];
   abortSignal?: AbortSignal;
   longPollTimeoutMs?: number;
   log?: (msg: string) => void;
@@ -131,6 +132,8 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
 
   let configManager = new WeixinConfigManager({ baseUrl, token }, log);
   const conversationExecutor = createConversationExecutor();
+  const boundConversationExecutor = createConversationExecutor();
+  const boundTurns = new Map<string, Set<AbortController>>();
 
   const seenMessageIds = new Set<number>();
   const messageIdOrder: number[] = [];
@@ -288,7 +291,24 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         // resolves to when they actually run.
         const chatKey = buildWeixinChatKey(accountId, fromUserId);
         const isSlash = inboundText.trim().startsWith("/");
-        const boundAlias = isSlash ? undefined : opts.peekCurrentSessionAlias?.(chatKey);
+        const localCommand = ["/echo", "/toggle-debug", "/clear", "/jx"].includes(parseSlashCommand(inboundText) ?? "");
+        const stoppingBound = /^\/(stop|cancel)$/i.test(inboundText.trim()) && boundTurns.has(chatKey);
+        if (stoppingBound) for (const controller of boundTurns.get(chatKey)!) controller.abort();
+        const conversationAgent = stoppingBound ? { chat: async () => ({ text: "Conversation stop requested." }) }
+          : localCommand ? undefined : opts.routeConversation?.({
+          accountId, conversationId: chatKey, text: inboundText,
+          metadata: { channel: "weixin", senderId: fromUserId, origin: "human", authenticatedHuman: Boolean(fromUserId),
+            ...(full.message_id != null ? { channelMessageId: String(full.message_id) } : {}) },
+        });
+        const controller = conversationAgent && !stoppingBound ? new AbortController() : undefined;
+        const abortBound = () => controller?.abort();
+        if (controller) {
+          const turns = boundTurns.get(chatKey) ?? new Set<AbortController>();
+          turns.add(controller); boundTurns.set(chatKey, turns);
+          abortSignal?.addEventListener("abort", abortBound, { once: true });
+          if (abortSignal?.aborted) controller.abort();
+        }
+        const boundAlias = conversationAgent || isSlash ? undefined : opts.peekCurrentSessionAlias?.(chatKey);
         // Serialize prompts per bound session; slash/unbound turns share the
         // chat-level lane.
         const sessionKey = boundAlias ?? "__chat__";
@@ -302,13 +322,13 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
           opts.activeTurns?.markActive(chatKey, boundAlias);
         }
 
-        const runPromise = conversationExecutor.run(
+        const runPromise = (conversationAgent ? boundConversationExecutor : conversationExecutor).run(
           full.from_user_id ?? "",
           getWeixinMessageTurnLane(full),
-          () =>
-            handleWeixinMessageTurn(full, {
+          () => controller?.signal.aborted ? Promise.resolve() : handleWeixinMessageTurn(full, {
               accountId,
-              agent,
+              agent: conversationAgent ?? agent,
+              ...(controller ? { abortSignal: controller.signal } : {}),
               baseUrl,
               cdnBaseUrl,
               token,
@@ -331,7 +351,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
               ...(opts.perfTracer ? { perfTracer: opts.perfTracer } : {}),
               ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
               ...(isForeground ? { isForeground } : {}),
-              ...(opts.setBackgroundResult
+              ...(!conversationAgent && opts.setBackgroundResult
                 ? {
                     onBackgroundFinal: async (
                       alias: string,
@@ -355,6 +375,12 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
             errLog(`[weixin] message turn failed: ${String(err)}`);
           })
           .finally(() => {
+            if (controller) {
+              abortSignal?.removeEventListener("abort", abortBound);
+              const turns = boundTurns.get(chatKey)!;
+              turns.delete(controller);
+              if (turns.size === 0) boundTurns.delete(chatKey);
+            }
             if (boundAlias) {
               opts.activeTurns?.markInactive(chatKey, boundAlias);
             }

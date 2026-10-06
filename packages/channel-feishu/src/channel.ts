@@ -168,11 +168,13 @@ export class FeishuChannel implements MessageChannelRuntime {
   private markDelivered: OrchestrationDeliveryCallbacks["markTaskNoticeDelivered"] | null = null;
   private markFailed: OrchestrationDeliveryCallbacks["markTaskNoticeFailed"] | null = null;
   private agent: ChannelStartInput["agent"] | null = null;
+  private routeConversation: ChannelStartInput["routeConversation"];
   private quota: ChannelStartInput["quota"] | null = null;
   private logger: ChannelStartInput["logger"] | null = null;
   private sessions: SessionService | null = null;
   private activeTurns: ActiveTurnRegistry | null = null;
   private readonly executor: ConversationExecutor = createConversationExecutor();
+  private readonly conversationExecutor: ConversationExecutor = createConversationExecutor();
   // Stack per chat: when a second turn races into the queue before the first
   // body runs, both are tracked so an inbound stop message can suppress all
   // pending entries. Push on registration, splice on cleanup.
@@ -526,6 +528,7 @@ export class FeishuChannel implements MessageChannelRuntime {
     // setLocale(), so input.locale is the only instance-independent source.
     setChannelLocale(input.locale ?? "en");
     this.agent = input.agent;
+    this.routeConversation = input.routeConversation;
     this.quota = input.quota;
     this.logger = input.logger;
     this.sessions = input.sessions ?? null;
@@ -972,8 +975,12 @@ export class FeishuChannel implements MessageChannelRuntime {
     // commands never bind — they act on whatever the chat resolves to when they
     // run (and switch/cancel commands take the control lane so they preempt a
     // running prompt for real-time switching).
+    const conversationAgent = this.routeConversation?.({ accountId, conversationId: chatKey, text: requestText,
+      metadata: { channel: "feishu", channelMessageId: messageId, senderId: event.sender?.sender_id?.open_id,
+        authenticatedHuman: event.sender.sender_type === "user",
+        ...(event.sender.sender_type === "user" ? { origin: "human" as const } : {}) } });
     const isSlash = requestText.trim().startsWith("/");
-    const boundAlias = isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
+    const boundAlias = conversationAgent || isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
     const lane = resolveTurnLane(requestText);
 
     const senderOpenId = event.sender?.sender_id?.open_id;
@@ -999,7 +1006,7 @@ export class FeishuChannel implements MessageChannelRuntime {
       active.senderIsOwner = await this.resolveSenderIsGroupOwner({ runtime, accountId, chatId, senderOpenId });
     }
 
-    await this.executor.run(
+    await (conversationAgent ? this.conversationExecutor : this.executor).run(
       chatKey,
       lane,
       () => this.runTurn({
@@ -1016,6 +1023,7 @@ export class FeishuChannel implements MessageChannelRuntime {
         active,
         abortController,
         boundAlias,
+        agent: conversationAgent,
       }),
       boundAlias,
     );
@@ -1212,6 +1220,7 @@ export class FeishuChannel implements MessageChannelRuntime {
   }
 
   private async runTurn(input: {
+    agent?: ChannelStartInput["agent"];
     runtime: AccountRuntime;
     accountId: string;
     chatId: string;
@@ -1277,7 +1286,7 @@ export class FeishuChannel implements MessageChannelRuntime {
       };
 
       try {
-        const response = await this.agent.chat({
+        const response = await (input.agent ?? this.agent).chat({
           accountId,
           conversationId: chatKey,
           text: requestText,

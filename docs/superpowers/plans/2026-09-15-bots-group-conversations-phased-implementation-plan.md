@@ -1040,7 +1040,9 @@ Map admitted channel chats/threads onto the same Conversation domain.
 
 Implementation seam: the durable binding and platform-message receipt tables
 live in `conversations.sqlite`. Public Control/Relay supports list/set/delete;
-the registry wraps only channel ingress Agents. Discord/Feishu/Weixin adapters
+the registry supplies an early Conversation ingress selector. After admission,
+Discord/Feishu/Weixin select the route before Session binding/active tracking and
+use an independent executor without Session background-result hooks. Adapters
 carry stable message identity plus explicit authenticated-human facts. Group
 bindings require an active Topic; Direct may use its deterministic default.
 Leading exact member addresses resolve once to canonical Bot IDs before normal
@@ -1066,6 +1068,9 @@ channel admission/authentication
 ```
 
 Binding never bypasses admission.
+Binding set/delete and acceptance serialize per external chatKey; unrelated
+routes do not share an acceptance mutex. Selection includes durable receipt
+existence so retries after unbind remain on the Conversation path.
 
 ## 13.3 Candidate mappings
 

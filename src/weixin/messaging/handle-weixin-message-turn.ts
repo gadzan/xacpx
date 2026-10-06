@@ -168,6 +168,7 @@ export type HandleWeixinMessageTurnDeps = {
   cdnBaseUrl: string;
   token?: string;
   typingTicket?: string;
+  abortSignal?: AbortSignal;
   log: (msg: string) => void;
   errLog: (msg: string) => void;
   mediaTempDir?: string;
@@ -400,6 +401,7 @@ export async function handleWeixinMessageTurn(
 
   let midFirstSent = false;
   const sendReplySegment = async (text: string): Promise<boolean> => {
+    if (deps.abortSignal?.aborted) return false;
     if (!shouldDeliverSegment(deps.isForeground)) {
       return false;
     }
@@ -434,6 +436,7 @@ export async function handleWeixinMessageTurn(
     accountId: deps.accountId,
     conversationId: buildWeixinChatKey(deps.accountId, full.from_user_id ?? ""),
     text: requestText,
+    ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}),
     ...(media.length > 0 ? { media } : {}),
     replyContextToken: contextToken,
     // The in-session coordinator agent's scheduled_create/list/cancel tools and
@@ -441,7 +444,7 @@ export async function handleWeixinMessageTurn(
     // chat route. Built-in WeChat is direct unless the message carries group_id.
     metadata: {
       channel: "weixin",
-      ...(full.message_id ? { channelMessageId: String(full.message_id) } : {}),
+      ...(full.message_id != null ? { channelMessageId: String(full.message_id) } : {}),
       authenticatedHuman: Boolean(full.from_user_id),
       chatType: full.group_id ? "group" : "direct",
       ...(full.from_user_id ? { senderId: full.from_user_id } : {}),
@@ -466,6 +469,8 @@ export async function handleWeixinMessageTurn(
       request,
       onReplySegment: sendReplySegment,
     });
+
+    if (deps.abortSignal?.aborted) return;
 
     // Text is sent first, then media items in sequence.
     const outboundMedia = normalizeMediaArray(turn.media);
@@ -675,9 +680,9 @@ export async function handleWeixinMessageTurn(
       });
     }
   } catch (err) {
-    if (isAbortError(err)) {
-      perfSpan.setOutcome("aborted", { reason: "user_cancel" });
-      deps.log(`handleWeixinMessageTurn: turn aborted: ${err.message}`);
+    if (deps.abortSignal?.aborted || isAbortError(err)) {
+      perfSpan.setOutcome("aborted", { reason: deps.abortSignal?.aborted ? "channel_abort" : "user_cancel" });
+      deps.log(`handleWeixinMessageTurn: turn aborted: ${String(err)}`);
       return;
     }
     perfSpan.setOutcome("error", { reason: "turn_error" });

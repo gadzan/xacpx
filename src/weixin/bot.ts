@@ -33,6 +33,7 @@ export type LoginOptions = {
 };
 
 export type StartOptions = {
+  routeConversation?: import("../channels/types.js").ChannelStartInput["routeConversation"];
   /** Account ID to use. Auto-selects the first registered account if omitted. */
   accountId?: string;
   /** Additional allowed root directories for outbound media paths. */
@@ -188,6 +189,7 @@ export async function start(agent: Agent, opts?: StartOptions): Promise<void> {
     token: account.token,
     accountId: account.accountId,
     agent,
+    ...(opts?.routeConversation ? { routeConversation: opts.routeConversation } : {}),
     abortSignal: opts?.abortSignal,
     log,
     ...(opts?.onInbound ? { onInbound: opts.onInbound } : {}),

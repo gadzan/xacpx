@@ -235,12 +235,14 @@ export class DiscordChannel implements MessageChannelRuntime {
   private markDelivered: OrchestrationDeliveryCallbacks["markTaskNoticeDelivered"] | null = null;
   private markFailed: OrchestrationDeliveryCallbacks["markTaskNoticeFailed"] | null = null;
   private agent: ChannelStartInput["agent"] | null = null;
+  private routeConversation: ChannelStartInput["routeConversation"];
   private quota: ChannelStartInput["quota"] | null = null;
   private logger: ChannelStartInput["logger"] | null = null;
   private sessions: ChannelStartInput["sessions"] | null = null;
   private activeTurns: ChannelStartInput["activeTurns"] | null = null;
   private abortSignal: AbortSignal | null = null;
   private readonly executor: ConversationExecutor = createConversationExecutor();
+  private readonly conversationExecutor: ConversationExecutor = createConversationExecutor();
   private readonly activeTasks: Map<string, ActiveTask[]> = new Map();
   private readonly pendingPermissions: Map<string, PendingDiscordPermission> = new Map();
   private readonly pendingElicitations: Map<string, PendingDiscordElicitation> = new Map();
@@ -362,6 +364,7 @@ export class DiscordChannel implements MessageChannelRuntime {
   async start(input: ChannelStartInput): Promise<void> {
     setChannelLocale(input.locale ?? "en");
     this.agent = input.agent;
+    this.routeConversation = input.routeConversation;
     this.quota = input.quota;
     this.logger = input.logger;
     this.sessions = input.sessions ?? null;
@@ -2119,8 +2122,11 @@ export class DiscordChannel implements MessageChannelRuntime {
     // Allow empty text if there are attachments (media-only message)
     if (!requestText.trim() && media.length === 0) return;
 
+    const conversationAgent = this.routeConversation?.({ accountId, conversationId: chatKey, text: requestText,
+      metadata: { channel: "discord", channelMessageId: messageId, senderId: msg.author.id,
+        authenticatedHuman: msg.author.bot === false, origin: msg.author.bot === false ? "human" : "peer" } });
     const isSlash = requestText.trim().startsWith("/");
-    const boundAlias = isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
+    const boundAlias = conversationAgent || isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
     const lane = resolveTurnLane(requestText);
 
     const { active, abortController } = this.registerActiveTask({
@@ -2136,7 +2142,7 @@ export class DiscordChannel implements MessageChannelRuntime {
     });
     if (boundAlias) this.activeTurns?.markActive(chatKey, boundAlias);
 
-    await this.executor.run(
+    await (conversationAgent ? this.conversationExecutor : this.executor).run(
       chatKey,
       lane,
       () =>
@@ -2155,6 +2161,7 @@ export class DiscordChannel implements MessageChannelRuntime {
           boundAlias,
           route,
           authenticatedHuman: msg.author.bot === false,
+          agent: conversationAgent,
         }),
       boundAlias,
     );
@@ -2419,6 +2426,7 @@ export class DiscordChannel implements MessageChannelRuntime {
   }
 
   private async runTurn(input: {
+    agent?: ChannelStartInput["agent"];
     runtime: AccountRuntime;
     accountId: string;
     channelId: string;
@@ -2524,7 +2532,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       };
 
       try {
-        const response = await this.agent.chat({
+        const response = await (input.agent ?? this.agent).chat({
           accountId,
           conversationId: chatKey,
           text: requestText,

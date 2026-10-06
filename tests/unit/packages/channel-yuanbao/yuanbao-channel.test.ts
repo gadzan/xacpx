@@ -146,6 +146,30 @@ test("YuanbaoChannel.start routes inbound text to agent and replies", async () =
   });
 });
 
+test("early Conversation rejection does not capture or mutate an ordinary Yuanbao Session", async () => {
+  let startInput: YuanbaoGatewayStartInput | undefined;
+  let normalCalls = 0; let backgroundCalls = 0;
+  const channel = new YuanbaoChannel({ ...defaultYuanbaoConfig, requireMention: false }, {
+    createGateway: () => ({ start: async (input) => { startInput = input; }, sendText: async () => {} }),
+  });
+  await channel.start({ agent: { chat: async () => { normalCalls++; return {}; } },
+    abortSignal: new AbortController().signal, quota: createNoopQuota(), logger: createNoopLogger(),
+    sessions: { peekCurrentSessionAlias: () => { throw new Error("must not bind Session A"); },
+      setBackgroundResult: async () => { backgroundCalls++; } } as never,
+    activeTurns: { markActive: () => { throw new Error("must not mark Session A active"); } } as never,
+    routeConversation: (input) => {
+      expect(input.metadata?.channelMessageId).toBe("bound-message");
+      return { chat: async () => { throw new Error("external_human_required"); } };
+    },
+  });
+  try {
+    await expect(startInput!.onMessage({ accountId: "default", chatType: "direct", raw: {
+      from_account: "human", msg_id: "bound-message", msg_body: [{ msg_type: "TIMTextElem", msg_content: { text: "work" } }],
+    } })).rejects.toThrow("external_human_required");
+    expect(normalCalls).toBe(0); expect(backgroundCalls).toBe(0);
+  } finally { channel.logout(); }
+});
+
 test("YuanbaoChannel keeps slash commands clean after bot mention", async () => {
   let startInput: YuanbaoGatewayStartInput | null = null;
   const gateway: YuanbaoGateway = {
