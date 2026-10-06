@@ -216,6 +216,12 @@ export class OrchestrationClient {
     return await this.request<AgentEndpointView[]>("agent.list", input);
   }
 
+  async groupSend(input: import("../conversations/group-handoff").GroupSendInvocation): Promise<{
+    runId: string; assignmentId: string; memberTurnId: string; messageId: string;
+  }> {
+    return await this.request("conversation.group_send", input);
+  }
+
   async agentSend(input: AgentSendRpcInput): Promise<AgentMessageReceipt> {
     return await this.request<AgentMessageReceipt>("agent.send", input);
   }

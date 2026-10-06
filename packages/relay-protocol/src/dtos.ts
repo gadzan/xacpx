@@ -372,6 +372,7 @@ export interface ConversationDetailDto extends ConversationSummaryDto {
 }
 
 export interface ConversationMessageDto {
+  handoff?: { senderMemberTurnId: string; to: string; assignmentId: string; memberTurnId: string; task: string; expectedOutput?: string };
   id: string;
   conversationId: string;
   topicId: string;
@@ -395,6 +396,8 @@ export type ConversationRunStateDto =
   | "indeterminate";
 
 export interface ConversationRunDto {
+  /** Run-local quarantine; does not disable the global Bot profile. */
+  quarantinedBotIds?: string[];
   id: string;
   conversationId: string;
   topicId: string;

@@ -30,6 +30,7 @@ import type { TurnInteractionContext } from "../../interactions/turn-interaction
 import { getGlobalElicitationBroker } from "../../interactions/elicitation-interaction-broker.js";
 import { parseDirectConversationChatKey } from "../../domain/ids";
 import { isHiddenProductSessionOwner } from "../../state/types";
+import { GroupExecutionOutcomeUnknownError, matchesGroupExecutionMetadata } from "../../conversations/group-execution-metadata";
 
 export interface SessionHandlerContext extends CommandRouterContext {
   lifecycle: SessionLifecycleOps;
@@ -1047,6 +1048,12 @@ async function promptWithSession(
     }
   }
   const effectiveReplyMode = resolveEffectiveReplyMode(context.config, chatKey, session.replyMode);
+  if (metadata?.groupExecutionToken) {
+    const owned = context.sessions.getLogicalSessionRecord(session.alias);
+    if (!matchesGroupExecutionMetadata(metadata, owned)) throw new Error("Group MCP capability requires a trusted owned Group execution");
+    session.mcpCoordinatorSession = metadata.groupExecutionToken;
+    session.mcpSourceHandle = metadata.groupExecutionToken;
+  }
   // Ensure the session carries the resolved value so downstream transports
   // see "verbose" instead of undefined and format tool-call progress correctly.
   if (!session.replyMode) session.replyMode = effectiveReplyMode;
@@ -1346,6 +1353,14 @@ export async function handlePromptWithSession(
   try {
     return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
   } catch (error) {
+    if (metadata?.groupExecutionToken && matchesGroupExecutionMetadata(metadata, context.sessions.getLogicalSessionRecord?.(session.alias))) {
+      const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      // Runtime reports failure, cancellation and permission refusal as
+      // terminal evidence. Other throws cannot prove absence of side effects.
+      if (code === "RUNTIME_TURN_FAILED" || code === "RUNTIME_TURN_CANCELLED"
+        || code === "RUNTIME_PERMISSION_DENIED" || code === "PERMISSION_DENIED") throw error;
+      throw new GroupExecutionOutcomeUnknownError(error);
+    }
     if (error instanceof AcpxQueueOverflowError) {
       const confirmed = error.cleanup?.ownerTerminationSucceeded === true;
       await context.logger.warn(

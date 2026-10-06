@@ -231,6 +231,11 @@ function mergeRun(current: ConversationRunDto | null, incoming: ConversationRunD
   if (merged.consumedMemberTurns === undefined) merged.consumedMemberTurns = current.consumedMemberTurns;
   if (merged.failedBotIds === undefined) merged.failedBotIds = current.failedBotIds;
   if (merged.unavailableBotIds === undefined) merged.unavailableBotIds = current.unavailableBotIds;
+  // Run quarantine only grows. A delayed pre-failure snapshot cannot restore
+  // an unavailable member; the global Bot catalog remains independent.
+  if (current.quarantinedBotIds || incoming.quarantinedBotIds) {
+    merged.quarantinedBotIds = [...new Set([...(current.quarantinedBotIds ?? []), ...(incoming.quarantinedBotIds ?? [])])];
+  }
   if (merged.startedAt === undefined) merged.startedAt = current.startedAt;
   if (merged.finishedAt === undefined) merged.finishedAt = current.finishedAt;
   if (merged.completionReason === undefined) merged.completionReason = current.completionReason;
@@ -284,9 +289,29 @@ function shouldUpdateMemberTurnState(
   return MEMBER_TURN_STATE_PRECEDENCE[incoming] >= MEMBER_TURN_STATE_PRECEDENCE[current];
 }
 
+/** Recovery reuses a MemberTurn ID. Attempt order precedes state order; an
+ * older connector's omitted attempt is a thin snapshot of the known attempt. */
+function memberAttemptOrder(current: MemberTurnSummaryDto, incoming: MemberTurnSummaryDto): number {
+  return (incoming.attempt ?? current.attempt ?? 1) - (current.attempt ?? 1);
+}
+
 function mergeMemberTurn(current: MemberTurnSummaryDto | null, incoming: MemberTurnSummaryDto): MemberTurnSummaryDto {
   if (!current || current.id !== incoming.id) {
     return incoming;
+  }
+  const attemptOrder = memberAttemptOrder(current, incoming);
+  if (attemptOrder < 0) return current;
+  if (attemptOrder > 0) {
+    // A new attempt may return to queued/dispatched. Execution evidence belongs
+    // to that attempt only; preserve the durable assignment, never an old
+    // source identity, start/finish timestamp or terminal failure evidence.
+    const merged: MemberTurnSummaryDto = { ...incoming };
+    if (merged.memberIndex === undefined) merged.memberIndex = current.memberIndex;
+    if (merged.assignmentId === undefined) merged.assignmentId = current.assignmentId;
+    if (merged.task === undefined) merged.task = current.task;
+    if (merged.expectedOutput === undefined) merged.expectedOutput = current.expectedOutput;
+    if (merged.dependsOn === undefined) merged.dependsOn = current.dependsOn;
+    return merged;
   }
   if (!shouldUpdateMemberTurnState(current.state, incoming.state)) {
     // The stored row is newer than the incoming one (typically a terminal row
@@ -311,6 +336,7 @@ function mergeMemberTurn(current: MemberTurnSummaryDto | null, incoming: MemberT
     return merged;
   }
   const merged: MemberTurnSummaryDto = { ...incoming };
+  if (merged.attempt === undefined) merged.attempt = current.attempt;
   if (merged.memberIndex === undefined) merged.memberIndex = current.memberIndex;
   if (merged.startedAt === undefined) merged.startedAt = current.startedAt;
   if (merged.finishedAt === undefined) merged.finishedAt = current.finishedAt;
@@ -475,6 +501,24 @@ export const useGroupsStore = defineStore("groups", () => {
     }
     return out;
   });
+
+  /** A MemberTurn survives recovery, but its physical execution trace does not.
+   * Retire all trace projections together whenever durable attempt identity
+   * advances, including discovery/reconnect paths that see no start event. */
+  function applyMemberTurns(incoming: MemberTurnSummaryDto[]): void {
+    for (const turn of incoming) {
+      const current = memberTurnsById.value[turn.id];
+      if (!current || memberAttemptOrder(current, turn) <= 0) continue;
+      const keys = [turn.id, ...(current.promptRequestId ? [current.promptRequestId] : [])];
+      for (const key of keys) {
+        delete liveTurnsByMember.value[key];
+        delete runParts.value[key];
+        delete runPartsComplete.value[key];
+        delete runPartsTruncated.value[key];
+      }
+    }
+    memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, incoming);
+  }
 
   /** A prompt whose accept outcome is uncertain (request sent, response lost or
    *  errored). The tuple is immutable and is what any retry replays verbatim:
@@ -1293,7 +1337,7 @@ export const useGroupsStore = defineStore("groups", () => {
         if (detail?.run) {
           activeRun.value = mergeRun(activeRun.value, detail.run);
           if (detail.run.memberTurns?.length) {
-            memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, detail.run.memberTurns);
+            applyMemberTurns(detail.run.memberTurns);
           }
           resolveUncertainPromptAgainstRun(detail.run);
         }
@@ -1716,7 +1760,7 @@ export const useGroupsStore = defineStore("groups", () => {
       const incomingRun = res.run;
       activeRun.value = mergeRun(activeRun.value, incomingRun);
       if (incomingRun.memberTurns?.length) {
-        memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, incomingRun.memberTurns);
+        applyMemberTurns(incomingRun.memberTurns);
       }
       resolveUncertainPromptAgainstRun(incomingRun);
     } catch {
@@ -1859,7 +1903,7 @@ export const useGroupsStore = defineStore("groups", () => {
       } else if (acceptOverwritesOwner) {
         activeRun.value = mergeRun(activeRun.value, res.run);
         const turns = res.memberTurns ?? (res.memberTurn ? [res.memberTurn] : []);
-        memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, turns);
+        applyMemberTurns(turns);
       }
       const adoptedRun = activeRun.value;
       if (!adoptedRun) {
@@ -2064,7 +2108,7 @@ export const useGroupsStore = defineStore("groups", () => {
         if (detail?.run && detail.run.id === candidate.id) {
           activeRun.value = mergeRun(activeRun.value, detail.run);
           if (detail.run.memberTurns?.length) {
-            memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, detail.run.memberTurns);
+            applyMemberTurns(detail.run.memberTurns);
           }
           resolveUncertainPromptAgainstRun(detail.run);
         }
@@ -2131,7 +2175,7 @@ export const useGroupsStore = defineStore("groups", () => {
       const retiringActiveRun = !isTerminalRunState(activeRun.value.state);
       activeRun.value = mergeRun(activeRun.value, res.run);
       if (res.run.memberTurns?.length) {
-        memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, res.run.memberTurns);
+        applyMemberTurns(res.run.memberTurns);
       }
       if (isTerminalRunState(activeRun.value.state)) {
         liveTurnsByMember.value = {};
@@ -2154,7 +2198,7 @@ export const useGroupsStore = defineStore("groups", () => {
             activeRun.value = mergeRun(activeRun.value, run);
                 resolveUncertainPromptAgainstRun(run);
             if (run.memberTurns?.length) {
-              memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, run.memberTurns);
+              applyMemberTurns(run.memberTurns);
             }
             if (isTerminalRunState(activeRun.value.state)) {
               liveTurnsByMember.value = {};
@@ -2248,7 +2292,7 @@ export const useGroupsStore = defineStore("groups", () => {
         const incomingRun = res.run;
         activeRun.value = mergeRun(activeRun.value, incomingRun);
         if (incomingRun.memberTurns?.length) {
-          memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, incomingRun.memberTurns);
+          applyMemberTurns(incomingRun.memberTurns);
         }
         resolveUncertainPromptAgainstRun(incomingRun);
         if (!wasTerminal && isTerminalRunState(activeRun.value.state)) {
@@ -2369,7 +2413,7 @@ export const useGroupsStore = defineStore("groups", () => {
                 activeRun.value = mergeRun(activeRun.value, run);
                 resolveUncertainPromptAgainstRun(run);
                 if (run.memberTurns?.length) {
-                  memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, run.memberTurns);
+                  applyMemberTurns(run.memberTurns);
                 }
                 if (isTerminalRunState(activeRun.value.state)) {
                   liveTurnsByMember.value = {};
@@ -2554,6 +2598,8 @@ export const useGroupsStore = defineStore("groups", () => {
     }
     if (e.type === "member-turn-started") {
       const { run, memberTurn } = e;
+      const priorMember = memberTurnsById.value[memberTurn.id];
+      if (priorMember && memberAttemptOrder(priorMember, memberTurn) < 0) return;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
         if (
           (activeRun.value && activeRun.value.id === run.id) ||
@@ -2561,7 +2607,7 @@ export const useGroupsStore = defineStore("groups", () => {
         ) {
           activeRun.value = mergeRun(activeRun.value, run);
                 resolveUncertainPromptAgainstRun(run);
-          memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, [memberTurn]);
+          applyMemberTurns([memberTurn]);
         } else if (!isTerminalRunState(run.state)) {
           const isOwnDraft =
             run.requestId !== "" &&
@@ -2581,7 +2627,7 @@ export const useGroupsStore = defineStore("groups", () => {
           }
           if (isOwnDraft) {
             activeRun.value = mergeRun(null, run);
-            memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, [memberTurn]);
+            applyMemberTurns([memberTurn]);
             promptError.value = null;
             promptErrorDetail.value = null;
             uncertainPrompt.value = null;
@@ -2607,6 +2653,8 @@ export const useGroupsStore = defineStore("groups", () => {
 
     if (e.type === "member-turn-finished") {
       const { run, memberTurn } = e;
+      const priorMember = memberTurnsById.value[memberTurn.id];
+      if (priorMember && memberAttemptOrder(priorMember, memberTurn) < 0) return;
       if (run.conversationId === activeConversationId.value && run.topicId === activeTopicId.value) {
         if (activeRun.value && activeRun.value.id !== run.id) {
           return;
@@ -2614,7 +2662,7 @@ export const useGroupsStore = defineStore("groups", () => {
         const retiringActiveRun = !!activeRun.value && !isTerminalRunState(activeRun.value.state);
         activeRun.value = mergeRun(activeRun.value, run);
                 resolveUncertainPromptAgainstRun(run);
-        memberTurnsById.value = mergeMemberTurns(memberTurnsById.value, [memberTurn]);
+        applyMemberTurns([memberTurn]);
         const next = { ...liveTurnsByMember.value };
         delete next[memberTurn.id];
         liveTurnsByMember.value = next;

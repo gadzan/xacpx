@@ -50,7 +50,7 @@ import {
   type ConversationProductEventSink,
 } from "./conversation-product-events";
 import type { AcceptRequestResult, ConversationStore, ListMessagesQuery } from "./conversation-store";
-import { isRunCancelling } from "./conversation-store";
+import { isRunCancelling, MAX_AUTOMATIC_MEMBER_TURNS } from "./conversation-store";
 import type {
   ConversationMessage,
   ConversationRecord,
@@ -441,6 +441,9 @@ export class ConversationRunService {
           content: input.text,
           profileSnapshot: firstSnapshot,
           primaryMember: { effect: "unknown" },
+          // Headroom is a guardrail, never automatic continuation. Explicit
+          // Runs still settle their accepted members when no handoff occurs.
+          maxMemberTurns: Math.max(selected.length, MAX_AUTOMATIC_MEMBER_TURNS),
           ...(restIds.length > 0
             ? {
               members: restIds.map((botId, index) => ({

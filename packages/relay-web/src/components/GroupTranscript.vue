@@ -83,15 +83,16 @@ function turnStateLabel(state: MemberTurnSummaryDto["state"]): string {
 function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
   if (!m.runId) return undefined;
   // A durable bot message belongs to exactly one MemberTurn: join through
-  // promptRequestId (sourceTurn.turnId) first, then senderBotId within the
-  // Run. Never read the newest member's trace for every bot row, and never
-  // fall back to a different Run's parts.
-  const runTurns = groupsStore.memberTurns.filter((turn) => turn.runId === m.runId);
-  const byPrompt = m.promptRequestId
+  // promptRequestId (sourceTurn.turnId) is authoritative when present. A thin
+  // local detail may not know its assignment yet; keep canonical message text
+  // instead of substituting another assignment of the same Bot. Older messages
+  // without source identity can use only an unambiguous member in this scope.
+  const runTurns = groupsStore.memberTurns.filter((turn) => turn.runId === m.runId
+    && turn.conversationId === m.conversationId && turn.topicId === m.topicId);
+  const candidates = m.senderBotId ? runTurns.filter((turn) => turn.botId === m.senderBotId) : [];
+  const owner = m.promptRequestId !== undefined
     ? runTurns.find((turn) => turn.promptRequestId === m.promptRequestId)
-    : undefined;
-  const owner = byPrompt
-    ?? (m.senderBotId ? runTurns.find((turn) => turn.botId === m.senderBotId) : undefined);
+    : candidates.length === 1 ? candidates[0] : undefined;
   const parts = owner ? partsForMember(owner) : undefined;
   return parts?.length ? parts : undefined;
 }

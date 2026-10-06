@@ -116,6 +116,8 @@ export interface ConversationMessage {
   senderBotId?: string;
   recipients?: string[];
   content: string;
+  /** Public structured assignment; never a private message or a model identity. */
+  handoff?: PublicHandoffEnvelope;
   replyTo?: string;
   runId?: string;
   createdAt: string;
@@ -123,6 +125,15 @@ export interface ConversationMessage {
     sessionAlias: string;
     turnId?: string;
   };
+}
+
+export interface PublicHandoffEnvelope {
+  senderMemberTurnId: string;
+  to: string;
+  assignmentId: string;
+  memberTurnId: string;
+  task: string;
+  expectedOutput?: string;
 }
 
 export interface ConversationRun {
@@ -153,6 +164,8 @@ export interface ConversationRun {
   failedBotIds: string[];
   /** Member Bot ids unavailable for the current batch (aggregate progress). */
   unavailableBotIds: string[];
+  /** Durable Run-local quarantine, independent of current-batch aggregates. */
+  quarantinedBotIds?: string[];
   profileRevision: number;
   profileSnapshot: BotProfileSnapshot;
   createdAt: string;

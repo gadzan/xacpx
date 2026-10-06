@@ -944,6 +944,14 @@ Clicking creates a new explicit human request referencing the blocked assignment
 
 # 12. PR 9 — Public handoff and recovery
 
+**Status:** implemented and self-reviewed on `codex/group-public-handoff-recovery`; awaiting PR review. Built from merged PR8 (`6e7aa2ba4c27f6c4c375d5bc4bd4124decc20647`). Local focused validation passed; Windows broad-suite baseline failures are reproduced and documented. PR9 is not authorized to merge without review.
+
+Full-review follow-up repairs strict durable quarantine decoding, pre-gate target membership/existence validation, budget rejection precedence during late-proof reconciliation, and Relay Web MemberTurn attempt ordering. The existing same-OS-user IPC trust boundary and the absence of presenting-process authentication are explicit in the runtime docs; mutually untrusted terminal-capable members require an additional isolation boundary. See the PR9 implementation boundaries review for regression coverage and residual limits.
+
+A second independent full review repairs retired-source late reconciliation, materialize/start quarantine revalidation, existing-Run handoff under a full Topic queue, retry trace cache retirement, and exact source-to-transcript trace joins. The 64-Run admission limit and per-Run work budget remain bounded; older execution evidence cannot prove a new attempt. PR9 remains awaiting review and unmerged.
+
+Runtime contract/schema: [Conversation runtime](../../conversation-runtime.md#public-structured-handoff-pr9). Execution chain/self-review: [PR9 boundaries](../reviews/2026-10-05-pr9-implementation-boundaries.md).
+
 ## Objective
 
 Continue collaboration across members without name parsing and recover safely from member failure/interruption.

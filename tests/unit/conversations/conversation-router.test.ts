@@ -373,14 +373,18 @@ test("the real Control runner cannot admit work while its untracked cancellation
   const drain = harness.dispatcher.kick();
   await started.promise;
   const cancellation = harness.service.cancelRun(accepted.run.id);
-  // The production runner has no tracked execution yet. Its async unknown
-  // outcome competes with the dispatcher's newly released continuation.
+  // The production runner has no tracked execution yet. The dispatcher can
+  // prove nonadmission before its asynchronous unknown cancel result settles.
   resumeStart.resolve();
   try {
     await bounded(cancellation); await bounded(drain); await bounded(harness.service.awaitRouting());
     expect(admissions).toBe(0);
     expect(router.inputs).toHaveLength(1);
-    expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "indeterminate", routingState: "done" });
+    expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "cancelled", completionReason: "human-cancelled",
+      routingState: "done", consumedMemberTurns: 1 });
+    const member = harness.store.listMemberTurns(accepted.run.id)[0]!;
+    expect(member).toMatchObject({ state: "cancelled", sourceTurnId: expect.any(String), startedAt: NOW });
+    expect(harness.store.getDispatchForMemberTurn(member.id)?.state).toBe("completed");
   } finally {
     provider.resolve({ ok: true, text: "cleanup proof" });
     await cancellation; await drain; await harness.service.awaitRouting(); harness.store.close();
@@ -408,11 +412,16 @@ test("durable cancel intent prevents first provider admission after the executio
   try {
     await bounded(drain);
     expect(harness.runner.runs).toEqual([]);
-    expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "running", completionReason: "cancelled" });
+    expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "cancelled", completionReason: "human-cancelled",
+      routingState: "done", consumedMemberTurns: 1 });
+    const member = harness.store.listMemberTurns(accepted.run.id)[0]!;
+    expect(member).toMatchObject({ state: "cancelled", sourceTurnId: expect.any(String), startedAt: NOW });
+    expect(harness.store.getDispatchForMemberTurn(member.id)?.state).toBe("completed");
   } finally {
     finishCancel.resolve({ outcome: "cancelled" });
     await cancellation; await harness.service.awaitRouting();
-    expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "cancelled", routingState: "done" });
+    expect(harness.store.getRun(accepted.run.id)).toMatchObject({ state: "cancelled", completionReason: "human-cancelled",
+      routingState: "done", consumedMemberTurns: 1 });
     harness.store.close();
   }
 });
@@ -2471,7 +2480,7 @@ test("Router uses the nearest 200 public rows and retains the latest text on a l
 test("a new automatic batch resets current aggregates while retaining failed assignment history", async () => {
   const router = new RecordingRouter([
     { type: "dispatch", mode: "single", assignments: [{ id: "failed-review", botId: BOT_ID, task: "review", triggerMessageIds: [] }] },
-    { type: "dispatch", mode: "single", assignments: [{ id: "retry-review", botId: BOT_ID, task: "retry review", triggerMessageIds: [] }] },
+    { type: "dispatch", mode: "single", assignments: [{ id: "retry-review", botId: TESTER_ID, task: "retry review", triggerMessageIds: [] }] },
     { type: "complete", reason: "retry succeeded" },
   ]);
   const harness = await createHarness({ autoKick: false, router });

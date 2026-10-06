@@ -552,6 +552,210 @@ describe("useGroupsStore", () => {
     expect(kept?.promptRequestId).toBe("sturn_a");
   });
 
+  describe("PR9 recovery attempt reconciliation", () => {
+    function setup() {
+      const store = useGroupsStore();
+      store.instanceId = "inst_1";
+      store.selectedGroupId = store.activeConversationId = "conversation_g";
+      store.activeTopicId = "topic_1";
+      const run: ConversationRunDto = { id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" };
+      const member: MemberTurnSummaryDto = { id: "turn_a", runId: run.id, conversationId: run.conversationId,
+        topicId: run.topicId, botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "handoff", state: "running",
+        createdAt: "now", assignmentId: "assignment_a", task: "Review patch", expectedOutput: "Findings", dependsOn: [],
+        promptRequestId: "old_source", startedAt: "old_start" };
+      store.activeRun = run;
+      store.memberTurnsById = { [member.id]: member };
+      const load = async (incoming: MemberTurnSummaryDto) => {
+        mockRpc.mockImplementation(async (_instance: string, type: string) => {
+          if (type === "control.runs.list") return { runs: [run], activeRunId: run.id,
+            conversationId: run.conversationId, topicId: run.topicId };
+          if (type === "control.runs.get") return { run: { ...run, memberTurns: [incoming] } };
+          throw new Error(`unexpected ${type}`);
+        });
+        await store.retryDiscovery();
+        await flushPromises();
+      };
+      return { store, run, member, load };
+    }
+
+    for (const state of ["queued", "dispatched"] as const) {
+      it(`accepts a higher attempt ${state} detail without inheriting retired execution identity`, async () => {
+        const { store, member, load } = setup();
+        store.memberTurnsById[member.id] = { ...member, finishedAt: "old_finish",
+          failureReason: "old failure", blockedReason: "human-authority-unknown" };
+        const incoming: MemberTurnSummaryDto = { id: member.id, runId: member.runId, conversationId: member.conversationId,
+          topicId: member.topicId, botId: member.botId, batch: member.batch, attempt: 2, origin: "recovery", state, createdAt: "now" };
+        await load(incoming);
+        expect(store.memberTurnsById[member.id]).toMatchObject({ attempt: 2, origin: "recovery", state,
+          assignmentId: member.assignmentId, task: member.task, expectedOutput: member.expectedOutput, dependsOn: [] });
+        for (const field of ["promptRequestId", "startedAt", "finishedAt", "failureReason", "blockedReason"] as const) {
+          expect(store.memberTurnsById[member.id]?.[field]).toBeUndefined();
+        }
+      });
+    }
+
+    it("retires execution traces when a higher attempt is discovered through detail", async () => {
+      const { store, run, member, load } = setup();
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a",
+        conversation: { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
+          memberTurnId: member.id, botId: member.botId }, chunk: "Retired attempt output",
+      } } as never);
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", ok: false,
+        conversation: { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
+          memberTurnId: member.id, botId: member.botId },
+      } } as never);
+      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "Retired attempt output" }]);
+
+      const incoming = { ...member, attempt: 2, origin: "recovery" as const, state: "queued" as const };
+      delete incoming.promptRequestId;
+      delete incoming.startedAt;
+      await load(incoming);
+      expect(store.liveTurnForMember(member.id)).toBeNull();
+      expect(store.runParts[member.id]).toBeUndefined();
+      expect(store.completeRunParts[member.id]).toBeUndefined();
+    });
+
+    it("a new attempt start cannot expose a completed trace from the retired execution", () => {
+      const { store, run, member } = setup();
+      const conversation = { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
+        memberTurnId: member.id, botId: member.botId };
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation,
+        chunk: "Retired attempt output",
+      } } as never);
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, ok: false,
+      } } as never);
+
+      const incoming = { ...member, attempt: 2, origin: "recovery" as const,
+        promptRequestId: "new_source", startedAt: "2026-10-05T00:00:00.000Z" };
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "member-turn-started", run, memberTurn: incoming,
+      } } as never);
+      expect(store.completeRunParts[member.id]).toBeUndefined();
+      expect(store.liveTurnForMember(member.id)?.parts).toEqual([]);
+
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation,
+        chunk: "New attempt output",
+      } } as never);
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, ok: true,
+      } } as never);
+      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "New attempt output" }]);
+    });
+
+    it("keeps a completed trace through same-attempt detail and accepts late same-attempt output", async () => {
+      const { store, run, member, load } = setup();
+      const conversation = { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
+        memberTurnId: member.id, botId: member.botId };
+      const output = (chunk: string) => store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, chunk,
+      } } as never);
+      const finish = () => store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, ok: true,
+      } } as never);
+      output("Same attempt output");
+      finish();
+      await load({ ...member });
+      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "Same attempt output" }]);
+      output(" plus final evidence");
+      finish();
+      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "Same attempt output plus final evidence" }]);
+    });
+
+    it("new attempt completion does not inherit a retired truncated snapshot flag", async () => {
+      const { store, run, member } = setup();
+      mockRpc.mockImplementation(async (_instance: string, type: string) => {
+        if (type === "control.runs.get") return { run: { ...run, memberTurns: [member] } };
+        throw new Error(`unexpected ${type}`);
+      });
+      const conversation = { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
+        memberTurnId: member.id, botId: member.botId };
+      store.applyEvent({ kind: "state-snapshot", instanceId: "inst_1", turns: [{
+        instanceId: "inst_1", sessionAlias: "owned_a", conversation, truncated: true,
+        parts: [{ type: "text", text: "Retired truncated output" }], status: "working", startedAt: 1,
+      }] } as never);
+      await flushPromises();
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "member-turn-started", run, memberTurn: { ...member, attempt: 2, origin: "recovery",
+          promptRequestId: "new_source", startedAt: "2026-10-05T00:00:00.000Z" },
+      } } as never);
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation,
+        chunk: "New complete output",
+      } } as never);
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, ok: true,
+      } } as never);
+      expect(store.completeRunParts[member.id]).toEqual([{ type: "text", text: "New complete output" }]);
+    });
+
+    for (const state of ["queued", "dispatched", "running", "completed", "failed", "cancelled", "indeterminate"] as const) {
+      it(`rejects older attempt ${state} events without changing the current Run or live trace`, () => {
+        const { store, run, member } = setup();
+        const current: MemberTurnSummaryDto = { ...member, attempt: 2, origin: "recovery", promptRequestId: "new_source", startedAt: "new_start" };
+        store.memberTurnsById = { [member.id]: current };
+        const live = { parts: [{ type: "text" as const, text: "New attempt output" }],
+          status: "streaming" as const, startedAt: 123, revision: 1 };
+        store.liveTurnsByMember = { [member.id]: live };
+        const stale = { ...member, state, task: "stale task", failureReason: "stale failure", finishedAt: "stale_finish" };
+        for (const type of ["member-turn-started", "member-turn-finished"] as const) {
+          store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+            type, run: { ...run, state: "failed", failedBotIds: [member.botId] }, memberTurn: stale,
+          } } as never);
+          expect(store.memberTurnsById[member.id]).toEqual(current);
+          expect(store.activeRun).toEqual(run);
+          expect(store.liveTurnsByMember[member.id]).toEqual(live);
+        }
+      });
+    }
+
+    it("rejects an older same-state detail after the new attempt has started", async () => {
+      const { store, member, load } = setup();
+      const current = { ...member, attempt: 2, origin: "recovery" as const, promptRequestId: "new_source", startedAt: "new_start" };
+      store.memberTurnsById = { [member.id]: current };
+      await load({ ...member, task: "stale task" });
+      expect(store.memberTurnsById[member.id]).toEqual(current);
+    });
+
+    it("keeps state and evidence monotonic within the same recovery attempt", async () => {
+      const { store, member, load } = setup();
+      const current = { ...member, attempt: 2, origin: "recovery" as const, state: "failed" as const,
+        promptRequestId: "new_source", startedAt: "new_start", failureReason: "new failure", finishedAt: "new_finish" };
+      store.memberTurnsById = { [member.id]: current };
+      await load({ ...member, attempt: 2, origin: "recovery", state: "queued" });
+      expect(store.memberTurnsById[member.id]).toEqual(current);
+    });
+
+    it("keeps legacy thin details compatible without erasing a known attempt", async () => {
+      const { store, member, load } = setup();
+      const current = { ...member, attempt: 2, origin: "recovery" as const, promptRequestId: "new_source", startedAt: "new_start" };
+      store.memberTurnsById = { [member.id]: current };
+      const thin = { ...current } as Partial<MemberTurnSummaryDto>;
+      delete thin.attempt;
+      delete thin.promptRequestId;
+      delete thin.startedAt;
+      await load(thin as MemberTurnSummaryDto);
+      expect(store.memberTurnsById[member.id]).toEqual(current);
+    });
+
+    it("recognizes a new attempt when the cached legacy row omitted attempt", async () => {
+      const { store, member, load } = setup();
+      const legacy = { ...member } as Partial<MemberTurnSummaryDto>;
+      delete legacy.attempt;
+      store.memberTurnsById = { [member.id]: legacy as MemberTurnSummaryDto };
+      const incoming = { ...member, attempt: 2, origin: "recovery" as const, state: "queued" as const };
+      delete incoming.promptRequestId;
+      delete incoming.startedAt;
+      await load(incoming);
+      expect(store.memberTurnsById[member.id]).toEqual(incoming);
+    });
+  });
+
   it("preserves assignment and failure evidence from a same-state thin member snapshot", () => {
     const store = useGroupsStore();
     store.instanceId = "inst_1";
@@ -982,6 +1186,78 @@ describe("useGroupsStore", () => {
     const liveB = store.liveTurnsByMember["turn_b"];
     expect(liveA?.parts).toEqual([{ type: "text", text: "alpha work" }]);
     expect(liveB?.parts).toEqual([{ type: "text", text: "beta work" }]);
+  });
+
+  describe("PR9 repeated Bot assignment trace joins", () => {
+    async function setup(includeSecondMember: boolean, promptRequestId?: string) {
+      const store = useGroupsStore();
+      store.instanceId = "inst_1";
+      store.selectedGroupId = store.activeConversationId = "conversation_g";
+      store.activeTopicId = "topic_1";
+      const run: ConversationRunDto = { id: "run_repeat", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_repeat", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" };
+      store.activeRun = run;
+      const seedTrace = (id: string, source: string, text: string) => {
+        const member: MemberTurnSummaryDto = { id, runId: run.id, conversationId: run.conversationId,
+          topicId: run.topicId, botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "handoff", state: "running",
+          promptRequestId: source, createdAt: "now", startedAt: "2026-10-05T00:00:00.000Z" };
+        const conversation = { conversationId: run.conversationId, topicId: run.topicId, runId: run.id,
+          memberTurnId: id, botId: member.botId };
+        store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+          type: "member-turn-started", run, memberTurn: member,
+        } } as never);
+        store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+          type: "turn-output", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, chunk: text,
+        } } as never);
+        store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+          type: "turn-finished", chatKey: "bot:conversation_g:topic_1", sessionAlias: "owned_a", conversation, ok: true,
+        } } as never);
+        store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+          type: "member-turn-finished", run, memberTurn: { ...member, state: "completed" },
+        } } as never);
+      };
+      seedTrace("first_a", "source_first", "First assignment trace");
+      if (includeSecondMember) seedTrace("second_a", "source_second", "Second assignment trace");
+      mockRpc.mockImplementation(async (_instance: string, type: string) => {
+        if (type === "control.conversation.history") return historyWith([{ id: "msg_second", conversationId: run.conversationId,
+          topicId: run.topicId, runId: run.id, seq: 1, role: "bot", senderBotId: "bot_a", content: "Canonical second answer",
+          ...(promptRequestId ? { promptRequestId } : {}), createdAt: "2026-10-05T00:00:00.000Z" }]);
+        if (type === "control.runs.list") return { runs: [run], activeRunId: run.id };
+        if (type === "control.runs.get") return { run: { ...run, memberTurns: Object.values(store.memberTurnsById) } };
+        throw new Error(`unexpected ${type}`);
+      });
+      await store.loadHistory("inst_1", run.conversationId, run.topicId);
+      const wrapper = mount(GroupTranscript, { props: { bots: BOTS }, global: { plugins: [i18n] } });
+      return { wrapper, row: wrapper.find('[data-message-id="msg_second"]') };
+    }
+
+    it("uses canonical history text when an exact source has no matching local MemberTurn", async () => {
+      const { wrapper, row } = await setup(false, "source_second");
+      expect(row.text()).toContain("Canonical second answer");
+      expect(row.text()).not.toContain("First assignment trace");
+      wrapper.unmount();
+    });
+
+    it("does not guess a legacy source among multiple assignments of the same Bot", async () => {
+      const { wrapper, row } = await setup(true);
+      expect(row.text()).toContain("Canonical second answer");
+      expect(row.text()).not.toContain("First assignment trace");
+      expect(row.text()).not.toContain("Second assignment trace");
+      wrapper.unmount();
+    });
+
+    it("joins a repeated Bot's exact source to its own completed trace", async () => {
+      const { wrapper, row } = await setup(true, "source_second");
+      expect(row.text()).toContain("Second assignment trace");
+      expect(row.text()).not.toContain("First assignment trace");
+      wrapper.unmount();
+    });
+
+    it("keeps unambiguous legacy history trace joins compatible", async () => {
+      const { wrapper, row } = await setup(false);
+      expect(row.text()).toContain("First assignment trace");
+      wrapper.unmount();
+    });
   });
 
   it("retries an uncertain prompt with the frozen target, not the current one", async () => {
@@ -2156,6 +2432,54 @@ describe("useGroupsStore", () => {
       event: { type: "conversation-run-changed", run: thinner },
     } as never);
     expect(store.activeRun?.routingState).toBe("dispatching");
+  });
+
+  it("PR9: Run quarantine survives thin and stale reconnects without disabling the global Bot", () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const run: ConversationRunDto = { id: "run_1", conversationId: "conversation_g", topicId: "topic_1",
+      requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "running",
+      routingState: "dispatching", profileRevision: 1, createdAt: "now", quarantinedBotIds: ["bot_a"] };
+    store.activeRun = run;
+    for (const quarantine of [undefined, [], ["bot_b"]]) {
+      store.applyEvent({ kind: "control-event", instanceId: "inst_1", event: {
+        type: "conversation-run-changed", run: { ...run, quarantinedBotIds: quarantine },
+      } } as never);
+      expect(store.activeRun?.quarantinedBotIds).toContain("bot_a");
+    }
+    expect(store.activeRun?.quarantinedBotIds).toEqual(["bot_a", "bot_b"]);
+    expect(BOTS.every((bot) => bot.enabled)).toBe(true);
+  });
+
+  it("PR9: public handoff is visible once after replay and history reconnect", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = store.activeConversationId = "conversation_g";
+    store.activeTopicId = "topic_1";
+    const message: ConversationHistoryResponseDto["messages"][number] = {
+      id: "handoff_1", conversationId: "conversation_g", topicId: "topic_1", seq: 2,
+      role: "system", senderBotId: "bot_a", runId: "run_1", createdAt: "now",
+      content: "Public handoff: bot_a → bot_b\nRun: run_1\nTask: Review patch\nExpected output: Findings",
+      handoff: { senderMemberTurnId: "turn_a", to: "bot_b", assignmentId: "assignment_b",
+        memberTurnId: "turn_b", task: "Review patch", expectedOutput: "Findings" },
+    };
+    const event = { kind: "control-event", instanceId: "inst_1", event: { type: "conversation-message", message } } as never;
+    store.applyEvent(event); store.applyEvent(event);
+    mockRpc.mockImplementation(async (_instance: string, type: string) => {
+      if (type === "control.conversation.history") return historyWith([message]);
+      if (type === "control.runs.list") return { runs: [], conversationId: "conversation_g", topicId: "topic_1" };
+      throw new Error(`unexpected ${type}`);
+    });
+    await store.loadHistory();
+    store.applyEvent(event);
+    expect(store.messages).toHaveLength(1);
+    expect(store.messages[0]?.handoff).toEqual(message.handoff);
+    const wrapper = mount(GroupTranscript, { props: { bots: BOTS }, global: { plugins: [i18n] } });
+    expect(wrapper.text()).toContain("Public handoff: bot_a → bot_b");
+    expect(wrapper.text()).toContain("Review patch"); expect(wrapper.text()).toContain("Findings");
+    wrapper.unmount();
   });
 
   it("preserves the waiting question for a thin reconnect and clears it on settlement", () => {

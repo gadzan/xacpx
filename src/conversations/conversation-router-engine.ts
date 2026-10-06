@@ -354,7 +354,7 @@ export class ConversationRouterEngine {
         workspace: bot.workspace,
         ...(bot.model ? { model: bot.model } : {}),
         ...(bot.effort ? { effort: bot.effort } : {}),
-        enabled: bot.enabled === true,
+        enabled: bot.enabled === true && !run.quarantinedBotIds?.includes(botId),
       };
       if (metadata.enabled) candidates.push(metadata);
       else if (disabled.length < MAX_ROUTER_MEMBER_METADATA) disabled.push(metadata);
@@ -460,6 +460,9 @@ export class ConversationRouterEngine {
       publicResultOf.set(turn.assignmentId, row.id);
     }
     const assignments = decision.assignments.map((assignment) => {
+      if (this.options.store.getRun(run.id)?.quarantinedBotIds?.includes(assignment.botId)) {
+        throw new ConversationError("router_unavailable_member", "Bot is quarantined for this Run");
+      }
       const group = this.options.readGroup(run.conversationId);
       // A removed Bot may already have been deleted; production getBot throws
       // in that case. Reject membership before reading its live profile.

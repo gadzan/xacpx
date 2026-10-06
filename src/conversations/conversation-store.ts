@@ -112,6 +112,22 @@ export function requestSnapshotMatches(
     && message.runId === run.id;
 }
 
+/** Public trigger boundary shared by Router/handoff commit and execution.
+ * Later Topic messages are legal only by exact current-Run identity; a
+ * queued sibling Run's human request must never become this Run's context. */
+export function publicMessageMatchesRunScope(
+  message: ConversationMessage | undefined,
+  run: ConversationRun,
+  request: ConversationMessage | undefined,
+): message is ConversationMessage {
+  return requestSnapshotMatches(request, run)
+    && request?.id === run.requestMessageId
+    && message !== undefined
+    && message.conversationId === run.conversationId
+    && message.topicId === run.topicId
+    && (message.seq <= request.seq || message.runId === run.id);
+}
+
 export interface AcceptRequestResult {
   reused: boolean;
   message: ConversationMessage;
@@ -193,6 +209,8 @@ export interface CompleteExecutionResult {
 export interface FailExecutionInput {
   runId: string;
   memberTurnId: string;
+  /** Physical attempt identity. Required after a started recovery retry. */
+  sourceTurnId?: string;
   now: string;
   reason: string;
   blockedReason?: MemberTurnRecord["blockedReason"];
@@ -351,6 +369,9 @@ export interface ReconcileLateResult {
 }
 
 export interface ConversationStore {
+  /** Internal trusted execution input. No public caller supplies its identity. */
+  acceptPublicHandoff(input: AcceptPublicHandoffInput): PublicHandoffReceipt;
+  getPublicHandoff(sourceTurnId: string, invocationId: string, args: GroupSendInput): PublicHandoffReceipt | undefined;
   acceptRequest(input: AcceptRequestInput): AcceptRequestResult;
   getRun(runId: string): ConversationRun | undefined;
   getRunByRequestId(conversationId: string, topicId: string, requestId: string): ConversationRun | undefined;
@@ -457,7 +478,10 @@ export interface ConversationStore {
    * re-derives from rows alone.
    */
   automaticRunsAwaitingRouting(): Array<{ run: ConversationRun; batchMembers: MemberTurnRecord[] }>;
-  completeCancel(runId: string, memberTurnId: string, now: string, indeterminate?: boolean, forceRunTerminal?: boolean): ConversationRun;
+  /** Known cancellation with forceRunTerminal persists whole-Run intent and
+   *  cancels never-started siblings atomically; admitted siblings drain their
+   *  evidence without resuming automatic routing. Unknown always seals. */
+  completeCancel(runId: string, memberTurnId: string, now: string, indeterminate?: boolean, forceRunTerminal?: boolean, sourceTurnId?: string): ConversationRun;
   /** Two-phase cancel settlement: persist every member's observed physical
    *  cancel outcome as member evidence first (completed evidence, failed
    *  state, cancelled, unknown), then aggregate the Run once. Proven member
@@ -496,4 +520,30 @@ export interface ConversationStore {
   deleteTopicRows(conversationId: string, topicId: string): void;
   deleteConversationRows(conversationId: string): void;
   close(): void;
+}
+
+/** Entire model-visible contract. Strict decoding rejects every other field. */
+export interface GroupSendInput {
+  to: string;
+  task: string;
+  expectedOutput?: string;
+}
+
+export interface AcceptPublicHandoffInput {
+  senderMemberTurnId: string;
+  sourceTurnId: string;
+  dispatchId: string;
+  owner: string;
+  generation: number;
+  invocationId: string;
+  args: GroupSendInput;
+  profileSnapshot: BotProfileSnapshot;
+  now: string;
+}
+
+export interface PublicHandoffReceipt {
+  reused: boolean;
+  run: ConversationRun;
+  memberTurn: MemberTurnRecord;
+  message: ConversationMessage;
 }

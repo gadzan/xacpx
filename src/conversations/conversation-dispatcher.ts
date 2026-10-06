@@ -9,8 +9,9 @@ import type { SessionService } from "../sessions/session-service";
 import { ConversationError } from "./conversation-error";
 import { isRunCancelling, requireMemberResult } from "./conversation-store";
 import { conversationExecutionOrigin, conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
-import { requestSnapshotMatches, type ClaimedWork, type ConversationStore } from "./conversation-store";
+import { publicMessageMatchesRunScope, requestSnapshotMatches, type ClaimedWork, type ConversationStore } from "./conversation-store";
 import { isEffectConcurrencySafe } from "./conversation-filesystem-policy";
+import type { GroupHandoffService } from "./group-handoff";
 import {
   emitConversationProductEvent,
   type ConversationProductEvent,
@@ -80,6 +81,7 @@ export class ConversationDispatcher {
    *  the runner's late-result handler wiring. */
   private onAutomaticBatchSettled?: AutomaticRoutingHandler;
   private closed = false;
+  private handoffs?: GroupHandoffService;
   private drainTask: Promise<void> | undefined;
   /** Executions currently holding provider turns. Keyed by dispatch id: while
    *  an execution is in flight its claim stays `claimed` (not requeueable) and
@@ -663,7 +665,12 @@ export class ConversationDispatcher {
     ) {
       return;
     }
+    if (current.quarantinedBotIds?.includes(work.memberTurn.botId)) {
+      this.failOwnClaimBeforeStart(work, "member_quarantined");
+      return;
+    }
     let started: MemberTurnRecord | undefined;
+    let releaseGroupExecution: (() => void) | undefined;
     try {
       await this.hooks?.beforeRuntimeMaterialize?.(work);
       const materializeFail = this.resolveMaterializeFail();
@@ -684,7 +691,7 @@ export class ConversationDispatcher {
         return;
       }
       const isGroup = this.runtime.conversationKind(work.run.conversationId) === "group";
-      if (isGroup && work.run.mode === "automatic" && !work.memberTurn.task?.trim()) {
+      if (isGroup && (work.run.mode === "automatic" || work.memberTurn.assignmentId) && !work.memberTurn.task?.trim()) {
         this.failOwnClaimBeforeStart(work, "missing_assignment_task");
         return;
       }
@@ -763,11 +770,18 @@ export class ConversationDispatcher {
       if (
         !latestRun
         || latestRun.state !== "running"
-        || isRunCancelling(latestRun)
         || !latestMember
         || latestMember.state !== "running"
         || latestMember.sourceTurnId !== sourceTurnId
       ) {
+        return;
+      }
+      if (isRunCancelling(latestRun)) {
+        // This exact attempt has not called runner.run(): durable start is
+        // not provider admission. Persist the known pre-provider cancellation
+        // instead of abandoning a running member/claimed dispatch that lease
+        // recovery would later misclassify as unknown side effects.
+        this.persistResult(work, started, { status: "cancelled" });
         return;
       }
       this.emitProduct({ type: "conversation-run-changed", run: latestRun });
@@ -775,7 +789,11 @@ export class ConversationDispatcher {
       const text = isGroup
         ? composeBotTurnPromptFromSnapshot(snapshot, groupPrompt!)
         : composeBotTurnPromptFromSnapshot(snapshot, this.requestText(work.run.requestMessageId));
+      const groupExecution = isGroup ? this.handoffs?.bindExecution({ senderMemberTurnId: started.id, sourceTurnId,
+        dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation }) : undefined;
+      releaseGroupExecution = groupExecution?.release;
       const result = await this.runner.run({
+        ...(groupExecution ? { groupExecutionToken: groupExecution.token } : {}),
         conversationId: work.run.conversationId,
         topicId: work.run.topicId,
         botId: work.memberTurn.botId,
@@ -783,7 +801,7 @@ export class ConversationDispatcher {
         memberTurnId: started.id,
         sessionAlias: binding.sessionAlias,
         logicalSessionId: binding.logicalSessionId,
-        text,
+        text: groupExecution ? `${this.handoffs!.memberContext(groupExecution.token)}\n\n${text}` : text,
         executionOrigin: conversationExecutionOrigin(
           this.store.getDispatchForMemberTurn(started.id)?.authorityEpoch,
           this.authorityEpoch,
@@ -798,11 +816,19 @@ export class ConversationDispatcher {
         })(),
         promptRequestId: sourceTurnId,
       });
+      releaseGroupExecution?.();
+      releaseGroupExecution = undefined;
       await this.hooks?.beforeResultPersist?.(work);
       this.persistResult(work, started, result);
     } catch (error) {
+      if (!started && work.memberTurn.assignmentId && error instanceof BotError
+        && ["group_member_not_member", "conversation_not_group", "bot_not_found", "bot_disabled"].includes(error.code)) {
+        this.failOwnClaimBeforeStart(work, error.code);
+        return;
+      }
       if (!started && error instanceof ConversationError
-        && (error.code === "member_result_missing" || error.code === "trigger_message_not_found")) {
+        && (error.code === "member_result_missing" || error.code === "trigger_message_not_found"
+          || error.code === "member_quarantined")) {
         this.failOwnClaimBeforeStart(work, error.code);
         return;
       }
@@ -827,6 +853,7 @@ export class ConversationDispatcher {
           memberTurnId: work.memberTurn.id,
           now: this.now().toISOString(),
           reason: "started_result_unknown",
+          sourceTurnId: started.sourceTurnId,
           terminalState: "indeterminate",
         });
         this.emitRunAndMember(run, work.memberTurn.id);
@@ -834,6 +861,8 @@ export class ConversationDispatcher {
       }
       this.releaseOwnClaim(work);
       this.deferredTopicIds.add(work.run.topicId);
+    } finally {
+      releaseGroupExecution?.();
     }
   }
 
@@ -910,6 +939,7 @@ export class ConversationDispatcher {
         memberTurnId: member.id,
         now,
         reason: result.error ?? "failed",
+        sourceTurnId: member.sourceTurnId,
         forceRunTerminalOnSettle: true,
       });
       this.emitRunAndMember(run, member.id);
@@ -925,7 +955,7 @@ export class ConversationDispatcher {
     result: Awaited<ReturnType<ConversationTurnRunner["run"]>>,
   ): void {
     const now = this.now().toISOString();
-    if (result.status === "completed") {
+    if (result.status === "completed" && !result.unknown) {
       const completed = this.store.completeExecution({
         runId: work.run.id,
         memberTurnId: started.id,
@@ -946,9 +976,15 @@ export class ConversationDispatcher {
       void this.kick().catch(() => {});
       return;
     }
-    if (result.status === "cancelled") {
-      const run = this.store.completeCancel(work.run.id, started.id, now, result.unknown === true, true);
+    if (result.status === "cancelled" || result.unknown) {
+      const unstartedSiblings = !result.unknown ? this.store.listMemberTurns(work.run.id)
+        .filter((member) => !member.startedAt && !TERMINAL_MEMBER_STATES.includes(member.state)) : [];
+      const run = this.store.completeCancel(work.run.id, started.id, now, result.unknown === true, true, started.sourceTurnId);
       this.emitRunAndMember(run, started.id);
+      for (const sibling of unstartedSiblings) {
+        const memberTurn = this.store.getMemberTurn(sibling.id);
+        if (memberTurn?.state === "cancelled") this.emitProduct({ type: "member-turn-finished", run, memberTurn });
+      }
       this.maybeRouteAutomatic(run);
       void this.kick().catch(() => {});
       return;
@@ -958,7 +994,8 @@ export class ConversationDispatcher {
       memberTurnId: started.id,
       now,
       reason: result.error ?? "failed",
-      ...(work.run.mode === "automatic" && result.blockedReason ? { blockedReason: result.blockedReason } : {}),
+      sourceTurnId: started.sourceTurnId,
+      ...(started.origin !== "human-explicit" && result.blockedReason ? { blockedReason: result.blockedReason } : {}),
     });
     this.emitRunAndMember(run, started.id);
     this.maybeRouteAutomatic(run);
@@ -986,6 +1023,8 @@ export class ConversationDispatcher {
     this.onAutomaticBatchSettled = handler;
   }
 
+  setHandoffService(handoffs: GroupHandoffService): void { this.handoffs = handoffs; }
+
   /**
    * Late provider settlement reached the dispatcher through the runner's
    * onLateResult seam (§14.3): the cancel-settle deadline already sealed the
@@ -1001,6 +1040,7 @@ export class ConversationDispatcher {
    */
   reconcileLateProviderResult(input: ConversationTurnRunInput, result: ConversationTurnRunResult): void {
     try {
+      if (result.unknown) return;
       if (result.status === "completed") {
         const reconciled = this.store.reconcileLateResult({
           runId: input.runId,
@@ -1067,7 +1107,7 @@ export class ConversationDispatcher {
 
   private groupTurnPrompt(work: ClaimedWork): string {
     const context = this.frozenGroupTranscript(work);
-    if (work.run.mode !== "automatic") return context;
+    if (work.run.mode !== "automatic" && !work.memberTurn.assignmentId) return context;
     // Recovery changes execution provenance, not the durable assignment.
     // Assignment instructions are per-member execution input, separate from
     // the frozen public transcript shared by parallel siblings.
@@ -1153,12 +1193,11 @@ export class ConversationDispatcher {
     return [...rows.values()];
   }
 
-  /** Durable public message lookup scoped to this Run's Conversation+Topic. */
+  /** Durable lookup revalidates the request boundary as well as Topic scope. */
   private getMessageInScope(messageId: string, work: ClaimedWork) {
     const message = this.store.getMessage(messageId);
-    if (!message
-      || message.conversationId !== work.run.conversationId
-      || message.topicId !== work.run.topicId) {
+    const request = this.store.getMessage(work.run.requestMessageId);
+    if (!publicMessageMatchesRunScope(message, work.run, request)) {
       return undefined;
     }
     return message;

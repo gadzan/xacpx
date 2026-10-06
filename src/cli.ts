@@ -156,6 +156,11 @@ export function createMcpStdioIdentityResolver(input: {
     const parsedCoordinatorSession = input.parsedCoordinatorSession?.trim() || null;
     const workspace = input.workspace?.trim() || null;
     const sourceHandle = input.sourceHandle?.trim() || null;
+    // An execution capability is not an Orchestration coordinator. Its only
+    // tool is group_send; admission verifies it against the live runtime.
+    if (sourceHandle?.startsWith("group-execution:") && parsedCoordinatorSession === sourceHandle) {
+      return { coordinatorSession: sourceHandle, sourceHandle };
+    }
 
     const resolvedWorkspace = workspace;
     // Normalize at this ingress boundary: a coordinator launched while its

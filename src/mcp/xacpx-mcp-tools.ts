@@ -3,6 +3,7 @@ import type {
   ToolExecution,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { XacpxMcpTransport } from "./xacpx-mcp-transport";
+import { GROUP_EXECUTION_PREFIX, MAX_GROUP_TASK_LENGTH, MAX_GROUP_EXPECTED_OUTPUT_LENGTH } from "../conversations/group-handoff";
 import {
   DEFAULT_TASK_WATCH_POLL_INTERVAL_MS,
   DEFAULT_TASK_WATCH_TIMEOUT_MS,
@@ -46,7 +47,7 @@ export interface XacpxMcpToolDefinition<Args> {
   description: string;
   inputSchema: z.ZodType<Args>;
   execution?: ToolExecution;
-  handler: (args: Args) => Promise<XacpxMcpToolResult>;
+  handler: (args: Args, context?: { invocationId: string }) => Promise<XacpxMcpToolResult>;
 }
 
 export type XacpxMcpToolResult = CallToolResult;
@@ -75,6 +76,23 @@ export function buildXacpxMcpToolRegistry(input: {
     internalSessionTools,
     availableAgents,
   } = input;
+
+  // The process launch binding is never supplied as a tool argument. A Group
+  // execution gets only the Group primitive, avoiding a second controller or
+  // Agent Messaging door into product-owned hidden sessions.
+  if (sourceHandle?.startsWith(GROUP_EXECUTION_PREFIX)) {
+    return [{
+      name: "group_send",
+      description: "Publicly assign a concrete task to another current Group Bot in this Run. Acceptance is durable; the filesystem scheduler decides when it starts. This tool grants no human permission authority.",
+      inputSchema: z.object({ to: z.string().min(1).max(128), task: z.string().min(1).max(MAX_GROUP_TASK_LENGTH),
+        expectedOutput: z.string().min(1).max(MAX_GROUP_EXPECTED_OUTPUT_LENGTH).optional() }).strict(),
+      handler: async (args, context) => await asToolResult(async () => {
+        if (!context?.invocationId || !transport.groupSend) throw new Error("group_send requires a bound runtime invocation");
+        const result = await transport.groupSend({ executionToken: sourceHandle, invocationId: context.invocationId, args });
+        return createSuccessResult("Public handoff accepted; target scheduling is pending.", result);
+      }),
+    }];
+  }
 
   const tools: XacpxMcpToolDefinition<unknown>[] = [
     {

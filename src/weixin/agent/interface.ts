@@ -68,6 +68,8 @@ export interface ChatRequest {
 }
 
 export interface ChatRequestMetadata {
+  /** Core-private execution capability, passed only by the Conversation runner. */
+  groupExecutionToken?: string;
   channel?: string;
   chatType?: "direct" | "group";
   senderId?: string;

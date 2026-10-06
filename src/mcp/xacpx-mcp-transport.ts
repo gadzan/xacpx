@@ -1,4 +1,5 @@
 import { OrchestrationClient } from "../orchestration/orchestration-client";
+import type { GroupSendInvocation } from "../conversations/group-handoff";
 import type { OrchestrationIpcEndpoint } from "../orchestration/orchestration-ipc";
 import type { ScheduledCreateFromRouteInput } from "../scheduled/scheduled-route-create";
 import type {
@@ -111,6 +112,7 @@ export interface XacpxMcpAgentSendArgs extends XacpxMcpAgentListArgs {
   completion?: AgentMessageCompletionMode;
 }
 export interface XacpxMcpTransport {
+  groupSend?: (input: GroupSendInvocation) => Promise<{ runId: string; assignmentId: string; memberTurnId: string; messageId: string }>;
   delegateRequest: (input: XacpxMcpDelegateRequest) => Promise<RequestDelegateRpcResult>;
   createGroup: (input: XacpxMcpGroupNewArgs) => Promise<OrchestrationGroupRecord>;
   getTask: (input: XacpxMcpTaskIdArgs) => Promise<OrchestrationTaskRecord | null>;
@@ -138,6 +140,7 @@ export interface XacpxMcpTransport {
 }
 
 interface OrchestrationClientLike {
+  groupSend?: OrchestrationClient["groupSend"];
   registerExternalCoordinator?: OrchestrationClient["registerExternalCoordinator"];
   delegateRequest: OrchestrationClient["delegateRequest"];
   createGroup: OrchestrationClient["createGroup"];
@@ -164,6 +167,10 @@ export function createOrchestrationTransport(
   const client = deps.client ?? new OrchestrationClient(endpoint);
 
   return {
+    groupSend: async (input) => {
+      if (!client.groupSend) throw new Error("Group handoff transport is not configured");
+      return await client.groupSend(input);
+    },
     delegateRequest: async (input) =>
       // For coordinator-side tool calls, coordinatorSession is the actual
       // source identity. The CLI may also pass an explicit sourceHandle, but

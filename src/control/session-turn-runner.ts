@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { ControlServiceDeps } from "./control-service";
 import type { ConversationTurnCorrelation } from "./conversation-control-dtos";
+import { bindGroupExecutionMetadata, GroupExecutionOutcomeUnknownError } from "../conversations/group-execution-metadata";
 import type { ScheduledOrigin } from "./control-event-bus";
 import type { PromptAttachmentRef } from "@ganglion/xacpx-relay-protocol";
 import type { ToolUseEvent } from "../channels/types";
@@ -18,6 +19,7 @@ import {
 } from "./turn-support";
 
 export interface TurnRequest {
+  groupExecutionToken?: string;
   chatKey: string;
   sessionAlias: string;
   boundSessionAlias?: string;
@@ -46,10 +48,12 @@ export interface TurnRequest {
 
 export interface TurnResult {
   ok: boolean;
+  /** Core Group transport failed without proven terminal evidence. */
+  unknown?: boolean;
   blockedReason?: "human-authority-required" | "human-authority-unknown";
   text?: string;
   errorMessage?: string;
-  /** Proven user-Stop / abort cancellation. Idle-timeout aborts omit this. */
+  /** Proven abort or typed Group Runtime cancellation. Idle-timeout aborts omit this. */
   cancelled?: boolean;
   // Inputs for the post-turn `sessions-changed` detection (a transport session that moved
   // during the turn — archived-restore or `/clear`). The CALLER performs the getSession
@@ -351,22 +355,25 @@ export class SessionTurnRunner {
         });
       },
     }, (event) => event.toolCallId, (event) => event.status, (event) => toolEventPayloadSize(event));
+    let releaseGroupMetadata: (() => void) | undefined;
     try {
+      const metadata = {
+        ...buildControlMetadata(req.senderId, req.isOwner, req.boundSessionAlias ?? (req.conversation ? internalAlias : undefined), req.preserveCoordinatorRoute, req.turnOrigin),
+        ...(req.permissionChatKey ? { permissionChatKey: req.permissionChatKey } : {}),
+        ...(req.senderName ? { senderName: req.senderName } : {}),
+        ...(req.groupExecutionToken ? { groupExecutionToken: req.groupExecutionToken } : {}),
+      };
+      if (req.groupExecutionToken && req.conversation && req.boundSessionAlias) {
+        const owned = this.deps.sessions.getLogicalSessionRecord?.(req.boundSessionAlias);
+        if (!owned?.logical_session_id) throw new Error("Group execution lost its logical session identity");
+        releaseGroupMetadata = bindGroupExecutionMetadata(metadata, { ...req.conversation, sessionAlias: req.boundSessionAlias,
+          logicalSessionId: owned.logical_session_id, executionToken: req.groupExecutionToken });
+      }
       const chatRequest: ChatRequest = {
         accountId: req.accountId ?? "control",
         conversationId: req.chatKey,
         text: chatText,
-        metadata: {
-          ...buildControlMetadata(
-            req.senderId,
-            req.isOwner,
-            req.boundSessionAlias ?? (req.conversation ? internalAlias : undefined),
-            req.preserveCoordinatorRoute,
-            req.turnOrigin,
-          ),
-          ...(req.permissionChatKey ? { permissionChatKey: req.permissionChatKey } : {}),
-          ...(req.senderName ? { senderName: req.senderName } : {}),
-        },
+        metadata,
         abortSignal: signal,
         ...(chatMedia.length > 0 ? { media: chatMedia } : {}),
         reply: async (chunk) => {
@@ -464,6 +471,8 @@ export class SessionTurnRunner {
       // non-human step. It does not prove that a human would be allowed, so
       // preserve that uncertainty rather than guessing from error text.
       const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+      const cancelled = !timedOut && (signal.aborted
+        || (!!req.groupExecutionToken && code === "RUNTIME_TURN_CANCELLED"));
       const blockedReason = req.conversation && req.turnOrigin !== "human" && !signal.aborted
         && (code === "RUNTIME_PERMISSION_DENIED" || code === "PERMISSION_DENIED")
         ? "human-authority-unknown" as const : undefined;
@@ -474,19 +483,22 @@ export class SessionTurnRunner {
         sessionAlias: req.sessionAlias,
         ok: false,
         errorMessage,
-        ...(!timedOut && signal.aborted ? { cancelled: true } : {}),
+        ...(cancelled ? { cancelled: true } : {}),
         ...(req.peerOrigin ? { peerOrigin: req.peerOrigin } : {}),
         ...(req.conversation ? { conversation: req.conversation } : {}),
       });
       return {
         ok: false,
         errorMessage,
+        ...(error instanceof GroupExecutionOutcomeUnknownError ? { unknown: true } : {}),
         ...(blockedReason ? { blockedReason } : {}),
-        ...(!timedOut && signal.aborted ? { cancelled: true } : {}),
+        ...(cancelled ? { cancelled: true } : {}),
         ...(internalAlias && priorTransportSession
           ? { postTurnDetection: { internalAlias, priorTransportSession } }
           : {}),
       };
+    } finally {
+      releaseGroupMetadata?.();
     }
     // NB: no `finally` doing the post-turn `sessions-changed` getSession here — that compare
     // is deliberately the caller's job (see TurnResult.postTurnDetection), so it runs after

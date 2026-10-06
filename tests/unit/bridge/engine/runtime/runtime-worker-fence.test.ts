@@ -371,7 +371,7 @@ test("fence discharge (POSIX): a live group that EXITS during the wait discharge
 test("fence discharge (POSIX): dead group discharges without a kill", async () => {
   const outcome = await dischargeRuntimeWorkerFence(record(), {
     platform: "darwin",
-    isProcessGroupAlive: () => false,
+    probeProcessGroup: () => "gone",
   });
   expect(outcome).toBe("discharged");
 });
