@@ -20,7 +20,7 @@ import { DiscordChannel } from "../../../packages/channel-discord/src/channel";
 import { FeishuChannel } from "../../../packages/channel-feishu/src/channel";
 import { MSG, parseControlPayload } from "@ganglion/xacpx-relay-protocol";
 
-async function compose(options: { state?: AppState; path?: string; agent?: Agent } = {}) {
+async function compose(options: { state?: AppState; path?: string; agent?: Agent; router?: unknown } = {}) {
   const state = options.state ?? createEmptyState();
   const path = options.path ?? join(mkdtempSync(join(tmpdir(), "xacpx-bindings-")), "conversations.sqlite");
   const config = { transport: { type: "acpx-cli", permissionMode: "approve-all" },
@@ -34,7 +34,7 @@ async function compose(options: { state?: AppState; path?: string; agent?: Agent
     workspaces: { list: () => [{ name: "backend", cwd: tmpdir() }] } } as never);
   const kernel = conversationKernel(control);
   const runtime = await createConversationRuntime({ config, state, stateStore, sessions, control: kernel,
-    sqlitePath: path, releaseOwnedSession: async () => {}, stateMutex, autoKick: false,
+    sqlitePath: path, releaseOwnedSession: async () => {}, stateMutex, autoKick: false, router: options.router,
     onProductEvent: (event) => kernel.emitConversationProduct(event) });
   kernel.bindConversationRuntime(runtime);
   const daemon = new AbortController();
@@ -81,6 +81,22 @@ test("bound human input reaches existing provider chain, returns exact public re
     expect(physical).toHaveLength(1);
     expect(physical[0]!.metadata!.origin).toBe("human");
     expect(current.delegated()).toBe(0);
+  } finally { await current.close(); }
+});
+
+test("structured automatic routing returns the durable human question through channel delivery", async () => {
+  let starts = 0;
+  const current = await compose({ agent: { chat: async () => { starts++; return { text: "wrong" }; } },
+    router: { capabilityRestriction: { toolsDisabled: true, filesystemDisabled: true, terminalDisabled: true,
+      permissionInteractionDisabled: true, messagingDisabled: true, orchestrationDisabled: true, structuredOutputOnly: true },
+      decide: async () => ({ type: "need-human", question: "Which branch should we review?" }) },
+  });
+  try {
+    const { group: g, topic } = await group(current);
+    const input = request(); input.metadata!.conversationTarget = { mode: "automatic" };
+    expect((await current.agent.chat(input)).text).toContain("Which branch should we review?");
+    expect(current.runtime.store.listRuns(g.id, topic.id)[0]?.state).toBe("waiting-human");
+    expect(starts).toBe(0);
   } finally { await current.close(); }
 });
 

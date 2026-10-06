@@ -37,7 +37,8 @@ export function createConversationChannelAgent(channelId: string, agent: Agent,
               const message = runtime.store.getMemberResult(member);
               return message ? [`${member.profileSnapshot?.presentation.name ?? member.botId}:\n${message.content}`] : [];
             });
-            const status = `Conversation ${run.state}${run.completionReason ? ` (${run.completionReason})` : ""}.`;
+            const status = [`Conversation ${run.state}${run.completionReason ? ` (${run.completionReason})` : ""}.`,
+              ...(run.waitingQuestion ? [run.waitingQuestion] : [])].join("\n");
             finish(undefined, { text: results.length
               ? [...results, ...(run.state === "completed" ? [] : [status])].join("\n\n") : status });
           } catch (error) { finish(error); }
