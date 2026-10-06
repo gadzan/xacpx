@@ -102,8 +102,15 @@ which is the same basis `loadConfiguredPlugins()` uses — a broken `main`/
 `channels[]` → `factory(options, deps)`:
 
 ```text
-resolve(packageName) → import(resolved entry) → validateWeacpxPlugin(pack, name) → channels[] → factory()
+resolve(packageName) → resolved entry → validateWeacpxPlugin(pack, name) → channels[] → factory()
 ```
+
+**Resolution is production's; execution is not, and the difference is stated rather
+than glossed.** Production resolves the entry with `createRequire(...)` and then
+`await import(pathToFileURL(entry).href)`. This smoke resolves the same way but
+executes the bundle with `require(resolved)`, because Bun's `require` is what
+loads a built ESM bundle synchronously inside a test process. The file executed is
+the one production would load; only the module-loading mechanism differs.
 
 This matters, and it took two rounds to get right. An earlier revision of this
 gate scanned bundle exports for a function named `*Channel` and constructed it

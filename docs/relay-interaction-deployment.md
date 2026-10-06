@@ -151,11 +151,13 @@ hub reachable from connector
       nothing under `transport.command`/`acpx-bridge`, which is the **xacpx ↔ acpx runtime
       transport** and has no bearing on where the connector points.
 - [ ] The instance has a stored instance credential **or** an initial pairing token.
-      `channel.start()` reports a terminal failure when neither is present: the
-      connector stops rather than reconnecting forever, `start()` rejects, and the
-      registry records the channel so the declared-vs-live audit can see it. The
-      same applies to a handshake the hub rejects (stale credential, or a pairing
-      token already used or expired) and to a protocol/version mismatch.
+      With neither, `RelayClient.start()` fails fast before any connection is
+      attempted — a hub that is unreachable does not delay or mask the report — so
+      `RelayChannel.start()` rejects, the registry records the channel, and the
+      declared-vs-live audit can see it. The same applies to a handshake the hub
+      rejects (stale credential, or a pairing token already used or expired; that
+      one requires the hub to be reachable, because only the hub can judge the
+      credential) and to a protocol/version mismatch.
 - [ ] The browser connects over **WSS** on any untrusted network. `/ws` is
       **authenticated** at upgrade by the `xrelay_session` cookie — an upgrade
       with no resolvable account is destroyed (`packages/relay/src/server.ts`

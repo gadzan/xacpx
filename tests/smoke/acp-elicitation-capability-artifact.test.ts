@@ -7,20 +7,26 @@
  * and constructor wiring — exactly the parts a bundler, a tree-shake, or a stale
  * tracked `dist` can silently change.
  *
- * This loads each channel's PRODUCTION bundle (`dist/index.js` under each
- * package, the file the plugin loader consumes) and resolves the channel by the
- * same chain `loadConfiguredPlugins()` uses:
+ * This loads each channel's PRODUCTION bundle by PACKAGE NAME and resolves the
+ * channel through the production plugin chain:
  *
- *   import(module) → validateWeacpxPlugin() → plugin.channels[] → factory()
+ *   createRequire(root).resolve(name) → entry → validateWeacpxPlugin() → channels[] → factory()
  *
- * NOT by scanning exports for a `*Channel` class and `new`-ing it. That shortcut
- * skips the default export, the channel definition, the factory wiring, and the
- * plugin validator — the layers whose breakage leaves a bundle that imports
- * cleanly but registers nothing at install time. The mutations that prove it
- * matters: setting the built Feishu bundle's `default.channels` to `[]` while
- * keeping the named class export passes every test under the shortcut; so does a
- * wrong `apiVersion` or a `name` that does not match the installed package. All
- * three fail here.
+ * NOT by scanning exports for a `*Channel` class and `new`-ing it, and not by
+ * reading `dist/index.js` as a path. Both shortcuts bypass layers production
+ * actually walks, and the mutations that prove it matters are recorded in the M5
+ * closure §2.2: a class-name lookup stays green on an empty `channels` array, and
+ * a path read stays green on an unresolvable package. None of them pass here.
+ *
+ * Package RESOLUTION is production's: `createRequire(<repo root>/package.json).resolve(name)`,
+ * the same basis `loadConfiguredPlugins()` uses, so a wrong `main`/`exports` fails
+ * here instead of being invisible.
+ *
+ * Execution then differs, and it is stated rather than glossed: production dynamic-
+ * `import()`s the resolved entry (`await import(pathToFileURL(entry).href)`), while this
+ * smoke `require()`s it. The resolved entry is the same file; only the module-loading
+ * mechanism differs, because Bun's `require` is what makes a built ESM bundle loadable
+ * synchronously inside a test process.
  *
  * It then asserts what the resolved runtime declares:
  *
