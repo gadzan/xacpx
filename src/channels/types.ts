@@ -122,6 +122,11 @@ export interface ScheduledChannelMessageInput {
   abortSignal?: AbortSignal;
 }
 
+export interface ConversationChannelAgent extends ChatAgent {
+  /** Commit durable ingress before typing/card setup; chat later awaits the same result. */
+  prepareConversation?(request: ChatRequest): Promise<void>;
+}
+
 export interface ChannelStartInput {
   agent: ChatAgent;
   /**
@@ -130,8 +135,10 @@ export interface ChannelStartInput {
    * an independent Conversation lane; omit Session background/foreground hooks.
    * Undefined preserves normal Session dispatch. Scheduled turns bypass this.
    * Selection includes durable receipt replays, even after unbind.
+   * Call prepareConversation with the full admitted request before typing/card
+   * setup; do not queue acceptance behind an older Conversation's settlement.
    */
-  routeConversation?: (request: ChatRequest) => ChatAgent | undefined;
+  routeConversation?: (request: ChatRequest) => ConversationChannelAgent | undefined;
   abortSignal: AbortSignal;
   quota: OutboundQuota;
   logger: AppLogger;

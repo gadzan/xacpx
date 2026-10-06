@@ -382,7 +382,7 @@ Called when the orchestration service sends text to the channel hosting the coor
 ```ts
 export interface ChannelStartInput {
   agent: ChatAgent;
-  routeConversation?: (request: ChatRequest) => ChatAgent | undefined;
+  routeConversation?: (request: ChatRequest) => ConversationChannelAgent | undefined;
   abortSignal: AbortSignal;
   quota: OutboundQuota;
   logger: AppLogger;
@@ -390,6 +390,10 @@ export interface ChannelStartInput {
   commandHints?: CommandHint[];   // built-in command catalog for input-box hints
   coreVersion?: string;           // xacpx core version string
   locale?: Locale;                // active runtime language ("en" | "zh") — see §5.1
+}
+
+export interface ConversationChannelAgent extends ChatAgent {
+  prepareConversation?(request: ChatRequest): Promise<void>;
 }
 ```
 
@@ -403,6 +407,19 @@ export interface ChannelStartInput {
 | `commandHints?` | Built-in command catalog, for channels that support input-box command hints. |
 | `coreVersion?` | xacpx core version string, for channels that need it (e.g. command-sync metadata). |
 | `locale?` | Active runtime language (`"en"` \| `"zh"`, type `Locale`), resolved from `config.language`. Use it to localize your channel's output. See [§5.1](#51-internationalization-i18n). |
+
+For bound Conversation turns, provide a separate `ChatRequest.humanStopSignal`.
+Abort it only for an admitted Stop from the turn's owner, along with the ordinary
+request `abortSignal`. Lifecycle termination (`disabled`, `removed`, logout or
+shutdown) aborts only `abortSignal`: the Conversation caller detaches, and an
+accepted durable Run remains owned by the core runtime. Generic request aborts
+never imply human cancellation. See [Conversation bindings](./conversation-runtime.md#external-channel-bindings-pr10).
+Call the selected Agent's `prepareConversation?.(fullRequest)` before typing or
+card initialization. It commits acceptance and installs settlement/Stop tracking;
+`chat(fullRequest)` subsequently awaits that same prepared result. Preserve its
+message identity, content and signal objects. Enter preparation for each admitted
+message immediately; the core Topic queue serializes execution. An older Run or
+its channel delivery must not hold later input in an in-memory channel lane.
 
 `ChatRequest` / `ChatResponse` are exported from `xacpx/plugin-api`. Deliver the
 selected Agent's response through the channel's normal reply mechanism. Scheduled

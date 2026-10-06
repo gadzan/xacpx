@@ -365,6 +365,12 @@ An unused Direct binding also keeps Bot deletion closed until it is unbound;
 creating the binding revalidates through the Bot lifecycle gate.
 Other channel plugins can implement the same ingress metadata contract; Relay
 keeps its existing structured Conversation API instead of this text adapter.
+The namespace before the first `:` uses the registered channel type contract:
+nonempty after trimming, with no `:`. Case, underscores, internal spaces and
+types longer than 64 characters are supported; chat keys use the canonical
+trimmed type. The complete chat key remains bounded to 2048 characters and
+requires a nonempty, whitespace-free route suffix. Product namespaces (`bot`,
+`control`, `relay`, `group-execution`) remain excluded from this external seam.
 The bundled Yuanbao adapter also selects before Session lifecycle; its current
 gateway does not prove authenticated-human origin, so bound input remains
 fail-closed rather than entering an ordinary Session.
@@ -373,20 +379,26 @@ The registry supplies an optional `routeConversation` ingress selector. After
 authentication/admission, adapters call it before reading the current Session,
 marking a Session active, or choosing its executor lane. A selected Conversation
 uses its own executor and Agent, without Session foreground/background hooks.
-Selection checks bindings and receipt existence synchronously; acceptance then
-revalidates under a mutex keyed by external chatKey. Bind/unbind/accept for one
-route serialize, while unrelated routes and ordinary unbound traffic remain
+Conversation turns enter acceptance concurrently, without waiting for an older
+Run's settlement or channel reply; the durable core Topic queue orders execution.
+The selected Agent's `prepareConversation` commits ingress and installs Stop and
+settlement tracking before typing/card setup; `chat` then awaits the same result.
+Selection captures the exact Conversation/Topic binding and receipt existence;
+acceptance first replays an existing receipt, otherwise requires the same binding
+under a mutex keyed by external chatKey. Replacement and removal both fail closed.
+Bind/unbind/accept for one route serialize, while unrelated routes and ordinary unbound traffic remain
 independent. Unused mutex entries are removed. If a selected binding disappears
 before acceptance, the request fails closed instead of falling back to Session.
-The adapter supplies explicit human
-origin, sender/account identity and a stable platform message id. Scheduled, peer,
+The adapter supplies explicit human origin, sender/account identity and a stable platform message id. Scheduled, peer,
 model-generated and provenance-unknown input cannot create a bound human Run.
 The metadata contract is `channel`, `channelMessageId`, `origin: "human"`,
 `authenticatedHuman: true`, and `senderId`; `accountId` comes from ChatRequest.
 Discord proves human origin with `author.bot === false`; Feishu requires the
 platform's `sender_type === "user"`. Missing sender type does not qualify.
-Known console commands keep their command path. Bound media is rejected until
-Conversation requests support attachments; it never falls back to a Session.
+Known console commands keep their command path except authenticated bound Stop.
+`hadInboundMedia` records original platform attachment presence before download,
+limits or skipped-resource degradation. Bound media is rejected before downloading
+until Conversation requests support attachments; it never falls back to a Session.
 
 Adapters may supply a structured `conversationTarget`. Otherwise a leading
 `@Name ` or `@{Name with spaces} ` selects an exact, unique current Group member.
@@ -399,16 +411,50 @@ target for the same source is rejected. Teardown retains a receipt tombstone so
 old messages cannot create new work after rebinding. Receipts grant no permission
 authority on replay or recovery. The channel returns the settled Run's public
 Bot results through its existing delivery path. Stop cancels that exact Run.
-Discord and Feishu track each task's execution domain: after checking sender
-ownership within the account/chat/thread, Stop selects only live Conversation
-tasks when any are owned by that sender, including queued turns. Otherwise it
-retains the existing Session stop behavior. Session tasks remain unsuppressed
-and keep their abort signals, even after a foreground Session switch. Weixin
-tracks bound turns with separate abort controllers: a bare `/stop` or `/cancel`
-interrupts those turns without cancelling the foreground Session. Channel
-shutdown still aborts tasks in both domains.
+Durable Conversation ownership is resolved before each adapter's Session Stop
+fast path, including after restart when only Session tasks are present in memory.
+Discord and Feishu track each task's execution domain; admitted Stop signals only
+owned Conversation tasks, including acceptance still waiting on a lifecycle gate.
+Weixin tracks bound turns with separate controllers. Concurrent Session tasks
+remain unsuppressed and keep their abort signals, even after a foreground Session
+switch. An unbound Stop with no durable Conversation targets retains the existing
+Session stop behavior. Stop with raw attachments is rejected without cancellation.
+Channel shutdown still aborts tasks in both domains.
+Human Stop is explicit: adapters supply `ChatRequest.humanStopSignal` and abort
+it only after admitting an owned user Stop. `abortSignal` covers all causes,
+including lifecycle termination, and never independently grants human Stop
+provenance. Adapters abort both signals for human Stop; `stop("disabled")`,
+`stop("removed")`, logout and daemon shutdown abort only the lifecycle/request
+signal. This detaches channel result waiting and fences unaccepted work, without
+cancelling an already accepted durable Run. Its execution and recovery stay
+owned by the Conversation runtime. Plugins must provide the separate human
+signal to support bound Stop; a generic abort without it fails closed for intent.
+After restart, authenticated Stop is selected before Session command bypass.
+Receipt `stop_ingress` holds only the original chatKey/account/sender facts and
+is joined to live exact receipt Runs (queued, running or waiting-human), including work accepted before a rebind or
+unbind. Stop freezes that target set, revalidates its owner and cancels through
+the existing Run service; it creates no new Run. It never restores permission
+authority or execution human ingress cleared by recovery. On schema upgrade,
+legacy receipts copy surviving original dispatch facts before recovery; a live
+legacy receipt whose Stop owner is already lost fails closed where bound, rather
+than inferring ownership from the current binding or sender. Receipt tombstones
+without a live Run cannot become Stop targets.
 Waiting for settlement holds no runtime operation lease. There is no durable
 outbound-delivery claim: provider-result retransmission and channel delivery
 exactly-once remain separate validation work.
 Daemon-triggered channel abort does not acquire human Stop provenance: queued
 work remains subject to the existing shutdown/recovery rules.
+
+External receipts currently have unlimited retention, including after Topic or
+Conversation teardown. Each accepted platform message retains its hashed source
+key, fingerprint, original Run/Conversation/Topic identifiers and the minimal
+Stop owner facts; the receipt does not
+retain a second copy of message text or attachments. This is a deliberate cost
+of rejecting arbitrary old replays after unbind, rebind and teardown: receipt
+storage grows with the lifetime count of accepted bound messages. There is no
+automatic TTL, maximum-row eviction or user-facing purge in PR10. A follow-up
+may compact retired receipts while preserving exact replay/conflict rejection,
+or introduce a bounded retention policy only after establishing an enforceable
+platform replay horizon (including manual retransmission). Such a policy must
+define expiry behavior and migration; deleting receipts while accepting the
+same old source again would weaken the current exactly-once contract.

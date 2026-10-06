@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import type { Agent, ChatRequest } from "../agent/interface.js";
+import type { ConversationChannelAgent } from "../../channels/types.js";
 import { sendTyping } from "../api/api.js";
 import type { WeixinMessage, MessageItem } from "../api/types.js";
 import { MessageItemType, TypingStatus } from "../api/types.js";
@@ -163,12 +164,14 @@ function createSaveMediaBuffer(mediaTempDir?: string) {
 
 export type HandleWeixinMessageTurnDeps = {
   accountId: string;
-  agent: Agent;
+  agent: ConversationChannelAgent;
   baseUrl: string;
   cdnBaseUrl: string;
   token?: string;
   typingTicket?: string;
   abortSignal?: AbortSignal;
+  humanStopSignal?: AbortSignal;
+  conversationBound?: boolean;
   log: (msg: string) => void;
   errLog: (msg: string) => void;
   mediaTempDir?: string;
@@ -355,12 +358,21 @@ export async function handleWeixinMessageTurn(
     }
   }
 
+  if (deps.conversationBound) await deps.agent.prepareConversation?.({
+    accountId: deps.accountId, conversationId: chatKey, text: bodyFromItemList(full.item_list),
+    ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}),
+    ...(deps.humanStopSignal ? { humanStopSignal: deps.humanStopSignal } : {}),
+    metadata: { channel: "weixin", channelMessageId: full.message_id != null ? String(full.message_id) : undefined,
+      senderId: full.from_user_id, origin: "human", authenticatedHuman: Boolean(full.from_user_id),
+      hadInboundMedia: full.item_list?.some((item) => item.type !== MessageItemType.TEXT) ?? false,
+      chatType: full.group_id ? "group" : "direct" },
+  });
   startTypingIndicator();
 
   const mediaStore = deps.mediaStore ?? new RuntimeMediaStore({ rootDir: resolveMediaTempDir(deps.mediaTempDir) });
   const media: NonNullable<ChatRequest["media"]> = [];
   const attachmentNotes: string[] = [];
-  const descriptors = extractWeixinMediaDescriptors(full.item_list).slice(0, DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE);
+  const descriptors = deps.conversationBound ? [] : extractWeixinMediaDescriptors(full.item_list).slice(0, DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE);
   const download = deps.downloadMediaFromItemFn ?? downloadMediaFromItem;
   for (const descriptor of descriptors) {
     try {
@@ -437,6 +449,7 @@ export async function handleWeixinMessageTurn(
     conversationId: buildWeixinChatKey(deps.accountId, full.from_user_id ?? ""),
     text: requestText,
     ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}),
+    ...(deps.humanStopSignal ? { humanStopSignal: deps.humanStopSignal } : {}),
     ...(media.length > 0 ? { media } : {}),
     replyContextToken: contextToken,
     // The in-session coordinator agent's scheduled_create/list/cancel tools and
@@ -444,6 +457,7 @@ export async function handleWeixinMessageTurn(
     // chat route. Built-in WeChat is direct unless the message carries group_id.
     metadata: {
       channel: "weixin",
+      hadInboundMedia: full.item_list?.some((item) => item.type !== MessageItemType.TEXT) ?? false,
       ...(full.message_id != null ? { channelMessageId: String(full.message_id) } : {}),
       authenticatedHuman: Boolean(full.from_user_id),
       chatType: full.group_id ? "group" : "direct",

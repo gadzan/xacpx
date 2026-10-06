@@ -133,7 +133,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
   let configManager = new WeixinConfigManager({ baseUrl, token }, log);
   const conversationExecutor = createConversationExecutor();
   const boundConversationExecutor = createConversationExecutor();
-  const boundTurns = new Map<string, Set<AbortController>>();
+  const boundTurns = new Map<string, Set<{ controller: AbortController; humanStop: AbortController }>>();
 
   const seenMessageIds = new Set<number>();
   const messageIdOrder: number[] = [];
@@ -292,19 +292,22 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         const chatKey = buildWeixinChatKey(accountId, fromUserId);
         const isSlash = inboundText.trim().startsWith("/");
         const localCommand = ["/echo", "/toggle-debug", "/clear", "/jx"].includes(parseSlashCommand(inboundText) ?? "");
-        const stoppingBound = /^\/(stop|cancel)$/i.test(inboundText.trim()) && boundTurns.has(chatKey);
-        if (stoppingBound) for (const controller of boundTurns.get(chatKey)!) controller.abort();
-        const conversationAgent = stoppingBound ? { chat: async () => ({ text: "Conversation stop requested." }) }
-          : localCommand ? undefined : opts.routeConversation?.({
+        const hadInboundMedia = full.item_list?.some((item) => item.type !== MessageItemType.TEXT) ?? false;
+        const conversationAgent = localCommand ? undefined : opts.routeConversation?.({
           accountId, conversationId: chatKey, text: inboundText,
           metadata: { channel: "weixin", senderId: fromUserId, origin: "human", authenticatedHuman: Boolean(fromUserId),
+            hadInboundMedia,
             ...(full.message_id != null ? { channelMessageId: String(full.message_id) } : {}) },
         });
-        const controller = conversationAgent && !stoppingBound ? new AbortController() : undefined;
+        if (conversationAgent && !hadInboundMedia && /^(?:\/(?:stop|cancel|abort)|stop|abort|interrupt)$/i.test(inboundText.trim())) {
+          for (const turn of boundTurns.get(chatKey) ?? []) { turn.humanStop.abort(); turn.controller.abort(); }
+        }
+        const controller = conversationAgent ? new AbortController() : undefined;
+        const turn = controller ? { controller, humanStop: new AbortController() } : undefined;
         const abortBound = () => controller?.abort();
         if (controller) {
-          const turns = boundTurns.get(chatKey) ?? new Set<AbortController>();
-          turns.add(controller); boundTurns.set(chatKey, turns);
+          const turns = boundTurns.get(chatKey) ?? new Set<NonNullable<typeof turn>>();
+          turns.add(turn!); boundTurns.set(chatKey, turns);
           abortSignal?.addEventListener("abort", abortBound, { once: true });
           if (abortSignal?.aborted) controller.abort();
         }
@@ -324,11 +327,13 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
 
         const runPromise = (conversationAgent ? boundConversationExecutor : conversationExecutor).run(
           full.from_user_id ?? "",
-          getWeixinMessageTurnLane(full),
+          conversationAgent ? "control" : getWeixinMessageTurnLane(full),
           () => controller?.signal.aborted ? Promise.resolve() : handleWeixinMessageTurn(full, {
               accountId,
               agent: conversationAgent ?? agent,
               ...(controller ? { abortSignal: controller.signal } : {}),
+              ...(turn ? { humanStopSignal: turn.humanStop.signal } : {}),
+              conversationBound: Boolean(conversationAgent),
               baseUrl,
               cdnBaseUrl,
               token,
@@ -378,7 +383,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
             if (controller) {
               abortSignal?.removeEventListener("abort", abortBound);
               const turns = boundTurns.get(chatKey)!;
-              turns.delete(controller);
+              turns.delete(turn!);
               if (turns.size === 0) boundTurns.delete(chatKey);
             }
             if (boundAlias) {

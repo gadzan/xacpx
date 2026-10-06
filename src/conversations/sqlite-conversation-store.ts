@@ -183,8 +183,9 @@ CREATE TABLE IF NOT EXISTS conversation_bindings (
 );
 CREATE TABLE IF NOT EXISTS external_conversation_requests (
   source_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, run_id TEXT NOT NULL,
-  conversation_id TEXT NOT NULL, topic_id TEXT NOT NULL
+  conversation_id TEXT NOT NULL, topic_id TEXT NOT NULL, stop_ingress TEXT
 );
+CREATE INDEX IF NOT EXISTS external_conversation_requests_run ON external_conversation_requests(run_id);
 CREATE TABLE IF NOT EXISTS topic_seq (
   topic_id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
@@ -331,6 +332,10 @@ function parseStoredHumanIngress(json: string | null | undefined): HumanIngressC
 function serializeHumanIngress(ingress: HumanIngressContext | undefined): string | null {
   const parsed = parseHumanIngress(ingress);
   return parsed ? JSON.stringify(parsed) : null;
+}
+
+function serializeStopIngress(ingress: HumanIngressContext | undefined): string | null {
+  return ingress ? serializeHumanIngress({ chatKey: ingress.chatKey, senderId: ingress.senderId, accountId: ingress.accountId }) : null;
 }
 
 /** Strict durable BotProfileSnapshot decoder: syntactically valid JSON with
@@ -648,6 +653,26 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureWaitingQuestionColumn();
     this.ensureDispatchMultiMemberShape();
     this.ensurePublicHandoffSchema();
+    this.ensureExternalStopIngress();
+  }
+
+  private ensureExternalStopIngress(): void {
+    this.sqlite.transaction(() => {
+      const columns = this.sqlite.all<{ name: string }>("PRAGMA table_info(external_conversation_requests)");
+      if (!columns.some((column) => column.name === "stop_ingress")) {
+        this.sqlite.exec("ALTER TABLE external_conversation_requests ADD COLUMN stop_ingress TEXT");
+      }
+      // Copy original route facts before recovery strips execution authority.
+      // This column authorizes only Stop; it is never used for provider authority.
+      for (const row of this.sqlite.all<{ source_key: string; human_ingress: string }>(
+        `SELECT e.source_key, p.human_ingress FROM external_conversation_requests e
+         JOIN pending_dispatches p ON p.run_id = e.run_id
+         WHERE e.stop_ingress IS NULL AND p.human_ingress IS NOT NULL ORDER BY p.created_at, p.rowid`)) {
+        const ingress = parseStoredHumanIngress(row.human_ingress);
+        if (ingress) this.sqlite.run("UPDATE external_conversation_requests SET stop_ingress = ? WHERE source_key = ? AND stop_ingress IS NULL",
+          [serializeStopIngress(ingress), row.source_key]);
+      }
+    });
   }
 
   private assertOpen(): void {
@@ -703,8 +728,8 @@ export class SqliteConversationStore implements ConversationStore {
         this.assertAcceptable(input.conversationId, input.topicId);
         const created = this.insertAccepted(input);
         if (input.externalRequest) {
-          this.sqlite.run("INSERT INTO external_conversation_requests (source_key, fingerprint, run_id, conversation_id, topic_id) VALUES (?, ?, ?, ?, ?)",
-            [input.externalRequest.key, input.externalRequest.fingerprint, created.run.id, created.run.conversationId, created.run.topicId]);
+          this.sqlite.run("INSERT INTO external_conversation_requests (source_key, fingerprint, run_id, conversation_id, topic_id, stop_ingress) VALUES (?, ?, ?, ?, ?, ?)",
+            [input.externalRequest.key, input.externalRequest.fingerprint, created.run.id, created.run.conversationId, created.run.topicId, serializeStopIngress(input.humanIngress)]);
         }
         this.beforeAcceptCommit?.();
         return created;
@@ -726,6 +751,15 @@ export class SqliteConversationStore implements ConversationStore {
 
   hasExternalRequest(key: string): boolean {
     return this.sqlite.get("SELECT 1 FROM external_conversation_requests WHERE source_key = ?", [key]) !== undefined;
+  }
+
+  listLiveExternalRequests(): Array<{ accepted: AcceptRequestResult; ingress?: HumanIngressContext }> {
+    return this.sqlite.all<{ source_key: string; fingerprint: string; stop_ingress: string | null }>(
+      `SELECT e.source_key, e.fingerprint, e.stop_ingress FROM runs r
+       JOIN external_conversation_requests e ON e.run_id = r.id
+       WHERE r.state IN ('queued', 'running', 'waiting-human') ORDER BY r.created_at, r.rowid`)
+      .map((row) => ({ accepted: this.getExternalRequest({ key: row.source_key, fingerprint: row.fingerprint })!,
+        ingress: parseStoredHumanIngress(row.stop_ingress) }));
   }
 
   getExternalRequest(input: { key: string; fingerprint: string }): AcceptRequestResult | undefined {

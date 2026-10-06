@@ -46,7 +46,7 @@ import { StreamingCardController, type StreamingCardClient } from "./card/stream
 import { RuntimeMediaStore, DEFAULT_ATTACHMENT_MAX_BYTES, DEFAULT_IMAGE_MAX_BYTES, DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE } from "./media-store.js";
 import { resolveSafeOutboundMediaPath } from "./outbound-media-safety.js";
 import { normalizeMediaArray, type ChannelMediaAttachment } from "./media-types.js";
-import { convertFeishuMessageContent } from "./content-converters.js";
+import { convertFeishuMessageContent, hasFeishuInboundMedia } from "./content-converters.js";
 import { downloadFeishuMessageResource } from "./media.js";
 
 // Group-owner lookups cache for 5 minutes: long enough that a busy group
@@ -117,6 +117,8 @@ interface ActiveTask {
   boundAlias: string | undefined;
   typingState: TypingIndicatorState;
   abortController: AbortController;
+  humanStopController: AbortController;
+  rootAbortCleanup: (() => void) | null;
   suppressed: boolean;
   cardController: StreamingCardController | null;
 }
@@ -170,6 +172,7 @@ export class FeishuChannel implements MessageChannelRuntime {
   private markFailed: OrchestrationDeliveryCallbacks["markTaskNoticeFailed"] | null = null;
   private agent: ChannelStartInput["agent"] | null = null;
   private routeConversation: ChannelStartInput["routeConversation"];
+  private abortSignal: AbortSignal | null = null;
   private quota: ChannelStartInput["quota"] | null = null;
   private logger: ChannelStartInput["logger"] | null = null;
   private sessions: SessionService | null = null;
@@ -244,6 +247,7 @@ export class FeishuChannel implements MessageChannelRuntime {
    * silently never answers.
    */
   async stop(reason: "shutdown" | "disabled" | "removed" | "logout" = "shutdown"): Promise<void> {
+    this.abortAllActiveTasks();
     await this.drainPendingElicitations(reason);
     this.logout();
   }
@@ -321,6 +325,8 @@ export class FeishuChannel implements MessageChannelRuntime {
   }
 
   logout(): void {
+    this.abortAllActiveTasks();
+    this.abortSignal = null;
     // Snapshot the entries: `stopAccountInbound` deletes as it goes, which also
     // leaves the registry empty here. The listener shutdown is intentionally
     // left unawaited — logout is synchronous and has nobody left to tell.
@@ -530,6 +536,7 @@ export class FeishuChannel implements MessageChannelRuntime {
     setChannelLocale(input.locale ?? "en");
     this.agent = input.agent;
     this.routeConversation = input.routeConversation;
+    this.abortSignal = input.abortSignal;
     this.quota = input.quota;
     this.logger = input.logger;
     this.sessions = input.sessions ?? null;
@@ -937,10 +944,6 @@ export class FeishuChannel implements MessageChannelRuntime {
     const chatKey = buildFeishuConversationId(accountId, chatId, threadId);
     const queueKey = buildFeishuQueueKey(accountId, chatId, threadId);
 
-    if (await this.tryHandleAbortTrigger({ event, runtime, queueKey, accountId, chatId, messageId })) {
-      return;
-    }
-
     const converted = await convertFeishuMessageContent({
       messageType: event.message.message_type,
       content: event.message.content,
@@ -960,7 +963,21 @@ export class FeishuChannel implements MessageChannelRuntime {
 
     this.quota.onInbound(chatKey);
 
-    const { media, skipped } = await this.downloadInboundAttachments({
+    const hadInboundMedia = hasFeishuInboundMedia(event.message.message_type, event.message.content);
+    const conversationAgent = this.routeConversation?.({ accountId, conversationId: chatKey, text: decision.text,
+      metadata: { channel: "feishu", channelMessageId: messageId, senderId: event.sender?.sender_id?.open_id,
+        hadInboundMedia, humanStopRequested: isLikelyAbortText(decision.text),
+        authenticatedHuman: event.sender.sender_type === "user",
+        ...(event.sender.sender_type === "user" ? { origin: "human" as const } : {}) } });
+    if (conversationAgent) {
+      if (!hadInboundMedia && event.sender.sender_type === "user" && isLikelyAbortText(decision.text)) {
+        const owned = this.activeTasks.get(queueKey)?.filter((task) => !task.suppressed
+          && task.executionDomain === "conversation" && task.senderOpenId === event.sender.sender_id?.open_id) ?? [];
+        if (owned.length) await this.handleAbortFastPath({ runtime, activeTasks: owned, abortRequestMessageId: messageId,
+          chatId, accountId, acknowledge: false });
+      }
+    } else if (await this.tryHandleAbortTrigger({ event, runtime, queueKey, accountId, chatId, messageId })) return;
+    const { media, skipped } = conversationAgent ? { media: [], skipped: [] } : await this.downloadInboundAttachments({
       runtime,
       accountId,
       chatKey,
@@ -976,10 +993,6 @@ export class FeishuChannel implements MessageChannelRuntime {
     // commands never bind — they act on whatever the chat resolves to when they
     // run (and switch/cancel commands take the control lane so they preempt a
     // running prompt for real-time switching).
-    const conversationAgent = this.routeConversation?.({ accountId, conversationId: chatKey, text: requestText,
-      metadata: { channel: "feishu", channelMessageId: messageId, senderId: event.sender?.sender_id?.open_id,
-        authenticatedHuman: event.sender.sender_type === "user",
-        ...(event.sender.sender_type === "user" ? { origin: "human" as const } : {}) } });
     const isSlash = requestText.trim().startsWith("/");
     const boundAlias = conversationAgent || isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
     const lane = resolveTurnLane(requestText);
@@ -1010,7 +1023,7 @@ export class FeishuChannel implements MessageChannelRuntime {
 
     await (conversationAgent ? this.conversationExecutor : this.executor).run(
       chatKey,
-      lane,
+      conversationAgent ? "control" : lane,
       () => this.runTurn({
         runtime,
         accountId,
@@ -1022,6 +1035,7 @@ export class FeishuChannel implements MessageChannelRuntime {
         messageId,
         requestText,
         media,
+        hadInboundMedia,
         active,
         abortController,
         boundAlias,
@@ -1133,13 +1147,32 @@ export class FeishuChannel implements MessageChannelRuntime {
       boundAlias,
       typingState: { messageId, reactionId: null },
       abortController,
+      humanStopController: new AbortController(),
+      rootAbortCleanup: null,
       suppressed: false,
       cardController: null,
     };
     const stack = this.activeTasks.get(queueKey) ?? [];
     stack.push(active);
     this.activeTasks.set(queueKey, stack);
+    const rootSignal = this.abortSignal;
+    const onRootAbort = () => { active.suppressed = true; abortController.abort(); };
+    if (rootSignal?.aborted) onRootAbort();
+    else if (rootSignal) {
+      rootSignal.addEventListener("abort", onRootAbort, { once: true });
+      active.rootAbortCleanup = () => rootSignal.removeEventListener("abort", onRootAbort);
+    }
     return { active, abortController };
+  }
+
+  private abortAllActiveTasks(): void {
+    for (const task of [...this.activeTasks.values()].flat()) {
+      task.suppressed = true;
+      task.abortController.abort();
+      task.rootAbortCleanup?.();
+      task.rootAbortCleanup = null;
+    }
+    this.activeTasks.clear();
   }
 
   /**
@@ -1227,7 +1260,7 @@ export class FeishuChannel implements MessageChannelRuntime {
   }
 
   private async runTurn(input: {
-    agent?: ChannelStartInput["agent"];
+    agent?: NonNullable<ReturnType<NonNullable<ChannelStartInput["routeConversation"]>>>;
     runtime: AccountRuntime;
     accountId: string;
     chatId: string;
@@ -1238,6 +1271,7 @@ export class FeishuChannel implements MessageChannelRuntime {
     messageId: string;
     requestText: string;
     media: ChannelMediaAttachment[];
+    hadInboundMedia: boolean;
     active: ActiveTask;
     abortController: AbortController;
     boundAlias: string | undefined;
@@ -1250,6 +1284,16 @@ export class FeishuChannel implements MessageChannelRuntime {
     try {
       if (!this.agent) return;
       if (active.suppressed) return;
+      const ingress = {
+        accountId, conversationId: chatKey, text: requestText, replyContextToken: messageId,
+        ...(media.length > 0 ? { media } : {}),
+        metadata: { ...buildFeishuRouteMetadata({ chatType, senderOpenId: active.senderOpenId, chatId, senderIsOwner: active.senderIsOwner }),
+          channelMessageId: messageId, hadInboundMedia: input.hadInboundMedia, authenticatedHuman: input.authenticatedHuman,
+          ...(boundAlias ? { boundSessionAlias: boundAlias } : {}), ...(input.authenticatedHuman ? { origin: "human" as const } : {}) },
+        abortSignal: abortController.signal,
+        ...(input.agent ? { humanStopSignal: active.humanStopController.signal } : {}),
+      };
+      await input.agent?.prepareConversation?.(ingress);
       active.typingState = await addTypingIndicator({
         client: runtime.client.sdk as unknown as FeishuReactionClient,
         messageId,
@@ -1294,18 +1338,7 @@ export class FeishuChannel implements MessageChannelRuntime {
 
       try {
         const response = await (input.agent ?? this.agent).chat({
-          accountId,
-          conversationId: chatKey,
-          text: requestText,
-          ...(media.length > 0 ? { media } : {}),
-          replyContextToken: messageId,
-          metadata: {
-            ...buildFeishuRouteMetadata({ chatType, senderOpenId: active.senderOpenId, chatId, senderIsOwner: active.senderIsOwner }),
-            channelMessageId: messageId,
-            authenticatedHuman: input.authenticatedHuman,
-            ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
-            ...(input.authenticatedHuman ? { origin: "human" as const } : {}),
-          },
+          ...ingress,
           reply: safeReply,
           // Only consume the structured tool-event side-channel when we actually
           // have a card to render into. Without this gate, static-mode turns would
@@ -1331,7 +1364,6 @@ export class FeishuChannel implements MessageChannelRuntime {
               active.cardController?.recordUsage(usage);
             },
           } : {}),
-          abortSignal: abortController.signal,
         });
         if (active.suppressed) return;
         await this.deliverResponse({ runtime, accountId, chatId, messageId, active, response });
@@ -1344,6 +1376,8 @@ export class FeishuChannel implements MessageChannelRuntime {
         throw error;
       }
     } finally {
+      active.rootAbortCleanup?.();
+      active.rootAbortCleanup = null;
       if (boundAlias) {
         // markInactive always mirrors the markActive in handleMessageEvent,
         // regardless of outcome (including skipped turns).
@@ -1518,6 +1552,7 @@ export class FeishuChannel implements MessageChannelRuntime {
     abortRequestMessageId: string;
     chatId: string;
     accountId: string;
+    acknowledge?: boolean;
   }): Promise<void> {
     const { runtime, activeTasks, abortRequestMessageId, chatId, accountId } = input;
     // Suppress and signal every pending entry in the selected execution domain.
@@ -1526,6 +1561,7 @@ export class FeishuChannel implements MessageChannelRuntime {
     for (const t of activeTasks) {
       t.suppressed = true;
       try {
+        t.humanStopController.abort();
         t.abortController.abort();
       } catch {
         // AbortController.abort() never throws in practice; defensive
@@ -1567,7 +1603,7 @@ export class FeishuChannel implements MessageChannelRuntime {
         });
       }
     }
-    if (cardAcked) return;
+    if (cardAcked || input.acknowledge === false) return;
     try {
       await this.sendReplyWithGuard({
         runtime,

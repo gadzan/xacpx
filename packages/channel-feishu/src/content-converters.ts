@@ -9,6 +9,21 @@ interface ConvertInput {
   stripBotMentions?: boolean;
 }
 
+export function hasFeishuInboundMedia(messageType: string, content: string): boolean {
+  if (messageType === "text") return false;
+  if (messageType !== "post") return true;
+  const parsed = safeParse(content);
+  if (!parsed || typeof parsed !== "object") return true;
+  const hasMedia = (value: unknown): boolean => {
+    if (Array.isArray(value)) return value.some(hasMedia);
+    if (!value || typeof value !== "object") return false;
+    const item = value as Record<string, unknown>;
+    return ["img", "image", "media", "file", "audio", "video"].includes(String(item.tag))
+      || "image_key" in item || "file_key" in item || Object.values(item).some(hasMedia);
+  };
+  return hasMedia(parsed);
+}
+
 export async function convertFeishuMessageContent(input: ConvertInput): Promise<FeishuContentConversionResult> {
   const resources: FeishuResourceDescriptor[] = [];
   const skippedNotes: string[] = [];

@@ -25,9 +25,9 @@ test("real Weixin adapter delivers Conversation after /use B without entering he
   const sent: Array<{ to: string; text: string; context: string }> = [];
   const pending: unknown[] = [];
   let wake = () => {};
-  const emit = (id: number, text: string) => {
+  const emit = (id: number, text: string, attachments: unknown[] = []) => {
     pending.push({ message_id: id, from_user_id: "human", to_user_id: "bot", context_token: `ctx-${id}`,
-      create_time_ms: Date.now(), item_list: [{ type: 1, text_item: { text } }] }); wake();
+      create_time_ms: Date.now(), item_list: [{ type: 1, text_item: { text } }, ...attachments] }); wake();
   };
   mock.module("../../../src/weixin/api/api.ts", () => ({
     getUpdates: async (input: { abortSignal?: AbortSignal }) => {
@@ -82,6 +82,11 @@ test("real Weixin adapter delivers Conversation after /use B without entering he
     finalRemaining: () => 4, hasPendingFinal: () => false, drainPendingFinalUpToBudget: () => [],
     prependPendingFinal() {}, enqueuePendingFinal() {}, clearPendingFinal() {} };
   let startup: Promise<void> | undefined;
+  let resumed: Awaited<ReturnType<typeof createConversationRuntime>> | undefined;
+  let restarted: Promise<void> | undefined;
+  let nextRegistry: MessageChannelRegistry | undefined;
+  const nextDaemon = new AbortController();
+  let finishRecovered = () => {};
   try {
     await sessions.createSession("A", "codex", "backend"); await sessions.createSession("B", "codex", "backend");
     await sessions.useSession(chatKey, "A");
@@ -127,13 +132,55 @@ test("real Weixin adapter delivers Conversation after /use B without entering he
     // Unknown slash text remains bound; only recognized commands bypass routing.
     emit(8, "/unknown-command"); await waitFor(() => runtime.store.listRuns(group.id, topic.id).length === 3);
     const resumable = runtime.store.listRuns(group.id, topic.id).find((run) => run.state === "queued")!;
+    let mediaRejections = 0;
+    const accept = runtime.bindings.accept.bind(runtime.bindings);
+    runtime.bindings.accept = async (...args) => {
+      try { return await accept(...args); }
+      catch (error) { if ((error as { code?: string }).code === "external_media_unsupported") mediaRejections++; throw error; }
+    };
+    // Raw attachments are rejected even without usable CDN keys, or on Stop.
+    for (const [index, attachment] of [{ type: 2, image_item: {} }, { type: 4, file_item: { file_name: "missing" } },
+      { type: 2, image_item: { aeskey: "bad", media: { encrypt_query_param: "missing" } } }].entries()) {
+      emit(20 + index, "work with attachment", [attachment]);
+      await waitFor(() => mediaRejections === index + 1);
+    }
+    emit(23, "/stop", [{ type: 2, image_item: {} }]); await Bun.sleep(20);
+    expect(runtime.store.getRun(resumable.id)?.state).toBe("queued");
+    expect(runtime.store.listRuns(group.id, topic.id)).toHaveLength(3);
     daemon.abort(); await startup; await Bun.sleep(5);
     expect(runtime.store.getRun(resumable.id)).toMatchObject({ state: "queued" });
     expect(runtime.store.getRun(resumable.id)?.completionReason).toBeUndefined();
     expect(sent.some((message) => message.context === "ctx-8")).toBe(false);
     finishOrdinary(); await waitFor(() => background.length === 1); expect(background).toEqual(["A"]);
+    await registry.stopAll(); await runtime.shutdown();
+    let recoveredStarted = false;
+    const nextEvents = createControlEventBus();
+    const nextControl = new ControlService({ agent: { chat: async (input: any) => {
+      recoveredStarted = true;
+      await new Promise<void>((resolve) => { finishRecovered = resolve;
+        input.abortSignal.addEventListener("abort", resolve, { once: true }); });
+      if (input.abortSignal.aborted) throw new Error("provider cancelled");
+      return { text: "recovered" };
+    } }, sessions, activeTurns: { isActiveAnywhere: () => false }, events: nextEvents, scheduled: {}, orchestration: {},
+      workspaces: { list: () => [{ name: "backend", cwd: root }] } } as never);
+    const nextKernel = conversationKernel(nextControl);
+    resumed = await createConversationRuntime({ config, state, stateStore, sessions, control: nextKernel,
+      sqlitePath: join(root, "conversations.sqlite"), releaseOwnedSession: async () => {}, stateMutex, autoKick: false,
+      onProductEvent: (event) => nextKernel.emitConversationProduct(event) });
+    nextKernel.bindConversationRuntime(resumed);
+    const activation = resumed.activateAfterConsumerLock(); await waitFor(() => recoveredStarted);
+    nextRegistry = new MessageChannelRegistry([new WeixinChannel()]);
+    const normal: Agent = { isKnownCommand: () => true, chat: async () => { normalStops++; return { text: "Session stopped" }; } };
+    const restored = resumed;
+    restarted = nextRegistry.startAll({ agent: normal, logger, quota, abortSignal: nextDaemon.signal } as never,
+      (id, agent) => createConversationChannelRouter(id, agent, restored, nextEvents, nextDaemon.signal));
+    restarted.catch(() => {}); emit(30, "/stop");
+    await waitFor(() => restored.store.getRun(resumable.id)?.state === "cancelled"); await activation;
+    expect(restored.store.getRun(resumable.id)?.completionReason).toBe("human-cancelled");
+    expect(restored.store.listRuns(group.id, topic.id)).toHaveLength(3); expect(normalStops).toBe(0);
   } finally {
-    finishOrdinary(); daemon.abort(); await startup; await registry.stopAll(); await runtime.shutdown();
+    finishOrdinary(); finishRecovered(); daemon.abort(); nextDaemon.abort(); await startup; await restarted;
+    await registry.stopAll(); await nextRegistry?.stopAll(); await runtime.shutdown(); await resumed?.shutdown();
     if (priorStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = priorStateDir;
     mock.restore();
   }

@@ -9,6 +9,7 @@ import { createControlEventBus } from "../../../src/control/control-event-bus";
 import { createConversationRuntime } from "../../../src/conversations/conversation-composition";
 import { createConversationChannelRouter } from "../../../src/channels/conversation-channel-router";
 import { MessageChannelRegistry } from "../../../src/channels/channel-registry";
+import { createMessageChannel, registerChannelFactory } from "../../../src/channels/create-channel";
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
 import { createSqlDriver } from "../../../src/conversations/sql-driver";
 import { createDirectConversationId } from "../../../src/domain/ids";
@@ -65,6 +66,64 @@ async function waitFor(condition: () => boolean) {
   while (!condition()) { if (Date.now() > deadline) throw new Error("condition timed out"); await Bun.sleep(3); }
 }
 
+type MediaScenario = "available" | "failed" | "over-limit" | "missing-key";
+function externalAdapter(platform: "discord" | "feishu", sent: string[]) {
+  let emit: (id: string, text: string, media?: MediaScenario) => Promise<void> | void = () => {};
+  let ready = false;
+  const channel = platform === "discord"
+    ? new DiscordChannel({ token: "x", dmPolicy: "open", guildPolicy: "disabled", requireMention: false,
+      typingIndicator: false, enableAutocomplete: false }, { logger: logger as never, identifyStaggerMs: 0,
+      createClient: () => ({
+        start: async (input: any) => { emit = (id, text, media) => input.handlers.onMessage({ id, content: text,
+          ...(media ? { attachments: Array.from({ length: media === "over-limit" ? 50 : 1 }, (_, index) => ({ id: `a${index}`,
+            url: media === "failed" ? "https://example.invalid/unavailable" : "https://example.com/image", name: "image.png",
+            contentType: "image/png", size: media === "over-limit" ? 100_000_000 : 10 })) } : {}),
+          channelId: "dm", guildId: null, author: { id: "human", bot: false }, createdTimestamp: Date.now() });
+          ready = true; return { botUserId: "bot" }; },
+        probeBot: async () => ({ botUserId: "bot" }), startTyping: async () => () => {},
+        sendMessage: async (_: unknown, body: any) => { sent.push(body.content ?? ""); return { messageId: `s${sent.length}` }; },
+        editMessage: async () => {}, deleteMessage: async () => {}, destroy: async () => {}, addReaction: async () => {},
+      }) as never })
+    : new FeishuChannel({ appId: "app", appSecret: "secret", domain: "feishu", dmPolicy: "open",
+      requireMention: false, textMessageFormat: "text", replyMode: "static" }, { createClient: () => ({
+        sdk: { im: { message: {
+          reply: async (body: unknown) => { sent.push(JSON.stringify(body)); return { data: { message_id: "reply", chat_id: "chat" } }; },
+          create: async (body: unknown) => { sent.push(JSON.stringify(body)); return { data: { message_id: "reply", chat_id: "chat" } }; },
+        } } }, probeBot: async () => ({ botOpenId: "bot" }), stop: () => {},
+        startWS: async (input: any) => { emit = (id, text, media) => input.handlers["im.message.receive_v1"]({
+          sender: { sender_id: { open_id: "human" }, sender_type: "user" },
+          message: { message_id: id, chat_id: "chat", chat_type: "p2p", message_type: media ? "post" : "text",
+            content: JSON.stringify(media ? { content: [[{ tag: "text", text },
+              ...Array.from({ length: media === "over-limit" ? 50 : 1 }, () => ({ tag: "img",
+                ...(media === "missing-key" ? {} : { image_key: media === "failed" ? "unavailable" : "image" }) }))]] } : { text }),
+            create_time: String(Date.now()) },
+        }); ready = true; },
+      }) as never });
+  return { channel, emit: (id: string, text: string, media?: MediaScenario) => emit(id, text, media), ready: () => ready };
+}
+
+test("registered plugin types retain their namespace contract through binding, ingress, replay and unbind", async () => {
+  const current = await compose();
+  try {
+    const { group: g, topic } = await group(current);
+    for (const type of ["my_channel", "Foo", "long".repeat(20), "my channel"]) {
+      registerChannelFactory(type, () => ({ id: type }) as never);
+      expect(createMessageChannel(type).id).toBe(type);
+      const chatKey = `${type}:abc`;
+      await current.control.bindConversation({ chatKey, conversationId: g.id, topicId: topic.id });
+      const input = request("work", "custom", chatKey); input.metadata!.channel = type;
+      const route = createConversationChannelRouter(type, current.normalAgent, current.runtime, current.events, current.daemon.signal);
+      const response = route(input)!.chat(input);
+      await waitFor(() => current.runtime.store.listRuns(g.id, topic.id).some((run) => run.state === "queued"));
+      await current.runtime.dispatcher.kick();
+      expect((await response).text).toContain("provider result");
+      await current.control.unbindConversation(chatKey);
+      expect((await route(input)!.chat(input)).text).toContain("provider result");
+    }
+    expect(current.delegated()).toBe(0);
+  } finally { await current.close(); }
+});
+
 test("bound human input reaches existing provider chain, returns exact public results and stamps ingress", async () => {
   const physical: ChatRequest[] = [];
   const current = await compose({ agent: { chat: async (input) => { physical.push(input); return { text: "reviewed" }; } } });
@@ -86,7 +145,7 @@ test("bound human input reaches existing provider chain, returns exact public re
   } finally { await current.close(); }
 });
 
-test("structured automatic routing returns the durable human question through channel delivery", async () => {
+test("structured automatic routing returns the durable question and Stop can cancel a waiting-human Run", async () => {
   let starts = 0;
   const current = await compose({ agent: { chat: async () => { starts++; return { text: "wrong" }; } },
     router: { capabilityRestriction: { toolsDisabled: true, filesystemDisabled: true, terminalDisabled: true,
@@ -98,6 +157,10 @@ test("structured automatic routing returns the durable human question through ch
     const input = request(); input.metadata!.conversationTarget = { mode: "automatic" };
     expect((await current.agent.chat(input)).text).toContain("Which branch should we review?");
     expect(current.runtime.store.listRuns(g.id, topic.id)[0]?.state).toBe("waiting-human");
+    await current.agent.chat(request("/stop", "stop-waiting"));
+    expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(1);
+    expect(current.runtime.store.listRuns(g.id, topic.id)[0]).toMatchObject({ state: "cancelled", completionReason: "human-cancelled" });
+    expect(current.delegated()).toBe(0);
     expect(starts).toBe(0);
   } finally { await current.close(); }
 });
@@ -124,6 +187,40 @@ test("binding and receipt survive restart, retries replay after rebind without r
     expect((await second.runtime.bindings.accept("discord", request()))?.run.id).toBe(accepted?.run.id);
   } finally { await second.close(); }
 });
+
+for (const retainOriginalFacts of [true, false]) {
+  test(`legacy receipt Stop owner migration ${retainOriginalFacts ? "backfills only original facts" : "fails closed when facts were lost"}`, async () => {
+    const first = await compose();
+    await group(first);
+    const accepted = (await first.runtime.bindings.accept("discord", request()))!;
+    await first.close();
+    const sql = await createSqlDriver(first.path);
+    sql.exec("ALTER TABLE external_conversation_requests DROP COLUMN stop_ingress");
+    if (!retainOriginalFacts) sql.run("UPDATE pending_dispatches SET human_ingress = NULL");
+    sql.close();
+    const second = await compose({ state: first.state, path: first.path });
+    try {
+      const stop = request("/stop", "stop-migration");
+      if (retainOriginalFacts) {
+        expect(second.runtime.bindings.stopTargets("discord", stop)).toEqual([accepted.run.id]);
+        const check = await createSqlDriver(first.path);
+        try {
+          expect(JSON.parse(check.get<{ stop_ingress: string }>("SELECT stop_ingress FROM external_conversation_requests")!.stop_ingress))
+            .toEqual({ chatKey: request().conversationId, senderId: "human", accountId: "default" });
+        } finally { check.close(); }
+        const replay = await second.runtime.bindings.accept("discord", request());
+        expect(replay?.dispatch?.authorityEpoch).toBe(first.runtime.authorityEpoch);
+        expect(replay?.dispatch?.authorityEpoch).not.toBe(second.runtime.authorityEpoch);
+        await second.agent.chat(stop);
+        expect(second.runtime.store.getRun(accepted.run.id)?.completionReason).toBe("human-cancelled");
+      } else {
+        await expect(second.agent.chat(stop)).rejects.toMatchObject({ code: "external_stop_unavailable" });
+        expect(second.runtime.store.getRun(accepted.run.id)?.state).toBe("queued");
+        expect(second.delegated()).toBe(0);
+      }
+    } finally { await second.close(); }
+  });
+}
 
 test("thread bindings do not inherit parent or cross Topic boundaries", async () => {
   const current = await compose();
@@ -200,7 +297,7 @@ test("Stop cancels the accepted Run and shutdown can finish while the channel aw
   try {
     const { group: g, topic } = await group(current);
     const abort = new AbortController();
-    const input = request(); input.abortSignal = abort.signal;
+    const input = request(); input.abortSignal = abort.signal; input.humanStopSignal = abort.signal;
     const waiting = current.agent.chat(input);
     await waitFor(() => current.runtime.store.listRuns(g.id, topic.id).length === 1);
     abort.abort();
@@ -282,7 +379,7 @@ test("Stop while acceptance waits for a real Bot gate creates no Run", async () 
     let entered = false;
     const gate = current.runtime.bots.runLifecycle(bots[0]!.id, async () => { entered = true; await new Promise<void>((resolve) => { release = resolve; }); });
     await waitFor(() => entered);
-    const abort = new AbortController(); const input = request(); input.abortSignal = abort.signal;
+    const abort = new AbortController(); const input = request(); input.abortSignal = abort.signal; input.humanStopSignal = abort.signal;
     const outcome = current.agent.chat(input).catch((error) => error);
     await Bun.sleep(5); abort.abort(); release(); await gate;
     expect(await outcome).toMatchObject({ code: "external_request_aborted" });
@@ -299,7 +396,7 @@ test("human Stop from accepted projection fences provider admission before chann
   });
   try {
     const { group: g, topic } = await group(current);
-    const input = request(); input.abortSignal = abort.signal;
+    const input = request(); input.abortSignal = abort.signal; input.humanStopSignal = abort.signal;
     expect(await current.agent.chat(input)).toMatchObject({ silent: true });
     expect(starts).toBe(0);
     expect(current.runtime.store.listRuns(g.id, topic.id)[0]?.state).toBe("cancelled");
@@ -418,7 +515,202 @@ test("early route selection keeps replay/tombstones out of Session and fails clo
   } finally { await current.close(); }
 });
 
+test("selection freezes Conversation and Topic; replacements fail closed while committed receipts still replay", async () => {
+  const current = await compose();
+  try {
+    const { group: g, topic } = await group(current);
+    const selectedTopic = current.route(request())!;
+    const otherTopic = await current.control.createGroupTopic(g.id, "Other", { workspace: "backend", isolation: "shared-single-writer" });
+    await current.control.bindConversation({ chatKey: request().conversationId, conversationId: g.id, topicId: otherTopic.id });
+    await expect(selectedTopic.chat(request())).rejects.toMatchObject({ code: "binding_changed" });
+    const selectedGroup = current.route(request())!;
+    const { group: otherGroup, topic: newTopic } = await group(current, ["Other", "Partner"]);
+    await expect(selectedGroup.chat(request())).rejects.toMatchObject({ code: "binding_changed" });
+    expect(current.runtime.store.listRuns(g.id)).toHaveLength(0);
+    expect(current.runtime.store.listRuns(otherGroup.id)).toHaveLength(0);
+    const response = current.agent.chat(request());
+    await waitFor(() => current.runtime.store.listRuns(otherGroup.id, newTopic.id).length === 1);
+    await current.runtime.dispatcher.kick(); await response;
+    const replay = current.route(request())!;
+    await current.control.bindConversation({ chatKey: request().conversationId, conversationId: g.id, topicId: topic.id });
+    expect((await replay.chat(request())).text).toContain("provider result");
+    expect(current.runtime.store.listRuns(g.id)).toHaveLength(0);
+  } finally { await current.close(); }
+});
+
+test("raw attachment presence rejects failed/skipped/retried media without creating a receipt", async () => {
+  const current = await compose();
+  try {
+    const { group: g, topic } = await group(current);
+    for (const media of [[{ kind: "image", filePath: "downloaded.png" }], undefined, []]) {
+      const input = request("analyze attachment", "media-message");
+      input.metadata!.hadInboundMedia = true; input.media = media as ChatRequest["media"];
+      await expect(current.agent.chat(input)).rejects.toMatchObject({ code: "external_media_unsupported" });
+    }
+    expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(0);
+    const key = createHash("sha256").update(JSON.stringify(["discord", "default", request().conversationId, "media-message"])).digest("hex");
+    expect(current.runtime.store.hasExternalRequest(key)).toBe(false);
+  } finally { await current.close(); }
+});
+
 for (const platform of ["discord", "feishu"] as const) {
+  test(`actual ${platform} rejects original attachments before download or degradation`, async () => {
+    const current = await compose(); const sent: string[] = [];
+    const { channel, emit, ready } = externalAdapter(platform, sent);
+    const registry = new MessageChannelRegistry([channel]); let startup: Promise<void> | undefined;
+    let rejected = 0; let downloads = 0;
+    const accept = current.runtime.bindings.accept.bind(current.runtime.bindings);
+    current.runtime.bindings.accept = async (...args) => {
+      try { return await accept(...args); } catch (error) {
+        if ((error as { code?: string }).code === "external_media_unsupported") rejected++;
+        throw error;
+      }
+    };
+    (channel as any).downloadInboundAttachments = async () => { downloads++; throw new Error("bound media must not download"); };
+    try {
+      const { group: g, topic } = await group(current);
+      const chatKey = platform === "discord" ? "discord:default:dm:dm" : "feishu:default:chat";
+      await current.control.bindConversation({ chatKey, conversationId: g.id, topicId: topic.id });
+      startup = registry.startAll({ agent: current.normalAgent, logger, quota, abortSignal: current.daemon.signal } as never,
+        (id, agent) => createConversationChannelRouter(id, agent, current.runtime, current.events, current.daemon.signal));
+      startup.catch(() => {}); await waitFor(ready); await Bun.sleep(5);
+      for (const mode of ["available", "failed", "over-limit", "missing-key"] as const) {
+        const before = rejected;
+        await Promise.resolve(emit(mode, "analyze attachment", mode)).catch(() => {});
+        await waitFor(() => rejected === before + 1);
+      }
+      expect(downloads).toBe(0); expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(0);
+      expect(current.delegated()).toBe(0);
+    } finally { await current.close(); await registry.stopAll(); await startup; }
+  });
+
+  test(`actual ${platform} commits later ingress while typing setup and an earlier Run are pending`, async () => {
+    const current = await compose(); const sent: string[] = [];
+    const { channel, emit, ready } = externalAdapter(platform, sent);
+    const registry = new MessageChannelRegistry([channel]); let startup: Promise<void> | undefined;
+    let releaseUi = () => {}; let uiCalls = 0;
+    const blockedUi = new Promise<void>((resolve) => { releaseUi = resolve; });
+    try {
+      const { group: g, topic } = await group(current);
+      const chatKey = platform === "discord" ? "discord:default:dm:dm" : "feishu:default:chat";
+      await current.control.bindConversation({ chatKey, conversationId: g.id, topicId: topic.id });
+      startup = registry.startAll({ agent: current.normalAgent, logger, quota, abortSignal: current.daemon.signal } as never,
+        (id, agent) => createConversationChannelRouter(id, agent, current.runtime, current.events, current.daemon.signal));
+      startup.catch(() => {}); await waitFor(ready); await Bun.sleep(5);
+      const runtime = (channel as any).accounts.get("default");
+      if (platform === "discord") {
+        runtime.account.typingIndicator = true;
+        runtime.client.startTyping = async () => { uiCalls++; await blockedUi; return () => {}; };
+      } else {
+        runtime.client.sdk.im.messageReaction = { create: async () => { uiCalls++; await blockedUi; return { data: { reaction_id: "typing" } }; }, delete: async () => {} };
+      }
+      const first = Promise.resolve(emit("ui1", "first")); await waitFor(() => uiCalls === 1);
+      const second = Promise.resolve(emit("ui2", "second"));
+      await waitFor(() => current.runtime.store.listRuns(g.id, topic.id).length === 2);
+      expect(current.runtime.store.listRuns(g.id, topic.id).every((run) => run.state === "queued")).toBe(true);
+      expect(sent).toEqual([]);
+      releaseUi(); await current.runtime.dispatcher.kick(); await first; await second;
+      await waitFor(() => sent.filter((text) => text.includes("provider result")).length === 2);
+    } finally { releaseUi(); await current.close(); await registry.stopAll(); await startup; }
+  });
+  for (const stopText of ["/stop", "stop"]) {
+    test(`actual ${platform} durably accepts pending input and restores ${stopText} targeting after restart`, async () => {
+      const first = await compose();
+      let second: Awaited<ReturnType<typeof compose>> | undefined;
+      let startup: Promise<void> | undefined; let restarted: Promise<void> | undefined;
+      const sent: string[] = [];
+      const original = externalAdapter(platform, sent);
+      const originalRegistry = new MessageChannelRegistry([original.channel]);
+      let nextRegistry: MessageChannelRegistry | undefined;
+      let providerStarted = false; let finishProvider = () => {}; let normalStops = 0;
+      let ordinarySignal: AbortSignal | undefined; let finishOrdinary = () => {};
+      try {
+        const { group: g, topic } = await group(first);
+        const chatKey = platform === "discord" ? "discord:default:dm:dm" : "feishu:default:chat";
+        await first.control.bindConversation({ chatKey, conversationId: g.id, topicId: topic.id });
+        startup = originalRegistry.startAll({ agent: first.normalAgent, logger, quota, abortSignal: first.daemon.signal } as never,
+          (id, agent) => createConversationChannelRouter(id, agent, first.runtime, first.events, first.daemon.signal));
+        startup.catch(() => {}); await waitFor(original.ready); await Bun.sleep(5);
+        const deliveries = ["m1", "m2", "m3"].map((id) => Promise.resolve(original.emit(id, `work ${id}`)).catch((error) => error));
+        await waitFor(() => first.runtime.store.listRuns(g.id, topic.id).length === 3);
+        const runs = first.runtime.store.listRuns(g.id, topic.id);
+        expect(runs.every((run) => run.state === "queued")).toBe(true);
+        for (const run of runs) expect(first.runtime.store.getAcceptedRequest(g.id, topic.id, run.requestId)).toBeDefined();
+        const replacement = await first.control.createGroupTopic(g.id, "Rebound", { workspace: "backend", isolation: "shared-single-writer" });
+        await first.control.bindConversation({ chatKey, conversationId: g.id, topicId: replacement.id });
+        expect(first.runtime.store.listRuns(g.id, replacement.id)).toHaveLength(0);
+        await original.channel.stop("disabled"); await Promise.all(deliveries); await first.close(); await startup;
+        second = await compose({ state: first.state, path: first.path, agent: { chat: async (input) => {
+          providerStarted = true;
+          await new Promise<void>((resolve) => { finishProvider = resolve; input.abortSignal!.addEventListener("abort", resolve as () => void, { once: true }); });
+          if (input.abortSignal!.aborted) throw new Error("provider cancelled");
+          return { text: "recovered" };
+        } } });
+        const resumed = second;
+        const activation = resumed.runtime.activateAfterConsumerLock();
+        await waitFor(() => providerStarted);
+        const adapter = externalAdapter(platform, sent); nextRegistry = new MessageChannelRegistry([adapter.channel]);
+        const normal: Agent = { isKnownCommand: () => true, chat: async (input) => {
+          if (input.text === "hold restored Session") {
+            ordinarySignal = input.abortSignal;
+            await new Promise<void>((resolve) => { finishOrdinary = resolve; }); return { text: "Session survived" };
+          }
+          normalStops++; return { text: "Session stopped" };
+        } };
+        restarted = nextRegistry.startAll({ agent: normal, logger, quota, abortSignal: resumed.daemon.signal } as never,
+          (id, agent) => createConversationChannelRouter(id, agent, resumed.runtime, resumed.events, resumed.daemon.signal));
+        restarted.catch(() => {}); await waitFor(adapter.ready); await Bun.sleep(5);
+        const ordinary = Promise.resolve(adapter.emit("session-after-restart", "hold restored Session"));
+        await waitFor(() => ordinarySignal !== undefined);
+        await Promise.resolve(adapter.emit("media-stop", stopText, "missing-key")).catch(() => {});
+        expect(resumed.runtime.store.listRuns(g.id, topic.id).some((run) => run.state === "running")).toBe(true);
+        expect(ordinarySignal!.aborted).toBe(false);
+        await adapter.emit("stop-after-restart", stopText);
+        await waitFor(() => resumed.runtime.store.listRuns(g.id, topic.id).every((run) => run.state === "cancelled"));
+        await activation;
+        expect(normalStops).toBe(0); expect(resumed.runtime.store.listRuns(g.id, topic.id)).toHaveLength(3);
+        expect(resumed.runtime.store.listRuns(g.id, replacement.id)).toHaveLength(0);
+        expect(resumed.runtime.store.listRuns(g.id, topic.id).map((run) => run.completionReason)).toEqual(Array(3).fill("human-cancelled"));
+        expect(ordinarySignal!.aborted).toBe(false);
+        const tasks = [...(adapter.channel as any).activeTasks.values()].flat();
+        expect(tasks.some((task: any) => task.executionDomain === "session" && !task.suppressed)).toBe(true);
+        finishOrdinary(); await ordinary; await waitFor(() => sent.some((message) => message.includes("Session survived")));
+      } finally { finishOrdinary(); finishProvider(); await first.close(); await second?.close(); await originalRegistry.stopAll(); await nextRegistry?.stopAll(); await startup; await restarted; }
+    });
+  }
+  for (const reason of ["disabled", "removed"] as const) {
+    test(`actual ${platform} stop(${reason}) detaches without cancelling durable ingress`, async () => {
+      const current = await compose();
+      const sent: string[] = [];
+      const { channel, emit, ready } = externalAdapter(platform, sent);
+      const registry = new MessageChannelRegistry([channel]);
+      let startup: Promise<void> | undefined;
+      try {
+        const { group: g, topic } = await group(current);
+        const chatKey = platform === "discord" ? "discord:default:dm:dm" : "feishu:default:chat";
+        await current.control.bindConversation({ chatKey, conversationId: g.id, topicId: topic.id });
+        startup = registry.startAll({ agent: current.normalAgent, logger, quota, abortSignal: current.daemon.signal } as never,
+          (id, agent) => createConversationChannelRouter(id, agent, current.runtime, current.events, current.daemon.signal));
+        startup.catch(() => {}); await waitFor(ready); await Bun.sleep(5);
+        const response = Promise.resolve(emit("queued", "work")).catch((error) => error);
+        await waitFor(() => current.runtime.store.listRuns(g.id, topic.id).length === 1);
+        const runId = current.runtime.store.listRuns(g.id, topic.id)[0]!.id;
+        await channel.stop(reason); await Bun.sleep(5);
+        expect(current.daemon.signal.aborted).toBe(false);
+        expect(current.runtime.store.getRun(runId)).toMatchObject({ state: "queued" });
+        expect(current.runtime.store.getRun(runId)?.completionReason).toBeUndefined();
+        expect((channel as any).activeTasks.size).toBe(0);
+        expect(current.delegated()).toBe(0);
+        await response; await current.close();
+        const reopened = await SqliteConversationStore.open(current.path);
+        try {
+          expect(reopened.getRun(runId)?.state).toBe("queued");
+          expect(reopened.getRun(runId)?.completionReason).toBeUndefined();
+        } finally { reopened.close(); }
+        expect(sent.some((text) => text.includes("provider result"))).toBe(false);
+      } finally { await current.close(); await registry.stopAll(); await startup; }
+    });
+  }
   test(`actual ${platform} bound Conversation bypasses Session A lane, result storage and Stop after /use B`, async () => {
     let providerCalls = 0;
     let finishProvider = () => {};
@@ -439,30 +731,7 @@ for (const platform of ["discord", "feishu"] as const) {
     let finishOrdinary = () => {}; let ordinaryStarted = false;
     let ordinarySignal: AbortSignal | undefined;
     const chatKey = platform === "discord" ? "discord:default:dm:dm" : "feishu:default:chat";
-    let emit: (id: string, text: string) => Promise<void> | void = () => {};
-    const channel = platform === "discord"
-      ? new DiscordChannel({ token: "x", dmPolicy: "open", guildPolicy: "disabled", requireMention: false,
-        typingIndicator: false, enableAutocomplete: false }, { logger: logger as never, identifyStaggerMs: 0,
-        createClient: () => ({
-          start: async (input: any) => { emit = (id, text) => input.handlers.onMessage({ id, content: text,
-            channelId: "dm", guildId: null, author: { id: "human", bot: false }, createdTimestamp: Date.now() });
-            return { botUserId: "bot" }; },
-          probeBot: async () => ({ botUserId: "bot" }), startTyping: async () => () => {},
-          sendMessage: async (_: unknown, body: any) => { sent.push(body.content ?? ""); return { messageId: `s${sent.length}` }; },
-          editMessage: async () => {}, deleteMessage: async () => {}, destroy: async () => {}, addReaction: async () => {},
-        }) as never })
-      : new FeishuChannel({ appId: "app", appSecret: "secret", domain: "feishu", dmPolicy: "open",
-        requireMention: false, textMessageFormat: "text", replyMode: "static" }, { createClient: () => ({
-          sdk: { im: { message: {
-            reply: async (body: unknown) => { sent.push(JSON.stringify(body)); return { data: { message_id: "reply", chat_id: "chat" } }; },
-            create: async (body: unknown) => { sent.push(JSON.stringify(body)); return { data: { message_id: "reply", chat_id: "chat" } }; },
-          } } }, probeBot: async () => ({ botOpenId: "bot" }), stop: () => {},
-          startWS: async (input: any) => { emit = (id, text) => input.handlers["im.message.receive_v1"]({
-            sender: { sender_id: { open_id: "human" }, sender_type: "user" },
-            message: { message_id: id, chat_id: "chat", chat_type: "p2p", message_type: "text",
-              content: JSON.stringify({ text }), create_time: String(Date.now()) },
-          }); },
-        }) as never });
+    const { channel, emit } = externalAdapter(platform, sent);
     const registry = new MessageChannelRegistry([channel]); let startup: Promise<void> | undefined;
     const normalAgent: Agent = { isKnownCommand: (text) => text.startsWith("/use "), chat: async (input) => {
       if (input.text === "/use B") { await current.sessions.useSession(chatKey, "B"); return { text: "switched" }; }
@@ -498,14 +767,16 @@ for (const platform of ["discord", "feishu"] as const) {
       expect(background).toEqual([]); expect(active).toEqual([]);
       expect(sent.filter((text) => text.includes("provider result"))).toHaveLength(1);
       // Keep A running while a second Conversation reaches the real provider.
-      // A third Conversation is queued in the adapter's independent lane.
+      // A third Conversation is durably accepted into the core Topic queue.
       const toCancel = emit("cancel-conversation", "cancel this work");
       await waitFor(() => current.runtime.store.listRuns(g.id, topic.id).length === 2);
       const cancelledRun = current.runtime.store.listRuns(g.id, topic.id).find((run) => run.state === "queued")!;
       const dispatched = current.runtime.dispatcher.kick();
       await waitFor(() => providerCalls === 2);
       const queued = emit("queued-conversation", "queued work");
-      await waitFor(() => Boolean(taskFor("queued-conversation")));
+      await waitFor(() => current.runtime.store.listRuns(g.id, topic.id).length === 3);
+      const queuedRun = current.runtime.store.listRuns(g.id, topic.id)[2]!;
+      expect(queuedRun.state).toBe("queued");
       const queuedTask = taskFor("queued-conversation")!;
       await emit("stop", "/stop");
       await waitFor(() => current.runtime.store.getRun(cancelledRun.id)?.state === "cancelled");
@@ -513,7 +784,8 @@ for (const platform of ["discord", "feishu"] as const) {
       expect(providerAborted).toBe(true);
       expect(queuedTask.abortController.signal.aborted).toBe(true); expect(queuedTask.suppressed).toBe(true);
       expect(ordinarySignal!.aborted).toBe(false); expect(ordinaryTask.suppressed).toBe(false);
-      expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(2);
+      expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(3);
+      expect(current.runtime.store.getRun(queuedRun.id)?.state).toBe("cancelled");
       expect(providerCalls).toBe(2);
       expect(sent.some((text) => text.includes("cancelled provider output"))).toBe(false);
       expect(background).toEqual([]); expect(active).toEqual([]);

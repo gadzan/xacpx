@@ -20,6 +20,7 @@ export type {
 } from "./interactions/elicitation-types.js";
 export type {
   ChannelStartInput,
+  ConversationChannelAgent,
   ChannelPermissionDecision,
   ChannelPermissionRequest,
   ConsumerLock,

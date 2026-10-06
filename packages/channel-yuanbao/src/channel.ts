@@ -477,7 +477,7 @@ export class YuanbaoChannel implements MessageChannelRuntime {
     if (boundAlias) this.activeTurns?.markActive(chatKey, boundAlias);
 
     try {
-      await (conversationAgent ? this.conversationExecutor : this.executor).run(chatKey, lane, async () => {
+      await (conversationAgent ? this.conversationExecutor : this.executor).run(chatKey, conversationAgent ? "control" : lane, async () => {
         if (!this.agent || !this.quota || !this.gateway || !this.logger) return;
         if (this.isAborted()) return;
         this.quota.onInbound(chatKey);
