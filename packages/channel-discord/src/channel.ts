@@ -114,6 +114,7 @@ interface AccountRuntime {
 }
 
 interface ActiveTask {
+  executionDomain: "session" | "conversation";
   accountId: string;
   channelId: string;
   guildId?: string;
@@ -2130,6 +2131,7 @@ export class DiscordChannel implements MessageChannelRuntime {
     const lane = resolveTurnLane(requestText);
 
     const { active, abortController } = this.registerActiveTask({
+      executionDomain: conversationAgent ? "conversation" : "session",
       accountId,
       channelId,
       guildId: route.guildId,
@@ -2199,8 +2201,11 @@ export class DiscordChannel implements MessageChannelRuntime {
     const senderId = msg.author.id;
     // If requireMention and group, sender must be the same as task sender? Spec says abort fast path
     // should check sender owns live task. We implement: senderId must match active senderId if present.
-    const owned = stack.filter((t) => !t.senderId || t.senderId === senderId);
-    const activeTasks = owned.length > 0 ? owned : [];
+    const owned = stack.filter((t) => !t.suppressed && (!t.senderId || t.senderId === senderId));
+    // Independent Conversation turns must not cancel the sender's Session
+    // work. Include queued turns, which are registered before lane admission.
+    const conversations = owned.filter((t) => t.executionDomain === "conversation");
+    const activeTasks = conversations.length > 0 ? conversations : owned;
     if (activeTasks.length === 0) return false;
 
     await this.handleAbortFastPath({ runtime, activeTasks, abortRequestMessageId: messageId, channelId, accountId, chatKey });
@@ -2208,6 +2213,7 @@ export class DiscordChannel implements MessageChannelRuntime {
   }
 
   private registerActiveTask(input: {
+    executionDomain: ActiveTask["executionDomain"];
     accountId: string;
     channelId: string;
     guildId?: string;
@@ -2221,6 +2227,7 @@ export class DiscordChannel implements MessageChannelRuntime {
     const { accountId, channelId, guildId, parentChannelId, messageId, senderId, chatKind, queueKey, boundAlias } = input;
     const abortController = new AbortController();
     const active: ActiveTask = {
+      executionDomain: input.executionDomain,
       accountId,
       channelId,
       guildId,

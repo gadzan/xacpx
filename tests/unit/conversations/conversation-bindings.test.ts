@@ -419,13 +419,25 @@ test("early route selection keeps replay/tombstones out of Session and fails clo
 });
 
 for (const platform of ["discord", "feishu"] as const) {
-  test(`actual ${platform} bound Conversation bypasses Session A lane and never stores its result after /use B`, async () => {
-    const current = await compose();
+  test(`actual ${platform} bound Conversation bypasses Session A lane, result storage and Stop after /use B`, async () => {
+    let providerCalls = 0;
+    let finishProvider = () => {};
+    let providerAborted = false;
+    const current = await compose({ agent: { chat: async (input) => {
+      if (++providerCalls === 1) return { text: "provider result" };
+      await new Promise<void>((resolve) => {
+        finishProvider = resolve;
+        input.abortSignal!.addEventListener("abort", () => { providerAborted = true; resolve(); }, { once: true });
+      });
+      if (input.abortSignal!.aborted) throw new Error("provider cancelled");
+      return { text: "cancelled provider output" };
+    } } });
     const sent: string[] = []; const active: string[] = []; const background: string[] = [];
     let sessionReads = 0;
     const peek = current.sessions.peekCurrentSessionAlias.bind(current.sessions);
     current.sessions.peekCurrentSessionAlias = (key) => { sessionReads++; return peek(key); };
     let finishOrdinary = () => {}; let ordinaryStarted = false;
+    let ordinarySignal: AbortSignal | undefined;
     const chatKey = platform === "discord" ? "discord:default:dm:dm" : "feishu:default:chat";
     let emit: (id: string, text: string) => Promise<void> | void = () => {};
     const channel = platform === "discord"
@@ -454,7 +466,7 @@ for (const platform of ["discord", "feishu"] as const) {
     const registry = new MessageChannelRegistry([channel]); let startup: Promise<void> | undefined;
     const normalAgent: Agent = { isKnownCommand: (text) => text.startsWith("/use "), chat: async (input) => {
       if (input.text === "/use B") { await current.sessions.useSession(chatKey, "B"); return { text: "switched" }; }
-      expect(input.metadata?.boundSessionAlias).toBe("A"); ordinaryStarted = true;
+      expect(input.metadata?.boundSessionAlias).toBe("A"); ordinarySignal = input.abortSignal; ordinaryStarted = true;
       await new Promise<void>((resolve) => { finishOrdinary = resolve; }); return { text: "ordinary finished" };
     } };
     const storeBackground = current.sessions.setBackgroundResult.bind(current.sessions);
@@ -468,6 +480,10 @@ for (const platform of ["discord", "feishu"] as const) {
       startup.catch(() => {}); await waitFor(() => platform === "discord" ? (channel as any).accounts.size > 0 : true);
       await Bun.sleep(10);
       const ordinary = emit("ordinary", "hold Session A"); await waitFor(() => ordinaryStarted);
+      const taskFor = (messageId: string) => ([...(channel as any).activeTasks.values()].flat() as
+        Array<{ messageId: string; suppressed: boolean; abortController: AbortController }>).find((task) => task.messageId === messageId);
+      const ordinaryTask = taskFor("ordinary")!;
+      expect(ordinarySignal).toBeDefined(); expect(ordinarySignal!.aborted).toBe(false);
       expect(active).toEqual(["A"]); active.length = 0;
       const readsBeforeConversation = sessionReads;
       const { group: g, topic } = await group(current);
@@ -481,10 +497,32 @@ for (const platform of ["discord", "feishu"] as const) {
       await waitFor(() => sent.some((text) => text.includes("provider result")));
       expect(background).toEqual([]); expect(active).toEqual([]);
       expect(sent.filter((text) => text.includes("provider result"))).toHaveLength(1);
+      // Keep A running while a second Conversation reaches the real provider.
+      // A third Conversation is queued in the adapter's independent lane.
+      const toCancel = emit("cancel-conversation", "cancel this work");
+      await waitFor(() => current.runtime.store.listRuns(g.id, topic.id).length === 2);
+      const cancelledRun = current.runtime.store.listRuns(g.id, topic.id).find((run) => run.state === "queued")!;
+      const dispatched = current.runtime.dispatcher.kick();
+      await waitFor(() => providerCalls === 2);
+      const queued = emit("queued-conversation", "queued work");
+      await waitFor(() => Boolean(taskFor("queued-conversation")));
+      const queuedTask = taskFor("queued-conversation")!;
+      await emit("stop", "/stop");
+      await waitFor(() => current.runtime.store.getRun(cancelledRun.id)?.state === "cancelled");
+      await toCancel; await queued; await dispatched;
+      expect(providerAborted).toBe(true);
+      expect(queuedTask.abortController.signal.aborted).toBe(true); expect(queuedTask.suppressed).toBe(true);
+      expect(ordinarySignal!.aborted).toBe(false); expect(ordinaryTask.suppressed).toBe(false);
+      expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(2);
+      expect(providerCalls).toBe(2);
+      expect(sent.some((text) => text.includes("cancelled provider output"))).toBe(false);
+      expect(background).toEqual([]); expect(active).toEqual([]);
       // Only the genuine Session turn may later produce a Session completion.
       finishOrdinary(); await ordinary;
       await waitFor(() => background.length === 1); expect(background).toEqual(["A"]);
-    } finally { finishOrdinary(); await current.close(); await registry.stopAll(); await startup; }
+      expect(ordinarySignal!.aborted).toBe(false); expect(ordinaryTask.suppressed).toBe(false);
+      expect(sent.some((text) => text.includes("ordinary finished"))).toBe(true);
+    } finally { finishProvider(); finishOrdinary(); await current.close(); await registry.stopAll(); await startup; }
   });
 }
 

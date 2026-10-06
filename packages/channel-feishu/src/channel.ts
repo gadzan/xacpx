@@ -95,6 +95,7 @@ interface AccountRuntime {
 }
 
 interface ActiveTask {
+  executionDomain: "session" | "conversation";
   accountId: string;
   chatId: string;
   messageId: string;
@@ -985,6 +986,7 @@ export class FeishuChannel implements MessageChannelRuntime {
 
     const senderOpenId = event.sender?.sender_id?.open_id;
     const { active, abortController } = this.registerActiveTask({
+      executionDomain: conversationAgent ? "conversation" : "session",
       accountId,
       chatId,
       messageId,
@@ -1072,9 +1074,12 @@ export class FeishuChannel implements MessageChannelRuntime {
       (t) => senderOpenId !== undefined && t.senderOpenId === senderOpenId,
     );
     if (owned.length > 0) {
+      // Select the domain only after sender ownership has been established.
+      // Queued Conversation turns are registered here too.
+      const conversations = owned.filter((t) => t.executionDomain === "conversation");
       await this.handleAbortFastPath({
         runtime,
-        activeTasks: owned,
+        activeTasks: conversations.length > 0 ? conversations : owned,
         abortRequestMessageId: messageId,
         chatId,
         accountId,
@@ -1105,6 +1110,7 @@ export class FeishuChannel implements MessageChannelRuntime {
    * mark it suppressed.
    */
   private registerActiveTask(input: {
+    executionDomain: ActiveTask["executionDomain"];
     accountId: string;
     chatId: string;
     messageId: string;
@@ -1117,6 +1123,7 @@ export class FeishuChannel implements MessageChannelRuntime {
     const { accountId, chatId, messageId, queueKey, senderOpenId, chatType, senderIsOwner, boundAlias } = input;
     const abortController = new AbortController();
     const active: ActiveTask = {
+      executionDomain: input.executionDomain,
       accountId,
       chatId,
       messageId,
@@ -1513,9 +1520,9 @@ export class FeishuChannel implements MessageChannelRuntime {
     accountId: string;
   }): Promise<void> {
     const { runtime, activeTasks, abortRequestMessageId, chatId, accountId } = input;
-    // Suppress and signal every pending entry — user said "stop", they mean
-    // everything pending for them. The most-recent entry decides whether the
-    // ack lands as a card update vs plain reply.
+    // Suppress and signal every pending entry in the selected execution domain.
+    // The most-recent entry decides whether the ack lands as a card update vs
+    // plain reply.
     for (const t of activeTasks) {
       t.suppressed = true;
       try {

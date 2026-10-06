@@ -398,10 +398,16 @@ Retries replay the original Run even after rebinding; different sender/content/
 target for the same source is rejected. Teardown retains a receipt tombstone so
 old messages cannot create new work after rebinding. Receipts grant no permission
 authority on replay or recovery. The channel returns the settled Run's public
-Bot results through its existing delivery path. Stop cancels that exact Run;
-Weixin tracks bound turns with separate abort controllers: a bare `/stop` or
-`/cancel` interrupts those turns without cancelling the foreground Session.
-waiting for settlement holds no runtime operation lease. There is no durable
+Bot results through its existing delivery path. Stop cancels that exact Run.
+Discord and Feishu track each task's execution domain: after checking sender
+ownership within the account/chat/thread, Stop selects only live Conversation
+tasks when any are owned by that sender, including queued turns. Otherwise it
+retains the existing Session stop behavior. Session tasks remain unsuppressed
+and keep their abort signals, even after a foreground Session switch. Weixin
+tracks bound turns with separate abort controllers: a bare `/stop` or `/cancel`
+interrupts those turns without cancelling the foreground Session. Channel
+shutdown still aborts tasks in both domains.
+Waiting for settlement holds no runtime operation lease. There is no durable
 outbound-delivery claim: provider-result retransmission and channel delivery
 exactly-once remain separate validation work.
 Daemon-triggered channel abort does not acquire human Stop provenance: queued
