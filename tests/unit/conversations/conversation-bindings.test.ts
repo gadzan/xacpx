@@ -371,6 +371,39 @@ test("corrupt receipt cannot join a different valid Run; public request-id colli
   } finally { await current.close(); }
 });
 
+test("Stop receipt rollback, input conflict, event-kind collision and corrupt targets fail closed", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "xacpx-stop-receipt-")), "conversations.sqlite");
+  let fail = true;
+  const store = await SqliteConversationStore.open(path, { beforeAcceptCommit: () => { if (fail) throw new Error("stop disk failure"); } });
+  const input = { key: "stop-key", fingerprint: "stop-fingerprint", chatKey: request().conversationId, accountId: "default", senderId: "human" };
+  try {
+    expect(() => store.acceptExternalStop(input, () => ["original-run"])).toThrow("stop disk failure");
+    expect(store.hasExternalStopRequest(input.key)).toBe(false);
+    fail = false;
+    expect(store.acceptExternalStop(input, () => ["original-run"])).toEqual({ reused: false, targetRunIds: ["original-run"] });
+    expect(store.acceptExternalStop(input, () => { throw new Error("replay must not select new targets"); }))
+      .toEqual({ reused: true, targetRunIds: ["original-run"] });
+    expect(() => store.getExternalStopRequest({ ...input, fingerprint: "changed" })).toThrow("different input");
+    const now = new Date().toISOString();
+    const profileSnapshot = snapshotBotProfile({ id: "bot", name: "Bot", agent: "codex", workspace: "backend", enabled: true,
+      profileRevision: 1, createdAt: now, updatedAt: now }, now);
+    const prompt = { conversationId: "c", topicId: "t", requestId: `external:${input.key}`, botId: "bot", content: "work", now,
+      profileSnapshot, externalRequest: { key: input.key, fingerprint: "prompt" } };
+    expect(() => store.acceptRequest(prompt)).toThrow("already identifies a Stop");
+    store.acceptRequest({ ...prompt, requestId: "external:prompt-key", externalRequest: { key: "prompt-key", fingerprint: "prompt" } });
+    expect(() => store.acceptExternalStop({ ...input, key: "prompt-key" }, () => [])).toThrow("already identifies a prompt");
+    const sql = await createSqlDriver(path);
+    try {
+      for (const targets of ["{broken", "{}", "[1]", '["duplicate","duplicate"]']) {
+        sql.run("UPDATE external_conversation_stops SET target_run_ids_json = ? WHERE source_key = ?", [targets, input.key]);
+        expect(() => store.getExternalStopRequest(input)).toThrow("targets");
+      }
+      sql.run("UPDATE external_conversation_stops SET target_run_ids_json = '[]', sender_id = 'other' WHERE source_key = ?", [input.key]);
+      expect(() => store.getExternalStopRequest(input)).toThrow("original owner");
+    } finally { sql.close(); }
+  } finally { store.close(); }
+});
+
 test("Stop while acceptance waits for a real Bot gate creates no Run", async () => {
   const current = await compose();
   let release = () => {};
@@ -678,6 +711,136 @@ for (const platform of ["discord", "feishu"] as const) {
       } finally { finishOrdinary(); finishProvider(); await first.close(); await second?.close(); await originalRegistry.stopAll(); await nextRegistry?.stopAll(); await startup; await restarted; }
     });
   }
+  test(`actual ${platform} replayed Stop preserves later Runs and blocked acceptance after restart/rebind`, async () => {
+    const first = await compose();
+    let second: Awaited<ReturnType<typeof compose>> | undefined;
+    let startup: Promise<void> | undefined; let restarted: Promise<void> | undefined;
+    let nextRegistry: MessageChannelRegistry | undefined;
+    let finishProvider = () => {}; let releaseGate = () => {}; let gate: Promise<void> | undefined;
+    let providerStarted = false; let providerCalls = 0; let normalStops = 0;
+    const sent: string[] = [];
+    const original = externalAdapter(platform, sent); const originalRegistry = new MessageChannelRegistry([original.channel]);
+    try {
+      const { group: g, topic, bots } = await group(first);
+      const chatKey = platform === "discord" ? "discord:default:dm:dm" : "feishu:default:chat";
+      await first.control.bindConversation({ chatKey, conversationId: g.id, topicId: topic.id });
+      startup = originalRegistry.startAll({ agent: first.normalAgent, logger, quota, abortSignal: first.daemon.signal } as never,
+        (id, agent) => createConversationChannelRouter(id, agent, first.runtime, first.events, first.daemon.signal));
+      startup.catch(() => {}); await waitFor(original.ready);
+      await original.emit("empty-stop", "/stop");
+      const a = Promise.resolve(original.emit("run-a", "original work")).catch(() => {});
+      await waitFor(() => first.runtime.store.listRuns(g.id, topic.id).length === 1);
+      const runA = first.runtime.store.listRuns(g.id, topic.id)[0]!;
+      await original.emit("stop-a", "/stop"); await a;
+      expect(first.runtime.store.getRun(runA.id)?.completionReason).toBe("human-cancelled");
+      const b = Promise.resolve(original.emit("run-b", "later work")).catch(() => {});
+      await waitFor(() => first.runtime.store.listRuns(g.id, topic.id).length === 2);
+      const runB = first.runtime.store.listRuns(g.id, topic.id).find((run) => run.state === "queued")!;
+      const replacement = await first.control.createGroupTopic(g.id, "Rebound", { workspace: "backend", isolation: "shared-single-writer" });
+      await first.control.bindConversation({ chatKey, conversationId: g.id, topicId: replacement.id });
+      await original.channel.stop("disabled"); await b; await first.close(); await startup;
+      second = await compose({ state: first.state, path: first.path, agent: { chat: async (input) => {
+        if (++providerCalls === 1) {
+          providerStarted = true;
+          await new Promise<void>((resolve) => { finishProvider = resolve;
+            input.abortSignal!.addEventListener("abort", resolve as () => void, { once: true }); });
+          if (input.abortSignal!.aborted) throw new Error("later Run was wrongly cancelled");
+        }
+        return { text: "later Run survived" };
+      } } });
+      const resumed = second; const activation = resumed.runtime.activateAfterConsumerLock();
+      await waitFor(() => providerStarted);
+      const adapter = externalAdapter(platform, sent); nextRegistry = new MessageChannelRegistry([adapter.channel]);
+      const normal: Agent = { isKnownCommand: (text) => text.startsWith("/"), chat: async () => { normalStops++; return { text: "Session" }; } };
+      restarted = nextRegistry.startAll({ agent: normal, logger, quota, abortSignal: resumed.daemon.signal } as never,
+        (id, agent) => createConversationChannelRouter(id, agent, resumed.runtime, resumed.events, resumed.daemon.signal));
+      restarted.catch(() => {}); await waitFor(adapter.ready);
+      let gateEntered = false;
+      gate = resumed.runtime.bots.runLifecycle(bots[0]!.id, async () => { gateEntered = true; await new Promise<void>((resolve) => { releaseGate = resolve; }); });
+      await waitFor(() => gateEntered);
+      const c = Promise.resolve(adapter.emit("run-c", "pending later work")).catch((error) => error);
+      await waitFor(() => (resumed.runtime.bindings as any).gates.get(chatKey)?.users === 1);
+      await adapter.emit("stop-a", "/stop"); await adapter.emit("empty-stop", "/stop");
+      expect(resumed.runtime.store.getRun(runB.id)).toMatchObject({ state: "running" });
+      expect(resumed.runtime.store.getRun(runB.id)?.completionReason).toBeUndefined();
+      const pending = [...(adapter.channel as any).activeTasks.values()].flat().find((task: any) => task.messageId === "run-c") as any;
+      expect(pending.suppressed).toBe(false); expect(pending.abortController.signal.aborted).toBe(false);
+      expect(pending.humanStopController.signal.aborted).toBe(false);
+      const stopInput = request("/stop", "stop-a", chatKey); stopInput.metadata!.channel = platform;
+      expect(resumed.runtime.bindings.acceptStop(platform, stopInput)).toEqual({ reused: true, targetRunIds: [runA.id] });
+      stopInput.metadata!.channelMessageId = "empty-stop";
+      expect(resumed.runtime.bindings.acceptStop(platform, stopInput)).toEqual({ reused: true, targetRunIds: [] });
+      expect(normalStops).toBe(0);
+      releaseGate(); await gate; await waitFor(() => resumed.runtime.store.listRuns(g.id, replacement.id).length === 1);
+      expect(resumed.runtime.store.listRuns(g.id, replacement.id)[0]?.state).toBe("queued");
+      finishProvider(); await activation; await c;
+      expect(resumed.runtime.store.getRun(runB.id)?.state).toBe("completed");
+      expect(resumed.runtime.store.listRuns(g.id, replacement.id)[0]?.state).toBe("completed");
+    } finally {
+      releaseGate(); finishProvider(); await gate; await first.close(); await second?.close();
+      await originalRegistry.stopAll(); await nextRegistry?.stopAll(); await startup; await restarted;
+    }
+  });
+  test(`actual ${platform} Stop preempts a blocked acceptance while cancelling a recovered Run`, async () => {
+    const first = await compose();
+    let second: Awaited<ReturnType<typeof compose>> | undefined;
+    let startup: Promise<void> | undefined;
+    let registry: MessageChannelRegistry | undefined;
+    let releaseGate = () => {}; let finishProvider = () => {};
+    let gate: Promise<void> | undefined;
+    let providerStarted = false; let normalStops = 0;
+    try {
+      const { group: g, topic, bots } = await group(first);
+      const chatKey = platform === "discord" ? "discord:default:dm:dm" : "feishu:default:chat";
+      await first.control.bindConversation({ chatKey, conversationId: g.id, topicId: topic.id });
+      const original = request("recover this", "before-restart", chatKey); original.metadata!.channel = platform;
+      const accepted = (await first.runtime.bindings.accept(platform, original))!;
+      await first.close();
+      second = await compose({ state: first.state, path: first.path, agent: { chat: async (input) => {
+        providerStarted = true;
+        await new Promise<void>((resolve) => { finishProvider = resolve;
+          input.abortSignal!.addEventListener("abort", resolve as () => void, { once: true }); });
+        if (input.abortSignal!.aborted) throw new Error("provider cancelled");
+        return { text: "recovered result" };
+      } } });
+      const resumed = second;
+      const activation = resumed.runtime.activateAfterConsumerLock();
+      await waitFor(() => providerStarted);
+      let gateEntered = false;
+      gate = resumed.runtime.bots.runLifecycle(bots[0]!.id, async () => {
+        gateEntered = true; await new Promise<void>((resolve) => { releaseGate = resolve; });
+      });
+      await waitFor(() => gateEntered);
+      const sent: string[] = [];
+      const adapter = externalAdapter(platform, sent); registry = new MessageChannelRegistry([adapter.channel]);
+      const normal: Agent = { isKnownCommand: (text) => text.startsWith("/"), chat: async () => {
+        normalStops++; return { text: "ordinary Session" };
+      } };
+      startup = registry.startAll({ agent: normal, logger, quota, abortSignal: resumed.daemon.signal } as never,
+        (id, agent) => createConversationChannelRouter(id, agent, resumed.runtime, resumed.events, resumed.daemon.signal));
+      startup.catch(() => {}); await waitFor(adapter.ready);
+      const pending = Promise.resolve(adapter.emit("pending-after-restart", "new acceptance")).catch((error) => error);
+      await waitFor(() => (resumed.runtime.bindings as any).gates.get(chatKey)?.users === 1);
+      expect(resumed.runtime.store.listRuns(g.id, topic.id)).toHaveLength(1);
+      let stopReturned = false;
+      const stop = Promise.resolve(adapter.emit("stop-blocked-acceptance", "/stop")).then(() => { stopReturned = true; });
+      stop.catch(() => {});
+      // The Bot gate remains held for every assertion here. R1 has no old
+      // adapter controller, so only durable Stop lookup can cancel it.
+      await waitFor(() => stopReturned && sent.some((text) => text.includes("Conversation stop requested.")));
+      expect(resumed.runtime.store.getRun(accepted.run.id)).toMatchObject({ state: "cancelled", completionReason: "human-cancelled" });
+      expect((resumed.runtime.bindings as any).gates.get(chatKey)?.users).toBe(1);
+      expect(normalStops).toBe(0);
+      await activation; await stop;
+      releaseGate(); await gate; await pending;
+      await waitFor(() => (resumed.runtime.bindings as any).gates.size === 0);
+      expect(resumed.runtime.store.listRuns(g.id, topic.id)).toHaveLength(1);
+      const pendingKey = createHash("sha256").update(JSON.stringify([platform, "default", chatKey, "pending-after-restart"])).digest("hex");
+      expect(resumed.runtime.store.hasExternalRequest(pendingKey)).toBe(false);
+    } finally {
+      releaseGate(); finishProvider(); await gate; await first.close(); await second?.close(); await registry?.stopAll(); await startup;
+    }
+  });
   for (const reason of ["disabled", "removed"] as const) {
     test(`actual ${platform} stop(${reason}) detaches without cancelling durable ingress`, async () => {
       const current = await compose();

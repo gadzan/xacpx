@@ -3,10 +3,10 @@ import type { ConversationRuntime } from "../conversations/conversation-composit
 import type { ControlEventBus } from "../control/control-event-bus";
 import { ConversationError } from "../conversations/conversation-error";
 import type { ConversationRouteSnapshot } from "../conversations/conversation-bindings";
-import type { ConversationChannelAgent } from "./types";
+import type { ConversationChannelAgent, ConversationIngressPreparation } from "./types";
 
-function preparedAgent(execute: (request: ChatRequest, admitted: () => void) => Promise<ChatResponse>): ConversationChannelAgent {
-  let prepared: { request: ChatRequest; identity: string; admission: Promise<void>; response: Promise<ChatResponse> } | undefined;
+function preparedAgent(execute: (request: ChatRequest, admitted: (result?: ConversationIngressPreparation) => void) => Promise<ChatResponse>): ConversationChannelAgent {
+  let prepared: { request: ChatRequest; identity: string; admission: Promise<ConversationIngressPreparation | void>; response: Promise<ChatResponse> } | undefined;
   const identity = (input: ChatRequest) => JSON.stringify([input.accountId, input.conversationId, input.text, input.media ?? null,
     input.metadata?.channel, input.metadata?.channelMessageId, input.metadata?.senderId, input.metadata?.origin,
     input.metadata?.authenticatedHuman, input.metadata?.hadInboundMedia ?? false, input.metadata?.conversationTarget ?? null]);
@@ -18,8 +18,8 @@ function preparedAgent(execute: (request: ChatRequest, admitted: () => void) => 
       }
       return prepared;
     }
-    const admission = Promise.withResolvers<void>();
-    const response = execute(request, () => admission.resolve());
+    const admission = Promise.withResolvers<ConversationIngressPreparation | void>();
+    const response = execute(request, (result) => admission.resolve(result));
     // UI setup can still be pending when lifecycle cancellation detaches us.
     response.catch((error) => admission.reject(error));
     admission.promise.catch(() => {});
@@ -96,15 +96,15 @@ export function createConversationChannelRouter(channelId: string, agent: Agent,
       if (humanStop) {
         const bound = runtime.bindings.hasRoute(channelId, request);
         if (!bound && (request.metadata?.origin !== "human" || request.metadata?.authenticatedHuman !== true)) return undefined;
-        const targets = runtime.bindings.stopTargets(channelId, request);
-        if (bound || targets.length) return preparedAgent(async (input, admitted) => {
+        if (bound || runtime.bindings.stopTargets(channelId, request).length) return preparedAgent(async (input, admitted) => {
           if (input.conversationId !== request.conversationId || input.accountId !== request.accountId
             || input.metadata?.senderId !== request.metadata?.senderId) throw new ConversationError("external_ingress_invalid", "Stop route changed");
-          if (input.media || input.metadata?.hadInboundMedia) throw new ConversationError("external_media_unsupported", "bound Conversation requests currently accept text only");
-          const stopped = runtime.withOperation(() => runtime.bindings.stopSelected(channelId, input, targets));
-          await stopped;
-          admitted();
-          return { text: targets.length ? "Conversation stop requested." : "No active Conversation Run." };
+          return runtime.withOperation(async () => {
+            const receipt = runtime.bindings.acceptStop(channelId, input);
+            admitted({ stopPendingAcceptance: !receipt.reused });
+            await runtime.bindings.stopSelected(channelId, input, receipt.targetRunIds);
+            return { text: receipt.targetRunIds.length ? "Conversation stop requested." : "No active Conversation Run." };
+          });
         });
       }
       if (agent.isKnownCommand?.(request.text)) return undefined;

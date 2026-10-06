@@ -969,14 +969,10 @@ export class FeishuChannel implements MessageChannelRuntime {
         hadInboundMedia, humanStopRequested: isLikelyAbortText(decision.text),
         authenticatedHuman: event.sender.sender_type === "user",
         ...(event.sender.sender_type === "user" ? { origin: "human" as const } : {}) } });
-    if (conversationAgent) {
-      if (!hadInboundMedia && event.sender.sender_type === "user" && isLikelyAbortText(decision.text)) {
-        const owned = this.activeTasks.get(queueKey)?.filter((task) => !task.suppressed
-          && task.executionDomain === "conversation" && task.senderOpenId === event.sender.sender_id?.open_id) ?? [];
-        if (owned.length) await this.handleAbortFastPath({ runtime, activeTasks: owned, abortRequestMessageId: messageId,
-          chatId, accountId, acknowledge: false });
-      }
-    } else if (await this.tryHandleAbortTrigger({ event, runtime, queueKey, accountId, chatId, messageId })) return;
+    const conversationStopTasks = conversationAgent && isLikelyAbortText(decision.text)
+      ? this.activeTasks.get(queueKey)?.filter((task) => !task.suppressed
+        && task.executionDomain === "conversation" && task.senderOpenId === event.sender.sender_id?.open_id) ?? [] : [];
+    if (!conversationAgent && await this.tryHandleAbortTrigger({ event, runtime, queueKey, accountId, chatId, messageId })) return;
     const { media, skipped } = conversationAgent ? { media: [], skipped: [] } : await this.downloadInboundAttachments({
       runtime,
       accountId,
@@ -1036,6 +1032,7 @@ export class FeishuChannel implements MessageChannelRuntime {
         requestText,
         media,
         hadInboundMedia,
+        conversationStopTasks,
         active,
         abortController,
         boundAlias,
@@ -1272,6 +1269,7 @@ export class FeishuChannel implements MessageChannelRuntime {
     requestText: string;
     media: ChannelMediaAttachment[];
     hadInboundMedia: boolean;
+    conversationStopTasks: ActiveTask[];
     active: ActiveTask;
     abortController: AbortController;
     boundAlias: string | undefined;
@@ -1293,7 +1291,12 @@ export class FeishuChannel implements MessageChannelRuntime {
         abortSignal: abortController.signal,
         ...(input.agent ? { humanStopSignal: active.humanStopController.signal } : {}),
       };
-      await input.agent?.prepareConversation?.(ingress);
+      const preparation = await input.agent?.prepareConversation?.(ingress);
+      if (preparation?.stopPendingAcceptance) {
+        const owned = input.conversationStopTasks.filter((task) => !task.suppressed);
+        if (owned.length) await this.handleAbortFastPath({ runtime, activeTasks: owned, abortRequestMessageId: messageId,
+          chatId, accountId, acknowledge: false });
+      }
       active.typingState = await addTypingIndicator({
         client: runtime.client.sdk as unknown as FeishuReactionClient,
         messageId,

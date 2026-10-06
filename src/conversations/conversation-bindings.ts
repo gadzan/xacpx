@@ -7,7 +7,7 @@ import type { BotService } from "../bots/bot-service";
 import type { ChatRequest } from "../weixin/agent/interface";
 import { ConversationError } from "./conversation-error";
 import type { ConversationRunService } from "./conversation-run-service";
-import type { SqliteConversationStore } from "./sqlite-conversation-store";
+import type { SqliteConversationStore, ExternalStopReceipt } from "./sqlite-conversation-store";
 import type { AcceptRequestResult } from "./conversation-store";
 
 export interface ConversationBinding {
@@ -62,7 +62,7 @@ export class ConversationBindingService {
   selectRoute(channelId: string, request: ChatRequest): ConversationRouteSnapshot | undefined {
     const binding = this.store.getConversationBinding(request.conversationId);
     const key = this.sourceKey(channelId, request);
-    if (!binding && !(key !== undefined && this.store.hasExternalRequest(key))) return undefined;
+    if (!binding && !(key !== undefined && (this.store.hasExternalRequest(key) || this.store.hasExternalStopRequest(key)))) return undefined;
     return { chatKey: request.conversationId, ...(binding ? { binding: { ...binding } } : {}) };
   }
 
@@ -91,18 +91,26 @@ export class ConversationBindingService {
   }
 
   async stopSelected(channelId: string, request: ChatRequest, selected: string[]): Promise<void> {
-    // A pending acceptance has no durable target yet and is fenced by its
-    // human signal. Its acknowledgement must not wait behind the held gate.
-    if (selected.length === 0) {
-      if (request.abortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel closed before Stop");
-      this.stopTargets(channelId, request);
-      return;
+    // Receipt ownership is immutable; revalidate it without the bind/accept
+    // mutex. An acceptance waiting on a Bot gate must not hold durable Stop.
+    // The Run service owns cancellation fences; pending acceptance is fenced
+    // separately by its human signal, regardless of this target set's size.
+    if (request.abortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel closed before Stop");
+    const live = new Set(this.stopTargets(channelId, request));
+    await Promise.all(selected.filter((id) => live.has(id)).map((id) => this.runs.cancelRun(id)));
+  }
+
+  acceptStop(channelId: string, request: ChatRequest): ExternalStopReceipt {
+    const metadata = request.metadata;
+    const key = this.sourceKey(channelId, request);
+    if (metadata?.origin !== "human" || metadata.authenticatedHuman !== true || !nonempty(metadata.senderId) || !key) {
+      throw new ConversationError("external_human_required", "Conversation Stop requires authenticated channel identity");
     }
-    await this.withRoute(request.conversationId, async () => {
-      if (request.abortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel closed before Stop");
-      const live = new Set(this.stopTargets(channelId, request));
-      await Promise.all(selected.filter((id) => live.has(id)).map((id) => this.runs.cancelRun(id)));
-    });
+    if (request.abortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel closed before Stop");
+    if (request.media || metadata.hadInboundMedia) throw new ConversationError("external_media_unsupported", "bound Conversation requests currently accept text only");
+    const fingerprint = createHash("sha256").update(JSON.stringify([metadata.senderId, request.text])).digest("hex");
+    return this.store.acceptExternalStop({ key, fingerprint, chatKey: request.conversationId, accountId: request.accountId, senderId: metadata.senderId },
+      () => this.stopTargets(channelId, request));
   }
 
   async bind(input: ConversationBinding): Promise<Required<ConversationBinding>> {

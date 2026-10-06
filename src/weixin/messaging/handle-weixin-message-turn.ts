@@ -172,6 +172,8 @@ export type HandleWeixinMessageTurnDeps = {
   abortSignal?: AbortSignal;
   humanStopSignal?: AbortSignal;
   conversationBound?: boolean;
+  /** Only invoked after a fresh durable Stop receipt; never on replay. */
+  onConversationStop?: () => void;
   log: (msg: string) => void;
   errLog: (msg: string) => void;
   mediaTempDir?: string;
@@ -358,15 +360,18 @@ export async function handleWeixinMessageTurn(
     }
   }
 
-  if (deps.conversationBound) await deps.agent.prepareConversation?.({
-    accountId: deps.accountId, conversationId: chatKey, text: bodyFromItemList(full.item_list),
-    ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}),
-    ...(deps.humanStopSignal ? { humanStopSignal: deps.humanStopSignal } : {}),
-    metadata: { channel: "weixin", channelMessageId: full.message_id != null ? String(full.message_id) : undefined,
-      senderId: full.from_user_id, origin: "human", authenticatedHuman: Boolean(full.from_user_id),
-      hadInboundMedia: full.item_list?.some((item) => item.type !== MessageItemType.TEXT) ?? false,
-      chatType: full.group_id ? "group" : "direct" },
-  });
+  if (deps.conversationBound) {
+    const preparation = await deps.agent.prepareConversation?.({
+      accountId: deps.accountId, conversationId: chatKey, text: bodyFromItemList(full.item_list),
+      ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}),
+      ...(deps.humanStopSignal ? { humanStopSignal: deps.humanStopSignal } : {}),
+      metadata: { channel: "weixin", channelMessageId: full.message_id != null ? String(full.message_id) : undefined,
+        senderId: full.from_user_id, origin: "human", authenticatedHuman: Boolean(full.from_user_id),
+        hadInboundMedia: full.item_list?.some((item) => item.type !== MessageItemType.TEXT) ?? false,
+        chatType: full.group_id ? "group" : "direct" },
+    });
+    if (preparation?.stopPendingAcceptance) deps.onConversationStop?.();
+  }
   startTypingIndicator();
 
   const mediaStore = deps.mediaStore ?? new RuntimeMediaStore({ rootDir: resolveMediaTempDir(deps.mediaTempDir) });

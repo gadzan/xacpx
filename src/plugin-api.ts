@@ -21,6 +21,7 @@ export type {
 export type {
   ChannelStartInput,
   ConversationChannelAgent,
+  ConversationIngressPreparation,
   ChannelPermissionDecision,
   ChannelPermissionRequest,
   ConsumerLock,

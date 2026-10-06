@@ -122,9 +122,14 @@ export interface ScheduledChannelMessageInput {
   abortSignal?: AbortSignal;
 }
 
+export interface ConversationIngressPreparation {
+  /** Fresh durable Stop only; replay must not abort later channel tasks. */
+  stopPendingAcceptance: boolean;
+}
+
 export interface ConversationChannelAgent extends ChatAgent {
   /** Commit durable ingress before typing/card setup; chat later awaits the same result. */
-  prepareConversation?(request: ChatRequest): Promise<void>;
+  prepareConversation?(request: ChatRequest): Promise<ConversationIngressPreparation | void>;
 }
 
 export interface ChannelStartInput {

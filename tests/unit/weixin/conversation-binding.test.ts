@@ -87,6 +87,7 @@ test("real Weixin adapter delivers Conversation after /use B without entering he
   let nextRegistry: MessageChannelRegistry | undefined;
   const nextDaemon = new AbortController();
   let finishRecovered = () => {};
+  let releaseRecoveryGate = () => {}; let recoveryGate: Promise<void> | undefined;
   try {
     await sessions.createSession("A", "codex", "backend"); await sessions.createSession("B", "codex", "backend");
     await sessions.useSession(chatKey, "A");
@@ -170,16 +171,40 @@ test("real Weixin adapter delivers Conversation after /use B without entering he
     nextKernel.bindConversationRuntime(resumed);
     const activation = resumed.activateAfterConsumerLock(); await waitFor(() => recoveredStarted);
     nextRegistry = new MessageChannelRegistry([new WeixinChannel()]);
-    const normal: Agent = { isKnownCommand: () => true, chat: async () => { normalStops++; return { text: "Session stopped" }; } };
+    const normal: Agent = { isKnownCommand: (text) => text.startsWith("/"), chat: async () => { normalStops++; return { text: "Session stopped" }; } };
     const restored = resumed;
     restarted = nextRegistry.startAll({ agent: normal, logger, quota, abortSignal: nextDaemon.signal } as never,
       (id, agent) => createConversationChannelRouter(id, agent, restored, nextEvents, nextDaemon.signal));
-    restarted.catch(() => {}); emit(30, "/stop");
-    await waitFor(() => restored.store.getRun(resumable.id)?.state === "cancelled"); await activation;
+    restarted.catch(() => {});
+    let recoveryGateEntered = false;
+    recoveryGate = restored.bots.runLifecycle(bot.id, async () => {
+      recoveryGateEntered = true; await new Promise<void>((resolve) => { releaseRecoveryGate = resolve; });
+    });
+    await waitFor(() => recoveryGateEntered);
+    let pendingHumanSignal: AbortSignal | undefined;
+    const restoredAccept = restored.bindings.accept.bind(restored.bindings);
+    restored.bindings.accept = (...args) => {
+      if (args[1].metadata?.channelMessageId === "31") pendingHumanSignal = args[1].humanStopSignal;
+      return restoredAccept(...args);
+    };
+    emit(31, "acceptance while recovering");
+    await waitFor(() => (restored.bindings as any).gates.get(chatKey)?.users === 1);
+    const previousReplies = sent.filter((message) => message.context === "ctx-5" || message.context === "ctx-7").length;
+    emit(5, "/stop"); emit(7, "/cancel");
+    await waitFor(() => sent.filter((message) => message.context === "ctx-5" || message.context === "ctx-7").length === previousReplies + 2);
+    expect(restored.store.getRun(resumable.id)?.state).toBe("running");
+    expect(pendingHumanSignal!.aborted).toBe(false);
+    emit(30, "/stop");
+    await waitFor(() => restored.store.getRun(resumable.id)?.state === "cancelled" && sent.some((message) => message.context === "ctx-30"));
+    expect((restored.bindings as any).gates.get(chatKey)?.users).toBe(1);
+    expect(pendingHumanSignal!.aborted).toBe(true);
+    await activation; releaseRecoveryGate(); await recoveryGate;
+    await waitFor(() => (restored.bindings as any).gates.size === 0);
     expect(restored.store.getRun(resumable.id)?.completionReason).toBe("human-cancelled");
     expect(restored.store.listRuns(group.id, topic.id)).toHaveLength(3); expect(normalStops).toBe(0);
+    expect(sent.some((message) => message.context === "ctx-31")).toBe(false);
   } finally {
-    finishOrdinary(); finishRecovered(); daemon.abort(); nextDaemon.abort(); await startup; await restarted;
+    releaseRecoveryGate(); await recoveryGate; finishOrdinary(); finishRecovered(); daemon.abort(); nextDaemon.abort(); await startup; await restarted;
     await registry.stopAll(); await nextRegistry?.stopAll(); await runtime.shutdown(); await resumed?.shutdown();
     if (priorStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = priorStateDir;
     mock.restore();

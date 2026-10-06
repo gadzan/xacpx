@@ -393,7 +393,7 @@ export interface ChannelStartInput {
 }
 
 export interface ConversationChannelAgent extends ChatAgent {
-  prepareConversation?(request: ChatRequest): Promise<void>;
+  prepareConversation?(request: ChatRequest): Promise<void | { stopPendingAcceptance: boolean }>;
 }
 ```
 
@@ -416,6 +416,11 @@ accepted durable Run remains owned by the core runtime. Generic request aborts
 never imply human cancellation. See [Conversation bindings](./conversation-runtime.md#external-channel-bindings-pr10).
 Call the selected Agent's `prepareConversation?.(fullRequest)` before typing or
 card initialization. It commits acceptance and installs settlement/Stop tracking;
+capture the owner's current Conversation tasks at Stop selection. If preparation
+returns `stopPendingAcceptance: true`, signal only those captured tasks before UI
+setup. Do not infer this from Stop text or route selection:
+only a fresh durable Stop receipt grants the flag, so an old platform Stop replay
+cannot abort later tasks. Ordinary Session tasks and the Stop's own task are excluded.
 `chat(fullRequest)` subsequently awaits that same prepared result. Preserve its
 message identity, content and signal objects. Enter preparation for each admitted
 message immediately; the core Topic queue serializes execution. An older Run or

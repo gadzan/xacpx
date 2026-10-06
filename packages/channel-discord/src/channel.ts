@@ -2103,16 +2103,10 @@ export class DiscordChannel implements MessageChannelRuntime {
       metadata: { channel: "discord", channelMessageId: messageId, senderId: msg.author.id, hadInboundMedia,
         humanStopRequested: isLikelyAbortText(requestText),
         authenticatedHuman: msg.author.bot === false, origin: msg.author.bot === false ? "human" : "peer" } });
-    // Durable Conversation ownership wins even when only Session tasks remain
-    // in memory after restart. Pending acceptance still needs its human signal.
-    if (conversationAgent) {
-      if (!hadInboundMedia && msg.author.bot === false && isLikelyAbortText(requestText)) {
-        const owned = this.activeTasks.get(queueKey)?.filter((task) => !task.suppressed
-          && task.executionDomain === "conversation" && task.senderId === msg.author.id) ?? [];
-        if (owned.length) await this.handleAbortFastPath({ runtime, activeTasks: owned, abortRequestMessageId: messageId,
-          channelId, accountId, chatKey, acknowledge: false });
-      }
-    } else if (await this.tryHandleAbortTrigger({ runtime, queueKey, accountId, channelId, messageId, msg,
+    const conversationStopTasks = conversationAgent && isLikelyAbortText(requestText)
+      ? this.activeTasks.get(queueKey)?.filter((task) => !task.suppressed
+        && task.executionDomain === "conversation" && task.senderId === msg.author.id) ?? [] : [];
+    if (!conversationAgent && await this.tryHandleAbortTrigger({ runtime, queueKey, accountId, channelId, messageId, msg,
       chatKey, isDM, requireMention: effectiveRequireMention })) return;
     const { media, skipped } = conversationAgent ? { media: [], skipped: [] } : await this.downloadInboundAttachments({
       runtime,
@@ -2158,6 +2152,7 @@ export class DiscordChannel implements MessageChannelRuntime {
           requestText,
           media,
           hadInboundMedia,
+          conversationStopTasks,
           active,
           abortController,
           boundAlias,
@@ -2448,6 +2443,7 @@ export class DiscordChannel implements MessageChannelRuntime {
     requestText: string;
     media: ChannelMediaAttachment[];
     hadInboundMedia: boolean;
+    conversationStopTasks: ActiveTask[];
     active: ActiveTask;
     abortController: AbortController;
     boundAlias?: string;
@@ -2470,7 +2466,12 @@ export class DiscordChannel implements MessageChannelRuntime {
         abortSignal: abortController.signal,
         ...(input.agent ? { humanStopSignal: active.humanStopController.signal } : {}),
       };
-      await input.agent?.prepareConversation?.(ingress);
+      const preparation = await input.agent?.prepareConversation?.(ingress);
+      if (preparation?.stopPendingAcceptance) {
+        const owned = input.conversationStopTasks.filter((task) => !task.suppressed);
+        if (owned.length) await this.handleAbortFastPath({ runtime, activeTasks: owned, abortRequestMessageId: messageId,
+          channelId, accountId, chatKey, acknowledge: false });
+      }
 
       // Typing indicator
       if (runtime.account.typingIndicator) {

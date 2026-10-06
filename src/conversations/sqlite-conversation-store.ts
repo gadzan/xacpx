@@ -77,6 +77,19 @@ export interface SqliteConversationStoreOptions {
   beforeDispatchMigrationCommit?: () => void;
 }
 
+export interface ExternalStopRequest {
+  key: string;
+  fingerprint: string;
+  chatKey: string;
+  accountId: string;
+  senderId: string;
+}
+
+export interface ExternalStopReceipt {
+  reused: boolean;
+  targetRunIds: string[];
+}
+
 interface MessageRow {
   handoff_json?: string | null;
   id: string;
@@ -186,6 +199,11 @@ CREATE TABLE IF NOT EXISTS external_conversation_requests (
   conversation_id TEXT NOT NULL, topic_id TEXT NOT NULL, stop_ingress TEXT
 );
 CREATE INDEX IF NOT EXISTS external_conversation_requests_run ON external_conversation_requests(run_id);
+CREATE TABLE IF NOT EXISTS external_conversation_stops (
+  source_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
+  chat_key TEXT NOT NULL, account_id TEXT NOT NULL, sender_id TEXT NOT NULL,
+  target_run_ids_json TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS topic_seq (
   topic_id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
@@ -725,6 +743,9 @@ export class SqliteConversationStore implements ConversationStore {
     }
     try {
       return this.sqlite.transaction(() => {
+        if (input.externalRequest && this.hasExternalStopRequest(input.externalRequest.key)) {
+          throw new ConversationError("external_request_conflict", "platform message already identifies a Stop");
+        }
         this.assertAcceptable(input.conversationId, input.topicId);
         const created = this.insertAccepted(input);
         if (input.externalRequest) {
@@ -753,6 +774,41 @@ export class SqliteConversationStore implements ConversationStore {
     return this.sqlite.get("SELECT 1 FROM external_conversation_requests WHERE source_key = ?", [key]) !== undefined;
   }
 
+  hasExternalStopRequest(key: string): boolean {
+    return this.sqlite.get("SELECT 1 FROM external_conversation_stops WHERE source_key = ?", [key]) !== undefined;
+  }
+
+  getExternalStopRequest(input: ExternalStopRequest): ExternalStopReceipt | undefined {
+    const row = this.sqlite.get<{ fingerprint: string; chat_key: string; account_id: string; sender_id: string; target_run_ids_json: string }>(
+      "SELECT * FROM external_conversation_stops WHERE source_key = ?", [input.key]);
+    if (!row) return undefined;
+    if (row.fingerprint !== input.fingerprint) throw new ConversationError("external_request_conflict", "platform Stop was already accepted with different input");
+    if (row.chat_key !== input.chatKey || row.account_id !== input.accountId || row.sender_id !== input.senderId) {
+      throw new ConversationError("external_stop_corrupt", "Stop receipt lost its original owner");
+    }
+    let ids: unknown;
+    try { ids = JSON.parse(row.target_run_ids_json); }
+    catch { throw new ConversationError("external_stop_corrupt", "Stop receipt has malformed targets"); }
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !id || id !== id.trim()) || new Set(ids).size !== ids.length) {
+      throw new ConversationError("external_stop_corrupt", "Stop receipt has invalid targets");
+    }
+    return { reused: true, targetRunIds: ids as string[] };
+  }
+
+  acceptExternalStop(input: ExternalStopRequest, selectTargets: () => string[]): ExternalStopReceipt {
+    this.assertOpen();
+    return this.sqlite.transaction(() => {
+      if (this.hasExternalRequest(input.key)) throw new ConversationError("external_request_conflict", "platform message already identifies a prompt");
+      const replay = this.getExternalStopRequest(input);
+      if (replay) return replay;
+      const targetRunIds = selectTargets();
+      this.sqlite.run("INSERT INTO external_conversation_stops (source_key, fingerprint, chat_key, account_id, sender_id, target_run_ids_json) VALUES (?, ?, ?, ?, ?, ?)",
+        [input.key, input.fingerprint, input.chatKey, input.accountId, input.senderId, JSON.stringify(targetRunIds)]);
+      this.beforeAcceptCommit?.();
+      return { reused: false, targetRunIds };
+    });
+  }
+
   listLiveExternalRequests(): Array<{ accepted: AcceptRequestResult; ingress?: HumanIngressContext }> {
     return this.sqlite.all<{ source_key: string; fingerprint: string; stop_ingress: string | null }>(
       `SELECT e.source_key, e.fingerprint, e.stop_ingress FROM runs r
@@ -763,6 +819,7 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   getExternalRequest(input: { key: string; fingerprint: string }): AcceptRequestResult | undefined {
+    if (this.hasExternalStopRequest(input.key)) throw new ConversationError("external_request_conflict", "platform message already identifies a Stop");
     const row = this.sqlite.get<{ fingerprint: string; run_id: string; conversation_id: string; topic_id: string }>(
       "SELECT * FROM external_conversation_requests WHERE source_key = ?", [input.key]);
     if (!row) return undefined;

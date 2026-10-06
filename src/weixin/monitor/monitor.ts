@@ -299,9 +299,8 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
             hadInboundMedia,
             ...(full.message_id != null ? { channelMessageId: String(full.message_id) } : {}) },
         });
-        if (conversationAgent && !hadInboundMedia && /^(?:\/(?:stop|cancel|abort)|stop|abort|interrupt)$/i.test(inboundText.trim())) {
-          for (const turn of boundTurns.get(chatKey) ?? []) { turn.humanStop.abort(); turn.controller.abort(); }
-        }
+        const stopTurns = conversationAgent && /^(?:\/(?:stop|cancel|abort)|stop|abort|interrupt)$/i.test(inboundText.trim())
+          ? [...(boundTurns.get(chatKey) ?? [])] : [];
         const controller = conversationAgent ? new AbortController() : undefined;
         const turn = controller ? { controller, humanStop: new AbortController() } : undefined;
         const abortBound = () => controller?.abort();
@@ -334,6 +333,9 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
               ...(controller ? { abortSignal: controller.signal } : {}),
               ...(turn ? { humanStopSignal: turn.humanStop.signal } : {}),
               conversationBound: Boolean(conversationAgent),
+              onConversationStop: () => {
+                for (const other of stopTurns) { other.humanStop.abort(); other.controller.abort(); }
+              },
               baseUrl,
               cdnBaseUrl,
               token,
