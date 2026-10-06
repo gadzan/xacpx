@@ -331,9 +331,16 @@ claims or Router continuation. Existing human-cancel admission regressions now
 also require known cancellation and a completed dispatch when this live process
 settles nonadmission before the pending physical cancel response.
 
+The first new-head CI run exposed an unchanged worker-fence test fixture:
+the dead POSIX-group test injected the removed isProcessGroupAlive hook,
+so the implementation instead probed real PGID 4242 and timed out if it was
+live. The fixture now supplies probeProcessGroup's existing gone verdict.
+This makes its intended dead-group proof deterministic without changing any
+production ownership, liveness or kill policy.
+
 ## Validation and residual limits
 
-- Pre-provider cancellation follow-up: **915** Conversation/Session/Control/MCP/wire DTO tests passed across 33 files, including both new real transport red-to-green cases and the updated human-cancel admission assertions. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
+- Pre-provider cancellation follow-up: **915** Conversation/Session/Control/MCP/wire DTO tests passed across 33 files, including both new real transport red-to-green cases and the updated human-cancel admission assertions. The corrected worker-fence fixture's full file passed **41** tests. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
 - Automatic multi-member cancellation follow-up, after integrating main's PR #373 fix: **913** Conversation/Session/Control/MCP/wire DTO tests passed across 33 files, including nine new regressions and the expanded CommandRouter/Control prompt coverage. Native Node SQLite passed five additional cancellation order/provenance/migration scenarios. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Before main integration, the 31-file sweep passed **809** cases. Exact new-HEAD CI is tracked in the PR/report.
 - Shutdown ordering follow-up: **800** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including the three new shutdown cases. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
 - Runtime terminal-evidence follow-up: **797** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including both new red-to-green real ConsoleAgent transport cases. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
