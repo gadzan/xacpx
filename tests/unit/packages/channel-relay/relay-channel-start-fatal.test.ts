@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 
 import { RelayChannel } from "../../../../packages/channel-relay/src/channel";
 import type { RelayCredential } from "../../../../packages/channel-relay/src/credential-store";
+import { RelayClient } from "../../../../packages/channel-relay/src/relay-client";
 import type { RelayFatalReason } from "../../../../packages/channel-relay/src/relay-client";
 
 /**
@@ -117,11 +118,65 @@ async function settle(started: Promise<void>, ms = 2000): Promise<"resolved" | "
   }
 }
 
+test("RelayClient reports no-credentials before creating a socket", () => {
+  // The fail-fast half, driven through the REAL `RelayClient` rather than a seam:
+  // the whole point is where the check sits relative to the network, which is the
+  // client's own behaviour. `createSocket` is never expected to be called at all.
+  //
+  // Named for what it proves: `start()` returns void, so nothing here rejects.
+  // What is asserted is (a) `onFatal` fires synchronously with start(), and (b) no
+  // socket was ever requested. The other half of the chain — that a fatal reason
+  // makes `RelayChannel.start()` REJECT — is proven separately by the test below,
+  // through the channel's own `createClient` seam.
+  //
+  // With neither a stored credential nor a pairing token the connector can never
+  // authenticate, so this is a permanent LOCAL configuration error — it must not
+  // depend on the hub being reachable. The check therefore runs in
+  // `RelayClient.start()` before any connection is attempted.
+  //
+  // Under the previous placement (inside `sendHandshake`, which only runs once the
+  // socket emits `open`), an unreachable hub meant the fatal never fired, the
+  // channel looped through reconnect forever, `start()` never rejected, and the
+  // registry kept the form capability advertised for a channel that could not use
+  // it.
+  let socketAttempts = 0;
+  const controller = new AbortController();
+  // Driven at the `RelayClient` level, because the placement of the check relative
+  // to the network is the client's own behaviour and the channel exposes no
+  // `createSocket` seam to observe it with.
+  let fatalReason: RelayFatalReason | undefined;
+  const client = new RelayClient({
+    url: "ws://127.0.0.1:1",
+    credentialStore: new MemoryCredentialStore(),
+    onRequest: () => {},
+    onFatal: (reason) => {
+      fatalReason = reason;
+    },
+    createSocket: () => {
+      socketAttempts += 1;
+      return {
+        send: () => {},
+        close: () => {},
+        terminate: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        readyState: 0,
+      } as never;
+    },
+  });
+
+  client.start(controller.signal);
+  // The fatal is synchronous with start(), before any socket exists.
+  expect(fatalReason).toBe("no-credentials");
+  // The decisive half: no connection was attempted at all.
+  expect(socketAttempts).toBe(0);
+  expect(client.isReady()).toBe(false);
+});
+
 test("start() rejects when the connector reports a terminal failure", async () => {
   // The core assertion. If start() merely parks on the abort signal here, the
   // channel is never recorded in `failedStartupChannels`, and the daemon keeps
   // advertising a form capability it cannot deliver.
-  //
   // The fatal is fired through the handler the channel itself installed on
   // `createClient`, which is the same call `RelayClient` makes.
   const channel = new RelayChannel(
