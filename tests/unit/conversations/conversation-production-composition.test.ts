@@ -148,6 +148,94 @@ test(`real ConsoleAgent handoff ${outcome} preserves failure vs indeterminate`, 
 });
 }
 
+for (const mode of ["automatic", "explicit"] as const) {
+for (const humanStop of [false, true]) {
+test(`real ${mode} budget rejection then typed cancellation preserves ${humanStop ? "live human Stop" : "budget failure"}`, async () => {
+  const budgetRejected = shutdownBarrier(), releaseProvider = shutdownBarrier(), cancelEntered = shutdownBarrier();
+  let consoleAgent!: ConsoleAgent, senderId = "", targetId = "", runId = "", routerCalls = 0, starts = 0;
+  let signal: AbortSignal | undefined;
+  const current = await compose(new BarrierStateStore(), {
+    agent: { chat: (request) => { signal = request.abortSignal; return consoleAgent.chat(request); } },
+    router: { capabilityRestriction: RESTRICTED, async decide() {
+      if (++routerCalls > 1) return { type: "complete", reason: "unexpected continuation" };
+      return { type: "dispatch", mode: "single", assignments: [
+        { id: "budget-sender", botId: senderId, task: "exhaust handoff budget", triggerMessageIds: [] },
+      ] };
+    } },
+  });
+  const transport = { prompt: async (session: ResolvedSession) => {
+    ++starts;
+    expect(starts).toBe(1);
+    expect(session.mcpSourceHandle).toMatch(/^group-execution:/);
+    try {
+      const limit = current.runtime.store.getRun(runId)!.maxMemberTurns;
+      expect(limit).toBe(24);
+      // Fill the real production budget with accepted public handoffs. No SQL
+      // budget override or model-supplied capability is needed for this case.
+      for (let index = 1; index < limit; index++) {
+        await current.runtime.handoffs.send({ executionToken: session.mcpSourceHandle!, invocationId: `budget-${index}`,
+          args: { to: targetId, task: `accepted downstream work ${index}` } });
+      }
+      await expect(current.runtime.handoffs.send({ executionToken: session.mcpSourceHandle!, invocationId: "budget-rejected",
+        args: { to: targetId, task: "must exceed durable work budget" } })).rejects.toMatchObject({ code: "budget-exhausted" });
+    } finally { budgetRejected.resolve(); }
+    await releaseProvider.promise;
+    throw Object.assign(new Error("provider terminal evidence"), { code: "RUNTIME_TURN_CANCELLED" });
+  }, cancel: async () => {
+    if (!humanStop) throw new Error("no human Stop was requested");
+    cancelEntered.resolve();
+  } } as unknown as SessionTransport;
+  consoleAgent = new ConsoleAgent(new CommandRouter(current.sessions, transport, createConfig()));
+  let drain: Promise<void> | undefined, cancellation: Promise<unknown> | undefined;
+  try {
+    senderId = (await current.control.createBot({ name: "Sender", agent: "codex", workspace: "backend" })).id;
+    targetId = (await current.control.createBot({ name: "Target", agent: "codex", workspace: "backend" })).id;
+    const group = await current.control.createGroup({ title: "Budget cancellation priority", botIds: [senderId, targetId] });
+    const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
+    const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
+      requestId: "budget-runtime-cancellation", text: "work", target: mode === "automatic" ? { mode: "automatic" } : { botId: senderId } });
+    runId = accepted.run.id;
+    await current.runtime.runs.awaitRouting();
+    drain = current.runtime.dispatcher.kick();
+    await budgetRejected.promise;
+    expect(current.runtime.store.listMemberTurns(runId)).toHaveLength(24);
+    const sql = await createSqlDriver(current.sqlitePath);
+    try { expect(sql.get("SELECT budget_exhausted, cancellation_reason FROM runs WHERE id = ?", [runId]))
+      .toMatchObject({ budget_exhausted: 1, cancellation_reason: null }); }
+    finally { sql.close(); }
+    if (humanStop) { cancellation = current.control.cancelRun(runId); await cancelEntered.promise; }
+    expect(signal?.aborted).toBe(humanStop);
+    releaseProvider.resolve();
+    await Promise.all([drain, cancellation]);
+    await current.runtime.runs.awaitRouting();
+    const expected = { state: humanStop ? "cancelled" : "failed",
+      completionReason: humanStop ? "human-cancelled" : "budget-exhausted", consumedMemberTurns: 1 };
+    const detail = await current.control.getRun(runId);
+    expect(detail).toMatchObject(expected);
+    expect(detail.memberTurns).toHaveLength(24);
+    expect(detail.memberTurns.every((turn) => turn.state === "cancelled")).toBe(true);
+    expect(detail.memberTurns.filter((turn) => turn.startedAt)).toHaveLength(1);
+    expect(detail.quarantinedBotIds ?? []).toEqual([]);
+    for (const turn of detail.memberTurns) expect(current.runtime.store.getDispatchForMemberTurn(turn.id)?.state).toBe("completed");
+    expect(starts).toBe(1);
+    expect(routerCalls).toBe(mode === "automatic" ? 1 : 0);
+    await current.runtime.shutdown();
+    const reopened = await SqliteConversationStore.open(current.sqlitePath);
+    try {
+      expect(reopened.getRun(runId)).toMatchObject(expected);
+      expect(reopened.automaticRunsAwaitingRouting()).toEqual([]);
+      expect(reopened.recoverExpiredClaims("2026-10-07T00:00:00.000Z")).toEqual([]);
+      expect(reopened.listMemberTurns(runId)).toHaveLength(24);
+    } finally { reopened.close(); }
+  } finally {
+    releaseProvider.resolve();
+    await Promise.allSettled([drain, cancellation]);
+    await current.runtime.shutdown();
+  }
+});
+}
+}
+
 for (const cancelledFirst of [true, false]) {
 test(`real automatic typed cancellation is durable with ${cancelledFirst ? "cancelled then completed" : "completed then cancelled"} settlement`, async () => {
   const entered = [shutdownBarrier(), shutdownBarrier()];

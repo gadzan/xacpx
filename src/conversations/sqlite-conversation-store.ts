@@ -3202,8 +3202,13 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   private settleExhaustedBudget(run: ConversationRun, now: string): ConversationRun | undefined {
-    if (isRunCancelling(run) || this.sqlite.get<{ budget_exhausted: number }>(
-      "SELECT budget_exhausted FROM runs WHERE id = ?", [run.id])?.budget_exhausted !== 1) return undefined;
+    const intent = this.sqlite.get<{ budget_exhausted: number; cancellation_reason: string | null }>(
+      "SELECT budget_exhausted, cancellation_reason FROM runs WHERE id = ?", [run.id]);
+    // Only live human Stop supersedes durable budget rejection. Execution
+    // cancellation still fences scheduling, but cannot erase this failure;
+    // an unknown seal retains its existing late-proof budget classification.
+    if (intent?.budget_exhausted !== 1
+      || (isRunCancelling(run) && intent.cancellation_reason === "human-cancelled")) return undefined;
     this.sqlite.run(`UPDATE runs SET state = 'failed', completion_reason = 'budget-exhausted', finished_at = ?,
       routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END WHERE id = ?`, [now, run.id]);
     return this.requireRun(run.id);

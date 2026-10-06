@@ -69,6 +69,64 @@ test("budget rejection keeps unproven execution indeterminate", async () => {
   } finally { store.close(); }
 });
 
+for (const withPendingSibling of [false, true]) {
+  for (const humanStop of [false, true]) {
+    for (const reopen of [false, true]) {
+      test(`budget rejection with execution cancellation preserves ${humanStop ? "live human" : "budget"} priority${withPendingSibling ? " and pending sibling" : ""}${reopen ? " after reopen" : ""}`, async () => {
+        const execution = await exhaustedExecution(withPendingSibling);
+        let store = execution.store;
+        const { runId, memberId } = execution;
+        try {
+          if (humanStop) store.cancelRun(runId, NOW);
+          if (reopen) { store.close(); store = await SqliteConversationStore.open(execution.path); }
+          store.completeCancel(runId, memberId, NOW, false, true, "source");
+          const expected = { state: humanStop ? "cancelled" : "failed",
+            completionReason: humanStop ? "human-cancelled" : "budget-exhausted", consumedMemberTurns: 1 };
+          expect(store.getRun(runId)).toMatchObject(expected);
+          const members = store.listMemberTurns(runId);
+          expect(members.map((member) => member.state)).toEqual(withPendingSibling ? ["cancelled", "cancelled"] : ["cancelled"]);
+          for (const member of members) expect(store.getDispatchForMemberTurn(member.id)?.state).toBe("completed");
+          expect(store.getRun(runId)?.quarantinedBotIds ?? []).toEqual([]);
+          store.completeCancel(runId, memberId, NOW, false, true, "source");
+          expect(store.getRun(runId)).toMatchObject(expected);
+          store.close(); store = await SqliteConversationStore.open(execution.path);
+          expect(store.getRun(runId)).toMatchObject(expected);
+          expect(store.claimNextDispatch({ owner: "next", now: NOW, leaseExpiresAt: NOW })).toBeUndefined();
+          expect(store.automaticRunsAwaitingRouting()).toEqual([]);
+        } finally { store.close(); }
+      });
+    }
+  }
+}
+
+for (const proof of ["completed", "failed"] as const) {
+  test(`execution cancellation plus budget rejection keeps unknown sealed until late ${proof} proof`, async () => {
+    const execution = await exhaustedExecution(true);
+    let store = execution.store;
+    const { runId, memberId } = execution;
+    try {
+      const claim = store.claimNextDispatch({ owner: "owner", now: NOW, leaseExpiresAt: "2026-10-05T00:01:00.000Z" })!;
+      const sibling = store.markExecutionStarted({ dispatchId: claim.dispatch.id, owner: "owner", generation: claim.dispatch.generation,
+        runId, memberTurnId: claim.memberTurn.id, sessionAlias: "sibling-session", logicalSessionId: "sibling-logical",
+        sourceTurnId: "sibling-source", now: NOW });
+      store.completeCancel(runId, memberId, NOW, false, true, "source");
+      expect(store.getRun(runId)).toMatchObject({ state: "running", completionReason: "execution-cancelled" });
+      store.completeCancel(runId, sibling.id, NOW, true, true, "sibling-source");
+      expect(store.getRun(runId)).toMatchObject({ state: "indeterminate", completionReason: "started_result_unknown", consumedMemberTurns: 2 });
+      store.close(); store = await SqliteConversationStore.open(execution.path);
+      store.reconcileLateResult({ runId, memberTurnId: sibling.id, outcome: proof, content: "proven sibling result", reason: "proven sibling failure",
+        sourceTurn: { sessionAlias: "sibling-session", turnId: "sibling-source" }, now: NOW });
+      expect(store.getRun(runId)).toMatchObject({ state: "failed", completionReason: "budget-exhausted", consumedMemberTurns: 2 });
+      expect(store.getMemberTurn(memberId)?.state).toBe("cancelled");
+      expect(store.getMemberTurn(sibling.id)?.state).toBe(proof);
+      expect(store.getMemberResult(store.getMemberTurn(sibling.id)!)?.content).toBe(proof === "completed" ? "proven sibling result" : undefined);
+      expect(store.automaticRunsAwaitingRouting()).toEqual([]);
+      store.close(); store = await SqliteConversationStore.open(execution.path);
+      expect(store.getRun(runId)).toMatchObject({ state: "failed", completionReason: "budget-exhausted", consumedMemberTurns: 2 });
+    } finally { store.close(); }
+  });
+}
+
 for (const outcome of ["completed", "cancelled"] as const) {
   test(`human cancel after budget rejection retains proven ${outcome} classification`, async () => {
     const { store, runId, memberId } = await exhaustedExecution();

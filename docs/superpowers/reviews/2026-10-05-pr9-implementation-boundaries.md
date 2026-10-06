@@ -338,8 +338,40 @@ live. The fixture now supplies probeProcessGroup's existing gone verdict.
 This makes its intended dead-group proof deterministic without changing any
 production ownership, liveness or kill policy.
 
+## Budget versus execution cancellation follow-up (2026-10-06)
+
+Review of exact HEAD `289af32c733b0639de9685d44c04ad0c1ef86347` identified
+one Medium: a known provider cancellation wrote execution-cancelled intent,
+then the budget classifier treated every live cancel intent as a human Stop
+and skipped the durable budget_exhausted marker.
+
+The shared budget classifier now reads cancellation provenance alongside the
+budget marker. Only a still-live Run with human-cancelled provenance retains
+the existing human Stop priority. Execution cancellation continues to fence
+scheduling and preserve cancelled member evidence, while the settled Run
+fails budget-exhausted. Unknown evidence still seals indeterminate first;
+late exact completed/failed proof then observes the durable budget marker.
+The existing sealed human-cancel late-proof behavior also remains unchanged.
+No scheduling predicate, migration, schema or wire surface changes.
+
+Four real ConsoleAgent → CommandRouter → transport cases fill the normal
+24-slot work budget with accepted public handoffs, reject the next invocation,
+and return typed RUNTIME_TURN_CANCELLED. Automatic and explicit modes each
+cover execution cancellation alone and a real human Stop before settlement.
+Only the latter retains human-cancelled. No test budget override or model
+capability proof is used. Provider/Router counts, cancelled pending evidence,
+completed dispatches, one consumed turn and SQLite reopen are asserted.
+
+Ten store regressions cover live human versus execution provenance, pending
+siblings, reopening before settlement, idempotent cancellation, and an unknown
+started sibling whose late completed/failed proof restores budget-exhausted.
+Six new cases failed on the reviewed HEAD, including both non-human real
+transport cases; all pass after repair. The independent durability review
+confirmed the finding and the live-provenance boundary.
+
 ## Validation and residual limits
 
+- Budget/execution-cancellation follow-up: **929** Conversation/Session/Control/MCP/wire DTO tests passed across 33 files, including 14 new regressions; the two focused files passed **56** cases. Independent native Node SQLite and Bun SQLite each passed the same **40** budget/provenance/reopen/late-proof/legacy-upgrade scenarios. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
 - Pre-provider cancellation follow-up: **915** Conversation/Session/Control/MCP/wire DTO tests passed across 33 files, including both new real transport red-to-green cases and the updated human-cancel admission assertions. The corrected worker-fence fixture's full file passed **41** tests. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
 - Automatic multi-member cancellation follow-up, after integrating main's PR #373 fix: **913** Conversation/Session/Control/MCP/wire DTO tests passed across 33 files, including nine new regressions and the expanded CommandRouter/Control prompt coverage. Native Node SQLite passed five additional cancellation order/provenance/migration scenarios. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Before main integration, the 31-file sweep passed **809** cases. Exact new-HEAD CI is tracked in the PR/report.
 - Shutdown ordering follow-up: **800** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including the three new shutdown cases. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
