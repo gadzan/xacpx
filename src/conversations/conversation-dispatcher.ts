@@ -770,11 +770,18 @@ export class ConversationDispatcher {
       if (
         !latestRun
         || latestRun.state !== "running"
-        || isRunCancelling(latestRun)
         || !latestMember
         || latestMember.state !== "running"
         || latestMember.sourceTurnId !== sourceTurnId
       ) {
+        return;
+      }
+      if (isRunCancelling(latestRun)) {
+        // This exact attempt has not called runner.run(): durable start is
+        // not provider admission. Persist the known pre-provider cancellation
+        // instead of abandoning a running member/claimed dispatch that lease
+        // recovery would later misclassify as unknown side effects.
+        this.persistResult(work, started, { status: "cancelled" });
         return;
       }
       this.emitProduct({ type: "conversation-run-changed", run: latestRun });

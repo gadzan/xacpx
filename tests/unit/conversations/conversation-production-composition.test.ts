@@ -24,6 +24,8 @@ import { ConsoleAgent } from "../../../src/console-agent";
 import { CommandRouter } from "../../../src/commands/command-router";
 import type { SessionTransport, ResolvedSession } from "../../../src/transport/types";
 import { isRunCancelling } from "../../../src/conversations/conversation-store";
+import type { ConversationDispatcherHooks } from "../../../src/conversations/conversation-dispatcher";
+import type { ConversationTurnRunner } from "../../../src/conversations/conversation-turn-runner";
 
 const RESTRICTED = { toolsDisabled: true, filesystemDisabled: true, terminalDisabled: true, permissionInteractionDisabled: true, messagingDisabled: true, orchestrationDisabled: true, structuredOutputOnly: true };
 
@@ -286,6 +288,106 @@ test("real automatic typed cancellation cancels unstarted writer siblings withou
     for (const turn of detail.memberTurns) expect(current.runtime.store.getDispatchForMemberTurn(turn.id)?.state).toBe("completed");
   } finally { unsubscribe(); await current.runtime.shutdown(); }
 });
+
+for (const mode of ["automatic", "explicit"] as const) {
+test(`real ${mode} execution cancellation settles a durable-started sibling before runner admission`, async () => {
+  const providerEntered = shutdownBarrier(), releaseProvider = shutdownBarrier();
+  const siblingStarted = shutdownBarrier(), releaseSibling = shutdownBarrier(), cancellationCommitted = shutdownBarrier();
+  let consoleAgent!: ConsoleAgent, cancelledBot = "", siblingBot = "", siblingSource = "", routerCalls = 0;
+  const providerBots: string[] = [];
+  const current = await compose(new BarrierStateStore(), {
+    agent: { chat: (request) => consoleAgent.chat(request) },
+    router: { capabilityRestriction: RESTRICTED, async decide() {
+      if (++routerCalls > 1) return { type: "complete", reason: "unexpected continuation" };
+      return { type: "dispatch", mode: "parallel", assignments: [
+        { id: "provider-cancellation", botId: cancelledBot, task: "provider cancellation", triggerMessageIds: [] },
+        { id: "pre-provider-sibling", botId: siblingBot, task: "must never reach runner", triggerMessageIds: [] },
+      ] };
+    } },
+  });
+  // Use the dispatcher's existing fault hook to hold this precise async
+  // boundary in the production composition, without a new production API.
+  const dispatcher = current.runtime.dispatcher as unknown as { hooks: ConversationDispatcherHooks; runner: ConversationTurnRunner };
+  const runnerCalls = spyOn(dispatcher.runner, "run");
+  dispatcher.hooks = { afterExecutionStart: async (turn) => {
+    if (turn.botId !== siblingBot) return;
+    siblingSource = turn.sourceTurnId!;
+    siblingStarted.resolve();
+    await releaseSibling.promise;
+  } };
+  const unsubscribe = current.events.subscribe((event) => {
+    if (event.type === "member-turn-finished" && event.memberTurn.botId === cancelledBot) cancellationCommitted.resolve();
+  });
+  const transport = { prompt: async (session: ResolvedSession) => {
+    const botId = current.sessions.getLogicalSessionRecord(session.alias)!.owner!.botId!;
+    providerBots.push(botId);
+    if (botId !== cancelledBot) return { text: "unexpected sibling provider result" };
+    expect(session.mcpSourceHandle).toMatch(/^group-execution:/);
+    providerEntered.resolve();
+    await releaseProvider.promise;
+    throw Object.assign(new Error("provider terminal evidence"), { code: "RUNTIME_TURN_CANCELLED" });
+  }, cancel: async () => { throw new Error("no human Stop was requested"); } } as unknown as SessionTransport;
+  consoleAgent = new ConsoleAgent(new CommandRouter(current.sessions, transport, createConfig()));
+  let drain: Promise<void> | undefined;
+  try {
+    cancelledBot = (await current.control.createBot({ name: "A", agent: "codex", workspace: "backend" })).id;
+    siblingBot = (await current.control.createBot({ name: "B", agent: "codex", workspace: "backend" })).id;
+    const group = await current.control.createGroup({ title: "Provider admission gap", botIds: [cancelledBot, siblingBot] });
+    const topic = await current.control.createGroupTopic(group.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" });
+    const accepted = await current.control.promptConversation({ conversationId: group.id, topicId: topic.id,
+      requestId: "pre-provider-cancellation", text: "work", target: mode === "automatic" ? { mode: "automatic" } : { mode: "everyone" } });
+    await current.runtime.runs.awaitRouting();
+    // Host-controlled, side-effect-free test providers use the existing
+    // enforced-read-only seam to admit concurrent siblings. Models cannot
+    // grant this capability through assignment fields.
+    const sql = await createSqlDriver(current.sqlitePath);
+    try { sql.run("UPDATE member_turns SET effect = 'read-only', effect_provenance = 'declared-enforced' WHERE run_id = ?", [accepted.run.id]); }
+    finally { sql.close(); }
+    drain = current.runtime.dispatcher.kick();
+    await Promise.all([providerEntered.promise, siblingStarted.promise]);
+    const sibling = current.runtime.store.listMemberTurns(accepted.run.id).find((turn) => turn.botId === siblingBot)!;
+    expect(sibling).toMatchObject({ state: "running", sourceTurnId: siblingSource });
+    expect(sibling.startedAt).toBeDefined();
+    expect(current.runtime.store.getDispatchForMemberTurn(sibling.id)?.state).toBe("claimed");
+    expect(conversationKernel(current.control).inspectPromptRequest(`bot:${group.id}:${topic.id}`, sibling.sessionAlias!, siblingSource)).toBe("absent");
+    releaseProvider.resolve();
+    await cancellationCommitted.promise;
+    expect(current.runtime.store.getRun(accepted.run.id)).toMatchObject({ state: "running", completionReason: "execution-cancelled" });
+    expect(current.runtime.store.getMemberTurn(sibling.id)?.state).toBe("running");
+    releaseSibling.resolve();
+    await drain;
+    await current.runtime.runs.awaitRouting();
+    const detail = await current.control.getRun(accepted.run.id);
+    expect(detail).toMatchObject({ state: "cancelled", completionReason: "execution-cancelled", consumedMemberTurns: 2 });
+    expect(detail.memberTurns.map((turn) => turn.state)).toEqual(["cancelled", "cancelled"]);
+    expect(providerBots).toEqual([cancelledBot]);
+    expect(runnerCalls.mock.calls.map(([input]) => input.botId)).toEqual([cancelledBot]);
+    expect(conversationKernel(current.control).inspectPromptRequest(`bot:${group.id}:${topic.id}`, sibling.sessionAlias!, siblingSource)).toBe("absent");
+    expect(routerCalls).toBe(mode === "automatic" ? 1 : 0);
+    expect(detail.quarantinedBotIds ?? []).toEqual([]);
+    for (const turn of detail.memberTurns) expect(current.runtime.store.getDispatchForMemberTurn(turn.id)?.state).toBe("completed");
+    await current.runtime.shutdown();
+    const reopened = await SqliteConversationStore.open(current.sqlitePath);
+    try {
+      expect(reopened.getRun(accepted.run.id)).toMatchObject({ state: "cancelled", completionReason: "execution-cancelled", consumedMemberTurns: 2 });
+      for (const turn of reopened.listMemberTurns(accepted.run.id)) {
+        expect(turn.state).toBe("cancelled");
+        expect(reopened.getDispatchForMemberTurn(turn.id)?.state).toBe("completed");
+      }
+      expect(reopened.recoverExpiredClaims("2026-10-07T00:00:00.000Z")).toEqual([]);
+      expect(reopened.convergePreviousOwnerClaims("replacement-owner", "2026-10-07T00:00:00.000Z")).toEqual([]);
+      expect(reopened.automaticRunsAwaitingRouting()).toEqual([]);
+      expect(reopened.getRun(accepted.run.id)?.completionReason).toBe("execution-cancelled");
+    } finally { reopened.close(); }
+  } finally {
+    releaseProvider.resolve(); releaseSibling.resolve();
+    await drain;
+    runnerCalls.mockRestore();
+    unsubscribe();
+    await current.runtime.shutdown();
+  }
+});
+}
 
 test("production public handoff carries private launch capability through Control and permission denial stays non-human", async () => {
   let current!: Awaited<ReturnType<typeof compose>>;

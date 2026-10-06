@@ -304,8 +304,36 @@ classification. The real Group chain now additionally verifies that cloning
 or replaying a request with still-live Group metadata cannot launch another
 provider turn. Main's Direct/Group/clear/ordinary-session regressions pass.
 
+## Pre-provider cancellation follow-up (2026-10-06)
+
+Review of exact HEAD `68daa4fda54e2c4c2eb04a18daea78e465c7ce67` identified
+one Medium: an execution-started sibling resumed after durable Run cancellation
+and returned without settling its still-running member or claimed dispatch,
+although this process had not called the runner. Recovery could later seal it
+as unknown despite the local proof of nonadmission.
+
+The dispatcher retains the existing Run/member/source fences, then settles
+that exact live pre-runner attempt through the ordinary cancellation result
+path. Its durable start/source remain auditable, its dispatch completes, the
+started attempt is counted once, and existing cancellation provenance is
+preserved. No runner or provider admission occurs and no next Router decision
+is permitted. Stale/terminal attempts remain untouched; process-loss recovery
+still treats a durable start without outcome conservatively. This adds no
+schema, wire field or provider-admission state.
+
+Two real ConsoleAgent → CommandRouter → transport regressions failed on the
+reviewed HEAD and pass after this fix. Automatic and explicit cohorts each
+admit A's provider, hold B at the existing afterExecutionStart hook, receive A's
+typed Runtime cancellation without local abort, then release B. They assert
+no B runner/provider call, execution-cancelled terminal Run, completed
+dispatches, exact budget/provenance after SQLite reopen, and no recoverable
+claims or Router continuation. Existing human-cancel admission regressions now
+also require known cancellation and a completed dispatch when this live process
+settles nonadmission before the pending physical cancel response.
+
 ## Validation and residual limits
 
+- Pre-provider cancellation follow-up: **915** Conversation/Session/Control/MCP/wire DTO tests passed across 33 files, including both new real transport red-to-green cases and the updated human-cancel admission assertions. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
 - Automatic multi-member cancellation follow-up, after integrating main's PR #373 fix: **913** Conversation/Session/Control/MCP/wire DTO tests passed across 33 files, including nine new regressions and the expanded CommandRouter/Control prompt coverage. Native Node SQLite passed five additional cancellation order/provenance/migration scenarios. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Before main integration, the 31-file sweep passed **809** cases. Exact new-HEAD CI is tracked in the PR/report.
 - Shutdown ordering follow-up: **800** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including the three new shutdown cases. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
 - Runtime terminal-evidence follow-up: **797** Conversation/Session/Control/MCP/wire DTO tests passed across 30 files, including both new red-to-green real ConsoleAgent transport cases. Root typecheck, root build (CLI/bridge/worker/plugin API), acpx import policy and diff checks passed. Exact new-HEAD CI is tracked in the PR/report.
