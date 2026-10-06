@@ -120,7 +120,19 @@ export class RelayClient {
 
   start(abortSignal: AbortSignal): void {
     abortSignal.addEventListener("abort", () => this.stop(), { once: true });
-    if (!abortSignal.aborted) this.connect();
+    if (abortSignal.aborted) return;
+    // FAIL FAST, BEFORE ANY NETWORK I/O. Having neither a stored credential nor a
+    // pairing token is a permanent local configuration error: no connection can
+    // ever authenticate. Checking it inside `sendHandshake` — which only runs once
+    // the socket emits `open` — makes the failure depend on the hub being
+    // reachable. With the hub down this would loop through reconnect forever and
+    // never report `no-credentials`, so `RelayChannel.start()` would never reject
+    // and the registry would keep the channel's form capability advertised.
+    if (!this.options.credentialStore.load() && !this.options.pairingToken) {
+      this.fatal("no-credentials");
+      return;
+    }
+    this.connect();
   }
 
   stop(): void {
@@ -341,6 +353,10 @@ export class RelayClient {
       );
       return;
     }
+    // Defence in depth. `start()` already refuses before connecting when neither
+    // credential nor pairing token exists, so this is reachable only if a
+    // credential was cleared between start and the socket opening — still a
+    // permanent configuration error, and still one the caller must be told about.
     void this.options.logger?.error(
       "relay.no_credentials",
       "relay channel has neither credential nor pairing token",
