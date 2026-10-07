@@ -71,6 +71,7 @@ test("a filesystem-held writer is not a reader and cannot deadlock later readers
 for (const text of ["Reviewer", "do not edit files", "read only"]) {
   test(`${text} is presentation/text and never enforcement proof`, async () => {
     const h = await harness(); const { group, topic } = await h.group(8);
+    await h.bots.updateBot(h.ids[0]!, { name: text, instructions: text });
     const a = await h.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
       requestId: text, text, target: { mode: "members", botIds: h.ids.slice(0, 2) } });
     expect(a.memberTurns.every((m) => m.effect !== "read-only" && m.effectProvenance === undefined)).toBe(true);
@@ -132,6 +133,19 @@ test("a writable owned session is physically released before read-only materiali
   expect(writableAgain.logicalSessionId).not.toBe(reader.logicalSessionId);
   expect(h.runner.calls.every((c) => c.executionOrigin === "orchestration")).toBe(true); h.store.close();
 });
+
+for (const unknownFirst of [false, true]) {
+  test(`legacy mixed unknown/reader batch, unknown first=${unknownFirst}, remains exclusive`, async () => {
+    const h = await harness(); const { group, topic } = await h.group(4);
+    const a = h.accept(group.id, topic.id, 2, true);
+    const { createSqlDriver } = await import("../../../src/conversations/sql-driver");
+    const sql = await createSqlDriver(h.path);
+    sql.run("UPDATE member_turns SET effect = 'unknown', effect_provenance = NULL WHERE id = ?", [a.memberTurns[unknownFirst ? 0 : 1]!.id]); sql.close();
+    const drain = h.dispatcher.kick(); await until(() => h.runner.calls.length === 1);
+    h.runner.finish(0); await until(() => h.runner.calls.length === 2); h.runner.finish(1); await drain;
+    expect(h.runner.peak).toBe(1); h.store.close();
+  });
+}
 
 test("persisted owned session ceiling survives parsing; malformed ceiling is quarantined", async () => {
   const h = await harness(); const { group, topic } = await h.group(1);
