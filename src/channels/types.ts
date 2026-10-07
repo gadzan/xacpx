@@ -1,4 +1,4 @@
-import type { Agent as ChatAgent } from "../weixin/agent/interface.js";
+import type { Agent as ChatAgent, ChatRequest } from "../weixin/agent/interface.js";
 import type { CommandHint } from "../commands/command-hints.js";
 import type { OrchestrationTaskRecord } from "../orchestration/orchestration-types.js";
 import type { AppLogger } from "../logging/app-logger.js";
@@ -122,8 +122,28 @@ export interface ScheduledChannelMessageInput {
   abortSignal?: AbortSignal;
 }
 
+export interface ConversationIngressPreparation {
+  /** Fresh durable Stop only; replay must not abort later channel tasks. */
+  stopPendingAcceptance: boolean;
+}
+
+export interface ConversationChannelAgent extends ChatAgent {
+  /** Commit durable ingress before typing/card setup; chat later awaits the same result. */
+  prepareConversation?(request: ChatRequest): Promise<ConversationIngressPreparation | void>;
+}
+
 export interface ChannelStartInput {
   agent: ChatAgent;
+  /**
+   * Call after platform admission, before Session alias lookup/active tracking
+   * or Session lane selection. A returned Agent owns this inbound turn through
+   * an independent Conversation lane; omit Session background/foreground hooks.
+   * Undefined preserves normal Session dispatch. Scheduled turns bypass this.
+   * Selection includes durable receipt replays, even after unbind.
+   * Call prepareConversation with the full admitted request before typing/card
+   * setup; do not queue acceptance behind an older Conversation's settlement.
+   */
+  routeConversation?: (request: ChatRequest) => ConversationChannelAgent | undefined;
   abortSignal: AbortSignal;
   quota: OutboundQuota;
   logger: AppLogger;

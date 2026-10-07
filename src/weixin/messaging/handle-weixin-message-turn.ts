@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import type { Agent, ChatRequest } from "../agent/interface.js";
+import type { ConversationChannelAgent } from "../../channels/types.js";
 import { sendTyping } from "../api/api.js";
 import type { WeixinMessage, MessageItem } from "../api/types.js";
 import { MessageItemType, TypingStatus } from "../api/types.js";
@@ -21,7 +22,7 @@ import { buildBackgroundCompletionNotice, shouldSendBackgroundNotice } from "./c
 import { executeChatTurn } from "./execute-chat-turn.js";
 import { buildFinalHeadsUp } from "./final-heads-up.js";
 import { shouldDeliverSegment, resolveFinalDisposition } from "./foreground-gate.js";
-import { setContextToken, bodyFromItemList, extractWeixinMediaDescriptors } from "./inbound.js";
+import { setContextToken, bodyFromItemList, extractWeixinMediaDescriptors, hasWeixinInboundMedia } from "./inbound.js";
 import { sendWeixinErrorNotice } from "./error-notice.js";
 import { sendWeixinMediaFile } from "./send-media.js";
 import { markdownToPlainText, sendMessageWeixin } from "./send.js";
@@ -163,11 +164,18 @@ function createSaveMediaBuffer(mediaTempDir?: string) {
 
 export type HandleWeixinMessageTurnDeps = {
   accountId: string;
-  agent: Agent;
+  agent: ConversationChannelAgent;
   baseUrl: string;
   cdnBaseUrl: string;
   token?: string;
   typingTicket?: string;
+  abortSignal?: AbortSignal;
+  humanStopSignal?: AbortSignal;
+  conversationBound?: boolean;
+  /** Only invoked after a fresh durable Stop receipt; never on replay. */
+  onConversationStop?: () => void;
+  /** Admission barrier for durable poll checkpoints; never waits for settlement. */
+  onConversationPrepared?: () => void;
   log: (msg: string) => void;
   errLog: (msg: string) => void;
   mediaTempDir?: string;
@@ -241,6 +249,11 @@ export function buildWeixinChatKey(accountId: string, userId: string): string {
   return `weixin:${accountId}:${userId}`;
 }
 
+/** Conversation selection must not interpret a group sender as a DM. */
+export function buildWeixinConversationChatKey(accountId: string, userId: string, groupId?: string): string {
+  return groupId ? `weixin:${accountId}:group:${encodeURIComponent(groupId)}` : buildWeixinChatKey(accountId, userId);
+}
+
 function defaultWeixinMime(kind: "image" | "file" | "audio" | "video"): string {
   if (kind === "image") return "image/*";
   if (kind === "video") return "video/mp4";
@@ -302,7 +315,9 @@ export async function handleWeixinMessageTurn(
   // rather than waiting for this turn to drain off the lane. The deps field
   // remains for direct unit testability of this function.
 
-  const chatKey = buildWeixinChatKey(deps.accountId, fromUserId);
+  const chatKey = deps.conversationBound
+    ? buildWeixinConversationChatKey(deps.accountId, fromUserId, full.group_id)
+    : buildWeixinChatKey(deps.accountId, fromUserId);
   const initialMediaCount = extractWeixinMediaDescriptors(full.item_list).length;
   const isSlashCommand = isSlashCommandText(textBody);
   const tracer = deps.perfTracer ?? createNoopPerfTracer();
@@ -320,7 +335,7 @@ export async function handleWeixinMessageTurn(
     setContextToken(deps.accountId, full.from_user_id ?? "", contextToken);
   }
 
-  if (isSlashCommand) {
+  if (isSlashCommand && !deps.conversationBound) {
     const shouldTypeForSlash = isClearSlashCommand(textBody);
     if (shouldTypeForSlash) {
       startTypingIndicator();
@@ -354,12 +369,30 @@ export async function handleWeixinMessageTurn(
     }
   }
 
+  let checkpointAfterResponse = false;
+  if (deps.conversationBound) {
+    if (!deps.agent.prepareConversation) throw new Error("bound Conversation Agent requires preparation");
+    const preparation = await deps.agent.prepareConversation({
+      accountId: deps.accountId, conversationId: chatKey, text: bodyFromItemList(full.item_list, true),
+      ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}),
+      ...(deps.humanStopSignal ? { humanStopSignal: deps.humanStopSignal } : {}),
+      metadata: { channel: "weixin", channelMessageId: full.message_id != null ? String(full.message_id) : undefined,
+        senderId: full.from_user_id, origin: "human", authenticatedHuman: Boolean(full.from_user_id),
+        hadInboundMedia: hasWeixinInboundMedia(full.item_list),
+        chatType: full.group_id ? "group" : "direct", ...(full.group_id ? { groupId: full.group_id } : {}) },
+    });
+    if (preparation?.stopPendingAcceptance) deps.onConversationStop?.();
+    checkpointAfterResponse = preparation?.stopPendingAcceptance !== undefined;
+    // Stop's durable receipt must also finish its cancellation write before a
+    // poll checkpoint can make the event disappear on restart.
+    if (!checkpointAfterResponse) deps.onConversationPrepared?.();
+  }
   startTypingIndicator();
 
   const mediaStore = deps.mediaStore ?? new RuntimeMediaStore({ rootDir: resolveMediaTempDir(deps.mediaTempDir) });
   const media: NonNullable<ChatRequest["media"]> = [];
   const attachmentNotes: string[] = [];
-  const descriptors = extractWeixinMediaDescriptors(full.item_list).slice(0, DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE);
+  const descriptors = deps.conversationBound ? [] : extractWeixinMediaDescriptors(full.item_list).slice(0, DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE);
   const download = deps.downloadMediaFromItemFn ?? downloadMediaFromItem;
   for (const descriptor of descriptors) {
     try {
@@ -400,6 +433,7 @@ export async function handleWeixinMessageTurn(
 
   let midFirstSent = false;
   const sendReplySegment = async (text: string): Promise<boolean> => {
+    if (deps.abortSignal?.aborted) return false;
     if (!shouldDeliverSegment(deps.isForeground)) {
       return false;
     }
@@ -425,15 +459,17 @@ export async function handleWeixinMessageTurn(
     }
   };
 
-  const requestText = appendAttachmentNotes(bodyFromItemList(full.item_list), attachmentNotes);
+  const requestText = appendAttachmentNotes(bodyFromItemList(full.item_list, deps.conversationBound), attachmentNotes);
   // Text-only degradation: WeChat can't render the subagent card, so a
   // delegation surfaces as one honest line via the existing reply path.
   // Ordinary tool calls stay hidden; the tracker dedups per toolCallId.
   const subagentNotices = new SubagentNoticeTracker();
   const request: Omit<ChatRequest, "reply"> = {
     accountId: deps.accountId,
-    conversationId: buildWeixinChatKey(deps.accountId, full.from_user_id ?? ""),
+    conversationId: chatKey,
     text: requestText,
+    ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}),
+    ...(deps.humanStopSignal ? { humanStopSignal: deps.humanStopSignal } : {}),
     ...(media.length > 0 ? { media } : {}),
     replyContextToken: contextToken,
     // The in-session coordinator agent's scheduled_create/list/cancel tools and
@@ -441,6 +477,9 @@ export async function handleWeixinMessageTurn(
     // chat route. Built-in WeChat is direct unless the message carries group_id.
     metadata: {
       channel: "weixin",
+      hadInboundMedia: hasWeixinInboundMedia(full.item_list),
+      ...(full.message_id != null ? { channelMessageId: String(full.message_id) } : {}),
+      authenticatedHuman: Boolean(full.from_user_id),
       chatType: full.group_id ? "group" : "direct",
       ...(full.from_user_id ? { senderId: full.from_user_id } : {}),
       ...(full.group_id ? { groupId: full.group_id } : {}),
@@ -464,6 +503,9 @@ export async function handleWeixinMessageTurn(
       request,
       onReplySegment: sendReplySegment,
     });
+    if (checkpointAfterResponse) deps.onConversationPrepared?.();
+
+    if (deps.abortSignal?.aborted) return;
 
     // Text is sent first, then media items in sequence.
     const outboundMedia = normalizeMediaArray(turn.media);
@@ -673,9 +715,9 @@ export async function handleWeixinMessageTurn(
       });
     }
   } catch (err) {
-    if (isAbortError(err)) {
-      perfSpan.setOutcome("aborted", { reason: "user_cancel" });
-      deps.log(`handleWeixinMessageTurn: turn aborted: ${err.message}`);
+    if (deps.abortSignal?.aborted || isAbortError(err)) {
+      perfSpan.setOutcome("aborted", { reason: deps.abortSignal?.aborted ? "channel_abort" : "user_cancel" });
+      deps.log(`handleWeixinMessageTurn: turn aborted: ${String(err)}`);
       return;
     }
     perfSpan.setOutcome("error", { reason: "turn_error" });

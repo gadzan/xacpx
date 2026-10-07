@@ -3,6 +3,7 @@ import type { MessageChannelRuntime } from "./types.js";
 import type { RuntimeMediaStore } from "./media-store.js";
 import { WeixinChannel } from "./weixin-channel.js";
 import { registerKnownChannelId } from "./channel-scope.js";
+import { normalizeChannelType } from "./channel-type.js";
 import { getMovedChannelInstallHint as getKnownMovedChannelInstallHint } from "../plugins/known-plugins.js";
 
 export function getMovedChannelInstallHint(type: string): string | null {
@@ -24,9 +25,7 @@ const channelFactories = new Map<string, ChannelFactory>();
 let builtinFactoriesRegistered = false;
 
 export function registerChannelFactory(type: string, factory: ChannelFactory): void {
-  const normalized = type.trim();
-  if (!normalized) throw new Error("channel type must be non-empty");
-  if (normalized.includes(":")) throw new Error("channel type must not contain ':'");
+  const normalized = normalizeChannelType(type);
   if (channelFactories.has(normalized)) {
     throw new Error(`channel type is already registered: ${normalized}`);
   }

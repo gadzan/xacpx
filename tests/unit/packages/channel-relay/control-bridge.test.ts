@@ -1715,6 +1715,23 @@ test("conversation history direction and topic runs list dispatch with product I
   }))).toMatchObject({ error: { code: "invalid-payload" } });
 });
 
+test("Conversation binding management dispatches sanitized payloads without execution authority", async () => {
+  const bindings = [{ chatKey: "discord:default:g:channel", conversationId: "g", topicId: "t" }];
+  const set: unknown[] = [], removed: unknown[] = [];
+  const { control } = makeFakeControl({ listConversationBindings: () => bindings,
+    bindConversation: async (input: unknown) => { set.push(input); return input; },
+    unbindConversation: async (chatKey: string) => { removed.push(chatKey); },
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.conversationBindingsList, {}))).toEqual({ bindings });
+  expect(await dispatch(bridge, req(MSG.conversationBindingsSet, { ...bindings[0], humanIngress: { senderId: "forged" } })))
+    .toEqual({ binding: bindings[0] });
+  expect(set).toEqual([bindings[0]]);
+  expect(await dispatch(bridge, req(MSG.conversationBindingsDelete, { chatKey: bindings[0]!.chatKey }))).toEqual({ ok: true });
+  expect(removed).toEqual([bindings[0]!.chatKey]);
+  expect(await dispatch(bridge, req(MSG.conversationBindingsSet, { chatKey: 5 }))).toMatchObject({ error: { code: "invalid-payload" } });
+});
+
 test("conversation.prompt with Hub-stamped ingress uses trusted accept, not public promptConversation", async () => {
   const publicPrompts: unknown[] = [];
   const trusted: Array<{ input: unknown; ingress: unknown }> = [];

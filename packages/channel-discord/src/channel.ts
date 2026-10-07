@@ -114,6 +114,7 @@ interface AccountRuntime {
 }
 
 interface ActiveTask {
+  executionDomain: "session" | "conversation";
   accountId: string;
   channelId: string;
   guildId?: string;
@@ -129,6 +130,7 @@ interface ActiveTask {
   queueKey: string;
   boundAlias?: string;
   abortController: AbortController;
+  humanStopController: AbortController;
   /** Releases this turn's listener on the channel-level abort signal. Cleared in
    *  runTurn's finally so a long-lived daemon does not accumulate one listener
    *  per handled message. */
@@ -235,12 +237,14 @@ export class DiscordChannel implements MessageChannelRuntime {
   private markDelivered: OrchestrationDeliveryCallbacks["markTaskNoticeDelivered"] | null = null;
   private markFailed: OrchestrationDeliveryCallbacks["markTaskNoticeFailed"] | null = null;
   private agent: ChannelStartInput["agent"] | null = null;
+  private routeConversation: ChannelStartInput["routeConversation"];
   private quota: ChannelStartInput["quota"] | null = null;
   private logger: ChannelStartInput["logger"] | null = null;
   private sessions: ChannelStartInput["sessions"] | null = null;
   private activeTurns: ChannelStartInput["activeTurns"] | null = null;
   private abortSignal: AbortSignal | null = null;
   private readonly executor: ConversationExecutor = createConversationExecutor();
+  private readonly conversationExecutor: ConversationExecutor = createConversationExecutor();
   private readonly activeTasks: Map<string, ActiveTask[]> = new Map();
   private readonly pendingPermissions: Map<string, PendingDiscordPermission> = new Map();
   private readonly pendingElicitations: Map<string, PendingDiscordElicitation> = new Map();
@@ -362,6 +366,7 @@ export class DiscordChannel implements MessageChannelRuntime {
   async start(input: ChannelStartInput): Promise<void> {
     setChannelLocale(input.locale ?? "en");
     this.agent = input.agent;
+    this.routeConversation = input.routeConversation;
     this.quota = input.quota;
     this.logger = input.logger;
     this.sessions = input.sessions ?? null;
@@ -2068,20 +2073,6 @@ export class DiscordChannel implements MessageChannelRuntime {
     const channelRequireMention = resolveChannelRequireMention(runtime.account, route.guildId, effectiveChannelIdForMention);
     const effectiveRequireMention = channelRequireMention ?? runtime.account.requireMention;
 
-    // Abort fast path
-    if (await this.tryHandleAbortTrigger({
-      runtime,
-      queueKey,
-      accountId,
-      channelId,
-      messageId,
-      msg,
-      chatKey,
-      isDM,
-      requireMention: effectiveRequireMention,
-    })) {
-      return;
-    }
     // Mention cleaning and gate
     const decision = shouldHandleDiscordMessage({
       message: msg,
@@ -2107,7 +2098,17 @@ export class DiscordChannel implements MessageChannelRuntime {
 
     let requestText = decision.text;
 
-    const { media, skipped } = await this.downloadInboundAttachments({
+    const hadInboundMedia = Boolean(msg.attachments?.length);
+    const conversationAgent = this.routeConversation?.({ accountId, conversationId: chatKey, text: requestText,
+      metadata: { channel: "discord", channelMessageId: messageId, senderId: msg.author.id, hadInboundMedia,
+        humanStopRequested: isLikelyAbortText(requestText),
+        authenticatedHuman: msg.author.bot === false, origin: msg.author.bot === false ? "human" : "peer" } });
+    const conversationStopTasks = conversationAgent && isLikelyAbortText(requestText)
+      ? this.activeTasks.get(queueKey)?.filter((task) => !task.suppressed
+        && task.executionDomain === "conversation" && task.senderId === msg.author.id) ?? [] : [];
+    if (!conversationAgent && await this.tryHandleAbortTrigger({ runtime, queueKey, accountId, channelId, messageId, msg,
+      chatKey, isDM, requireMention: effectiveRequireMention })) return;
+    const { media, skipped } = conversationAgent ? { media: [], skipped: [] } : await this.downloadInboundAttachments({
       runtime,
       accountId,
       chatKey,
@@ -2117,13 +2118,13 @@ export class DiscordChannel implements MessageChannelRuntime {
     requestText = appendSkippedAttachmentNotes(requestText, skipped);
 
     // Allow empty text if there are attachments (media-only message)
-    if (!requestText.trim() && media.length === 0) return;
-
+    if (!conversationAgent && !requestText.trim() && media.length === 0) return;
     const isSlash = requestText.trim().startsWith("/");
-    const boundAlias = isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
+    const boundAlias = conversationAgent || isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
     const lane = resolveTurnLane(requestText);
 
     const { active, abortController } = this.registerActiveTask({
+      executionDomain: conversationAgent ? "conversation" : "session",
       accountId,
       channelId,
       guildId: route.guildId,
@@ -2136,9 +2137,9 @@ export class DiscordChannel implements MessageChannelRuntime {
     });
     if (boundAlias) this.activeTurns?.markActive(chatKey, boundAlias);
 
-    await this.executor.run(
+    await (conversationAgent ? this.conversationExecutor : this.executor).run(
       chatKey,
-      lane,
+      conversationAgent ? "control" : lane,
       () =>
         this.runTurn({
           runtime,
@@ -2150,10 +2151,14 @@ export class DiscordChannel implements MessageChannelRuntime {
           messageId,
           requestText,
           media,
+          hadInboundMedia,
+          conversationStopTasks,
           active,
           abortController,
           boundAlias,
           route,
+          authenticatedHuman: msg.author.bot === false,
+          agent: conversationAgent,
         }),
       boundAlias,
     );
@@ -2191,8 +2196,11 @@ export class DiscordChannel implements MessageChannelRuntime {
     const senderId = msg.author.id;
     // If requireMention and group, sender must be the same as task sender? Spec says abort fast path
     // should check sender owns live task. We implement: senderId must match active senderId if present.
-    const owned = stack.filter((t) => !t.senderId || t.senderId === senderId);
-    const activeTasks = owned.length > 0 ? owned : [];
+    const owned = stack.filter((t) => !t.suppressed && (!t.senderId || t.senderId === senderId));
+    // Independent Conversation turns must not cancel the sender's Session
+    // work. Include queued turns, which are registered before lane admission.
+    const conversations = owned.filter((t) => t.executionDomain === "conversation");
+    const activeTasks = conversations.length > 0 ? conversations : owned;
     if (activeTasks.length === 0) return false;
 
     await this.handleAbortFastPath({ runtime, activeTasks, abortRequestMessageId: messageId, channelId, accountId, chatKey });
@@ -2200,6 +2208,7 @@ export class DiscordChannel implements MessageChannelRuntime {
   }
 
   private registerActiveTask(input: {
+    executionDomain: ActiveTask["executionDomain"];
     accountId: string;
     channelId: string;
     guildId?: string;
@@ -2213,6 +2222,7 @@ export class DiscordChannel implements MessageChannelRuntime {
     const { accountId, channelId, guildId, parentChannelId, messageId, senderId, chatKind, queueKey, boundAlias } = input;
     const abortController = new AbortController();
     const active: ActiveTask = {
+      executionDomain: input.executionDomain,
       accountId,
       channelId,
       guildId,
@@ -2223,6 +2233,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       queueKey,
       boundAlias,
       abortController,
+      humanStopController: new AbortController(),
       rootAbortCleanup: null,
       suppressed: false,
       previewStream: null,
@@ -2312,11 +2323,13 @@ export class DiscordChannel implements MessageChannelRuntime {
     channelId: string;
     accountId: string;
     chatKey: string;
+    acknowledge?: boolean;
   }): Promise<void> {
     const { runtime, activeTasks, abortRequestMessageId, channelId, accountId, chatKey } = input;
     for (const t of activeTasks) {
       t.suppressed = true;
       try {
+        t.humanStopController.abort();
         t.abortController.abort();
       } catch {
         // ignore
@@ -2360,6 +2373,7 @@ export class DiscordChannel implements MessageChannelRuntime {
       // Preview already covered visual feedback; no need for extra ack if we cleaned preview?
       // Still send ack to confirm.
     }
+    if (input.acknowledge === false) return;
     try {
       const targetForAck: DeliveryTarget = target;
       await runtime.client.sendMessage(targetForAck, { content: getMessages().abortAck, allowedMentions: { parse: [] } });
@@ -2418,6 +2432,7 @@ export class DiscordChannel implements MessageChannelRuntime {
   }
 
   private async runTurn(input: {
+    agent?: NonNullable<ReturnType<NonNullable<ChannelStartInput["routeConversation"]>>>;
     runtime: AccountRuntime;
     accountId: string;
     channelId: string;
@@ -2427,10 +2442,13 @@ export class DiscordChannel implements MessageChannelRuntime {
     messageId: string;
     requestText: string;
     media: ChannelMediaAttachment[];
+    hadInboundMedia: boolean;
+    conversationStopTasks: ActiveTask[];
     active: ActiveTask;
     abortController: AbortController;
     boundAlias?: string;
     route: DiscordRoute;
+    authenticatedHuman: boolean;
   }): Promise<void> {
     const { runtime, accountId, channelId, guildId, chatKey, queueKey, messageId, requestText, media, active, abortController, boundAlias } = input;
     let turnStatus: "done" | "error" | "skipped" = "skipped";
@@ -2438,6 +2456,22 @@ export class DiscordChannel implements MessageChannelRuntime {
     try {
       if (!this.agent) return;
       if (active.suppressed) return;
+      const ingress = {
+        accountId, conversationId: chatKey, text: requestText,
+        ...(media.length > 0 ? { media } : {}), replyContextToken: messageId,
+        metadata: { channel: "discord", channelMessageId: messageId, hadInboundMedia: input.hadInboundMedia,
+          authenticatedHuman: input.authenticatedHuman, chatType: input.route.kind === "dm" ? "direct" as const : "group" as const,
+          senderId: active.senderId, groupId: guildId, ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
+          origin: input.authenticatedHuman ? "human" as const : "peer" as const },
+        abortSignal: abortController.signal,
+        ...(input.agent ? { humanStopSignal: active.humanStopController.signal } : {}),
+      };
+      const preparation = await input.agent?.prepareConversation?.(ingress);
+      if (preparation?.stopPendingAcceptance) {
+        const owned = input.conversationStopTasks.filter((task) => !task.suppressed);
+        if (owned.length) await this.handleAbortFastPath({ runtime, activeTasks: owned, abortRequestMessageId: messageId,
+          channelId, accountId, chatKey, acknowledge: false });
+      }
 
       // Typing indicator
       if (runtime.account.typingIndicator) {
@@ -2522,24 +2556,11 @@ export class DiscordChannel implements MessageChannelRuntime {
       };
 
       try {
-        const response = await this.agent.chat({
-          accountId,
-          conversationId: chatKey,
-          text: requestText,
-          ...(media.length > 0 ? { media } : {}),
-          replyContextToken: messageId,
-          metadata: {
-            channel: "discord",
-            chatType: input.route.kind === "dm" ? "direct" : "group",
-            senderId: active.senderId,
-            groupId: guildId,
-            ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
-            origin: "human" as const,
-          },
+        const response = await (input.agent ?? this.agent).chat({
+          ...ingress,
           reply: safeReply,
           onToolEvent,
           onThought,
-          abortSignal: abortController.signal,
         });
         if (active.suppressed) return;
 

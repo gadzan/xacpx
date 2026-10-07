@@ -49,6 +49,8 @@ export interface ChatRequest {
    * output produced after abort.
    */
   abortSignal?: AbortSignal;
+  /** Admitted human Stop only. Lifecycle aborts must never fire this signal. */
+  humanStopSignal?: AbortSignal;
   /** Structured tool-use side-channel; see PromptOptions.onToolEvent. */
   onToolEvent?: (event: ToolUseEvent) => void | Promise<void>;
   /** Structured thinking side-channel; see PromptOptions.onThought. */
@@ -68,6 +70,16 @@ export interface ChatRequest {
 }
 
 export interface ChatRequestMetadata {
+  /** Original platform attachment presence, before downloading or degradation. */
+  hadInboundMedia?: boolean;
+  /** Admitted channel abort trigger, including its localized text forms. */
+  humanStopRequested?: boolean;
+  /** Stable id from an admitted platform event, never synthesized from time. */
+  channelMessageId?: string;
+  /** Adapter proved this admitted platform sender is a human (not a bot/app). */
+  authenticatedHuman?: boolean;
+  /** Explicit target supplied by the authenticated channel interaction. */
+  conversationTarget?: import("../../control/conversation-control-dtos.js").ConversationTarget;
   /** Core-private execution capability, passed only by the Conversation runner. */
   groupExecutionToken?: string;
   channel?: string;

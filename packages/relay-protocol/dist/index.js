@@ -187,6 +187,9 @@ var MSG = {
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
   conversationPrompt: "control.conversation.prompt",
+  conversationBindingsList: "control.conversation.bindings.list",
+  conversationBindingsSet: "control.conversation.bindings.set",
+  conversationBindingsDelete: "control.conversation.bindings.delete",
   conversationHistory: "control.conversation.history",
   runsGet: "control.runs.get",
   runsList: "control.runs.list",
@@ -1282,6 +1285,19 @@ var validateConversationPrompt = (p) => {
   }
   return o;
 };
+var validateConversationBinding = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.chatKey, 2048) && isBoundedStr(o.conversationId, 2048) && (o.topicId === undefined || isBoundedStr(o.topicId, 2048)) ? {
+    chatKey: o.chatKey,
+    conversationId: o.conversationId,
+    ...o.topicId !== undefined ? { topicId: o.topicId } : {}
+  } : null;
+};
+var validateConversationBindingDelete = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.chatKey, 2048) ? { chatKey: o.chatKey } : null;
+};
+var validateConversationBindingsList = (p) => fields(p) ? {} : null;
 var validateConversationHistory = (p) => {
   const o = fields(p);
   if (!o)
@@ -1598,6 +1614,9 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
   [MSG.conversationPrompt]: validateConversationPrompt,
+  [MSG.conversationBindingsList]: validateConversationBindingsList,
+  [MSG.conversationBindingsSet]: validateConversationBinding,
+  [MSG.conversationBindingsDelete]: validateConversationBindingDelete,
   [MSG.conversationHistory]: validateConversationHistory,
   [MSG.runsGet]: validateRunsGet,
   [MSG.runsList]: validateRunsList,

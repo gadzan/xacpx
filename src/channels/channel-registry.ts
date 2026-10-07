@@ -1,4 +1,5 @@
 import { getChannelIdFromChatKey } from "./channel-scope";
+import type { Agent } from "../weixin/agent/interface";
 import type {
   ChannelStartInput,
   CoordinatorMessageInput,
@@ -106,13 +107,13 @@ export class MessageChannelRegistry {
     }
   }
 
-  async startAll(input: ChannelStartInput): Promise<void> {
+  async startAll(input: ChannelStartInput, createConversationRoute?: (id: string, agent: Agent) => ChannelStartInput["routeConversation"]): Promise<void> {
     const entries = [...this.channels.entries()];
     const outcomes = await Promise.allSettled(
       entries.map(async ([id, channel]) => {
         let failed = false;
         try {
-          await channel.start(input);
+          await channel.start(createConversationRoute ? { ...input, routeConversation: createConversationRoute(id, input.agent) } : input);
         } catch (error) {
           failed = true;
           const message =

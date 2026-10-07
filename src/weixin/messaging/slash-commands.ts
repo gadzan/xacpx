@@ -161,6 +161,10 @@ export async function drainPendingFinalForJx(ctx: SlashCommandContext): Promise<
  *
  * @returns handled=true 表示该消息已作为指令处理，不需要继续走 AI 管道
  */
+export function isLocalWeixinSlashCommand(text: string): boolean {
+  return /^\/(?:echo|toggle-debug|clear|jx)(?:\s|$)/i.test(text.trim());
+}
+
 export async function handleSlashCommand(
   content: string,
   ctx: SlashCommandContext,

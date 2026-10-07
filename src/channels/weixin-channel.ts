@@ -1,6 +1,7 @@
 import type {
   MessageChannelRuntime,
   ChannelStartInput,
+  ChannelStopReason,
   CoordinatorMessageInput,
   OutboundQuota,
   OrchestrationDeliveryCallbacks,
@@ -41,6 +42,7 @@ export class WeixinChannel implements MessageChannelRuntime {
   private markFailed: OrchestrationDeliveryCallbacks["markTaskNoticeFailed"] | null = null;
   private mediaStore: RuntimeMediaStore | null;
   private allowedMediaRoots: string[];
+  private lifecycle: AbortController | undefined;
 
   constructor(mediaStore?: RuntimeMediaStore, allowedMediaRoots?: string[]) {
     this.mediaStore = mediaStore ?? null;
@@ -56,17 +58,20 @@ export class WeixinChannel implements MessageChannelRuntime {
   }
 
   logout(): void {
+    this.stop("logout");
     weixinLogout();
   }
 
   /**
-   * Non-destructive shutdown. The monitor loop is already stopped via the
-   * abort signal passed to start(); this only drops runtime references and
+   * Non-destructive shutdown. Abort this start's local monitor and
+   * drop runtime references, even when the daemon remains alive. This
    * MUST NOT touch the credential files on disk (a graceful daemon stop or
    * restart must not force a QR re-login). Destructive credential removal
    * happens only through logout() (the explicit `xacpx logout` CLI path).
    */
-  stop(): void {
+  stop(_reason?: ChannelStopReason): void {
+    this.lifecycle?.abort();
+    this.lifecycle = undefined;
     this.agent = null;
     this.quota = null;
     this.logger = null;
@@ -87,6 +92,10 @@ export class WeixinChannel implements MessageChannelRuntime {
   }
 
   async start(input: ChannelStartInput): Promise<void> {
+    this.lifecycle?.abort();
+    const lifecycle = new AbortController();
+    this.lifecycle = lifecycle;
+    const abortSignal = AbortSignal.any([lifecycle.signal, input.abortSignal]);
     this.agent = input.agent;
     this.quota = input.quota;
     this.logger = input.logger;
@@ -95,11 +104,13 @@ export class WeixinChannel implements MessageChannelRuntime {
       console.log(t().misc.weixinNoCredentials);
       await this.login();
     }
+    if (abortSignal.aborted) return;
 
     const sessions = input.sessions;
 
     await weixinStart(input.agent, {
-      abortSignal: input.abortSignal,
+      ...(input.routeConversation ? { routeConversation: input.routeConversation } : {}),
+      abortSignal,
       ...(this.mediaStore ? { mediaStore: this.mediaStore } : {}),
       ...(this.allowedMediaRoots.length > 0 ? { allowedMediaRoots: this.allowedMediaRoots } : {}),
       onInbound: (chatKey) => input.quota.onInbound(chatKey),

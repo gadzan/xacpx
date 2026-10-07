@@ -382,6 +382,7 @@ Called when the orchestration service sends text to the channel hosting the coor
 ```ts
 export interface ChannelStartInput {
   agent: ChatAgent;
+  routeConversation?: (request: ChatRequest) => ConversationChannelAgent | undefined;
   abortSignal: AbortSignal;
   quota: OutboundQuota;
   logger: AppLogger;
@@ -390,11 +391,16 @@ export interface ChannelStartInput {
   coreVersion?: string;           // xacpx core version string
   locale?: Locale;                // active runtime language ("en" | "zh") — see §5.1
 }
+
+export interface ConversationChannelAgent extends ChatAgent {
+  prepareConversation?(request: ChatRequest): Promise<void | { stopPendingAcceptance: boolean }>;
+}
 ```
 
 | Field | Purpose |
 | --- | --- |
-| `agent` | The xacpx router entry point. After you receive a text message, call `agent.handle(chatKey, text)` to feed it into the command router. |
+| `agent` | The ordinary Session/command router entry point: `await agent.chat(request)` returns a `ChatResponse` and may also use `request.reply`. |
+| `routeConversation?` | After admission, call this before current-Session lookup, active tracking or Session lane selection. A returned Agent handles the turn on an independent Conversation executor, with no Session alias or foreground/background-result hooks. Undefined preserves Session dispatch. Supply exact channel/account/chatKey/platform-message identity; the full chat request must carry authenticated-human metadata. See [Conversation bindings](./conversation-runtime.md#external-channel-bindings-pr10). |
 | `abortSignal` | The daemon shutdown signal. Listen for the `aborted` event and stop all long-lived connections and timers. |
 | `quota` | Outbound rate/total quota; see the next section. |
 | `logger` | Structured logger; see [§7](#7-application-logging-applogger). |
@@ -402,7 +408,42 @@ export interface ChannelStartInput {
 | `coreVersion?` | xacpx core version string, for channels that need it (e.g. command-sync metadata). |
 | `locale?` | Active runtime language (`"en"` \| `"zh"`, type `Locale`), resolved from `config.language`. Use it to localize your channel's output. See [§5.1](#51-internationalization-i18n). |
 
-The `ChatAgent` interface itself is internal, but the `MessageChannelRuntime` contract only requires you to `await agent.handle(chatKey, text)` for inbound text. It returns no data; the agent calls your send methods within its own callback chain.
+For bound Conversation turns, provide a separate `ChatRequest.humanStopSignal`.
+Abort it only for an admitted Stop from the turn's owner, along with the ordinary
+request `abortSignal`. Lifecycle termination (`disabled`, `removed`, logout or
+shutdown) aborts only `abortSignal`: the Conversation caller detaches, and an
+accepted durable Run remains owned by the core runtime. Generic request aborts
+never imply human cancellation. See [Conversation bindings](./conversation-runtime.md#external-channel-bindings-pr10).
+Call the selected Agent's `prepareConversation?.(fullRequest)` before typing or
+card initialization. It commits acceptance and installs settlement/Stop tracking;
+capture the owner's current Conversation tasks at Stop selection. If preparation
+returns `stopPendingAcceptance: true`, signal only those captured tasks before UI
+setup. Do not infer this from Stop text or route selection:
+only a fresh durable Stop receipt grants the flag, so an old platform Stop replay
+cannot abort later tasks. Ordinary Session tasks and the Stop's own task are excluded.
+`chat(fullRequest)` subsequently awaits that same prepared result. Preserve its
+message identity, content and signal objects. Enter preparation for each admitted
+message immediately; the core Topic queue serializes execution. An older Run or
+its channel delivery must not hold later input in an in-memory channel lane.
+Fresh Stop admission also commits cancellation tombstones for the owned platform
+sources already inside preparation, including route/Bot gate waiters. They remain
+rejected across restart even if the adapter never gets to signal them. Stop replay
+does not capture later preparation calls.
+
+Polling and webhook plugins should import `isConversationIngressRejection` from
+`xacpx/plugin-api`. If preparation rejects and this predicate returns true, the
+source decision is already durable and can be acknowledged/checkpointed. Other
+errors must remain unacknowledged/retryable; matching a code string is insufficient.
+The predicate works across independently bundled plugin and core copies.
+
+`ChatRequest` / `ChatResponse` are exported from `xacpx/plugin-api`. Deliver the
+selected Agent's response through the channel's normal reply mechanism. Scheduled
+turns retain the ordinary Agent. The selector only chooses the path; binding and
+authority are revalidated when the selected Agent accepts the complete request.
+The core freezes a durable binding revision as well as the target tuple: removing
+and restoring the same binding invalidates an unaccepted selection. Cached owner
+enrichment must not delay bound preparation; the bundled Feishu adapter uses
+unexpired cached facts and refreshes them after acceptance for later turns.
 
 > **Important**: Your channel must hold a reference to `agent` / `quota` / `logger` until `stop()` / `logout()` or `abortSignal` fires. They are not passed again after `start()` returns.
 
@@ -758,6 +799,23 @@ Your channel **must**:
 3. In callbacks like `notifyTaskCompletion`, check whether `task.chatKey` starts with `<type>:`, and if not, return immediately.
 
 `channelId` must not contain `:`. `registerChannelFactory` enforces this check, and a failure is reported at daemon startup.
+
+### Conversation-binding chat keys
+
+Plugins opting into `routeConversation` must also meet the external-binding key
+contract: the complete key is at most 2048 characters, and the suffix after the
+first `:` is nonempty and contains no whitespace. The prefix is the canonical
+trimmed registered channel type; case, underscores, internal spaces and types
+longer than 64 characters are supported. Product namespaces (`bot`, `control`,
+`relay`, `group-execution`) are excluded from this binding seam.
+
+These are capability-specific restrictions. Ordinary Session routing retains
+the general convention above; a Session-compatible key outside these limits
+cannot be bound to a Conversation. Plugins can encode internal IDs into a
+stable whitespace-free suffix within the size limit. Supporting arbitrary
+opaque suffixes for bindings remains a compatibility follow-up. See
+[external Conversation bindings](./conversation-runtime.md#external-channel-bindings-pr10)
+for admission, preparation and Stop requirements.
 
 ---
 

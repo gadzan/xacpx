@@ -1,6 +1,6 @@
 # Conversation runtime (Direct + Group persistence and lifecycle)
 
-Direct and Group Conversation execution is durable. Relay Web Group UX, the stateless automatic ConversationRouter (PR8), and public structured handoff with bounded recovery (PR9) are part of this contract. External channel Conversation bindings and private handoff remain out of scope.
+Direct and Group Conversation execution is durable. Relay Web Group UX, the stateless automatic ConversationRouter (PR8), public structured handoff with bounded recovery (PR9), and external channel bindings (PR10) are part of this contract. Private handoff remains out of scope.
 
 ## Store ownership
 
@@ -292,7 +292,7 @@ Shutdown first marks the runtime stopping to reject new operation leases, then w
 
 ## Out of scope
 
-Private member-to-member handoff, external channel Conversation bindings (PR10), cross-account routing, and the full blocked-permission "Start this step myself" product flow. PR9 preserves structured blocked-step evidence; a future continuation must create a new explicit human request rather than promote an existing assignment.
+Private member-to-member handoff, cross-account routing, and the full blocked-permission "Start this step myself" product flow. PR9 preserves structured blocked-step evidence; a future continuation must create a new explicit human request rather than promote an existing assignment.
 
 ## Public structured handoff (PR9)
 
@@ -351,3 +351,244 @@ The additive `runs.cancellation_reason` column preserves cancellation provenance
 Pre-commit failure leaves no handoff rows. Commit before response/start leaves one recoverable assignment/envelope. Claim without start evidence requeues; started unknown effects seal the Run, including pending downstream work. Result commit before notification remains discoverable through history, with exact source joins preventing duplicate append. Tests cover rollback, restart/claim windows, retired evidence, cancel/lifecycle races, same-Bot assignments, mixed-schema reopen, permission refusal, budget loops and Web replay.
 
 **Follow-up before Direct Bot product release:** global dispatcher parallelism (more than one claimed execution in flight across Topics/Bots) is not part of this contract. Keep the current drain/claim sequencing until that work is designed. The drain launches the first claim globally, then admits only same-Run siblings concurrently (Topic isolation decides overlap); unrelated Topics/Bots wait for the next pass, after the cohort settles. A pass that defers Topics on pre-start failure takes at most chained extra passes with the deferrals preserved — never a retry without progress. An unexpected execution failure that escapes the handled settlement paths rejects the drain (and therefore fails activation) after every launched execution settles; it is never swallowed into a successful kick.
+
+## External channel bindings (PR10)
+
+An admitted channel chat may bind to one Conversation and Topic through
+`bindConversation({chatKey, conversationId, topicId?})`; `listConversationBindings()`
+and `unbindConversation(chatKey)` manage the same durable mapping. Group bindings
+require an active Topic; Direct bindings may omit the deterministic default Topic.
+Bindings live in `conversations.sqlite`, survive restarts, and are removed when
+their Topic or Conversation is torn down. Discord channels and threads, Feishu
+chats and threads, and Weixin direct chats use exact chat keys: no parent inheritance.
+Conversation bindings for Weixin group chats are not supported by the current sender-addressed
+reply adapter. Group events select a distinct account/group key, never a sender's
+DM binding or receipt; a selected group binding fails `external_group_unsupported`
+before acceptance or Stop. Unbound group events retain the existing Session path.
+An unused Direct binding also keeps Bot deletion closed until it is unbound;
+creating the binding revalidates through the Bot lifecycle gate.
+Other channel plugins can implement the same ingress metadata contract; Relay
+keeps its existing structured Conversation API instead of this text adapter.
+The namespace before the first `:` uses the registered channel type contract:
+nonempty after trimming, with no `:`. Case, underscores, internal spaces and
+types longer than 64 characters are supported; chat keys use the canonical
+trimmed type. The complete chat key remains bounded to 2048 characters and
+requires a nonempty, whitespace-free route suffix. Product namespaces (`bot`,
+`control`, `relay`, `group-execution`) remain excluded from this external seam.
+The bundled Yuanbao adapter also selects before Session lifecycle; its current
+gateway does not prove authenticated-human origin, so bound input remains
+fail-closed rather than entering an ordinary Session.
+Yuanbao selects using the admitted message's original text and raw media facts,
+before consuming group history or downloading attachments. Bound input prepares
+before reply heartbeats and does not consume that history; known commands keep
+their original text on the Session path. Selector errors provide a rejecting
+preparation method as well as `chat`, so adapters fail before UI setup.
+
+The registry supplies an optional `routeConversation` ingress selector. After
+authentication/admission, adapters call it before reading the current Session,
+marking a Session active, or choosing its executor lane. A selected Conversation
+uses its own executor and Agent, without Session foreground/background hooks.
+Conversation turns enter acceptance concurrently, without waiting for an older
+Run's settlement or channel reply; the durable core Topic queue orders execution.
+The selected Agent's `prepareConversation` commits ingress and installs Stop and
+settlement tracking before typing/card setup; `chat` then awaits the same result.
+Weixin keeps polling with its in-memory cursor while bound preparation is pending,
+but persists cursor checkpoints in response order only after each batch's bound
+messages have committed acceptance or reached a deterministic ingress rejection.
+Selected-but-rejected platform input commits a durable rejection receipt before
+it is acknowledged. The source key and admitted-input fingerprint freeze its
+original rejection across checkpoint failure, rebind, unbind, teardown and restart.
+Replays return the original rejection before command/binding classification;
+changed input conflicts. Prompt, Stop and rejection receipts are mutually exclusive.
+Re-enabling a target or correcting a binding does not retry a rejected source;
+a new platform message identity is required for a fresh admission attempt.
+The binding service normalizes Topic lifecycle races to `binding_topic_invalid`
+and disabled/missing targets to `external_target_unavailable`. Adapters recognize
+the committed ingress-decision type, rather than enumerating internal Run/Bot
+errors. Unknown errors, failed receipt writes and channel lifecycle abort remain
+retryable/unknown and cannot acknowledge preparation.
+Polling/webhook plugins use the exported `isConversationIngressRejection(error)`
+predicate from `xacpx/plugin-api` to recognize an already durable rejection and
+safely acknowledge it. Matching an error code alone is insufficient. Direct
+bindings reject Group-shaped structured targets as `external_target_invalid`.
+An inactive/archived bound Topic (`binding_topic_invalid`) is a completed ingress
+rejection and can checkpoint, so it cannot poison later account traffic or be
+retried as ordinary input after teardown removes the binding.
+Prompt checkpointing does not wait for Run settlement; Stop additionally waits
+for its cancellation writes. Neither barrier blocks polling for incoming Stop.
+Ordinary Session prompts and commands wait until a cursor covering their poll
+batch has been persisted, before quota hooks, typing/media work, active-turn
+tracking or Agent execution. Conversation preparation/Stop remains concurrent
+with this wait. Responses without a new cursor retain ordinary input until a
+later checkpoint covers it. Channel abort and credential epoch checks fence
+deferred dispatch, so replayed deferred events have not entered the ordinary
+pipeline. This preserves
+the existing ordinary save-before-dispatch semantics, not a durable Session inbox.
+Unexpected preparation/checkpoint errors hold back durable advancement until
+restart and also hold ordinary dispatch; restart replays from the last safe
+checkpoint through platform receipts.
+Selection captures the exact Conversation/Topic binding, its durable opaque revision and receipt existence;
+acceptance first replays an existing receipt, otherwise requires the same binding
+revision under a mutex keyed by external chatKey. Every bind writes a new revision,
+including rebinding the same target; unbind/rebind and A→B→A cannot revive an old
+selection. Legacy rows acquire revisions on schema upgrade. Replacement and removal both fail closed.
+Bind/unbind/accept for one route serialize, while unrelated routes and ordinary unbound traffic remain
+independent. Unused mutex entries are removed. If a selected binding disappears
+before acceptance, the request fails closed instead of falling back to Session.
+The adapter supplies explicit human origin, sender/account identity and a stable platform message id. Scheduled, peer,
+model-generated and provenance-unknown input cannot create a bound human Run.
+The metadata contract is `channel`, `channelMessageId`, `origin: "human"`,
+`authenticatedHuman: true`, and `senderId`; `accountId` comes from ChatRequest.
+Discord proves human origin with `author.bot === false`; Feishu requires the
+platform's `sender_type === "user"`. Missing sender type does not qualify.
+Bound Feishu ingress uses only an unexpired cached group-owner fact; a cache miss
+supplies an adapter assertion of `isOwner: false` and prepares durable acceptance
+immediately. The shared configured `ownerIds` policy can still make the final
+durable owner flag true. A background
+lookup after preparation may enrich later turns, never the accepted turn's authority.
+Ordinary Session/control turns retain the awaited owner lookup. Weixin bound text
+uses the stable English `[Quote: ...]` marker, including nested quotes, so locale
+changes do not change its receipt fingerprint; ordinary Session text stays localized.
+Bound canonical text places the current authored text before the quote context,
+so leading member addresses are parsed from the user's input. The admitted prompt
+keeps that quote context after member selection. Older quote-first receipts retain
+their original fingerprint; a layout mismatch fails closed rather than creating
+or retargeting work.
+Receipts accepted by earlier builds keep their stored fingerprint. A historical
+localized quote cannot be safely backfilled from the stored flattened text, so
+such a receipt still rejects a locale-derived mismatch rather than relaxing
+changed-input checks.
+An existing platform prompt/Stop/rejection receipt determines the execution domain before
+current command classification, including Weixin local commands. Replays retain
+their original receipt kind; changed command-shaped input fails the same
+fingerprint fence. Fresh known commands retain their command path except bound Stop.
+`hadInboundMedia` records original platform attachment presence before download,
+limits or skipped-resource degradation, including Weixin quoted image, file,
+voice and video items using the same descriptor semantics as ordinary extraction.
+Weixin follows the entire nested text-quote chain for each item. Media extraction
+and canonical/localized text rendering share this traversal, which is iterative and detects repeated
+objects to avoid recursive stack growth or cycles. Deep quotes are not silently
+classified as media-free by a depth cutoff.
+Text is assembled from the innermost quote outward before preparation, preserving
+the existing authored-text order, titles, empty-quote and quoted-media rules.
+Cycles render each reachable object once, with the repeated edge treated as absent.
+Deep pure-text input can commit acceptance; deep media input can commit its
+deterministic rejection and advance the covering checkpoint.
+Bound media is rejected before downloading
+until Conversation requests support attachments; it never falls back to a Session.
+
+Adapters may supply a structured `conversationTarget`. Otherwise a leading
+`@Name ` or `@{Name with spaces} ` selects an exact, unique current Group member.
+Unknown/ambiguous names fail closed. With no selection the Group lead is used;
+missing lead fails closed. Direct requests always target their owning Bot.
+Name selection is revalidated for exact, unique current membership inside the
+target Bot lifecycle gate after the final asynchronous wait. The check and
+SQLite acceptance are synchronous, so sibling rename cannot commit between
+name validation and Run persistence; a racing rename fails
+`external_target_changed`. Structured Bot IDs keep their existing semantics.
+External human ingress applies the shared `withEffectiveOwner` policy using the
+original channel and configured `ownerIds` before freezing durable authority.
+Feishu's conservative cache assertion is combined with that configured policy.
+An empty attachment array means zero media; original raw media presence still
+rejects a request even when normalized downloads are empty.
+
+Platform-message receipts and Run acceptance commit in one SQLite transaction.
+Retries replay the original Run even after rebinding; different sender/content/
+target for the same source is rejected. Teardown retains a receipt tombstone so
+old messages cannot create new work after rebinding. Receipts grant no permission
+authority on replay or recovery. The channel returns the settled Run's public
+Bot results through its existing delivery path. Stop cancels that exact Run.
+Durable Conversation ownership is resolved before each adapter's Session Stop
+fast path, including after restart when only Session tasks are present in memory.
+Discord and Feishu track each task's execution domain; admitted Stop signals only
+owned Conversation tasks, including acceptance still waiting on a lifecycle gate.
+Weixin tracks bound turns with separate controllers. Concurrent Session tasks
+remain unsuppressed and keep their abort signals, even after a foreground Session
+switch. An unbound Stop with no durable Conversation targets retains the existing
+Session stop behavior. Stop with raw attachments is rejected without cancellation.
+Channel shutdown still aborts tasks in both domains.
+Human Stop is explicit: adapters supply `ChatRequest.humanStopSignal` and abort
+it only after admitting an owned user Stop. `abortSignal` covers all causes,
+including lifecycle termination, and never independently grants human Stop
+provenance. Adapters abort both signals for human Stop; `stop("disabled")`,
+`stop("removed")`, logout and daemon shutdown abort only the lifecycle/request
+signal. This detaches channel result waiting and fences unaccepted work, without
+cancelling an already accepted durable Run. Its execution and recovery stay
+owned by the Conversation runtime. Plugins must provide the separate human
+signal to support bound Stop; a generic abort without it fails closed for intent.
+Weixin combines a fresh per-start channel controller with the daemon signal;
+channel stop/logout aborts that controller even while the daemon remains live.
+The monitor checks it after network waits and before dispatching each message.
+After restart, authenticated Stop is selected before Session command bypass.
+Receipt `stop_ingress` holds only the original chatKey/account/sender facts and
+is joined to live exact receipt Runs (queued, running or waiting-human), including work accepted before a rebind or
+unbind. Owner resolution currently scans and validates all live external receipts
+before filtering by route/account/sender. Its cost grows with the instance's live
+external Runs, and corruption in an unrelated receipt can reject this Stop too.
+An indexed owner-specific query that filters before full receipt validation is a
+follow-up for both performance and corruption isolation.
+Stop freezes that target set, revalidates its owner and cancels through
+the existing Run service; it creates no new Run. It never restores permission
+authority or execution human ingress cleared by recovery. Durable Stop does not
+acquire the bind/accept route mutex: receipt ownership is immutable, and Run
+cancellation uses its own durable state fences. A new acceptance waiting on a
+Bot lifecycle gate cannot delay cancellation or acknowledgement for an existing
+Run. Its independent human signal still prevents it from creating a new Run.
+On schema upgrade,
+legacy receipts copy surviving original dispatch facts before recovery; a live
+legacy receipt whose Stop owner is already lost fails closed where bound, rather
+than inferring ownership from the current binding or sender. Receipt tombstones
+without a live Run cannot become Stop targets.
+Bound Stop has its own durable platform receipt. The first admitted Stop
+atomically records its source key, input fingerprint, original owner and frozen
+target Run IDs, including an empty set, before any cancellation or adapter human
+signal. In that same transaction it records `external_request_aborted` rejection
+receipts for the owned platform sources whose acceptance is already pending,
+including those waiting for the route mutex or a Bot lifecycle gate. These
+source/fingerprint tombstones survive a crash before pending acceptance wakes
+or writes its own rejection; restart cannot resurrect the stopped prompt.
+Accepted sources remain Run targets, and other owners/accounts/routes are excluded.
+Failure to persist any pending fence rolls back the entire Stop admission.
+Replay uses the original receipts without capturing new pending sources and
+cannot cancel later Runs. Prompt and
+Stop receipts share source identity: changing the input or switching event kind
+fails closed. Stop receipts survive unbind, rebind, restart and target teardown.
+Only fresh Stop admission authorizes adapters to fence the owned pending tasks
+captured at that Stop's selection, never tasks arriving later;
+replayed Stop never fires controllers for later channel tasks. The preparation
+result reports `stopPendingAcceptance` for this purpose. A failed cancellation
+can retry only the original targets. Stop records have the same unlimited
+retention contract as prompt receipts. Earlier releases stored no Stop source
+identity, so historical Stop events cannot be backfilled.
+Stop receipts created before pending-source fences cannot recover the lost
+in-memory pending set; replay never guesses targets for those historical receipts.
+
+Stop receipt corruption checks reject malformed JSON, invalid/duplicate target
+IDs and mismatched owner facts. These checks do not prove the historical
+membership of a syntactically valid target set after database corruption. If a
+stored target ID is replaced with a later live Run owned by the same
+route/account/sender, owner revalidation can still accept and cancel that Run.
+Normal writers preserve the frozen set; stronger integrity checks for semantic
+retargeting require additional immutable association evidence and remain a
+follow-up. The replay guarantee above assumes the stored target set is intact.
+
+Waiting for settlement holds no runtime operation lease. There is no durable
+outbound-delivery claim: provider-result retransmission and channel delivery
+exactly-once remain separate validation work.
+Daemon-triggered channel abort does not acquire human Stop provenance: queued
+work remains subject to the existing shutdown/recovery rules.
+
+External receipts currently have unlimited retention, including after Topic or
+Conversation teardown. Each accepted platform message retains its hashed source
+key, fingerprint, original Run/Conversation/Topic identifiers and the minimal
+Stop owner facts. Stop receipts additionally retain their frozen target ID set;
+rejection receipts retain only source/fingerprint and the original rejection code/message.
+No receipt kind retains a second copy of inbound text or attachments. This is a deliberate cost
+of rejecting arbitrary old replays after unbind, rebind and teardown: receipt
+storage grows with the lifetime count of accepted or rejected bound messages. There is no
+automatic TTL, maximum-row eviction or user-facing purge in PR10. A follow-up
+may compact retired receipts while preserving exact replay/conflict rejection,
+or introduce a bounded retention policy only after establishing an enforceable
+platform replay horizon (including manual retransmission). Such a policy must
+define expiry behavior and migration; deleting receipts while accepting the
+same old source again would weaken the current exactly-once contract.

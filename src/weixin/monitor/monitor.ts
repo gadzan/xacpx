@@ -5,6 +5,7 @@ import { SESSION_EXPIRED_ERRCODE, pauseSession } from "../api/session-guard.js";
 import { createConversationExecutor } from "../../runtime/conversation-executor.js";
 import {
   buildWeixinChatKey,
+  buildWeixinConversationChatKey,
   getWeixinMessageTurnLane,
   handleWeixinMessageTurn,
 } from "../messaging/handle-weixin-message-turn.js";
@@ -18,7 +19,8 @@ import { weixinLog } from "../util/weixin-log";
 import { redactBody } from "../util/redact.js";
 import { resolveWeixinAccount, listWeixinAccountIds } from "../auth/accounts.js";
 import { resetSessionPause } from "../api/session-guard.js";
-import { clearContextTokensForAccount, restoreContextTokens } from "../messaging/inbound.js";
+import { clearContextTokensForAccount, restoreContextTokens, hasWeixinInboundMedia } from "../messaging/inbound.js";
+import { isConversationIngressRejection } from "../../conversations/conversation-ingress-rejection.js";
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -26,12 +28,14 @@ const BACKOFF_DELAY_MS = 30_000;
 const RETRY_DELAY_MS = 2_000;
 const CREDENTIAL_RECOVERY_POLL_INTERVAL_MS = 30_000;
 
+
 export type MonitorWeixinOpts = {
   baseUrl: string;
   cdnBaseUrl: string;
   token?: string;
   accountId: string;
   agent: Agent;
+  routeConversation?: import("../../channels/types.js").ChannelStartInput["routeConversation"];
   abortSignal?: AbortSignal;
   longPollTimeoutMs?: number;
   log?: (msg: string) => void;
@@ -122,6 +126,12 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
   let syncFilePath = getSyncBufFilePath(accountId);
   const previousGetUpdatesBuf = loadGetUpdatesBuf(syncFilePath);
   let getUpdatesBuf = previousGetUpdatesBuf ?? "";
+  let checkpointTail = Promise.resolve();
+  let checkpointEpoch = 0;
+  let checkpointFailed = false;
+  let pendingOrdinary: Array<() => Promise<void>> = [];
+  let ordinaryDispatchTail = Promise.resolve();
+  let pendingBatch: { reject(error: unknown): void } | undefined;
 
   if (previousGetUpdatesBuf) {
     log(`[weixin] resuming from previous sync buf (${getUpdatesBuf.length} bytes)`);
@@ -131,6 +141,8 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
 
   let configManager = new WeixinConfigManager({ baseUrl, token }, log);
   const conversationExecutor = createConversationExecutor();
+  const boundConversationExecutor = createConversationExecutor();
+  const boundTurns = new Map<string, Set<{ controller: AbortController; humanStop: AbortController }>>();
 
   const seenMessageIds = new Set<number>();
   const messageIdOrder: number[] = [];
@@ -148,6 +160,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         timeoutMs: nextTimeoutMs,
         abortSignal,
       });
+      if (abortSignal?.aborted) break;
 
       if (resp.longpolling_timeout_ms != null && resp.longpolling_timeout_ms > 0) {
         nextTimeoutMs = resp.longpolling_timeout_ms;
@@ -195,6 +208,11 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
           syncFilePath = getSyncBufFilePath(accountId);
           const previousBuf = loadGetUpdatesBuf(syncFilePath);
           getUpdatesBuf = previousBuf ?? "";
+          checkpointEpoch++;
+          checkpointTail = Promise.resolve();
+          checkpointFailed = false;
+          pendingOrdinary = [];
+          ordinaryDispatchTail = Promise.resolve();
           configManager = new WeixinConfigManager({ baseUrl, token }, log);
           seenMessageIds.clear();
           messageIdOrder.length = 0;
@@ -226,13 +244,40 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
 
       consecutiveFailures = 0;
 
-      if (resp.get_updates_buf != null && resp.get_updates_buf !== "") {
-        saveGetUpdatesBuf(syncFilePath, resp.get_updates_buf);
-        getUpdatesBuf = resp.get_updates_buf;
-      }
-
+      const preparations: Promise<void>[] = [];
+      const ordinary: Array<() => Promise<void>> = [];
+      const enumerated = Promise.withResolvers<void>();
+      pendingBatch = enumerated;
+      enumerated.promise.catch(() => {});
+      const nextBuf = resp.get_updates_buf;
+      const epoch = checkpointEpoch;
+      const checkpointPath = syncFilePath;
+      checkpointTail = checkpointTail.then(() => enumerated.promise)
+        .then(() => Promise.all(preparations)).then(() => {
+          if (abortSignal?.aborted || epoch !== checkpointEpoch) return;
+          pendingOrdinary.push(...ordinary);
+          // A later cursor must cover responses that did not supply one.
+          if (!nextBuf) return;
+          saveGetUpdatesBuf(checkpointPath, nextBuf);
+          const ready = pendingOrdinary;
+          pendingOrdinary = [];
+          for (const dispatch of ready) {
+            // Serialize dispatch setup, not Agent settlement. Ordinary control
+            // lanes can still preempt an ordinary prompt after checkpointing.
+            ordinaryDispatchTail = ordinaryDispatchTail.then(dispatch).catch((error) => {
+              errLog(`[weixin] ordinary dispatch failed: ${String(error)}`);
+            });
+          }
+        });
+      checkpointTail.catch((error) => {
+        if (epoch === checkpointEpoch && !checkpointFailed && !abortSignal?.aborted) {
+          checkpointFailed = true;
+          errLog(`[weixin] durable cursor held until restart: ${String(error)}`);
+        }
+      });
       const list = resp.msgs ?? [];
       for (const full of list) {
+        if (abortSignal?.aborted) break;
         const msgId = full.message_id;
         if (msgId != null) {
           if (seenMessageIds.has(msgId)) {
@@ -257,110 +302,161 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
 
         const fromUserId = full.from_user_id ?? "";
         const inboundText = extractInboundText(full.item_list);
-        const cachedConfig =
-          fromUserId && shouldFetchTypingConfig(inboundText)
-            ? await configManager.getForUser(fromUserId, full.context_token)
-            : { typingTicket: "" };
 
-        // Fire onInbound before lane queueing: a user reply during a long-running
-        // prompt would otherwise sit behind the in-flight turn on the normal
-        // lane, delaying quota reset until the prior task finishes — defeating
-        // the heads-up "reply to continue" UX.
-        //
-        // v1.4: also drop pending paginated-final chunks unless the inbound is
-        // `/jx` (the only command that drains pending). Doing this here in the
-        // monitor — alongside onInbound, before lane queueing — keeps the
-        // policy consistent with onInbound's "reset window immediately" intent.
-        if (fromUserId) {
-          opts.onInbound?.(fromUserId);
-          if (opts.dropPendingFinal) {
-            if (inboundText.trim().toLowerCase() !== "/jx") {
-              opts.dropPendingFinal(fromUserId);
+        const conversationChatKey = buildWeixinConversationChatKey(accountId, fromUserId, full.group_id);
+        const isSlash = inboundText.trim().startsWith("/");
+        const hadInboundMedia = hasWeixinInboundMedia(full.item_list);
+        const conversationAgent = opts.routeConversation?.({
+          accountId, conversationId: conversationChatKey, text: inboundText,
+          metadata: { channel: "weixin", senderId: fromUserId, origin: "human", authenticatedHuman: Boolean(fromUserId),
+            chatType: full.group_id ? "group" : "direct", ...(full.group_id ? { groupId: full.group_id } : {}),
+            hadInboundMedia,
+            ...(full.message_id != null ? { channelMessageId: String(full.message_id) } : {}) },
+        });
+        const chatKey = conversationAgent ? conversationChatKey : buildWeixinChatKey(accountId, fromUserId);
+        const dispatch = async () => {
+          if (abortSignal?.aborted || epoch !== checkpointEpoch) return;
+          // Fire onInbound before lane queueing: a user reply during a long-running
+          // prompt would otherwise sit behind the in-flight turn on the normal
+          // lane, delaying quota reset until the prior task finishes — defeating
+          // the heads-up "reply to continue" UX.
+          //
+          // v1.4: also drop pending paginated-final chunks unless the inbound is
+          // `/jx` (the only command that drains pending). Doing this here in the
+          // monitor — alongside onInbound, before lane queueing — keeps the
+          // policy consistent with onInbound's "reset window immediately" intent.
+          if (fromUserId) {
+            opts.onInbound?.(fromUserId);
+            if (opts.dropPendingFinal) {
+              if (inboundText.trim().toLowerCase() !== "/jx") {
+                opts.dropPendingFinal(fromUserId);
+              }
             }
           }
-        }
 
-        // Dispatch-time session binding. Capture the chat's current session at
-        // the moment the message arrives. Prompts bind to that alias so a queued
-        // prompt runs against the session that was current when the user sent it
-        // — even if they switch sessions while it waits on the per-session lane.
-        // Slash commands never bind: they act on whatever the chat context
-        // resolves to when they actually run.
-        const chatKey = buildWeixinChatKey(accountId, fromUserId);
-        const isSlash = inboundText.trim().startsWith("/");
-        const boundAlias = isSlash ? undefined : opts.peekCurrentSessionAlias?.(chatKey);
-        // Serialize prompts per bound session; slash/unbound turns share the
-        // chat-level lane.
-        const sessionKey = boundAlias ?? "__chat__";
-        // Foreground gate: this turn is foreground only while its bound session
-        // is still the chat's current session at send time.
-        const isForeground = boundAlias
-          ? () => opts.peekCurrentSessionAlias?.(chatKey) === boundAlias
-          : undefined;
+          // Bound durability and Stop must not wait for a typing-ticket RPC.
+          const cachedConfig = !conversationAgent && fromUserId && shouldFetchTypingConfig(inboundText)
+            ? await configManager.getForUser(fromUserId, full.context_token) : { typingTicket: "" };
+          if (abortSignal?.aborted || epoch !== checkpointEpoch) return;
+          const stopTurns = conversationAgent && /^(?:\/(?:stop|cancel|abort)|stop|abort|interrupt)$/i.test(inboundText.trim())
+            ? [...(boundTurns.get(chatKey) ?? [])] : [];
+          const controller = conversationAgent ? new AbortController() : undefined;
+          const preparation = conversationAgent ? Promise.withResolvers<void>() : undefined;
+          if (preparation) { preparations.push(preparation.promise); preparation.promise.catch(() => {}); }
+          const turn = controller ? { controller, humanStop: new AbortController() } : undefined;
+          const abortBound = () => controller?.abort();
+          if (controller) {
+            const turns = boundTurns.get(chatKey) ?? new Set<NonNullable<typeof turn>>();
+            turns.add(turn!); boundTurns.set(chatKey, turns);
+            abortSignal?.addEventListener("abort", abortBound, { once: true });
+            if (abortSignal?.aborted) controller.abort();
+          }
+          // Capture the current Session at actual dispatch, after checkpoint and
+          // typing setup, before it waits on a per-session execution lane. Slash
+          // commands resolve their chat context when they execute.
+          const boundAlias = conversationAgent || isSlash ? undefined : opts.peekCurrentSessionAlias?.(chatKey);
+          // Serialize prompts per bound session; slash/unbound turns share the
+          // chat-level lane.
+          const sessionKey = boundAlias ?? "__chat__";
+          // Foreground gate: this turn is foreground only while its bound session
+          // is still the chat's current session at send time.
+          const isForeground = boundAlias
+            ? () => opts.peekCurrentSessionAlias?.(chatKey) === boundAlias
+            : undefined;
 
-        if (boundAlias) {
-          opts.activeTurns?.markActive(chatKey, boundAlias);
-        }
+          if (boundAlias) {
+            opts.activeTurns?.markActive(chatKey, boundAlias);
+          }
 
-        const runPromise = conversationExecutor.run(
-          full.from_user_id ?? "",
-          getWeixinMessageTurnLane(full),
-          () =>
-            handleWeixinMessageTurn(full, {
-              accountId,
-              agent,
-              baseUrl,
-              cdnBaseUrl,
-              token,
-              typingTicket: cachedConfig.typingTicket,
-              log,
-              errLog,
-              ...(opts.onInbound ? { onInbound: opts.onInbound } : {}),
-              ...(opts.reserveFinal ? { reserveFinal: opts.reserveFinal } : {}),
-              ...(opts.finalRemaining ? { finalRemaining: opts.finalRemaining } : {}),
-              ...(opts.enqueuePendingFinal
-                ? { enqueuePendingFinal: opts.enqueuePendingFinal }
-                : {}),
-              ...(opts.hasPendingFinal ? { hasPendingFinal: opts.hasPendingFinal } : {}),
-              ...(opts.drainPendingFinal ? { drainPendingFinal: opts.drainPendingFinal } : {}),
-              ...(opts.prependPendingFinal
-                ? { prependPendingFinal: opts.prependPendingFinal }
-                : {}),
-              ...(opts.mediaStore ? { mediaStore: opts.mediaStore } : {}),
-              ...(opts.allowedMediaRoots ? { allowedMediaRoots: opts.allowedMediaRoots } : {}),
-              ...(opts.perfTracer ? { perfTracer: opts.perfTracer } : {}),
-              ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
-              ...(isForeground ? { isForeground } : {}),
-              ...(opts.setBackgroundResult
-                ? {
-                    onBackgroundFinal: async (
-                      alias: string,
-                      text: string,
-                      status: "done" | "error",
-                    ) => {
-                      await opts.setBackgroundResult!(chatKey, alias, {
-                        text,
-                        status,
-                        finished_at: new Date().toISOString(),
-                      });
-                    },
-                  }
-                : {}),
-            }),
-          sessionKey,
-        );
+          const runPromise = (conversationAgent ? boundConversationExecutor : conversationExecutor).run(
+            full.from_user_id ?? "",
+            conversationAgent ? "control" : getWeixinMessageTurnLane(full),
+            () => controller?.signal.aborted || abortSignal?.aborted || epoch !== checkpointEpoch ? Promise.resolve() : handleWeixinMessageTurn(full, {
+                accountId,
+                agent: conversationAgent ?? agent,
+                ...(controller ? { abortSignal: controller.signal } : {}),
+                ...(turn ? { humanStopSignal: turn.humanStop.signal } : {}),
+                conversationBound: Boolean(conversationAgent),
+                onConversationPrepared: () => preparation?.resolve(),
+                onConversationStop: () => {
+                  for (const other of stopTurns) { other.humanStop.abort(); other.controller.abort(); }
+                },
+                baseUrl,
+                cdnBaseUrl,
+                token,
+                typingTicket: cachedConfig.typingTicket,
+                log,
+                errLog,
+                ...(opts.onInbound ? { onInbound: opts.onInbound } : {}),
+                ...(opts.reserveFinal ? { reserveFinal: opts.reserveFinal } : {}),
+                ...(opts.finalRemaining ? { finalRemaining: opts.finalRemaining } : {}),
+                ...(opts.enqueuePendingFinal
+                  ? { enqueuePendingFinal: opts.enqueuePendingFinal }
+                  : {}),
+                ...(opts.hasPendingFinal ? { hasPendingFinal: opts.hasPendingFinal } : {}),
+                ...(opts.drainPendingFinal ? { drainPendingFinal: opts.drainPendingFinal } : {}),
+                ...(opts.prependPendingFinal
+                  ? { prependPendingFinal: opts.prependPendingFinal }
+                  : {}),
+                ...(opts.mediaStore ? { mediaStore: opts.mediaStore } : {}),
+                ...(opts.allowedMediaRoots ? { allowedMediaRoots: opts.allowedMediaRoots } : {}),
+                ...(opts.perfTracer ? { perfTracer: opts.perfTracer } : {}),
+                ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
+                ...(isForeground ? { isForeground } : {}),
+                ...(!conversationAgent && opts.setBackgroundResult
+                  ? {
+                      onBackgroundFinal: async (
+                        alias: string,
+                        text: string,
+                        status: "done" | "error",
+                      ) => {
+                        await opts.setBackgroundResult!(chatKey, alias, {
+                          text,
+                          status,
+                          finished_at: new Date().toISOString(),
+                        });
+                      },
+                    }
+                  : {}),
+              }),
+            sessionKey,
+          );
 
-        void runPromise
-          .catch((err) => {
-            errLog(`[weixin] message turn failed: ${String(err)}`);
-          })
-          .finally(() => {
-            if (boundAlias) {
-              opts.activeTurns?.markInactive(chatKey, boundAlias);
-            }
+          void runPromise.then(() => {
+            // A skipped/aborted task that never prepared must not advance a cursor.
+            preparation?.reject(new Error("bound message ended before preparation"));
+          }, (error) => {
+            if (isConversationIngressRejection(error)) preparation?.resolve();
+            else preparation?.reject(error);
           });
+          void runPromise
+            .catch((err) => {
+              errLog(`[weixin] message turn failed: ${String(err)}`);
+            })
+            .finally(() => {
+              if (controller) {
+                abortSignal?.removeEventListener("abort", abortBound);
+                const turns = boundTurns.get(chatKey)!;
+                turns.delete(turn!);
+                if (turns.size === 0) boundTurns.delete(chatKey);
+              }
+              if (boundAlias) {
+                opts.activeTurns?.markInactive(chatKey, boundAlias);
+              }
+            });
+        };
+        if (conversationAgent) await dispatch();
+        else ordinary.push(dispatch);
       }
+      if (abortSignal?.aborted) enumerated.reject(new Error("poll batch ended before dispatch completed"));
+      else {
+        if (nextBuf) getUpdatesBuf = nextBuf;
+        enumerated.resolve();
+      }
+      pendingBatch = undefined;
     } catch (err) {
+      pendingBatch?.reject(err);
+      pendingBatch = undefined;
       if (abortSignal?.aborted) {
         weixinLog.info("weixin.monitor.stopped", "monitor stopped (aborted)", { accountId });
         return;

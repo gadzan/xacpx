@@ -110,7 +110,8 @@ There are two session concepts:
 - Runtime permission: [`docs/runtime-permission.md`](docs/runtime-permission.md)
 - Runtime MCP: [`docs/runtime-mcp.md`](docs/runtime-mcp.md)
 - Instance desktop over RFB/VNC (setup, per-platform VNC servers, open-time errors): [`docs/desktop-rfb-setup.md`](docs/desktop-rfb-setup.md)
-- Direct Conversation persistence + lifecycle: [`docs/conversation-runtime.md`](docs/conversation-runtime.md) (Direct, Group explicit routing, and the stateless automatic ConversationRouter)
+- Conversation persistence + lifecycle: [`docs/conversation-runtime.md`](docs/conversation-runtime.md) (Direct, Group routing/handoff, and external channel bindings)
+- External Conversation channel binding/admission seam: [`docs/conversation-runtime.md#external-channel-bindings-pr10`](docs/conversation-runtime.md#external-channel-bindings-pr10)
 - Control / Relay Bot + Conversation public API: [`docs/control-module.md`](docs/control-module.md), [`docs/relay-module.md`](docs/relay-module.md)
 ## Gotchas
 

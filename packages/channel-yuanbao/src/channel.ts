@@ -63,6 +63,7 @@ export class YuanbaoChannel implements MessageChannelRuntime {
   private readonly config: YuanbaoChannelConfig;
   private gateway: YuanbaoGateway | null = null;
   private agent: ChannelStartInput["agent"] | null = null;
+  private routeConversation: ChannelStartInput["routeConversation"];
   private quota: ChannelStartInput["quota"] | null = null;
   private logger: ChannelStartInput["logger"] | null = null;
   private abortSignal: AbortSignal | null = null;
@@ -72,6 +73,7 @@ export class YuanbaoChannel implements MessageChannelRuntime {
   // prompt so `/use` / `/ss` / `/cancel` / `/stop` switch the foreground
   // session in real time instead of queuing behind the in-flight turn.
   private readonly executor: ConversationExecutor = createConversationExecutor();
+  private readonly conversationExecutor: ConversationExecutor = createConversationExecutor();
   private readonly dedup = new MessageDedup();
   private readonly replyQuoteSent = new ReplyQuoteCache();
   private readonly groupHistory: GroupHistoryStore;
@@ -114,6 +116,7 @@ export class YuanbaoChannel implements MessageChannelRuntime {
   async start(input: ChannelStartInput): Promise<void> {
     setChannelLocale(input.locale ?? "en");
     this.agent = input.agent;
+    this.routeConversation = input.routeConversation;
     this.quota = input.quota;
     this.logger = input.logger;
     this.abortSignal = input.abortSignal;
@@ -433,17 +436,26 @@ export class YuanbaoChannel implements MessageChannelRuntime {
 
     if (this.isAborted()) return;
 
-    const history = input.chatType === "group" && account.historyLimit > 0
+    const ingressMetadata = {
+      channel: "yuanbao", chatType: input.chatType, senderId: fromAccount,
+      hadInboundMedia: hasMedia || extracted.placeholders.length > 0,
+      ...(messageId ? { channelMessageId: messageId } : {}),
+      ...(raw.sender_nickname ? { senderName: raw.sender_nickname } : {}),
+      ...(input.chatType === "group" ? { groupId: target } : {}),
+    };
+    const conversationAgent = this.routeConversation?.({ accountId: account.accountId, conversationId: chatKey,
+      text: extracted.text, metadata: ingressMetadata });
+    const history = !conversationAgent && !knownCommand && input.chatType === "group" && account.historyLimit > 0
       ? this.groupHistory.consume(account.accountId, target)
       : [];
 
-    const downloaded = await this.downloadInboundCandidates({
+    const downloaded = conversationAgent ? { media: [], failed: [] } : await this.downloadInboundCandidates({
       account,
       chatKey,
       messageId: messageId ?? "",
       candidates: extracted.mediaCandidates,
     });
-    const promptText = buildPromptText({
+    const promptText = conversationAgent || knownCommand ? extracted.text : buildPromptText({
       history,
       quote,
       replyToBot,
@@ -458,7 +470,7 @@ export class YuanbaoChannel implements MessageChannelRuntime {
     // run, and switch/cancel commands take the control lane so they preempt a
     // running prompt for real-time switching.
     const isSlash = extracted.text.trim().startsWith("/");
-    const boundAlias = isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
+    const boundAlias = conversationAgent || isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
     const sessionKey = boundAlias ?? "__chat__";
     const lane = resolveTurnLane(extracted.text);
     // Foreground predicate, evaluated at SEND time: a turn is foreground only
@@ -472,7 +484,7 @@ export class YuanbaoChannel implements MessageChannelRuntime {
     if (boundAlias) this.activeTurns?.markActive(chatKey, boundAlias);
 
     try {
-      await this.executor.run(chatKey, lane, async () => {
+      await (conversationAgent ? this.conversationExecutor : this.executor).run(chatKey, conversationAgent ? "control" : lane, async () => {
         if (!this.agent || !this.quota || !this.gateway || !this.logger) return;
         if (this.isAborted()) return;
         this.quota.onInbound(chatKey);
@@ -489,25 +501,21 @@ export class YuanbaoChannel implements MessageChannelRuntime {
           replyContextToken: messageId,
         });
         try {
-          heartbeat.start();
-          const subagentNotices = new SubagentNoticeTracker();
-          const response = await this.agent.chat({
-            accountId: account.accountId,
-            conversationId: chatKey,
-            text: promptText,
-            replyContextToken: messageId,
+          const ingress = {
+            accountId: account.accountId, conversationId: chatKey, text: promptText, replyContextToken: messageId,
             ...(this.abortSignal ? { abortSignal: this.abortSignal } : {}),
             ...(downloaded.media.length > 0 ? { media: downloaded.media } : {}),
-            metadata: {
-              channel: "yuanbao",
-              chatType: input.chatType,
-              senderId: fromAccount,
-              ...(raw.sender_nickname ? { senderName: raw.sender_nickname } : {}),
-              ...(input.chatType === "group" ? { groupId: target } : {}),
-              isOwner: Boolean(raw.bot_owner_id && raw.from_account === raw.bot_owner_id),
+            metadata: { ...ingressMetadata,
+              ...(!conversationAgent ? { origin: "human" as const,
+                isOwner: Boolean(raw.bot_owner_id && raw.from_account === raw.bot_owner_id) } : {}),
               ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
-              origin: "human" as const,
             },
+          };
+          await conversationAgent?.prepareConversation?.(ingress);
+          heartbeat.start();
+          const subagentNotices = new SubagentNoticeTracker();
+          const response = await (conversationAgent ?? this.agent).chat({
+            ...ingress,
             // Text-only degradation: no card, so a delegation surfaces as one
             // honest line. Ordinary tool calls stay hidden to avoid flooding
             // the chat; the tracker dedups start/terminal per toolCallId.

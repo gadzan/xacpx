@@ -46,7 +46,7 @@ import { StreamingCardController, type StreamingCardClient } from "./card/stream
 import { RuntimeMediaStore, DEFAULT_ATTACHMENT_MAX_BYTES, DEFAULT_IMAGE_MAX_BYTES, DEFAULT_MAX_ATTACHMENTS_PER_MESSAGE } from "./media-store.js";
 import { resolveSafeOutboundMediaPath } from "./outbound-media-safety.js";
 import { normalizeMediaArray, type ChannelMediaAttachment } from "./media-types.js";
-import { convertFeishuMessageContent } from "./content-converters.js";
+import { convertFeishuMessageContent, hasFeishuInboundMedia } from "./content-converters.js";
 import { downloadFeishuMessageResource } from "./media.js";
 
 // Group-owner lookups cache for 5 minutes: long enough that a busy group
@@ -95,6 +95,7 @@ interface AccountRuntime {
 }
 
 interface ActiveTask {
+  executionDomain: "session" | "conversation";
   accountId: string;
   chatId: string;
   messageId: string;
@@ -116,6 +117,8 @@ interface ActiveTask {
   boundAlias: string | undefined;
   typingState: TypingIndicatorState;
   abortController: AbortController;
+  humanStopController: AbortController;
+  rootAbortCleanup: (() => void) | null;
   suppressed: boolean;
   cardController: StreamingCardController | null;
 }
@@ -168,11 +171,14 @@ export class FeishuChannel implements MessageChannelRuntime {
   private markDelivered: OrchestrationDeliveryCallbacks["markTaskNoticeDelivered"] | null = null;
   private markFailed: OrchestrationDeliveryCallbacks["markTaskNoticeFailed"] | null = null;
   private agent: ChannelStartInput["agent"] | null = null;
+  private routeConversation: ChannelStartInput["routeConversation"];
+  private abortSignal: AbortSignal | null = null;
   private quota: ChannelStartInput["quota"] | null = null;
   private logger: ChannelStartInput["logger"] | null = null;
   private sessions: SessionService | null = null;
   private activeTurns: ActiveTurnRegistry | null = null;
   private readonly executor: ConversationExecutor = createConversationExecutor();
+  private readonly conversationExecutor: ConversationExecutor = createConversationExecutor();
   // Stack per chat: when a second turn races into the queue before the first
   // body runs, both are tracked so an inbound stop message can suppress all
   // pending entries. Push on registration, splice on cleanup.
@@ -241,6 +247,7 @@ export class FeishuChannel implements MessageChannelRuntime {
    * silently never answers.
    */
   async stop(reason: "shutdown" | "disabled" | "removed" | "logout" = "shutdown"): Promise<void> {
+    this.abortAllActiveTasks();
     await this.drainPendingElicitations(reason);
     this.logout();
   }
@@ -318,6 +325,8 @@ export class FeishuChannel implements MessageChannelRuntime {
   }
 
   logout(): void {
+    this.abortAllActiveTasks();
+    this.abortSignal = null;
     // Snapshot the entries: `stopAccountInbound` deletes as it goes, which also
     // leaves the registry empty here. The listener shutdown is intentionally
     // left unawaited — logout is synchronous and has nobody left to tell.
@@ -526,6 +535,8 @@ export class FeishuChannel implements MessageChannelRuntime {
     // setLocale(), so input.locale is the only instance-independent source.
     setChannelLocale(input.locale ?? "en");
     this.agent = input.agent;
+    this.routeConversation = input.routeConversation;
+    this.abortSignal = input.abortSignal;
     this.quota = input.quota;
     this.logger = input.logger;
     this.sessions = input.sessions ?? null;
@@ -933,10 +944,6 @@ export class FeishuChannel implements MessageChannelRuntime {
     const chatKey = buildFeishuConversationId(accountId, chatId, threadId);
     const queueKey = buildFeishuQueueKey(accountId, chatId, threadId);
 
-    if (await this.tryHandleAbortTrigger({ event, runtime, queueKey, accountId, chatId, messageId })) {
-      return;
-    }
-
     const converted = await convertFeishuMessageContent({
       messageType: event.message.message_type,
       content: event.message.content,
@@ -956,7 +963,17 @@ export class FeishuChannel implements MessageChannelRuntime {
 
     this.quota.onInbound(chatKey);
 
-    const { media, skipped } = await this.downloadInboundAttachments({
+    const hadInboundMedia = hasFeishuInboundMedia(event.message.message_type, event.message.content);
+    const conversationAgent = this.routeConversation?.({ accountId, conversationId: chatKey, text: decision.text,
+      metadata: { channel: "feishu", channelMessageId: messageId, senderId: event.sender?.sender_id?.open_id,
+        hadInboundMedia, humanStopRequested: isLikelyAbortText(decision.text),
+        authenticatedHuman: event.sender.sender_type === "user",
+        ...(event.sender.sender_type === "user" ? { origin: "human" as const } : {}) } });
+    const conversationStopTasks = conversationAgent && isLikelyAbortText(decision.text)
+      ? this.activeTasks.get(queueKey)?.filter((task) => !task.suppressed
+        && task.executionDomain === "conversation" && task.senderOpenId === event.sender.sender_id?.open_id) ?? [] : [];
+    if (!conversationAgent && await this.tryHandleAbortTrigger({ event, runtime, queueKey, accountId, chatId, messageId })) return;
+    const { media, skipped } = conversationAgent ? { media: [], skipped: [] } : await this.downloadInboundAttachments({
       runtime,
       accountId,
       chatKey,
@@ -973,11 +990,12 @@ export class FeishuChannel implements MessageChannelRuntime {
     // run (and switch/cancel commands take the control lane so they preempt a
     // running prompt for real-time switching).
     const isSlash = requestText.trim().startsWith("/");
-    const boundAlias = isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
+    const boundAlias = conversationAgent || isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
     const lane = resolveTurnLane(requestText);
 
     const senderOpenId = event.sender?.sender_id?.open_id;
     const { active, abortController } = this.registerActiveTask({
+      executionDomain: conversationAgent ? "conversation" : "session",
       accountId,
       chatId,
       messageId,
@@ -992,29 +1010,35 @@ export class FeishuChannel implements MessageChannelRuntime {
     // Opt-in owner assertion runs AFTER task registration + markActive: the
     // bound session must enjoy active-turn protection (archive refusal,
     // running-state reporting) and abort tracking even while this turn is
-    // blocked on a (possibly uncached) REST lookup. The resolved flag rides
-    // on ActiveTask into the turn's route metadata; any failure leaves it
-    // undefined and the host's owner gate stays fail-closed.
+    // blocked on a (possibly uncached) REST lookup. Conversation ingress uses
+    // only unexpired cached facts here so durable preparation never waits on
+    // that RPC. A miss stays fail-closed for the accepted turn.
     if (event.message.chat_type === "group" && runtime.account.trustGroupOwner && senderOpenId) {
-      active.senderIsOwner = await this.resolveSenderIsGroupOwner({ runtime, accountId, chatId, senderOpenId });
+      active.senderIsOwner = conversationAgent
+        ? this.cachedSenderIsGroupOwner(accountId, chatId, senderOpenId)
+        : await this.resolveSenderIsGroupOwner({ runtime, accountId, chatId, senderOpenId });
     }
 
-    await this.executor.run(
+    await (conversationAgent ? this.conversationExecutor : this.executor).run(
       chatKey,
-      lane,
+      conversationAgent ? "control" : lane,
       () => this.runTurn({
         runtime,
         accountId,
         chatId,
         chatType: event.message.chat_type,
+        authenticatedHuman: event.sender.sender_type === "user",
         chatKey,
         queueKey,
         messageId,
         requestText,
         media,
+        hadInboundMedia,
+        conversationStopTasks,
         active,
         abortController,
         boundAlias,
+        agent: conversationAgent,
       }),
       boundAlias,
     );
@@ -1063,9 +1087,12 @@ export class FeishuChannel implements MessageChannelRuntime {
       (t) => senderOpenId !== undefined && t.senderOpenId === senderOpenId,
     );
     if (owned.length > 0) {
+      // Select the domain only after sender ownership has been established.
+      // Queued Conversation turns are registered here too.
+      const conversations = owned.filter((t) => t.executionDomain === "conversation");
       await this.handleAbortFastPath({
         runtime,
-        activeTasks: owned,
+        activeTasks: conversations.length > 0 ? conversations : owned,
         abortRequestMessageId: messageId,
         chatId,
         accountId,
@@ -1096,6 +1123,7 @@ export class FeishuChannel implements MessageChannelRuntime {
    * mark it suppressed.
    */
   private registerActiveTask(input: {
+    executionDomain: ActiveTask["executionDomain"];
     accountId: string;
     chatId: string;
     messageId: string;
@@ -1108,6 +1136,7 @@ export class FeishuChannel implements MessageChannelRuntime {
     const { accountId, chatId, messageId, queueKey, senderOpenId, chatType, senderIsOwner, boundAlias } = input;
     const abortController = new AbortController();
     const active: ActiveTask = {
+      executionDomain: input.executionDomain,
       accountId,
       chatId,
       messageId,
@@ -1117,13 +1146,32 @@ export class FeishuChannel implements MessageChannelRuntime {
       boundAlias,
       typingState: { messageId, reactionId: null },
       abortController,
+      humanStopController: new AbortController(),
+      rootAbortCleanup: null,
       suppressed: false,
       cardController: null,
     };
     const stack = this.activeTasks.get(queueKey) ?? [];
     stack.push(active);
     this.activeTasks.set(queueKey, stack);
+    const rootSignal = this.abortSignal;
+    const onRootAbort = () => { active.suppressed = true; abortController.abort(); };
+    if (rootSignal?.aborted) onRootAbort();
+    else if (rootSignal) {
+      rootSignal.addEventListener("abort", onRootAbort, { once: true });
+      active.rootAbortCleanup = () => rootSignal.removeEventListener("abort", onRootAbort);
+    }
     return { active, abortController };
+  }
+
+  private abortAllActiveTasks(): void {
+    for (const task of [...this.activeTasks.values()].flat()) {
+      task.suppressed = true;
+      task.abortController.abort();
+      task.rootAbortCleanup?.();
+      task.rootAbortCleanup = null;
+    }
+    this.activeTasks.clear();
   }
 
   /**
@@ -1137,6 +1185,11 @@ export class FeishuChannel implements MessageChannelRuntime {
    * the epoch check drops it, and the identity-checked finally can never
    * evict a newer lifecycle's in-flight registration.
    */
+  private cachedSenderIsGroupOwner(accountId: string, chatId: string, senderOpenId: string): boolean | undefined {
+    const cached = this.chatOwnerCache.get(`${accountId}:${chatId}`);
+    return cached && cached.expiresAt > Date.now() ? cached.ownerId === senderOpenId : undefined;
+  }
+
   private async resolveSenderIsGroupOwner(input: {
     runtime: AccountRuntime;
     accountId: string;
@@ -1211,15 +1264,19 @@ export class FeishuChannel implements MessageChannelRuntime {
   }
 
   private async runTurn(input: {
+    agent?: NonNullable<ReturnType<NonNullable<ChannelStartInput["routeConversation"]>>>;
     runtime: AccountRuntime;
     accountId: string;
     chatId: string;
     chatType: string | undefined;
+    authenticatedHuman: boolean;
     chatKey: string;
     queueKey: string;
     messageId: string;
     requestText: string;
     media: ChannelMediaAttachment[];
+    hadInboundMedia: boolean;
+    conversationStopTasks: ActiveTask[];
     active: ActiveTask;
     abortController: AbortController;
     boundAlias: string | undefined;
@@ -1232,6 +1289,26 @@ export class FeishuChannel implements MessageChannelRuntime {
     try {
       if (!this.agent) return;
       if (active.suppressed) return;
+      const ingress = {
+        accountId, conversationId: chatKey, text: requestText, replyContextToken: messageId,
+        ...(media.length > 0 ? { media } : {}),
+        metadata: { ...buildFeishuRouteMetadata({ chatType, senderOpenId: active.senderOpenId, chatId, senderIsOwner: active.senderIsOwner }),
+          channelMessageId: messageId, hadInboundMedia: input.hadInboundMedia, authenticatedHuman: input.authenticatedHuman,
+          ...(boundAlias ? { boundSessionAlias: boundAlias } : {}), ...(input.authenticatedHuman ? { origin: "human" as const } : {}) },
+        abortSignal: abortController.signal,
+        ...(input.agent ? { humanStopSignal: active.humanStopController.signal } : {}),
+      };
+      const preparation = await input.agent?.prepareConversation?.(ingress);
+      if (preparation?.stopPendingAcceptance) {
+        const owned = input.conversationStopTasks.filter((task) => !task.suppressed);
+        if (owned.length) await this.handleAbortFastPath({ runtime, activeTasks: owned, abortRequestMessageId: messageId,
+          chatId, accountId, acknowledge: false });
+      }
+      // Accepted authority is immutable. A cache miss fails closed for this
+      // turn; refresh asynchronously for later ingress without delaying it.
+      if (input.agent && chatType === "group" && runtime.account.trustGroupOwner && active.senderOpenId) {
+        void this.resolveSenderIsGroupOwner({ runtime, accountId, chatId, senderOpenId: active.senderOpenId }).catch(() => {});
+      }
       active.typingState = await addTypingIndicator({
         client: runtime.client.sdk as unknown as FeishuReactionClient,
         messageId,
@@ -1275,17 +1352,8 @@ export class FeishuChannel implements MessageChannelRuntime {
       };
 
       try {
-        const response = await this.agent.chat({
-          accountId,
-          conversationId: chatKey,
-          text: requestText,
-          ...(media.length > 0 ? { media } : {}),
-          replyContextToken: messageId,
-          metadata: {
-            ...buildFeishuRouteMetadata({ chatType, senderOpenId: active.senderOpenId, chatId, senderIsOwner: active.senderIsOwner }),
-            ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
-            origin: "human" as const,
-          },
+        const response = await (input.agent ?? this.agent).chat({
+          ...ingress,
           reply: safeReply,
           // Only consume the structured tool-event side-channel when we actually
           // have a card to render into. Without this gate, static-mode turns would
@@ -1311,7 +1379,6 @@ export class FeishuChannel implements MessageChannelRuntime {
               active.cardController?.recordUsage(usage);
             },
           } : {}),
-          abortSignal: abortController.signal,
         });
         if (active.suppressed) return;
         await this.deliverResponse({ runtime, accountId, chatId, messageId, active, response });
@@ -1324,6 +1391,8 @@ export class FeishuChannel implements MessageChannelRuntime {
         throw error;
       }
     } finally {
+      active.rootAbortCleanup?.();
+      active.rootAbortCleanup = null;
       if (boundAlias) {
         // markInactive always mirrors the markActive in handleMessageEvent,
         // regardless of outcome (including skipped turns).
@@ -1498,14 +1567,16 @@ export class FeishuChannel implements MessageChannelRuntime {
     abortRequestMessageId: string;
     chatId: string;
     accountId: string;
+    acknowledge?: boolean;
   }): Promise<void> {
     const { runtime, activeTasks, abortRequestMessageId, chatId, accountId } = input;
-    // Suppress and signal every pending entry — user said "stop", they mean
-    // everything pending for them. The most-recent entry decides whether the
-    // ack lands as a card update vs plain reply.
+    // Suppress and signal every pending entry in the selected execution domain.
+    // The most-recent entry decides whether the ack lands as a card update vs
+    // plain reply.
     for (const t of activeTasks) {
       t.suppressed = true;
       try {
+        t.humanStopController.abort();
         t.abortController.abort();
       } catch {
         // AbortController.abort() never throws in practice; defensive
@@ -1547,7 +1618,7 @@ export class FeishuChannel implements MessageChannelRuntime {
         });
       }
     }
-    if (cardAcked) return;
+    if (cardAcked || input.acknowledge === false) return;
     try {
       await this.sendReplyWithGuard({
         runtime,

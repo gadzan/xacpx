@@ -2066,6 +2066,18 @@ export class ControlService {
     return this.#promptConversation(sanitizePublicConversationPrompt(input));
   }
 
+  listConversationBindings() {
+    return this.requireConversations().bindings.list();
+  }
+
+  bindConversation(input: import("../conversations/conversation-bindings").ConversationBinding) {
+    return this.runConversationMutation((runtime) => runtime.bindings.bind(input));
+  }
+
+  unbindConversation(chatKey: string) {
+    return this.runConversationMutation((runtime) => runtime.bindings.unbind(chatKey));
+  }
+
   #promptConversation(
     input: ConversationPromptRequestDto,
     ingress?: HumanIngressContext,

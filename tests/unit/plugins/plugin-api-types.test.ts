@@ -1,5 +1,21 @@
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
+import { isConversationIngressRejection } from "../../../src/plugin-api";
+import { ConversationIngressRejection } from "../../../src/conversations/conversation-ingress-rejection";
+import { ConversationError } from "../../../src/conversations/conversation-error";
+
+test("plugin-api recognizes durable ingress rejection across bundle copies without guessing error codes", () => {
+  expect(isConversationIngressRejection(new ConversationIngressRejection("external_target_invalid", "invalid target"))).toBe(true);
+  expect(isConversationIngressRejection(new ConversationError("external_target_invalid", "not committed"))).toBe(false);
+  expect(isConversationIngressRejection(new Error("disk failure"))).toBe(false);
+  const otherBundle = Object.assign(new Error("durable rejection"), { code: "external_request_aborted",
+    [Symbol.for("@ganglion/xacpx/conversation-ingress-rejection")]: true });
+  expect(isConversationIngressRejection(otherBundle)).toBe(true);
+  expect(isConversationIngressRejection({ ...otherBundle, code: "run_corrupt" })).toBe(false);
+  for (const error of [null, undefined, "external_request_aborted", { code: "external_request_aborted", message: "not committed" }]) {
+    expect(isConversationIngressRejection(error)).toBe(false);
+  }
+});
 
 import type {
   ChannelCliProvider,

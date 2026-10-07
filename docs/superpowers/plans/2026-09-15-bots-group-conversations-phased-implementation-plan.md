@@ -1038,6 +1038,18 @@ Map admitted channel chats/threads onto the same Conversation domain.
 
 ## 13.1 Binding model
 
+Implementation seam: the durable binding and platform-message receipt tables
+live in `conversations.sqlite`. Public Control/Relay supports list/set/delete;
+the registry supplies an early Conversation ingress selector. After admission,
+Discord/Feishu/Weixin select the route before Session binding/active tracking and
+use an independent executor without Session background-result hooks. Adapters
+carry stable message identity plus explicit authenticated-human facts. Group
+bindings require an active Topic; Direct may use its deterministic default.
+Leading exact member addresses resolve once to canonical Bot IDs before normal
+Run acceptance. Replays retain the original Run across rebinding and teardown
+retains receipt tombstones. Replies/Stop use the existing Run/result/cancel chain.
+Real platform smoke and durable outbound delivery are separate validation work.
+
 ```ts
 interface ConversationBinding {
   chatKey: string;
@@ -1056,6 +1068,9 @@ channel admission/authentication
 ```
 
 Binding never bypasses admission.
+Binding set/delete and acceptance serialize per external chatKey; unrelated
+routes do not share an acceptance mutex. Selection includes durable receipt
+existence so retries after unbind remain on the Conversation path.
 
 ## 13.3 Candidate mappings
 

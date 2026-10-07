@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   createConversationMessageId,
   createConversationRunId,
@@ -7,6 +8,7 @@ import {
 } from "../domain/ids";
 import type { BotProfileSnapshot } from "../bots/bot-types";
 import { ConversationError } from "./conversation-error";
+import { isExternalIngressRejectionCode } from "./conversation-ingress-rejection";
 import type {
   AcceptMemberInput,
   AcceptPublicHandoffInput,
@@ -75,6 +77,24 @@ export interface SqliteConversationStoreOptions {
   /** Fault-injection seam for migration crash tests. Throwing inside aborts
    *  the dispatch table rebuild before it commits. */
   beforeDispatchMigrationCommit?: () => void;
+}
+
+export interface ExternalStopRequest {
+  key: string;
+  fingerprint: string;
+  chatKey: string;
+  accountId: string;
+  senderId: string;
+}
+
+export interface ExternalStopReceipt {
+  reused: boolean;
+  targetRunIds: string[];
+}
+
+export interface ExternalRejectionReceipt {
+  code: string;
+  message: string;
 }
 
 interface MessageRow {
@@ -178,6 +198,23 @@ interface RoutingDecisionRow {
 }
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS conversation_bindings (
+  chat_key TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, topic_id TEXT NOT NULL, revision TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS external_conversation_requests (
+  source_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, run_id TEXT NOT NULL,
+  conversation_id TEXT NOT NULL, topic_id TEXT NOT NULL, stop_ingress TEXT
+);
+CREATE INDEX IF NOT EXISTS external_conversation_requests_run ON external_conversation_requests(run_id);
+CREATE TABLE IF NOT EXISTS external_conversation_stops (
+  source_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
+  chat_key TEXT NOT NULL, account_id TEXT NOT NULL, sender_id TEXT NOT NULL,
+  target_run_ids_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS external_conversation_rejections (
+  source_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
+  rejection_code TEXT NOT NULL, rejection_message TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS topic_seq (
   topic_id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
@@ -324,6 +361,10 @@ function parseStoredHumanIngress(json: string | null | undefined): HumanIngressC
 function serializeHumanIngress(ingress: HumanIngressContext | undefined): string | null {
   const parsed = parseHumanIngress(ingress);
   return parsed ? JSON.stringify(parsed) : null;
+}
+
+function serializeStopIngress(ingress: HumanIngressContext | undefined): string | null {
+  return ingress ? serializeHumanIngress({ chatKey: ingress.chatKey, senderId: ingress.senderId, accountId: ingress.accountId }) : null;
 }
 
 /** Strict durable BotProfileSnapshot decoder: syntactically valid JSON with
@@ -641,6 +682,38 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureWaitingQuestionColumn();
     this.ensureDispatchMultiMemberShape();
     this.ensurePublicHandoffSchema();
+    this.ensureExternalStopIngress();
+    this.ensureBindingRevision();
+  }
+
+  private ensureBindingRevision(): void {
+    this.sqlite.transaction(() => {
+      const columns = this.sqlite.all<{ name: string }>("PRAGMA table_info(conversation_bindings)");
+      if (columns.some((column) => column.name === "revision")) return;
+      this.sqlite.exec("ALTER TABLE conversation_bindings ADD COLUMN revision TEXT");
+      for (const row of this.sqlite.all<{ chat_key: string }>("SELECT chat_key FROM conversation_bindings")) {
+        this.sqlite.run("UPDATE conversation_bindings SET revision = ? WHERE chat_key = ?", [randomUUID(), row.chat_key]);
+      }
+    });
+  }
+
+  private ensureExternalStopIngress(): void {
+    this.sqlite.transaction(() => {
+      const columns = this.sqlite.all<{ name: string }>("PRAGMA table_info(external_conversation_requests)");
+      if (!columns.some((column) => column.name === "stop_ingress")) {
+        this.sqlite.exec("ALTER TABLE external_conversation_requests ADD COLUMN stop_ingress TEXT");
+      }
+      // Copy original route facts before recovery strips execution authority.
+      // This column authorizes only Stop; it is never used for provider authority.
+      for (const row of this.sqlite.all<{ source_key: string; human_ingress: string }>(
+        `SELECT e.source_key, p.human_ingress FROM external_conversation_requests e
+         JOIN pending_dispatches p ON p.run_id = e.run_id
+         WHERE e.stop_ingress IS NULL AND p.human_ingress IS NOT NULL ORDER BY p.created_at, p.rowid`)) {
+        const ingress = parseStoredHumanIngress(row.human_ingress);
+        if (ingress) this.sqlite.run("UPDATE external_conversation_requests SET stop_ingress = ? WHERE source_key = ? AND stop_ingress IS NULL",
+          [serializeStopIngress(ingress), row.source_key]);
+      }
+    });
   }
 
   private assertOpen(): void {
@@ -674,6 +747,10 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   acceptRequest(input: AcceptRequestInput): AcceptRequestResult {
+    if (input.externalRequest) {
+      const replay = this.getExternalRequest(input.externalRequest);
+      if (replay) return replay;
+    }
     // Idempotent replay short-circuits BEFORE the bounded-queue check: a
     // retry of an already-accepted request at a full queue must return the
     // existing Run, never fail `topic_queue_full`. loadAccepted throws
@@ -681,6 +758,7 @@ export class SqliteConversationStore implements ConversationStore {
     // contract as the unique-violation fallback below.
     const existing = this.getRunByRequestId(input.conversationId, input.topicId, input.requestId);
     if (existing) {
+      if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
       const reused = this.loadAccepted(input.conversationId, input.topicId, input.requestId);
       if (reused) {
         return { reused: true, ...reused };
@@ -688,13 +766,27 @@ export class SqliteConversationStore implements ConversationStore {
     }
     try {
       return this.sqlite.transaction(() => {
+        if (input.externalRequest && this.hasExternalStopRequest(input.externalRequest.key)) {
+          throw new ConversationError("external_request_conflict", "platform message already identifies a Stop");
+        }
+        if (input.externalRequest && this.hasExternalRejection(input.externalRequest.key)) {
+          throw new ConversationError("external_request_conflict", "platform message already identifies a rejection");
+        }
         this.assertAcceptable(input.conversationId, input.topicId);
         const created = this.insertAccepted(input);
+        if (input.externalRequest) {
+          this.sqlite.run("INSERT INTO external_conversation_requests (source_key, fingerprint, run_id, conversation_id, topic_id, stop_ingress) VALUES (?, ?, ?, ?, ?, ?)",
+            [input.externalRequest.key, input.externalRequest.fingerprint, created.run.id, created.run.conversationId, created.run.topicId, serializeStopIngress(input.humanIngress)]);
+        }
         this.beforeAcceptCommit?.();
         return created;
       });
     } catch (error) {
       if (isSqliteUniqueViolation(error)) {
+        if (input.externalRequest) {
+          const replay = this.getExternalRequest(input.externalRequest);
+          if (replay) return replay;
+        }
         const reused = this.loadAccepted(input.conversationId, input.topicId, input.requestId);
         if (reused) {
           return { reused: true, ...reused };
@@ -702,6 +794,153 @@ export class SqliteConversationStore implements ConversationStore {
       }
       throw error;
     }
+  }
+
+  hasExternalRequest(key: string): boolean {
+    return this.sqlite.get("SELECT 1 FROM external_conversation_requests WHERE source_key = ?", [key]) !== undefined;
+  }
+
+  hasExternalStopRequest(key: string): boolean {
+    return this.sqlite.get("SELECT 1 FROM external_conversation_stops WHERE source_key = ?", [key]) !== undefined;
+  }
+
+  hasExternalRejection(key: string): boolean {
+    return this.sqlite.get("SELECT 1 FROM external_conversation_rejections WHERE source_key = ?", [key]) !== undefined;
+  }
+
+  getExternalRejection(input: { key: string; fingerprint: string }): ExternalRejectionReceipt | undefined {
+    const row = this.sqlite.get<{ fingerprint: string; rejection_code: string; rejection_message: string }>(
+      "SELECT * FROM external_conversation_rejections WHERE source_key = ?", [input.key]);
+    if (!row) return undefined;
+    if (this.hasExternalRequest(input.key) || this.hasExternalStopRequest(input.key)
+      || typeof row.fingerprint !== "string" || !row.fingerprint
+      || !isExternalIngressRejectionCode(row.rejection_code) || typeof row.rejection_message !== "string" || !row.rejection_message) {
+      throw new ConversationError("external_request_corrupt", "platform rejection receipt is invalid");
+    }
+    if (row.fingerprint !== input.fingerprint) throw new ConversationError("external_request_conflict", "platform rejection was recorded with different input");
+    return { code: row.rejection_code, message: row.rejection_message };
+  }
+
+  recordExternalRejection(input: { key: string; fingerprint: string }, rejection: ExternalRejectionReceipt): ExternalRejectionReceipt {
+    this.assertOpen();
+    return this.sqlite.transaction(() => {
+      const result = this.insertExternalRejection(input, rejection);
+      this.beforeAcceptCommit?.();
+      return result;
+    });
+  }
+
+  /** Caller holds the write transaction; also used by atomic Stop admission. */
+  private insertExternalRejection(input: { key: string; fingerprint: string }, rejection: ExternalRejectionReceipt): ExternalRejectionReceipt {
+    if (this.hasExternalRequest(input.key) || this.hasExternalStopRequest(input.key)) {
+      throw new ConversationError("external_request_conflict", "platform message already has an accepted receipt");
+    }
+    const replay = this.getExternalRejection(input);
+    if (replay) return replay;
+    if (!isExternalIngressRejectionCode(rejection.code) || !rejection.message) {
+      throw new ConversationError("external_request_corrupt", "invalid external rejection decision");
+    }
+    this.sqlite.run("INSERT INTO external_conversation_rejections (source_key, fingerprint, rejection_code, rejection_message) VALUES (?, ?, ?, ?)",
+      [input.key, input.fingerprint, rejection.code, rejection.message]);
+    return rejection;
+  }
+
+  getExternalStopRequest(input: ExternalStopRequest): ExternalStopReceipt | undefined {
+    if (this.hasExternalRejection(input.key)) throw new ConversationError("external_request_conflict", "platform message already identifies a rejection");
+    const row = this.sqlite.get<{ fingerprint: string; chat_key: string; account_id: string; sender_id: string; target_run_ids_json: string }>(
+      "SELECT * FROM external_conversation_stops WHERE source_key = ?", [input.key]);
+    if (!row) return undefined;
+    if (row.fingerprint !== input.fingerprint) throw new ConversationError("external_request_conflict", "platform Stop was already accepted with different input");
+    if (row.chat_key !== input.chatKey || row.account_id !== input.accountId || row.sender_id !== input.senderId) {
+      throw new ConversationError("external_stop_corrupt", "Stop receipt lost its original owner");
+    }
+    let ids: unknown;
+    try { ids = JSON.parse(row.target_run_ids_json); }
+    catch { throw new ConversationError("external_stop_corrupt", "Stop receipt has malformed targets"); }
+    if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string" || !id || id !== id.trim()) || new Set(ids).size !== ids.length) {
+      throw new ConversationError("external_stop_corrupt", "Stop receipt has invalid targets");
+    }
+    return { reused: true, targetRunIds: ids as string[] };
+  }
+
+  acceptExternalStop(input: ExternalStopRequest, selectTargets: () => string[],
+    selectPending: () => Array<{ key: string; fingerprint: string }> = () => []): ExternalStopReceipt {
+    this.assertOpen();
+    return this.sqlite.transaction(() => {
+      if (this.hasExternalRequest(input.key)) throw new ConversationError("external_request_conflict", "platform message already identifies a prompt");
+      const replay = this.getExternalStopRequest(input);
+      if (replay) return replay;
+      const targetRunIds = selectTargets();
+      for (const pending of selectPending()) {
+        if (pending.key === input.key) throw new ConversationError("external_request_conflict", "Stop source also identifies a pending prompt");
+        // A committed prompt is handled by the frozen Run targets, never by a
+        // rejection. Pending sources need durable proof even if we crash before
+        // their human signal fires or their own rejection can be written.
+        if (!this.hasExternalRequest(pending.key)) this.insertExternalRejection(pending,
+          { code: "external_request_aborted", message: "channel request was stopped before acceptance" });
+      }
+      this.sqlite.run("INSERT INTO external_conversation_stops (source_key, fingerprint, chat_key, account_id, sender_id, target_run_ids_json) VALUES (?, ?, ?, ?, ?, ?)",
+        [input.key, input.fingerprint, input.chatKey, input.accountId, input.senderId, JSON.stringify(targetRunIds)]);
+      this.beforeAcceptCommit?.();
+      return { reused: false, targetRunIds };
+    });
+  }
+
+  listLiveExternalRequests(): Array<{ accepted: AcceptRequestResult; ingress?: HumanIngressContext }> {
+    return this.sqlite.all<{ source_key: string; fingerprint: string; stop_ingress: string | null }>(
+      `SELECT e.source_key, e.fingerprint, e.stop_ingress FROM runs r
+       JOIN external_conversation_requests e ON e.run_id = r.id
+       WHERE r.state IN ('queued', 'running', 'waiting-human') ORDER BY r.created_at, r.rowid`)
+      .map((row) => ({ accepted: this.getExternalRequest({ key: row.source_key, fingerprint: row.fingerprint })!,
+        ingress: parseStoredHumanIngress(row.stop_ingress) }));
+  }
+
+  getExternalRequest(input: { key: string; fingerprint: string }): AcceptRequestResult | undefined {
+    if (this.hasExternalRejection(input.key)) throw new ConversationError("external_request_conflict", "platform message already identifies a rejection");
+    if (this.hasExternalStopRequest(input.key)) throw new ConversationError("external_request_conflict", "platform message already identifies a Stop");
+    const row = this.sqlite.get<{ fingerprint: string; run_id: string; conversation_id: string; topic_id: string }>(
+      "SELECT * FROM external_conversation_requests WHERE source_key = ?", [input.key]);
+    if (!row) return undefined;
+    if (row.fingerprint !== input.fingerprint) {
+      throw new ConversationError("external_request_conflict", "platform message was already accepted with different input");
+    }
+    const run = this.getRun(row.run_id);
+    if (!run) throw new ConversationError("external_request_retired", "platform message belongs to a deleted Run");
+    if (run.conversationId !== row.conversation_id || run.topicId !== row.topic_id || run.requestId !== `external:${input.key}`) {
+      throw new ConversationError("external_request_corrupt", "platform receipt lost its exact Run scope");
+    }
+    const accepted = this.getAcceptedRequest(run.conversationId, run.topicId, run.requestId);
+    if (!accepted) throw new ConversationError("external_request_corrupt", "platform message lost its accepted request");
+    return accepted;
+  }
+
+  listConversationBindings(): Array<{ chatKey: string; conversationId: string; topicId: string }> {
+    return this.sqlite.all<{ chat_key: string; conversation_id: string; topic_id: string }>(
+      "SELECT * FROM conversation_bindings ORDER BY chat_key").map((row) => {
+      if (!row.chat_key || !row.conversation_id || !row.topic_id) {
+        throw new ConversationError("binding_corrupt", "Conversation binding is incomplete");
+      }
+      return { chatKey: row.chat_key, conversationId: row.conversation_id, topicId: row.topic_id };
+    });
+  }
+
+  getConversationBinding(chatKey: string): { chatKey: string; conversationId: string; topicId: string; revision: string } | undefined {
+    const row = this.sqlite.get<{ conversation_id: string; topic_id: string; revision: string }>(
+      "SELECT conversation_id, topic_id, revision FROM conversation_bindings WHERE chat_key = ?", [chatKey]);
+    if (!row) return undefined;
+    if (!row.conversation_id || !row.topic_id || typeof row.revision !== "string" || !row.revision || row.revision !== row.revision.trim()) {
+      throw new ConversationError("binding_corrupt", "Conversation binding is incomplete");
+    }
+    return { chatKey, conversationId: row.conversation_id, topicId: row.topic_id, revision: row.revision };
+  }
+
+  setConversationBinding(binding: { chatKey: string; conversationId: string; topicId: string }): void {
+    this.sqlite.run("INSERT INTO conversation_bindings (chat_key, conversation_id, topic_id, revision) VALUES (?, ?, ?, ?) ON CONFLICT(chat_key) DO UPDATE SET conversation_id = excluded.conversation_id, topic_id = excluded.topic_id, revision = excluded.revision",
+      [binding.chatKey, binding.conversationId, binding.topicId, randomUUID()]);
+  }
+
+  removeConversationBinding(chatKey: string): void {
+    this.sqlite.run("DELETE FROM conversation_bindings WHERE chat_key = ?", [chatKey]);
   }
 
   getPublicHandoff(sourceTurnId: string, invocationId: string, args: GroupSendInput): PublicHandoffReceipt | undefined {
@@ -1253,6 +1492,7 @@ export class SqliteConversationStore implements ConversationStore {
 
   hasDurableBotWork(botId: string): boolean {
     const conversationId = createDirectConversationId(botId);
+    if (this.sqlite.get("SELECT 1 AS ok FROM conversation_bindings WHERE conversation_id = ? LIMIT 1", [conversationId])) return true;
     if (this.sqlite.get("SELECT 1 AS ok FROM member_turns WHERE bot_id = ? LIMIT 1", [botId])) {
       return true;
     }
@@ -1287,6 +1527,7 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   hasDurableGroupWork(conversationId: string): boolean {
+    if (this.sqlite.get("SELECT 1 AS ok FROM conversation_bindings WHERE conversation_id = ? LIMIT 1", [conversationId])) return true;
     if (this.sqlite.get("SELECT 1 AS ok FROM runs WHERE conversation_id = ? LIMIT 1", [conversationId])) {
       return true;
     }
@@ -2330,6 +2571,7 @@ export class SqliteConversationStore implements ConversationStore {
 
   deleteTopicRows(conversationId: string, topicId: string): void {
     this.sqlite.transaction(() => {
+      this.sqlite.run("DELETE FROM conversation_bindings WHERE conversation_id = ? AND topic_id = ?", [conversationId, topicId]);
       const owned = this.sqlite.get(
         `SELECT 1 AS ok FROM topic_seq WHERE conversation_id = ? AND topic_id = ?
          UNION ALL
@@ -2380,6 +2622,7 @@ export class SqliteConversationStore implements ConversationStore {
 
   deleteConversationRows(conversationId: string): void {
     this.sqlite.transaction(() => {
+      this.sqlite.run("DELETE FROM conversation_bindings WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run(
         "DELETE FROM pending_dispatches WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)",
         [conversationId],
