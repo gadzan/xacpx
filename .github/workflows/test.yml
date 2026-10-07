@@ -106,11 +106,14 @@ jobs:
       # Exercise the actual pinned native SDK against an adversarial loopback
       # provider. No model credentials; no package hooks or root lockfile edits.
       - name: Install pinned read-only enforcement fixture
-        run: npm install --prefix "$RUNNER_TEMP/conversation-policy-adapter" --registry=https://registry.npmjs.org --ignore-scripts --no-audit --no-fund --package-lock=false @agentclientprotocol/claude-agent-acp@0.78.0
+        run: |
+          npm install --prefix "$RUNNER_TEMP/conversation-policy-adapter" --registry=https://registry.npmjs.org --ignore-scripts --no-audit --no-fund --package-lock=false @agentclientprotocol/claude-agent-acp@0.78.0
+          bun build ./src/adapters/acp-read-only-guard-main.ts --outfile "$RUNNER_TEMP/conversation-policy-adapter/guard.js" --target node
 
       - name: Native read-only capability boundary
         env:
           XACPX_CLAUDE_READ_ONLY_TEST_ROOT: ${{ runner.temp }}/conversation-policy-adapter
+          XACPX_READ_ONLY_TEST_GUARD_ENTRY: ${{ runner.temp }}/conversation-policy-adapter/guard.js
         run: bun test tests/compat/conversation-read-only.test.ts
 
       # Build ALL workspace packages, not just the root. Each package's own

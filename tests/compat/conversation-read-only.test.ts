@@ -62,7 +62,7 @@ test.skipIf(!vendorRoot)("pinned Claude native SDK cannot Write, Bash or MCP thr
   // Test-only entry override lets the mutation check exercise a built guard
   // with its exclusive tool-set setting removed. Production has no override.
   const argv = process.env.XACPX_READ_ONLY_TEST_GUARD_ENTRY
-    ? [process.execPath, process.env.XACPX_READ_ONLY_TEST_GUARD_ENTRY, "--", process.execPath, join(vendor, "dist", "index.js")]
+    ? ["node", process.env.XACPX_READ_ONLY_TEST_GUARD_ENTRY, "--", "node", join(vendor, "dist", "index.js")]
     : wrapReadOnlyAgentArgv([process.execPath, join(vendor, "dist", "index.js")]);
   const env = { ...process.env, ANTHROPIC_API_KEY: "xacpx-fake-test-key", ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`,
     CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1" };
