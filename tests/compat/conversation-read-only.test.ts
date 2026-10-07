@@ -93,6 +93,7 @@ test.skipIf(!vendorRoot)("pinned Claude native SDK cannot Write, Bash or MCP thr
     expect(result.stopReason).toBe("end_turn"); expect(requests.length).toBeGreaterThanOrEqual(5);
     const offered = requests[0]!.tools.map((tool: any) => tool.name);
     expect(offered).toContain("Read");
+    expect(offered.every((name: string) => ["Read", "Glob", "Grep"].includes(name))).toBe(true);
     for (const name of ["Write", "Edit", "Bash", "Agent", "Skill", "mcp__evil__write"]) expect(offered).not.toContain(name);
     expect(await readFile(canary, "utf8")).toBe("unchanged");
     expect(await readFile(hookCanary, "utf8").catch(() => undefined)).toBeUndefined();
@@ -111,6 +112,7 @@ test.skipIf(!vendorRoot)("pinned Claude native SDK cannot Write, Bash or MCP thr
     for (const body of requests.slice(callsBeforeDenied)) {
       const names = body.tools.map((tool: any) => tool.name);
       resumedNames.push(...names);
+      expect(names.every((name: string) => ["Read", "Glob", "Grep"].includes(name))).toBe(true);
       expect(names).not.toContain("Edit"); expect(names).not.toContain("Bash");
     }
     expect(resumedNames).toContain("Read");
