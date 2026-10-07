@@ -25,6 +25,7 @@ test("real Weixin adapter delivers Conversation after /use B without entering he
   const sent: Array<{ to: string; text: string; context: string }> = [];
   const pending: unknown[] = [];
   let wake = () => {};
+  let cursor = 0;
   const emit = (id: number, text: string, attachments: unknown[] = []) => {
     pending.push({ message_id: id, from_user_id: "human", to_user_id: "bot", context_token: `ctx-${id}`,
       create_time_ms: Date.now(), item_list: [{ type: 1, text_item: { text } }, ...attachments] }); wake();
@@ -35,7 +36,7 @@ test("real Weixin adapter delivers Conversation after /use B without entering he
         const finish = () => { input.abortSignal?.removeEventListener("abort", finish); resolve(); };
         wake = finish; input.abortSignal?.addEventListener("abort", finish, { once: true });
       });
-      return { ret: 0, msgs: pending.splice(0), get_updates_buf: "" };
+      return { ret: 0, msgs: pending.splice(0), get_updates_buf: `cursor-${++cursor}` };
     },
     sendMessage: async (input: any) => { sent.push({ to: input.body.msg.to_user_id,
       text: input.body.msg.item_list?.[0]?.text_item?.text ?? "", context: input.body.msg.context_token }); return {}; },

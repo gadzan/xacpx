@@ -30,7 +30,7 @@ async function runOneInbound(textBody: string): Promise<{
         return {
           ret: 0,
           errcode: 0,
-          get_updates_buf: "",
+          get_updates_buf: "cursor-one",
           msgs: [
             {
               from_user_id: "test-user",
@@ -370,7 +370,7 @@ async function runDispatchBinding(
         return {
           ret: 0,
           errcode: 0,
-          get_updates_buf: "",
+          get_updates_buf: "cursor-one",
           msgs: [
             {
               from_user_id: "u1",

@@ -397,8 +397,17 @@ but persists cursor checkpoints in response order only after each batch's bound
 messages have committed acceptance or reached a deterministic ingress rejection.
 Prompt checkpointing does not wait for Run settlement; Stop additionally waits
 for its cancellation writes. Neither barrier blocks polling for incoming Stop.
+Ordinary Session prompts and commands wait until a cursor covering their poll
+batch has been persisted, before quota hooks, typing/media work, active-turn
+tracking or Agent execution. Conversation preparation/Stop remains concurrent
+with this wait. Responses without a new cursor retain ordinary input until a
+later checkpoint covers it. Channel abort and credential epoch checks fence
+deferred dispatch, so replayed deferred events have not entered the ordinary
+pipeline. This preserves
+the existing ordinary save-before-dispatch semantics, not a durable Session inbox.
 Unexpected preparation/checkpoint errors hold back durable advancement until
-restart; restart replays from the last safe checkpoint through platform receipts.
+restart and also hold ordinary dispatch; restart replays from the last safe
+checkpoint through platform receipts.
 Selection captures the exact Conversation/Topic binding, its durable opaque revision and receipt existence;
 acceptance first replays an existing receipt, otherwise requires the same binding
 revision under a mutex keyed by external chatKey. Every bind writes a new revision,

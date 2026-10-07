@@ -1,5 +1,5 @@
 import { expect, mock, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ControlService, conversationKernel } from "../../../src/control/control-service";
@@ -27,6 +27,7 @@ async function fixture() {
   let nextBuf = ""; const pollInputs: string[] = []; let clears = 0;
   const sent: Array<{ context: string; text: string }> = [];
   const ordinary: ChatRequest[] = []; const errors: string[] = [];
+  const configCalls: string[] = []; const inbound: string[] = [];
   mock.module("../../../src/weixin/api/api.ts", () => ({
     getUpdates: async (input: { abortSignal?: AbortSignal; get_updates_buf: string }) => {
       polls++;
@@ -43,7 +44,7 @@ async function fixture() {
     sendTyping: async () => ({}),
   }));
   mock.module("../../../src/weixin/api/config-cache.ts", () => ({
-    WeixinConfigManager: class { async getForUser() { return { typingTicket: "" }; } },
+    WeixinConfigManager: class { async getForUser(user: string) { configCalls.push(user); return { typingTicket: "" }; } },
   }));
   const { WeixinChannel } = await import("../../../src/channels/weixin-channel");
   const { buildWeixinConversationChatKey } = await import("../../../src/weixin/messaging/handle-weixin-message-turn");
@@ -76,7 +77,7 @@ async function fixture() {
   const chatKey = "weixin:default:human"; await control.bindConversation({ chatKey, conversationId: group.id, topicId: topic.id });
   const channel = new WeixinChannel(); const registry = new MessageChannelRegistry([channel]); const daemon = new AbortController();
   const logger = { info: async () => {}, warn: async () => {}, error: async () => {}, debug: async () => {} };
-  const quota = { onInbound() {}, reserveMidSegment: () => true, reserveFinal: () => true, finalRemaining: () => 4,
+  const quota = { onInbound(user: string) { inbound.push(user); }, reserveMidSegment: () => true, reserveFinal: () => true, finalRemaining: () => 4,
     hasPendingFinal: () => false, drainPendingFinalUpToBudget: () => [], prependPendingFinal() {}, enqueuePendingFinal() {}, clearPendingFinal() {} };
   let startup: Promise<void> | undefined;
   const start = async () => {
@@ -92,7 +93,7 @@ async function fixture() {
     await startup;
   };
   const emit = (id: number, text: string, extra: Partial<WeixinMessage> = {}, buf?: string) => {
-    if (buf !== undefined) nextBuf = buf;
+    nextBuf = buf ?? `cursor-${id}`;
     pending.push({ message_id: id, from_user_id: "human", to_user_id: "bot", context_token: `ctx-${id}`,
       create_time_ms: Date.now(), item_list: [{ type: 1, text_item: { text } }], ...extra }); wake();
   };
@@ -103,7 +104,8 @@ async function fixture() {
     mock.restore();
   };
   return { runtime, control, group, topic, chatKey, daemon, pending, ordinary, errors, sent, start, stop, emit, runs, close, buildWeixinConversationChatKey,
-    pollInputs, cursor: () => loadGetUpdatesBuf(getSyncBufFilePath("default")), clears: () => clears };
+    pollInputs, configCalls, inbound, syncPath: () => getSyncBufFilePath("default"),
+    cursor: () => loadGetUpdatesBuf(getSyncBufFilePath("default")), clears: () => clears };
 }
 
 test("Weixin durable cursor waits for bound preparation in batch order while polling continues and settlement stays pending", async () => {
@@ -115,12 +117,81 @@ test("Weixin durable cursor waits for bound preparation in batch order while pol
     expect(f.cursor()).toBeUndefined(); expect(f.runs()).toHaveLength(0);
     await waitFor(() => f.pollInputs.includes("B"));
     f.emit(2, "ordinary later batch", { from_user_id: "other" }, "C");
-    await waitFor(() => f.ordinary.length === 1); expect(f.cursor()).toBeUndefined();
-    resume.resolve(); await waitFor(() => f.cursor() === "C");
+    await waitFor(() => f.pollInputs.includes("C")); expect(f.cursor()).toBeUndefined();
+    expect(f.ordinary).toHaveLength(0); expect(f.configCalls).not.toContain("other"); expect(f.inbound).not.toContain("other");
+    resume.resolve(); await waitFor(() => f.cursor() === "C" && f.ordinary.length === 1);
     expect(f.runs()).toHaveLength(1); const run = f.runs()[0]!;
     expect(f.runtime.store.getAcceptedRequest(f.group.id, f.topic.id, run.requestId)?.dispatch?.humanIngress?.senderId).toBe("human");
     expect(run.state).toBe("queued"); expect(f.sent.some((entry) => entry.context === "ctx-1")).toBe(false);
   } finally { resume.resolve(); await f.close(); }
+});
+
+for (const sameBatch of [false, true]) {
+  test(`Weixin restart replays deferred ordinary input exactly once (${sameBatch ? "same" : "later"} batch)`, async () => {
+    const f = await fixture(); const entered = Promise.withResolvers<void>(); const resume = Promise.withResolvers<void>();
+    const accept = f.runtime.bindings.accept.bind(f.runtime.bindings);
+    f.runtime.bindings.accept = async (...args) => { entered.resolve(); await resume.promise; return accept(...args); };
+    try {
+      await f.start(); f.emit(1, "work", {}, "B");
+      if (!sameBatch) await entered.promise;
+      f.emit(2, "ordinary work", { from_user_id: "other" }, "C");
+      f.emit(3, "/help", { from_user_id: "other" }, "D");
+      f.emit(4, "/clear", { from_user_id: "other" }, "E");
+      await entered.promise; await waitFor(() => f.pollInputs.includes("E"));
+      expect(f.cursor()).toBeUndefined();
+      await f.stop("disabled"); resume.resolve();
+      await waitFor(() => f.errors.includes("external_request_aborted"));
+      f.runtime.bindings.accept = accept; const before = f.pollInputs.length;
+      await f.start(); expect(f.pollInputs[before]).toBe("");
+      f.emit(1, "work", {}, "B"); f.emit(2, "ordinary work", { from_user_id: "other" }, "C");
+      f.emit(3, "/help", { from_user_id: "other" }, "D"); f.emit(4, "/clear", { from_user_id: "other" }, "E");
+      await waitFor(() => f.cursor() === "E" && f.clears() > 0 && f.ordinary.length >= 2);
+      expect(f.ordinary.map((input) => input.text)).toEqual(["ordinary work", "/help"]);
+      expect(f.clears()).toBe(1); expect(f.runs()).toHaveLength(1);
+    } finally { resume.resolve(); await f.close(); }
+  });
+}
+
+test("Weixin ordinary input without a cursor waits for a later covering checkpoint", async () => {
+  const f = await fixture();
+  try {
+    await f.start(); f.emit(1, "ordinary without cursor", { from_user_id: "other" }, "");
+    await waitFor(() => f.pollInputs.length >= 2); expect(f.ordinary).toHaveLength(0); expect(f.configCalls).toHaveLength(0);
+    f.emit(2, "bound work", {}, "B"); await waitFor(() => f.cursor() === "B" && f.ordinary.length === 1);
+    expect(f.runs()).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
+test("Weixin an earlier checkpoint cannot release ordinary input from a later unprepared batch", async () => {
+  const f = await fixture(); const entered = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const resume = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+  const accept = f.runtime.bindings.accept.bind(f.runtime.bindings);
+  f.runtime.bindings.accept = async (...args) => {
+    const index = args[1].metadata?.channelMessageId === "1" ? 0 : 1;
+    entered[index]!.resolve(); await resume[index]!.promise; return accept(...args);
+  };
+  try {
+    await f.start(); f.emit(1, "earlier bound", {}, "B"); await entered[0]!.promise;
+    f.emit(2, "ordinary in later batch", { from_user_id: "other" }, "C"); f.emit(3, "later bound", {}, "D");
+    await entered[1]!.promise; resume[0]!.resolve(); await waitFor(() => f.cursor() === "B");
+    expect(f.ordinary).toHaveLength(0); expect(f.configCalls).not.toContain("other");
+    resume[1]!.resolve(); await waitFor(() => f.cursor() === "D" && f.ordinary.length === 1);
+    expect(f.runs()).toHaveLength(2);
+  } finally { for (const pending of resume) pending.resolve(); await f.close(); }
+});
+
+test("Weixin failed checkpoint never dispatches ordinary work, even after later bound admission", async () => {
+  const f = await fixture();
+  try {
+    mkdirSync(f.syncPath());
+    await f.start(); f.emit(1, "ordinary", { from_user_id: "other" }, "B");
+    await waitFor(() => f.pollInputs.includes("B"));
+    f.emit(2, "bound work", {}, "C"); await waitFor(() => f.runs().length === 1 && f.pollInputs.includes("C"));
+    expect(f.ordinary).toHaveLength(0); expect(f.configCalls).not.toContain("other"); expect(f.inbound).not.toContain("other");
+    await f.stop("disabled"); rmdirSync(f.syncPath()); await f.start();
+    f.emit(1, "ordinary", { from_user_id: "other" }, "B"); f.emit(2, "bound work", {}, "C");
+    await waitFor(() => f.cursor() === "C" && f.ordinary.length === 1); expect(f.runs()).toHaveLength(1);
+  } finally { await f.close(); }
 });
 
 test("Weixin restart before preparation resumes the old durable cursor and replays the unaccepted message", async () => {
@@ -147,10 +218,12 @@ test("Weixin polling admits Stop while a later acceptance holds a real Bot gate,
     const run = f.runs()[0]!;
     gate = f.runtime.bots.runLifecycle(f.group.botIds[0]!, async () => { held.resolve(); await release.promise; }); await held.promise;
     f.emit(2, "pending", {}, "B"); await waitFor(() => pending);
-    f.emit(3, "/stop", {}, "C");
+    f.emit(4, "ordinary waiting", { from_user_id: "other" }, "C"); await waitFor(() => f.pollInputs.includes("C"));
+    f.emit(3, "/stop", {}, "D");
     await waitFor(() => f.runtime.store.getRun(run.id)?.state === "cancelled" && f.sent.some((entry) => entry.context === "ctx-3"));
     expect(f.cursor()).toBe("A"); expect(f.runtime.store.getRun(run.id)?.completionReason).toBe("human-cancelled");
-    release.resolve(); await gate; await waitFor(() => f.cursor() === "C"); expect(f.runs()).toHaveLength(1);
+    expect(f.ordinary).toHaveLength(0);
+    release.resolve(); await gate; await waitFor(() => f.cursor() === "D" && f.ordinary.length === 1); expect(f.runs()).toHaveLength(1);
   } finally { release.resolve(); await gate; await f.close(); }
 });
 
@@ -174,7 +247,8 @@ test("Weixin unknown preparation failure holds later checkpoints, while determin
     f.runtime.bindings.accept = async () => { failed = true; throw new Error("injected unknown acceptance error"); };
     await f.start(); f.emit(1, "work", {}, "B"); await waitFor(() => failed);
     f.runtime.bindings.accept = accept; f.emit(2, "later work", {}, "C"); await waitFor(() => f.runs().length === 1);
-    await Bun.sleep(10); expect(f.cursor()).toBeUndefined();
+    f.emit(4, "ordinary after unknown", { from_user_id: "other" }, "E"); await waitFor(() => f.pollInputs.includes("E"));
+    expect(f.cursor()).toBeUndefined(); expect(f.ordinary).toHaveLength(0); expect(f.configCalls).not.toContain("other");
     await f.stop("disabled"); await f.start();
     f.emit(3, "media", { item_list: [{ type: 2 }] }, "D");
     await waitFor(() => f.cursor() === "D"); expect(f.errors).toContain("external_media_unsupported");
