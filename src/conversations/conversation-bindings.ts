@@ -18,7 +18,7 @@ export interface ConversationBinding {
 
 export interface ConversationRouteSnapshot {
   chatKey: string;
-  binding?: Required<ConversationBinding>;
+  binding?: Required<ConversationBinding> & { revision: string };
 }
 
 function nonempty(value: unknown): value is string {
@@ -102,6 +102,7 @@ export class ConversationBindingService {
 
   acceptStop(channelId: string, request: ChatRequest): ExternalStopReceipt {
     const metadata = request.metadata;
+    this.assertSupportedIngress(channelId, request);
     const key = this.sourceKey(channelId, request);
     if (metadata?.origin !== "human" || metadata.authenticatedHuman !== true || !nonempty(metadata.senderId) || !key) {
       throw new ConversationError("external_human_required", "Conversation Stop requires authenticated channel identity");
@@ -149,6 +150,7 @@ export class ConversationBindingService {
     return this.withRoute(request.conversationId, async () => {
       const binding = this.store.getConversationBinding(request.conversationId);
       const metadata = request.metadata;
+      this.assertSupportedIngress(channelId, request);
       if (selected && selected.chatKey !== request.conversationId) {
         throw new ConversationError("binding_changed", "selected external route changed");
       }
@@ -174,7 +176,8 @@ export class ConversationBindingService {
       const replay = this.store.getExternalRequest(externalRequest);
       if (replay) return replay;
       if (selected && (!selected.binding || !binding
-        || selected.binding.conversationId !== binding.conversationId || selected.binding.topicId !== binding.topicId)) {
+        || selected.binding.conversationId !== binding.conversationId || selected.binding.topicId !== binding.topicId
+        || selected.binding.revision !== binding.revision)) {
         throw new ConversationError("binding_changed", "selected Conversation binding was replaced or removed");
       }
       if (!binding) return undefined;
@@ -229,5 +232,11 @@ export class ConversationBindingService {
         await cancellation;
       }
     });
+  }
+
+  private assertSupportedIngress(channelId: string, request: ChatRequest): void {
+    if (channelId === "weixin" && (request.metadata?.chatType === "group" || request.metadata?.groupId)) {
+      throw new ConversationError("external_group_unsupported", "Weixin Group Conversation delivery is not supported");
+    }
   }
 }

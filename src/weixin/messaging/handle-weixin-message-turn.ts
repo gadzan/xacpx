@@ -247,6 +247,11 @@ export function buildWeixinChatKey(accountId: string, userId: string): string {
   return `weixin:${accountId}:${userId}`;
 }
 
+/** Conversation selection must not interpret a group sender as a DM. */
+export function buildWeixinConversationChatKey(accountId: string, userId: string, groupId?: string): string {
+  return groupId ? `weixin:${accountId}:group:${encodeURIComponent(groupId)}` : buildWeixinChatKey(accountId, userId);
+}
+
 function defaultWeixinMime(kind: "image" | "file" | "audio" | "video"): string {
   if (kind === "image") return "image/*";
   if (kind === "video") return "video/mp4";
@@ -308,7 +313,9 @@ export async function handleWeixinMessageTurn(
   // rather than waiting for this turn to drain off the lane. The deps field
   // remains for direct unit testability of this function.
 
-  const chatKey = buildWeixinChatKey(deps.accountId, fromUserId);
+  const chatKey = deps.conversationBound
+    ? buildWeixinConversationChatKey(deps.accountId, fromUserId, full.group_id)
+    : buildWeixinChatKey(deps.accountId, fromUserId);
   const initialMediaCount = extractWeixinMediaDescriptors(full.item_list).length;
   const isSlashCommand = isSlashCommandText(textBody);
   const tracer = deps.perfTracer ?? createNoopPerfTracer();
@@ -362,13 +369,13 @@ export async function handleWeixinMessageTurn(
 
   if (deps.conversationBound) {
     const preparation = await deps.agent.prepareConversation?.({
-      accountId: deps.accountId, conversationId: chatKey, text: bodyFromItemList(full.item_list),
+      accountId: deps.accountId, conversationId: chatKey, text: bodyFromItemList(full.item_list, true),
       ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}),
       ...(deps.humanStopSignal ? { humanStopSignal: deps.humanStopSignal } : {}),
       metadata: { channel: "weixin", channelMessageId: full.message_id != null ? String(full.message_id) : undefined,
         senderId: full.from_user_id, origin: "human", authenticatedHuman: Boolean(full.from_user_id),
         hadInboundMedia: full.item_list?.some((item) => item.type !== MessageItemType.TEXT) ?? false,
-        chatType: full.group_id ? "group" : "direct" },
+        chatType: full.group_id ? "group" : "direct", ...(full.group_id ? { groupId: full.group_id } : {}) },
     });
     if (preparation?.stopPendingAcceptance) deps.onConversationStop?.();
   }
@@ -444,14 +451,14 @@ export async function handleWeixinMessageTurn(
     }
   };
 
-  const requestText = appendAttachmentNotes(bodyFromItemList(full.item_list), attachmentNotes);
+  const requestText = appendAttachmentNotes(bodyFromItemList(full.item_list, deps.conversationBound), attachmentNotes);
   // Text-only degradation: WeChat can't render the subagent card, so a
   // delegation surfaces as one honest line via the existing reply path.
   // Ordinary tool calls stay hidden; the tracker dedups per toolCallId.
   const subagentNotices = new SubagentNoticeTracker();
   const request: Omit<ChatRequest, "reply"> = {
     accountId: deps.accountId,
-    conversationId: buildWeixinChatKey(deps.accountId, full.from_user_id ?? ""),
+    conversationId: chatKey,
     text: requestText,
     ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}),
     ...(deps.humanStopSignal ? { humanStopSignal: deps.humanStopSignal } : {}),

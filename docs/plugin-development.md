@@ -430,6 +430,10 @@ its channel delivery must not hold later input in an in-memory channel lane.
 selected Agent's response through the channel's normal reply mechanism. Scheduled
 turns retain the ordinary Agent. The selector only chooses the path; binding and
 authority are revalidated when the selected Agent accepts the complete request.
+The core freezes a durable binding revision as well as the target tuple: removing
+and restoring the same binding invalidates an unaccepted selection. Cached owner
+enrichment must not delay bound preparation; the bundled Feishu adapter uses
+unexpired cached facts and refreshes them after acceptance for later turns.
 
 > **Important**: Your channel must hold a reference to `agent` / `quota` / `logger` until `stop()` / `logout()` or `abortSignal` fires. They are not passed again after `start()` returns.
 

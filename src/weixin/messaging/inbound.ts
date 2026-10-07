@@ -279,7 +279,7 @@ export function isMediaItem(item: MessageItem): boolean {
   );
 }
 
-export function bodyFromItemList(itemList?: MessageItem[]): string {
+export function bodyFromItemList(itemList?: MessageItem[], canonicalQuotes = false): string {
   if (!itemList?.length) return "";
   for (const item of itemList) {
     if (item.type === MessageItemType.TEXT && item.text_item?.text != null) {
@@ -292,11 +292,12 @@ export function bodyFromItemList(itemList?: MessageItem[]): string {
       const parts: string[] = [];
       if (ref.title) parts.push(ref.title);
       if (ref.message_item) {
-        const refBody = bodyFromItemList([ref.message_item]);
+        const refBody = bodyFromItemList([ref.message_item], canonicalQuotes);
         if (refBody) parts.push(refBody);
       }
       if (!parts.length) return text;
-      return `${t().misc.quotedMessagePrefix(parts.join(" | "))}\n${text}`;
+      const quote = parts.join(" | ");
+      return `${canonicalQuotes ? `[Quote: ${quote}]` : t().misc.quotedMessagePrefix(quote)}\n${text}`;
     }
     // 语音转文字：如果语音消息有 text 字段，直接使用文字内容
     if (item.type === MessageItemType.VOICE && item.voice_item?.text) {

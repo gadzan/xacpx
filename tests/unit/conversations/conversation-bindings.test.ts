@@ -19,6 +19,8 @@ import { createEmptyState, type AppState } from "../../../src/state/types";
 import type { Agent, ChatRequest } from "../../../src/weixin/agent/interface";
 import { DiscordChannel } from "../../../packages/channel-discord/src/channel";
 import { FeishuChannel } from "../../../packages/channel-feishu/src/channel";
+import { YuanbaoChannel } from "../../../packages/channel-yuanbao/src/channel";
+import type { YuanbaoGatewayStartInput } from "../../../packages/channel-yuanbao/src/types";
 import { MSG, parseControlPayload } from "@ganglion/xacpx-relay-protocol";
 
 async function compose(options: { state?: AppState; path?: string; agent?: Agent; router?: unknown } = {}) {
@@ -67,7 +69,7 @@ async function waitFor(condition: () => boolean) {
 }
 
 type MediaScenario = "available" | "failed" | "over-limit" | "missing-key";
-function externalAdapter(platform: "discord" | "feishu", sent: string[]) {
+function externalAdapter(platform: "discord" | "feishu", sent: string[], options?: { feishuOwnerLookup: () => Promise<string | undefined> }) {
   let emit: (id: string, text: string, media?: MediaScenario) => Promise<void> | void = () => {};
   let ready = false;
   const channel = platform === "discord"
@@ -85,14 +87,15 @@ function externalAdapter(platform: "discord" | "feishu", sent: string[]) {
         editMessage: async () => {}, deleteMessage: async () => {}, destroy: async () => {}, addReaction: async () => {},
       }) as never })
     : new FeishuChannel({ appId: "app", appSecret: "secret", domain: "feishu", dmPolicy: "open",
-      requireMention: false, textMessageFormat: "text", replyMode: "static" }, { createClient: () => ({
+      requireMention: false, textMessageFormat: "text", replyMode: "static", trustGroupOwner: Boolean(options) }, { createClient: () => ({
+        ...(options ? { getChatOwner: options.feishuOwnerLookup } : {}),
         sdk: { im: { message: {
           reply: async (body: unknown) => { sent.push(JSON.stringify(body)); return { data: { message_id: "reply", chat_id: "chat" } }; },
           create: async (body: unknown) => { sent.push(JSON.stringify(body)); return { data: { message_id: "reply", chat_id: "chat" } }; },
         } } }, probeBot: async () => ({ botOpenId: "bot" }), stop: () => {},
         startWS: async (input: any) => { emit = (id, text, media) => input.handlers["im.message.receive_v1"]({
           sender: { sender_id: { open_id: "human" }, sender_type: "user" },
-          message: { message_id: id, chat_id: "chat", chat_type: "p2p", message_type: media ? "post" : "text",
+          message: { message_id: id, chat_id: "chat", chat_type: options ? "group" : "p2p", message_type: media ? "post" : "text",
             content: JSON.stringify(media ? { content: [[{ tag: "text", text },
               ...Array.from({ length: media === "over-limit" ? 50 : 1 }, () => ({ tag: "img",
                 ...(media === "missing-key" ? {} : { image_key: media === "failed" ? "unavailable" : "image" }) }))]] } : { text }),
@@ -509,6 +512,7 @@ test("a held acceptance serializes only its route; other channels and binding ma
       for (const channelId of ["discord", "feishu", "weixin"]) {
         const input = request("ordinary", "m2", `${channelId}:default:other`);
         input.metadata!.channel = channelId;
+        if (channelId === "weixin") input.metadata!.chatType = "direct";
         expect(await current.runtime.bindings.accept(channelId, input)).toBeUndefined();
       }
       await current.control.bindConversation({ chatKey: "feishu:default:other", conversationId: createDirectConversationId(otherBot.id) });
@@ -548,6 +552,52 @@ test("early route selection keeps replay/tombstones out of Session and fails clo
   } finally { await current.close(); }
 });
 
+test("binding revision migration persists across reopen and corrupt revision fails closed", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "xacpx-binding-revision-")), "conversations.sqlite");
+  let store = await SqliteConversationStore.open(path);
+  const binding = { chatKey: request().conversationId, conversationId: "c", topicId: "t" };
+  store.setConversationBinding(binding); store.close();
+  const sql = await createSqlDriver(path);
+  sql.exec("ALTER TABLE conversation_bindings DROP COLUMN revision"); sql.close();
+  store = await SqliteConversationStore.open(path);
+  try {
+    const revision = store.getConversationBinding(binding.chatKey)!.revision;
+    expect(revision).toBeTruthy(); expect(store.listConversationBindings()).toEqual([binding]);
+    store.close(); store = await SqliteConversationStore.open(path);
+    expect(store.getConversationBinding(binding.chatKey)!.revision).toBe(revision);
+    store.setConversationBinding(binding); expect(store.getConversationBinding(binding.chatKey)!.revision).not.toBe(revision);
+    const writer = await createSqlDriver(path);
+    writer.run("UPDATE conversation_bindings SET revision = NULL WHERE chat_key = ?", [binding.chatKey]); writer.close();
+    expect(() => store.getConversationBinding(binding.chatKey)).toThrow("incomplete");
+    store.close(); store = await SqliteConversationStore.open(path);
+    expect(() => store.getConversationBinding(binding.chatKey)).toThrow("incomplete");
+  } finally { store.close(); }
+});
+
+for (const change of ["unbind-rebind", "A-B-A", "same-target"] as const) {
+  test(`binding revision rejects ${change} ABA before receipt but preserves committed replay`, async () => {
+    const current = await compose();
+    try {
+      const { group: g, topic } = await group(current);
+      const input = request(); const selected = current.route(input)!;
+      if (change === "unbind-rebind") await current.control.unbindConversation(input.conversationId);
+      if (change === "A-B-A") {
+        const other = await current.control.createGroupTopic(g.id, "Other", { workspace: "backend", isolation: "shared-single-writer" });
+        await current.control.bindConversation({ chatKey: input.conversationId, conversationId: g.id, topicId: other.id });
+      }
+      await current.control.bindConversation({ chatKey: input.conversationId, conversationId: g.id, topicId: topic.id });
+      await expect(selected.prepareConversation!(input)).rejects.toMatchObject({ code: "binding_changed" });
+      expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(0);
+      const accepted = current.route(input)!; await accepted.prepareConversation!(input);
+      await current.runtime.dispatcher.kick(); expect((await accepted.chat(input)).text).toContain("provider result");
+      await current.control.unbindConversation(input.conversationId);
+      await current.control.bindConversation({ chatKey: input.conversationId, conversationId: g.id, topicId: topic.id });
+      expect((await current.route(input)!.chat(input)).text).toContain("provider result");
+      expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(1); expect(current.delegated()).toBe(0);
+    } finally { await current.close(); }
+  });
+}
+
 test("selection freezes Conversation and Topic; replacements fail closed while committed receipts still replay", async () => {
   const current = await compose();
   try {
@@ -570,6 +620,86 @@ test("selection freezes Conversation and Topic; replacements fail closed while c
     expect(current.runtime.store.listRuns(g.id)).toHaveLength(0);
   } finally { await current.close(); }
 });
+
+test("actual Feishu trustGroupOwner blocked RPC cannot delay acceptance or Stop; enrichment applies only to later turns", async () => {
+  const current = await compose();
+  const sent: string[] = []; let finishLookup = (_owner: string) => {}; let lookups = 0;
+  const adapter = externalAdapter("feishu", sent, { feishuOwnerLookup: () => {
+    lookups++; return new Promise<string>((resolve) => { finishLookup = resolve; });
+  } });
+  const registry = new MessageChannelRegistry([adapter.channel]); let startup: Promise<void> | undefined;
+  try {
+    const { group: g, topic } = await group(current); const chatKey = "feishu:default:chat";
+    await current.control.bindConversation({ chatKey, conversationId: g.id, topicId: topic.id });
+    startup = registry.startAll({ agent: current.normalAgent, logger, quota, abortSignal: current.daemon.signal } as never,
+      (id, agent) => createConversationChannelRouter(id, agent, current.runtime, current.events, current.daemon.signal));
+    startup.catch(() => {}); await waitFor(adapter.ready);
+    const response = Promise.resolve(adapter.emit("cold-owner", "work")).catch(() => {});
+    await waitFor(() => lookups === 1 && current.runtime.store.listRuns(g.id, topic.id).length === 1);
+    const run = current.runtime.store.listRuns(g.id, topic.id)[0]!;
+    const original = current.runtime.store.getAcceptedRequest(g.id, topic.id, run.requestId)!;
+    expect(original.dispatch?.humanIngress?.isOwner).toBe(false);
+    await adapter.emit("stop-cold-owner", "/stop"); await response;
+    expect(current.runtime.store.getRun(run.id)).toMatchObject({ state: "cancelled", completionReason: "human-cancelled" });
+    expect(lookups).toBe(1);
+    finishLookup("human"); await waitFor(() => (adapter.channel as any).chatOwnerCache.size === 1);
+    const later = Promise.resolve(adapter.emit("warm-owner", "later work")); later.catch(() => {});
+    await waitFor(() => current.runtime.store.listRuns(g.id, topic.id).length === 2);
+    const next = current.runtime.store.listRuns(g.id, topic.id).find((item) => item.id !== run.id)!;
+    expect(current.runtime.store.getAcceptedRequest(g.id, topic.id, next.requestId)?.dispatch?.humanIngress?.isOwner).toBe(true);
+    expect(original.dispatch?.humanIngress?.isOwner).toBe(false);
+    await current.runtime.dispatcher.kick(); await later; expect(lookups).toBe(1);
+    expect(current.delegated()).toBe(0);
+  } finally { finishLookup("human"); await current.close(); await registry.stopAll(); await startup; }
+});
+
+for (const failure of ["provenance", "selector"] as const) {
+  test(`actual Yuanbao ${failure} rejection prepares before media/history/heartbeat; known commands keep raw text`, async () => {
+    const current = await compose(); let input: YuanbaoGatewayStartInput | undefined;
+    let fetches = 0; let heartbeats = 0; let preparations = 0; let sessionReads = 0;
+    const ordinary: ChatRequest[] = []; const selected: ChatRequest[] = [];
+    const channel = new YuanbaoChannel({ appKey: "key", appSecret: "secret", botId: "bot", requireMention: true,
+      historyLimit: 10, outboundQueueStrategy: "immediate", minChars: 1, maxChars: 1000, idleMs: 0 }, {
+      createGateway: () => ({ start: async (start) => { input = start; }, sendText: async () => {},
+        sendReplyHeartbeat: async () => { heartbeats++; } }),
+      fetchInboundMedia: (async () => { fetches++; throw new Error("bound media must not download"); }) as typeof fetch,
+    });
+    const normal: Agent = { isKnownCommand: (text) => text === "/help", chat: async (request) => { ordinary.push(request); return { text: "Session" }; } };
+    const route = createConversationChannelRouter("yuanbao", normal, current.runtime, current.events, current.daemon.signal);
+    const send = (id: string, text: string, addressed: boolean, media = false) => input!.onMessage({ accountId: "default", chatType: "group",
+      raw: { from_account: "human", group_code: "g1", msg_id: id, msg_body: [
+        ...(addressed ? [{ msg_type: "TIMCustomElem", msg_content: { data: JSON.stringify({ elem_type: 1002, text: "@Bot", user_id: "bot" }) } }] : []),
+        { msg_type: "TIMTextElem", msg_content: { text } },
+        ...(media ? [{ msg_type: "TIMImageElem", msg_content: { image_info_array: [{ type: 1, url: "https://example.invalid/image", size: 1 }] } }] : []),
+      ] } });
+    try {
+      const { group: g, topic } = await group(current); const chatKey = "yuanbao:default:group:g1";
+      await current.control.bindConversation({ chatKey, conversationId: g.id, topicId: topic.id });
+      if (failure === "selector") {
+        const db = await createSqlDriver(current.path); db.run("UPDATE conversation_bindings SET topic_id = '' WHERE chat_key = ?", [chatKey]); db.close();
+      }
+      await channel.start({ agent: normal, logger, quota, abortSignal: current.daemon.signal,
+        sessions: { peekCurrentSessionAlias: () => { sessionReads++; return undefined; } } as never,
+        routeConversation: (request) => {
+          selected.push(request); const agent = route(request);
+          return agent ? { ...agent, prepareConversation: async (full) => { preparations++; return agent.prepareConversation!(full); } } : undefined;
+        } });
+      await send("history", "preserved aside", false);
+      expect(selected).toHaveLength(0);
+      await expect(send("blocked", "work", true, true)).rejects.toMatchObject({
+        code: failure === "selector" ? "binding_corrupt" : "external_human_required",
+      });
+      expect(preparations).toBe(1); expect(fetches).toBe(0); expect(heartbeats).toBe(0); expect(sessionReads).toBe(0);
+      expect(ordinary).toHaveLength(0); expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(0);
+      expect(selected[0]).toMatchObject({ text: "work", metadata: { channelMessageId: "blocked", senderId: "human", hadInboundMedia: true } });
+      await send("command", "/help", false); expect(ordinary[0]?.text).toBe("/help");
+      await current.control.unbindConversation(chatKey);
+      await send("normal", "later work", true);
+      expect(ordinary).toHaveLength(2); expect(ordinary[1]?.text).toContain("preserved aside");
+      expect(ordinary[1]?.text).toContain("later work"); expect(fetches).toBe(0);
+    } finally { channel.logout(); await current.close(); }
+  });
+}
 
 test("raw attachment presence rejects failed/skipped/retried media without creating a receipt", async () => {
   const current = await compose();

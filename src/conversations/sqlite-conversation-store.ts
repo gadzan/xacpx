@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   createConversationMessageId,
   createConversationRunId,
@@ -192,7 +193,7 @@ interface RoutingDecisionRow {
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS conversation_bindings (
-  chat_key TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, topic_id TEXT NOT NULL
+  chat_key TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, topic_id TEXT NOT NULL, revision TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS external_conversation_requests (
   source_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, run_id TEXT NOT NULL,
@@ -672,6 +673,18 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureDispatchMultiMemberShape();
     this.ensurePublicHandoffSchema();
     this.ensureExternalStopIngress();
+    this.ensureBindingRevision();
+  }
+
+  private ensureBindingRevision(): void {
+    this.sqlite.transaction(() => {
+      const columns = this.sqlite.all<{ name: string }>("PRAGMA table_info(conversation_bindings)");
+      if (columns.some((column) => column.name === "revision")) return;
+      this.sqlite.exec("ALTER TABLE conversation_bindings ADD COLUMN revision TEXT");
+      for (const row of this.sqlite.all<{ chat_key: string }>("SELECT chat_key FROM conversation_bindings")) {
+        this.sqlite.run("UPDATE conversation_bindings SET revision = ? WHERE chat_key = ?", [randomUUID(), row.chat_key]);
+      }
+    });
   }
 
   private ensureExternalStopIngress(): void {
@@ -846,17 +859,19 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
-  getConversationBinding(chatKey: string): { chatKey: string; conversationId: string; topicId: string } | undefined {
-    const row = this.sqlite.get<{ conversation_id: string; topic_id: string }>(
-      "SELECT conversation_id, topic_id FROM conversation_bindings WHERE chat_key = ?", [chatKey]);
+  getConversationBinding(chatKey: string): { chatKey: string; conversationId: string; topicId: string; revision: string } | undefined {
+    const row = this.sqlite.get<{ conversation_id: string; topic_id: string; revision: string }>(
+      "SELECT conversation_id, topic_id, revision FROM conversation_bindings WHERE chat_key = ?", [chatKey]);
     if (!row) return undefined;
-    if (!row.conversation_id || !row.topic_id) throw new ConversationError("binding_corrupt", "Conversation binding is incomplete");
-    return { chatKey, conversationId: row.conversation_id, topicId: row.topic_id };
+    if (!row.conversation_id || !row.topic_id || typeof row.revision !== "string" || !row.revision || row.revision !== row.revision.trim()) {
+      throw new ConversationError("binding_corrupt", "Conversation binding is incomplete");
+    }
+    return { chatKey, conversationId: row.conversation_id, topicId: row.topic_id, revision: row.revision };
   }
 
   setConversationBinding(binding: { chatKey: string; conversationId: string; topicId: string }): void {
-    this.sqlite.run("INSERT INTO conversation_bindings (chat_key, conversation_id, topic_id) VALUES (?, ?, ?) ON CONFLICT(chat_key) DO UPDATE SET conversation_id = excluded.conversation_id, topic_id = excluded.topic_id",
-      [binding.chatKey, binding.conversationId, binding.topicId]);
+    this.sqlite.run("INSERT INTO conversation_bindings (chat_key, conversation_id, topic_id, revision) VALUES (?, ?, ?, ?) ON CONFLICT(chat_key) DO UPDATE SET conversation_id = excluded.conversation_id, topic_id = excluded.topic_id, revision = excluded.revision",
+      [binding.chatKey, binding.conversationId, binding.topicId, randomUUID()]);
   }
 
   removeConversationBinding(chatKey: string): void {

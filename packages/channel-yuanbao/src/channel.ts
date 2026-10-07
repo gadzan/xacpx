@@ -436,17 +436,26 @@ export class YuanbaoChannel implements MessageChannelRuntime {
 
     if (this.isAborted()) return;
 
-    const history = input.chatType === "group" && account.historyLimit > 0
+    const ingressMetadata = {
+      channel: "yuanbao", chatType: input.chatType, senderId: fromAccount,
+      hadInboundMedia: hasMedia || extracted.placeholders.length > 0,
+      ...(messageId ? { channelMessageId: messageId } : {}),
+      ...(raw.sender_nickname ? { senderName: raw.sender_nickname } : {}),
+      ...(input.chatType === "group" ? { groupId: target } : {}),
+    };
+    const conversationAgent = this.routeConversation?.({ accountId: account.accountId, conversationId: chatKey,
+      text: extracted.text, metadata: ingressMetadata });
+    const history = !conversationAgent && !knownCommand && input.chatType === "group" && account.historyLimit > 0
       ? this.groupHistory.consume(account.accountId, target)
       : [];
 
-    const downloaded = await this.downloadInboundCandidates({
+    const downloaded = conversationAgent ? { media: [], failed: [] } : await this.downloadInboundCandidates({
       account,
       chatKey,
       messageId: messageId ?? "",
       candidates: extracted.mediaCandidates,
     });
-    const promptText = buildPromptText({
+    const promptText = conversationAgent || knownCommand ? extracted.text : buildPromptText({
       history,
       quote,
       replyToBot,
@@ -460,8 +469,6 @@ export class YuanbaoChannel implements MessageChannelRuntime {
     // commands never bind — they act on whatever the chat resolves to when they
     // run, and switch/cancel commands take the control lane so they preempt a
     // running prompt for real-time switching.
-    const conversationAgent = this.routeConversation?.({ accountId: account.accountId, conversationId: chatKey,
-      text: promptText, metadata: { channel: "yuanbao", ...(messageId ? { channelMessageId: messageId } : {}) } });
     const isSlash = extracted.text.trim().startsWith("/");
     const boundAlias = conversationAgent || isSlash ? undefined : (this.sessions?.peekCurrentSessionAlias(chatKey) ?? undefined);
     const sessionKey = boundAlias ?? "__chat__";
@@ -494,25 +501,21 @@ export class YuanbaoChannel implements MessageChannelRuntime {
           replyContextToken: messageId,
         });
         try {
+          const ingress = {
+            accountId: account.accountId, conversationId: chatKey, text: promptText, replyContextToken: messageId,
+            ...(this.abortSignal ? { abortSignal: this.abortSignal } : {}),
+            ...(downloaded.media.length > 0 ? { media: downloaded.media } : {}),
+            metadata: { ...ingressMetadata,
+              ...(!conversationAgent ? { origin: "human" as const,
+                isOwner: Boolean(raw.bot_owner_id && raw.from_account === raw.bot_owner_id) } : {}),
+              ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
+            },
+          };
+          await conversationAgent?.prepareConversation?.(ingress);
           heartbeat.start();
           const subagentNotices = new SubagentNoticeTracker();
           const response = await (conversationAgent ?? this.agent).chat({
-            accountId: account.accountId,
-            conversationId: chatKey,
-            text: promptText,
-            replyContextToken: messageId,
-            ...(this.abortSignal ? { abortSignal: this.abortSignal } : {}),
-            ...(downloaded.media.length > 0 ? { media: downloaded.media } : {}),
-            metadata: {
-              channel: "yuanbao",
-              chatType: input.chatType,
-              senderId: fromAccount,
-              ...(raw.sender_nickname ? { senderName: raw.sender_nickname } : {}),
-              ...(input.chatType === "group" ? { groupId: target } : {}),
-              isOwner: Boolean(raw.bot_owner_id && raw.from_account === raw.bot_owner_id),
-              ...(boundAlias ? { boundSessionAlias: boundAlias } : {}),
-              origin: "human" as const,
-            },
+            ...ingress,
             // Text-only degradation: no card, so a delegation surfaces as one
             // honest line. Ordinary tool calls stay hidden to avoid flooding
             // the chat; the tracker dedups start/terminal per toolCallId.

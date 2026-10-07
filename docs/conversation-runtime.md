@@ -360,7 +360,11 @@ and `unbindConversation(chatKey)` manage the same durable mapping. Group binding
 require an active Topic; Direct bindings may omit the deterministic default Topic.
 Bindings live in `conversations.sqlite`, survive restarts, and are removed when
 their Topic or Conversation is torn down. Discord channels and threads, Feishu
-chats and threads, and Weixin chats use exact chat keys: no parent inheritance.
+chats and threads, and Weixin direct chats use exact chat keys: no parent inheritance.
+Conversation bindings for Weixin group chats are not supported by the current sender-addressed
+reply adapter. Group events select a distinct account/group key, never a sender's
+DM binding or receipt; a selected group binding fails `external_group_unsupported`
+before acceptance or Stop. Unbound group events retain the existing Session path.
 An unused Direct binding also keeps Bot deletion closed until it is unbound;
 creating the binding revalidates through the Bot lifecycle gate.
 Other channel plugins can implement the same ingress metadata contract; Relay
@@ -374,6 +378,11 @@ requires a nonempty, whitespace-free route suffix. Product namespaces (`bot`,
 The bundled Yuanbao adapter also selects before Session lifecycle; its current
 gateway does not prove authenticated-human origin, so bound input remains
 fail-closed rather than entering an ordinary Session.
+Yuanbao selects using the admitted message's original text and raw media facts,
+before consuming group history or downloading attachments. Bound input prepares
+before reply heartbeats and does not consume that history; known commands keep
+their original text on the Session path. Selector errors provide a rejecting
+preparation method as well as `chat`, so adapters fail before UI setup.
 
 The registry supplies an optional `routeConversation` ingress selector. After
 authentication/admission, adapters call it before reading the current Session,
@@ -383,9 +392,11 @@ Conversation turns enter acceptance concurrently, without waiting for an older
 Run's settlement or channel reply; the durable core Topic queue orders execution.
 The selected Agent's `prepareConversation` commits ingress and installs Stop and
 settlement tracking before typing/card setup; `chat` then awaits the same result.
-Selection captures the exact Conversation/Topic binding and receipt existence;
+Selection captures the exact Conversation/Topic binding, its durable opaque revision and receipt existence;
 acceptance first replays an existing receipt, otherwise requires the same binding
-under a mutex keyed by external chatKey. Replacement and removal both fail closed.
+revision under a mutex keyed by external chatKey. Every bind writes a new revision,
+including rebinding the same target; unbind/rebind and A→B→A cannot revive an old
+selection. Legacy rows acquire revisions on schema upgrade. Replacement and removal both fail closed.
 Bind/unbind/accept for one route serialize, while unrelated routes and ordinary unbound traffic remain
 independent. Unused mutex entries are removed. If a selected binding disappears
 before acceptance, the request fails closed instead of falling back to Session.
@@ -395,6 +406,16 @@ The metadata contract is `channel`, `channelMessageId`, `origin: "human"`,
 `authenticatedHuman: true`, and `senderId`; `accountId` comes from ChatRequest.
 Discord proves human origin with `author.bot === false`; Feishu requires the
 platform's `sender_type === "user"`. Missing sender type does not qualify.
+Bound Feishu ingress uses only an unexpired cached group-owner fact; a cache miss
+records `isOwner: false` and prepares durable acceptance immediately. A background
+lookup after preparation may enrich later turns, never the accepted turn's authority.
+Ordinary Session/control turns retain the awaited owner lookup. Weixin bound text
+uses the stable English `[Quote: ...]` marker, including nested quotes, so locale
+changes do not change its receipt fingerprint; ordinary Session text stays localized.
+Receipts accepted by earlier builds keep their stored fingerprint. A historical
+localized quote cannot be safely backfilled from the stored flattened text, so
+such a receipt still rejects a locale-derived mismatch rather than relaxing
+changed-input checks.
 Known console commands keep their command path except authenticated bound Stop.
 `hadInboundMedia` records original platform attachment presence before download,
 limits or skipped-resource degradation. Bound media is rejected before downloading
@@ -429,10 +450,14 @@ signal. This detaches channel result waiting and fences unaccepted work, without
 cancelling an already accepted durable Run. Its execution and recovery stay
 owned by the Conversation runtime. Plugins must provide the separate human
 signal to support bound Stop; a generic abort without it fails closed for intent.
+Weixin combines a fresh per-start channel controller with the daemon signal;
+channel stop/logout aborts that controller even while the daemon remains live.
+The monitor checks it after network waits and before dispatching each message.
 After restart, authenticated Stop is selected before Session command bypass.
 Receipt `stop_ingress` holds only the original chatKey/account/sender facts and
 is joined to live exact receipt Runs (queued, running or waiting-human), including work accepted before a rebind or
-unbind. Stop freezes that target set, revalidates its owner and cancels through
+unbind. Owner resolution currently scans live external receipts; an indexed
+owner-specific query is a performance follow-up. Stop freezes that target set, revalidates its owner and cancels through
 the existing Run service; it creates no new Run. It never restores permission
 authority or execution human ingress cleared by recovery. Durable Stop does not
 acquire the bind/accept route mutex: receipt ownership is immutable, and Run

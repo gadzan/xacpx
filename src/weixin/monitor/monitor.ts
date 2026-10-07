@@ -5,6 +5,7 @@ import { SESSION_EXPIRED_ERRCODE, pauseSession } from "../api/session-guard.js";
 import { createConversationExecutor } from "../../runtime/conversation-executor.js";
 import {
   buildWeixinChatKey,
+  buildWeixinConversationChatKey,
   getWeixinMessageTurnLane,
   handleWeixinMessageTurn,
 } from "../messaging/handle-weixin-message-turn.js";
@@ -151,6 +152,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         timeoutMs: nextTimeoutMs,
         abortSignal,
       });
+      if (abortSignal?.aborted) break;
 
       if (resp.longpolling_timeout_ms != null && resp.longpolling_timeout_ms > 0) {
         nextTimeoutMs = resp.longpolling_timeout_ms;
@@ -236,6 +238,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
 
       const list = resp.msgs ?? [];
       for (const full of list) {
+        if (abortSignal?.aborted) break;
         const msgId = full.message_id;
         if (msgId != null) {
           if (seenMessageIds.has(msgId)) {
@@ -260,10 +263,6 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
 
         const fromUserId = full.from_user_id ?? "";
         const inboundText = extractInboundText(full.item_list);
-        const cachedConfig =
-          fromUserId && shouldFetchTypingConfig(inboundText)
-            ? await configManager.getForUser(fromUserId, full.context_token)
-            : { typingTicket: "" };
 
         // Fire onInbound before lane queueing: a user reply during a long-running
         // prompt would otherwise sit behind the in-flight turn on the normal
@@ -289,16 +288,22 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         // — even if they switch sessions while it waits on the per-session lane.
         // Slash commands never bind: they act on whatever the chat context
         // resolves to when they actually run.
-        const chatKey = buildWeixinChatKey(accountId, fromUserId);
+        const conversationChatKey = buildWeixinConversationChatKey(accountId, fromUserId, full.group_id);
         const isSlash = inboundText.trim().startsWith("/");
         const localCommand = ["/echo", "/toggle-debug", "/clear", "/jx"].includes(parseSlashCommand(inboundText) ?? "");
         const hadInboundMedia = full.item_list?.some((item) => item.type !== MessageItemType.TEXT) ?? false;
         const conversationAgent = localCommand ? undefined : opts.routeConversation?.({
-          accountId, conversationId: chatKey, text: inboundText,
+          accountId, conversationId: conversationChatKey, text: inboundText,
           metadata: { channel: "weixin", senderId: fromUserId, origin: "human", authenticatedHuman: Boolean(fromUserId),
+            chatType: full.group_id ? "group" : "direct", ...(full.group_id ? { groupId: full.group_id } : {}),
             hadInboundMedia,
             ...(full.message_id != null ? { channelMessageId: String(full.message_id) } : {}) },
         });
+        // Bound durability and Stop must not wait for a typing-ticket RPC.
+        const cachedConfig = !conversationAgent && fromUserId && shouldFetchTypingConfig(inboundText)
+          ? await configManager.getForUser(fromUserId, full.context_token) : { typingTicket: "" };
+        if (abortSignal?.aborted) break;
+        const chatKey = conversationAgent ? conversationChatKey : buildWeixinChatKey(accountId, fromUserId);
         const stopTurns = conversationAgent && /^(?:\/(?:stop|cancel|abort)|stop|abort|interrupt)$/i.test(inboundText.trim())
           ? [...(boundTurns.get(chatKey) ?? [])] : [];
         const controller = conversationAgent ? new AbortController() : undefined;

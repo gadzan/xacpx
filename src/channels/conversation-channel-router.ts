@@ -114,7 +114,7 @@ export function createConversationChannelRouter(channelId: string, agent: Agent,
     catch (error) {
       // Corrupt/retired routing must stay out of ordinary Session lifecycle,
       // while the adapter's existing error delivery and cleanup still apply.
-      return { chat: async () => { throw error; } };
+      return preparedAgent(async () => { throw error; });
     }
   };
 }

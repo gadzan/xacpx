@@ -1010,11 +1010,13 @@ export class FeishuChannel implements MessageChannelRuntime {
     // Opt-in owner assertion runs AFTER task registration + markActive: the
     // bound session must enjoy active-turn protection (archive refusal,
     // running-state reporting) and abort tracking even while this turn is
-    // blocked on a (possibly uncached) REST lookup. The resolved flag rides
-    // on ActiveTask into the turn's route metadata; any failure leaves it
-    // undefined and the host's owner gate stays fail-closed.
+    // blocked on a (possibly uncached) REST lookup. Conversation ingress uses
+    // only unexpired cached facts here so durable preparation never waits on
+    // that RPC. A miss stays fail-closed for the accepted turn.
     if (event.message.chat_type === "group" && runtime.account.trustGroupOwner && senderOpenId) {
-      active.senderIsOwner = await this.resolveSenderIsGroupOwner({ runtime, accountId, chatId, senderOpenId });
+      active.senderIsOwner = conversationAgent
+        ? this.cachedSenderIsGroupOwner(accountId, chatId, senderOpenId)
+        : await this.resolveSenderIsGroupOwner({ runtime, accountId, chatId, senderOpenId });
     }
 
     await (conversationAgent ? this.conversationExecutor : this.executor).run(
@@ -1183,6 +1185,11 @@ export class FeishuChannel implements MessageChannelRuntime {
    * the epoch check drops it, and the identity-checked finally can never
    * evict a newer lifecycle's in-flight registration.
    */
+  private cachedSenderIsGroupOwner(accountId: string, chatId: string, senderOpenId: string): boolean | undefined {
+    const cached = this.chatOwnerCache.get(`${accountId}:${chatId}`);
+    return cached && cached.expiresAt > Date.now() ? cached.ownerId === senderOpenId : undefined;
+  }
+
   private async resolveSenderIsGroupOwner(input: {
     runtime: AccountRuntime;
     accountId: string;
@@ -1296,6 +1303,11 @@ export class FeishuChannel implements MessageChannelRuntime {
         const owned = input.conversationStopTasks.filter((task) => !task.suppressed);
         if (owned.length) await this.handleAbortFastPath({ runtime, activeTasks: owned, abortRequestMessageId: messageId,
           chatId, accountId, acknowledge: false });
+      }
+      // Accepted authority is immutable. A cache miss fails closed for this
+      // turn; refresh asynchronously for later ingress without delaying it.
+      if (input.agent && chatType === "group" && runtime.account.trustGroupOwner && active.senderOpenId) {
+        void this.resolveSenderIsGroupOwner({ runtime, accountId, chatId, senderOpenId: active.senderOpenId }).catch(() => {});
       }
       active.typingState = await addTypingIndicator({
         client: runtime.client.sdk as unknown as FeishuReactionClient,
