@@ -28,6 +28,31 @@ Idempotency key: **`conversationId × topicId × requestId`** (`UNIQUE` constrai
 
 ## Outbox / claim recovery
 
+### Topic execution concurrency (Phase 10A)
+
+`ConversationTopic.maxConcurrentMemberTurns` is an optional creation-time scheduling
+limit, separate from `ExecutionTarget`. Control/Relay Topic creation accepts an
+integer from 1 through 64. Omission preserves the existing dispatcher behavior;
+it does not enable cross-Topic parallelism. There is no hot-edit API in this phase.
+The field persists in AppState; legacy Topics need no migration or SQLite changes.
+
+Logical collaboration parallelism != physical execution concurrency != filesystem
+write concurrency. A limit never changes Run/batch/assignment identity, frozen
+transcripts, dependencies, Router decisions or authority. Current public explicit,
+Router and handoff producers carry unknown effects, so their writers still
+serialize under the existing filesystem gate even when the limit is greater than 1.
+Only the existing `read-only` + `declared-enforced` proof can permit overlap.
+
+Capacity is reserved by the existing durable `claimed` dispatches (including
+pre-start materialization); the claim transaction checks the per-Topic count.
+Full capacity leaves work pending without stripping ingress or changing origin.
+Configured cohorts refill after an individual execution settles; live claims are
+renewed before lease recovery during refill. Cancel/delete fences remain part of
+claim and physical start. Restart first converges previous-owner claims under the
+exclusive consumer lock, then reconstructs reservations from SQLite. Started unknown
+writers remain indeterminate; bounded proven read-only recovery uses the same limit.
+No semaphore count, second queue or additional executor is persisted.
+
 ```text
 accept transaction commits request + pending dispatch
 → dispatcher claims with owner + generation + lease

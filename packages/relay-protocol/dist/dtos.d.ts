@@ -305,6 +305,7 @@ export interface GroupTopicCreateTargetDto {
     isolation: "shared" | "shared-single-writer";
 }
 export interface TopicSummaryDto {
+    maxConcurrentMemberTurns?: number;
     id: string;
     conversationId: string;
     title: string;

@@ -154,6 +154,8 @@ export interface ClaimNextDispatchInput {
   /** Restrict the claim to one Run's dispatches: the same-batch sibling
    *  cohort. Unset claims globally (previous sequencing). */
   runId?: string;
+  /** Durable Topic configuration. Missing keys preserve legacy admission. */
+  topicConcurrencyLimits?: Readonly<Record<string, number>>;
 }
 
 export interface ClaimedWork {
@@ -428,6 +430,8 @@ export interface ConversationStore {
    *  `stale_claim`, so a lost race can never extend a lease it no longer owns.
    *  Scheduling waits must never look like crash recovery. */
   renewHeldClaim(input: RenewHeldClaimInput): PendingDispatch;
+  /** Renew a physical execution still owned by the live drain before refill/recovery. */
+  renewInFlightClaim(input: RenewHeldClaimInput): PendingDispatch;
   /** Retire one unstarted held claim at graceful shutdown WITHOUT touching
    *  provenance: the dispatch returns to `pending` with owner cleared and a
    *  FRESH lease window, but authorityEpoch/humanIngress, generation, member

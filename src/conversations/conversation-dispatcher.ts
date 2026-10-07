@@ -92,6 +92,7 @@ export class ConversationDispatcher {
    *  Topic isolation policy, not to drain sequencing. Entries are removed in a
    *  `finally` so a throw can never strand the set (and with it the drain). */
   private readonly inFlightExecutions = new Map<string, Promise<void>>();
+  private readonly inFlightWork = new Map<string, ClaimedWork>();
 
   constructor(
     private readonly store: ConversationStore,
@@ -210,6 +211,7 @@ export class ConversationDispatcher {
         () => {
           if (this.inFlightExecutions.get(work.dispatch.id) === guard) {
             this.inFlightExecutions.delete(work.dispatch.id);
+            this.inFlightWork.delete(work.dispatch.id);
           }
         },
         (error: unknown) => {
@@ -217,10 +219,12 @@ export class ConversationDispatcher {
           outcome.reason = error;
           if (this.inFlightExecutions.get(work.dispatch.id) === guard) {
             this.inFlightExecutions.delete(work.dispatch.id);
+            this.inFlightWork.delete(work.dispatch.id);
           }
         },
       );
       this.inFlightExecutions.set(work.dispatch.id, guard);
+      this.inFlightWork.set(work.dispatch.id, work);
       cohort.push({ guard, outcome });
     };
     const awaitCohortInFlight = async (): Promise<void> => {
@@ -286,9 +290,29 @@ export class ConversationDispatcher {
           if (this.closed) {
             return;
           }
+          const limits = this.runtime.topicConcurrencyLimits();
+          // Configured cohorts can refill while a long-lived sibling is still
+          // executing. Protect the exact live promises before lease recovery;
+          // restart has no such promises and uses normal durable convergence.
+          for (const active of this.inFlightWork.values()) {
+            if (limits[active.run.topicId] === undefined) continue;
+            try {
+              this.store.renewInFlightClaim({ dispatchId: active.dispatch.id, owner: this.ownerId,
+                generation: active.dispatch.generation, now: this.now().toISOString(),
+                leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString() });
+            } catch (error) {
+              if (!(error instanceof ConversationError && error.code === "stale_claim")) throw error;
+            }
+          }
           this.store.recoverExpiredClaims(this.now().toISOString());
           const claimed = this.claimOne(cohortRunId);
           if (!claimed) {
+            const active = this.inFlightWork.values().next().value as ClaimedWork | undefined;
+            if (cohortRunId !== undefined && active && limits[active.run.topicId] !== undefined
+              && this.inFlightExecutions.size > 0) {
+              await Promise.race(this.inFlightExecutions.values());
+              continue;
+            }
             break;
           }
           // PR7 filesystem scheduling: a claimed Group sibling that must
@@ -483,6 +507,7 @@ export class ConversationDispatcher {
       owner: this.ownerId,
       leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString(),
       authorityEpoch: this.authorityEpoch,
+      topicConcurrencyLimits: this.runtime.topicConcurrencyLimits(),
       ...(cohortRunId !== undefined ? { runId: cohortRunId } : {}),
       ...(this.deferredTopicIds.size > 0 ? { skipTopicIds: [...this.deferredTopicIds] } : {}),
     });

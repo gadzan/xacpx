@@ -100,6 +100,8 @@ export interface ConversationTopic {
   status: ConversationTopicStatus;
   createdAt: string;
   updatedAt: string;
+  /** Creation-time physical admission cap; absent preserves legacy scheduling. */
+  maxConcurrentMemberTurns?: number;
   /** Effective work target for this Topic. Absent on pre-Group rows: readers
    *  must treat absence as unknown, never as a default policy. Writers always
    *  persist it on Group Topics; direct Topics resolve execution from the

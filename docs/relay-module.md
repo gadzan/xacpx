@@ -428,6 +428,13 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 
 ## External Conversation binding management
 
+Phase 10A Topic creation RPCs (`control.topics.create`, `control.group.topics.create`)
+accept optional top-level `maxConcurrentMemberTurns` (integer 1–64), returned on
+Topic summaries/events. The field is separate from `target`; omission preserves
+existing scheduling. It is creation-only, with no hot-update RPC. Strictness of
+other existing payload fields is unchanged. See the Topic execution concurrency
+contract in [Conversation runtime](conversation-runtime.md).
+
 Authenticated instance Control RPC exposes `control.conversation.bindings.list`
 (`{}` → `{bindings}`), `.set` (`{chatKey, conversationId, topicId?}` → `{binding}`)
 and `.delete` (`{chatKey}` → `{ok:true}`). These are instance-owner management

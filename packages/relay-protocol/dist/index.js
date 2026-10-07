@@ -569,7 +569,7 @@ function validTopicSummary(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string" && validExecutionTarget(c.executionTarget);
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string" && validExecutionTarget(c.executionTarget) && (c.maxConcurrentMemberTurns === undefined || typeof c.maxConcurrentMemberTurns === "number" && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64);
 }
 function validConversationMessage(value) {
   if (typeof value !== "object" || value === null)
@@ -1202,8 +1202,9 @@ var validateTopicsList = (p) => {
 };
 var validateTopicsCreate = (p) => {
   const o = fields(p);
-  return o && isStr(o.conversationId) && isStr(o.title) ? o : null;
+  return o && isStr(o.conversationId) && isStr(o.title) && validMemberConcurrency(o.maxConcurrentMemberTurns) ? o : null;
 };
+var validMemberConcurrency = (v) => v === undefined || typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 64;
 var isCreateIsolation = (v) => v === "shared" || v === "shared-single-writer";
 var validateGroupsCreate = (p) => {
   const o = fields(p);
@@ -1238,7 +1239,7 @@ var validateGroupsList = (p) => {
 };
 var validateGroupTopicsCreate = (p) => {
   const o = fields(p);
-  if (!o || !isStr(o.conversationId) || !isStr(o.title))
+  if (!o || !isStr(o.conversationId) || !isStr(o.title) || !validMemberConcurrency(o.maxConcurrentMemberTurns))
     return null;
   const t = o.target;
   if (!isObj(t) || !isStr(t.workspace) || t.cwd !== undefined && !isStr(t.cwd) || !isCreateIsolation(t.isolation)) {

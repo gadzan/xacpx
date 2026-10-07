@@ -82,6 +82,7 @@ import {
 import type { AppLogger } from "../logging/app-logger";
 import type { ConversationRuntime } from "../conversations/conversation-composition";
 import { ConversationError } from "../conversations/conversation-error";
+import type { TopicSchedulingOptions } from "../conversations/conversation-scheduling-policy";
 import { parseHumanIngress } from "../conversations/conversation-execution";
 import type { ConversationProductEvent } from "../conversations/conversation-product-events";
 import type { HumanIngressContext } from "../conversations/conversation-types";
@@ -2012,9 +2013,10 @@ export class ControlService {
     conversationId: string,
     title: string,
     target: { workspace: string; cwd?: string; isolation: "shared" | "shared-single-writer" },
+    options?: TopicSchedulingOptions,
   ) {
     return this.runConversationMutation(async (runtime) => {
-      const topic = await runtime.runs.createGroupTopic(conversationId, title, target);
+      const topic = await runtime.runs.createGroupTopic(conversationId, title, target, options);
       return toTopicSummary(topic);
     });
   }
@@ -2055,9 +2057,9 @@ export class ControlService {
     return this.requireConversations().runs.listTopics(conversationId).map(toTopicSummary);
   }
 
-  async createTopic(conversationId: string, title: string) {
+  async createTopic(conversationId: string, title: string, options?: TopicSchedulingOptions) {
     return this.runConversationMutation(async (runtime) => {
-      const topic = await runtime.runs.createTopic(conversationId, title);
+      const topic = await runtime.runs.createTopic(conversationId, title, options);
       return toTopicSummary(topic);
     });
   }

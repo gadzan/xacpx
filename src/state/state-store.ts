@@ -4,6 +4,7 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 import type { BotProfile, BotRuntimeBinding } from "../bots/bot-types";
 import type { ConversationRecord, ConversationTopic } from "../conversations/conversation-types";
 import { classifyConversationRoot } from "../conversations/conversation-roots";
+import { isMemberConcurrencyLimit } from "../conversations/conversation-scheduling-policy";
 import { writePrivateFileAtomic } from "../util/private-file.js";
 import { createEmptyState, type AppState, type LogicalSession, type LogicalSessionOwner } from "./types";
 import { createDirectConversationId, createScopedGroupMemberBindingId } from "../domain/ids";
@@ -1022,7 +1023,8 @@ function isConversationTopic(value: unknown): value is ConversationTopic {
     (value.status === "active" || value.status === "archived" || value.status === "deleting") &&
     isString(value.createdAt) &&
     isString(value.updatedAt) &&
-    isExecutionTarget(value.executionTarget)
+    isExecutionTarget(value.executionTarget) &&
+    (value.maxConcurrentMemberTurns === undefined || isMemberConcurrencyLimit(value.maxConcurrentMemberTurns))
   );
 }
 

@@ -453,6 +453,7 @@ export interface TopicsListResult {
     topics: TopicSummaryDto[];
 }
 export interface TopicsCreatePayload {
+    maxConcurrentMemberTurns?: number;
     conversationId: string;
     title: string;
 }
@@ -491,6 +492,7 @@ export interface GroupsListResult {
     groups: GroupSummaryDto[];
 }
 export interface GroupTopicsCreatePayload {
+    maxConcurrentMemberTurns?: number;
     conversationId: string;
     title: string;
     target: GroupTopicCreateTargetDto;

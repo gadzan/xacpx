@@ -329,6 +329,7 @@ export interface GroupTopicCreateTargetDto {
 }
 
 export interface TopicSummaryDto {
+  maxConcurrentMemberTurns?: number;
   id: string;
   conversationId: string;
   title: string;

@@ -82,6 +82,7 @@ export interface ExecutionTargetDto {
 }
 
 export interface TopicSummaryDto {
+  maxConcurrentMemberTurns?: number;
   id: string;
   conversationId: string;
   title: string;
@@ -303,6 +304,7 @@ export function toBotDetail(bot: BotProfile, hasRuntime?: boolean): BotDetailDto
 
 export function toTopicSummary(topic: ConversationTopic): TopicSummaryDto {
   return {
+    ...(topic.maxConcurrentMemberTurns !== undefined ? { maxConcurrentMemberTurns: topic.maxConcurrentMemberTurns } : {}),
     id: topic.id,
     conversationId: topic.conversationId,
     title: topic.title,

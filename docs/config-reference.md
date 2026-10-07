@@ -2,6 +2,12 @@
 
 `~/.xacpx/config.json` is xacpx's main configuration file.
 
+Conversation member concurrency is Topic metadata, not a daemon-wide setting in
+this file. Create a Topic through Control/Relay with optional
+`maxConcurrentMemberTurns` (integer 1–64); omission preserves existing scheduling.
+The limit is creation-only in Phase 10A. It caps physical member execution without
+granting filesystem parallelism. See [Conversation runtime](conversation-runtime.md#topic-execution-concurrency-phase-10a).
+
 If you want to manage WeChat/Feishu message channels, see [`docs/channel-management.md`](./channel-management.md). If you want to modify part of the configuration directly from chat instead of hand-editing JSON, see [`docs/config-command.md`](./config-command.md).
 
 ## Full Example

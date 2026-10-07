@@ -455,8 +455,11 @@ const validateTopicsList: Validator<TopicsListPayload> = (p) => {
 };
 const validateTopicsCreate: Validator<TopicsCreatePayload> = (p) => {
   const o = fields(p);
-  return o && isStr(o.conversationId) && isStr(o.title) ? (o as unknown as TopicsCreatePayload) : null;
+  return o && isStr(o.conversationId) && isStr(o.title) && validMemberConcurrency(o.maxConcurrentMemberTurns)
+    ? (o as unknown as TopicsCreatePayload) : null;
 };
+const validMemberConcurrency = (v: unknown): boolean => v === undefined ||
+  (typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 64);
 /** Create-time only: `worktree-per-member` is refused because no provisioning
  *  exists, so the Topic could never execute. Topic responses use the separate
  *  legacy-tolerant `validExecutionTarget` check. */
@@ -491,7 +494,7 @@ const validateGroupsList: Validator<Record<string, never>> = (p) => {
 };
 const validateGroupTopicsCreate: Validator<GroupTopicsCreatePayload> = (p) => {
   const o = fields(p);
-  if (!o || !isStr(o.conversationId) || !isStr(o.title)) return null;
+  if (!o || !isStr(o.conversationId) || !isStr(o.title) || !validMemberConcurrency(o.maxConcurrentMemberTurns)) return null;
   const t = o.target;
   if (!isObj(t) || !isStr(t.workspace) || (t.cwd !== undefined && !isStr(t.cwd)) || !isCreateIsolation(t.isolation)) {
     return null;
