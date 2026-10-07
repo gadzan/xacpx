@@ -1146,6 +1146,13 @@ Do not infer ordering from:
 
 # 15. Dispatcher and queue integration
 
+**Phase 10A status: implemented, awaiting PR review.** This slice follows merged
+PR #376: optional Topic scheduling `maxConcurrentMemberTurns` (1–64), set only at
+creation. The existing dispatcher and atomic claim enforce physical capacity;
+logical batches, dependencies, filesystem policy, recovery and authority are
+unchanged. Omission retains the existing scheduling path. Hot mutation and other
+Phase 10 capabilities are deferred.
+
 Reuse existing per-session `TurnQueue` for actual model execution.
 
 Conversation-level scheduler owns only:

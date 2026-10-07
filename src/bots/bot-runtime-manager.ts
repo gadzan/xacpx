@@ -1,4 +1,5 @@
 import { BotError } from "./bot-error";
+import { memberConcurrencyLimit } from "../conversations/conversation-scheduling-policy";
 import {
   classifyDirectBotBindingSessionLink,
   classifyDirectBotRuntimeBindingOwnership,
@@ -77,6 +78,18 @@ export class BotRuntimeManager {
    *  so legacy rows keep the Direct materialization path. */
   conversationKind(conversationId: string): "bot" | "group" | undefined {
     return this.state.conversations[conversationId]?.kind;
+  }
+
+  /** Durable Topic scheduling metadata; no live execution counter. */
+  topicConcurrencyLimits(): Record<string, number> {
+    const limits: Record<string, number> = {};
+    for (const topic of Object.values(this.state.conversation_topics)) {
+      const limit = memberConcurrencyLimit(topic.maxConcurrentMemberTurns);
+      if (limit !== undefined) {
+        limits[topic.id] = limit;
+      }
+    }
+    return limits;
   }
 
   /** Effective Topic isolation for Group scheduling. Absent durable target

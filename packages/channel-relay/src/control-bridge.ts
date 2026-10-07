@@ -1044,7 +1044,7 @@ async function dispatchControlRequest(
     case MSG.topicsCreate: {
       const input = parseControlPayload(MSG.topicsCreate, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.topicsCreate}: malformed payload`);
-      return { topic: await control.createTopic(input.conversationId, input.title) };
+      return { topic: await control.createTopic(input.conversationId, input.title, { maxConcurrentMemberTurns: input.maxConcurrentMemberTurns }) };
     }
     case MSG.groupsCreate: {
       const input = parseControlPayload(MSG.groupsCreate, payload);
@@ -1075,7 +1075,7 @@ async function dispatchControlRequest(
     case MSG.groupTopicsCreate: {
       const input = parseControlPayload(MSG.groupTopicsCreate, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.groupTopicsCreate}: malformed payload`);
-      return { topic: await control.createGroupTopic(input.conversationId, input.title, input.target) };
+      return { topic: await control.createGroupTopic(input.conversationId, input.title, input.target, { maxConcurrentMemberTurns: input.maxConcurrentMemberTurns }) };
     }
     case MSG.groupTopicsArchive: {
       const input = parseControlPayload(MSG.groupTopicsArchive, payload);

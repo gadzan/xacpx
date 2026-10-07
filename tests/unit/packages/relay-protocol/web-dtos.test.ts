@@ -36,6 +36,14 @@ test("public handoff wire envelope is bounded, public, and rejects forged privat
   }
 });
 
+test("Topic event projection accepts legacy/concurrency metadata and rejects invalid limits", () => {
+  const topic = { id: "t", conversationId: "c", title: "t", status: "active", createdAt: "now", updatedAt: "now" };
+  const valid = (value: unknown) => validControlEvent({ type: "conversation-topic-changed", topic: value });
+  expect(valid(topic)).toBe(true);
+  for (const value of [1, 2, 64]) expect(valid({ ...topic, maxConcurrentMemberTurns: value })).toBe(true);
+  for (const value of [0, -1, 1.5, NaN, Infinity, 65, null, "2"]) expect(valid({ ...topic, maxConcurrentMemberTurns: value })).toBe(false);
+});
+
 test("webEventEnvelope wraps an event and round-trips through encode/decode", () => {
   const event: WebServerEvent = {
     kind: "control-event",

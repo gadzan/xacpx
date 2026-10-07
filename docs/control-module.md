@@ -65,6 +65,12 @@ PR9 公开 handoff 走 execution-bound `group_send({to, task, expectedOutput?})`
 
 ## 方法概览
 
+Phase 10A：`createTopic(conversationId, title, options?)` 与
+`createGroupTopic(conversationId, title, target, options?)` 接受
+`options.maxConcurrentMemberTurns`（可选整数 1–64）。该字段单独投影到
+`TopicSummaryDto`，只在创建时设置；没有运行中修改接口。缺失保持既有调度。
+这是物理执行上限，不能改变 logical batch、依赖、filesystem policy 或权限来源。
+
 | 方法 | 说明 |
 |------|------|
 | `listSessions()` | 返回所有已解析逻辑会话的快照（`ControlSessionInfo[]`），含 `running` 字段（来自 `ActiveTurnRegistry`）与可选 `warm` 字段（running 时恒为 true，否则读 `SessionWarmthTracker` 最近观测；无 tracker 或未观测时省略）。`LogicalSession.owner.kind` 为 `bot-direct` / `group-member` / `group-controller` 的隐藏运行时不会出现在普通 Sessions 列表中（按 owner metadata，不是 `brt_` 前缀）。普通 alias 寻址的 Session 操作（prompt / remove / archive / rename / model / effort / cancel 等）对上述 owner 失败 `hidden_session`；Conversation 执行/释放只走 core-private `ConversationExecutionPort`。 |

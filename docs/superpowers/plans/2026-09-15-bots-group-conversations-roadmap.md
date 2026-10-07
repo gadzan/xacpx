@@ -537,13 +537,18 @@ Conversation semantics are independent from Relay Web.
 
 # 15. Phase 10 — Advanced collaboration
 
+**Phase 10A status: implemented, awaiting PR review.** Configurable physical
+MemberTurn concurrency is the first selected slice, based on merged PR #376. Optional per-Topic creation-time
+`maxConcurrentMemberTurns` (1–64) preserves omitted-field behavior, durable claims,
+filesystem safety and provenance. No runtime limit mutation, cross-Topic dispatcher
+parallelism or other advanced capability is included. See `docs/conversation-runtime.md`.
+
 Optional later capabilities:
 
 - `worktree-per-member` execution with explicit integration step;
 - richer read/write capability policies;
 - group templates;
 - workspace presets;
-- configurable concurrency limits;
 - resumable long-running Runs;
 - richer synthesis policies;
 - cross-instance membership with explicit trust/persistence contracts;

@@ -7,6 +7,20 @@ import {
   CONTROL_PAYLOAD_VALIDATORS,
 } from "../../../../packages/relay-protocol/src/index";
 
+test("Topic concurrency limits validate on both creation RPCs without changing extra-field handling", () => {
+  for (const kind of [MSG.topicsCreate, MSG.groupTopicsCreate]) {
+    const base = { conversationId: "c", title: "t", ...(kind === MSG.groupTopicsCreate
+      ? { target: { workspace: "backend", isolation: "shared" } } : {}) };
+    for (const value of [undefined, 1, 2, 64]) {
+      expect(parseControlPayload(kind, { ...base, ...(value !== undefined ? { maxConcurrentMemberTurns: value } : {}) })).not.toBeNull();
+    }
+    for (const value of [0, -1, 1.5, NaN, Infinity, 65, null, "2", []]) {
+      expect(parseControlPayload(kind, { ...base, maxConcurrentMemberTurns: value })).toBeNull();
+    }
+    expect(parseControlPayload(kind, { ...base, unrelatedLegacyExtra: true })).not.toBeNull();
+  }
+});
+
 test("parseControlPayload accepts a well-formed fsWrite payload", () => {
   const ok = parseControlPayload(MSG.fsWrite, {
     workspace: "home", path: "a.txt", content: "hi",

@@ -182,6 +182,22 @@ async function wire(options?: {
   };
 }
 
+test("Control Topic creation persists and projects optional concurrency without a hot-edit surface", async () => {
+  const { control, runtime, state } = await wire({ autoKick: false });
+  const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
+  const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
+  const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+  const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" }, { maxConcurrentMemberTurns: 2 });
+  expect(topic.maxConcurrentMemberTurns).toBe(2);
+  expect(control.getGroup(group.id).topics.find((t) => t.id === topic.id)?.maxConcurrentMemberTurns).toBe(2);
+  expect(state.conversation_topics[topic.id]?.maxConcurrentMemberTurns).toBe(2);
+  const direct = await control.createTopic(createDirectConversationId(a.id), "Direct", { maxConcurrentMemberTurns: 1 });
+  expect(direct.maxConcurrentMemberTurns).toBe(1);
+  await expect(control.createGroupTopic(group.id, "bad", { workspace: "backend", isolation: "shared" }, { maxConcurrentMemberTurns: 0 })).rejects.toMatchObject({ code: "invalid_concurrency_limit" });
+  expect("updateTopic" in control).toBe(false);
+  await runtime.shutdown();
+});
+
 test("Bot CRUD is a BotService DTO wrapper and rename keeps product IDs", async () => {
   const { control } = await wire({ autoKick: false });
   const created = await control.createBot({

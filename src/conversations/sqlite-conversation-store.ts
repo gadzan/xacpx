@@ -8,6 +8,7 @@ import {
 } from "../domain/ids";
 import type { BotProfileSnapshot } from "../bots/bot-types";
 import { ConversationError } from "./conversation-error";
+import { memberConcurrencyLimit } from "./conversation-scheduling-policy";
 import { isExternalIngressRejectionCode } from "./conversation-ingress-rejection";
 import type {
   AcceptMemberInput,
@@ -1391,6 +1392,16 @@ export class SqliteConversationStore implements ConversationStore {
 
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined {
     return this.sqlite.transaction(() => {
+      const limits = input.topicConcurrencyLimits ?? {};
+      for (const limit of Object.values(limits)) {
+        memberConcurrencyLimit(limit);
+      }
+      const capacityClause = Object.keys(limits).length === 0 ? "" : `AND NOT EXISTS (
+        SELECT 1 FROM json_each(?) capacity WHERE capacity.key = r.topic_id
+          AND (SELECT COUNT(*) FROM pending_dispatches reserved
+            JOIN runs reserved_run ON reserved_run.id = reserved.run_id
+            WHERE reserved_run.topic_id = r.topic_id AND reserved.state = 'claimed') >= capacity.value
+      )`;
       const skipTopicIds = input.skipTopicIds ?? [];
       const skipClause = skipTopicIds.length === 0
         ? ""
@@ -1403,6 +1414,7 @@ export class SqliteConversationStore implements ConversationStore {
       if (input.runId !== undefined) {
         params.push(input.runId);
       }
+      if (capacityClause) params.push(JSON.stringify(limits));
       const row = this.sqlite.get<DispatchRow>(
         `SELECT d.* FROM pending_dispatches d
          JOIN runs r ON r.id = d.run_id
@@ -1447,6 +1459,7 @@ export class SqliteConversationStore implements ConversationStore {
            )
            ${skipClause}
            ${runClause}
+           ${capacityClause}
            ${SEQUENTIAL_DEPENDENCY_FENCE}
          ORDER BY msg.seq ASC, r.created_at ASC, r.topic_id ASC, m.batch ASC, m.member_index ASC, d.id ASC
          LIMIT 1`,
@@ -1595,6 +1608,21 @@ export class SqliteConversationStore implements ConversationStore {
          WHERE id = ?`,
         [input.leaseExpiresAt, dispatch.id],
       );
+      return this.requireDispatch(dispatch.id);
+    });
+  }
+
+  renewInFlightClaim(input: RenewHeldClaimInput): PendingDispatch {
+    return this.sqlite.transaction(() => {
+      const dispatch = this.sqlite.get<DispatchRow>("SELECT * FROM pending_dispatches WHERE id = ?", [input.dispatchId]);
+      if (!dispatch || dispatch.state !== "claimed" || dispatch.owner !== input.owner
+        || Number(dispatch.generation) !== input.generation) {
+        throw new ConversationError("stale_claim", "execution no longer owns its reservation");
+      }
+      // The caller still awaits this exact execute() promise. Its lease expiry
+      // is elapsed provider time, not process-death evidence. CAS identity is
+      // still required; never renew a recovered/replaced claim.
+      this.sqlite.run("UPDATE pending_dispatches SET lease_expires_at = ? WHERE id = ?", [input.leaseExpiresAt, dispatch.id]);
       return this.requireDispatch(dispatch.id);
     });
   }

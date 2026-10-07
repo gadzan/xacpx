@@ -575,7 +575,9 @@ function validTopicSummary(value: unknown): boolean {
     && (c.status === "active" || c.status === "archived" || c.status === "deleting")
     && typeof c.createdAt === "string"
     && typeof c.updatedAt === "string"
-    && validExecutionTarget(c.executionTarget);
+    && validExecutionTarget(c.executionTarget)
+    && (c.maxConcurrentMemberTurns === undefined || (typeof c.maxConcurrentMemberTurns === "number"
+      && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64));
 }
 
 function validConversationMessage(value: unknown): boolean {

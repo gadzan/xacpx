@@ -1825,6 +1825,21 @@ test("conversation.prompt without Hub ingress stays on public promptConversation
     text: "hi",
   }]);
 });
+test("Topic creation bridge forwards optional concurrency policy and rejects invalid values", async () => {
+  const calls: unknown[][] = [];
+  const create = async (...args: unknown[]) => { calls.push(args); return { id: "topic" }; };
+  const { control } = makeFakeControl({ createTopic: create, createGroupTopic: create });
+  const bridge = createControlBridge(control as never);
+  for (const kind of [MSG.topicsCreate, MSG.groupTopicsCreate]) {
+    const base = { conversationId: "c", title: "t", ...(kind === MSG.groupTopicsCreate
+      ? { target: { workspace: "backend", isolation: "shared" } } : {}) };
+    expect(await dispatch(bridge, req(kind, { ...base, maxConcurrentMemberTurns: 2 }))).toMatchObject({ topic: { id: "topic" } });
+    expect(calls.at(-1)?.at(-1)).toEqual({ maxConcurrentMemberTurns: 2 });
+    expect(await dispatch(bridge, req(kind, { ...base, maxConcurrentMemberTurns: 0 }))).toMatchObject({ error: { code: "invalid-payload" } });
+  }
+  expect(calls).toHaveLength(2);
+});
+
 test("group CRUD and topic lifecycle dispatch with product IDs", async () => {
   const calls: Record<string, unknown[]> = {};
   const record = (name: string, arg: unknown) => {

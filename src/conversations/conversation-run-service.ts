@@ -42,6 +42,7 @@ function assertSessionKeyMatchesAlias(key: string, session: LogicalSession): voi
   }
 }
 import { ConversationError } from "./conversation-error";
+import { memberConcurrencyLimit, type TopicSchedulingOptions } from "./conversation-scheduling-policy";
 import type { ConversationDispatcher } from "./conversation-dispatcher";
 import type { ConversationRouterEngine, RoutingAttemptOutcome } from "./conversation-router-engine";
 import { parseHumanIngress } from "./conversation-execution";
@@ -702,8 +703,9 @@ export class ConversationRunService {
     return { runs, ...(active ? { activeRunId: active.id, activeRun: active } : {}) };
   }
 
-  async createDirectTopic(botId: string, title: string): Promise<ConversationTopic> {
+  async createDirectTopic(botId: string, title: string, options?: TopicSchedulingOptions): Promise<ConversationTopic> {
     this.assertOpen();
+    const limit = memberConcurrencyLimit(options?.maxConcurrentMemberTurns);
     const topic = await this.bots.runLifecycle(botId, async () => {
       const bot = this.bots.getBot(botId);
       const timestamp = this.now().toISOString();
@@ -715,6 +717,7 @@ export class ConversationRunService {
           id: this.nextTopicId(),
           conversationId: planned.conversation.id,
           title: title.trim() || "Topic",
+          ...(limit !== undefined ? { maxConcurrentMemberTurns: limit } : {}),
           status: "active",
           createdAt: timestamp,
           updatedAt: timestamp,
@@ -732,8 +735,8 @@ export class ConversationRunService {
     return topic;
   }
 
-  async createTopic(conversationId: string, title: string): Promise<ConversationTopic> {
-    return this.createDirectTopic(this.resolveDirectBotId(conversationId), title);
+  async createTopic(conversationId: string, title: string, options?: TopicSchedulingOptions): Promise<ConversationTopic> {
+    return this.createDirectTopic(this.resolveDirectBotId(conversationId), title, options);
   }
   /**
    * PR6 Group Topic lifecycle. Creates a Topic under a group Conversation
@@ -749,8 +752,10 @@ export class ConversationRunService {
     conversationId: string,
     title: string,
     target: { workspace: string; cwd?: string; isolation: WorkspaceIsolationPolicy },
+    options?: TopicSchedulingOptions,
   ): Promise<ConversationTopic> {
     this.assertOpen();
+    const limit = memberConcurrencyLimit(options?.maxConcurrentMemberTurns);
     const conversation = this.requireConversation(conversationId);
     if (conversation.kind !== "group") {
       throw new ConversationError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
@@ -770,6 +775,7 @@ export class ConversationRunService {
         title: title.trim() || "Topic",
         status: "active",
         executionTarget,
+        ...(limit !== undefined ? { maxConcurrentMemberTurns: limit } : {}),
         createdAt: timestamp,
         updatedAt: timestamp,
       };
