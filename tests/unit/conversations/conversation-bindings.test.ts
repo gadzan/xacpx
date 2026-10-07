@@ -788,6 +788,103 @@ test("rejection transaction rollback, additive reopen and all source-kind collis
   } finally { store.close(); }
 });
 
+test("Stop atomically rejects owned pending sources, including route waiters, without capturing other owners or later replay tasks", async () => {
+  const current = await compose(); const held = Promise.withResolvers<void>(); const release = Promise.withResolvers<void>();
+  let gate: Promise<void> | undefined;
+  try {
+    const { group: g, topic, bots } = await group(current);
+    const otherRoute = "discord:default:another";
+    await current.control.bindConversation({ chatKey: otherRoute, conversationId: g.id, topicId: topic.id });
+    gate = current.runtime.bots.runLifecycle(bots[0]!.id, async () => { held.resolve(); await release.promise; }); await held.promise;
+    const owned = [request("first", "pending-1"), request("second", "pending-2")];
+    const others = [request("other owner", "pending-owner"), request("other account", "pending-account"), request("other route", "pending-route", otherRoute)];
+    others[0]!.metadata!.senderId = "someone-else"; others[1]!.accountId = "another-account";
+    const inputs = [...owned, ...others];
+    const outcomes = inputs.map((input) => current.runtime.bindings.accept("discord", input).catch((error) => error));
+    await Bun.sleep(5);
+    const stop = request("/stop", "stop-pending");
+    expect(current.runtime.bindings.acceptStop("discord", stop)).toEqual({ reused: false, targetRunIds: [] });
+    for (const input of owned) expect(current.runtime.bindings.receiptKind("discord", input)).toBe("rejection");
+    for (const input of others) expect(current.runtime.bindings.receiptKind("discord", input)).toBeUndefined();
+    const later = request("after Stop", "later-pending");
+    const laterOutcome = current.runtime.bindings.accept("discord", later);
+    expect(current.runtime.bindings.acceptStop("discord", stop)).toEqual({ reused: true, targetRunIds: [] });
+    expect(current.runtime.bindings.receiptKind("discord", later)).toBeUndefined();
+    release.resolve(); await gate;
+    const results = await Promise.all(outcomes);
+    for (const result of results.slice(0, 2)) expect(result).toMatchObject({ code: "external_request_aborted" });
+    for (const result of results.slice(2)) expect(result.run.state).toBe("queued");
+    expect((await laterOutcome)?.run.state).toBe("queued");
+    expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(4);
+  } finally { release.resolve(); await gate; await current.close(); }
+});
+
+test("Stop transaction rolls back every pending tombstone on failure and replay never selects new pending sources", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "xacpx-stop-pending-")), "conversations.sqlite");
+  let fail = true;
+  let store = await SqliteConversationStore.open(path, { beforeAcceptCommit: () => { if (fail) throw new Error("Stop commit failed"); } });
+  const stop = { key: "stop", fingerprint: "stop-fp", chatKey: request().conversationId, accountId: "default", senderId: "human" };
+  const sources = [{ key: "p1", fingerprint: "fp1" }, { key: "p2", fingerprint: "fp2" }];
+  const sql = await createSqlDriver(path);
+  try {
+    expect(() => store.acceptExternalStop(stop, () => [], () => sources)).toThrow("Stop commit failed");
+    expect(store.hasExternalStopRequest(stop.key)).toBe(false);
+    for (const source of sources) expect(store.hasExternalRejection(source.key)).toBe(false);
+    fail = false;
+    sql.exec("CREATE TRIGGER fail_pending_rejection BEFORE INSERT ON external_conversation_rejections WHEN NEW.source_key = 'p2' BEGIN SELECT RAISE(ABORT, 'pending fence disk failure'); END");
+    expect(() => store.acceptExternalStop(stop, () => [], () => sources)).toThrow("pending fence disk failure");
+    expect(store.hasExternalStopRequest(stop.key)).toBe(false); expect(store.hasExternalRejection("p1")).toBe(false);
+    sql.exec("DROP TRIGGER fail_pending_rejection");
+    expect(store.acceptExternalStop(stop, () => [], () => sources)).toEqual({ reused: false, targetRunIds: [] });
+    store.close(); store = await SqliteConversationStore.open(path);
+    for (const source of sources) expect(store.getExternalRejection(source)?.code).toBe("external_request_aborted");
+    expect(store.acceptExternalStop(stop, () => { throw new Error("must not select targets"); },
+      () => { throw new Error("must not select pending sources"); })).toEqual({ reused: true, targetRunIds: [] });
+    expect(() => store.getExternalRejection({ ...sources[0]!, fingerprint: "changed" })).toThrow("different input");
+    expect(() => store.acceptExternalStop({ ...stop, key: "another-stop" }, () => [], () => [{ ...sources[0]!, fingerprint: "changed" }])).toThrow("different input");
+    expect(store.hasExternalStopRequest("another-stop")).toBe(false);
+  } finally { sql.close(); store.close(); }
+});
+
+test("prompt write transaction rechecks rejection committed by another SQLite writer after its precheck", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "xacpx-receipt-writers-")), "conversations.sqlite");
+  const store = await SqliteConversationStore.open(path); const writer = await SqliteConversationStore.open(path);
+  const source = { key: "race", fingerprint: "prompt-fingerprint" };
+  const get = store.getExternalRequest.bind(store); let injected = false;
+  store.getExternalRequest = (input) => {
+    const result = get(input);
+    if (!injected) { injected = true; writer.recordExternalRejection({ ...source, fingerprint: "rejection-fingerprint" },
+      { code: "external_request_aborted", message: "stopped" }); }
+    return result;
+  };
+  try {
+    const now = new Date().toISOString();
+    const profileSnapshot = snapshotBotProfile({ id: "bot", name: "Bot", agent: "codex", workspace: "backend", enabled: true,
+      profileRevision: 1, createdAt: now, updatedAt: now }, now);
+    expect(() => store.acceptRequest({ conversationId: "c", topicId: "t", requestId: `external:${source.key}`, botId: "bot", content: "work", now,
+      profileSnapshot, externalRequest: source })).toThrow("already identifies a rejection");
+    expect(store.hasExternalRequest(source.key)).toBe(false); expect(store.listRuns("c", "t")).toHaveLength(0);
+    expect(writer.getExternalRejection({ ...source, fingerprint: "rejection-fingerprint" })?.code).toBe("external_request_aborted");
+  } finally { writer.close(); store.close(); }
+});
+
+test("Direct binding durably rejects a Group-shaped structured target and replays after unbind/restart", async () => {
+  let current = await compose(); const input = request(); input.metadata!.conversationTarget = { mode: "everyone" };
+  try {
+    const bot = await current.control.createBot({ name: "Direct", agent: "codex", workspace: "backend" });
+    const id = createDirectConversationId(bot.id);
+    await current.control.bindConversation({ chatKey: input.conversationId, conversationId: id });
+    await expect(current.route(input)!.prepareConversation!(input)).rejects.toMatchObject({ code: "external_target_invalid" });
+    expect(current.runtime.bindings.receiptKind("discord", input)).toBe("rejection");
+    await current.control.unbindConversation(input.conversationId);
+    const { path, state } = current; await current.close(); current = await compose({ path, state });
+    await expect(current.route(input)!.prepareConversation!(input)).rejects.toMatchObject({ code: "external_target_invalid" });
+    const changed = { ...input, metadata: { ...input.metadata, conversationTarget: { mode: "automatic" as const } } };
+    await expect(current.route(changed)!.prepareConversation!(changed)).rejects.toMatchObject({ code: "external_request_conflict" });
+    expect(current.runtime.store.listRuns(id)).toHaveLength(0); expect(current.delegated()).toBe(0);
+  } finally { await current.close(); }
+});
+
 test("actual Feishu trustGroupOwner blocked RPC cannot delay acceptance or Stop; enrichment applies only to later turns", async () => {
   const current = await compose();
   const sent: string[] = []; let finishLookup = (_owner: string) => {}; let lookups = 0;

@@ -71,16 +71,21 @@ async function fixture() {
     activeTurns: { isActiveAnywhere: () => false }, events, scheduled: {}, orchestration: {},
     workspaces: { list: () => [{ name: "backend", cwd: root }] } } as never);
   const kernel = conversationKernel(control);
-  const runtime = await createConversationRuntime({ config, state, stateStore, sessions, control: kernel,
+  const createRuntime = () => createConversationRuntime({ config, state, stateStore, sessions, control: kernel,
     sqlitePath: join(root, "conversations.sqlite"), releaseOwnedSession: async () => {}, stateMutex, autoKick: false,
     onProductEvent: (event) => kernel.emitConversationProduct(event) });
-  kernel.bindConversationRuntime(runtime);
-  const accept = runtime.bindings.accept.bind(runtime.bindings);
-  runtime.bindings.accept = async (...args) => { try { return await accept(...args); }
-    catch (error) { errors.push((error as { code: string }).code); throw error; } };
-  const acceptStop = runtime.bindings.acceptStop.bind(runtime.bindings);
-  runtime.bindings.acceptStop = (...args) => { try { return acceptStop(...args); }
-    catch (error) { errors.push((error as { code: string }).code); throw error; } };
+  let runtime = await createRuntime();
+  const observeRuntime = () => {
+    kernel.bindConversationRuntime(runtime);
+    const accept = runtime.bindings.accept.bind(runtime.bindings);
+    runtime.bindings.accept = async (...args) => { try { return await accept(...args); }
+      catch (error) { errors.push((error as { code: string }).code); throw error; } };
+    const acceptStop = runtime.bindings.acceptStop.bind(runtime.bindings);
+    runtime.bindings.acceptStop = (...args) => { try { return acceptStop(...args); }
+      catch (error) { errors.push((error as { code: string }).code); throw error; } };
+  };
+  observeRuntime();
+  const restartRuntime = async () => { await runtime.shutdown(); runtime = await createRuntime(); observeRuntime(); };
   const bot = await control.createBot({ name: "Bot", agent: "codex", workspace: "backend" });
   const sibling = await control.createBot({ name: "Other", agent: "codex", workspace: "backend" });
   const group = await control.createGroup({ title: "Bound", botIds: [bot.id, sibling.id], leadBotId: bot.id });
@@ -114,7 +119,7 @@ async function fixture() {
     if (priorStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = priorStateDir;
     mock.restore();
   };
-  return { runtime, control, bot, group, topic, chatKey, daemon, pending, ordinary, errors, downloads, sent, start, stop, emit, runs, close, buildWeixinConversationChatKey,
+  return { get runtime() { return runtime; }, restartRuntime, control, bot, group, topic, chatKey, daemon, pending, ordinary, errors, downloads, sent, start, stop, emit, runs, close, buildWeixinConversationChatKey,
     pollInputs, configCalls, inbound, sessionReads, refreshCredentials, syncPath: () => getSyncBufFilePath("default"),
     cursor: () => loadGetUpdatesBuf(getSyncBufFilePath("default")), clears: () => clears };
 }
@@ -253,6 +258,33 @@ test("Weixin polling admits Stop while a later acceptance holds a real Bot gate,
     expect(f.cursor()).toBe("A"); expect(f.runtime.store.getRun(run.id)?.completionReason).toBe("human-cancelled");
     expect(f.ordinary).toHaveLength(0);
     release.resolve(); await gate; await waitFor(() => f.cursor() === "D" && f.ordinary.length === 1); expect(f.runs()).toHaveLength(1);
+  } finally { release.resolve(); await gate; await f.close(); }
+});
+
+test("Weixin durable Stop fences pending sources across failed rejection write, old-cursor replay and runtime restart", async () => {
+  const f = await fixture(); const held = Promise.withResolvers<void>(); const release = Promise.withResolvers<void>();
+  let gate: Promise<void> | undefined; let pending = false; let failedWrite = false;
+  const accept = f.runtime.bindings.accept.bind(f.runtime.bindings);
+  f.runtime.bindings.accept = async (...args) => { pending = true; return accept(...args); };
+  try {
+    gate = f.runtime.bots.runLifecycle(f.bot.id, async () => { held.resolve(); await release.promise; }); await held.promise;
+    await f.start(); f.emit(1, "stopped before acceptance", {}, "B"); await waitFor(() => pending);
+    f.runtime.store.recordExternalRejection = () => { failedWrite = true; throw new Error("pending rejection write failed"); };
+    f.emit(2, "/stop", {}, "C"); await waitFor(() => f.sent.some((entry) => entry.context === "ctx-2"));
+    expect(f.cursor()).toBeUndefined(); expect(f.runs()).toHaveLength(0);
+    // Lose the in-memory human signal before the pending prompt can finish.
+    await f.stop("disabled"); release.resolve(); await gate; await waitFor(() => failedWrite);
+    expect(f.cursor()).toBeUndefined();
+    await f.restartRuntime();
+    const before = f.pollInputs.length; await f.start(); expect(f.pollInputs[before]).toBe("");
+    f.emit(1, "stopped before acceptance", {}, "B"); f.emit(2, "/stop", {}, "C");
+    await waitFor(() => f.cursor() === "C");
+    await f.runtime.dispatcher.kick(); expect(f.runs()).toHaveLength(0); expect(f.ordinary).toHaveLength(0);
+    expect(f.errors).toContain("external_request_aborted");
+    // The old Stop cannot capture a genuinely later source.
+    f.emit(3, "fresh work", {}, "D"); await waitFor(() => f.cursor() === "D");
+    expect(f.runs()).toHaveLength(1); expect(f.runs()[0]?.state).toBe("queued");
+    await f.runtime.dispatcher.kick(); await waitFor(() => f.runs()[0]?.state === "completed");
   } finally { release.resolve(); await gate; await f.close(); }
 });
 

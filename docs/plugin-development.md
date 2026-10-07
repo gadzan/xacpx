@@ -425,6 +425,16 @@ cannot abort later tasks. Ordinary Session tasks and the Stop's own task are exc
 message identity, content and signal objects. Enter preparation for each admitted
 message immediately; the core Topic queue serializes execution. An older Run or
 its channel delivery must not hold later input in an in-memory channel lane.
+Fresh Stop admission also commits cancellation tombstones for the owned platform
+sources already inside preparation, including route/Bot gate waiters. They remain
+rejected across restart even if the adapter never gets to signal them. Stop replay
+does not capture later preparation calls.
+
+Polling and webhook plugins should import `isConversationIngressRejection` from
+`xacpx/plugin-api`. If preparation rejects and this predicate returns true, the
+source decision is already durable and can be acknowledged/checkpointed. Other
+errors must remain unacknowledged/retryable; matching a code string is insufficient.
+The predicate works across independently bundled plugin and core copies.
 
 `ChatRequest` / `ChatResponse` are exported from `xacpx/plugin-api`. Deliver the
 selected Agent's response through the channel's normal reply mechanism. Scheduled

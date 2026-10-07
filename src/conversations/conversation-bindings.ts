@@ -9,7 +9,7 @@ import type { ChatRequest } from "../weixin/agent/interface";
 import { ConversationError } from "./conversation-error";
 import { ConversationIngressRejection, isExternalIngressRejectionCode } from "./conversation-ingress-rejection";
 import type { ConversationRunService } from "./conversation-run-service";
-import type { SqliteConversationStore, ExternalStopReceipt } from "./sqlite-conversation-store";
+import type { SqliteConversationStore, ExternalStopReceipt, ExternalStopRequest } from "./sqlite-conversation-store";
 import type { AcceptRequestResult } from "./conversation-store";
 import { withEffectiveOwner, type ChannelOwnerConfig } from "../commands/command-policy";
 
@@ -48,6 +48,7 @@ function validateChatKey(chatKey: unknown): asserts chatKey is string {
 
 export class ConversationBindingService {
   private readonly gates = new Map<string, { mutex: AsyncMutex; users: number }>();
+  private readonly pendingAcceptances = new Set<ExternalStopRequest>();
   constructor(private readonly store: SqliteConversationStore,
     private readonly runs: ConversationRunService, private readonly bots: BotService,
     private readonly ownerConfig?: ChannelOwnerConfig) {}
@@ -109,7 +110,7 @@ export class ConversationBindingService {
     let code = error.code;
     if (["topic_not_active", "topic_not_found", "conversation_not_found", "conversation_deleting", "topic_deleting", "group_not_found"].includes(code)) code = "binding_topic_invalid";
     else if (["bot_disabled", "bot_not_found", "empty_target"].includes(code)) code = "external_target_unavailable";
-    else if (["invalid-target", "target_too_large", "group_member_not_member", "conversation_mismatch"].includes(code)) code = "external_target_invalid";
+    else if (["invalid-target", "target_too_large", "group_member_not_member", "conversation_mismatch", "conversation_target_mismatch"].includes(code)) code = "external_target_invalid";
     else if (code === "target_required") code = "external_target_required";
     else if (code === "topic_queue_full") code = "external_queue_full";
     else if (code === "automatic_unsupported") code = "external_routing_unsupported";
@@ -177,7 +178,9 @@ export class ConversationBindingService {
       if (hasMedia(request.media) || metadata.hadInboundMedia) throw new ConversationError("external_media_unsupported", "bound Conversation requests currently accept text only");
       const fingerprint = createHash("sha256").update(JSON.stringify([metadata.senderId, request.text])).digest("hex");
       return this.store.acceptExternalStop({ key, fingerprint, chatKey: request.conversationId, accountId: request.accountId, senderId: metadata.senderId },
-        () => this.stopTargets(channelId, request));
+        () => this.stopTargets(channelId, request),
+        () => [...this.pendingAcceptances].filter((pending) => pending.chatKey === request.conversationId
+          && pending.accountId === request.accountId && pending.senderId === metadata.senderId));
     } catch (error) { return this.rejectIngress(identity, request, error); }
   }
 
@@ -215,6 +218,12 @@ export class ConversationBindingService {
   async accept(channelId: string, request: ChatRequest, shutdownSignal?: AbortSignal,
     selected?: ConversationRouteSnapshot): Promise<AcceptRequestResult | undefined> {
     const identity = this.rejectionIdentity(channelId, request);
+    const metadata = request.metadata;
+    const pending = identity && metadata?.origin === "human" && metadata.authenticatedHuman === true && nonempty(metadata.senderId)
+      ? { ...identity, chatKey: request.conversationId, accountId: request.accountId, senderId: metadata.senderId } : undefined;
+    // Register before waiting for either route or Bot gates. Fresh Stop commits
+    // these exact sources as rejection tombstones in its own transaction.
+    if (pending) this.pendingAcceptances.add(pending);
     return this.withRoute(request.conversationId, async () => {
       try {
         this.replayRejection(identity);
@@ -306,7 +315,7 @@ export class ConversationBindingService {
           await cancellation;
         }
       } catch (error) { return this.rejectIngress(identity, request, error, shutdownSignal); }
-    });
+    }).finally(() => { if (pending) this.pendingAcceptances.delete(pending); });
   }
 
   private assertSupportedIngress(channelId: string, request: ChatRequest): void {

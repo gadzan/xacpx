@@ -20,7 +20,7 @@ import { redactBody } from "../util/redact.js";
 import { resolveWeixinAccount, listWeixinAccountIds } from "../auth/accounts.js";
 import { resetSessionPause } from "../api/session-guard.js";
 import { clearContextTokensForAccount, restoreContextTokens, hasWeixinInboundMedia } from "../messaging/inbound.js";
-import { ConversationIngressRejection } from "../../conversations/conversation-ingress-rejection.js";
+import { isConversationIngressRejection } from "../../conversations/conversation-ingress-rejection.js";
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -426,7 +426,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
             // A skipped/aborted task that never prepared must not advance a cursor.
             preparation?.reject(new Error("bound message ended before preparation"));
           }, (error) => {
-            if (error instanceof ConversationIngressRejection) preparation?.resolve();
+            if (isConversationIngressRejection(error)) preparation?.resolve();
             else preparation?.reject(error);
           });
           void runPromise

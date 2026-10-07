@@ -12,5 +12,17 @@ const REJECTION_CODES = new Set([
 
 export function isExternalIngressRejectionCode(code: string): boolean { return REJECTION_CODES.has(code); }
 
+const DURABLE_INGRESS_REJECTION = Symbol.for("@ganglion/xacpx/conversation-ingress-rejection");
+
 /** Only issued after durable source evidence exists; safe to acknowledge ingress. */
-export class ConversationIngressRejection extends ConversationError {}
+export class ConversationIngressRejection extends ConversationError {
+  readonly [DURABLE_INGRESS_REJECTION] = true;
+}
+
+/** Stable across separately bundled plugin/core copies; error codes alone are not proof. */
+export function isConversationIngressRejection(error: unknown): error is ConversationIngressRejection {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as ConversationIngressRejection;
+  return candidate[DURABLE_INGRESS_REJECTION] === true && typeof candidate.code === "string"
+    && isExternalIngressRejectionCode(candidate.code) && typeof candidate.message === "string";
+}

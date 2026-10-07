@@ -1,4 +1,5 @@
 export { ActiveConsumerLockError } from "./channels/types.js";
+export { isConversationIngressRejection } from "./conversations/conversation-ingress-rejection.js";
 export type {
   ChannelPluginDefinition,
   ChannelRetireContext,

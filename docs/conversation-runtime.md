@@ -407,6 +407,10 @@ and disabled/missing targets to `external_target_unavailable`. Adapters recogniz
 the committed ingress-decision type, rather than enumerating internal Run/Bot
 errors. Unknown errors, failed receipt writes and channel lifecycle abort remain
 retryable/unknown and cannot acknowledge preparation.
+Polling/webhook plugins use the exported `isConversationIngressRejection(error)`
+predicate from `xacpx/plugin-api` to recognize an already durable rejection and
+safely acknowledge it. Matching an error code alone is insufficient. Direct
+bindings reject Group-shaped structured targets as `external_target_invalid`.
 An inactive/archived bound Topic (`binding_topic_invalid`) is a completed ingress
 rejection and can checkpoint, so it cannot poison later account traffic or be
 retried as ordinary input after teardown removes the binding.
@@ -529,7 +533,15 @@ without a live Run cannot become Stop targets.
 Bound Stop has its own durable platform receipt. The first admitted Stop
 atomically records its source key, input fingerprint, original owner and frozen
 target Run IDs, including an empty set, before any cancellation or adapter human
-signal. Replay uses that original set and cannot cancel later Runs. Prompt and
+signal. In that same transaction it records `external_request_aborted` rejection
+receipts for the owned platform sources whose acceptance is already pending,
+including those waiting for the route mutex or a Bot lifecycle gate. These
+source/fingerprint tombstones survive a crash before pending acceptance wakes
+or writes its own rejection; restart cannot resurrect the stopped prompt.
+Accepted sources remain Run targets, and other owners/accounts/routes are excluded.
+Failure to persist any pending fence rolls back the entire Stop admission.
+Replay uses the original receipts without capturing new pending sources and
+cannot cancel later Runs. Prompt and
 Stop receipts share source identity: changing the input or switching event kind
 fails closed. Stop receipts survive unbind, rebind, restart and target teardown.
 Only fresh Stop admission authorizes adapters to fence the owned pending tasks
@@ -539,6 +551,8 @@ result reports `stopPendingAcceptance` for this purpose. A failed cancellation
 can retry only the original targets. Stop records have the same unlimited
 retention contract as prompt receipts. Earlier releases stored no Stop source
 identity, so historical Stop events cannot be backfilled.
+Stop receipts created before pending-source fences cannot recover the lost
+in-memory pending set; replay never guesses targets for those historical receipts.
 
 Stop receipt corruption checks reject malformed JSON, invalid/duplicate target
 IDs and mismatched owner facts. These checks do not prove the historical

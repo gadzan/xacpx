@@ -769,6 +769,9 @@ export class SqliteConversationStore implements ConversationStore {
         if (input.externalRequest && this.hasExternalStopRequest(input.externalRequest.key)) {
           throw new ConversationError("external_request_conflict", "platform message already identifies a Stop");
         }
+        if (input.externalRequest && this.hasExternalRejection(input.externalRequest.key)) {
+          throw new ConversationError("external_request_conflict", "platform message already identifies a rejection");
+        }
         this.assertAcceptable(input.conversationId, input.topicId);
         const created = this.insertAccepted(input);
         if (input.externalRequest) {
@@ -821,19 +824,25 @@ export class SqliteConversationStore implements ConversationStore {
   recordExternalRejection(input: { key: string; fingerprint: string }, rejection: ExternalRejectionReceipt): ExternalRejectionReceipt {
     this.assertOpen();
     return this.sqlite.transaction(() => {
-      if (this.hasExternalRequest(input.key) || this.hasExternalStopRequest(input.key)) {
-        throw new ConversationError("external_request_conflict", "platform message already has an accepted receipt");
-      }
-      const replay = this.getExternalRejection(input);
-      if (replay) return replay;
-      if (!isExternalIngressRejectionCode(rejection.code) || !rejection.message) {
-        throw new ConversationError("external_request_corrupt", "invalid external rejection decision");
-      }
-      this.sqlite.run("INSERT INTO external_conversation_rejections (source_key, fingerprint, rejection_code, rejection_message) VALUES (?, ?, ?, ?)",
-        [input.key, input.fingerprint, rejection.code, rejection.message]);
+      const result = this.insertExternalRejection(input, rejection);
       this.beforeAcceptCommit?.();
-      return rejection;
+      return result;
     });
+  }
+
+  /** Caller holds the write transaction; also used by atomic Stop admission. */
+  private insertExternalRejection(input: { key: string; fingerprint: string }, rejection: ExternalRejectionReceipt): ExternalRejectionReceipt {
+    if (this.hasExternalRequest(input.key) || this.hasExternalStopRequest(input.key)) {
+      throw new ConversationError("external_request_conflict", "platform message already has an accepted receipt");
+    }
+    const replay = this.getExternalRejection(input);
+    if (replay) return replay;
+    if (!isExternalIngressRejectionCode(rejection.code) || !rejection.message) {
+      throw new ConversationError("external_request_corrupt", "invalid external rejection decision");
+    }
+    this.sqlite.run("INSERT INTO external_conversation_rejections (source_key, fingerprint, rejection_code, rejection_message) VALUES (?, ?, ?, ?)",
+      [input.key, input.fingerprint, rejection.code, rejection.message]);
+    return rejection;
   }
 
   getExternalStopRequest(input: ExternalStopRequest): ExternalStopReceipt | undefined {
@@ -854,13 +863,22 @@ export class SqliteConversationStore implements ConversationStore {
     return { reused: true, targetRunIds: ids as string[] };
   }
 
-  acceptExternalStop(input: ExternalStopRequest, selectTargets: () => string[]): ExternalStopReceipt {
+  acceptExternalStop(input: ExternalStopRequest, selectTargets: () => string[],
+    selectPending: () => Array<{ key: string; fingerprint: string }> = () => []): ExternalStopReceipt {
     this.assertOpen();
     return this.sqlite.transaction(() => {
       if (this.hasExternalRequest(input.key)) throw new ConversationError("external_request_conflict", "platform message already identifies a prompt");
       const replay = this.getExternalStopRequest(input);
       if (replay) return replay;
       const targetRunIds = selectTargets();
+      for (const pending of selectPending()) {
+        if (pending.key === input.key) throw new ConversationError("external_request_conflict", "Stop source also identifies a pending prompt");
+        // A committed prompt is handled by the frozen Run targets, never by a
+        // rejection. Pending sources need durable proof even if we crash before
+        // their human signal fires or their own rejection can be written.
+        if (!this.hasExternalRequest(pending.key)) this.insertExternalRejection(pending,
+          { code: "external_request_aborted", message: "channel request was stopped before acceptance" });
+      }
       this.sqlite.run("INSERT INTO external_conversation_stops (source_key, fingerprint, chat_key, account_id, sender_id, target_run_ids_json) VALUES (?, ?, ?, ?, ?, ?)",
         [input.key, input.fingerprint, input.chatKey, input.accountId, input.senderId, JSON.stringify(targetRunIds)]);
       this.beforeAcceptCommit?.();
