@@ -24,7 +24,7 @@ async function fixture() {
   const root = mkdtempSync(join(tmpdir(), "xacpx-weixin-boundary-"));
   const priorStateDir = process.env.OPENCLAW_STATE_DIR; process.env.OPENCLAW_STATE_DIR = root;
   const pending: WeixinMessage[] = []; let wake = () => {}; let polls = 0;
-  let nextBuf = ""; const pollInputs: string[] = []; let clears = 0;
+  let nextBuf = ""; const pollInputs: string[] = []; let clears = 0; let sessionExpired = false;
   const sent: Array<{ context: string; text: string }> = [];
   const ordinary: ChatRequest[] = []; const errors: string[] = [];
   const configCalls: string[] = []; const inbound: string[] = [];
@@ -36,6 +36,7 @@ async function fixture() {
         const finish = () => { input.abortSignal?.removeEventListener("abort", finish); resolve(); };
         wake = finish; input.abortSignal?.addEventListener("abort", finish, { once: true });
       });
+      if (sessionExpired) { sessionExpired = false; return { ret: -14, msgs: [], get_updates_buf: "" }; }
       const buf = nextBuf; nextBuf = "";
       return { ret: 0, msgs: pending.splice(0), get_updates_buf: buf };
     },
@@ -51,6 +52,9 @@ async function fixture() {
   const { saveWeixinAccount, registerWeixinAccountId } = await import("../../../src/weixin/auth/accounts");
   const { getSyncBufFilePath, loadGetUpdatesBuf } = await import("../../../src/weixin/storage/sync-buf");
   const credentials = () => { saveWeixinAccount("default", { token: "test", baseUrl: "https://example.com" }); registerWeixinAccountId("default"); };
+  const refreshCredentials = () => {
+    saveWeixinAccount("default", { token: "refreshed", baseUrl: "https://example.com" }); sessionExpired = true; wake();
+  };
   credentials();
   const state = createEmptyState(); const stateStore = { save: async () => {}, saveNow: async () => {} }; const stateMutex = new AsyncMutex();
   const config = { transport: { type: "acpx-cli", permissionMode: "approve-all" },
@@ -106,7 +110,7 @@ async function fixture() {
     mock.restore();
   };
   return { runtime, control, group, topic, chatKey, daemon, pending, ordinary, errors, sent, start, stop, emit, runs, close, buildWeixinConversationChatKey,
-    pollInputs, configCalls, inbound, sessionReads, syncPath: () => getSyncBufFilePath("default"),
+    pollInputs, configCalls, inbound, sessionReads, refreshCredentials, syncPath: () => getSyncBufFilePath("default"),
     cursor: () => loadGetUpdatesBuf(getSyncBufFilePath("default")), clears: () => clears };
 }
 
@@ -163,6 +167,23 @@ test("Weixin ordinary input without a cursor waits for a later covering checkpoi
     f.emit(2, "bound work", {}, "B"); await waitFor(() => f.cursor() === "B" && f.ordinary.length === 1);
     expect(f.runs()).toHaveLength(1);
   } finally { await f.close(); }
+});
+
+test("Weixin credential refresh fences old deferred ordinary work and replays from the durable cursor", async () => {
+  const f = await fixture(); const entered = Promise.withResolvers<void>(); const resume = Promise.withResolvers<void>();
+  const accept = f.runtime.bindings.accept.bind(f.runtime.bindings);
+  f.runtime.bindings.accept = async (...args) => { entered.resolve(); await resume.promise; return accept(...args); };
+  try {
+    await f.start(); f.emit(1, "bound before refresh", {}, "B"); await entered.promise;
+    f.emit(2, "ordinary before refresh", { from_user_id: "other" }, "C"); await waitFor(() => f.pollInputs.includes("C"));
+    expect(f.cursor()).toBeUndefined(); expect(f.ordinary).toHaveLength(0);
+    const before = f.pollInputs.length; f.refreshCredentials();
+    await waitFor(() => f.pollInputs.length > before); expect(f.pollInputs[before]).toBe("");
+    f.emit(1, "bound before refresh", {}, "B"); f.emit(2, "ordinary before refresh", { from_user_id: "other" }, "C");
+    resume.resolve(); await waitFor(() => f.cursor() === "C" && f.ordinary.length === 1);
+    expect(f.runs()).toHaveLength(1); expect(f.ordinary.map((input) => input.text)).toEqual(["ordinary before refresh"]);
+    expect(f.configCalls.filter((user) => user === "other")).toHaveLength(1);
+  } finally { resume.resolve(); await f.close(); }
 });
 
 test("Weixin an earlier checkpoint cannot release ordinary input from a later unprepared batch", async () => {
