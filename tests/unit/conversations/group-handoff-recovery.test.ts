@@ -44,7 +44,10 @@ async function harness(options: { onRun?: (input: ConversationTurnRunInput) => P
   const config = { agents: { codex: { driver: "codex" } }, workspaces: { backend: { cwd: tmpdir() } },
     transport: { type: "acpx-cli" }, channel: { type: "weixin" }, channels: [], plugins: [] } as unknown as AppConfig;
   const stateStore = { async save(_state: AppState) {}, async saveNow(_state: AppState) {} };
-  if (options.enforcedReaders) config.agents.codex!.driver = "claude";
+  if (options.enforcedReaders) {
+    config.agents.codex!.driver = "claude";
+    config.transport.adapterVersions = { claude: "0.78.0" };
+  }
   const stateMutex = new AsyncMutex();
   const sessions = new SessionService(config, stateStore, state, { stateMutex });
   const releaseOwnedSession = createStrictOwnedSessionRelease({ sessions, transport: {

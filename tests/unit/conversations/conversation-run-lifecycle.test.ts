@@ -200,7 +200,10 @@ async function createLifecycle(options: {
   const stateStore = new MemoryStateStore();
   const stateMutex = new AsyncMutex();
   const config = createConfig();
-  if (options.enforcedReaders) config.agents.codex!.driver = "claude";
+  if (options.enforcedReaders) {
+    config.agents.codex!.driver = "claude";
+    config.transport.adapterVersions = { claude: "0.78.0" };
+  }
   const sessions = new SessionService(config, stateStore, state, { now: () => Date.parse(NOW), stateMutex });
   const physical = {
     fail: false,

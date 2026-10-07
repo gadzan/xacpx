@@ -170,6 +170,7 @@ async function wire(options?: {
   return {
     dir,
     sqlitePath,
+    config,
     state,
     sessions,
     control,
@@ -199,7 +200,8 @@ test("Control Topic creation persists and projects optional concurrency without 
 });
 
 test("dedicated policy Control operation accepts a durable effective ceiling and preserves ingress authority", async () => {
-  const { control, runtime, origins } = await wire();
+  const { control, runtime, origins, config } = await wire();
+  config.transport.adapterVersions = { claude: "0.78.0" };
   try {
     const bot = await control.createBot({ name: "Reviewer", agent: "claude", workspace: "backend" });
     const input = { conversationId: createDirectConversationId(bot.id), topicId: createDirectTopicId(bot.id),

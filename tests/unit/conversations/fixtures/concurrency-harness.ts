@@ -65,7 +65,8 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
   // The config key is an alias: synthetic reader fixtures now materialize the
   // actual supported restricted launch instead of treating Codex's mode as proof.
   const config = { agents: { codex: { driver: "claude" } }, workspaces: { backend: { cwd: "/tmp/backend" } },
-    transport: { type: "acpx-cli", command: "acpx" } } as AppConfig;
+    // Pin the validated enforcement contract independently of release defaults.
+    transport: { type: "acpx-cli", command: "acpx", adapterVersions: { claude: "0.78.0" } } } as AppConfig;
   const stateMutex = new AsyncMutex();
   const sessions = new SessionService(config, stateStore, state, { stateMutex });
   const releaseOwnedSession = createStrictOwnedSessionRelease({ sessions, transport: { async deleteSession() {}, async releaseLogicalSession() {} } });

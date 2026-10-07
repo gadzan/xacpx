@@ -581,7 +581,10 @@ async function compose(stateStore: BarrierStateStore, options: {
   const state = options.state ?? createEmptyState();
   const sqlitePath = options.sqlitePath ?? join(dir, "conversations.sqlite");
   const config = createConfig();
-  if (options.enforcedReaders) config.agents.codex!.driver = "claude";
+  if (options.enforcedReaders) {
+    config.agents.codex!.driver = "claude";
+    config.transport.adapterVersions = { claude: "0.78.0" };
+  }
   const stateMutex = new AsyncMutex();
   const sessions = new SessionService(config, stateStore, state, { stateMutex });
   const events = createControlEventBus();
