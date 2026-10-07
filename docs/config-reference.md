@@ -327,8 +327,10 @@ See full operation instructions in: [docs/channel-management.md](./channel-manag
 | `options.trustGroupOwner` | `boolean` | No | Opt-in group-owner command authorization. When `true`, the plugin queries the Feishu chat owner (GET `/im/v1/chats/{chat_id}`, cached 5 minutes, 10 s timeout; needs the `im:chat:readonly` scope) and asserts `isOwner` on group turns whose sender is that owner, letting owner-gated control commands (`/use`, `/session new`, in-session `scheduled_*` tools, ...) work without listing senders in [`channel.ownerIds`](#channelownerids). Every group turn records an explicit owner boolean (non-owner, feature-off, and failed lookups all record `isOwner: false`), so a member turn overwrites a previous owner turn's state on the persistent route instead of inheriting it. **Only enable when you control who can add this bot to groups**: anyone who creates a group and adds the bot is its owner, and control commands execute with the operator's authority; a transferred-away owner keeps command authority until the 5-minute cache expires. Failed or ownerless lookups are short-circuit cached for 30 seconds so a misconfigured scope cannot cost one REST request per group message. Defaults to `false` |
 
 For Conversation-bound Feishu group messages, `trustGroupOwner` uses only an
-unexpired owner cache entry at admission. A cache miss records `isOwner: false`
-and accepts durable ingress without waiting for REST; a background refresh after
+unexpired owner cache entry at admission. A cache miss supplies `isOwner: false`
+from the adapter; the shared `channel.ownerIds` / `channels[].ownerIds` policy
+still contributes to the final durable owner flag. Ingress is accepted without
+waiting for REST; a background refresh after
 acceptance can authorize later turns, never the accepted turn. Ordinary Session
 and control-command paths retain the awaited lookup described above.
 

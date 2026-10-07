@@ -414,7 +414,9 @@ The metadata contract is `channel`, `channelMessageId`, `origin: "human"`,
 Discord proves human origin with `author.bot === false`; Feishu requires the
 platform's `sender_type === "user"`. Missing sender type does not qualify.
 Bound Feishu ingress uses only an unexpired cached group-owner fact; a cache miss
-records `isOwner: false` and prepares durable acceptance immediately. A background
+supplies an adapter assertion of `isOwner: false` and prepares durable acceptance
+immediately. The shared configured `ownerIds` policy can still make the final
+durable owner flag true. A background
 lookup after preparation may enrich later turns, never the accepted turn's authority.
 Ordinary Session/control turns retain the awaited owner lookup. Weixin bound text
 uses the stable English `[Quote: ...]` marker, including nested quotes, so locale
