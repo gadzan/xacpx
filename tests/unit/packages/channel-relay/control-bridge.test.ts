@@ -258,6 +258,20 @@ for (const human of [false, true]) {
   });
 }
 
+test("policy RPC with trusted ingress rejects a missing dedicated callback without public downgrade", async () => {
+  let publicCalls = 0, oldTrustedCalls = 0;
+  const { control } = makeFakeControl({ promptConversationWithPolicy: async () => { publicCalls++; return {} as never; } });
+  const bridge = createControlBridge(control as never, {
+    trustedConversationPrompt: async () => { oldTrustedCalls++; return {} as never; },
+  });
+  expect(await dispatch(bridge, req(MSG.conversationPromptWithPolicy, {
+    conversationId: "c", topicId: "t", requestId: "r", text: "review",
+    memberPolicies: [{ botId: "a", filesystem: "read-only" }],
+    humanIngress: { chatKey: "relay:a", senderId: "a", accountId: "a", isOwner: true },
+  }))).toMatchObject({ error: { code: "unsupported-effect-policy" } });
+  expect(publicCalls).toBe(0); expect(oldTrustedCalls).toBe(0);
+});
+
 test("sessions.list / prompt / command.execute dispatch and shape results", async () => {
   const { control, calls } = makeFakeControl();
   const bridge = createControlBridge(control as never);

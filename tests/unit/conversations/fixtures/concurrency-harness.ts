@@ -57,7 +57,7 @@ export class ControlledRunner implements ConversationTurnRunner {
     return { outcome: "cancelled" as const };
   }
 }
-export async function harness(options: { path?: string; state?: AppState; hooks?: ConversationDispatcherHooks; router?: ConversationRouter; ownerId?: string } = {}) {
+export async function harness(options: { path?: string; state?: AppState; hooks?: ConversationDispatcherHooks; router?: ConversationRouter; ownerId?: string; beforeAcceptPersist?: () => Promise<void> } = {}) {
   const path = options.path ?? join(mkdtempSync(join(tmpdir(), "xacpx-concurrency-")), "conversations.sqlite");
   const store = await SqliteConversationStore.open(path);
   const state = options.state ?? createEmptyState();
@@ -82,7 +82,7 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
     readGroup: (id) => state.conversations[id], readTopic: (_id, tid) => state.conversation_topics[tid],
     readBot: (id) => bots.getBot(id), runLifecycleAll: (ids, fn) => bots.runLifecycleAll(ids, fn), now }) : undefined;
   const service = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, stateStore,
-    { now, stateMutex, autoKick: false, releaseOwnedSession, routerEngine });
+    { now, stateMutex, autoKick: false, releaseOwnedSession, routerEngine, beforeAcceptPersist: options.beforeAcceptPersist });
   dispatcher.setAutomaticRoutingHandler((id) => service.trackAutomaticRouting(id));
   const ids = Object.keys(state.bots);
   async function group(limit?: number) {

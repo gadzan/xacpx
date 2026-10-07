@@ -1113,7 +1113,12 @@ async function dispatchControlRequest(
           return errorPayload("unsupported-effect-policy", "daemon does not support policy-aware Conversation execution");
         }
         const policyInput = { ...publicInput, memberPolicies: publicInput.memberPolicies as { botId: string; filesystem: "read-only" | "read-write" }[] };
-        if (ingress && trustedConversationPolicyPrompt) return await trustedConversationPolicyPrompt(policyInput, ingress);
+        if (ingress) {
+          if (!trustedConversationPolicyPrompt) {
+            return errorPayload("unsupported-effect-policy", "trusted policy-aware Conversation ingress is not configured");
+          }
+          return await trustedConversationPolicyPrompt(policyInput, ingress);
+        }
         return await control.promptConversationWithPolicy(policyInput);
       }
       if (ingress && trustedConversationPrompt) return await trustedConversationPrompt(publicInput, ingress);

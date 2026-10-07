@@ -1,9 +1,12 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { harness, deferred, until, HUMAN } from "./fixtures/concurrency-harness";
 import { CLAUDE_READ_ONLY_POLICY, isReadOnlyAgentArgv, supportsEnforcedReadOnly } from "../../../src/adapters/conversation-effect-policy";
 import { parseMemberPolicies } from "../../../src/conversations/conversation-effect-request";
 import { parseState } from "../../../src/state/state-store";
 import { parseRoutingDecision } from "../../../src/conversations/conversation-router-types";
+import { GroupHandoffService } from "../../../src/conversations/group-handoff";
+import { snapshotBotProfile } from "../../../src/bots/bot-types";
+import { createDirectConversationId, createDirectTopicId } from "../../../src/domain/ids";
 
 test("a Router cannot submit an effect request or mint enforcement provenance", () => {
   for (const forged of [{ effectProvenance: "declared-enforced" }, { effectProvenance: "human" }, { trustedReadOnly: true }, { effect: "read-only" }]) {
@@ -212,6 +215,138 @@ test("exact policy replay uses durable members after live membership and adapter
   } finally { h.store.close(); }
 });
 
+for (const targetIndex of [0, 2]) {
+  test(`original policy replay survives public handoff to ${targetIndex === 0 ? "an original Bot" : "a new Bot"} and reopen`, async () => {
+    const h = await harness(); const { group, topic } = await h.group(2);
+    const handoffs = new GroupHandoffService({ store: h.store, bots: h.bots, state: h.state, now: h.now,
+      wake: () => { void h.dispatcher.kick(); } });
+    h.dispatcher.setHandoffService(handoffs);
+    const accepted = await accept(h, group.id, topic.id, ["read-only", "read-write"]);
+    const drain = h.dispatcher.kick();
+    try {
+      await until(() => h.runner.calls.length === 1); h.runner.finish(0);
+      await until(() => h.runner.calls.length === 2);
+      const receipt = await handoffs.send({ executionToken: h.runner.calls[1]!.groupExecutionToken!, invocationId: "append",
+        args: { to: h.ids[targetIndex], task: "additional work" } });
+      expect(receipt.memberTurn.assignmentId).toBeDefined();
+      expect(h.store.getMemberTurn(receipt.memberTurn.id)!.effect ?? "unknown").toBe("unknown");
+      const replay = await accept(h, group.id, topic.id, ["read-only", "read-write"]);
+      expect(replay.reused).toBe(true); expect(replay.run.id).toBe(accepted.run.id);
+      expect(replay.memberTurns).toHaveLength(3);
+      expect(replay.memberTurns.slice(0, 2).map((m) => m.id)).toEqual(accepted.memberTurns.map((m) => m.id));
+      h.runner.finish(1); await until(() => h.runner.calls.length === 3); h.runner.finish(2); await drain;
+      const reopened = await harness({ path: h.path, state: parseState(structuredClone(h.state)) });
+      try {
+        const replayAfterReopen = await accept(reopened, group.id, topic.id, ["read-only", "read-write"]);
+        expect(replayAfterReopen.reused).toBe(true);
+        expect(replayAfterReopen.run.id).toBe(accepted.run.id);
+        expect(replayAfterReopen.memberTurns.map((m) => m.id)).toEqual(replay.memberTurns.map((m) => m.id));
+        expect(reopened.runner.calls).toHaveLength(0);
+      } finally { reopened.store.close(); }
+    } finally { await h.service.cancelRun(accepted.run.id); await drain; handoffs.close(); h.store.close(); }
+  });
+}
+
+for (const kind of ["direct", "group"] as const) for (const filesystem of ["read-only", "read-write"] as const) {
+  test(`${kind}: ordinary replay cannot discard an accepted ${filesystem} policy`, async () => {
+    const h = await harness();
+    try {
+      if (kind === "group") {
+        const { group, topic } = await h.group(2);
+        const accepted = await accept(h, group.id, topic.id, [filesystem]);
+        await expect(h.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+          requestId: accepted.run.requestId, text: "review this tree", target: { botId: h.ids[0]! } }))
+          .rejects.toMatchObject({ code: "effect_policy_conflict" });
+      } else {
+        const input = { botId: h.ids[0]!, requestId: "same", content: "review this tree" };
+        await h.service.acceptDirectPrompt({ ...input, memberPolicies: [{ botId: h.ids[0]!, filesystem }] });
+        await expect(h.service.acceptDirectPrompt(input)).rejects.toMatchObject({ code: "effect_policy_conflict" });
+      }
+      expect(h.runner.calls).toHaveLength(0);
+    } finally { h.store.close(); }
+  });
+}
+
+for (const winnerIndex of [0, 1]) for (const path of ["store-replay", "unique-fallback"] as const) {
+  test(`concurrent disjoint policy accepts validate ${path}, winner=${winnerIndex}`, async () => {
+    const entered = deferred(), release = [deferred(), deferred()]; let arrivals = 0;
+    const h = await harness({ beforeAcceptPersist: async () => {
+      const index = arrivals++; if (arrivals === 2) entered.resolve(); await release[index]!.promise;
+    } });
+    const { group, topic } = await h.group(2);
+    const requests = (["read-only", "read-write"] as const).map((filesystem, index) => h.service.acceptGroupPrompt({
+      conversationId: group.id, topicId: topic.id, requestId: "race", text: "work",
+      target: { botId: h.ids[index]! }, memberPolicies: [{ botId: h.ids[index]!, filesystem }], humanIngress: HUMAN,
+    }));
+    const outcomes = Promise.allSettled(requests); let staleRead: ReturnType<typeof spyOn> | undefined;
+    try {
+      await entered.promise; expect(h.store.listRuns(group.id, topic.id)).toHaveLength(0);
+      release[winnerIndex]!.resolve(); const winner = await requests[winnerIndex]!;
+      if (path === "unique-fallback") staleRead = spyOn(h.store, "getRunByRequestId").mockImplementationOnce(() => undefined);
+      release[1 - winnerIndex]!.resolve();
+      const settled = await outcomes;
+      expect(settled[winnerIndex]).toMatchObject({ status: "fulfilled", value: { reused: false } });
+      expect(settled[1 - winnerIndex]).toMatchObject({ status: "rejected", reason: { code: "effect_policy_conflict" } });
+      expect(h.store.listRuns(group.id, topic.id).map((r) => r.id)).toEqual([winner.run.id]);
+      expect(h.store.listMemberTurns(winner.run.id)).toEqual(winner.memberTurns);
+      expect(h.runner.calls).toHaveLength(0);
+    } finally { staleRead?.mockRestore(); release.forEach((gate) => gate.resolve()); await outcomes; h.store.close(); }
+  });
+}
+
+for (const winnerIndex of [0, 1]) {
+  test(`concurrent policy and ordinary accepts cannot share an id, winner=${winnerIndex}`, async () => {
+    const entered = deferred(), release = [deferred(), deferred()]; let arrivals = 0;
+    const h = await harness({ beforeAcceptPersist: async () => {
+      const index = arrivals++; if (arrivals === 2) entered.resolve(); await release[index]!.promise;
+    } });
+    const { group, topic } = await h.group(2);
+    const requests = [0, 1].map((index) => h.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+      requestId: "race", text: "work", target: { botId: h.ids[index]! },
+      ...(index === 0 ? { memberPolicies: [{ botId: h.ids[0]!, filesystem: "read-only" as const }] } : {}),
+    }));
+    const outcomes = Promise.allSettled(requests);
+    try {
+      await entered.promise; release[winnerIndex]!.resolve(); const winner = await requests[winnerIndex]!;
+      release[1 - winnerIndex]!.resolve();
+      expect((await outcomes)[1 - winnerIndex]).toMatchObject({ status: "rejected", reason: { code: "effect_policy_conflict" } });
+      expect(h.store.listRuns(group.id, topic.id).map((r) => r.id)).toEqual([winner.run.id]);
+      expect(h.runner.calls).toHaveLength(0);
+    } finally { release.forEach((gate) => gate.resolve()); await outcomes; h.store.close(); }
+  });
+}
+
+test("Direct policy acceptance validates a competing durable store result after its final await", async () => {
+  const entered = deferred(), release = deferred();
+  const h = await harness({ beforeAcceptPersist: async () => { entered.resolve(); await release.promise; } });
+  const pending = h.service.acceptDirectPrompt({ botId: h.ids[0]!, requestId: "race", content: "review",
+    memberPolicies: [{ botId: h.ids[0]!, filesystem: "read-only" }] });
+  const outcome = Promise.allSettled([pending]);
+  try {
+    await entered.promise;
+    const winner = h.store.acceptRequest({ conversationId: createDirectConversationId(h.ids[0]!),
+      topicId: createDirectTopicId(h.ids[0]!), requestId: "race", botId: h.ids[0]!, content: "write",
+      profileSnapshot: snapshotBotProfile(h.bots.getBot(h.ids[0]!), h.now().toISOString()),
+      primaryMember: { effect: "mutating" }, now: h.now().toISOString() });
+    release.resolve();
+    expect((await outcome)[0]).toMatchObject({ status: "rejected", reason: { code: "effect_policy_conflict" } });
+    expect(h.store.getRun(winner.run.id)?.state).toBe("queued");
+    expect(h.runner.calls).toHaveLength(0);
+  } finally { release.resolve(); await outcome; h.store.close(); }
+});
+
+test("a filesystem-held writer retains its durable capacity slot ahead of a compatible reader", async () => {
+  const h = await harness(); const { group, topic } = await h.group(2);
+  const accepted = await accept(h, group.id, topic.id, ["read-only", "read-write", "read-only"]);
+  const drain = h.dispatcher.kick();
+  try {
+    await until(() => h.runner.calls.length === 1 && h.store.getDispatchForMemberTurn(accepted.memberTurns[1]!.id)?.state === "claimed");
+    expect(h.store.getMemberTurn(accepted.memberTurns[1]!.id)?.startedAt).toBeUndefined();
+    expect(h.store.getDispatchForMemberTurn(accepted.memberTurns[2]!.id)?.state).toBe("pending");
+    expect(h.runner.peak).toBe(1);
+  } finally { await h.service.cancelRun(accepted.run.id); await drain; h.store.close(); }
+});
+
 for (const action of ["cancel", "teardown"] as const) {
   test(`read-only Bot-gate waiter vs ${action} cannot start or strand capacity`, async () => {
     const h = await harness(); const { group, topic } = await h.group(1);
@@ -240,6 +375,7 @@ for (const crash of ["before claim", "after claim", "after start"] as const) {
     const second = await harness({ path: first.path, state, ownerId: "new" });
     const drain = second.service.activateAfterConsumerLock(); await until(() => second.runner.calls.length === 2);
     expect(second.store.listMemberTurns(a.run.id).every((m) => m.effect === "read-only" && m.effectProvenance === "declared-enforced")).toBe(true);
+    expect((await accept(second, group.id, topic.id, ["read-only", "read-only", "read-only"], a.run.requestId)).reused).toBe(true);
     second.runner.finish(0); await until(() => second.runner.calls.length === 3);
     second.runner.finish(1); second.runner.finish(2); await drain;
     expect(second.runner.peak).toBe(2); expect(second.runner.calls.every((c) => c.executionOrigin === "orchestration")).toBe(true);

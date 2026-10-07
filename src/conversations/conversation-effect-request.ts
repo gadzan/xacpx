@@ -27,14 +27,23 @@ export function assertPolicySelection(selected: readonly string[], policies?: re
   }
 }
 
-/** Replay must match the complete durable member set and its execution ceilings. */
+/** Replay matches the original explicit acceptance, not later assigned work. */
 export function assertAcceptedPolicies(accepted: AcceptRequestResult, policies?: readonly ConversationMemberPolicy[]): AcceptRequestResult {
+  // Handoff and Router work have durable assignment IDs, including handoffs to
+  // an originally selected Bot in batch 1. Recovery preserves these identities;
+  // origin is mutable during recovery and must not determine request membership.
+  const originalMembers = accepted.run.mode === "automatic" ? [] : accepted.memberTurns.filter(
+    (member) => member.batch === 1 && member.assignmentId === undefined,
+  );
+  if (!policies && originalMembers.some((member) => (member.effect ?? "unknown") !== "unknown" || member.effectProvenance !== undefined)) {
+    throw new ConversationError("effect_policy_conflict", "request id already accepted with a different execution ceiling");
+  }
   if (policies) {
-    if (policies.length !== accepted.memberTurns.length) {
+    if (policies.length !== originalMembers.length) {
       throw new ConversationError("effect_policy_conflict", "request id already accepted with a different execution ceiling");
     }
     const requested = new Map(policies.map((policy) => [policy.botId, policy.filesystem]));
-    for (const member of accepted.memberTurns) {
+    for (const member of originalMembers) {
       const filesystem = requested.get(member.botId);
       if (!filesystem || (filesystem === "read-only"
         ? member.effect !== "read-only" || member.effectProvenance !== "declared-enforced"

@@ -350,6 +350,9 @@ export class ConversationRunService {
       });
       return created;
     });
+    // The store may reuse an acceptance committed during the final await,
+    // including its SQLite unique-key fallback. Validate before acknowledgement.
+    assertAcceptedPolicies(accepted, memberPolicies);
     if (!accepted.reused) {
       this.emitAcceptProjection(accepted);
     }
@@ -542,6 +545,7 @@ export class ConversationRunService {
         return created;
       });
       if (accepted !== null) {
+        assertAcceptedPolicies(accepted, memberPolicies);
         if (!accepted.reused) {
           this.emitAcceptProjection(accepted);
         }

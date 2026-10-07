@@ -434,6 +434,9 @@ prompt payload plus required `memberPolicies: [{botId, filesystem: "read-only" |
 RPC is a safety fence: old hubs/daemons reject it; new connectors cannot fall back
 to the older policy-blind prompt or trusted ingress. Hub overwrites human ingress
 from the authenticated account just as for ordinary Conversation prompts. Trusted
+ingress requires the dedicated trusted policy callback; a connector without it
+returns `unsupported-effect-policy`, preserving human origin and permission routing
+instead of falling back to the public entry point. Trusted
 proof fields are rejected, and the response exposes effective durable effect/proof
 on MemberTurn summaries. Old clients remain compatible through optional response
 fields; requesting read-only on an unsupported adapter fails before durable accept.

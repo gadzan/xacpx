@@ -46,6 +46,10 @@ Only the existing `read-only` + `declared-enforced` proof can permit overlap.
 Capacity is reserved by the existing durable `claimed` dispatches (including
 pre-start materialization); the claim transaction checks the per-Topic count.
 Full capacity leaves work pending without stripping ingress or changing origin.
+Filesystem-held writers retain their claimed capacity reservation. With limit 2,
+one active reader plus one held writer leaves no slot for a later compatible
+reader. This reservation/fairness tradeoff is intentional; spare capacity may
+admit later readers, but filesystem compatibility alone cannot reclaim a slot.
 Configured cohorts refill after an individual execution settles. Every claim
 this process still holds — in-flight provider turns and writer-slot waits,
 with or without `maxConcurrentMemberTurns` — has its lease extended on a
@@ -241,6 +245,15 @@ submit trusted proof. Replay with an incompatible accepted ceiling fails
 `effect_policy_conflict`; unsupported read-only fails `effect_policy_unsupported`
 before creating a Run. There is no silent fallback to writable execution.
 
+Replay compares policies with the original explicit acceptance: batch 1 members
+without an assignment id. Router/handoff work has durable assignment ids and
+does not expand that original request set, even when it targets the same Bot.
+Recovery preserves these identities while changing origin/attempt. Policy
+presence is part of request identity: ordinary and policy-aware prompts cannot
+reuse each other's request id. Every acceptance return is checked, including
+concurrent store replay and the SQLite unique-key fallback; conflicting losers
+receive no successful acknowledgement or new scheduling/projection.
+
 The operation name provides a cross-version fence: an old daemon/hub rejects an
 unknown RPC; a new relay connector checks for the new core method and never
 falls back to the older, policy-blind trusted-ingress callback. Only the separate
@@ -248,6 +261,9 @@ core-private policy ingress callback can carry authenticated human authority;
 public Control still yields orchestration. Old clients and the ordinary prompt
 operation retain their defaults. No Router, handoff or external binding schema
 expansion is included; those producers continue to accept unknown/unproven work.
+When trusted human ingress is present, a connector without the dedicated trusted
+policy callback rejects `unsupported-effect-policy`; it cannot discard ingress
+and fall back to public orchestration.
 
 `maxConcurrentMemberTurns` sets a physical ceiling. Effect policy decides whether
 filesystem overlap is safe. Logical batch/dependency semantics remain unchanged:
