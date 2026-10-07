@@ -72,6 +72,8 @@ export interface NativeSessionListCacheRecord {
 }
 
 export interface LogicalSession {
+  /** Core-owned immutable capability ceiling; absent on writable/legacy sessions. */
+  execution_policy?: import("../adapters/conversation-effect-policy").EnforcedExecutionPolicy;
   alias: string;
   agent: string;
   workspace: string;

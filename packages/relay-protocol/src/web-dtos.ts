@@ -741,6 +741,8 @@ function validMemberTurnSummary(value: unknown): boolean {
     && typeof c.botId === "string"
     && typeof c.batch === "number"
     && optNonNegInt(c.memberIndex)
+    && (c.effect === undefined || c.effect === "unknown" || c.effect === "read-only" || c.effect === "mutating")
+    && (c.effectProvenance === undefined || (c.effect === "read-only" && c.effectProvenance === "declared-enforced"))
     && typeof c.attempt === "number"
     && (c.origin === "human-explicit" || c.origin === "human"
       || c.origin === "router" || c.origin === "handoff" || c.origin === "followup"

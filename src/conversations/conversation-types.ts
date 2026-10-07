@@ -65,19 +65,12 @@ export type MemberTurnState =
 
 export type PendingDispatchState = "pending" | "claimed" | "completed";
 
-/** Declared side-effect capability of one MemberTurn. Durably attached at
- *  accept (PR7 persists `unknown` for every explicit member: no read-only
- *  capability is enforceably proven yet); the scheduler (§9.6) serializes
- *  turns that are not enforceably read-only under shared-single-writer.
- *  Never inferred from Bot name/description — the caller must prove
- *  read-only capability. */
+/** Execution effect frozen at accept. Only the server-owned restricted runtime
+ *  can prove read-only; omitted policy is unproven. Identity/text never prove it. */
 export type MemberTurnEffect = "unknown" | "read-only" | "mutating";
 
-/** Declared effect provenance for one MemberTurn. Set only when the caller
- *  proves read-only capability through an enforced capability/tool policy —
- *  PR7 callers never set this, so every PR7 accept persists `unknown` and the
- *  scheduler treats it as side-effect-capable. Never inferred from Bot
- *  name/description/prompt. */
+/** Server-owned enforced capability proof, rechecked before execution.
+ *  Absence means unproven. Never supplied by a model or public client. */
 export type MemberTurnEffectProvenance = "declared-enforced";
 
 export interface ConversationRecord {

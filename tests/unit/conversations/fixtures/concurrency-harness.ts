@@ -62,7 +62,9 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
   const store = await SqliteConversationStore.open(path);
   const state = options.state ?? createEmptyState();
   const stateStore = { async save(_s: AppState) {}, async saveNow(_s: AppState) {} };
-  const config = { agents: { codex: { driver: "codex" } }, workspaces: { backend: { cwd: "/tmp/backend" } },
+  // The config key is an alias: synthetic reader fixtures now materialize the
+  // actual supported restricted launch instead of treating Codex's mode as proof.
+  const config = { agents: { codex: { driver: "claude" } }, workspaces: { backend: { cwd: "/tmp/backend" } },
     transport: { type: "acpx-cli", command: "acpx" } } as AppConfig;
   const stateMutex = new AsyncMutex();
   const sessions = new SessionService(config, stateStore, state, { stateMutex });
@@ -95,5 +97,5 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
       primaryMember: first, members: ids.slice(1, count).map(member), content: "one frozen request", now: NOW,
       maxMemberTurns: 24, authorityEpoch: dispatcher.authorityEpoch, humanIngress: HUMAN });
   }
-  return { path, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, ids, now, jump: (ms: number) => { clock += ms; } };
+  return { path, config, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, ids, now, jump: (ms: number) => { clock += ms; } };
 }

@@ -156,6 +156,7 @@ export const MSG = {
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
   conversationPrompt: "control.conversation.prompt",
+  conversationPromptWithPolicy: "control.conversation.prompt-with-policy",
   conversationBindingsList: "control.conversation.bindings.list",
   conversationBindingsSet: "control.conversation.bindings.set",
   conversationBindingsDelete: "control.conversation.bindings.delete",
@@ -600,6 +601,10 @@ export interface ConversationPromptPayload {
   target?: ConversationTargetDto;
 }
 export type ConversationPromptResult = ConversationPromptResponseDto;
+export interface ConversationPolicyPromptPayload extends ConversationPromptPayload {
+  memberPolicies: { botId: string; filesystem: "read-only" | "read-write" }[];
+}
+export type ConversationPolicyPromptResult = ConversationPromptResponseDto;
 export interface ConversationHistoryPayload {
   conversationId: string;
   topicId: string;

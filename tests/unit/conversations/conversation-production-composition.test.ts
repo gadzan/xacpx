@@ -245,6 +245,7 @@ test(`real automatic typed cancellation is durable with ${cancelledFirst ? "canc
   const signals: AbortSignal[] = [];
   let consoleAgent!: ConsoleAgent, cancelledBot = "", completedBot = "", routerCalls = 0, providerCalls = 0;
   const current = await compose(new BarrierStateStore(), {
+    enforcedReaders: true,
     agent: { chat: async (request) => {
       if (request.abortSignal) signals.push(request.abortSignal);
       return await consoleAgent.chat(request);
@@ -385,6 +386,7 @@ test(`real ${mode} execution cancellation settles a durable-started sibling befo
   let consoleAgent!: ConsoleAgent, cancelledBot = "", siblingBot = "", siblingSource = "", routerCalls = 0;
   const providerBots: string[] = [];
   const current = await compose(new BarrierStateStore(), {
+    enforcedReaders: true,
     agent: { chat: (request) => consoleAgent.chat(request) },
     router: { capabilityRestriction: RESTRICTED, async decide() {
       if (++routerCalls > 1) return { type: "complete", reason: "unexpected continuation" };
@@ -569,6 +571,7 @@ function createConfig(): AppConfig {
 }
 
 async function compose(stateStore: BarrierStateStore, options: {
+  enforcedReaders?: boolean;
   router?: ConversationRouter; agent?: Agent; state?: AppState; sqlitePath?: string;
   autoKick?: boolean; now?: () => Date; leaseMs?: number; leaseScheduler?: LeaseScheduler;
   beforeLeaseRenewal?: () => void;
@@ -578,6 +581,7 @@ async function compose(stateStore: BarrierStateStore, options: {
   const state = options.state ?? createEmptyState();
   const sqlitePath = options.sqlitePath ?? join(dir, "conversations.sqlite");
   const config = createConfig();
+  if (options.enforcedReaders) config.agents.codex!.driver = "claude";
   const stateMutex = new AsyncMutex();
   const sessions = new SessionService(config, stateStore, state, { stateMutex });
   const events = createControlEventBus();

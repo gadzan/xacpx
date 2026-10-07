@@ -382,6 +382,15 @@ export class ConversationDispatcher {
           if (this.mustDeferForWriterSlot(claimed)) {
             this.holdClaimForWriterSlot(claimed);
             passProgress = true;
+            // A parked writer is a capacity reservation, not a physical
+            // writer. Existing reader-safe siblings may still use remaining
+            // capacity without changing the logical batch or dependencies.
+            const readers = [...this.inFlightWork.values()];
+            if (cohortRunId === claimed.run.id && readers.length > 0 && readers.every((active) =>
+              active.memberTurn.effect === "read-only" && active.memberTurn.effectProvenance === "declared-enforced")) {
+              this.deferredTopicIds.delete(claimed.run.topicId);
+              continue;
+            }
             // The held Run is parked for this drain — but only until a cohort
             // launches. Before any launch, sequencing stays global so an
             // unrelated Topic is still drainable (pre-PR behavior); once a
@@ -583,10 +592,9 @@ export class ConversationDispatcher {
    * Isolation is read from the Topic's durable ExecutionTarget. No isolation
    * passes unproven work through: only an enforceably read-only member
    * (`read-only` + `declared-enforced` proof) may overlap another in-flight
-   * turn — and since PR7 carries no proven capability, every PR7 member
-   * defers. `MemberTurnEffect` attaches to the assignment when callers can
-   * prove read-only; until then the effect is `undefined` (unproven), which
-   * never counts as safe.
+   * turn. The policy-aware producer supplies a runtime-enforced proof;
+   * ordinary, Router and handoff work remains unproven. Both participants
+   * must be readers. A parked claim is a reservation, not physical execution.
    */
   private mustDeferForWriterSlot(work: ClaimedWork): boolean {
     if (work.memberTurn.startedAt) {
@@ -596,13 +604,15 @@ export class ConversationDispatcher {
       return false;
     }
     const siblings = this.store.listMemberTurns(work.run.id);
+    const heldMembers = new Set([...this.heldWriterSlotClaims.values()].map((held) => held.memberTurn.id));
     const otherExecuting = siblings.filter((turn) => turn.id !== work.memberTurn.id
-      && (turn.state === "running" || turn.state === "dispatched"));
+      && (turn.state === "running" || (turn.state === "dispatched" && !heldMembers.has(turn.id))));
     if (otherExecuting.length === 0) {
       return false;
     }
     const isolation = this.runtime.groupTopicIsolation(work.run.conversationId, work.run.topicId);
-    return !isEffectConcurrencySafe(work.memberTurn.effect, isolation, otherExecuting.length, work.memberTurn.effectProvenance);
+    return !isEffectConcurrencySafe(work.memberTurn.effect, isolation, otherExecuting.length, work.memberTurn.effectProvenance)
+      || otherExecuting.some((turn) => !isEffectConcurrencySafe(turn.effect, isolation, 1, turn.effectProvenance));
   }
 
   /** Writer-slot-held claims, keyed by dispatch id. The drain KEEPS the
@@ -885,6 +895,7 @@ export class ConversationDispatcher {
         throw materializeFail;
       }
       const snapshot = work.memberSnapshot ?? work.memberTurn.profileSnapshot ?? work.run.profileSnapshot;
+      const executionPolicy = this.runtime.executionPolicyFor(work.memberTurn, snapshot.execution.agent);
       // Unified request-snapshot contract (claim LEFT JOINs messages so a
       // corrupted reference reaches this check instead of being silently
       // invisible): a missing or wrong-reference request row is corrupted
@@ -929,6 +940,7 @@ export class ConversationDispatcher {
           conversationId: work.run.conversationId,
           topicId: work.run.topicId,
           execution: snapshot.execution,
+          executionPolicy,
           assertStillDispatchable,
         })
         : await this.runtime.getOrCreateDirectSession({
@@ -936,6 +948,7 @@ export class ConversationDispatcher {
           conversationId: work.run.conversationId,
           topicId: work.run.topicId,
           execution: snapshot.execution,
+          executionPolicy,
           assertStillDispatchable,
         });
       const session = this.sessions.getLogicalSessionRecord(binding.sessionAlias);
@@ -944,6 +957,10 @@ export class ConversationDispatcher {
         return;
       }
       await this.hooks?.beforeExecutionStart?.(work);
+      if (this.runtime.executionPolicyFor(work.memberTurn, snapshot.execution.agent) !== session.execution_policy) {
+        this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
+        return;
+      }
       const latestBeforeStart = this.store.getRun(work.run.id);
       if (!latestBeforeStart || latestBeforeStart.state === "cancelled") {
         this.store.cancelRun(work.run.id, this.now().toISOString());

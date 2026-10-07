@@ -537,11 +537,19 @@ Conversation semantics are independent from Relay Web.
 
 # 15. Phase 10 — Advanced collaboration
 
-**Phase 10A status: implemented, awaiting PR review.** Configurable physical
+**Phase 10A status: merged in PR #377.** Configurable physical
 MemberTurn concurrency is the first selected slice, based on merged PR #376. Optional per-Topic creation-time
 `maxConcurrentMemberTurns` (1–64) preserves omitted-field behavior, durable claims,
 filesystem safety and provenance. No runtime limit mutation, cross-Topic dispatcher
 parallelism or other advanced capability is included. See `docs/conversation-runtime.md`.
+
+**Phase 10B status: implemented, awaiting code review.** A separate policy-aware
+explicit prompt freezes per-member effect/proof in the existing durable columns.
+The initial supported runtime is pinned managed Claude ACP 0.78.0 / SDK 0.3.270,
+with an exclusive native tool set and ACP guard; unsupported adapters fail closed.
+Reader overlap uses the existing filesystem scheduler and Phase 10A capacity.
+The protocol fence, runtime identity, recovery and validation residuals are
+documented in `docs/conversation-runtime.md`. Worktree-per-member remains Phase 10C.
 
 Optional later capabilities:
 

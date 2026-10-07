@@ -20,6 +20,14 @@ import {
   type WebServerEvent,
 } from "../../../../packages/relay-protocol/src/index";
 
+test("MemberTurn effect acknowledgement accepts legacy data and rejects malformed trusted proof", () => {
+  const run = { id: "r", conversationId: "c", topicId: "t", requestMessageId: "m", requestId: "q", mode: "explicit", state: "running", profileRevision: 1, createdAt: "now" };
+  const member = { id: "member", runId: "r", conversationId: "c", topicId: "t", botId: "b", batch: 0, attempt: 1, origin: "human", state: "running", createdAt: "now" };
+  const valid = (extra: object) => validControlEvent({ type: "member-turn-started", run, memberTurn: { ...member, ...extra } });
+  for (const extra of [{}, { effect: "unknown" }, { effect: "mutating" }, { effect: "read-only", effectProvenance: "declared-enforced" }]) expect(valid(extra)).toBe(true);
+  for (const extra of [{ effect: "fake" }, { effectProvenance: "human" }, { effect: "mutating", effectProvenance: "declared-enforced" }]) expect(valid(extra)).toBe(false);
+});
+
 test("public handoff wire envelope is bounded, public, and rejects forged private metadata", () => {
   const message = { id: "message", conversationId: "group", topicId: "topic", seq: 2, role: "system",
     senderBotId: "sender", runId: "run", content: "public task", createdAt: "now",

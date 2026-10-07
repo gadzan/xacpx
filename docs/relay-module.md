@@ -428,6 +428,18 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 
 ## External Conversation binding management
 
+Phase 10B adds `control.conversation.prompt-with-policy`: the ordinary Conversation
+prompt payload plus required `memberPolicies: [{botId, filesystem: "read-only" |
+"read-write"}]`, matching the complete explicit member selection. The distinct
+RPC is a safety fence: old hubs/daemons reject it; new connectors cannot fall back
+to the older policy-blind prompt or trusted ingress. Hub overwrites human ingress
+from the authenticated account just as for ordinary Conversation prompts. Trusted
+proof fields are rejected, and the response exposes effective durable effect/proof
+on MemberTurn summaries. Old clients remain compatible through optional response
+fields; requesting read-only on an unsupported adapter fails before durable accept.
+There is no Web policy selector in this slice; programmatic callers use the new RPC.
+See [Enforced execution effects](conversation-runtime.md#enforced-execution-effects-phase-10b).
+
 Phase 10A Topic creation RPCs (`control.topics.create`, `control.group.topics.create`)
 accept optional top-level `maxConcurrentMemberTurns` (integer 1–64), returned on
 Topic summaries/events. The field is separate from `target`; omission preserves

@@ -449,6 +449,8 @@ export type ConversationTargetDto =
   | { mode: "automatic" };
 
 export interface MemberTurnSummaryDto {
+  effect?: "unknown" | "read-only" | "mutating";
+  effectProvenance?: "declared-enforced";
   id: string;
   runId: string;
   conversationId: string;

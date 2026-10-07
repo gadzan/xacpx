@@ -40,8 +40,9 @@ export interface AcceptMemberInput {
   profileSnapshot: BotProfileSnapshot;
   /** Declared side-effect capability. Only an explicitly proven `read-only`
    *  (effect + effectProvenance "declared-enforced") counts as safe for
-   *  concurrent execution; everything else persists as `unknown`. Absent ⇒
-   *  `unknown` (PR7: no enforceable read-only proof exists yet). */
+   *  concurrent execution. Explicit read-write persists as `mutating`;
+   *  absent/unproven policy persists as `unknown`. Only the server runtime
+   *  classifier supplies enforced proof; public producers request a ceiling. */
   effect?: MemberTurnEffect;
   effectProvenance?: MemberTurnEffectProvenance;
   /** Durable provenance for this member. Defaults to human-explicit on

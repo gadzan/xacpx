@@ -105,6 +105,7 @@ export declare const MSG: {
     readonly groupTopicsArchive: "control.group.topics.archive";
     readonly groupTopicsTeardown: "control.group.topics.teardown";
     readonly conversationPrompt: "control.conversation.prompt";
+    readonly conversationPromptWithPolicy: "control.conversation.prompt-with-policy";
     readonly conversationBindingsList: "control.conversation.bindings.list";
     readonly conversationBindingsSet: "control.conversation.bindings.set";
     readonly conversationBindingsDelete: "control.conversation.bindings.delete";
@@ -513,6 +514,13 @@ export interface ConversationPromptPayload {
     target?: ConversationTargetDto;
 }
 export type ConversationPromptResult = ConversationPromptResponseDto;
+export interface ConversationPolicyPromptPayload extends ConversationPromptPayload {
+    memberPolicies: {
+        botId: string;
+        filesystem: "read-only" | "read-write";
+    }[];
+}
+export type ConversationPolicyPromptResult = ConversationPromptResponseDto;
 export interface ConversationHistoryPayload {
     conversationId: string;
     topicId: string;

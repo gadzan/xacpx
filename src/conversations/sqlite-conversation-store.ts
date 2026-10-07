@@ -3181,11 +3181,11 @@ export class SqliteConversationStore implements ConversationStore {
           input.now,
           // Normalize at the durable boundary: only `read-only` backed by the
           // exact `declared-enforced` proof persists as proven. A bare
-          // `read-only` (missing/invalid provenance) or any other combination
-          // persists as `unknown` with no proof — fail-closed for scheduling.
+          // `read-only` without proof persists as `unknown`; explicit mutating
+          // persists without proof. Both remain conservative for scheduling.
           ...(member.effect === "read-only" && member.effectProvenance === "declared-enforced"
             ? ["read-only", "declared-enforced"]
-            : ["unknown", null]),
+            : [member.effect === "mutating" ? "mutating" : "unknown", null]),
           member.assignmentId ?? null,
           member.task ?? null,
           member.expectedOutput ?? null,

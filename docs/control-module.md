@@ -71,6 +71,16 @@ Phase 10A：`createTopic(conversationId, title, options?)` 与
 `TopicSummaryDto`，只在创建时设置；没有运行中修改接口。缺失保持既有调度。
 这是物理执行上限，不能改变 logical batch、依赖、filesystem policy 或权限来源。
 
+Phase 10B：新增 `promptConversationWithPolicy(input)`，在原 prompt DTO 上要求
+`memberPolicies: [{botId, filesystem: "read-only" | "read-write"}]`，必须完整匹配
+explicit member selection；Direct 为一个 Bot，Group 为 1–64 个成员，不支持 automatic。
+这是独立方法，禁止把安全字段加到旧 prompt 后期待旧 daemon 执行。服务端验证 adapter
+是否真正支持限制后的运行时；不支持则在创建 Run 前拒绝，不静默降级。返回 MemberTurn
+的 `effect` / `effectProvenance` 是 durable acknowledgement，客户端不能提交 proof。
+public 调用仍为 orchestration；独立的 core-private trusted ingress 才能保持 human
+authority。策略漂移、旧可写 session 的释放/重建、恢复和支持范围见
+[Conversation runtime](conversation-runtime.md#enforced-execution-effects-phase-10b)。
+
 | 方法 | 说明 |
 |------|------|
 | `listSessions()` | 返回所有已解析逻辑会话的快照（`ControlSessionInfo[]`），含 `running` 字段（来自 `ActiveTurnRegistry`）与可选 `warm` 字段（running 时恒为 true，否则读 `SessionWarmthTracker` 最近观测；无 tracker 或未观测时省略）。`LogicalSession.owner.kind` 为 `bot-direct` / `group-member` / `group-controller` 的隐藏运行时不会出现在普通 Sessions 列表中（按 owner metadata，不是 `brt_` 前缀）。普通 alias 寻址的 Session 操作（prompt / remove / archive / rename / model / effort / cancel 等）对上述 owner 失败 `hidden_session`；Conversation 执行/释放只走 core-private `ConversationExecutionPort`。 |

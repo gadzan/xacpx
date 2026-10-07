@@ -1,4 +1,6 @@
 import { BotError } from "./bot-error";
+import { CLAUDE_READ_ONLY_POLICY, type EnforcedExecutionPolicy, type RequestedFilesystemPolicy } from "../adapters/conversation-effect-policy";
+import type { MemberTurnRecord } from "../conversations/conversation-types";
 import { memberConcurrencyLimit } from "../conversations/conversation-scheduling-policy";
 import {
   classifyDirectBotBindingSessionLink,
@@ -58,7 +60,7 @@ export class BotRuntimeManager {
     private readonly sessions: Pick<
       SessionService,
       "createSession" | "getLogicalSessionRecord" | "getLogicalSessionById" | "setSessionModel" | "setSessionEffort"
-    >,
+    > & Partial<Pick<SessionService, "supportsConversationReadOnly">>,
     private readonly state: AppState,
     private readonly stateStore: SessionWriter,
     options: BotRuntimeManagerOptions,
@@ -72,6 +74,32 @@ export class BotRuntimeManager {
 
   getBot(botId: string): BotProfile {
     return this.bots.getBot(botId);
+  }
+
+  resolveMemberEffect(agent: string, requested?: RequestedFilesystemPolicy): Pick<MemberTurnRecord, "effect" | "effectProvenance"> {
+    if (requested === undefined) return { effect: "unknown" };
+    if (requested === "read-write") return { effect: "mutating" };
+    if (requested !== "read-only" || !this.sessions.supportsConversationReadOnly?.(agent)) {
+      throw new BotError("effect_policy_unsupported", "adapter cannot enforce the requested read-only execution");
+    }
+    return { effect: "read-only", effectProvenance: "declared-enforced" };
+  }
+
+  private assertExecutionPolicySupported(policy: EnforcedExecutionPolicy | undefined, agent: string): void {
+    if (policy !== undefined && (policy !== CLAUDE_READ_ONLY_POLICY || !this.sessions.supportsConversationReadOnly?.(agent))) {
+      throw new BotError("runtime_revision_mismatch", "restricted execution policy is no longer supported");
+    }
+  }
+
+  executionPolicyFor(turn: Pick<MemberTurnRecord, "effect" | "effectProvenance">, agent: string): EnforcedExecutionPolicy | undefined {
+    if (turn.effect !== "read-only") {
+      if (turn.effectProvenance !== undefined) throw new BotError("runtime_revision_mismatch", "invalid accepted effect proof");
+      return undefined;
+    }
+    if (turn.effectProvenance !== "declared-enforced" || !this.sessions.supportsConversationReadOnly?.(agent)) {
+      throw new BotError("runtime_revision_mismatch", "accepted read-only ceiling cannot be enforced by this runtime");
+    }
+    return CLAUDE_READ_ONLY_POLICY;
   }
 
   /** Conversation kind for dispatcher routing. Unknown ids read as Direct
@@ -107,6 +135,7 @@ export class BotRuntimeManager {
     conversationId?: string;
     topicId?: string;
     execution?: BotProfileExecution;
+    executionPolicy?: EnforcedExecutionPolicy;
     /** Runs inside the Bot lifecycle gate before any Session/AppState mutation. */
     assertStillDispatchable?: () => void;
   }): Promise<BotRuntimeBinding> {
@@ -136,6 +165,7 @@ export class BotRuntimeManager {
     conversationId: string;
     topicId: string;
     execution?: BotProfileExecution;
+    executionPolicy?: EnforcedExecutionPolicy;
     assertStillDispatchable?: () => void;
   }): Promise<BotRuntimeBinding> {
     this.requireEnabledBot(input.botId);
@@ -285,10 +315,12 @@ export class BotRuntimeManager {
     conversationId?: string;
     topicId?: string;
     execution?: BotProfileExecution;
+    executionPolicy?: EnforcedExecutionPolicy;
     assertStillDispatchable?: () => void;
   }): Promise<BotRuntimeBinding> {
     input.assertStillDispatchable?.();
     const bot = this.requireEnabledBot(input.botId);
+    this.assertExecutionPolicySupported(input.executionPolicy, (input.execution ?? bot).agent);
     this.assertAcceptedStickyIdentity(bot, input.execution);
     const scope = this.resolveScope(bot.id, input);
     const scopedId = createScopedDirectBindingId(scope.conversationId, scope.topicId, bot.id);
@@ -298,7 +330,7 @@ export class BotRuntimeManager {
         ?? this.sessions.getLogicalSessionById(existing.logicalSessionId);
       const target = input.execution ?? bot;
       const targetEffort = target.effort;
-      if (session && session.effort && !targetEffort) {
+      if (session && (session.execution_policy !== input.executionPolicy || (session.effort && !targetEffort))) {
         await this.releaseDirectBindingInternal(existing, existing.id);
       } else {
         await this.alignSessionRuntime(existing, input.execution ?? bot);
@@ -311,7 +343,7 @@ export class BotRuntimeManager {
         ?? this.findOwnedSession(adopted.id, bot.id, scope.conversationId);
       const target = input.execution ?? bot;
       const targetEffort = target.effort;
-      if (session && session.effort && !targetEffort) {
+      if (session && (session.execution_policy !== input.executionPolicy || (session.effort && !targetEffort))) {
         await this.releaseDirectBindingInternal(adopted, adopted.id);
       } else {
         await this.alignSessionRuntime(adopted, input.execution ?? bot);
@@ -320,7 +352,7 @@ export class BotRuntimeManager {
       }
     }
     await this.afterDirectSnapshot?.(bot);
-    const session = await this.ensureOwnedSession(bot, scopedId, scope, input.execution);
+    const session = await this.ensureOwnedSession(bot, scopedId, scope, input.execution, input.executionPolicy);
     return await this.publishDirectRuntime(bot, session, scopedId, scope);
   }
 
@@ -329,12 +361,14 @@ export class BotRuntimeManager {
     conversationId: string;
     topicId: string;
     execution?: BotProfileExecution;
+    executionPolicy?: EnforcedExecutionPolicy;
     assertStillDispatchable?: () => void;
   }): Promise<BotRuntimeBinding> {
     input.assertStillDispatchable?.();
     const bot = this.requireEnabledBot(input.botId);
     const scope = this.resolveGroupMemberScope(bot.id, input.conversationId, input.topicId);
     const effective = this.resolveGroupMemberExecution(bot, scope.topic, input.execution);
+    this.assertExecutionPolicySupported(input.executionPolicy, effective.agent);
     this.assertGroupMemberStickyIdentity(bot, scope.topic, input.execution);
     const scopedId = createScopedGroupMemberBindingId(scope.conversationId, scope.topicId, bot.id);
     const existing = this.findScopedGroupMemberBinding(scope.conversationId, scope.topicId, bot.id);
@@ -350,7 +384,7 @@ export class BotRuntimeManager {
       await this.assertGroupMemberReuseDispatchable(bot, scope);
       const session = this.sessions.getLogicalSessionRecord(existing.sessionAlias)
         ?? this.sessions.getLogicalSessionById(existing.logicalSessionId);
-      if (session && session.effort && !effective.effort) {
+      if (session && (session.execution_policy !== input.executionPolicy || (session.effort && !effective.effort))) {
         // Turn-boundary recreate mirrors direct: clearing effort from a set
         // value to default must not silently keep the old effort runtime.
         await this.releaseGroupMemberBindingInternal(existing, existing.id);
@@ -359,7 +393,7 @@ export class BotRuntimeManager {
         return existing;
       }
     }
-    const session = await this.ensureGroupMemberOwnedSession(bot, scopedId, scope, effective);
+    const session = await this.ensureGroupMemberOwnedSession(bot, scopedId, scope, effective, input.executionPolicy);
     return await this.publishGroupMemberRuntime(bot, session, scopedId, scope);
   }
 
@@ -551,10 +585,12 @@ export class BotRuntimeManager {
     bindingId: string,
     scope: { conversationId: string; topicId: string },
     execution?: BotProfileExecution,
+    executionPolicy?: EnforcedExecutionPolicy,
   ): Promise<LogicalSession> {
     const alias = ownedDirectSessionAlias(bindingId);
     const current = this.findOwnedSession(bindingId, bot.id, scope.conversationId);
     if (current) {
+      if (current.execution_policy !== executionPolicy) throw new BotError("runtime_revision_mismatch", "binding-less session has a different capability ceiling");
       const owner = current.owner;
       if (
         owner?.kind !== "bot-direct"
@@ -593,6 +629,7 @@ export class BotRuntimeManager {
     const effort = target.effort;
     if (!occupant) {
       await this.sessions.createSession(alias, agent, workspace, {
+        ...(executionPolicy ? { executionPolicy } : {}),
         owner: createBotDirectOwner({
           bindingId,
           botId: bot.id,
@@ -614,6 +651,7 @@ export class BotRuntimeManager {
     bindingId: string,
     scope: { conversationId: string; topicId: string },
     execution?: BotProfileExecution,
+    executionPolicy?: EnforcedExecutionPolicy,
   ): Promise<LogicalSession> {
     const alias = ownedGroupMemberSessionAlias(bindingId);
     const expected = execution ?? bot;
@@ -623,7 +661,7 @@ export class BotRuntimeManager {
       // changed identity: agent/workspace/model/effort all gate reuse, the
       // same axes the dispatcher checks post-materialize. A mismatch fails
       // closed instead of silently adopting stale Agent context.
-      if (!sessionMatchesExecution(current, expected)) {
+      if (!sessionMatchesExecution(current, expected) || current.execution_policy !== executionPolicy) {
         throw new BotError(
           "runtime_revision_mismatch",
           `bot "${bot.id}" group execution no longer matches the persisted session`,
@@ -647,6 +685,7 @@ export class BotRuntimeManager {
     const target = execution ?? bot;
     if (!occupant) {
       await this.sessions.createSession(alias, target.agent, target.workspace, {
+        ...(executionPolicy ? { executionPolicy } : {}),
         owner: createGroupMemberOwner({
           bindingId,
           botId: bot.id,
@@ -661,7 +700,7 @@ export class BotRuntimeManager {
     if (!record) {
       throw new BotError("session_missing", `failed to persist owned session for bot "${bot.id}"`);
     }
-    if (!sessionMatchesExecution(record, expected)) {
+    if (!sessionMatchesExecution(record, expected) || record.execution_policy !== executionPolicy) {
       throw new BotError(
         "runtime_revision_mismatch",
         `bot "${bot.id}" group execution no longer matches the persisted session`,

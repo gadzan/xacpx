@@ -102,6 +102,7 @@ import {
   type BotUpdateRequestDto,
   type ConversationHistoryRequestDto,
   type ConversationPromptRequestDto,
+  type ConversationPolicyPromptRequestDto,
   type ConversationPromptResponseDto,
   type ConversationTurnCorrelation,
   type GroupDetailDto,
@@ -427,6 +428,10 @@ export interface ControlConversationKernel extends ConversationExecutionPort {
     input: ConversationPromptRequestDto,
     ingress: HumanIngressContext,
   ): Promise<ConversationPromptResponseDto>;
+  promptConversationWithPolicyFromHumanIngress(
+    input: ConversationPolicyPromptRequestDto,
+    ingress: HumanIngressContext,
+  ): Promise<ConversationPromptResponseDto>;
 }
 
 const conversationKernels = new WeakMap<ControlService, ControlConversationKernel>();
@@ -575,6 +580,12 @@ export class ControlService {
           );
         }
         return this.#promptConversation(input, parsed);
+      },
+      promptConversationWithPolicyFromHumanIngress: async (input, ingress) => {
+        const parsed = parseHumanIngress(ingress);
+        if (!parsed) throw new ConversationError("human_ingress_invalid", "trusted policy prompt requires complete human ingress");
+        const { parseMemberPolicies } = await import("../conversations/conversation-effect-request");
+        return this.#promptConversation({ ...sanitizePublicConversationPrompt(input), memberPolicies: parseMemberPolicies(input.memberPolicies) }, parsed);
       },
     });
   }
@@ -2068,6 +2079,11 @@ export class ControlService {
     return this.#promptConversation(sanitizePublicConversationPrompt(input));
   }
 
+  async promptConversationWithPolicy(input: ConversationPolicyPromptRequestDto): Promise<ConversationPromptResponseDto> {
+    const { parseMemberPolicies } = await import("../conversations/conversation-effect-request");
+    return this.#promptConversation({ ...sanitizePublicConversationPrompt(input), memberPolicies: parseMemberPolicies(input.memberPolicies) });
+  }
+
   listConversationBindings() {
     return this.requireConversations().bindings.list();
   }
@@ -2081,12 +2097,13 @@ export class ControlService {
   }
 
   #promptConversation(
-    input: ConversationPromptRequestDto,
+    input: ConversationPromptRequestDto | ConversationPolicyPromptRequestDto,
     ingress?: HumanIngressContext,
   ): Promise<ConversationPromptResponseDto> {
     return this.runConversationMutation(async (runtime) => {
       const parsedIngress = parseHumanIngress(ingress);
       const accepted = await runtime.runs.acceptConversationPrompt({
+        ...("memberPolicies" in input ? { memberPolicies: input.memberPolicies } : {}),
         conversationId: input.conversationId,
         topicId: input.topicId,
         requestId: input.requestId,

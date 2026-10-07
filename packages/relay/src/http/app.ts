@@ -694,7 +694,7 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         chatType: "direct",
       };
     }
-    if (body.type === MSG.conversationPrompt) {
+    if (body.type === MSG.conversationPrompt || body.type === MSG.conversationPromptWithPolicy) {
       payload = {
         ...(payload as Record<string, unknown>),
         humanIngress: {

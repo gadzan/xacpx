@@ -1146,12 +1146,20 @@ Do not infer ordering from:
 
 # 15. Dispatcher and queue integration
 
-**Phase 10A status: implemented, awaiting PR review.** This slice follows merged
+**Phase 10A status: merged in PR #377.** This slice follows merged
 PR #376: optional Topic scheduling `maxConcurrentMemberTurns` (1–64), set only at
 creation. The existing dispatcher and atomic claim enforce physical capacity;
 logical batches, dependencies, filesystem policy, recovery and authority are
-unchanged. Omission retains the existing scheduling path. Hot mutation and other
-Phase 10 capabilities are deferred.
+unchanged. Omission retains the existing scheduling path. Hot mutation is deferred.
+
+**Phase 10B status: implemented, awaiting code review.** Policy-aware explicit
+prompts request a per-member filesystem ceiling. Server-owned adapter discovery
+mints `read-only/declared-enforced` only for the pinned restricted Claude runtime;
+read-write is `mutating`, and omitted policy remains unknown/unproven. No Router
+or handoff schema expansion is included. The existing dispatcher checks both
+participants for reader-safe overlap; parked writer claims retain capacity and
+provenance. There is no second queue/executor. See the execution effect contract
+in `docs/conversation-runtime.md` for protocol fences and unsupported adapters.
 
 Reuse existing per-session `TurnQueue` for actual model execution.
 
@@ -1192,6 +1200,17 @@ The scheduler must distinguish requested conversational parallelism from safe fi
 If xacpx cannot enforce that a turn is read-only/non-mutating, classify it as potentially side-effecting.
 
 Do not infer from Bot identity or prompt wording.
+
+Phase 10B implements this through the existing durable effect columns and an
+owned session execution policy. The core ACP guard installs an exclusive native
+Read/Glob/Grep tool set, bare/restricted mode, no terminal, MCP, plugins, hooks,
+agents/skills or permission escalation. Guarded launch identity cannot reuse a
+writable session; policy changes require strict physical release/recreation.
+Current support must be re-proven after restart and before execution; drift never
+downgrades to writable. Node/Bun SQLite tests cover legacy/corrupt proof and bounded
+retry; scheduler tests measure runner peaks and mixed reader/writer cancellation,
+teardown, completion and recovery races; CI drives the real pinned native SDK
+against an adversarial loopback provider. Filesystem effect never changes origin.
 
 ## 16.2 `shared`
 

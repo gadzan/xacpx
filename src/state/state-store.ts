@@ -699,6 +699,7 @@ function isSessionRecord(value: unknown): value is MaybeLegacySession {
     isOptionalString(value.transport_acpx_agent) &&
     (value.transport_agent_argv === undefined || isStringArray(value.transport_agent_argv)) &&
     (value.transport_engine === undefined || value.transport_engine === "cli" || value.transport_engine === "runtime") &&
+    (value.execution_policy === undefined || value.execution_policy === "claude-read-only-v1") &&
     isOptionalString(value.mode_id) &&
     isOptionalString(value.effort) &&
     (value.reply_mode === undefined || isReplyMode(value.reply_mode)) &&
