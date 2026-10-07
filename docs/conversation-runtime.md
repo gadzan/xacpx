@@ -395,6 +395,18 @@ settlement tracking before typing/card setup; `chat` then awaits the same result
 Weixin keeps polling with its in-memory cursor while bound preparation is pending,
 but persists cursor checkpoints in response order only after each batch's bound
 messages have committed acceptance or reached a deterministic ingress rejection.
+Selected-but-rejected platform input commits a durable rejection receipt before
+it is acknowledged. The source key and admitted-input fingerprint freeze its
+original rejection across checkpoint failure, rebind, unbind, teardown and restart.
+Replays return the original rejection before command/binding classification;
+changed input conflicts. Prompt, Stop and rejection receipts are mutually exclusive.
+Re-enabling a target or correcting a binding does not retry a rejected source;
+a new platform message identity is required for a fresh admission attempt.
+The binding service normalizes Topic lifecycle races to `binding_topic_invalid`
+and disabled/missing targets to `external_target_unavailable`. Adapters recognize
+the committed ingress-decision type, rather than enumerating internal Run/Bot
+errors. Unknown errors, failed receipt writes and channel lifecycle abort remain
+retryable/unknown and cannot acknowledge preparation.
 An inactive/archived bound Topic (`binding_topic_invalid`) is a completed ingress
 rejection and can checkpoint, so it cannot poison later account traffic or be
 retried as ordinary input after teardown removes the binding.
@@ -437,12 +449,14 @@ Receipts accepted by earlier builds keep their stored fingerprint. A historical
 localized quote cannot be safely backfilled from the stored flattened text, so
 such a receipt still rejects a locale-derived mismatch rather than relaxing
 changed-input checks.
-An existing platform prompt/Stop receipt determines the execution domain before
+An existing platform prompt/Stop/rejection receipt determines the execution domain before
 current command classification, including Weixin local commands. Replays retain
 their original receipt kind; changed command-shaped input fails the same
 fingerprint fence. Fresh known commands retain their command path except bound Stop.
 `hadInboundMedia` records original platform attachment presence before download,
-limits or skipped-resource degradation. Bound media is rejected before downloading
+limits or skipped-resource degradation, including Weixin quoted image, file,
+voice and video items using the same descriptor semantics as ordinary extraction.
+Bound media is rejected before downloading
 until Conversation requests support attachments; it never falls back to a Session.
 
 Adapters may supply a structured `conversationTarget`. Otherwise a leading
@@ -540,9 +554,10 @@ External receipts currently have unlimited retention, including after Topic or
 Conversation teardown. Each accepted platform message retains its hashed source
 key, fingerprint, original Run/Conversation/Topic identifiers and the minimal
 Stop owner facts. Stop receipts additionally retain their frozen target ID set;
-neither receipt kind retains a second copy of message text or attachments. This is a deliberate cost
+rejection receipts retain only source/fingerprint and the original rejection code/message.
+No receipt kind retains a second copy of inbound text or attachments. This is a deliberate cost
 of rejecting arbitrary old replays after unbind, rebind and teardown: receipt
-storage grows with the lifetime count of accepted bound messages. There is no
+storage grows with the lifetime count of accepted or rejected bound messages. There is no
 automatic TTL, maximum-row eviction or user-facing purge in PR10. A follow-up
 may compact retired receipts while preserving exact replay/conflict rejection,
 or introduce a bounded retention policy only after establishing an enforceable

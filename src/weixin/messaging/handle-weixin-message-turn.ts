@@ -22,7 +22,7 @@ import { buildBackgroundCompletionNotice, shouldSendBackgroundNotice } from "./c
 import { executeChatTurn } from "./execute-chat-turn.js";
 import { buildFinalHeadsUp } from "./final-heads-up.js";
 import { shouldDeliverSegment, resolveFinalDisposition } from "./foreground-gate.js";
-import { setContextToken, bodyFromItemList, extractWeixinMediaDescriptors } from "./inbound.js";
+import { setContextToken, bodyFromItemList, extractWeixinMediaDescriptors, hasWeixinInboundMedia } from "./inbound.js";
 import { sendWeixinErrorNotice } from "./error-notice.js";
 import { sendWeixinMediaFile } from "./send-media.js";
 import { markdownToPlainText, sendMessageWeixin } from "./send.js";
@@ -378,7 +378,7 @@ export async function handleWeixinMessageTurn(
       ...(deps.humanStopSignal ? { humanStopSignal: deps.humanStopSignal } : {}),
       metadata: { channel: "weixin", channelMessageId: full.message_id != null ? String(full.message_id) : undefined,
         senderId: full.from_user_id, origin: "human", authenticatedHuman: Boolean(full.from_user_id),
-        hadInboundMedia: full.item_list?.some((item) => item.type !== MessageItemType.TEXT) ?? false,
+        hadInboundMedia: hasWeixinInboundMedia(full.item_list),
         chatType: full.group_id ? "group" : "direct", ...(full.group_id ? { groupId: full.group_id } : {}) },
     });
     if (preparation?.stopPendingAcceptance) deps.onConversationStop?.();
@@ -477,7 +477,7 @@ export async function handleWeixinMessageTurn(
     // chat route. Built-in WeChat is direct unless the message carries group_id.
     metadata: {
       channel: "weixin",
-      hadInboundMedia: full.item_list?.some((item) => item.type !== MessageItemType.TEXT) ?? false,
+      hadInboundMedia: hasWeixinInboundMedia(full.item_list),
       ...(full.message_id != null ? { channelMessageId: String(full.message_id) } : {}),
       authenticatedHuman: Boolean(full.from_user_id),
       chatType: full.group_id ? "group" : "direct",

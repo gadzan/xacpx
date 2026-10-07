@@ -105,7 +105,7 @@ export function createConversationChannelRouter(channelId: string, agent: Agent,
     try {
       // Durable source identity outranks mutable command vocabularies and text.
       const kind = runtime.bindings.receiptKind(channelId, request);
-      if (kind === "prompt") return conversationAgent({ chatKey: request.conversationId });
+      if (kind === "prompt" || kind === "rejection") return conversationAgent({ chatKey: request.conversationId });
       if (kind === "stop") return stopAgent(request);
       const knownCommand = agent.isKnownCommand?.(request.text)
         || (channelId === "weixin" && isLocalWeixinSlashCommand(request.text));

@@ -23,6 +23,7 @@ import { YuanbaoChannel } from "../../../packages/channel-yuanbao/src/channel";
 import type { YuanbaoGatewayStartInput } from "../../../packages/channel-yuanbao/src/types";
 import { MSG, parseControlPayload } from "@ganglion/xacpx-relay-protocol";
 import type { ChannelOwnerConfig } from "../../../src/commands/command-policy";
+import { ConversationIngressRejection } from "../../../src/conversations/conversation-ingress-rejection";
 
 async function compose(options: { state?: AppState; path?: string; agent?: Agent; router?: unknown; ownerConfig?: ChannelOwnerConfig } = {}) {
   const state = options.state ?? createEmptyState();
@@ -342,11 +343,11 @@ test("exact current member addressing fails closed on ambiguity, removed/unknown
   try {
     const { group: g, topic, bots } = await group(current, ["Same", "Same", "Name with spaces"]);
     for (const text of ["@Same work", "@Unknown work", "@{broken work"]) {
-      await expect(current.agent.chat(request(text))).rejects.toBeDefined();
+      await expect(current.agent.chat(request(text, text))).rejects.toBeDefined();
     }
     const outsider = await current.control.createBot({ name: "Outsider", agent: "codex", workspace: "backend" });
-    await expect(current.agent.chat(request("@Outsider work"))).rejects.toMatchObject({ code: "external_target_ambiguous" });
-    const invalid = request(); invalid.metadata!.conversationTarget = { botId: outsider.id };
+    await expect(current.agent.chat(request("@Outsider work", "outsider"))).rejects.toMatchObject({ code: "external_target_ambiguous" });
+    const invalid = request("work", "invalid"); invalid.metadata!.conversationTarget = { botId: outsider.id };
     await expect(current.agent.chat(invalid)).rejects.toBeDefined();
     expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(0);
     const a = await current.runtime.bindings.accept("discord", request("@{Name with spaces} work"));
@@ -362,12 +363,12 @@ test("missing, bot and generated provenance never parse targets or fall through 
     const { group: g, topic } = await group(current);
     for (const patch of [{ origin: undefined }, { origin: "peer" }, { authenticatedHuman: false },
       { authenticatedHuman: undefined }, { senderId: undefined }, { channelMessageId: undefined }, { channel: "feishu" }]) {
-      const input = request("@Reviewer work"); Object.assign(input.metadata!, patch);
+      const input = request("@Reviewer work", JSON.stringify(patch)); Object.assign(input.metadata!, patch);
       await expect(current.agent.chat(input)).rejects.toBeDefined();
     }
     expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(0);
     expect(current.delegated()).toBe(0);
-    expect(await current.agent.chat(request("/help"))).toEqual({ text: "ordinary" });
+    expect(await current.agent.chat(request("/help", "fresh-help"))).toEqual({ text: "ordinary" });
     const scheduled = request(); scheduled.metadata!.origin = "scheduled";
     expect(await current.agent.chat(scheduled)).toEqual({ text: "ordinary" });
   } finally { await current.close(); }
@@ -634,16 +635,18 @@ test("early route selection keeps replay/tombstones out of Session and fails clo
     await expect(selected.chat(request())).rejects.toMatchObject({ code: "binding_changed" });
     expect(current.delegated()).toBe(0);
     await current.control.bindConversation({ chatKey: request().conversationId, conversationId: g.id, topicId: topic.id });
-    const response = current.agent.chat(request());
+    await expect(current.agent.chat(request())).rejects.toMatchObject({ code: "binding_changed" });
+    const fresh = request("work", "fresh-message");
+    const response = current.agent.chat(fresh);
     await waitFor(() => current.runtime.store.listRuns(g.id, topic.id).length === 1);
     await current.runtime.dispatcher.kick(); await response;
     await current.control.unbindConversation(request().conversationId);
-    expect(current.route(request())).toBeDefined();
-    expect((await current.agent.chat(request())).text).toContain("provider result");
+    expect(current.route(fresh)).toBeDefined();
+    expect((await current.agent.chat(fresh)).text).toContain("provider result");
     expect(current.delegated()).toBe(0);
     await current.control.teardownGroupTopic(g.id, topic.id);
     expect(current.route(request())).toBeDefined();
-    await expect(current.agent.chat(request())).rejects.toMatchObject({ code: "external_request_retired" });
+    await expect(current.agent.chat(fresh)).rejects.toMatchObject({ code: "external_request_retired" });
     expect(current.delegated()).toBe(0);
     expect(current.route(request("new", "new-message", "discord:default:unbound"))).toBeUndefined();
   } finally { await current.close(); }
@@ -685,11 +688,13 @@ for (const change of ["unbind-rebind", "A-B-A", "same-target"] as const) {
       await current.control.bindConversation({ chatKey: input.conversationId, conversationId: g.id, topicId: topic.id });
       await expect(selected.prepareConversation!(input)).rejects.toMatchObject({ code: "binding_changed" });
       expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(0);
-      const accepted = current.route(input)!; await accepted.prepareConversation!(input);
-      await current.runtime.dispatcher.kick(); expect((await accepted.chat(input)).text).toContain("provider result");
+      await expect(current.route(input)!.chat(input)).rejects.toMatchObject({ code: "binding_changed" });
+      const fresh = request("work", "fresh-message");
+      const accepted = current.route(fresh)!; await accepted.prepareConversation!(fresh);
+      await current.runtime.dispatcher.kick(); expect((await accepted.chat(fresh)).text).toContain("provider result");
       await current.control.unbindConversation(input.conversationId);
       await current.control.bindConversation({ chatKey: input.conversationId, conversationId: g.id, topicId: topic.id });
-      expect((await current.route(input)!.chat(input)).text).toContain("provider result");
+      expect((await current.route(fresh)!.chat(fresh)).text).toContain("provider result");
       expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(1); expect(current.delegated()).toBe(0);
     } finally { await current.close(); }
   });
@@ -703,19 +708,84 @@ test("selection freezes Conversation and Topic; replacements fail closed while c
     const otherTopic = await current.control.createGroupTopic(g.id, "Other", { workspace: "backend", isolation: "shared-single-writer" });
     await current.control.bindConversation({ chatKey: request().conversationId, conversationId: g.id, topicId: otherTopic.id });
     await expect(selectedTopic.chat(request())).rejects.toMatchObject({ code: "binding_changed" });
-    const selectedGroup = current.route(request())!;
+    const groupInput = request("work", "group-selection");
+    const selectedGroup = current.route(groupInput)!;
     const { group: otherGroup, topic: newTopic } = await group(current, ["Other", "Partner"]);
-    await expect(selectedGroup.chat(request())).rejects.toMatchObject({ code: "binding_changed" });
+    await expect(selectedGroup.chat(groupInput)).rejects.toMatchObject({ code: "binding_changed" });
     expect(current.runtime.store.listRuns(g.id)).toHaveLength(0);
     expect(current.runtime.store.listRuns(otherGroup.id)).toHaveLength(0);
-    const response = current.agent.chat(request());
+    await expect(current.agent.chat(request())).rejects.toMatchObject({ code: "binding_changed" });
+    const fresh = request("work", "fresh-message");
+    const response = current.agent.chat(fresh);
     await waitFor(() => current.runtime.store.listRuns(otherGroup.id, newTopic.id).length === 1);
     await current.runtime.dispatcher.kick(); await response;
-    const replay = current.route(request())!;
+    const replay = current.route(fresh)!;
     await current.control.bindConversation({ chatKey: request().conversationId, conversationId: g.id, topicId: topic.id });
-    expect((await replay.chat(request())).text).toContain("provider result");
+    expect((await replay.chat(fresh)).text).toContain("provider result");
     expect(current.runtime.store.listRuns(g.id)).toHaveLength(0);
   } finally { await current.close(); }
+});
+
+test("rejection receipts preserve source decisions through teardown, reopen and command evolution", async () => {
+  let current = await compose();
+  const input = request("@Missing work");
+  try {
+    const { group: g, topic } = await group(current);
+    await expect(current.route(input)!.prepareConversation!(input)).rejects.toBeInstanceOf(ConversationIngressRejection);
+    expect(current.runtime.bindings.receiptKind("discord", input)).toBe("rejection");
+    await current.control.teardownGroupTopic(g.id, topic.id);
+    const { state, path } = current; await current.close(); current = await compose({ state, path });
+    current.normalAgent.isKnownCommand = () => true;
+    await expect(current.route(input)!.prepareConversation!(input)).rejects.toMatchObject({ code: "external_target_ambiguous" });
+    for (const text of ["/help", "/stop", "changed work"]) {
+      const replay = request(text);
+      await expect(current.route(replay)!.prepareConversation!(replay)).rejects.toMatchObject({ code: "external_request_conflict" });
+    }
+    const changedTarget = request(input.text); changedTarget.metadata!.conversationTarget = { mode: "everyone" };
+    const changedSender = request(input.text); changedSender.metadata!.senderId = "other";
+    const changedMedia = request(input.text); changedMedia.metadata!.hadInboundMedia = true;
+    for (const changed of [changedTarget, changedSender, changedMedia]) {
+      await expect(current.route(changed)!.prepareConversation!(changed)).rejects.toMatchObject({ code: "external_request_conflict" });
+    }
+    expect(current.runtime.store.listRuns(g.id)).toHaveLength(0); expect(current.delegated()).toBe(0);
+  } finally { await current.close(); }
+});
+
+test("rejection transaction rollback, additive reopen and all source-kind collisions fail closed", async () => {
+  const path = join(mkdtempSync(join(tmpdir(), "xacpx-rejections-")), "conversations.sqlite");
+  let fail = true;
+  let store = await SqliteConversationStore.open(path, { beforeAcceptCommit: () => { if (fail) throw new Error("rejection disk failure"); } });
+  const input = { key: "rejected", fingerprint: "original" };
+  const rejection = { code: "external_media_unsupported", message: "media unsupported" };
+  try {
+    expect(() => store.recordExternalRejection(input, rejection)).toThrow("rejection disk failure");
+    expect(store.hasExternalRejection(input.key)).toBe(false); fail = false;
+    expect(store.recordExternalRejection(input, rejection)).toEqual(rejection);
+    expect(store.recordExternalRejection(input, { code: "binding_changed", message: "later state" })).toEqual(rejection);
+    expect(() => store.getExternalRejection({ ...input, fingerprint: "changed" })).toThrow("different input");
+    const stop = { ...input, chatKey: request().conversationId, accountId: "default", senderId: "human" };
+    expect(() => store.acceptExternalStop(stop, () => [])).toThrow("already identifies a rejection");
+    const now = new Date().toISOString();
+    const profileSnapshot = snapshotBotProfile({ id: "bot", name: "Bot", agent: "codex", workspace: "backend", enabled: true,
+      profileRevision: 1, createdAt: now, updatedAt: now }, now);
+    const prompt = { conversationId: "c", topicId: "t", requestId: `external:${input.key}`, botId: "bot", content: "work", now,
+      profileSnapshot, externalRequest: input };
+    expect(() => store.acceptRequest(prompt)).toThrow("already identifies a rejection");
+    store.acceptRequest({ ...prompt, requestId: "external:prompt", externalRequest: { ...input, key: "prompt" } });
+    store.acceptExternalStop({ ...stop, key: "stop" }, () => []);
+    for (const key of ["prompt", "stop"]) expect(() => store.recordExternalRejection({ ...input, key }, rejection)).toThrow("accepted receipt");
+    store.close(); store = await SqliteConversationStore.open(path);
+    expect(store.getExternalRejection(input)).toEqual(rejection);
+    const sql = await createSqlDriver(path);
+    sql.run("UPDATE external_conversation_rejections SET rejection_code = 'run_corrupt' WHERE source_key = ?", [input.key]);
+    expect(() => store.getExternalRejection(input)).toThrow("invalid");
+    sql.exec("DROP TABLE external_conversation_rejections"); sql.close();
+    store.close(); store = await SqliteConversationStore.open(path);
+    expect(store.hasExternalRequest("prompt")).toBe(true); expect(store.hasExternalStopRequest("stop")).toBe(true);
+    expect(store.recordExternalRejection(input, rejection)).toEqual(rejection);
+    store.close(); store = await SqliteConversationStore.open(path);
+    expect(store.getExternalRejection(input)).toEqual(rejection);
+  } finally { store.close(); }
 });
 
 test("actual Feishu trustGroupOwner blocked RPC cannot delay acceptance or Stop; enrichment applies only to later turns", async () => {
@@ -798,7 +868,7 @@ for (const failure of ["provenance", "selector"] as const) {
   });
 }
 
-test("raw attachment presence rejects failed/skipped/retried media without creating a receipt", async () => {
+test("raw attachment presence rejects failed/skipped/retried media without creating a Run receipt", async () => {
   const current = await compose();
   try {
     const { group: g, topic } = await group(current);

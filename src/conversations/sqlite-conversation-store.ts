@@ -8,6 +8,7 @@ import {
 } from "../domain/ids";
 import type { BotProfileSnapshot } from "../bots/bot-types";
 import { ConversationError } from "./conversation-error";
+import { isExternalIngressRejectionCode } from "./conversation-ingress-rejection";
 import type {
   AcceptMemberInput,
   AcceptPublicHandoffInput,
@@ -89,6 +90,11 @@ export interface ExternalStopRequest {
 export interface ExternalStopReceipt {
   reused: boolean;
   targetRunIds: string[];
+}
+
+export interface ExternalRejectionReceipt {
+  code: string;
+  message: string;
 }
 
 interface MessageRow {
@@ -204,6 +210,10 @@ CREATE TABLE IF NOT EXISTS external_conversation_stops (
   source_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
   chat_key TEXT NOT NULL, account_id TEXT NOT NULL, sender_id TEXT NOT NULL,
   target_run_ids_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS external_conversation_rejections (
+  source_key TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
+  rejection_code TEXT NOT NULL, rejection_message TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS topic_seq (
   topic_id TEXT PRIMARY KEY,
@@ -791,7 +801,43 @@ export class SqliteConversationStore implements ConversationStore {
     return this.sqlite.get("SELECT 1 FROM external_conversation_stops WHERE source_key = ?", [key]) !== undefined;
   }
 
+  hasExternalRejection(key: string): boolean {
+    return this.sqlite.get("SELECT 1 FROM external_conversation_rejections WHERE source_key = ?", [key]) !== undefined;
+  }
+
+  getExternalRejection(input: { key: string; fingerprint: string }): ExternalRejectionReceipt | undefined {
+    const row = this.sqlite.get<{ fingerprint: string; rejection_code: string; rejection_message: string }>(
+      "SELECT * FROM external_conversation_rejections WHERE source_key = ?", [input.key]);
+    if (!row) return undefined;
+    if (this.hasExternalRequest(input.key) || this.hasExternalStopRequest(input.key)
+      || typeof row.fingerprint !== "string" || !row.fingerprint
+      || !isExternalIngressRejectionCode(row.rejection_code) || typeof row.rejection_message !== "string" || !row.rejection_message) {
+      throw new ConversationError("external_request_corrupt", "platform rejection receipt is invalid");
+    }
+    if (row.fingerprint !== input.fingerprint) throw new ConversationError("external_request_conflict", "platform rejection was recorded with different input");
+    return { code: row.rejection_code, message: row.rejection_message };
+  }
+
+  recordExternalRejection(input: { key: string; fingerprint: string }, rejection: ExternalRejectionReceipt): ExternalRejectionReceipt {
+    this.assertOpen();
+    return this.sqlite.transaction(() => {
+      if (this.hasExternalRequest(input.key) || this.hasExternalStopRequest(input.key)) {
+        throw new ConversationError("external_request_conflict", "platform message already has an accepted receipt");
+      }
+      const replay = this.getExternalRejection(input);
+      if (replay) return replay;
+      if (!isExternalIngressRejectionCode(rejection.code) || !rejection.message) {
+        throw new ConversationError("external_request_corrupt", "invalid external rejection decision");
+      }
+      this.sqlite.run("INSERT INTO external_conversation_rejections (source_key, fingerprint, rejection_code, rejection_message) VALUES (?, ?, ?, ?)",
+        [input.key, input.fingerprint, rejection.code, rejection.message]);
+      this.beforeAcceptCommit?.();
+      return rejection;
+    });
+  }
+
   getExternalStopRequest(input: ExternalStopRequest): ExternalStopReceipt | undefined {
+    if (this.hasExternalRejection(input.key)) throw new ConversationError("external_request_conflict", "platform message already identifies a rejection");
     const row = this.sqlite.get<{ fingerprint: string; chat_key: string; account_id: string; sender_id: string; target_run_ids_json: string }>(
       "SELECT * FROM external_conversation_stops WHERE source_key = ?", [input.key]);
     if (!row) return undefined;
@@ -832,6 +878,7 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   getExternalRequest(input: { key: string; fingerprint: string }): AcceptRequestResult | undefined {
+    if (this.hasExternalRejection(input.key)) throw new ConversationError("external_request_conflict", "platform message already identifies a rejection");
     if (this.hasExternalStopRequest(input.key)) throw new ConversationError("external_request_conflict", "platform message already identifies a Stop");
     const row = this.sqlite.get<{ fingerprint: string; run_id: string; conversation_id: string; topic_id: string }>(
       "SELECT * FROM external_conversation_requests WHERE source_key = ?", [input.key]);

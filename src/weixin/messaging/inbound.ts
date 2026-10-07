@@ -394,6 +394,11 @@ export function extractWeixinMediaDescriptors(itemList?: MessageItem[]): WeixinI
   return out;
 }
 
+/** Same side-effect-free semantics as download extraction, including quotes. */
+export function hasWeixinInboundMedia(itemList?: MessageItem[]): boolean {
+  return extractWeixinMediaDescriptors(itemList).length > 0;
+}
+
 function descriptorFromItem(item?: MessageItem): WeixinInboundMediaDescriptor | undefined {
   if (!item) return undefined;
   if (item.type === MessageItemType.IMAGE) return { item, kind: "image" };

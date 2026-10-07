@@ -19,8 +19,8 @@ import { weixinLog } from "../util/weixin-log";
 import { redactBody } from "../util/redact.js";
 import { resolveWeixinAccount, listWeixinAccountIds } from "../auth/accounts.js";
 import { resetSessionPause } from "../api/session-guard.js";
-import { clearContextTokensForAccount, restoreContextTokens } from "../messaging/inbound.js";
-import { ConversationError } from "../../conversations/conversation-error.js";
+import { clearContextTokensForAccount, restoreContextTokens, hasWeixinInboundMedia } from "../messaging/inbound.js";
+import { ConversationIngressRejection } from "../../conversations/conversation-ingress-rejection.js";
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -28,13 +28,6 @@ const BACKOFF_DELAY_MS = 30_000;
 const RETRY_DELAY_MS = 2_000;
 const CREDENTIAL_RECOVERY_POLL_INTERVAL_MS = 30_000;
 
-// These are completed ingress decisions, not unknown acceptance outcomes.
-const FINAL_INGRESS_REJECTIONS = new Set([
-  "binding_changed", "binding_topic_invalid", "external_request_conflict", "external_request_retired",
-  "external_group_unsupported", "external_human_required", "external_media_unsupported",
-  "external_ingress_invalid", "external_target_ambiguous", "external_target_invalid",
-  "external_target_required", "external_target_changed",
-]);
 
 export type MonitorWeixinOpts = {
   baseUrl: string;
@@ -312,7 +305,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
 
         const conversationChatKey = buildWeixinConversationChatKey(accountId, fromUserId, full.group_id);
         const isSlash = inboundText.trim().startsWith("/");
-        const hadInboundMedia = full.item_list?.some((item) => item.type !== MessageItemType.TEXT) ?? false;
+        const hadInboundMedia = hasWeixinInboundMedia(full.item_list);
         const conversationAgent = opts.routeConversation?.({
           accountId, conversationId: conversationChatKey, text: inboundText,
           metadata: { channel: "weixin", senderId: fromUserId, origin: "human", authenticatedHuman: Boolean(fromUserId),
@@ -433,8 +426,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
             // A skipped/aborted task that never prepared must not advance a cursor.
             preparation?.reject(new Error("bound message ended before preparation"));
           }, (error) => {
-            if (error instanceof ConversationError && (FINAL_INGRESS_REJECTIONS.has(error.code)
-              || (error.code === "external_request_aborted" && turn?.humanStop.signal.aborted && !abortSignal?.aborted))) preparation?.resolve();
+            if (error instanceof ConversationIngressRejection) preparation?.resolve();
             else preparation?.reject(error);
           });
           void runPromise

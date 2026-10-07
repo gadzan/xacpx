@@ -4,8 +4,10 @@ import { normalizeChannelType } from "../channels/channel-type";
 import { sanitizePublicConversationPrompt } from "../control/public-control";
 import type { ConversationTarget } from "../control/conversation-control-dtos";
 import type { BotService } from "../bots/bot-service";
+import { BotError } from "../bots/bot-error";
 import type { ChatRequest } from "../weixin/agent/interface";
 import { ConversationError } from "./conversation-error";
+import { ConversationIngressRejection, isExternalIngressRejectionCode } from "./conversation-ingress-rejection";
 import type { ConversationRunService } from "./conversation-run-service";
 import type { SqliteConversationStore, ExternalStopReceipt } from "./sqlite-conversation-store";
 import type { AcceptRequestResult } from "./conversation-store";
@@ -68,17 +70,63 @@ export class ConversationBindingService {
   selectRoute(channelId: string, request: ChatRequest): ConversationRouteSnapshot | undefined {
     const binding = this.store.getConversationBinding(request.conversationId);
     const key = this.sourceKey(channelId, request);
-    if (!binding && !(key !== undefined && (this.store.hasExternalRequest(key) || this.store.hasExternalStopRequest(key)))) return undefined;
+    if (!binding && !(key !== undefined && (this.store.hasExternalRequest(key) || this.store.hasExternalStopRequest(key) || this.store.hasExternalRejection(key)))) return undefined;
     return { chatKey: request.conversationId, ...(binding ? { binding: { ...binding } } : {}) };
   }
 
-  receiptKind(channelId: string, request: ChatRequest): "prompt" | "stop" | undefined {
+  receiptKind(channelId: string, request: ChatRequest): "prompt" | "stop" | "rejection" | undefined {
     const key = this.sourceKey(channelId, request);
     if (!key) return undefined;
     const prompt = this.store.hasExternalRequest(key);
     const stop = this.store.hasExternalStopRequest(key);
-    if (prompt && stop) throw new ConversationError("external_request_conflict", "platform message has conflicting receipt kinds");
-    return prompt ? "prompt" : stop ? "stop" : undefined;
+    const rejection = this.store.hasExternalRejection(key);
+    if (Number(prompt) + Number(stop) + Number(rejection) > 1) throw new ConversationError("external_request_corrupt", "platform message has conflicting receipt kinds");
+    return prompt ? "prompt" : stop ? "stop" : rejection ? "rejection" : undefined;
+  }
+
+  private rejectionIdentity(channelId: string, request: ChatRequest): { key: string; fingerprint: string } | undefined {
+    const key = this.sourceKey(channelId, request);
+    if (!key) return undefined;
+    const m = request.metadata;
+    // Pre-download facts, also available after teardown and on Stop replay.
+    // Downloaded paths, mutable owner facts and the current binding are excluded.
+    return { key, fingerprint: createHash("sha256").update(JSON.stringify([
+      m?.senderId ?? null, request.text, m?.conversationTarget ?? null,
+      hasMedia(request.media) || Boolean(m?.hadInboundMedia), m?.origin ?? null, m?.authenticatedHuman === true,
+    ])).digest("hex") };
+  }
+
+  private replayRejection(identity: { key: string; fingerprint: string } | undefined): void {
+    if (!identity) return;
+    const rejection = this.store.getExternalRejection(identity);
+    if (rejection) throw new ConversationIngressRejection(rejection.code, rejection.message);
+  }
+
+  private rejectIngress(identity: { key: string; fingerprint: string } | undefined, request: ChatRequest,
+    error: unknown, shutdownSignal?: AbortSignal): never {
+    if (error instanceof ConversationIngressRejection) throw error;
+    if (!(error instanceof ConversationError || error instanceof BotError) || !identity) throw error;
+    let code = error.code;
+    if (["topic_not_active", "topic_not_found", "conversation_not_found", "conversation_deleting", "topic_deleting", "group_not_found"].includes(code)) code = "binding_topic_invalid";
+    else if (["bot_disabled", "bot_not_found", "empty_target"].includes(code)) code = "external_target_unavailable";
+    else if (["invalid-target", "target_too_large", "group_member_not_member", "conversation_mismatch"].includes(code)) code = "external_target_invalid";
+    else if (code === "target_required") code = "external_target_required";
+    else if (code === "topic_queue_full") code = "external_queue_full";
+    else if (code === "automatic_unsupported") code = "external_routing_unsupported";
+    if (!isExternalIngressRejectionCode(code)) throw error;
+    // Lifecycle abort leaves input retryable. Only a proven user Stop freezes
+    // a rejected pending source, just as it freezes its own Stop target set.
+    if (code === "external_request_aborted" && (!request.humanStopSignal?.aborted || shutdownSignal?.aborted)) throw error;
+    let rejection = { code, message: error.message };
+    if (!this.store.hasExternalRequest(identity.key) && !this.store.hasExternalStopRequest(identity.key)) {
+      try { rejection = this.store.recordExternalRejection(identity, rejection); }
+      catch (failure) {
+        if (!(failure instanceof ConversationError) || failure.code !== "external_request_conflict"
+          || !(this.store.hasExternalRequest(identity.key) || this.store.hasExternalStopRequest(identity.key) || this.store.hasExternalRejection(identity.key))) throw failure;
+        rejection = { code: failure.code, message: failure.message };
+      }
+    }
+    throw new ConversationIngressRejection(rejection.code, rejection.message);
   }
 
   private sourceKey(channelId: string, request: ChatRequest): string | undefined {
@@ -116,17 +164,21 @@ export class ConversationBindingService {
   }
 
   acceptStop(channelId: string, request: ChatRequest): ExternalStopReceipt {
-    const metadata = request.metadata;
-    this.assertSupportedIngress(channelId, request);
-    const key = this.sourceKey(channelId, request);
-    if (metadata?.origin !== "human" || metadata.authenticatedHuman !== true || !nonempty(metadata.senderId) || !key) {
-      throw new ConversationError("external_human_required", "Conversation Stop requires authenticated channel identity");
-    }
-    if (request.abortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel closed before Stop");
-    if (hasMedia(request.media) || metadata.hadInboundMedia) throw new ConversationError("external_media_unsupported", "bound Conversation requests currently accept text only");
-    const fingerprint = createHash("sha256").update(JSON.stringify([metadata.senderId, request.text])).digest("hex");
-    return this.store.acceptExternalStop({ key, fingerprint, chatKey: request.conversationId, accountId: request.accountId, senderId: metadata.senderId },
-      () => this.stopTargets(channelId, request));
+    const identity = this.rejectionIdentity(channelId, request);
+    try {
+      this.replayRejection(identity);
+      const metadata = request.metadata;
+      this.assertSupportedIngress(channelId, request);
+      const key = this.sourceKey(channelId, request);
+      if (metadata?.origin !== "human" || metadata.authenticatedHuman !== true || !nonempty(metadata.senderId) || !key) {
+        throw new ConversationError("external_human_required", "Conversation Stop requires authenticated channel identity");
+      }
+      if (request.abortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel closed before Stop");
+      if (hasMedia(request.media) || metadata.hadInboundMedia) throw new ConversationError("external_media_unsupported", "bound Conversation requests currently accept text only");
+      const fingerprint = createHash("sha256").update(JSON.stringify([metadata.senderId, request.text])).digest("hex");
+      return this.store.acceptExternalStop({ key, fingerprint, chatKey: request.conversationId, accountId: request.accountId, senderId: metadata.senderId },
+        () => this.stopTargets(channelId, request));
+    } catch (error) { return this.rejectIngress(identity, request, error); }
   }
 
   async bind(input: ConversationBinding): Promise<Required<ConversationBinding>> {
@@ -162,94 +214,98 @@ export class ConversationBindingService {
   /** Called by a selected Conversation Agent, never the ordinary Session Agent. */
   async accept(channelId: string, request: ChatRequest, shutdownSignal?: AbortSignal,
     selected?: ConversationRouteSnapshot): Promise<AcceptRequestResult | undefined> {
+    const identity = this.rejectionIdentity(channelId, request);
     return this.withRoute(request.conversationId, async () => {
-      const binding = this.store.getConversationBinding(request.conversationId);
-      const metadata = request.metadata;
-      this.assertSupportedIngress(channelId, request);
-      if (selected && selected.chatKey !== request.conversationId) {
-        throw new ConversationError("binding_changed", "selected external route changed");
-      }
-      // Nonhuman events cannot enter target parsing or create human authority.
-      // A bound chat must not silently execute them through the Session lane.
-      if (metadata?.origin !== "human" || metadata.authenticatedHuman !== true) {
-        if (binding) throw new ConversationError("external_human_required", "bound Conversation input requires authenticated human origin");
-        return undefined;
-      }
-      if (metadata.channel !== channelId || !request.conversationId.startsWith(`${channelId}:`)
-        || !nonempty(metadata.senderId) || !nonempty(request.accountId) || !nonempty(metadata.channelMessageId)) {
-        if (binding) throw new ConversationError("external_ingress_invalid", "bound input requires channel, sender, account and stable platform message identity");
-        return undefined;
-      }
-      if (hasMedia(request.media) || metadata.hadInboundMedia) throw new ConversationError("external_media_unsupported", "bound Conversation requests currently accept text only");
-      const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-      const explicitTarget = sanitizePublicConversationPrompt({ conversationId: "", topicId: "", requestId: "",
-        text: request.text, ...(metadata.conversationTarget !== undefined ? { target: metadata.conversationTarget } : {}) }).target;
-      const externalRequest = {
-        key: this.sourceKey(channelId, request)!,
-        fingerprint: hash([metadata.senderId, request.text, explicitTarget ?? null, hasMedia(request.media) ? request.media : null]),
-      };
-      const replay = this.store.getExternalRequest(externalRequest);
-      if (replay) return replay;
-      if (selected && (!selected.binding || !binding
-        || selected.binding.conversationId !== binding.conversationId || selected.binding.topicId !== binding.topicId
-        || selected.binding.revision !== binding.revision)) {
-        throw new ConversationError("binding_changed", "selected Conversation binding was replaced or removed");
-      }
-      if (!binding) return undefined;
-      const ingressSignal = request.humanStopSignal
-        ? AbortSignal.any([request.humanStopSignal, ...(request.abortSignal ? [request.abortSignal] : [])]) : request.abortSignal;
-      if (ingressSignal?.aborted) throw new ConversationError("external_request_aborted", "channel request was stopped before acceptance");
-      const topics = this.runs.listTopics(binding.conversationId);
-      const topic = topics.find((item) => item.id === binding.topicId);
-      if (!topic || topic.status !== "active") throw new ConversationError("binding_topic_invalid", "bound Topic is no longer active");
-      const group = this.runs.listGroups().find((item) => item.id === binding.conversationId);
-      let text = request.text;
-      let target: ConversationTarget | undefined = explicitTarget;
-      let externalAddress: { botId: string; name: string } | undefined;
-      if (!target && group) {
-        const mention = /^@(?:\{([^}\r\n]+)\}|([^\s{}]+))(?:\s+|$)/.exec(text);
-        if (mention) {
-          const name = mention[1] ?? mention[2]!;
-          const matches = group.botIds.filter((id) => this.bots.getBot(id).name === name);
-          if (matches.length !== 1) throw new ConversationError("external_target_ambiguous", "address must match exactly one current Group member");
-          target = { botId: matches[0]! };
-          externalAddress = { botId: matches[0]!, name };
-          text = text.slice(mention[0].length);
-        } else {
-          if (text.startsWith("@")) throw new ConversationError("external_target_invalid", "malformed member address");
-          if (!group.leadBotId) throw new ConversationError("external_target_required", "Group requires a target or lead Bot");
-          target = { botId: group.leadBotId };
-        }
-      }
-      const input = sanitizePublicConversationPrompt({ ...binding, requestId: `external:${externalRequest.key}`, text, ...(target ? { target } : {}) });
-      let cancellation: Promise<void> | undefined;
-      const stop = () => {
-        if (shutdownSignal?.aborted) return;
-        // The receipt is published with the Run, so this listener never stops
-        // an unrelated public request with a colliding request id.
-        try {
-          const accepted = this.store.getExternalRequest(externalRequest);
-          if (accepted) cancellation = this.runs.cancelRun(accepted.run.id);
-        } catch (error) { cancellation = Promise.reject(error); }
-        cancellation?.catch(() => {});
-      };
-      request.humanStopSignal?.addEventListener("abort", stop, { once: true });
       try {
-        const owner = withEffectiveOwner(metadata, this.ownerConfig)!;
-        return await this.runs.acceptConversationPrompt({ ...input, externalRequest,
-          ...(externalAddress ? { externalAddress } : {}),
-          ...(ingressSignal ? { channelAbortSignal: ingressSignal } : {}), humanIngress: {
-            chatKey: request.conversationId, senderId: metadata.senderId, accountId: request.accountId,
-            ...(metadata.senderName ? { senderName: metadata.senderName } : {}),
-            ...(owner.isOwner !== undefined ? { isOwner: owner.isOwner } : {}),
-            ...(metadata.chatType ? { chatType: metadata.chatType } : {}),
-        } });
-      } finally {
-        request.humanStopSignal?.removeEventListener("abort", stop);
-        // Keep the acceptance operation lease until an entered cancellation
-        // settles; shutdown must not close SQLite beneath its durable write.
-        await cancellation;
-      }
+        this.replayRejection(identity);
+        const binding = this.store.getConversationBinding(request.conversationId);
+        const metadata = request.metadata;
+        this.assertSupportedIngress(channelId, request);
+        if (selected && selected.chatKey !== request.conversationId) {
+          throw new ConversationError("binding_changed", "selected external route changed");
+        }
+        // Nonhuman events cannot enter target parsing or create human authority.
+        // A bound chat must not silently execute them through the Session lane.
+        if (metadata?.origin !== "human" || metadata.authenticatedHuman !== true) {
+          if (binding) throw new ConversationError("external_human_required", "bound Conversation input requires authenticated human origin");
+          return undefined;
+        }
+        if (metadata.channel !== channelId || !request.conversationId.startsWith(`${channelId}:`)
+          || !nonempty(metadata.senderId) || !nonempty(request.accountId) || !nonempty(metadata.channelMessageId)) {
+          if (binding) throw new ConversationError("external_ingress_invalid", "bound input requires channel, sender, account and stable platform message identity");
+          return undefined;
+        }
+        if (hasMedia(request.media) || metadata.hadInboundMedia) throw new ConversationError("external_media_unsupported", "bound Conversation requests currently accept text only");
+        const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+        const explicitTarget = sanitizePublicConversationPrompt({ conversationId: "", topicId: "", requestId: "",
+          text: request.text, ...(metadata.conversationTarget !== undefined ? { target: metadata.conversationTarget } : {}) }).target;
+        const externalRequest = {
+          key: this.sourceKey(channelId, request)!,
+          fingerprint: hash([metadata.senderId, request.text, explicitTarget ?? null, hasMedia(request.media) ? request.media : null]),
+        };
+        const replay = this.store.getExternalRequest(externalRequest);
+        if (replay) return replay;
+        if (selected && (!selected.binding || !binding
+          || selected.binding.conversationId !== binding.conversationId || selected.binding.topicId !== binding.topicId
+          || selected.binding.revision !== binding.revision)) {
+          throw new ConversationError("binding_changed", "selected Conversation binding was replaced or removed");
+        }
+        if (!binding) return undefined;
+        const ingressSignal = request.humanStopSignal
+          ? AbortSignal.any([request.humanStopSignal, ...(request.abortSignal ? [request.abortSignal] : [])]) : request.abortSignal;
+        if (ingressSignal?.aborted) throw new ConversationError("external_request_aborted", "channel request was stopped before acceptance");
+        const topics = this.runs.listTopics(binding.conversationId);
+        const topic = topics.find((item) => item.id === binding.topicId);
+        if (!topic || topic.status !== "active") throw new ConversationError("binding_topic_invalid", "bound Topic is no longer active");
+        const group = this.runs.listGroups().find((item) => item.id === binding.conversationId);
+        let text = request.text;
+        let target: ConversationTarget | undefined = explicitTarget;
+        let externalAddress: { botId: string; name: string } | undefined;
+        if (!target && group) {
+          const mention = /^@(?:\{([^}\r\n]+)\}|([^\s{}]+))(?:\s+|$)/.exec(text);
+          if (mention) {
+            const name = mention[1] ?? mention[2]!;
+            const matches = group.botIds.filter((id) => this.bots.getBot(id).name === name);
+            if (matches.length !== 1) throw new ConversationError("external_target_ambiguous", "address must match exactly one current Group member");
+            target = { botId: matches[0]! };
+            externalAddress = { botId: matches[0]!, name };
+            text = text.slice(mention[0].length);
+          } else {
+            if (text.startsWith("@")) throw new ConversationError("external_target_invalid", "malformed member address");
+            if (!group.leadBotId) throw new ConversationError("external_target_required", "Group requires a target or lead Bot");
+            target = { botId: group.leadBotId };
+          }
+        }
+        const input = sanitizePublicConversationPrompt({ ...binding, requestId: `external:${externalRequest.key}`, text, ...(target ? { target } : {}) });
+        let cancellation: Promise<void> | undefined;
+        const stop = () => {
+          if (shutdownSignal?.aborted) return;
+          // The receipt is published with the Run, so this listener never stops
+          // an unrelated public request with a colliding request id.
+          try {
+            const accepted = this.store.getExternalRequest(externalRequest);
+            if (accepted) cancellation = this.runs.cancelRun(accepted.run.id);
+          } catch (error) { cancellation = Promise.reject(error); }
+          cancellation?.catch(() => {});
+        };
+        request.humanStopSignal?.addEventListener("abort", stop, { once: true });
+        try {
+          const owner = withEffectiveOwner(metadata, this.ownerConfig)!;
+          return await this.runs.acceptConversationPrompt({ ...input, externalRequest,
+            ...(externalAddress ? { externalAddress } : {}),
+            ...(ingressSignal ? { channelAbortSignal: ingressSignal } : {}), humanIngress: {
+              chatKey: request.conversationId, senderId: metadata.senderId, accountId: request.accountId,
+              ...(metadata.senderName ? { senderName: metadata.senderName } : {}),
+              ...(owner.isOwner !== undefined ? { isOwner: owner.isOwner } : {}),
+              ...(metadata.chatType ? { chatType: metadata.chatType } : {}),
+          } });
+        } finally {
+          request.humanStopSignal?.removeEventListener("abort", stop);
+          // Keep the acceptance operation lease until an entered cancellation
+          // settles; shutdown must not close SQLite beneath its durable write.
+          await cancellation;
+        }
+      } catch (error) { return this.rejectIngress(identity, request, error, shutdownSignal); }
     });
   }
 

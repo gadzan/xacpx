@@ -14,6 +14,7 @@ import { getLocale, setLocale } from "../../../src/i18n";
 import type { ChatRequest } from "../../../src/weixin/agent/interface";
 import type { WeixinMessage } from "../../../src/weixin/api/types";
 import type { ChannelStopReason } from "../../../src/channels/types";
+import { createDirectConversationId } from "../../../src/domain/ids";
 
 async function waitFor(condition: () => boolean) {
   const deadline = Date.now() + 3000;
@@ -28,6 +29,10 @@ async function fixture() {
   const sent: Array<{ context: string; text: string }> = [];
   const ordinary: ChatRequest[] = []; const errors: string[] = [];
   const configCalls: string[] = []; const inbound: string[] = [];
+  const downloads: unknown[] = [];
+  mock.module("../../../src/weixin/media/media-download.ts", () => ({
+    downloadMediaFromItem: async (input: unknown) => { downloads.push(input); return undefined; },
+  }));
   mock.module("../../../src/weixin/api/api.ts", () => ({
     getUpdates: async (input: { abortSignal?: AbortSignal; get_updates_buf: string }) => {
       polls++;
@@ -109,7 +114,7 @@ async function fixture() {
     if (priorStateDir === undefined) delete process.env.OPENCLAW_STATE_DIR; else process.env.OPENCLAW_STATE_DIR = priorStateDir;
     mock.restore();
   };
-  return { runtime, control, group, topic, chatKey, daemon, pending, ordinary, errors, sent, start, stop, emit, runs, close, buildWeixinConversationChatKey,
+  return { runtime, control, bot, group, topic, chatKey, daemon, pending, ordinary, errors, downloads, sent, start, stop, emit, runs, close, buildWeixinConversationChatKey,
     pollInputs, configCalls, inbound, sessionReads, refreshCredentials, syncPath: () => getSyncBufFilePath("default"),
     cursor: () => loadGetUpdatesBuf(getSyncBufFilePath("default")), clears: () => clears };
 }
@@ -299,6 +304,96 @@ test("Weixin archived bound Topic rejection checkpoints without freezing later o
     expect(f.errors.filter((code) => code === "binding_topic_invalid")).toHaveLength(1);
   } finally { await f.close(); }
 });
+
+for (const type of [2, 3, 4, 5]) {
+  test(`Weixin quoted media type ${type} rejects prompt and Stop before downloads or durable effects`, async () => {
+    const f = await fixture();
+    const quoted = (text: string) => ({ item_list: [{ type: 1, text_item: { text }, ref_msg: { message_item: { type } } }] });
+    try {
+      await f.start(); f.emit(1, "analyze this", quoted("analyze this"), "B");
+      await waitFor(() => f.cursor() === "B");
+      expect(f.errors).toEqual(["external_media_unsupported"]); expect(f.runs()).toHaveLength(0);
+      f.emit(2, "existing", {}, "C"); await waitFor(() => f.cursor() === "C");
+      const run = f.runs()[0]!;
+      f.emit(3, "/stop", quoted("/stop"), "D"); await waitFor(() => f.cursor() === "D");
+      expect(f.errors).toEqual(["external_media_unsupported", "external_media_unsupported"]);
+      expect(f.runtime.store.getRun(run.id)).toEqual(run);
+      expect(f.runtime.bindings.receiptKind("weixin", { accountId: "default", conversationId: f.chatKey, text: "/stop",
+        metadata: { channel: "weixin", channelMessageId: "3" } })).toBe("rejection");
+      expect(f.downloads).toHaveLength(0); expect(f.ordinary).toHaveLength(0);
+    } finally { await f.close(); }
+  });
+}
+
+test("Weixin failed rejection receipt write holds checkpoint and ordinary dispatch until retry", async () => {
+  const f = await fixture();
+  try {
+    (f.runtime.store as any).beforeAcceptCommit = () => { throw new Error("rejection storage failure"); };
+    await f.start(); f.emit(1, "media", { item_list: [{ type: 2 }] }, "B");
+    await waitFor(() => f.errors.length > 0 && f.pollInputs.includes("B"));
+    expect(f.runtime.bindings.receiptKind("weixin", { accountId: "default", conversationId: f.chatKey, text: "media",
+      metadata: { channel: "weixin", channelMessageId: "1" } })).toBeUndefined();
+    f.emit(2, "ordinary after write failure", { from_user_id: "other" }, "C"); await waitFor(() => f.pollInputs.includes("C"));
+    expect(f.cursor()).toBeUndefined(); expect(f.ordinary).toHaveLength(0);
+    await f.stop("disabled"); (f.runtime.store as any).beforeAcceptCommit = undefined; await f.start();
+    f.emit(1, "media", { item_list: [{ type: 2 }] }, "B");
+    f.emit(2, "ordinary after write failure", { from_user_id: "other" }, "C");
+    await waitFor(() => f.cursor() === "C" && f.ordinary.length === 1);
+    expect(f.errors.at(-1)).toBe("external_media_unsupported"); expect(f.runs()).toHaveLength(0);
+  } finally { (f.runtime.store as any).beforeAcceptCommit = undefined; await f.close(); }
+});
+
+test("Weixin rejected media survives failed checkpoint and unbind/restart without entering Session", async () => {
+  const f = await fixture(); const media = { item_list: [{ type: 1, text_item: { text: "media" } }, { type: 2 }] };
+  try {
+    mkdirSync(f.syncPath()); await f.start(); f.emit(1, "media", media, "B");
+    await waitFor(() => f.errors.includes("external_media_unsupported") && f.pollInputs.includes("B"));
+    expect(f.runs()).toHaveLength(0); await f.control.unbindConversation(f.chatKey);
+    await f.stop("disabled"); rmdirSync(f.syncPath()); const before = f.pollInputs.length;
+    await f.start(); expect(f.pollInputs[before]).toBe(""); f.emit(1, "media", media, "B");
+    await waitFor(() => f.cursor() === "B");
+    expect(f.errors.filter((code) => code === "external_media_unsupported")).toHaveLength(2);
+    expect(f.ordinary).toHaveLength(0); expect(f.downloads).toHaveLength(0); expect(f.runs()).toHaveLength(0);
+  } finally { await f.close(); }
+});
+
+for (const direct of [false, true]) {
+  test(`Weixin disabled ${direct ? "Direct" : "Group lead"} is a durable rejection without poisoning later traffic`, async () => {
+    const f = await fixture();
+    try {
+      if (direct) await f.control.bindConversation({ chatKey: f.chatKey, conversationId: createDirectConversationId(f.bot.id) });
+      await f.control.updateBot(f.bot.id, { enabled: false }); await f.start(); f.emit(1, "disabled target", {}, "B");
+      await waitFor(() => f.errors.length > 0); expect(f.errors[0]).toBe("external_target_unavailable");
+      await waitFor(() => f.cursor() === "B");
+      f.emit(2, "ordinary after disabled", { from_user_id: "other" }, "C");
+      await waitFor(() => f.cursor() === "C" && f.ordinary.length === 1);
+      await f.control.updateBot(f.bot.id, { enabled: true }); await f.control.unbindConversation(f.chatKey);
+      await f.stop("disabled"); await f.start(); f.emit(1, "disabled target", {}, "D");
+      await waitFor(() => f.cursor() === "D"); expect(f.errors).toEqual(["external_target_unavailable", "external_target_unavailable"]);
+      expect(f.ordinary).toHaveLength(1); expect(f.runs()).toHaveLength(0);
+    } finally { await f.close(); }
+  });
+}
+
+for (const action of ["archive", "teardown"] as const) {
+  test(`Weixin Topic ${action} after outer active check becomes a durable external rejection`, async () => {
+    const f = await fixture(); const entered = Promise.withResolvers<void>(); const release = Promise.withResolvers<void>();
+    (f.runtime.runs as any).beforeGroupAcceptGatesAcquired = async () => { entered.resolve(); await release.promise; };
+    try {
+      await f.start(); f.emit(1, "racing lifecycle", {}, "B"); await entered.promise;
+      if (action === "archive") await f.control.archiveGroupTopic(f.group.id, f.topic.id);
+      else await f.control.teardownGroupTopic(f.group.id, f.topic.id);
+      release.resolve(); await waitFor(() => f.errors.length > 0); expect(f.errors[0]).toBe("binding_topic_invalid");
+      await waitFor(() => f.cursor() === "B"); expect(f.runs()).toHaveLength(0);
+      f.emit(2, "ordinary after race", { from_user_id: "other" }, "C");
+      await waitFor(() => f.cursor() === "C" && f.ordinary.length === 1);
+      if (action === "archive") await f.control.teardownGroupTopic(f.group.id, f.topic.id);
+      await f.stop("disabled"); await f.start(); f.emit(1, "racing lifecycle", {}, "D");
+      await waitFor(() => f.cursor() === "D"); expect(f.errors).toEqual(["binding_topic_invalid", "binding_topic_invalid"]);
+      expect(f.ordinary).toHaveLength(1);
+    } finally { release.resolve(); await f.close(); }
+  });
+}
 
 test("Weixin local command replay cannot bypass a durable receipt or invoke local Session handlers", async () => {
   const f = await fixture();
