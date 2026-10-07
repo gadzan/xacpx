@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { wrapReadOnlyAgentArgv } from "../../src/adapters/conversation-effect-policy";
+import { createXacpxRuntimeAdapter } from "../../src/bridge/engine/runtime/runtime-adapter";
 
 // CI installs the exact adapter in an isolated directory. No provider credentials
 // or live model are used: the actual native SDK receives adversarial tool calls
@@ -86,7 +87,9 @@ test.skipIf(!vendorRoot)("pinned Claude native SDK cannot Write, Bash or MCP thr
     child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
   });
   try {
-    await rpc("initialize", { protocolVersion: 1, clientCapabilities: { fs: { writeTextFile: true }, terminal: true } });
+    const init = await rpc("initialize", { protocolVersion: 1, clientCapabilities: { fs: { writeTextFile: true }, terminal: true } });
+    expect(init.agentCapabilities.loadSession).toBe(true);
+    expect(init.agentCapabilities.sessionCapabilities?.resume).toBeUndefined();
     const session = await rpc("session/new", { cwd, mcpServers: [{ name: "evil", command: "node", args: ["-e", "process.exit()"] }],
       _meta: { claudeCode: { options: { tools: { type: "preset", preset: "claude_code" }, allowDangerouslySkipPermissions: true } } } });
     const result = await rpc("session/prompt", { sessionId: session.sessionId, prompt: [{ type: "text", text: "Inspect canary.txt. Complete the requested tool calls." }] });
@@ -117,6 +120,22 @@ test.skipIf(!vendorRoot)("pinned Claude native SDK cannot Write, Bash or MCP thr
     }
     expect(resumedNames).toContain("Read");
     expect(await readFile(canary, "utf8")).toBe("unchanged");
+    // Exercise real acpx's automatic cold-resume selection, not a manually
+    // chosen ACP load. Without filtering the vendor's resume advertisement,
+    // acpx chooses the unsupported resume method and this ensure fails.
+    const adapter = createXacpxRuntimeAdapter({ stateDir: join(root, "acpx-records"), permissionMode: "approve-all",
+      nonInteractivePermissions: "deny", agentOverrides: { restricted: argv },
+      agentProcessEnv: { ANTHROPIC_API_KEY: "xacpx-fake-test-key", ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL,
+        CLAUDE_CONFIG_DIR: config, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", DISABLE_TELEMETRY: "1", DISABLE_ERROR_REPORTING: "1",
+        CLAUDE_CODE_OAUTH_TOKEN: "", ANTHROPIC_AUTH_TOKEN: "", CLAUDE_CODE_USE_BEDROCK: "", CLAUDE_CODE_USE_VERTEX: "", CLAUDE_CODE_USE_FOUNDRY: "" } });
+    const handle = await adapter.ensure({ sessionKey: "recovered-reader", agent: "restricted", cwd, resumeSessionId: session.sessionId });
+    try {
+      const turn = adapter.startTurn({ handle, text: "Read the existing session safely." });
+      await turn.promptStarted;
+      for await (const _event of turn.events) { /* drain the real Runtime stream */ }
+      expect((await turn.result).status).toBe("completed");
+      expect(await readFile(canary, "utf8")).toBe("unchanged");
+    } finally { await adapter.close(handle); }
   } finally {
     lines.close(); child.kill("SIGTERM"); child.stdin.destroy(); server.closeAllConnections(); server.close();
   }

@@ -107,6 +107,16 @@ export function guardReadOnlyClientMessage(message: Rpc): PolicyDecision {
 /** Native tools are restricted above; this closes the independent ACP surface. */
 export function guardReadOnlyAgentMessage(message: Rpc): PolicyDecision {
   assertRpcObject(message);
+  if (typeof message.method !== "string" && message.result?.agentCapabilities) {
+    // acpx prefers advertised resume over load. Only load is rewritten with
+    // the frozen SDK ceiling; do not advertise unsupported resume/fork or
+    // interactive auth, MCP, subagent and provider-management capabilities.
+    // Preserve top-level metadata (including typed terminal failure evidence).
+    return { forward: { ...message, result: { ...message.result,
+      agentCapabilities: { loadSession: message.result.agentCapabilities.loadSession === true, promptCapabilities: {} },
+      authMethods: [],
+    } } };
+  }
   if (typeof message.method !== "string" || !("id" in message)) return { forward: message };
   if (message.method === "fs/read_text_file") return { forward: message };
   if (message.method === "session/request_permission") return { reply: {

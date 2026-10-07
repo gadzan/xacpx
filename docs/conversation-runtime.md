@@ -264,7 +264,9 @@ a reader; the dispatcher checks **both** participants. A filesystem-held writer
 is a durable capacity reservation, not a physical execution, and cannot make
 later readers deadlock. No new executor, queue or RW lock is introduced.
 
-The guard replaces session creation/load metadata, strips all MCP launch data,
+The guard advertises only supported capabilities: acpx cold recovery selects
+guarded load rather than the adapter's otherwise preferred resume. Typed terminal
+failure metadata is retained. It replaces session creation/load metadata, strips all MCP launch data,
 rejects non-text and command-shaped prompts, denies mode/extension changes and
 answers ACP permission requests with cancellation. Model/effort changes cannot
 raise the ceiling. The native SDK exclusive `tools` option removes Write/Edit,

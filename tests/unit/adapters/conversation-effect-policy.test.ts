@@ -38,6 +38,18 @@ test("permission approval never opens the read-only ceiling", () => {
     .toMatchObject({ reply: { result: { outcome: { outcome: "cancelled" } } } });
   expect(guardReadOnlyAgentMessage(rpc("fs/read_text_file"))).toHaveProperty("forward");
 });
+test("advertised capabilities route real acpx cold recovery through guarded load while retaining terminal evidence", () => {
+  const decision = guardReadOnlyAgentMessage({ jsonrpc: "2.0", id: 1, result: {
+    protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {}, fork: {}, subagents: {} },
+      promptCapabilities: { image: true }, mcpCapabilities: { http: true }, providers: {} },
+    authMethods: [{ id: "terminal-auth" }], _meta: { terminalEvidence: true },
+  } });
+  expect(decision).toMatchObject({ forward: { result: { agentCapabilities: { loadSession: true }, authMethods: [], _meta: { terminalEvidence: true } } } });
+  if (!("forward" in decision)) throw new Error("expected initialize forwarding");
+  expect(decision.forward.result.agentCapabilities.sessionCapabilities).toBeUndefined();
+  expect(decision.forward.result.agentCapabilities.providers).toBeUndefined();
+  expect(decision.forward.result.agentCapabilities.promptCapabilities.image).toBeUndefined();
+});
 for (const message of [rpc("session/set_mode", { modeId: "bypassPermissions" }),
   rpc("session/set_config_option", { configId: "mode", value: "acceptEdits" }),
   rpc("session/fork"), rpc("_custom/execute"),
