@@ -790,6 +790,23 @@ Your channel **must**:
 
 `channelId` must not contain `:`. `registerChannelFactory` enforces this check, and a failure is reported at daemon startup.
 
+### Conversation-binding chat keys
+
+Plugins opting into `routeConversation` must also meet the external-binding key
+contract: the complete key is at most 2048 characters, and the suffix after the
+first `:` is nonempty and contains no whitespace. The prefix is the canonical
+trimmed registered channel type; case, underscores, internal spaces and types
+longer than 64 characters are supported. Product namespaces (`bot`, `control`,
+`relay`, `group-execution`) are excluded from this binding seam.
+
+These are capability-specific restrictions. Ordinary Session routing retains
+the general convention above; a Session-compatible key outside these limits
+cannot be bound to a Conversation. Plugins can encode internal IDs into a
+stable whitespace-free suffix within the size limit. Supporting arbitrary
+opaque suffixes for bindings remains a compatibility follow-up. See
+[external Conversation bindings](./conversation-runtime.md#external-channel-bindings-pr10)
+for admission, preparation and Stop requirements.
+
 ---
 
 ## 14. Validation rules

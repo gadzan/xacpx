@@ -456,8 +456,12 @@ The monitor checks it after network waits and before dispatching each message.
 After restart, authenticated Stop is selected before Session command bypass.
 Receipt `stop_ingress` holds only the original chatKey/account/sender facts and
 is joined to live exact receipt Runs (queued, running or waiting-human), including work accepted before a rebind or
-unbind. Owner resolution currently scans live external receipts; an indexed
-owner-specific query is a performance follow-up. Stop freezes that target set, revalidates its owner and cancels through
+unbind. Owner resolution currently scans and validates all live external receipts
+before filtering by route/account/sender. Its cost grows with the instance's live
+external Runs, and corruption in an unrelated receipt can reject this Stop too.
+An indexed owner-specific query that filters before full receipt validation is a
+follow-up for both performance and corruption isolation.
+Stop freezes that target set, revalidates its owner and cancels through
 the existing Run service; it creates no new Run. It never restores permission
 authority or execution human ingress cleared by recovery. Durable Stop does not
 acquire the bind/accept route mutex: receipt ownership is immutable, and Run
@@ -482,6 +486,16 @@ result reports `stopPendingAcceptance` for this purpose. A failed cancellation
 can retry only the original targets. Stop records have the same unlimited
 retention contract as prompt receipts. Earlier releases stored no Stop source
 identity, so historical Stop events cannot be backfilled.
+
+Stop receipt corruption checks reject malformed JSON, invalid/duplicate target
+IDs and mismatched owner facts. These checks do not prove the historical
+membership of a syntactically valid target set after database corruption. If a
+stored target ID is replaced with a later live Run owned by the same
+route/account/sender, owner revalidation can still accept and cancel that Run.
+Normal writers preserve the frozen set; stronger integrity checks for semantic
+retargeting require additional immutable association evidence and remain a
+follow-up. The replay guarantee above assumes the stored target set is intact.
+
 Waiting for settlement holds no runtime operation lease. There is no durable
 outbound-delivery claim: provider-result retransmission and channel delivery
 exactly-once remain separate validation work.
