@@ -395,6 +395,9 @@ settlement tracking before typing/card setup; `chat` then awaits the same result
 Weixin keeps polling with its in-memory cursor while bound preparation is pending,
 but persists cursor checkpoints in response order only after each batch's bound
 messages have committed acceptance or reached a deterministic ingress rejection.
+An inactive/archived bound Topic (`binding_topic_invalid`) is a completed ingress
+rejection and can checkpoint, so it cannot poison later account traffic or be
+retried as ordinary input after teardown removes the binding.
 Prompt checkpointing does not wait for Run settlement; Stop additionally waits
 for its cancellation writes. Neither barrier blocks polling for incoming Stop.
 Ordinary Session prompts and commands wait until a cursor covering their poll

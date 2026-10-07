@@ -30,7 +30,7 @@ const CREDENTIAL_RECOVERY_POLL_INTERVAL_MS = 30_000;
 
 // These are completed ingress decisions, not unknown acceptance outcomes.
 const FINAL_INGRESS_REJECTIONS = new Set([
-  "binding_changed", "external_request_conflict", "external_request_retired",
+  "binding_changed", "binding_topic_invalid", "external_request_conflict", "external_request_retired",
   "external_group_unsupported", "external_human_required", "external_media_unsupported",
   "external_ingress_invalid", "external_target_ambiguous", "external_target_invalid",
   "external_target_required", "external_target_changed",

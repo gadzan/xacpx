@@ -280,6 +280,26 @@ test("Weixin unknown preparation failure holds later checkpoints, while determin
   } finally { await f.close(); }
 });
 
+test("Weixin archived bound Topic rejection checkpoints without freezing later ordinary input or replaying after teardown", async () => {
+  const f = await fixture();
+  try {
+    await f.control.archiveGroupTopic(f.group.id, f.topic.id);
+    await f.start(); f.emit(1, "work for archived Topic", {}, "B");
+    await waitFor(() => f.errors.includes("binding_topic_invalid"));
+    await waitFor(() => f.cursor() === "B");
+    expect(f.runs()).toHaveLength(0); expect(f.ordinary).toHaveLength(0);
+    f.emit(2, "ordinary after rejection", { from_user_id: "other" }, "C");
+    await waitFor(() => f.cursor() === "C" && f.ordinary.length === 1);
+    await f.control.teardownGroupTopic(f.group.id, f.topic.id);
+    await f.stop("disabled"); const before = f.pollInputs.length;
+    await f.start(); expect(f.pollInputs[before]).toBe("C");
+    f.emit(3, "ordinary after teardown", { from_user_id: "other" }, "D");
+    await waitFor(() => f.cursor() === "D" && f.ordinary.length === 2);
+    expect(f.ordinary.map((input) => input.text)).toEqual(["ordinary after rejection", "ordinary after teardown"]);
+    expect(f.errors.filter((code) => code === "binding_topic_invalid")).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
 test("Weixin local command replay cannot bypass a durable receipt or invoke local Session handlers", async () => {
   const f = await fixture();
   try {
