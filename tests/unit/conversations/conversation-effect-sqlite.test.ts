@@ -46,6 +46,12 @@ for (const proof of [null, "unproven", "human", "declared-enforced-corrupt", ""]
     const a = store.acceptRequest({ conversationId: "c", topicId: "t", requestId: "r", botId: "a", content: "inspect", profileSnapshot: profile, now });
     const sql = await createSqlDriver(path);
     sql.run("UPDATE member_turns SET effect = 'read-only', effect_provenance = ? WHERE id = ?", [proof, a.memberTurn.id]); sql.close();
+    if (proof !== null) {
+      assert.throws(() => store.getMemberTurn(a.memberTurn.id), /malformed execution ceiling/);
+      assert.throws(() => store.claimNextDispatch({ owner: "old", now, leaseExpiresAt: "2026-10-07T00:01:00.000Z" }), /malformed execution ceiling/);
+      assert.equal(store.getDispatchForMemberTurn(a.memberTurn.id)?.state, "pending");
+      store.close(); return;
+    }
     const member = store.getMemberTurn(a.memberTurn.id)!;
     assert.equal(isEffectConcurrencySafe(member.effect, "shared-single-writer", 1, member.effectProvenance), false);
     const c = store.claimNextDispatch({ owner: "old", now, leaseExpiresAt: "2026-10-07T00:01:00.000Z" })!;
@@ -66,3 +72,16 @@ test("legacy rows without effect columns migrate to unknown and never obtain pro
   assert.equal(store.getMemberTurn(a.memberTurn.id)?.effect ?? "unknown", "unknown");
   assert.equal(store.getMemberTurn(a.memberTurn.id)?.effectProvenance, undefined); store.close();
 });
+
+for (const effect of ["read only", "writable", ""]) {
+  test(`malformed SQLite effect ${JSON.stringify(effect)} cannot silently become writable unknown`, async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "xacpx-effect-value-")), "store.sqlite");
+    const store = await SqliteConversationStore.open(path);
+    const a = store.acceptRequest({ conversationId: "c", topicId: "t", requestId: "r", botId: "a", content: "inspect", profileSnapshot: profile, now });
+    const sql = await createSqlDriver(path);
+    sql.run("UPDATE member_turns SET effect = ? WHERE id = ?", [effect, a.memberTurn.id]); sql.close();
+    assert.throws(() => store.getMemberTurn(a.memberTurn.id), /malformed execution ceiling/);
+    assert.throws(() => store.claimNextDispatch({ owner: "new", now, leaseExpiresAt: "2026-10-07T00:01:00.000Z" }), /malformed execution ceiling/);
+    assert.equal(store.getDispatchForMemberTurn(a.memberTurn.id)?.state, "pending"); store.close();
+  });
+}

@@ -276,7 +276,10 @@ before a restricted turn; the policy participates in the persisted launch argv,
 derived agent identity and existing Runtime/CLI construction fingerprints.
 
 No new SQLite columns are needed: existing effect columns are reused; migration
-of legacy rows continues to produce unknown/absent proof. The optional owned
+of legacy rows continues to produce unknown/absent proof.
+Malformed stored effects/proofs reject reads and claims with `invalid_effect_policy`;
+they are never normalized into writable unknown work. Such corruption requires
+repair instead of a capability downgrade. The optional owned
 LogicalSession `execution_policy` records the versioned runtime ceiling; invalid
 values are quarantined by AppState parsing. Current adapter support is checked
 again at materialization/start and session resolution. Drift fails

@@ -600,6 +600,13 @@ function isMemberTurnEffect(value: unknown): value is MemberTurnEffect {
 }
 
 function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
+  // Effects now carry an accepted security ceiling. Corruption cannot be
+  // normalized to writable unknown work; only genuinely absent legacy data
+  // may use the unproven default.
+  if ((row.effect !== undefined && !isMemberTurnEffect(row.effect))
+    || (row.effect_provenance != null && (row.effect_provenance !== "declared-enforced" || row.effect !== "read-only"))) {
+    throw new ConversationError("invalid_effect_policy", `member turn "${row.id}" has a malformed execution ceiling`);
+  }
   const dependsOn = parseDependsOn(row.depends_on_json);
   const snapshot = parseMemberSnapshot(row.profile_snapshot_json);
   return {
