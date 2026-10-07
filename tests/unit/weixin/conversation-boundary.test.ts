@@ -12,7 +12,7 @@ import { SessionService } from "../../../src/sessions/session-service";
 import { createEmptyState } from "../../../src/state/types";
 import { getLocale, setLocale } from "../../../src/i18n";
 import type { ChatRequest } from "../../../src/weixin/agent/interface";
-import type { WeixinMessage } from "../../../src/weixin/api/types";
+import type { MessageItem, WeixinMessage } from "../../../src/weixin/api/types";
 import type { ChannelStopReason } from "../../../src/channels/types";
 import { createDirectConversationId } from "../../../src/domain/ids";
 
@@ -384,6 +384,41 @@ for (const type of [2, 3, 4, 5]) {
       } finally { await f.close(); }
     });
   }
+}
+
+for (const mediaType of [undefined, 2, 3, 4, 5]) {
+  test(`Weixin 32768-layer ${mediaType === undefined ? "pure text" : `media type ${mediaType}`} quote reaches durable preparation and checkpoint`, async () => {
+    const f = await fixture(); const previous = getLocale();
+    let item: MessageItem = mediaType === undefined ? { type: 1, text_item: { text: "deepest context" } } : { type: mediaType };
+    for (let i = 0; i < 32768; i++) item = { type: 1, text_item: { text: i === 32767 ? "@Bot work" : "context" },
+      ref_msg: { title: "thread", message_item: item } };
+    const event = { item_list: [item] };
+    try {
+      setLocale("zh"); await f.start(); f.emit(1, "@Bot work", event, "B"); await waitFor(() => f.cursor() === "B");
+      const receipt = () => f.runtime.bindings.receiptKind("weixin", { accountId: "default", conversationId: f.chatKey, text: "@Bot work",
+        metadata: { channel: "weixin", channelMessageId: "1" } });
+      if (mediaType === undefined) {
+        expect(receipt()).toBe("prompt"); expect(f.runs()).toHaveLength(1);
+        const run = f.runs()[0]!;
+        expect(f.runtime.store.listMemberTurns(run.id).map((member) => member.botId)).toEqual([f.bot.id]);
+        const accepted = f.runtime.store.getAcceptedRequest(f.group.id, f.topic.id, run.requestId)!;
+        expect(accepted.message.content).toStartWith("work\n\n[Quote: thread | context");
+        expect(accepted.message.content).toContain("deepest context");
+        expect(accepted.message.content.match(/\[Quote: /g)).toHaveLength(32768);
+        expect(f.errors).toEqual([]);
+      } else {
+        expect(receipt()).toBe("rejection"); expect(f.runs()).toHaveLength(0);
+        expect(f.errors).toEqual(["external_media_unsupported"]);
+      }
+      expect(f.downloads).toHaveLength(0); expect(f.ordinary).toHaveLength(0);
+      await f.stop("disabled"); await f.control.unbindConversation(f.chatKey); await f.restartRuntime();
+      setLocale("en"); await f.start(); f.emit(1, "@Bot work", event, "C"); await waitFor(() => f.cursor() === "C");
+      expect(receipt()).toBe(mediaType === undefined ? "prompt" : "rejection");
+      expect(f.runs()).toHaveLength(mediaType === undefined ? 1 : 0); expect(f.downloads).toHaveLength(0); expect(f.ordinary).toHaveLength(0);
+      if (mediaType === undefined) { await f.runtime.dispatcher.kick(); await waitFor(() => f.runs()[0]?.state === "completed"); }
+      else expect(f.errors).toEqual(["external_media_unsupported", "external_media_unsupported"]);
+    } finally { setLocale(previous); await f.close(); }
+  });
 }
 
 test("Weixin failed rejection receipt write holds checkpoint and ordinary dispatch until retry", async () => {

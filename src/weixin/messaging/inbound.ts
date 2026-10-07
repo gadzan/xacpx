@@ -279,31 +279,43 @@ export function isMediaItem(item: MessageItem): boolean {
   );
 }
 
+/** Shared by text rendering and media admission; cycles end at the repeated edge. */
+function* walkWeixinQuoteChain(root: MessageItem): Generator<MessageItem> {
+  const seen = new Set<MessageItem>();
+  let item: MessageItem | undefined = root;
+  while (item && !seen.has(item)) {
+    seen.add(item);
+    yield item;
+    item = item.type === MessageItemType.TEXT ? item.ref_msg?.message_item : undefined;
+  }
+}
+
 export function bodyFromItemList(itemList?: MessageItem[], canonicalQuotes = false): string {
-  if (!itemList?.length) return "";
-  for (const item of itemList) {
-    if (item.type === MessageItemType.TEXT && item.text_item?.text != null) {
-      const text = String(item.text_item.text);
-      const ref = item.ref_msg;
-      if (!ref) return text;
-      // Quoted media is passed as MediaPath; only include the current text as body.
-      if (ref.message_item && isMediaItem(ref.message_item)) return text;
-      // Build quoted context from both title and message_item content.
-      const parts: string[] = [];
-      if (ref.title) parts.push(ref.title);
-      if (ref.message_item) {
-        const refBody = bodyFromItemList([ref.message_item], canonicalQuotes);
-        if (refBody) parts.push(refBody);
+  for (const root of itemList ?? []) {
+    if (root.type === MessageItemType.TEXT && root.text_item?.text != null) {
+      const chain = [...walkWeixinQuoteChain(root)];
+      let body = "";
+      // Fold from the leaf outward without recursive calls or flattening the
+      // accumulated child through Array.join at every parent.
+      for (let i = chain.length - 1; i >= 0; i--) {
+        const item = chain[i]!;
+        if (item.type !== MessageItemType.TEXT || item.text_item?.text == null) {
+          body = item.type === MessageItemType.VOICE ? item.voice_item?.text ?? "" : "";
+          continue;
+        }
+        const text = String(item.text_item.text);
+        const ref = item.ref_msg;
+        // Quoted media is passed separately; its title/transcript is not body text.
+        if (!ref || (ref.message_item && isMediaItem(ref.message_item))) { body = text; continue; }
+        const quote = ref.title ? (body ? `${ref.title} | ${body}` : ref.title) : body;
+        // Bound routing reads the authored address before locale-stable context.
+        body = quote ? (canonicalQuotes ? `${text}\n\n[Quote: ${quote}]` : `${t().misc.quotedMessagePrefix(quote)}\n${text}`) : text;
       }
-      if (!parts.length) return text;
-      const quote = parts.join(" | ");
-      // Bound routing reads the leading authored address before quote context.
-      // Keep nested context canonical too, so locale cannot change a receipt.
-      return canonicalQuotes ? `${text}\n\n[Quote: ${quote}]` : `${t().misc.quotedMessagePrefix(quote)}\n${text}`;
+      return body;
     }
     // 语音转文字：如果语音消息有 text 字段，直接使用文字内容
-    if (item.type === MessageItemType.VOICE && item.voice_item?.text) {
-      return item.voice_item.text;
+    if (root.type === MessageItemType.VOICE && root.voice_item?.text) {
+      return root.voice_item.text;
     }
   }
   return "";
@@ -387,15 +399,9 @@ export interface WeixinInboundMediaDescriptor {
 export function extractWeixinMediaDescriptors(itemList?: MessageItem[]): WeixinInboundMediaDescriptor[] {
   const out: WeixinInboundMediaDescriptor[] = [];
   for (const root of itemList ?? []) {
-    // Walk the complete quote chain without recursive stack growth or a depth
-    // cutoff that could hide media. Each root retains its own attachment order.
-    const seen = new Set<MessageItem>();
-    let item: MessageItem | undefined = root;
-    while (item && !seen.has(item)) {
-      seen.add(item);
+    for (const item of walkWeixinQuoteChain(root)) {
       const descriptor = descriptorFromItem(item);
       if (descriptor) out.push(descriptor);
-      item = item.type === MessageItemType.TEXT ? item.ref_msg?.message_item : undefined;
     }
   }
   return out;
