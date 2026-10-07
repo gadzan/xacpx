@@ -185,6 +185,22 @@ for (const rename of ["target", "other-member"] as const) {
   });
 }
 
+test("name-addressed acceptance rejects sibling ambiguity introduced during its final persistence wait", async () => {
+  const current = await compose(); const entered = Promise.withResolvers<void>(); const resume = Promise.withResolvers<void>();
+  try {
+    const { group: g, bots } = await group(current);
+    (current.runtime.runs as any).beforeAcceptPersist = async () => { entered.resolve(); await resume.promise; };
+    const input = request("@Reviewer work"); const result = current.route(input)!.prepareConversation!(input); result.catch(() => {});
+    await entered.promise;
+    await current.control.updateBot(bots[1]!.id, { name: "Reviewer" });
+    resume.resolve(); await expect(result).rejects.toMatchObject({ code: "external_target_changed" });
+    expect(current.runtime.store.listRuns(g.id)).toHaveLength(0);
+    const structured = request("work", "structured-after-rename"); structured.metadata!.conversationTarget = { botId: bots[0]!.id };
+    await current.route(structured)!.prepareConversation!(structured);
+    expect(current.runtime.store.listRuns(g.id)).toHaveLength(1);
+  } finally { resume.resolve(); await current.close(); }
+});
+
 for (const platform of ["discord", "feishu"] as const) {
   test(`actual ${platform} configured ownerIds enrich bound group authority before acceptance`, async () => {
     const current = await compose({ ownerConfig: { channels: [{ id: platform, type: platform, ownerIds: ["human"] }] } });

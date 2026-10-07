@@ -406,13 +406,6 @@ export class ConversationRunService {
         if (!target) {
           throw new ConversationError("execution_target_missing", `topic "${input.topicId}" has no execution target`);
         }
-        if (input.externalAddress) {
-          const address = input.externalAddress;
-          const matches = live.botIds.filter((botId) => this.bots.getBot(botId).name === address.name);
-          if (matches.length !== 1 || matches[0] !== address.botId || selected.length !== 1 || selected[0] !== address.botId) {
-            throw new ConversationError("external_target_changed", "addressed Group member changed before acceptance");
-          }
-        }
         const snapshots = selected.map((botId) => {
           const bot = this.bots.getBot(botId);
           if (!bot.enabled) {
@@ -423,6 +416,16 @@ export class ConversationRunService {
         await this.beforeAcceptPersist?.();
         if (input.channelAbortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel request stopped before acceptance");
         const humanIngress = parseHumanIngress(input.humanIngress);
+        // Target gates pin membership and selected profiles, but sibling names
+        // can change independently. Check the all-member predicate after the
+        // final await; no yield may separate it from synchronous SQLite accept.
+        if (input.externalAddress) {
+          const address = input.externalAddress;
+          const matches = live.botIds.filter((botId) => this.bots.getBot(botId).name === address.name);
+          if (matches.length !== 1 || matches[0] !== address.botId || selected.length !== 1 || selected[0] !== address.botId) {
+            throw new ConversationError("external_target_changed", "addressed Group member changed before acceptance");
+          }
+        }
         // Automatic Runs are accepted with the FIRST eligible member as the
         // durable snapshot carrier (the Run's own execution identity) but with
         // NO MemberTurn: no human selected anyone, so nothing may execute

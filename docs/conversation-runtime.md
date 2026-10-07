@@ -447,7 +447,9 @@ Adapters may supply a structured `conversationTarget`. Otherwise a leading
 Unknown/ambiguous names fail closed. With no selection the Group lead is used;
 missing lead fails closed. Direct requests always target their owning Bot.
 Name selection is revalidated for exact, unique current membership inside the
-target Bot lifecycle gate before the profile snapshot; a racing rename fails
+target Bot lifecycle gate after the final asynchronous wait. The check and
+SQLite acceptance are synchronous, so sibling rename cannot commit between
+name validation and Run persistence; a racing rename fails
 `external_target_changed`. Structured Bot IDs keep their existing semantics.
 External human ingress applies the shared `withEffectiveOwner` policy using the
 original channel and configured `ownerIds` before freezing durable authority.
