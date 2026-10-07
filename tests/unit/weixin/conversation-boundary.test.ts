@@ -56,6 +56,8 @@ async function fixture() {
   const config = { transport: { type: "acpx-cli", permissionMode: "approve-all" },
     agents: { codex: { driver: "codex" } }, workspaces: { backend: { cwd: root } } } as never;
   const sessions = new SessionService(config, stateStore, state, { stateMutex }); const events = createControlEventBus();
+  const sessionReads: string[] = []; const peek = sessions.peekCurrentSessionAlias.bind(sessions);
+  sessions.peekCurrentSessionAlias = (key) => { sessionReads.push(key); return peek(key); };
   const control = new ControlService({ agent: { chat: async () => ({ text: "durable result" }) }, sessions,
     activeTurns: { isActiveAnywhere: () => false }, events, scheduled: {}, orchestration: {},
     workspaces: { list: () => [{ name: "backend", cwd: root }] } } as never);
@@ -84,7 +86,7 @@ async function fixture() {
     credentials(); const before = polls;
     startup = registry.startAll({ agent: { isKnownCommand: (text: string) => text.startsWith("/"),
       chat: async (input: ChatRequest) => { ordinary.push(input); return { text: "ordinary" }; },
-      clearSession: () => { clears++; } }, logger, quota, abortSignal: daemon.signal } as never,
+      clearSession: () => { clears++; } }, logger, quota, sessions, abortSignal: daemon.signal } as never,
       (id, agent) => createConversationChannelRouter(id, agent, runtime, events, daemon.signal));
     startup.catch(() => {}); await waitFor(() => polls > before);
   };
@@ -104,7 +106,7 @@ async function fixture() {
     mock.restore();
   };
   return { runtime, control, group, topic, chatKey, daemon, pending, ordinary, errors, sent, start, stop, emit, runs, close, buildWeixinConversationChatKey,
-    pollInputs, configCalls, inbound, syncPath: () => getSyncBufFilePath("default"),
+    pollInputs, configCalls, inbound, sessionReads, syncPath: () => getSyncBufFilePath("default"),
     cursor: () => loadGetUpdatesBuf(getSyncBufFilePath("default")), clears: () => clears };
 }
 
@@ -119,6 +121,7 @@ test("Weixin durable cursor waits for bound preparation in batch order while pol
     f.emit(2, "ordinary later batch", { from_user_id: "other" }, "C");
     await waitFor(() => f.pollInputs.includes("C")); expect(f.cursor()).toBeUndefined();
     expect(f.ordinary).toHaveLength(0); expect(f.configCalls).not.toContain("other"); expect(f.inbound).not.toContain("other");
+    expect(f.sessionReads).not.toContain("weixin:default:other");
     resume.resolve(); await waitFor(() => f.cursor() === "C" && f.ordinary.length === 1);
     expect(f.runs()).toHaveLength(1); const run = f.runs()[0]!;
     expect(f.runtime.store.getAcceptedRequest(f.group.id, f.topic.id, run.requestId)?.dispatch?.humanIngress?.senderId).toBe("human");

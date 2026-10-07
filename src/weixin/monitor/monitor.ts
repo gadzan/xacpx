@@ -310,12 +310,6 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         const fromUserId = full.from_user_id ?? "";
         const inboundText = extractInboundText(full.item_list);
 
-        // Dispatch-time session binding. Capture the chat's current session at
-        // the moment the message arrives. Prompts bind to that alias so a queued
-        // prompt runs against the session that was current when the user sent it
-        // — even if they switch sessions while it waits on the per-session lane.
-        // Slash commands never bind: they act on whatever the chat context
-        // resolves to when they actually run.
         const conversationChatKey = buildWeixinConversationChatKey(accountId, fromUserId, full.group_id);
         const isSlash = inboundText.trim().startsWith("/");
         const hadInboundMedia = full.item_list?.some((item) => item.type !== MessageItemType.TEXT) ?? false;
@@ -327,7 +321,6 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
             ...(full.message_id != null ? { channelMessageId: String(full.message_id) } : {}) },
         });
         const chatKey = conversationAgent ? conversationChatKey : buildWeixinChatKey(accountId, fromUserId);
-        const boundAlias = conversationAgent || isSlash ? undefined : opts.peekCurrentSessionAlias?.(chatKey);
         const dispatch = async () => {
           if (abortSignal?.aborted || epoch !== checkpointEpoch) return;
           // Fire onInbound before lane queueing: a user reply during a long-running
@@ -365,6 +358,10 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
             abortSignal?.addEventListener("abort", abortBound, { once: true });
             if (abortSignal?.aborted) controller.abort();
           }
+          // Capture the current Session at actual dispatch, after checkpoint and
+          // typing setup, before it waits on a per-session execution lane. Slash
+          // commands resolve their chat context when they execute.
+          const boundAlias = conversationAgent || isSlash ? undefined : opts.peekCurrentSessionAlias?.(chatKey);
           // Serialize prompts per bound session; slash/unbound turns share the
           // chat-level lane.
           const sessionKey = boundAlias ?? "__chat__";
