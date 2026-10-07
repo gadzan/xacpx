@@ -1,6 +1,10 @@
 # Changelog
 ## [Unreleased]
 
+### Changed
+
+- Managed adapter pins refreshed (ACP initialize probe passes on both): Codex `1.12.0` → `2.1.1`, Claude `0.78.0` → `0.86.0`. Recorded managed-adapter commands refresh to the new defaults automatically; crash-recovery reaping covers the previous-pin identities.
+
 ### Added
 
 - Relay Web Direct Bot conversations: complete direct Bot user interface in Relay Web (`packages/relay-web`). Provides separate `stores/direct-bots.ts` keyed by stable product identities (`instanceId × botId × conversationId × topicId × runId × memberTurnId × requestId`); sidebar `Sessions | Bots` mode toggle; Bot CRUD (`BotDialog.vue`) without exposing hidden runtime aliases; Topic listing, creation, and isolation; conversation history with `seq`-cursor pagination and prepend position anchoring; prompt submission with client `requestId` idempotency; streaming trace, reasoning, and tool card rendering via existing `TurnParts.vue`; exact Run cancellation via `control.runs.cancel({ runId })`; WebSocket reconnect recovery and state-snapshot synchronization; isolation of ordinary session state (`useChatStore`) from hidden Bot session events and meters; and full English and Simplified Chinese i18n parity.
