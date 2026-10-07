@@ -13,7 +13,7 @@ import type { RuntimeWorkerElicitationRequestPayload } from "../../../../../src/
  * `buildEnsureParams().agent` is `input.acpxAgent ?? input.agent`, and
  * `acpxAgent` is documented as the "acpx positional agent / xacpx-managed
  * overlay alias" — structured launches generate names like
- * `xacpx-managed-codex-9d1628a76ca9`. Displaying that to a user does not
+ * `xacpx-managed-codex-af1d3f1b4eee`. Displaying that to a user does not
  * satisfy ACP's "clearly identify the Agent" requirement, which exists so the
  * user knows who is asking before they answer.
  */
@@ -78,7 +78,7 @@ test("the renderer sees the user-facing alias, not the transport selector", asyn
     await engine.prompt({
       agent: "user-alias",
       // The transport selector that a structured/managed launch resolves to.
-      acpxAgent: "xacpx-managed-codex-9d1628a76ca9",
+      acpxAgent: "xacpx-managed-codex-af1d3f1b4eee",
       agentArgv: [process.execPath, agentFile],
       cwd: dir,
       name: "identity-session",
@@ -122,7 +122,7 @@ test("the worker construction still uses the transport selector", async () => {
   try {
     await engine.prompt({
       agent: "user-alias",
-      acpxAgent: "xacpx-managed-codex-9d1628a76ca9",
+      acpxAgent: "xacpx-managed-codex-af1d3f1b4eee",
       agentArgv: [process.execPath, agentFile],
       cwd: dir,
       name: "construct-session",
