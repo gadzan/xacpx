@@ -357,6 +357,35 @@ for (const type of [2, 3, 4, 5]) {
   });
 }
 
+for (const type of [2, 3, 4, 5]) {
+  for (const stop of [false, true]) {
+    test(`Weixin nested quoted media type ${type} ${stop ? "Stop" : "prompt"} rejects durably without download or cancellation`, async () => {
+      const f = await fixture();
+      const text = stop ? "/stop" : "analyze this";
+      const event = { item_list: [{ type: 1, text_item: { text }, ref_msg: { message_item: {
+        type: 1, text_item: { text: "quoted context" }, ref_msg: { message_item: { type } },
+      } } }] };
+      try {
+        await f.start();
+        if (stop) { f.emit(1, "existing", {}, "A"); await waitFor(() => f.cursor() === "A"); }
+        const before = f.runs();
+        f.emit(2, text, event, "B"); await waitFor(() => f.cursor() === "B");
+        expect(f.errors).toEqual(["external_media_unsupported"]);
+        expect(f.runs()).toEqual(before);
+        expect(f.runtime.bindings.receiptKind("weixin", { accountId: "default", conversationId: f.chatKey, text,
+          metadata: { channel: "weixin", channelMessageId: "2" } })).toBe("rejection");
+        expect(f.downloads).toHaveLength(0); expect(f.ordinary).toHaveLength(0);
+        if (stop) expect(before[0]?.state).toBe("queued");
+        // Rejected sources stay rejected after restart and binding removal.
+        await f.stop("disabled"); await f.control.unbindConversation(f.chatKey); await f.restartRuntime(); await f.start();
+        f.emit(2, text, event, "C"); await waitFor(() => f.cursor() === "C");
+        expect(f.errors).toEqual(["external_media_unsupported", "external_media_unsupported"]);
+        expect(f.runs()).toEqual(before); expect(f.downloads).toHaveLength(0); expect(f.ordinary).toHaveLength(0);
+      } finally { await f.close(); }
+    });
+  }
+}
+
 test("Weixin failed rejection receipt write holds checkpoint and ordinary dispatch until retry", async () => {
   const f = await fixture();
   try {

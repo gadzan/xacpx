@@ -386,12 +386,17 @@ export interface WeixinInboundMediaDescriptor {
 
 export function extractWeixinMediaDescriptors(itemList?: MessageItem[]): WeixinInboundMediaDescriptor[] {
   const out: WeixinInboundMediaDescriptor[] = [];
-  for (const item of itemList ?? []) {
-    const descriptor = descriptorFromItem(item);
-    if (descriptor) out.push(descriptor);
-    const ref = item.type === MessageItemType.TEXT ? item.ref_msg?.message_item : undefined;
-    const refDescriptor = descriptorFromItem(ref);
-    if (refDescriptor) out.push(refDescriptor);
+  for (const root of itemList ?? []) {
+    // Walk the complete quote chain without recursive stack growth or a depth
+    // cutoff that could hide media. Each root retains its own attachment order.
+    const seen = new Set<MessageItem>();
+    let item: MessageItem | undefined = root;
+    while (item && !seen.has(item)) {
+      seen.add(item);
+      const descriptor = descriptorFromItem(item);
+      if (descriptor) out.push(descriptor);
+      item = item.type === MessageItemType.TEXT ? item.ref_msg?.message_item : undefined;
+    }
   }
   return out;
 }

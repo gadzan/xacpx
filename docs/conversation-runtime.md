@@ -465,6 +465,10 @@ fingerprint fence. Fresh known commands retain their command path except bound S
 `hadInboundMedia` records original platform attachment presence before download,
 limits or skipped-resource degradation, including Weixin quoted image, file,
 voice and video items using the same descriptor semantics as ordinary extraction.
+Weixin follows the entire nested text-quote chain for each item. Media extraction
+and admission share this traversal, which is iterative and detects repeated
+objects to avoid recursive stack growth or cycles. Deep quotes are not silently
+classified as media-free by a depth cutoff.
 Bound media is rejected before downloading
 until Conversation requests support attachments; it never falls back to a Session.
 
