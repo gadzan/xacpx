@@ -20,12 +20,21 @@ import { redactBody } from "../util/redact.js";
 import { resolveWeixinAccount, listWeixinAccountIds } from "../auth/accounts.js";
 import { resetSessionPause } from "../api/session-guard.js";
 import { clearContextTokensForAccount, restoreContextTokens } from "../messaging/inbound.js";
+import { ConversationError } from "../../conversations/conversation-error.js";
 
 const DEFAULT_LONG_POLL_TIMEOUT_MS = 35_000;
 const MAX_CONSECUTIVE_FAILURES = 3;
 const BACKOFF_DELAY_MS = 30_000;
 const RETRY_DELAY_MS = 2_000;
 const CREDENTIAL_RECOVERY_POLL_INTERVAL_MS = 30_000;
+
+// These are completed ingress decisions, not unknown acceptance outcomes.
+const FINAL_INGRESS_REJECTIONS = new Set([
+  "binding_changed", "external_request_conflict", "external_request_retired",
+  "external_group_unsupported", "external_human_required", "external_media_unsupported",
+  "external_ingress_invalid", "external_target_ambiguous", "external_target_invalid",
+  "external_target_required", "external_target_changed",
+]);
 
 export type MonitorWeixinOpts = {
   baseUrl: string;
@@ -124,6 +133,10 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
   let syncFilePath = getSyncBufFilePath(accountId);
   const previousGetUpdatesBuf = loadGetUpdatesBuf(syncFilePath);
   let getUpdatesBuf = previousGetUpdatesBuf ?? "";
+  let checkpointTail = Promise.resolve();
+  let checkpointEpoch = 0;
+  let checkpointFailed = false;
+  let pendingBatch: { reject(error: unknown): void } | undefined;
 
   if (previousGetUpdatesBuf) {
     log(`[weixin] resuming from previous sync buf (${getUpdatesBuf.length} bytes)`);
@@ -200,6 +213,9 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
           syncFilePath = getSyncBufFilePath(accountId);
           const previousBuf = loadGetUpdatesBuf(syncFilePath);
           getUpdatesBuf = previousBuf ?? "";
+          checkpointEpoch++;
+          checkpointTail = Promise.resolve();
+          checkpointFailed = false;
           configManager = new WeixinConfigManager({ baseUrl, token }, log);
           seenMessageIds.clear();
           messageIdOrder.length = 0;
@@ -231,11 +247,23 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
 
       consecutiveFailures = 0;
 
-      if (resp.get_updates_buf != null && resp.get_updates_buf !== "") {
-        saveGetUpdatesBuf(syncFilePath, resp.get_updates_buf);
-        getUpdatesBuf = resp.get_updates_buf;
-      }
-
+      const preparations: Promise<void>[] = [];
+      const enumerated = Promise.withResolvers<void>();
+      pendingBatch = enumerated;
+      enumerated.promise.catch(() => {});
+      const nextBuf = resp.get_updates_buf;
+      const epoch = checkpointEpoch;
+      const checkpointPath = syncFilePath;
+      checkpointTail = checkpointTail.then(() => enumerated.promise)
+        .then(() => Promise.all(preparations)).then(() => {
+          if (nextBuf && !abortSignal?.aborted && epoch === checkpointEpoch) saveGetUpdatesBuf(checkpointPath, nextBuf);
+        });
+      checkpointTail.catch((error) => {
+        if (epoch === checkpointEpoch && !checkpointFailed && !abortSignal?.aborted) {
+          checkpointFailed = true;
+          errLog(`[weixin] durable cursor held until restart: ${String(error)}`);
+        }
+      });
       const list = resp.msgs ?? [];
       for (const full of list) {
         if (abortSignal?.aborted) break;
@@ -290,9 +318,8 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         // resolves to when they actually run.
         const conversationChatKey = buildWeixinConversationChatKey(accountId, fromUserId, full.group_id);
         const isSlash = inboundText.trim().startsWith("/");
-        const localCommand = ["/echo", "/toggle-debug", "/clear", "/jx"].includes(parseSlashCommand(inboundText) ?? "");
         const hadInboundMedia = full.item_list?.some((item) => item.type !== MessageItemType.TEXT) ?? false;
-        const conversationAgent = localCommand ? undefined : opts.routeConversation?.({
+        const conversationAgent = opts.routeConversation?.({
           accountId, conversationId: conversationChatKey, text: inboundText,
           metadata: { channel: "weixin", senderId: fromUserId, origin: "human", authenticatedHuman: Boolean(fromUserId),
             chatType: full.group_id ? "group" : "direct", ...(full.group_id ? { groupId: full.group_id } : {}),
@@ -307,6 +334,8 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
         const stopTurns = conversationAgent && /^(?:\/(?:stop|cancel|abort)|stop|abort|interrupt)$/i.test(inboundText.trim())
           ? [...(boundTurns.get(chatKey) ?? [])] : [];
         const controller = conversationAgent ? new AbortController() : undefined;
+        const preparation = conversationAgent ? Promise.withResolvers<void>() : undefined;
+        if (preparation) { preparations.push(preparation.promise); preparation.promise.catch(() => {}); }
         const turn = controller ? { controller, humanStop: new AbortController() } : undefined;
         const abortBound = () => controller?.abort();
         if (controller) {
@@ -338,6 +367,7 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
               ...(controller ? { abortSignal: controller.signal } : {}),
               ...(turn ? { humanStopSignal: turn.humanStop.signal } : {}),
               conversationBound: Boolean(conversationAgent),
+              onConversationPrepared: () => preparation?.resolve(),
               onConversationStop: () => {
                 for (const other of stopTurns) { other.humanStop.abort(); other.controller.abort(); }
               },
@@ -382,6 +412,14 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
           sessionKey,
         );
 
+        void runPromise.then(() => {
+          // A skipped/aborted task that never prepared must not advance a cursor.
+          preparation?.reject(new Error("bound message ended before preparation"));
+        }, (error) => {
+          if (error instanceof ConversationError && (FINAL_INGRESS_REJECTIONS.has(error.code)
+            || (error.code === "external_request_aborted" && turn?.humanStop.signal.aborted && !abortSignal?.aborted))) preparation?.resolve();
+          else preparation?.reject(error);
+        });
         void runPromise
           .catch((err) => {
             errLog(`[weixin] message turn failed: ${String(err)}`);
@@ -398,7 +436,15 @@ export async function monitorWeixinProvider(opts: MonitorWeixinOpts): Promise<vo
             }
           });
       }
+      if (abortSignal?.aborted) enumerated.reject(new Error("poll batch ended before dispatch completed"));
+      else {
+        if (nextBuf) getUpdatesBuf = nextBuf;
+        enumerated.resolve();
+      }
+      pendingBatch = undefined;
     } catch (err) {
+      pendingBatch?.reject(err);
+      pendingBatch = undefined;
       if (abortSignal?.aborted) {
         weixinLog.info("weixin.monitor.stopped", "monitor stopped (aborted)", { accountId });
         return;

@@ -330,6 +330,8 @@ export class ConversationRunService {
   async acceptGroupPrompt(input: {
     channelAbortSignal?: AbortSignal;
     externalRequest?: AcceptRequestInput["externalRequest"];
+    /** Internal channel name assertion, never a public prompt field. */
+    externalAddress?: { botId: string; name: string };
     conversationId: string;
     topicId: string;
     requestId: string;
@@ -403,6 +405,13 @@ export class ConversationRunService {
         const target = topic.executionTarget;
         if (!target) {
           throw new ConversationError("execution_target_missing", `topic "${input.topicId}" has no execution target`);
+        }
+        if (input.externalAddress) {
+          const address = input.externalAddress;
+          const matches = live.botIds.filter((botId) => this.bots.getBot(botId).name === address.name);
+          if (matches.length !== 1 || matches[0] !== address.botId || selected.length !== 1 || selected[0] !== address.botId) {
+            throw new ConversationError("external_target_changed", "addressed Group member changed before acceptance");
+          }
         }
         const snapshots = selected.map((botId) => {
           const bot = this.bots.getBot(botId);
@@ -498,6 +507,7 @@ export class ConversationRunService {
   async acceptConversationPrompt(input: {
     channelAbortSignal?: AbortSignal;
     externalRequest?: AcceptRequestInput["externalRequest"];
+    externalAddress?: { botId: string; name: string };
     conversationId: string;
     topicId: string;
     requestId: string;
@@ -512,6 +522,7 @@ export class ConversationRunService {
       return this.acceptGroupPrompt({
         ...(input.channelAbortSignal ? { channelAbortSignal: input.channelAbortSignal } : {}),
         ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
+        ...(input.externalAddress ? { externalAddress: input.externalAddress } : {}),
         conversationId: input.conversationId,
         topicId: input.topicId,
         requestId: input.requestId,

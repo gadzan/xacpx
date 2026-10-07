@@ -51,7 +51,7 @@ export interface ConversationRuntime {
 }
 
 export interface CreateConversationRuntimeInput {
-  config: Pick<AppConfig, "agents" | "workspaces">;
+  config: Pick<AppConfig, "agents" | "workspaces"> & Partial<Pick<AppConfig, "channel" | "channels">>;
   state: AppState;
   stateStore: Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
   sessions: SessionService;
@@ -213,7 +213,7 @@ export async function createConversationRuntime(
     dispatcher,
     runs,
     handoffs,
-    bindings: new ConversationBindingService(store, runs, bots),
+    bindings: new ConversationBindingService(store, runs, bots, input.config),
     authorityEpoch: dispatcher.authorityEpoch,
     kick: () => dispatcher.kick(),
     activateAfterConsumerLock: () => runs.activateAfterConsumerLock(),

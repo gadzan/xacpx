@@ -174,6 +174,8 @@ export type HandleWeixinMessageTurnDeps = {
   conversationBound?: boolean;
   /** Only invoked after a fresh durable Stop receipt; never on replay. */
   onConversationStop?: () => void;
+  /** Admission barrier for durable poll checkpoints; never waits for settlement. */
+  onConversationPrepared?: () => void;
   log: (msg: string) => void;
   errLog: (msg: string) => void;
   mediaTempDir?: string;
@@ -333,7 +335,7 @@ export async function handleWeixinMessageTurn(
     setContextToken(deps.accountId, full.from_user_id ?? "", contextToken);
   }
 
-  if (isSlashCommand) {
+  if (isSlashCommand && !deps.conversationBound) {
     const shouldTypeForSlash = isClearSlashCommand(textBody);
     if (shouldTypeForSlash) {
       startTypingIndicator();
@@ -367,8 +369,10 @@ export async function handleWeixinMessageTurn(
     }
   }
 
+  let checkpointAfterResponse = false;
   if (deps.conversationBound) {
-    const preparation = await deps.agent.prepareConversation?.({
+    if (!deps.agent.prepareConversation) throw new Error("bound Conversation Agent requires preparation");
+    const preparation = await deps.agent.prepareConversation({
       accountId: deps.accountId, conversationId: chatKey, text: bodyFromItemList(full.item_list, true),
       ...(deps.abortSignal ? { abortSignal: deps.abortSignal } : {}),
       ...(deps.humanStopSignal ? { humanStopSignal: deps.humanStopSignal } : {}),
@@ -378,6 +382,10 @@ export async function handleWeixinMessageTurn(
         chatType: full.group_id ? "group" : "direct", ...(full.group_id ? { groupId: full.group_id } : {}) },
     });
     if (preparation?.stopPendingAcceptance) deps.onConversationStop?.();
+    checkpointAfterResponse = preparation?.stopPendingAcceptance !== undefined;
+    // Stop's durable receipt must also finish its cancellation write before a
+    // poll checkpoint can make the event disappear on restart.
+    if (!checkpointAfterResponse) deps.onConversationPrepared?.();
   }
   startTypingIndicator();
 
@@ -495,6 +503,7 @@ export async function handleWeixinMessageTurn(
       request,
       onReplySegment: sendReplySegment,
     });
+    if (checkpointAfterResponse) deps.onConversationPrepared?.();
 
     if (deps.abortSignal?.aborted) return;
 

@@ -392,6 +392,13 @@ Conversation turns enter acceptance concurrently, without waiting for an older
 Run's settlement or channel reply; the durable core Topic queue orders execution.
 The selected Agent's `prepareConversation` commits ingress and installs Stop and
 settlement tracking before typing/card setup; `chat` then awaits the same result.
+Weixin keeps polling with its in-memory cursor while bound preparation is pending,
+but persists cursor checkpoints in response order only after each batch's bound
+messages have committed acceptance or reached a deterministic ingress rejection.
+Prompt checkpointing does not wait for Run settlement; Stop additionally waits
+for its cancellation writes. Neither barrier blocks polling for incoming Stop.
+Unexpected preparation/checkpoint errors hold back durable advancement until
+restart; restart replays from the last safe checkpoint through platform receipts.
 Selection captures the exact Conversation/Topic binding, its durable opaque revision and receipt existence;
 acceptance first replays an existing receipt, otherwise requires the same binding
 revision under a mutex keyed by external chatKey. Every bind writes a new revision,
@@ -416,7 +423,10 @@ Receipts accepted by earlier builds keep their stored fingerprint. A historical
 localized quote cannot be safely backfilled from the stored flattened text, so
 such a receipt still rejects a locale-derived mismatch rather than relaxing
 changed-input checks.
-Known console commands keep their command path except authenticated bound Stop.
+An existing platform prompt/Stop receipt determines the execution domain before
+current command classification, including Weixin local commands. Replays retain
+their original receipt kind; changed command-shaped input fails the same
+fingerprint fence. Fresh known commands retain their command path except bound Stop.
 `hadInboundMedia` records original platform attachment presence before download,
 limits or skipped-resource degradation. Bound media is rejected before downloading
 until Conversation requests support attachments; it never falls back to a Session.
@@ -425,6 +435,14 @@ Adapters may supply a structured `conversationTarget`. Otherwise a leading
 `@Name ` or `@{Name with spaces} ` selects an exact, unique current Group member.
 Unknown/ambiguous names fail closed. With no selection the Group lead is used;
 missing lead fails closed. Direct requests always target their owning Bot.
+Name selection is revalidated for exact, unique current membership inside the
+target Bot lifecycle gate before the profile snapshot; a racing rename fails
+`external_target_changed`. Structured Bot IDs keep their existing semantics.
+External human ingress applies the shared `withEffectiveOwner` policy using the
+original channel and configured `ownerIds` before freezing durable authority.
+Feishu's conservative cache assertion is combined with that configured policy.
+An empty attachment array means zero media; original raw media presence still
+rejects a request even when normalized downloads are empty.
 
 Platform-message receipts and Run acceptance commit in one SQLite transaction.
 Retries replay the original Run even after rebinding; different sender/content/

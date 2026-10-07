@@ -22,12 +22,13 @@ import { FeishuChannel } from "../../../packages/channel-feishu/src/channel";
 import { YuanbaoChannel } from "../../../packages/channel-yuanbao/src/channel";
 import type { YuanbaoGatewayStartInput } from "../../../packages/channel-yuanbao/src/types";
 import { MSG, parseControlPayload } from "@ganglion/xacpx-relay-protocol";
+import type { ChannelOwnerConfig } from "../../../src/commands/command-policy";
 
-async function compose(options: { state?: AppState; path?: string; agent?: Agent; router?: unknown } = {}) {
+async function compose(options: { state?: AppState; path?: string; agent?: Agent; router?: unknown; ownerConfig?: ChannelOwnerConfig } = {}) {
   const state = options.state ?? createEmptyState();
   const path = options.path ?? join(mkdtempSync(join(tmpdir(), "xacpx-bindings-")), "conversations.sqlite");
   const config = { transport: { type: "acpx-cli", permissionMode: "approve-all" },
-    agents: { codex: { driver: "codex" } }, workspaces: { backend: { cwd: tmpdir() } } } as never;
+    agents: { codex: { driver: "codex" } }, workspaces: { backend: { cwd: tmpdir() } }, ...options.ownerConfig } as never;
   const stateStore = { save: async () => {}, saveNow: async () => {} };
   const stateMutex = new AsyncMutex();
   const sessions = new SessionService(config, stateStore, state, { stateMutex });
@@ -69,26 +70,26 @@ async function waitFor(condition: () => boolean) {
 }
 
 type MediaScenario = "available" | "failed" | "over-limit" | "missing-key";
-function externalAdapter(platform: "discord" | "feishu", sent: string[], options?: { feishuOwnerLookup: () => Promise<string | undefined> }) {
+function externalAdapter(platform: "discord" | "feishu", sent: string[], options?: { feishuOwnerLookup?: () => Promise<string | undefined>; group?: boolean }) {
   let emit: (id: string, text: string, media?: MediaScenario) => Promise<void> | void = () => {};
   let ready = false;
   const channel = platform === "discord"
-    ? new DiscordChannel({ token: "x", dmPolicy: "open", guildPolicy: "disabled", requireMention: false,
+    ? new DiscordChannel({ token: "x", dmPolicy: "open", guildPolicy: options?.group ? "open" : "disabled", requireMention: false,
       typingIndicator: false, enableAutocomplete: false }, { logger: logger as never, identifyStaggerMs: 0,
       createClient: () => ({
         start: async (input: any) => { emit = (id, text, media) => input.handlers.onMessage({ id, content: text,
           ...(media ? { attachments: Array.from({ length: media === "over-limit" ? 50 : 1 }, (_, index) => ({ id: `a${index}`,
             url: media === "failed" ? "https://example.invalid/unavailable" : "https://example.com/image", name: "image.png",
             contentType: "image/png", size: media === "over-limit" ? 100_000_000 : 10 })) } : {}),
-          channelId: "dm", guildId: null, author: { id: "human", bot: false }, createdTimestamp: Date.now() });
+          channelId: "dm", guildId: options?.group ? "guild" : null, author: { id: "human", bot: false }, createdTimestamp: Date.now() });
           ready = true; return { botUserId: "bot" }; },
         probeBot: async () => ({ botUserId: "bot" }), startTyping: async () => () => {},
         sendMessage: async (_: unknown, body: any) => { sent.push(body.content ?? ""); return { messageId: `s${sent.length}` }; },
         editMessage: async () => {}, deleteMessage: async () => {}, destroy: async () => {}, addReaction: async () => {},
       }) as never })
     : new FeishuChannel({ appId: "app", appSecret: "secret", domain: "feishu", dmPolicy: "open",
-      requireMention: false, textMessageFormat: "text", replyMode: "static", trustGroupOwner: Boolean(options) }, { createClient: () => ({
-        ...(options ? { getChatOwner: options.feishuOwnerLookup } : {}),
+      requireMention: false, textMessageFormat: "text", replyMode: "static", trustGroupOwner: Boolean(options?.feishuOwnerLookup) }, { createClient: () => ({
+        ...(options?.feishuOwnerLookup ? { getChatOwner: options.feishuOwnerLookup } : {}),
         sdk: { im: { message: {
           reply: async (body: unknown) => { sent.push(JSON.stringify(body)); return { data: { message_id: "reply", chat_id: "chat" } }; },
           create: async (body: unknown) => { sent.push(JSON.stringify(body)); return { data: { message_id: "reply", chat_id: "chat" } }; },
@@ -126,6 +127,86 @@ test("registered plugin types retain their namespace contract through binding, i
     expect(current.delegated()).toBe(0);
   } finally { await current.close(); }
 });
+
+test("durable prompt/Stop receipts precede changed command classification and reject command-shaped conflicts", async () => {
+  const current = await compose(); let known = false; let ordinary = 0;
+  const normal = { isKnownCommand: () => known, chat: async () => { ordinary++; return { text: "ordinary" }; } };
+  const route = createConversationChannelRouter("discord", normal, current.runtime, current.events, current.daemon.signal);
+  try {
+    const { group: g, topic } = await group(current);
+    const original = request("/future-command", "future"); const response = route(original)!.chat(original);
+    await waitFor(() => current.runtime.store.listRuns(g.id, topic.id).length === 1);
+    await current.runtime.dispatcher.kick(); await response; known = true;
+    await current.control.unbindConversation(original.conversationId);
+    const selected = route(original); expect(selected).toBeDefined();
+    expect((await selected!.chat(original)).text).toContain("provider result");
+    const conflict = request("/help", "future");
+    await expect(route(conflict)!.prepareConversation!(conflict)).rejects.toMatchObject({ code: "external_request_conflict" });
+    expect(route(request("/help", "fresh-command"))).toBeUndefined();
+    await current.control.bindConversation({ chatKey: original.conversationId, conversationId: g.id, topicId: topic.id });
+    const stop = request("/stop", "durable-stop"); await route(stop)!.chat(stop);
+    const stopConflict = request("/help", "durable-stop");
+    await expect(route(stopConflict)!.prepareConversation!(stopConflict)).rejects.toMatchObject({ code: "external_request_conflict" });
+    expect(ordinary).toBe(0); expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(1);
+  } finally { await current.close(); }
+});
+
+test("plugin empty attachment arrays accept text and Stop, and replay as the same zero-media input", async () => {
+  const current = await compose();
+  try {
+    const { group: g, topic } = await group(current); const input = request();
+    input.media = []; input.metadata!.hadInboundMedia = false;
+    await current.route(input)!.prepareConversation!(input);
+    expect(current.runtime.store.listRuns(g.id, topic.id)).toHaveLength(1);
+    await current.route(request())!.prepareConversation!(request());
+    const stop = request("/stop", "empty-media-stop"); stop.media = []; stop.metadata!.hadInboundMedia = false;
+    await current.route(stop)!.chat(stop);
+    expect(current.runtime.store.listRuns(g.id, topic.id)[0]).toMatchObject({ state: "cancelled", completionReason: "human-cancelled" });
+    const rawMedia = request("text", "raw-media"); rawMedia.media = []; rawMedia.metadata!.hadInboundMedia = true;
+    await expect(current.route(rawMedia)!.prepareConversation!(rawMedia)).rejects.toMatchObject({ code: "external_media_unsupported" });
+  } finally { await current.close(); }
+});
+
+for (const rename of ["target", "other-member"] as const) {
+  test(`name-addressed acceptance revalidates ${rename} rename under lifecycle gates`, async () => {
+    const current = await compose(); const entered = Promise.withResolvers<void>(); const resume = Promise.withResolvers<void>();
+    try {
+      const { group: g, bots } = await group(current);
+      (current.runtime.runs as any).beforeGroupAcceptGatesAcquired = async () => { entered.resolve(); await resume.promise; };
+      const input = request("@Reviewer work"); const result = current.route(input)!.prepareConversation!(input); result.catch(() => {});
+      await entered.promise;
+      await current.control.updateBot(bots[rename === "target" ? 0 : 1]!.id, { name: rename === "target" ? "FormerReviewer" : "Reviewer" });
+      resume.resolve(); await expect(result).rejects.toMatchObject({ code: "external_target_changed" });
+      expect(current.runtime.store.listRuns(g.id)).toHaveLength(0);
+      const structured = request("work", "structured"); structured.metadata!.conversationTarget = { botId: bots[0]!.id };
+      await current.route(structured)!.prepareConversation!(structured);
+      expect(current.runtime.store.listRuns(g.id)).toHaveLength(1);
+    } finally { resume.resolve(); await current.close(); }
+  });
+}
+
+for (const platform of ["discord", "feishu"] as const) {
+  test(`actual ${platform} configured ownerIds enrich bound group authority before acceptance`, async () => {
+    const current = await compose({ ownerConfig: { channels: [{ id: platform, type: platform, ownerIds: ["human"] }] } });
+    const sent: string[] = []; const adapter = externalAdapter(platform, sent, { group: true, feishuOwnerLookup: async () => undefined });
+    const registry = new MessageChannelRegistry([adapter.channel]); let startup: Promise<void> | undefined;
+    try {
+      const { group: g, topic } = await group(current);
+      const chatKey = platform === "discord" ? "discord:default:g:dm" : "feishu:default:chat";
+      await current.control.bindConversation({ chatKey, conversationId: g.id, topicId: topic.id });
+      startup = registry.startAll({ agent: current.normalAgent, logger, quota, abortSignal: current.daemon.signal } as never,
+        (id, agent) => createConversationChannelRouter(id, agent, current.runtime, current.events, current.daemon.signal));
+      startup.catch(() => {}); await waitFor(adapter.ready);
+      const response = Promise.resolve(adapter.emit("configured-owner", "work")); response.catch(() => {});
+      await waitFor(() => current.runtime.store.listRuns(g.id, topic.id).length === 1);
+      const run = current.runtime.store.listRuns(g.id, topic.id)[0]!;
+      expect(current.runtime.store.getAcceptedRequest(g.id, topic.id, run.requestId)?.dispatch?.humanIngress)
+        .toMatchObject({ senderId: "human", chatKey, chatType: "group", isOwner: true });
+      await current.runtime.dispatcher.kick(); await response;
+      expect(current.delegated()).toBe(0);
+    } finally { await current.close(); await registry.stopAll(); await startup; }
+  });
+}
 
 test("bound human input reaches existing provider chain, returns exact public results and stamps ingress", async () => {
   const physical: ChatRequest[] = [];

@@ -9,6 +9,7 @@ import { ConversationError } from "./conversation-error";
 import type { ConversationRunService } from "./conversation-run-service";
 import type { SqliteConversationStore, ExternalStopReceipt } from "./sqlite-conversation-store";
 import type { AcceptRequestResult } from "./conversation-store";
+import { withEffectiveOwner, type ChannelOwnerConfig } from "../commands/command-policy";
 
 export interface ConversationBinding {
   chatKey: string;
@@ -23,6 +24,10 @@ export interface ConversationRouteSnapshot {
 
 function nonempty(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value === value.trim() && value.length <= 2048;
+}
+
+function hasMedia(media: ChatRequest["media"]): boolean {
+  return Array.isArray(media) ? media.length > 0 : Boolean(media);
 }
 
 function validateChatKey(chatKey: unknown): asserts chatKey is string {
@@ -42,7 +47,8 @@ function validateChatKey(chatKey: unknown): asserts chatKey is string {
 export class ConversationBindingService {
   private readonly gates = new Map<string, { mutex: AsyncMutex; users: number }>();
   constructor(private readonly store: SqliteConversationStore,
-    private readonly runs: ConversationRunService, private readonly bots: BotService) {}
+    private readonly runs: ConversationRunService, private readonly bots: BotService,
+    private readonly ownerConfig?: ChannelOwnerConfig) {}
 
   list(): Array<Required<ConversationBinding>> { return this.store.listConversationBindings(); }
 
@@ -64,6 +70,15 @@ export class ConversationBindingService {
     const key = this.sourceKey(channelId, request);
     if (!binding && !(key !== undefined && (this.store.hasExternalRequest(key) || this.store.hasExternalStopRequest(key)))) return undefined;
     return { chatKey: request.conversationId, ...(binding ? { binding: { ...binding } } : {}) };
+  }
+
+  receiptKind(channelId: string, request: ChatRequest): "prompt" | "stop" | undefined {
+    const key = this.sourceKey(channelId, request);
+    if (!key) return undefined;
+    const prompt = this.store.hasExternalRequest(key);
+    const stop = this.store.hasExternalStopRequest(key);
+    if (prompt && stop) throw new ConversationError("external_request_conflict", "platform message has conflicting receipt kinds");
+    return prompt ? "prompt" : stop ? "stop" : undefined;
   }
 
   private sourceKey(channelId: string, request: ChatRequest): string | undefined {
@@ -108,7 +123,7 @@ export class ConversationBindingService {
       throw new ConversationError("external_human_required", "Conversation Stop requires authenticated channel identity");
     }
     if (request.abortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel closed before Stop");
-    if (request.media || metadata.hadInboundMedia) throw new ConversationError("external_media_unsupported", "bound Conversation requests currently accept text only");
+    if (hasMedia(request.media) || metadata.hadInboundMedia) throw new ConversationError("external_media_unsupported", "bound Conversation requests currently accept text only");
     const fingerprint = createHash("sha256").update(JSON.stringify([metadata.senderId, request.text])).digest("hex");
     return this.store.acceptExternalStop({ key, fingerprint, chatKey: request.conversationId, accountId: request.accountId, senderId: metadata.senderId },
       () => this.stopTargets(channelId, request));
@@ -165,13 +180,13 @@ export class ConversationBindingService {
         if (binding) throw new ConversationError("external_ingress_invalid", "bound input requires channel, sender, account and stable platform message identity");
         return undefined;
       }
-      if (request.media || metadata.hadInboundMedia) throw new ConversationError("external_media_unsupported", "bound Conversation requests currently accept text only");
+      if (hasMedia(request.media) || metadata.hadInboundMedia) throw new ConversationError("external_media_unsupported", "bound Conversation requests currently accept text only");
       const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
       const explicitTarget = sanitizePublicConversationPrompt({ conversationId: "", topicId: "", requestId: "",
         text: request.text, ...(metadata.conversationTarget !== undefined ? { target: metadata.conversationTarget } : {}) }).target;
       const externalRequest = {
         key: this.sourceKey(channelId, request)!,
-        fingerprint: hash([metadata.senderId, request.text, explicitTarget ?? null, request.media ?? null]),
+        fingerprint: hash([metadata.senderId, request.text, explicitTarget ?? null, hasMedia(request.media) ? request.media : null]),
       };
       const replay = this.store.getExternalRequest(externalRequest);
       if (replay) return replay;
@@ -190,6 +205,7 @@ export class ConversationBindingService {
       const group = this.runs.listGroups().find((item) => item.id === binding.conversationId);
       let text = request.text;
       let target: ConversationTarget | undefined = explicitTarget;
+      let externalAddress: { botId: string; name: string } | undefined;
       if (!target && group) {
         const mention = /^@(?:\{([^}\r\n]+)\}|([^\s{}]+))(?:\s+|$)/.exec(text);
         if (mention) {
@@ -197,6 +213,7 @@ export class ConversationBindingService {
           const matches = group.botIds.filter((id) => this.bots.getBot(id).name === name);
           if (matches.length !== 1) throw new ConversationError("external_target_ambiguous", "address must match exactly one current Group member");
           target = { botId: matches[0]! };
+          externalAddress = { botId: matches[0]!, name };
           text = text.slice(mention[0].length);
         } else {
           if (text.startsWith("@")) throw new ConversationError("external_target_invalid", "malformed member address");
@@ -218,11 +235,13 @@ export class ConversationBindingService {
       };
       request.humanStopSignal?.addEventListener("abort", stop, { once: true });
       try {
+        const owner = withEffectiveOwner(metadata, this.ownerConfig)!;
         return await this.runs.acceptConversationPrompt({ ...input, externalRequest,
+          ...(externalAddress ? { externalAddress } : {}),
           ...(ingressSignal ? { channelAbortSignal: ingressSignal } : {}), humanIngress: {
             chatKey: request.conversationId, senderId: metadata.senderId, accountId: request.accountId,
             ...(metadata.senderName ? { senderName: metadata.senderName } : {}),
-            ...(metadata.isOwner !== undefined ? { isOwner: metadata.isOwner } : {}),
+            ...(owner.isOwner !== undefined ? { isOwner: owner.isOwner } : {}),
             ...(metadata.chatType ? { chatType: metadata.chatType } : {}),
         } });
       } finally {

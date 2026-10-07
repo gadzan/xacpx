@@ -4,10 +4,12 @@ import type { ControlEventBus } from "../control/control-event-bus";
 import { ConversationError } from "../conversations/conversation-error";
 import type { ConversationRouteSnapshot } from "../conversations/conversation-bindings";
 import type { ConversationChannelAgent, ConversationIngressPreparation } from "./types";
+import { isLocalWeixinSlashCommand } from "../weixin/messaging/slash-commands";
 
 function preparedAgent(execute: (request: ChatRequest, admitted: (result?: ConversationIngressPreparation) => void) => Promise<ChatResponse>): ConversationChannelAgent {
   let prepared: { request: ChatRequest; identity: string; admission: Promise<ConversationIngressPreparation | void>; response: Promise<ChatResponse> } | undefined;
-  const identity = (input: ChatRequest) => JSON.stringify([input.accountId, input.conversationId, input.text, input.media ?? null,
+  const identity = (input: ChatRequest) => JSON.stringify([input.accountId, input.conversationId, input.text,
+    Array.isArray(input.media) && input.media.length === 0 ? null : input.media ?? null,
     input.metadata?.channel, input.metadata?.channelMessageId, input.metadata?.senderId, input.metadata?.origin,
     input.metadata?.authenticatedHuman, input.metadata?.hadInboundMedia ?? false, input.metadata?.conversationTarget ?? null]);
   const start = (request: ChatRequest) => {
@@ -87,27 +89,34 @@ export function createConversationChannelRouter(channelId: string, agent: Agent,
         else inspect();
       });
   });
+  const stopAgent = (request: ChatRequest) => preparedAgent(async (input, admitted) => {
+    if (input.conversationId !== request.conversationId || input.accountId !== request.accountId
+      || input.metadata?.senderId !== request.metadata?.senderId) throw new ConversationError("external_ingress_invalid", "Stop route changed");
+    return runtime.withOperation(async () => {
+      const receipt = runtime.bindings.acceptStop(channelId, input);
+      admitted({ stopPendingAcceptance: !receipt.reused });
+      await runtime.bindings.stopSelected(channelId, input, receipt.targetRunIds);
+      return { text: receipt.targetRunIds.length ? "Conversation stop requested." : "No active Conversation Run." };
+    });
+  });
   return (request) => {
     if (request.metadata?.origin === "scheduled") return undefined;
     const humanStop = request.metadata?.humanStopRequested || /^(?:\/(?:stop|cancel|abort)|stop|abort|interrupt)$/i.test(request.text.trim());
-    if (!humanStop && agent.isKnownCommand?.(request.text)) return undefined;
     try {
+      // Durable source identity outranks mutable command vocabularies and text.
+      const kind = runtime.bindings.receiptKind(channelId, request);
+      if (kind === "prompt") return conversationAgent({ chatKey: request.conversationId });
+      if (kind === "stop") return stopAgent(request);
+      const knownCommand = agent.isKnownCommand?.(request.text)
+        || (channelId === "weixin" && isLocalWeixinSlashCommand(request.text));
+      if (!humanStop && knownCommand) return undefined;
       runtime.assertOpen();
       if (humanStop) {
         const bound = runtime.bindings.hasRoute(channelId, request);
         if (!bound && (request.metadata?.origin !== "human" || request.metadata?.authenticatedHuman !== true)) return undefined;
-        if (bound || runtime.bindings.stopTargets(channelId, request).length) return preparedAgent(async (input, admitted) => {
-          if (input.conversationId !== request.conversationId || input.accountId !== request.accountId
-            || input.metadata?.senderId !== request.metadata?.senderId) throw new ConversationError("external_ingress_invalid", "Stop route changed");
-          return runtime.withOperation(async () => {
-            const receipt = runtime.bindings.acceptStop(channelId, input);
-            admitted({ stopPendingAcceptance: !receipt.reused });
-            await runtime.bindings.stopSelected(channelId, input, receipt.targetRunIds);
-            return { text: receipt.targetRunIds.length ? "Conversation stop requested." : "No active Conversation Run." };
-          });
-        });
+        if (bound || runtime.bindings.stopTargets(channelId, request).length) return stopAgent(request);
       }
-      if (agent.isKnownCommand?.(request.text)) return undefined;
+      if (knownCommand) return undefined;
       const selected = runtime.bindings.selectRoute(channelId, request);
       return selected ? conversationAgent(selected) : undefined;
     }
