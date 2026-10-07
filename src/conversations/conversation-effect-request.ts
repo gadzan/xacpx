@@ -27,14 +27,21 @@ export function assertPolicySelection(selected: readonly string[], policies?: re
   }
 }
 
-/** A safety request cannot replay an older writable acceptance under the same id. */
+/** Replay must match the complete durable member set and its execution ceilings. */
 export function assertAcceptedPolicies(accepted: AcceptRequestResult, policies?: readonly ConversationMemberPolicy[]): AcceptRequestResult {
-  if (policies) for (const policy of policies) {
-    const member = accepted.memberTurns.find((m) => m.botId === policy.botId);
-    if (!member || (policy.filesystem === "read-only"
-      ? member.effect !== "read-only" || member.effectProvenance !== "declared-enforced"
-      : member.effect !== "mutating" || member.effectProvenance !== undefined)) {
+  if (policies) {
+    if (policies.length !== accepted.memberTurns.length) {
       throw new ConversationError("effect_policy_conflict", "request id already accepted with a different execution ceiling");
+    }
+    const requested = new Map(policies.map((policy) => [policy.botId, policy.filesystem]));
+    for (const member of accepted.memberTurns) {
+      const filesystem = requested.get(member.botId);
+      if (!filesystem || (filesystem === "read-only"
+        ? member.effect !== "read-only" || member.effectProvenance !== "declared-enforced"
+        : member.effect !== "mutating" || member.effectProvenance !== undefined)) {
+        throw new ConversationError("effect_policy_conflict", "request id already accepted with a different execution ceiling");
+      }
+      requested.delete(member.botId);
     }
   }
   return accepted;

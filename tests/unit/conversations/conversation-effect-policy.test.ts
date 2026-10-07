@@ -165,6 +165,53 @@ test("policy replay cannot turn an old writable request into a read-only acknowl
   expect(h.runner.calls).toHaveLength(0); h.store.close();
 });
 
+for (const replay of [
+  { name: "omits an accepted writer", indices: [0], effects: ["read-only"] },
+  { name: "replaces an accepted writer with another Bot", indices: [0, 2], effects: ["read-only", "read-write"] },
+] as const) {
+  test(`policy replay rejects a member set that ${replay.name}`, async () => {
+    const h = await harness(); const { group, topic } = await h.group(2);
+    try {
+      const accepted = await accept(h, group.id, topic.id, ["read-only", "read-write"], "same");
+      expect(accepted.memberTurns.map((m) => [m.botId, m.effect, m.effectProvenance])).toEqual([
+        [h.ids[0], "read-only", "declared-enforced"], [h.ids[1], "mutating", undefined],
+      ]);
+      await expect(h.service.acceptGroupPrompt({
+        conversationId: group.id, topicId: topic.id, requestId: "same", text: "review this tree",
+        target: { mode: "members", botIds: replay.indices.map((index) => h.ids[index]!) },
+        memberPolicies: replay.indices.map((index, i) => ({ botId: h.ids[index]!, filesystem: replay.effects[i]! })),
+        humanIngress: HUMAN,
+      })).rejects.toMatchObject({ code: "effect_policy_conflict" });
+      expect(h.store.listRuns(group.id, topic.id).map((run) => run.id)).toEqual([accepted.run.id]);
+      expect(h.store.listMemberTurns(accepted.run.id)).toEqual(accepted.memberTurns);
+      expect(h.runner.calls).toHaveLength(0);
+    } finally { h.store.close(); }
+  });
+}
+
+test("exact policy replay uses durable members after live membership and adapter changes", async () => {
+  const h = await harness(); const { group, topic } = await h.group(2);
+  try {
+    const accepted = await accept(h, group.id, topic.id, ["read-only", "read-write"], "same");
+    await h.service.cancelRun(accepted.run.id);
+    await h.bots.updateGroup(group.id, { botIds: [h.ids[0]!, h.ids[2]!] });
+    h.config.agents.codex!.driver = "codex";
+    const durable = h.store.getAcceptedRequest(group.id, topic.id, "same")!;
+    const replayed = await h.service.acceptGroupPrompt({
+      conversationId: group.id, topicId: topic.id, requestId: "same", text: "review this tree",
+      target: { mode: "members", botIds: [h.ids[0]!, h.ids[1]!] },
+      memberPolicies: [{ botId: h.ids[1]!, filesystem: "read-write" }, { botId: h.ids[0]!, filesystem: "read-only" }],
+      humanIngress: HUMAN,
+    });
+    expect(replayed.reused).toBe(true);
+    expect(replayed.run.id).toBe(accepted.run.id);
+    expect(replayed).toEqual(durable);
+    expect(replayed.memberTurns.map((m) => m.id)).toEqual(accepted.memberTurns.map((m) => m.id));
+    expect(h.store.listRuns(group.id, topic.id)).toHaveLength(1);
+    expect(h.runner.calls).toHaveLength(0);
+  } finally { h.store.close(); }
+});
+
 for (const action of ["cancel", "teardown"] as const) {
   test(`read-only Bot-gate waiter vs ${action} cannot start or strand capacity`, async () => {
     const h = await harness(); const { group, topic } = await h.group(1);
