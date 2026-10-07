@@ -449,6 +449,76 @@ for (const reason of ["disabled", "removed", "logout"] as const) {
   });
 }
 
+for (const address of ["@Reviewer", "@{Name with spaces}", ""] as const) {
+  test(`real Weixin quoted text preserves authored member selection and replay (${address || "lead"})`, async () => {
+    const f = await fixture(); const previous = getLocale();
+    try {
+      const reviewerId = f.group.botIds[1]!;
+      await f.control.updateBot(f.bot.id, { name: "Builder" });
+      await f.control.updateBot(reviewerId, { name: address === "@{Name with spaces}" ? "Name with spaces" : "Reviewer" });
+      const text = `${address ? `${address} ` : ""}work`;
+      const item_list = [{ type: 1, text_item: { text }, ref_msg: { title: "thread",
+        message_item: { type: 1, text_item: { text: "@Reviewer quoted context" } } } }];
+      setLocale("zh"); await f.start(); f.emit(1, text, { item_list }, "B");
+      await waitFor(() => f.cursor() === "B"); const run = f.runs()[0]!;
+      const members = f.runtime.store.listMemberTurns(run.id);
+      expect(members).toHaveLength(1); expect(members[0]!.botId).toBe(address ? reviewerId : f.bot.id);
+      expect(f.runtime.store.getAcceptedRequest(f.group.id, f.topic.id, run.requestId)?.message.content)
+        .toBe("work\n\n[Quote: thread | @Reviewer quoted context]");
+      await f.stop("disabled"); setLocale("en"); await f.start(); f.emit(1, text, { item_list }, "C");
+      await waitFor(() => f.cursor() === "C");
+      expect(f.runs()).toHaveLength(1); expect(f.runs()[0]!.id).toBe(run.id);
+      expect(f.runtime.store.listMemberTurns(run.id)).toEqual(members);
+      expect(f.errors).toEqual([]); expect(f.ordinary).toHaveLength(0);
+      await f.runtime.dispatcher.kick(); await waitFor(() => f.sent.some((message) => message.context === "ctx-1"));
+    } finally { setLocale(previous); await f.close(); }
+  });
+}
+
+test("real Weixin quoted text cannot turn an unknown authored member address into lead routing", async () => {
+  const f = await fixture();
+  try {
+    await f.start(); f.emit(1, "@Missing work", { item_list: [{ type: 1, text_item: { text: "@Missing work" },
+      ref_msg: { message_item: { type: 1, text_item: { text: "prior context" } } } }] }, "B");
+    await waitFor(() => f.cursor() === "B");
+    expect(f.errors).toEqual(["external_target_ambiguous"]); expect(f.runs()).toHaveLength(0);
+    expect(f.ordinary).toHaveLength(0);
+  } finally { await f.close(); }
+});
+
+test("real Weixin quoted text Stop retains its durable cancellation semantics", async () => {
+  const f = await fixture();
+  try {
+    await f.start(); f.emit(1, "existing", {}, "B"); await waitFor(() => f.cursor() === "B");
+    const run = f.runs()[0]!;
+    f.emit(2, "/stop", { item_list: [{ type: 1, text_item: { text: "/stop" },
+      ref_msg: { message_item: { type: 1, text_item: { text: "prior context" } } } }] }, "C");
+    await waitFor(() => f.cursor() === "C");
+    expect(f.runtime.store.getRun(run.id)).toMatchObject({ state: "cancelled", completionReason: "human-cancelled" });
+    expect(f.runtime.bindings.receiptKind("weixin", { accountId: "default", conversationId: f.chatKey, text: "/stop",
+      metadata: { channel: "weixin", channelMessageId: "2" } })).toBe("stop");
+    expect(f.errors).toEqual([]); expect(f.runs()).toHaveLength(1); expect(f.ordinary).toHaveLength(0);
+  } finally { await f.close(); }
+});
+
+test("real Weixin historical quote-first receipt fails closed without retargeting its Run", async () => {
+  const f = await fixture();
+  try {
+    await f.control.updateBot(f.bot.id, { name: "Builder" });
+    await f.control.updateBot(f.group.botIds[1]!, { name: "Reviewer" });
+    const original = await f.runtime.bindings.accept("weixin", { accountId: "default", conversationId: f.chatKey,
+      text: "[Quote: prior context]\n@Reviewer work", metadata: { channel: "weixin", channelMessageId: "1",
+        senderId: "human", origin: "human", authenticatedHuman: true, hadInboundMedia: false, chatType: "direct" } });
+    const members = f.runtime.store.listMemberTurns(original!.run.id);
+    expect(members[0]!.botId).toBe(f.bot.id);
+    await f.start(); f.emit(1, "@Reviewer work", { item_list: [{ type: 1, text_item: { text: "@Reviewer work" },
+      ref_msg: { message_item: { type: 1, text_item: { text: "prior context" } } } }] }, "B");
+    await waitFor(() => f.cursor() === "B");
+    expect(f.errors).toEqual(["external_request_conflict"]); expect(f.runs()).toHaveLength(1);
+    expect(f.runtime.store.listMemberTurns(original!.run.id)).toEqual(members); expect(f.ordinary).toHaveLength(0);
+  } finally { await f.close(); }
+});
+
 test("real Weixin quoted-message replay after restart and locale switch uses the same durable Run", async () => {
   const f = await fixture(); const previous = getLocale();
   const item_list = [{ type: 1, text_item: { text: "review" }, ref_msg: { title: "thread",
@@ -457,7 +527,7 @@ test("real Weixin quoted-message replay after restart and locale switch uses the
     setLocale("zh"); await f.start(); f.emit(1, "review", { item_list }); await waitFor(() => f.runs().length === 1);
     const run = f.runs()[0]!;
     expect(f.runtime.store.getAcceptedRequest(f.group.id, f.topic.id, run.requestId)?.message.content)
-      .toBe("[Quote: thread | [Quote: earlier]\noriginal]\nreview");
+      .toBe("review\n\n[Quote: thread | original\n\n[Quote: earlier]]");
     await f.stop("disabled"); setLocale("en"); await f.start(); f.emit(1, "review", { item_list });
     await f.runtime.dispatcher.kick(); await waitFor(() => f.sent.some((message) => message.context === "ctx-1"));
     expect(f.runs()).toHaveLength(1); expect(f.runs()[0]?.id).toBe(run.id); expect(f.errors).toEqual([]);

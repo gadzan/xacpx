@@ -297,7 +297,9 @@ export function bodyFromItemList(itemList?: MessageItem[], canonicalQuotes = fal
       }
       if (!parts.length) return text;
       const quote = parts.join(" | ");
-      return `${canonicalQuotes ? `[Quote: ${quote}]` : t().misc.quotedMessagePrefix(quote)}\n${text}`;
+      // Bound routing reads the leading authored address before quote context.
+      // Keep nested context canonical too, so locale cannot change a receipt.
+      return canonicalQuotes ? `${text}\n\n[Quote: ${quote}]` : `${t().misc.quotedMessagePrefix(quote)}\n${text}`;
     }
     // 语音转文字：如果语音消息有 text 字段，直接使用文字内容
     if (item.type === MessageItemType.VOICE && item.voice_item?.text) {

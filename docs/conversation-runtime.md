@@ -445,6 +445,11 @@ lookup after preparation may enrich later turns, never the accepted turn's autho
 Ordinary Session/control turns retain the awaited owner lookup. Weixin bound text
 uses the stable English `[Quote: ...]` marker, including nested quotes, so locale
 changes do not change its receipt fingerprint; ordinary Session text stays localized.
+Bound canonical text places the current authored text before the quote context,
+so leading member addresses are parsed from the user's input. The admitted prompt
+keeps that quote context after member selection. Older quote-first receipts retain
+their original fingerprint; a layout mismatch fails closed rather than creating
+or retargeting work.
 Receipts accepted by earlier builds keep their stored fingerprint. A historical
 localized quote cannot be safely backfilled from the stored flattened text, so
 such a receipt still rejects a locale-derived mismatch rather than relaxing
