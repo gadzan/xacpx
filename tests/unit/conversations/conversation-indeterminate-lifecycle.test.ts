@@ -147,7 +147,7 @@ async function createHarness(runner = new FakeRunner(), physical: { deleteSessio
   const reviewer = await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
   const tester = await bots.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
   await service.activateAfterConsumerLock();
-  return { path, store, state, bots, runner, dispatcher, service, reviewer, tester, sessions };
+  return { path, store, state, stateStore, bots, runner, dispatcher, service, reviewer, tester, sessions };
 }
 
 test("an indeterminate member cancels unstarted siblings and leaves a started sibling runnable", async () => {
@@ -257,6 +257,9 @@ test("resolution keeps the unknown evidence, is idempotent, and then allows dire
   await expect(harness.service.teardownDirectConversation(harness.reviewer.id)).rejects.toMatchObject({
     code: "conversation_indeterminate",
   });
+  expect(harness.store.isConversationDeleting(conversationId)).toBe(false);
+  expect(harness.state.conversations[conversationId]?.lifecycle).not.toBe("deleting");
+  expect(harness.store.getRun(accepted.run.id)?.state).toBe("indeterminate");
   await expect(harness.bots.deleteBot(harness.reviewer.id)).rejects.toBeInstanceOf(BotError);
 
   expect(() => harness.service.resolveIndeterminateRun({
@@ -290,6 +293,8 @@ test("resolution keeps the unknown evidence, is idempotent, and then allows dire
   expect(harness.store.getRunResolution(accepted.run.id)?.reason).toBe("operator checked the workspace");
 
   await harness.service.teardownDirectConversation(harness.reviewer.id);
+  expect(harness.store.getRun(accepted.run.id)).toBeUndefined();
+  expect(harness.store.getRunResolution(accepted.run.id)).toBeUndefined();
   await harness.bots.deleteBot(harness.reviewer.id);
   expect(harness.bots.listBots().some((bot) => bot.id === harness.reviewer.id)).toBe(false);
   harness.store.close();
@@ -326,6 +331,7 @@ test("direct delete waits out a finished run, an extra topic, and a release fail
   await expect(harness.service.teardownDirectConversation(harness.reviewer.id)).rejects.toMatchObject({
     code: "conversation_indeterminate",
   });
+  expect(harness.store.isConversationDeleting(createDirectConversationId(harness.reviewer.id))).toBe(true);
   expect(harness.store.getRun(accepted.run.id)?.state).toBe("indeterminate");
   harness.service.resolveIndeterminateRun({
     runId: accepted.run.id, action: "accept-unknown", reason: "provider never returned", actorAccountId: "acct",
@@ -339,6 +345,117 @@ test("direct delete waits out a finished run, an extra topic, and a release fail
   failRelease = false;
   await harness.service.teardownDirectConversation(harness.reviewer.id);
   await harness.bots.deleteBot(harness.reviewer.id);
+  harness.store.close();
+});
+
+test("direct teardown of a group member keeps direct history", async () => {
+  const harness = await createHarness();
+  const accepted = await harness.service.acceptDirectPrompt({
+    botId: harness.reviewer.id,
+    requestId: "req-grouped",
+    content: "keep me",
+  });
+  void harness.dispatcher.kick();
+  await waitUntil(() => harness.store.getRun(accepted.run.id)?.state === "completed");
+  const conversationId = createDirectConversationId(harness.reviewer.id);
+  await harness.bots.createGroup({
+    title: "Keep",
+    botIds: [harness.reviewer.id, harness.tester.id],
+  });
+  await expect(harness.service.teardownDirectConversation(harness.reviewer.id)).rejects.toMatchObject({
+    code: "bot_in_group",
+  });
+  expect(harness.store.isConversationDeleting(conversationId)).toBe(false);
+  expect(harness.store.getRun(accepted.run.id)?.state).toBe("completed");
+  expect(harness.state.conversations[conversationId]?.lifecycle).not.toBe("deleting");
+  expect(harness.state.bots[harness.reviewer.id]).toBeDefined();
+  await expect(harness.bots.deleteBot(harness.reviewer.id)).rejects.toMatchObject({ code: "bot_in_group" });
+  harness.store.close();
+});
+
+test("topic appstate persist failure keeps sqlite rows, and a sqlite failure stays retryable", async () => {
+  const harness = await createHarness();
+  const conversationId = createDirectConversationId(harness.reviewer.id);
+  const extra = await harness.service.createDirectTopic(harness.reviewer.id, "Notes");
+  const accepted = await harness.service.acceptDirectPrompt({
+    botId: harness.reviewer.id,
+    requestId: "req-notes",
+    content: "note",
+    topicId: extra.id,
+  });
+  void harness.dispatcher.kick();
+  await waitUntil(() => harness.store.getRun(accepted.run.id)?.state === "completed");
+
+  let failPersist = true;
+  harness.stateStore.saveNow = async (next) => {
+    if (failPersist && !next.conversation_topics[extra.id]) {
+      throw new Error("injected appstate persist failure");
+    }
+  };
+  await expect(harness.service.teardownDirectTopic(conversationId, extra.id)).rejects.toThrow(
+    "injected appstate persist failure",
+  );
+  expect(harness.store.getRun(accepted.run.id)?.state).toBe("completed");
+  expect(harness.store.isTopicDeletingIn(conversationId, extra.id)).toBe(true);
+  expect(harness.state.conversation_topics[extra.id]).toBeDefined();
+
+  failPersist = false;
+  let failSqlite = true;
+  const original = harness.store.deleteTopicContent.bind(harness.store);
+  harness.store.deleteTopicContent = (cid, tid) => {
+    if (failSqlite) {
+      failSqlite = false;
+      throw new Error("injected sqlite topic delete failure");
+    }
+    original(cid, tid);
+  };
+  await expect(harness.service.teardownDirectTopic(conversationId, extra.id)).rejects.toThrow(
+    "injected sqlite topic delete failure",
+  );
+  expect(harness.state.conversation_topics[extra.id]).toBeUndefined();
+  expect(harness.store.getRun(accepted.run.id)?.state).toBe("completed");
+  expect(harness.store.isTopicDeletingIn(conversationId, extra.id)).toBe(true);
+
+  await harness.service.teardownDirectTopic(conversationId, extra.id);
+  expect(harness.store.getRun(accepted.run.id)).toBeUndefined();
+  expect(harness.store.isTopicDeletingIn(conversationId, extra.id)).toBe(false);
+  expect(harness.state.conversation_topics[createDirectTopicId(harness.reviewer.id)]).toBeDefined();
+  harness.store.close();
+});
+
+test("group topic appstate persist failure keeps the deleting barrier and retries", async () => {
+  const harness = await createHarness();
+  const group = await harness.bots.createGroup({
+    title: "Squad",
+    botIds: [harness.reviewer.id, harness.tester.id],
+  });
+  const topic = await harness.service.createGroupTopic(group.id, "Notes", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  let contentDeletes = 0;
+  const original = harness.store.deleteTopicContent.bind(harness.store);
+  harness.store.deleteTopicContent = (conversationId, topicId) => {
+    contentDeletes += 1;
+    original(conversationId, topicId);
+  };
+  let fail = true;
+  harness.stateStore.saveNow = async (next) => {
+    if (fail && !next.conversation_topics[topic.id]) {
+      throw new Error("injected appstate persist failure");
+    }
+  };
+  await expect(harness.service.teardownGroupTopic(group.id, topic.id)).rejects.toThrow(
+    "injected appstate persist failure",
+  );
+  expect(contentDeletes).toBe(0);
+  expect(harness.store.isTopicDeletingIn(group.id, topic.id)).toBe(true);
+  expect(harness.state.conversation_topics[topic.id]?.status).toBe("deleting");
+  fail = false;
+  await harness.service.teardownGroupTopic(group.id, topic.id);
+  expect(harness.state.conversation_topics[topic.id]).toBeUndefined();
+  expect(harness.store.isTopicDeletingIn(group.id, topic.id)).toBe(false);
+  expect(contentDeletes).toBe(1);
   harness.store.close();
 });
 

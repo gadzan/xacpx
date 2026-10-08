@@ -2700,59 +2700,88 @@ export class SqliteConversationStore implements ConversationStore {
     return row?.state === "deleting";
   }
 
+  isTopicDeletingIn(conversationId: string, topicId: string): boolean {
+    const row = this.sqlite.get<{ state: string }>(
+      "SELECT state FROM topic_lifecycle WHERE topic_id = ? AND conversation_id = ?",
+      [topicId, conversationId],
+    );
+    return row?.state === "deleting";
+  }
+
   deleteTopicRows(conversationId: string, topicId: string): void {
     this.sqlite.transaction(() => {
-      this.sqlite.run("DELETE FROM conversation_bindings WHERE conversation_id = ? AND topic_id = ?", [conversationId, topicId]);
-      const owned = this.sqlite.get(
-        `SELECT 1 AS ok FROM topic_seq WHERE conversation_id = ? AND topic_id = ?
-         UNION ALL
-         SELECT 1 AS ok FROM topic_lifecycle WHERE conversation_id = ? AND topic_id = ?
-         UNION ALL
-         SELECT 1 AS ok FROM runs WHERE conversation_id = ? AND topic_id = ?
-         UNION ALL
-         SELECT 1 AS ok FROM messages WHERE conversation_id = ? AND topic_id = ?
-         LIMIT 1`,
-        [conversationId, topicId, conversationId, topicId, conversationId, topicId, conversationId, topicId],
-      );
-      if (!owned) {
-        return;
-      }
-      this.sqlite.run(
-        `DELETE FROM pending_dispatches
-         WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)`,
-        [conversationId, topicId],
-      );
-      this.sqlite.run(
-        "DELETE FROM member_turns WHERE conversation_id = ? AND topic_id = ?",
-        [conversationId, topicId],
-      );
-      this.sqlite.run(
-        "DELETE FROM messages WHERE conversation_id = ? AND topic_id = ?",
-        [conversationId, topicId],
-      );
-      this.sqlite.run(
-        "DELETE FROM routing_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
-        [conversationId, topicId],
-      );
-      this.sqlite.run("DELETE FROM recovery_attempts WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
-        [conversationId, topicId]);
-      this.sqlite.run(
-        "DELETE FROM run_resolutions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
-        [conversationId, topicId],
-      );
-      this.sqlite.run(
-        "DELETE FROM runs WHERE conversation_id = ? AND topic_id = ?",
-        [conversationId, topicId],
-      );
-      this.sqlite.run(
-        "DELETE FROM topic_seq WHERE conversation_id = ? AND topic_id = ?",
-        [conversationId, topicId],
-      );
+      this.purgeTopicContent(conversationId, topicId);
       this.sqlite.run(
         "DELETE FROM topic_lifecycle WHERE conversation_id = ? AND topic_id = ?",
         [conversationId, topicId],
       );
     });
+  }
+
+  deleteTopicContent(conversationId: string, topicId: string): void {
+    this.sqlite.transaction(() => {
+      this.purgeTopicContent(conversationId, topicId);
+    });
+  }
+
+  clearTopicLifecycle(conversationId: string, topicId: string): void {
+    this.sqlite.run(
+      "DELETE FROM topic_lifecycle WHERE conversation_id = ? AND topic_id = ?",
+      [conversationId, topicId],
+    );
+  }
+
+  /**
+   * Topic content, including `run_resolutions`, goes with the Run. The
+   * resolution row is the in-lifetime audit (it survives restart while the
+   * Run exists). It is not kept after the Topic or Conversation is deleted.
+   * `topic_lifecycle` stays until `clearTopicLifecycle`.
+   */
+  private purgeTopicContent(conversationId: string, topicId: string): void {
+    this.sqlite.run("DELETE FROM conversation_bindings WHERE conversation_id = ? AND topic_id = ?", [conversationId, topicId]);
+    const owned = this.sqlite.get(
+      `SELECT 1 AS ok FROM topic_seq WHERE conversation_id = ? AND topic_id = ?
+       UNION ALL
+       SELECT 1 AS ok FROM runs WHERE conversation_id = ? AND topic_id = ?
+       UNION ALL
+       SELECT 1 AS ok FROM messages WHERE conversation_id = ? AND topic_id = ?
+       LIMIT 1`,
+      [conversationId, topicId, conversationId, topicId, conversationId, topicId],
+    );
+    if (!owned) {
+      return;
+    }
+    this.sqlite.run(
+      `DELETE FROM pending_dispatches
+       WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)`,
+      [conversationId, topicId],
+    );
+    this.sqlite.run(
+      "DELETE FROM member_turns WHERE conversation_id = ? AND topic_id = ?",
+      [conversationId, topicId],
+    );
+    this.sqlite.run(
+      "DELETE FROM messages WHERE conversation_id = ? AND topic_id = ?",
+      [conversationId, topicId],
+    );
+    this.sqlite.run(
+      "DELETE FROM routing_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
+      [conversationId, topicId],
+    );
+    this.sqlite.run("DELETE FROM recovery_attempts WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
+      [conversationId, topicId]);
+    this.sqlite.run(
+      "DELETE FROM run_resolutions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
+      [conversationId, topicId],
+    );
+    this.sqlite.run(
+      "DELETE FROM runs WHERE conversation_id = ? AND topic_id = ?",
+      [conversationId, topicId],
+    );
+    this.sqlite.run(
+      "DELETE FROM topic_seq WHERE conversation_id = ? AND topic_id = ?",
+      [conversationId, topicId],
+    );
   }
 
   deleteConversationRows(conversationId: string): void {
@@ -2766,6 +2795,7 @@ export class SqliteConversationStore implements ConversationStore {
       this.sqlite.run("DELETE FROM messages WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM routing_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
       this.sqlite.run("DELETE FROM recovery_attempts WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
+      // Resolutions are the Run's in-lifetime audit and leave with the Run.
       this.sqlite.run(
         "DELETE FROM run_resolutions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)",
         [conversationId],

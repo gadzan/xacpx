@@ -459,6 +459,20 @@ describe("useDirectBotsStore", () => {
       expect(calls).toEqual(["control.bots.teardown-direct", "control.bots.delete"]);
     });
 
+    it("does not delete the bot or continue when teardown reports group membership", async () => {
+      const store = useDirectBotsStore();
+      mockRpc.mockImplementation((_inst: string, type: string) => {
+        if (type === "control.bots.teardown-direct") {
+          return Promise.resolve({
+            error: { code: "bot_in_group", message: "bot is referenced by groups", details: { conversationIds: ["conv_g"] } },
+          });
+        }
+        return Promise.resolve({ ok: true });
+      });
+      await expect(store.deleteDirectBot("inst_1", "bot_1")).rejects.toMatchObject({ code: "bot_in_group" });
+      expect(mockRpc.mock.calls.map((call) => call[1])).toEqual(["control.bots.teardown-direct"]);
+    });
+
     it("does not delete the bot when teardown reports an unresolved indeterminate run and the operator declines", async () => {
       const store = useDirectBotsStore();
       mockRpc.mockImplementation((_inst: string, type: string) => {

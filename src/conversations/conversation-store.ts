@@ -541,7 +541,18 @@ export interface ConversationStore {
   markTopicDeleting(topicId: string, conversationId: string, now: string): void;
   isConversationDeleting(conversationId: string): boolean;
   isTopicDeleting(topicId: string): boolean;
+  /** True when this Conversation's Topic row is the one marked deleting. */
+  isTopicDeletingIn(conversationId: string, topicId: string): boolean;
   deleteTopicRows(conversationId: string, topicId: string): void;
+  /**
+   * Deletes a Topic's durable rows and leaves `topic_lifecycle` in place.
+   * The barrier stays until AppState has dropped the Topic and
+   * `clearTopicLifecycle` runs, so a failed AppState save can still find
+   * the Topic and retry.
+   */
+  deleteTopicContent(conversationId: string, topicId: string): void;
+  /** Drops the Topic deleting barrier after both stores have dropped the Topic. */
+  clearTopicLifecycle(conversationId: string, topicId: string): void;
   deleteConversationRows(conversationId: string): void;
   /** Human acceptance of an indeterminate Run. Does not change Run state. */
   getRunResolution(runId: string): IndeterminateResolution | undefined;

@@ -2,6 +2,7 @@ import { defineStore } from "pinia";
 import { ref, watch } from "vue";
 import {
   isErrorPayload,
+  type ErrorPayload,
   type FsDiffResult,
   type FsDownloadResult,
   type FsEntryDto,
@@ -16,7 +17,7 @@ import { pushToast } from "../lib/use-toasts";
 import * as viewCache from "../lib/view-snapshot-cache";
 import { useAuthStore } from "./auth";
 
-function unwrap<T>(result: T | { error: { code: string; message: string } }): T {
+function unwrap<T>(result: T | ErrorPayload): T {
   if (isErrorPayload(result)) throw new Error(result.error.message || result.error.code);
   return result;
 }

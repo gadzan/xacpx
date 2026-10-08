@@ -3,6 +3,7 @@ import { computed, markRaw, ref } from "vue";
 import {
   MSG,
   isErrorPayload,
+  type ErrorPayload,
   type BotDetailDto,
   type BotSummaryDto,
   type ConversationDetailDto,
@@ -167,7 +168,7 @@ class DirectBotRpcError extends Error {
     this.details = details;
   }
 }
-function unwrapRpc<T>(result: T | { error: { code: string; message: string; details?: Record<string, unknown> } }): T {
+function unwrapRpc<T>(result: T | ErrorPayload): T {
   if (isErrorPayload(result)) {
     if (result.error.code === "unknown-type") {
       throw new DirectBotRpcError(result.error.code, "connectorOutdated");
@@ -1052,9 +1053,11 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
   /**
    * Product delete: tear down the Direct Conversation first, then the
-   * metadata-only Bot delete. A teardown failure leaves the Bot in place.
-   * When the only blocker is an unresolved indeterminate Run, `acceptUnknown`
-   * may record the administrator acceptance and the teardown is retried once.
+   * metadata-only Bot delete. The server refuses Group membership before it
+   * marks the Conversation deleting, so a `bot_in_group` error leaves Direct
+   * history in place. An already-indeterminate Run is also refused before
+   * that barrier. When the operator accepts, `acceptUnknown` records it and
+   * the teardown is retried once. Declining does not call delete.
    */
   async function deleteDirectBot(
     targetInstanceId: string,

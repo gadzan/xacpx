@@ -429,6 +429,30 @@ export class BotService {
     });
   }
 
+  /**
+   * Conditions `deleteBot` still rejects after Direct teardown, and that
+   * Direct teardown cannot clear: Group membership and a Group-member
+   * runtime. Call this before destroying Direct history. `deleteBot`
+   * repeats the same checks.
+   */
+  assertDirectHistoryDeleteAllowed(botId: string): void {
+    this.assertOpen();
+    this.getBot(botId);
+    const groups = Object.values(this.state.conversations).filter(
+      (conversation) => conversation.kind === "group" && conversation.botIds.includes(botId),
+    );
+    if (groups.length > 0) {
+      throw new BotError("bot_in_group", `bot "${botId}" is referenced by groups`, {
+        conversationIds: groups.map((group) => group.id),
+      });
+    }
+    if (this.hasGroupMemberRuntime(botId)) {
+      throw new BotError("bot_in_use", `bot "${botId}" still has a group-member runtime`, {
+        conversationIds: [],
+      });
+    }
+  }
+
   async deleteBot(id: string): Promise<void> {
     this.assertOpen();
     await this.runLifecycle(id, async () => {

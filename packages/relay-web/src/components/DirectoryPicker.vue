@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { X, Folder, Home, ArrowUp, Loader2 } from "lucide-vue-next";
-import { isErrorPayload, type FsBrowseResult } from "@ganglion/xacpx-relay-protocol";
+import { isErrorPayload, type ErrorPayload, type FsBrowseResult } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import { useModalA11y } from "../lib/use-modal-a11y";
 
@@ -17,7 +17,7 @@ const { t } = useI18n();
 const dialogEl = ref<HTMLElement | null>(null);
 useModalA11y(dialogEl, () => emit("close"));
 
-function unwrap<T>(result: T | { error: { code: string; message: string } }): T {
+function unwrap<T>(result: T | ErrorPayload): T {
   if (isErrorPayload(result)) throw new Error(result.error.message || result.error.code);
   return result;
 }
