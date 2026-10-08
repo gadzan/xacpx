@@ -543,7 +543,48 @@ export interface ConversationStore {
   isTopicDeleting(topicId: string): boolean;
   deleteTopicRows(conversationId: string, topicId: string): void;
   deleteConversationRows(conversationId: string): void;
+  /** Human acceptance of an indeterminate Run. Does not change Run state. */
+  getRunResolution(runId: string): IndeterminateResolution | undefined;
+  /**
+   * Record that an administrator accepted the unknown result. The original
+   * Run and MemberTurn rows stay indeterminate. Repeat calls with the same
+   * action return the existing record and write nothing else. A started
+   * member that is still non-terminal refuses the call.
+   */
+  resolveIndeterminateRun(input: ResolveIndeterminateRunInput): IndeterminateResolution;
   close(): void;
+}
+
+/** Audit record for a human acceptance of unknown side effects. */
+export interface IndeterminateResolution {
+  id: string;
+  runId: string;
+  action: "accept-unknown";
+  reason: string;
+  actorAccountId: string;
+  actorName?: string;
+  createdAt: string;
+  runState: "indeterminate";
+  completionReason?: string;
+  consumedMemberTurns: number;
+  failedBotIds: string[];
+  members: Array<{
+    id: string;
+    botId: string;
+    state: string;
+    startedAt?: string;
+    finishedAt?: string;
+    failureReason?: string;
+  }>;
+}
+
+export interface ResolveIndeterminateRunInput {
+  runId: string;
+  action: "accept-unknown";
+  reason: string;
+  actorAccountId: string;
+  actorName?: string;
+  now: string;
 }
 
 /** Entire model-visible contract. Strict decoding rejects every other field. */

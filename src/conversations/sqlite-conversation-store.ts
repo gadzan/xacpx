@@ -34,7 +34,9 @@ import type {
   ApplyRoutingDecisionInput,
   ApplyRoutingDecisionResult,
   ClaimRecoveryScope,
+  IndeterminateResolution,
   RecoveredClaim,
+  ResolveIndeterminateRunInput,
   ReleaseClaimToPendingInput,
   RenewHeldClaimInput,
   RoutingAssignmentInput,
@@ -186,6 +188,21 @@ interface DispatchRow {
   created_at: string;
   claimed_at: string | null;
   completed_at: string | null;
+}
+
+interface ResolutionRow {
+  id: string;
+  run_id: string;
+  action: string;
+  reason: string;
+  actor_account_id: string;
+  actor_name: string | null;
+  created_at: string;
+  run_state: string;
+  completion_reason: string | null;
+  consumed_member_turns: number;
+  failed_bot_ids_json: string;
+  members_json: string;
 }
 
 interface RoutingDecisionRow {
@@ -629,6 +646,25 @@ function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
       ? { blockedReason: row.blocked_reason as MemberTurnRecord["blockedReason"] }
       : {}),
     createdAt: row.created_at,
+  };
+}
+
+function mapResolution(row: ResolutionRow): IndeterminateResolution {
+  const members = JSON.parse(row.members_json) as IndeterminateResolution["members"];
+  const failedBotIds = JSON.parse(row.failed_bot_ids_json) as string[];
+  return {
+    id: row.id,
+    runId: row.run_id,
+    action: "accept-unknown",
+    reason: row.reason,
+    actorAccountId: row.actor_account_id,
+    ...(optionalString(row.actor_name) ? { actorName: row.actor_name as string } : {}),
+    createdAt: row.created_at,
+    runState: "indeterminate",
+    ...(optionalString(row.completion_reason) ? { completionReason: row.completion_reason as string } : {}),
+    consumedMemberTurns: Number(row.consumed_member_turns),
+    failedBotIds,
+    members,
   };
 }
 
@@ -1167,7 +1203,7 @@ export class SqliteConversationStore implements ConversationStore {
         const member = this.requireMemberTurn(row.member_turn_id);
         const run = this.requireRun(row.run_id);
         if (TERMINAL_RUN_STATES.includes(run.state)) {
-          this.finishDispatch(row.id, now);
+          this.sealClaimOnTerminalRun(row, member, run, now);
           continue;
         }
         if (member.startedAt) {
@@ -1264,9 +1300,11 @@ export class SqliteConversationStore implements ConversationStore {
         const member = this.requireMemberTurn(row.member_turn_id);
         const run = this.requireRun(row.run_id);
         if (TERMINAL_RUN_STATES.includes(run.state)) {
-          // Already finished business: finish the dispatch identically to
-          // the normal recovery path (no entry — nothing converged).
-          this.finishDispatch(row.id, now);
+          // The Run is already sealed. A sibling that started before the seal
+          // and then lost its owner still has an unknown result: record that
+          // member alone. An unstarted sibling is cancelled. Neither path
+          // reopens the Run or requeues work.
+          this.sealClaimOnTerminalRun(row, member, run, now);
           continue;
         }
         if (member.startedAt) {
@@ -1830,12 +1868,26 @@ export class SqliteConversationStore implements ConversationStore {
         };
       }
       if (run.state === "indeterminate") {
-        // Sealed Run: scheduling stays dead, but proof from an execution
-        // that was already admitted (started) before the seal is durable
-        // evidence, not a scheduling decision — reconcile it (reclassify
-        // this member, re-derive the Run from the whole batch; an unknown
-        // sibling keeps it indeterminate). Anything without execution
-        // identity falls through to the evidence no-op below.
+        // Sealed Run: scheduling stays dead. Proof from an execution that
+        // was already admitted (started) before the seal is durable evidence.
+        // A member still in flight keeps its own outcome; it is not rewritten
+        // as indeterminate just because a sibling's result is unknown.
+        if (member.startedAt && !TERMINAL_MEMBER_STATES.includes(member.state)) {
+          const evidence = this.persistAdmittedMemberEvidence({
+            runId: run.id,
+            memberTurnId: member.id,
+            outcome: "completed",
+            content: input.content,
+            sourceTurn: input.sourceTurn,
+            now: input.now,
+          });
+          return {
+            run: evidence.run,
+            memberTurn: evidence.memberTurn,
+            assistantMessage: evidence.message,
+            resurrected: false,
+          };
+        }
         if (member.state === "indeterminate" && member.startedAt) {
           const evidence = this.persistSealedMemberEvidence({
             runId: run.id,
@@ -2685,6 +2737,10 @@ export class SqliteConversationStore implements ConversationStore {
       this.sqlite.run("DELETE FROM recovery_attempts WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
         [conversationId, topicId]);
       this.sqlite.run(
+        "DELETE FROM run_resolutions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
+        [conversationId, topicId],
+      );
+      this.sqlite.run(
         "DELETE FROM runs WHERE conversation_id = ? AND topic_id = ?",
         [conversationId, topicId],
       );
@@ -2710,6 +2766,10 @@ export class SqliteConversationStore implements ConversationStore {
       this.sqlite.run("DELETE FROM messages WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM routing_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
       this.sqlite.run("DELETE FROM recovery_attempts WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)", [conversationId]);
+      this.sqlite.run(
+        "DELETE FROM run_resolutions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ?)",
+        [conversationId],
+      );
       this.sqlite.run("DELETE FROM runs WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM topic_seq WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM topic_lifecycle WHERE conversation_id = ?", [conversationId]);
@@ -2756,7 +2816,21 @@ export class SqliteConversationStore implements ConversationStore {
         CREATE UNIQUE INDEX IF NOT EXISTS idx_handoff_envelope ON messages (json_extract(handoff_json, '$.memberTurnId')) WHERE handoff_json IS NOT NULL;
         CREATE TABLE IF NOT EXISTS recovery_attempts (
           member_turn_id TEXT NOT NULL, run_id TEXT NOT NULL, source_turn_id TEXT NOT NULL,
-          generation INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(member_turn_id, source_turn_id));`);
+          generation INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(member_turn_id, source_turn_id));
+        CREATE TABLE IF NOT EXISTS run_resolutions (
+          id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL UNIQUE,
+          action TEXT NOT NULL CHECK (action = 'accept-unknown'),
+          reason TEXT NOT NULL,
+          actor_account_id TEXT NOT NULL,
+          actor_name TEXT,
+          created_at TEXT NOT NULL,
+          run_state TEXT NOT NULL,
+          completion_reason TEXT,
+          consumed_member_turns INTEGER NOT NULL,
+          failed_bot_ids_json TEXT NOT NULL,
+          members_json TEXT NOT NULL
+        );`);
       if (upgrade) {
         const oldRuns = this.sqlite.all<{ id: string; conversation_id: string }>(
           "SELECT id, conversation_id FROM runs WHERE mode = 'explicit' AND state IN ('queued', 'running', 'waiting-human') AND max_member_turns < ?",
@@ -3346,9 +3420,45 @@ export class SqliteConversationStore implements ConversationStore {
     }
     if (run.state === "indeterminate") {
       const sealed = this.requireMemberTurn(input.memberTurnId);
+      if (sealed.runId !== run.id) {
+        throw new ConversationError(
+          "run_member_mismatch",
+          `member turn "${sealed.id}" does not belong to run "${run.id}"`,
+        );
+      }
+      if (sealed.startedAt && !TERMINAL_MEMBER_STATES.includes(sealed.state)) {
+        const terminalState = input.terminalState ?? "failed";
+        if (terminalState === "indeterminate") {
+          this.recordUnknownStartedMember(sealed, run, input.now);
+          return this.requireRun(run.id);
+        }
+        if (terminalState === "cancelled") {
+          return this.persistAdmittedMemberEvidence({
+            runId: run.id,
+            memberTurnId: sealed.id,
+            outcome: "cancelled",
+            reason: input.reason,
+            sourceTurn: {
+              sessionAlias: sealed.sessionAlias ?? "",
+              ...(sealed.sourceTurnId !== undefined ? { turnId: sealed.sourceTurnId } : {}),
+            },
+            now: input.now,
+          }).run;
+        }
+        return this.persistAdmittedMemberEvidence({
+          runId: run.id,
+          memberTurnId: sealed.id,
+          outcome: "failed",
+          reason: input.reason,
+          sourceTurn: {
+            sessionAlias: sealed.sessionAlias ?? "",
+            ...(sealed.sourceTurnId !== undefined ? { turnId: sealed.sourceTurnId } : {}),
+          },
+          now: input.now,
+        }).run;
+      }
       if (
-        sealed.runId === run.id
-        && sealed.state === "indeterminate"
+        sealed.state === "indeterminate"
         && sealed.startedAt
         && (input.terminalState === undefined || input.terminalState === "failed")
       ) {
@@ -3434,10 +3544,12 @@ export class SqliteConversationStore implements ConversationStore {
    * forceRunTerminal is set or durable cancel intent exists, in which case the
    * settled batch aggregates to its terminal outcome exactly like explicit.
    * Indeterminate (unproven side effects) always seals the Run in EITHER
-   * mode — even with runnable siblings — and settles every still-runnable
-   * sibling as indeterminate in the same transaction, so no further member
-   * can be claimed afterwards. Only failed members accumulate in
-   * failedBotIds; cancelled/indeterminate are read from MemberTurns.
+   * mode — even with runnable siblings — so no further member can be claimed.
+   * A sibling with an empty startedAt has a start fence proving it never
+   * ran: it becomes cancelled and does not consume a turn. A sibling that
+   * already started stays in its current state so its own evidence can land
+   * later; it is not relabeled indeterminate. Already-terminal members are
+   * left untouched. Only failed members accumulate in failedBotIds.
    * unavailableBotIds is PR7+ reservation surface.
    */
   private aggregateRunAfterMemberTerminal(
@@ -3471,27 +3583,33 @@ export class SqliteConversationStore implements ConversationStore {
     }
     const batchIndeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
     if (batchIndeterminate.length > 0) {
-      // Unknown side effects seal the Run immediately, in either mode, even
-      // with runnable siblings: settle every still-runnable sibling as
-      // indeterminate in the same transaction so nothing further can be
-      // claimed, then terminal the Run. Covers runner settlement
-      // (completeCancel unknown), lease recovery, and consumer-lock
-      // convergence identically: no sibling may start after unproven
-      // execution.
+      // Unknown side effects seal the Run immediately, in either mode, so
+      // nothing further can be claimed. Unstarted siblings are cancelled:
+      // startedAt is the execution-start fence, and an empty one proves the
+      // provider was not entered. Started siblings keep their live state and
+      // claim so a still-running owner can persist real evidence, or a later
+      // owner-loss recovery can seal that member alone.
       const reason = batchMembers.length === 1 ? (memberReason ?? "started_result_unknown") : "started_result_unknown";
+      let cancelledUnstarted = false;
       for (const turn of batchMembers) {
-        if (TERMINAL_MEMBER_STATES.includes(turn.state)) {
+        if (TERMINAL_MEMBER_STATES.includes(turn.state) || turn.startedAt) {
           continue;
         }
         this.sqlite.run(
-          `UPDATE member_turns SET state = 'indeterminate', finished_at = ? WHERE id = ?`,
+          `UPDATE member_turns SET state = 'cancelled', finished_at = ? WHERE id = ?`,
           [now, turn.id],
         );
+        this.finishDispatchForMemberTurn(turn.id, now);
+        cancelledUnstarted = true;
+      }
+      if (cancelledUnstarted) {
+        // The schema only distinguishes human Stop from system cancellation.
+        // An unstarted sibling stopped by this seal is not a human Stop, so
+        // later exact proof must not reclassify the Run as human-cancelled.
         this.sqlite.run(
-          `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+          `UPDATE runs SET cancellation_reason = COALESCE(cancellation_reason, 'execution-cancelled') WHERE id = ?`,
           [runId],
         );
-        this.finishDispatchForMemberTurn(turn.id, now);
       }
       this.sqlite.run(
         `UPDATE runs SET state = 'indeterminate', completion_reason = ?, routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END, finished_at = ? WHERE id = ?`,
@@ -3549,12 +3667,138 @@ export class SqliteConversationStore implements ConversationStore {
    * and of an intervening indeterminate seal. Legacy rows keep their prior
    * human-cancelled classification when provenance is unavailable.
    */
+  /**
+   * A terminal Run no longer schedules, but a claim that outlived the seal
+   * still describes one member. Started work whose owner is gone is unknown.
+   * Unstarted work is cancelled. The Run state is not reopened.
+   */
+  private sealClaimOnTerminalRun(row: DispatchRow, member: MemberTurnRecord, run: ConversationRun, now: string): void {
+    if (TERMINAL_MEMBER_STATES.includes(member.state)) {
+      this.finishDispatch(row.id, now);
+      return;
+    }
+    if (!member.startedAt) {
+      this.sqlite.run(
+        `UPDATE member_turns SET state = 'cancelled', finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+        [now, member.id],
+      );
+      this.sqlite.run(
+        `UPDATE runs SET cancellation_reason = COALESCE(cancellation_reason, 'execution-cancelled') WHERE id = ?`,
+        [run.id],
+      );
+      this.finishDispatch(row.id, now);
+      return;
+    }
+    this.recordUnknownStartedMember(member, run, now);
+    this.finishDispatch(row.id, now);
+  }
+
+  /** Count a started unknown member once and seal that member only. */
+  private recordUnknownStartedMember(member: MemberTurnRecord, run: ConversationRun, now: string): void {
+    const alreadyCounted = Boolean(member.finishedAt) || member.state === "indeterminate";
+    this.sqlite.run(
+      `UPDATE member_turns SET state = 'indeterminate', finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+      [now, member.id],
+    );
+    if (!alreadyCounted) {
+      this.sqlite.run(
+        `UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`,
+        [run.id],
+      );
+    }
+    this.finishDispatchForMemberTurn(member.id, now);
+  }
+
+  /**
+   * Persist a real outcome for a member that had already started when the Run
+   * sealed. Does not increment a member that was already counted, does not
+   * retry anyone else, and does not clear an indeterminate seal while any
+   * sibling is still unknown or a human resolution is on record.
+   */
+  private persistAdmittedMemberEvidence(input: {
+    runId: string;
+    memberTurnId: string;
+    outcome: "completed" | "failed" | "cancelled";
+    content?: string;
+    reason?: string;
+    sourceTurn: { sessionAlias: string; turnId?: string };
+    now: string;
+  }): { run: ConversationRun; memberTurn: MemberTurnRecord; message?: ConversationMessage } {
+    const run = this.requireRun(input.runId);
+    const member = this.requireMemberTurn(input.memberTurnId);
+    if (member.runId !== run.id || !member.startedAt || TERMINAL_MEMBER_STATES.includes(member.state)) {
+      throw new ConversationError("stale_claim", `member turn "${input.memberTurnId}" is not admitted in-flight evidence`);
+    }
+    const alreadyCounted = Boolean(member.finishedAt) || member.state === "indeterminate";
+    let message: ConversationMessage | undefined;
+    if (input.outcome === "completed") {
+      const seq = this.allocateSeq(run.conversationId, run.topicId);
+      const messageId = this.ids.messageId();
+      this.sqlite.run(
+        `INSERT INTO messages (
+           id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
+         ) VALUES (?, ?, ?, ?, 'bot', ?, ?, ?, ?, ?)`,
+        [
+          messageId, run.conversationId, run.topicId, seq, member.botId,
+          input.content ?? "", run.id, JSON.stringify(input.sourceTurn), input.now,
+        ],
+      );
+      this.sqlite.run(
+        `UPDATE member_turns SET state = 'completed', failure_reason = NULL, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+        [input.now, member.id],
+      );
+      message = this.getMessage(messageId);
+    } else if (input.outcome === "failed") {
+      this.sqlite.run(
+        `UPDATE member_turns SET state = 'failed', failure_reason = ?, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+        [input.reason ?? "failed", input.now, member.id],
+      );
+      if (!this.requireRun(run.id).failedBotIds.includes(member.botId)) {
+        const failed = [...this.requireRun(run.id).failedBotIds, member.botId];
+        this.sqlite.run(`UPDATE runs SET failed_bot_ids_json = ? WHERE id = ?`, [JSON.stringify(failed), run.id]);
+      }
+    } else {
+      this.sqlite.run(
+        `UPDATE member_turns SET state = 'cancelled', finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+        [input.now, member.id],
+      );
+    }
+    if (!alreadyCounted) {
+      this.sqlite.run(`UPDATE runs SET consumed_member_turns = consumed_member_turns + 1 WHERE id = ?`, [run.id]);
+    }
+    this.finishDispatchForMemberTurn(member.id, input.now);
+    const members = this.listMemberTurns(run.id);
+    const batch = run.activeBatch ?? 1;
+    const reconciledRun = this.classifySettledBatch(
+      run.id,
+      members.filter((turn) => turn.batch === batch),
+      input.now,
+      input.outcome === "failed" ? (input.reason ?? "execution-failed") : undefined,
+    );
+    return {
+      run: reconciledRun,
+      memberTurn: this.requireMemberTurn(member.id),
+      ...(message ? { message } : {}),
+    };
+  }
+
   private classifySettledBatch(
     runId: string,
     batchMembers: MemberTurnRecord[],
     now: string,
     memberReason?: string,
   ): ConversationRun {
+    if (batchMembers.some((turn) => !TERMINAL_MEMBER_STATES.includes(turn.state))) {
+      // An in-flight sibling is not unknown just because another member is.
+      // Keep the existing seal and wait for that sibling's own evidence.
+      if (batchMembers.some((turn) => turn.state === "indeterminate")) {
+        this.sqlite.run(
+          `UPDATE runs SET state = 'indeterminate', completion_reason = COALESCE(completion_reason, 'started_result_unknown'), routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+          [now, runId],
+        );
+      }
+      return this.requireRun(runId);
+    }
     const indeterminate = batchMembers.filter((turn) => turn.state === "indeterminate");
     if (indeterminate.length > 0) {
       const reason = batchMembers.length === 1 ? (memberReason ?? "started_result_unknown") : "started_result_unknown";
@@ -3562,6 +3806,12 @@ export class SqliteConversationStore implements ConversationStore {
         `UPDATE runs SET state = 'indeterminate', completion_reason = ?, routing_state = CASE WHEN mode = 'automatic' THEN 'done' ELSE routing_state END, finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
         [reason, now, runId],
       );
+      return this.requireRun(runId);
+    }
+    // A human acceptance of unknown results is an audit record, not a
+    // successful completion. Late proof may update member evidence, but it
+    // must not reclassify the Run into completed/failed/cancelled.
+    if (this.getRunResolution(runId)) {
       return this.requireRun(runId);
     }
     // Late proof can remove an indeterminate seal, but cannot erase the
@@ -3736,6 +3986,27 @@ export class SqliteConversationStore implements ConversationStore {
       // stay sealed (late completion never resurrects a cancel the user
       // requested); live Runs and already-proven members have nothing to
       // reconcile. No dispatch, progress, or scheduling state changes.
+      if (
+        run.state === "indeterminate"
+        && member.startedAt
+        && !TERMINAL_MEMBER_STATES.includes(member.state)
+      ) {
+        const evidence = this.persistAdmittedMemberEvidence({
+          runId: run.id,
+          memberTurnId: member.id,
+          outcome: input.outcome,
+          ...(input.content !== undefined ? { content: input.content } : {}),
+          ...(input.reason !== undefined ? { reason: input.reason } : {}),
+          sourceTurn: input.sourceTurn,
+          now: input.now,
+        });
+        return {
+          run: evidence.run,
+          memberTurn: evidence.memberTurn,
+          ...(evidence.message ? { message: evidence.message } : {}),
+          reconciled: true,
+        };
+      }
       if (run.state !== "indeterminate" || member.state !== "indeterminate" || !member.startedAt) {
         return { run, memberTurn: member, reconciled: false };
       }
@@ -3754,6 +4025,84 @@ export class SqliteConversationStore implements ConversationStore {
         ...(evidence.message ? { message: evidence.message } : {}),
         reconciled: true,
       };
+    });
+  }
+
+  getRunResolution(runId: string): IndeterminateResolution | undefined {
+    const row = this.sqlite.get<ResolutionRow>("SELECT * FROM run_resolutions WHERE run_id = ?", [runId]);
+    return row ? mapResolution(row) : undefined;
+  }
+
+  resolveIndeterminateRun(input: ResolveIndeterminateRunInput): IndeterminateResolution {
+    return this.sqlite.transaction(() => {
+      const reason = input.reason.trim();
+      const actorAccountId = input.actorAccountId.trim();
+      if (input.action !== "accept-unknown" || reason.length === 0 || reason.length > 2000) {
+        throw new ConversationError("resolution_invalid", "indeterminate resolution requires accept-unknown and a reason");
+      }
+      if (actorAccountId.length === 0 || actorAccountId.startsWith("bot:")) {
+        throw new ConversationError("resolution_forbidden", "indeterminate resolution requires an authenticated administrator");
+      }
+      const run = this.requireRun(input.runId);
+      const existing = this.getRunResolution(run.id);
+      if (existing) {
+        if (existing.action !== input.action) {
+          throw new ConversationError("resolution_conflict", `run "${run.id}" already has a different resolution`);
+        }
+        return existing;
+      }
+      if (run.state !== "indeterminate") {
+        throw new ConversationError("run_not_indeterminate", `run "${run.id}" is ${run.state}`);
+      }
+      for (const member of this.listMemberTurns(run.id)) {
+        if (TERMINAL_MEMBER_STATES.includes(member.state)) continue;
+        if (!member.startedAt) {
+          this.sqlite.run(
+            `UPDATE member_turns SET state = 'cancelled', finished_at = COALESCE(finished_at, ?) WHERE id = ?`,
+            [input.now, member.id],
+          );
+          this.finishDispatchForMemberTurn(member.id, input.now);
+          continue;
+        }
+        throw new ConversationError(
+          "execution_still_active",
+          `run "${run.id}" still has a started member that can write`,
+          { memberTurnId: member.id },
+        );
+      }
+      const members = this.listMemberTurns(run.id);
+      const snapshot = members.map((member) => ({
+        id: member.id,
+        botId: member.botId,
+        state: member.state,
+        ...(member.startedAt ? { startedAt: member.startedAt } : {}),
+        ...(member.finishedAt ? { finishedAt: member.finishedAt } : {}),
+        ...(member.failureReason ? { failureReason: member.failureReason } : {}),
+      }));
+      const id = `resolution_${randomUUID()}`;
+      this.sqlite.run(
+        `INSERT INTO run_resolutions (
+           id, run_id, action, reason, actor_account_id, actor_name, created_at,
+           run_state, completion_reason, consumed_member_turns, failed_bot_ids_json, members_json
+         ) VALUES (?, ?, 'accept-unknown', ?, ?, ?, ?, 'indeterminate', ?, ?, ?, ?)`,
+        [
+          id,
+          run.id,
+          reason,
+          actorAccountId,
+          input.actorName ?? null,
+          input.now,
+          run.completionReason ?? null,
+          run.consumedMemberTurns,
+          JSON.stringify(run.failedBotIds),
+          JSON.stringify(snapshot),
+        ],
+      );
+      const stored = this.getRunResolution(run.id);
+      if (!stored) {
+        throw new ConversationError("resolution_invalid", `resolution for run "${run.id}" was not stored`);
+      }
+      return stored;
     });
   }
 

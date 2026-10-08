@@ -141,9 +141,17 @@ The durable boundary is the dispatch `authorityEpoch` **bound to** `humanIngress
   Run.state = indeterminate
   ```
 
-  Unknown side effects seal the Run in **either mode** — even an explicit multi-member batch: every still-runnable sibling settles as `indeterminate` with its dispatch finished in the same transaction, so no new side-effect-capable turn can start after unproven execution. Sealed scheduling stays dead, but proof from an execution admitted before the seal still persists: a concurrently running sibling (reachable on a `shared` Topic) that later returns a proven completion/failure reclassifies to its outcome with its evidence durable (message / `failedBotIds`), and the Run re-derives from the whole batch — an unknown sibling keeps it `indeterminate`. Only already-started proof lands; nothing new is ever claimed after the seal.
+  Unknown side effects seal the Run in **either mode** — even an explicit multi-member batch — so no new member can be claimed. Siblings are not all rewritten as `indeterminate`:
 
-  Accepted-but-never-started is a different recovery case (redispatch). Started-but-result-unknown is not.
+  - `startedAt` empty: the execution-start fence proves the provider was not entered. The member becomes `cancelled`, its dispatch is finished, and `consumedMemberTurns` does not increase. That stop records `cancellation_reason = execution-cancelled` when no human Stop is already stored, so later exact proof of a started sibling cannot relabel the Run as `human-cancelled`.
+  - already terminal: left unchanged.
+  - already started and still in flight: left in its current state. Its own completion, failure, or later owner-loss recovery is persisted idempotently. A sibling's unknown result does not invent unknown side effects for it.
+
+  Sealed scheduling stays dead. Proof from an execution admitted before the seal still persists. A proven sibling keeps its message / `failedBotIds`. While any member remains `indeterminate`, or a human resolution record exists, the Run stays `indeterminate` — late proof does not turn an accepted unknown into a successful Run, and it does not reopen scheduling. Only already-started proof lands; nothing new is ever claimed after the seal.
+
+  An administrator records acceptance with `resolveIndeterminateRun` (`accept-unknown` plus a reason and a hub-stamped account). The resolution row keeps the original Run/member snapshot. The Run state is not rewritten to `cancelled` or `completed`. Repeat calls return the same row. A started member that is still non-terminal is `execution_still_active`. Chat prompts cannot call this. After every member is terminal and a resolution exists, teardown may release the resource. Before that, teardown stays `conversation_indeterminate`.
+
+  Accepted-but-never-started is a different recovery case (redispatch, or `cancelled` when the Run has already sealed). Started-but-result-unknown is not.
 
 ## Profile revision snapshot
 
@@ -191,7 +199,9 @@ A crash before step 5 leaves the SQLite `deleting` barrier in place: new accepts
 
 Injected release failure leaves `deleting` + ownership in place for retry.
 
-**Remaining Bot-delete boundary:** `BotService.deleteBot` stays fail-closed (`bot_in_use` / `bot_in_group`) and does **not** auto-teardown. It consults AppState runtime references **and** ConversationStore durable work (`hasDurableBotWork`) so an accepted Run/outbox cannot outlive a deleted Bot through a crash-before-materialize window. Call `ConversationRunService.teardownDirectConversation` first, then delete the Bot.
+**Remaining Bot-delete boundary:** `BotService.deleteBot` stays fail-closed (`bot_in_use` / `bot_in_group`) and does **not** auto-teardown. It consults AppState runtime references **and** ConversationStore durable work (`hasDurableBotWork`) so an accepted Run/outbox cannot outlive a deleted Bot through a crash-before-materialize window. Control `teardownDirectConversation` runs the verified Direct teardown; Relay Web delete calls that first and calls `deleteBot` only after it returns. An unresolved `indeterminate` Run stays fail-closed until `resolveIndeterminateRun`. A `session_release_failed` error leaves the Bot and the deleting barrier in place for retry.
+
+Direct non-default Topics have `teardownDirectTopic`. It cancels that Topic's Runs, recovers only that Topic's expired claims, releases hidden sessions bound to that Topic, and deletes that Topic's rows. The default Topic is the Bot's conversation identity and is removed only with the Direct Conversation. Archived Group Topics keep their member sessions until Topic teardown: archive only stops new execution.
 
 ## Group foundations and explicit routing (PR6 + PR7)
 
@@ -322,7 +332,19 @@ Idempotent `requestId` retries reuse the durable accept result and do not re-emi
 
 Shutdown first marks the runtime stopping to reject new operation leases, then waits for entered operations, including `group_send` waiting on Bot lifecycle gates. It stops and drains the Run service/dispatcher before closing the handoff service. Live execution capabilities remain available through this drain, so an entered handoff can commit and an already started execution can bind its capability. Handoff capability revocation runs in `finally`, including a failed drain; shutdown failures remain visible rather than reporting success.
 
-`topic archive/delete` is not a public Control method until domain lifecycle owns it. `BotService.deleteBot` remains fail-closed while durable/runtime ownership exists.
+Group Topic archive/teardown and Direct Conversation teardown are public Control methods. Archive does not release member sessions; Topic teardown does. `BotService.deleteBot` remains fail-closed while durable/runtime ownership exists, so the product delete path tears the Direct Conversation down first.
+
+## Production limits kept on purpose
+
+These are current contracts, not open P0 defects:
+
+- `waiting-human` is visible on the Run DTO (`waitingQuestion`). There is still no answer API that resumes that same Run. A later answer must not become a new queued Run, skip Topic order, or reuse a stale Router generation. That resume API is not in this change.
+- `main.ts` does not pass a Router into `createConversationRuntime`. Automatic mode stays `automatic_unsupported` until a capability-restricted Router adapter exists. A normal tool-capable agent is not that adapter.
+- Explicit Runs still continue through the public handoff primitive inside the same Run, bounded by the member-turn budget. The original spec's "named members finish and the Run ends" rule is not what the runtime implements. Handoff is not removed here.
+- `transport.permissionMode` defaults to `approve-all` for non-interactive turns. Provenance still decides who may receive a human permission interaction. Recovery and Router origins do not gain that route merely because the default policy is permissive.
+- Execution identity is the accepted Run snapshot plus the sticky agent/workspace check. `profileRevision` is stored. A non-empty Topic `cwd` is rejected (`cwd_unsupported`) until launch honors it. That is a capability gap, not a second identity system.
+- One dispatcher drain still claims one Run cohort. Independent Bots and Topics do not run in parallel yet. `maxConcurrentMemberTurns` is a physical cap inside a Topic. `unknown` effect stays on the writer slot. Only `read-only` plus `declared-enforced` may overlap. Configuring a limit above 1 does not mean unknown writers run together.
+- Group Topic archive keeps member sessions until teardown. That retention is the archive contract.
 
 ## Out of scope
 

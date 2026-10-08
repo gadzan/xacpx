@@ -738,6 +738,98 @@ export class ConversationRunService {
   async createTopic(conversationId: string, title: string, options?: TopicSchedulingOptions): Promise<ConversationTopic> {
     return this.createDirectTopic(this.resolveDirectBotId(conversationId), title, options);
   }
+
+  /**
+   * Remove one non-default Direct Topic. The default Topic is the Bot's
+   * durable conversation identity and is removed only by
+   * teardownDirectConversation. This path releases hidden sessions bound to
+   * the Topic, then deletes that Topic's rows. Other Topics and the Direct
+   * Conversation stay.
+   */
+  async teardownDirectTopic(conversationId: string, topicId: string): Promise<void> {
+    this.assertOpen();
+    const botId = this.resolveDirectBotId(conversationId);
+    if (topicId === createDirectTopicId(botId)) {
+      throw new ConversationError(
+        "default_topic_permanent",
+        "the Direct default Topic is removed only by tearing down the Direct Conversation",
+      );
+    }
+    const topic = this.state.conversation_topics[topicId];
+    if (!topic || topic.conversationId !== conversationId) {
+      throw new ConversationError("topic_not_found", `topic "${topicId}" does not belong to this conversation`);
+    }
+    const timestamp = this.now().toISOString();
+    await this.bots.runLifecycle(botId, async () => {
+      this.store.markTopicDeleting(topicId, conversationId, timestamp);
+      await this.stateMutex.run(async () => {
+        const live = this.state.conversation_topics[topicId];
+        if (live && live.conversationId === conversationId && live.status === "active") {
+          const next = structuredClone(this.state);
+          next.conversation_topics[topicId] = { ...live, status: "deleting", updatedAt: timestamp };
+          await this.persist(next);
+        }
+      });
+    });
+    await this.afterTeardownMarkedDeleting?.();
+    for (const run of this.store.listRuns(conversationId, topicId)) {
+      if (run.state === "queued" || run.state === "running" || run.state === "waiting-human") {
+        await this.cancelRunAndAbortRouting(run.id);
+      }
+    }
+    await this.dispatcher.flushOwnedClaimLeases();
+    this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId, topicId });
+    const remaining = this.store.listRuns(conversationId, topicId);
+    const blocking = remaining.filter(
+      (run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human",
+    );
+    if (blocking.length > 0) {
+      throw new ConversationError("conversation_not_settled", "topic has unsettled runs", {
+        runIds: blocking.map((run) => run.id),
+      });
+    }
+    const indeterminate = this.unresolvedIndeterminate(remaining);
+    if (indeterminate.length > 0) {
+      throw new ConversationError("conversation_indeterminate", "topic has indeterminate work", {
+        runIds: indeterminate.map((run) => run.id),
+      });
+    }
+    for (const alias of this.directTopicAliases(botId, conversationId, topicId)) {
+      if (this.sessions.getLogicalSessionRecord(alias)) {
+        await this.releaseAlias(alias);
+      }
+    }
+    await this.bots.runLifecycle(botId, async () => {
+      await this.beforeTeardownFinalize?.();
+      for (const alias of this.directTopicAliases(botId, conversationId, topicId)) {
+        if (this.sessions.getLogicalSessionRecord(alias)) {
+          await this.releaseAlias(alias);
+        }
+      }
+      await this.stateMutex.run(async () => {
+        const leftover = this.directTopicAliases(botId, conversationId, topicId);
+        if (leftover.length > 0) {
+          throw new ConversationError("session_release_failed", "direct topic still has a hidden session", {
+            aliases: leftover,
+          });
+        }
+        const next = structuredClone(this.state);
+        for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
+          if (
+            binding.scope === "bot-direct"
+            && binding.conversationId === conversationId
+            && binding.topicId === topicId
+          ) {
+            delete next.bot_runtime_bindings[id];
+          }
+        }
+        this.store.deleteTopicRows(conversationId, topicId);
+        delete next.conversation_topics[topicId];
+        await this.persist(next);
+      });
+    });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+  }
   /**
    * PR6 Group Topic lifecycle. Creates a Topic under a group Conversation
    * with an explicit ExecutionTarget. The workspace must be registered; the
@@ -1229,6 +1321,30 @@ export class ConversationRunService {
     }
   }
 
+  /**
+   * Administrator acceptance of an indeterminate Run. Ordinary chat does not
+   * reach this method. The Run stays `indeterminate`; the resolution row is
+   * the audit that unknown side effects were accepted.
+   */
+  resolveIndeterminateRun(input: {
+    runId: string;
+    action: "accept-unknown";
+    reason: string;
+    actorAccountId: string;
+    actorName?: string;
+  }) {
+    this.assertOpen();
+    const resolved = this.store.resolveIndeterminateRun({
+      ...input,
+      now: this.now().toISOString(),
+    });
+    const run = this.store.getRun(resolved.runId);
+    if (run) {
+      emitConversationProductEvent(this.onProductEvent, { type: "conversation-run-changed", run });
+    }
+    return resolved;
+  }
+
   async teardownDirectConversation(botId: string): Promise<void> {
     this.assertOpen();
     const bot = this.bots.getBot(botId);
@@ -1257,7 +1373,7 @@ export class ConversationRunService {
     await this.dispatcher.flushOwnedClaimLeases();
     this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId });
     const remaining = this.store.listRuns(conversationId);
-    const indeterminate = remaining.filter((run) => run.state === "indeterminate");
+    const indeterminate = this.unresolvedIndeterminate(remaining);
     if (indeterminate.length > 0) {
       throw new ConversationError("conversation_indeterminate", "conversation has indeterminate work", {
         runIds: indeterminate.map((run) => run.id),
@@ -1361,8 +1477,7 @@ export class ConversationRunService {
         runIds: unsettled.map((run) => run.id),
       });
     }
-    const ghostIndeterminate = this.store.listRuns(conversationId)
-      .filter((run) => run.state === "indeterminate");
+    const ghostIndeterminate = this.unresolvedIndeterminate(this.store.listRuns(conversationId));
     if (ghostIndeterminate.length > 0) {
       throw new ConversationError("conversation_indeterminate", "group has indeterminate work", {
         runIds: ghostIndeterminate.map((run) => run.id),
@@ -1944,7 +2059,7 @@ export class ConversationRunService {
         runIds: blocking.map((run) => run.id),
       });
     }
-    const indeterminate = remaining.filter((run) => run.state === "indeterminate");
+    const indeterminate = this.unresolvedIndeterminate(remaining);
     if (indeterminate.length > 0) {
       throw new ConversationError("conversation_indeterminate", "topic has indeterminate work", {
         runIds: indeterminate.map((run) => run.id),
@@ -2287,6 +2402,27 @@ export class ConversationRunService {
         }
       }
       await this.persist(next);
+    });
+  }
+
+  private unresolvedIndeterminate(runs: ConversationRun[]): ConversationRun[] {
+    return runs.filter((run) => {
+      if (run.state !== "indeterminate") return false;
+      if (!this.store.getRunResolution(run.id)) return true;
+      return this.store.listMemberTurns(run.id).some((member) => !TERMINAL_MEMBER_STATES.includes(member.state));
+    });
+  }
+
+  /** Hidden sessions whose binding or owner names this Direct Topic only. */
+  private directTopicAliases(botId: string, conversationId: string, topicId: string): string[] {
+    return this.ownedAliases(botId, conversationId).filter((alias) => {
+      const owner = this.state.sessions[alias]?.owner;
+      if (owner?.kind === "bot-direct" && owner.topicId === topicId) return true;
+      return Object.values(this.state.bot_runtime_bindings).some((binding) =>
+        binding.scope === "bot-direct"
+        && binding.sessionAlias === alias
+        && binding.conversationId === conversationId
+        && binding.topicId === topicId);
     });
   }
 

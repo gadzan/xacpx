@@ -159,19 +159,27 @@ for (const proof of ["completed", "failed"] as const) {
       expect(store.claimNextDispatch({ owner: "next", now: NOW, leaseExpiresAt: NOW })).toBeUndefined();
     } finally { store.close(); }
   });
-  test(`late ${proof} proof cannot erase the unknown sibling seal without human stop`, async () => {
+  test(`late ${proof} proof keeps an unstarted sibling cancelled and retains budget rejection`, async () => {
     const execution = await exhaustedExecution(true);
     let store = execution.store;
     const { runId, memberId } = execution;
     try {
       store.failExecution({ runId, memberTurnId: memberId, sourceTurnId: "source", terminalState: "indeterminate",
         reason: "started_result_unknown", now: NOW });
-      expect(store.listMemberTurns(runId)[1]?.state).toBe("indeterminate");
+      const sealedSibling = store.listMemberTurns(runId)[1];
+      expect(sealedSibling?.state).toBe("cancelled");
+      expect(sealedSibling?.startedAt).toBeUndefined();
+      expect(store.getRun(runId)).toMatchObject({
+        state: "indeterminate", completionReason: "started_result_unknown", consumedMemberTurns: 1,
+      });
       store.close(); store = await SqliteConversationStore.open(execution.path);
       store.reconcileLateResult({ runId, memberTurnId: memberId, outcome: proof,
         content: "proven result", reason: "proven failure", sourceTurn: { sessionAlias: "session", turnId: "source" }, now: NOW });
-      expect(store.getRun(runId)).toMatchObject({ state: "indeterminate", completionReason: "started_result_unknown" });
-      expect(store.listMemberTurns(runId)[1]?.state).toBe("indeterminate");
+      expect(store.getRun(runId)).toMatchObject({
+        state: "failed", completionReason: "budget-exhausted", consumedMemberTurns: 1,
+      });
+      expect(store.listMemberTurns(runId)[0]?.state).toBe(proof);
+      expect(store.listMemberTurns(runId)[1]?.state).toBe("cancelled");
       expect(store.claimNextDispatch({ owner: "next", now: NOW, leaseExpiresAt: NOW })).toBeUndefined();
     } finally { store.close(); }
   });
