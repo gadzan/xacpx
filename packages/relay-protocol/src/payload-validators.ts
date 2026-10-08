@@ -461,11 +461,9 @@ const validateTopicsCreate: Validator<TopicsCreatePayload> = (p) => {
 };
 const validMemberConcurrency = (v: unknown): boolean => v === undefined ||
   (typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 64);
-/** Create-time only: `worktree-per-member` is refused because no provisioning
- *  exists, so the Topic could never execute. Topic responses use the separate
- *  legacy-tolerant `validExecutionTarget` check. */
+/** Creation does not grant runtime proof: every worktree binding is verified. */
 const isCreateIsolation = (v: unknown): boolean =>
-  v === "shared" || v === "shared-single-writer";
+  v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
 const validateGroupsCreate: Validator<GroupsCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description))
@@ -595,6 +593,22 @@ const validateConversationHistory: Validator<ConversationHistoryPayload> = (p) =
 const validateRunsGet: Validator<RunsGetPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? (o as unknown as RunsGetPayload) : null;
+};
+export type ConversationWorktreePayload =
+  | { action: "preview"; runId: string; botIds: string[] }
+  | { action: "integrate"; runId: string; requestId: string; previewId: string; snapshotUncommitted: true }
+  | { action: "continue" | "recover" | "abandon" | "cleanup"; runId: string };
+const validateConversationWorktree: Validator<ConversationWorktreePayload> = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.runId) || !o.runId || !isStr(o.action)) return null;
+  const keys = o.action === "preview" ? ["action", "runId", "botIds"] : o.action === "integrate"
+    ? ["action", "runId", "requestId", "previewId", "snapshotUncommitted"] : ["action", "runId"];
+  if (Object.keys(o).some(k => !keys.includes(k))) return null;
+  if (o.action === "preview") return Array.isArray(o.botIds) && o.botIds.every(v => typeof v === "string" && !!v)
+    && o.botIds.length > 0 && o.botIds.length <= 128 && new Set(o.botIds).size === o.botIds.length ? o as unknown as ConversationWorktreePayload : null;
+  if (o.action === "integrate") return typeof o.requestId === "string" && !!o.requestId && o.requestId.length <= 128
+    && typeof o.previewId === "string" && !!o.previewId && o.snapshotUncommitted === true ? o as unknown as ConversationWorktreePayload : null;
+  return ["continue", "recover", "abandon", "cleanup"].includes(o.action as string) ? o as unknown as ConversationWorktreePayload : null;
 };
 const validateRunsList: Validator<RunsListPayload> = (p) => {
   const o = fields(p);
@@ -924,6 +938,7 @@ export type ControlRpcType =
   | typeof MSG.groupsList
   | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown
   | typeof MSG.conversationPrompt | typeof MSG.conversationPromptWithPolicy | typeof MSG.conversationHistory
+  | typeof MSG.conversationWorktree
   | typeof MSG.conversationBindingsList | typeof MSG.conversationBindingsSet | typeof MSG.conversationBindingsDelete
   | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel
   | typeof MSG.interactionRequest | typeof MSG.interactionRespond
@@ -1005,6 +1020,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
   [MSG.conversationPrompt]: validateConversationPrompt,
   [MSG.conversationPromptWithPolicy]: validateConversationPolicyPrompt,
+  [MSG.conversationWorktree]: validateConversationWorktree,
   [MSG.conversationBindingsList]: validateConversationBindingsList,
   [MSG.conversationBindingsSet]: validateConversationBinding,
   [MSG.conversationBindingsDelete]: validateConversationBindingDelete,

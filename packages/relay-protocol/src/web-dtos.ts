@@ -701,6 +701,7 @@ function validConversationRun(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const c = value as Record<string, unknown>;
   return typeof c.id === "string"
+    && (c.worktree === undefined || isConversationWorktreeStatus(c.worktree))
     && typeof c.conversationId === "string"
     && typeof c.topicId === "string"
     && typeof c.requestMessageId === "string"
@@ -729,6 +730,32 @@ function validConversationRun(value: unknown): boolean {
     && (c.routingState === undefined
       || c.routingState === "queued" || c.routingState === "routing"
       || c.routingState === "dispatching" || c.routingState === "done");
+}
+
+export function isConversationWorktreeStatus(value: unknown): value is import("./dtos.js").ConversationWorktreeStatusDto {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const v = value as Record<string, any>;
+  const str = (s: unknown): s is string => typeof s === "string" && s.length <= 32768;
+  const list = (s: unknown): s is string[] => Array.isArray(s) && s.length <= 100000 && s.every(str);
+  const sha = (s: unknown): boolean => typeof s === "string" && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(s);
+  const object = (s: unknown): s is Record<string, any> => typeof s === "object" && s !== null && !Array.isArray(s);
+  if (!str(v.runId) || !sha(v.baseCommitSha) || !["pending", "integrated", "abandoned"].includes(v.disposition)
+    || !Number.isSafeInteger(v.revision) || v.revision < 1 || !Array.isArray(v.resources) || v.resources.length > 256
+    || v.resources.some((r: unknown) => !object(r) || !["id", "botId", "worktreePath", "branchRef"].every(k => str(r[k]))
+      || !["member", "integration"].includes(r.kind) || !["planned", "provisioning", "ready", "active", "awaiting-integration", "integrated", "cleanup-pending", "cleaned", "provision-failed", "missing", "recovery-required", "cleanup-failed"].includes(r.state)
+      || r.ownerToken !== undefined || r.gitDir !== undefined || (r.snapshotSha !== undefined && !sha(r.snapshotSha)) || (r.lastError !== undefined && !str(r.lastError)))) return false;
+  if (v.preview !== undefined && (!object(v.preview) || !str(v.preview.id) || !str(v.preview.createdAt) || !Array.isArray(v.preview.members)
+    || v.preview.members.length > 128 || v.preview.members.some((m: unknown) => !object(m) || !str(m.botId) || !str(m.worktreeId)
+      || !sha(m.head) || !sha(m.tree) || !list(m.files) || !str(m.diff)))) return false;
+  const i = v.integration;
+  if (v.orphanWorktreePaths !== undefined && !list(v.orphanWorktreePaths)) return false;
+  if (i !== undefined && (!object(i) || !["id", "requestId", "previewId", "resourceId", "createdAt", "updatedAt"].every(k => str(i[k]))
+    || !Number.isSafeInteger(i.generation) || i.generation < 1 || i.operationSource !== "control"
+    || !["preparing", "integrating", "integrated", "conflicted", "failed", "recovery-required", "abandoned"].includes(i.state)
+    || !list(i.orderedBotIds) || !Array.isArray(i.patches) || !i.patches.every(sha) || !sha(i.candidateCommitSha)
+    || !Number.isInteger(i.nextIndex) || i.nextIndex < 0 || i.nextIndex > i.orderedBotIds.length || !list(i.conflictFiles)
+    || (i.expectedParent !== undefined && !sha(i.expectedParent)) || (i.lastError !== undefined && !str(i.lastError)))) return false;
+  return true;
 }
 
 function validMemberTurnSummary(value: unknown): boolean {

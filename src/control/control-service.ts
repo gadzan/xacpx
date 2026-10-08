@@ -22,6 +22,7 @@ import type {
   AgentMessageCompletion,
   AgentMessageMode,
 } from "../orchestration/agent-messaging-types";
+import { worktreeStatus } from "../conversations/conversation-worktree-types";
 import {
   getChannelIdFromChatKey,
   isSessionAliasVisibleInChannel,
@@ -107,6 +108,7 @@ import {
   type ConversationTurnCorrelation,
   type GroupDetailDto,
   type GroupSummaryDto,
+  type ExecutionTargetDto,
 } from "./conversation-control-dtos";
 
 const MODEL_SET_SETTLE_BUDGET_MS =
@@ -2023,7 +2025,7 @@ export class ControlService {
   async createGroupTopic(
     conversationId: string,
     title: string,
-    target: { workspace: string; cwd?: string; isolation: "shared" | "shared-single-writer" },
+    target: ExecutionTargetDto,
     options?: TopicSchedulingOptions,
   ) {
     return this.runConversationMutation(async (runtime) => {
@@ -2161,8 +2163,14 @@ export class ControlService {
   }
 
   getRun(runId: string) {
-    const result = this.requireConversations().runs.getRun(runId);
-    return toRunDetail(result.run, result.memberTurns);
+    const runtime = this.requireConversations();
+    const result = runtime.runs.getRun(runId);
+    const worktree = runtime.store.worktrees.get(runId);
+    return { ...toRunDetail(result.run, result.memberTurns), ...(worktree ? { worktree: worktreeStatus(worktree) } : {}) };
+  }
+
+  async operateConversationWorktree(input: import("../conversations/conversation-worktree-types").WorktreeOperation) {
+    return this.mutateWorkspaceGit(() => this.runConversationMutation(async runtime => worktreeStatus(await runtime.integrations.operate(input))));
   }
 
   listTopicRuns(conversationId: string, topicId: string, limit?: number) {

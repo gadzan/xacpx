@@ -92,6 +92,8 @@ export type AutomaticRoutingHandler = (runId: string) => void;
 const DEFAULT_LEASE_MS = 30_000;
 
 export class ConversationDispatcher {
+  private worktrees?: import("./conversation-worktree-manager").ConversationWorktreeManager;
+  setWorktreeManager(manager: import("./conversation-worktree-manager").ConversationWorktreeManager): void { this.worktrees = manager; }
   private readonly now: () => Date;
   private readonly leaseMs: number;
   /** Stable per-process claim owner. Published so activation can sweep
@@ -611,6 +613,9 @@ export class ConversationDispatcher {
       return false;
     }
     const isolation = this.runtime.groupTopicIsolation(work.run.conversationId, work.run.topicId);
+    // Allow preparation to overlap; physical admission verifies distinct cwd
+    // bindings below. The flag alone never authorizes provider execution.
+    if (isolation === "worktree-per-member" && this.worktrees) return false;
     return !isEffectConcurrencySafe(work.memberTurn.effect, isolation, otherExecuting.length, work.memberTurn.effectProvenance)
       || otherExecuting.some((turn) => !isEffectConcurrencySafe(turn.effect, isolation, 1, turn.effectProvenance));
   }
@@ -888,6 +893,7 @@ export class ConversationDispatcher {
     }
     let started: MemberTurnRecord | undefined;
     let releaseGroupExecution: (() => void) | undefined;
+    let worktreeRef: import("./conversation-worktree-types").ConversationWorktreeRef | undefined;
     try {
       await this.hooks?.beforeRuntimeMaterialize?.(work);
       const materializeFail = this.resolveMaterializeFail();
@@ -934,6 +940,12 @@ export class ConversationDispatcher {
           now: this.now().toISOString(),
         });
       };
+      if (isGroup && this.runtime.groupTopicIsolation(work.run.conversationId, work.run.topicId) === "worktree-per-member") {
+        if (!this.worktrees) throw new ConversationError("worktree_unprovisioned", "worktree manager unavailable");
+        try { worktreeRef = await this.worktrees.prepare(work.run.id, work.memberTurn.botId, assertStillDispatchable); }
+        catch (e) { assertStillDispatchable(); throw new ConversationError("worktree_prepare_failed", e instanceof Error ? e.message : String(e)); }
+        assertStillDispatchable();
+      }
       const binding = isGroup
         ? await this.runtime.getOrCreateGroupMemberSession({
           botId: work.memberTurn.botId,
@@ -942,6 +954,7 @@ export class ConversationDispatcher {
           execution: snapshot.execution,
           executionPolicy,
           assertStillDispatchable,
+          ...(worktreeRef ? { executionWorktree: worktreeRef } : {}),
         })
         : await this.runtime.getOrCreateDirectSession({
           botId: work.memberTurn.botId,
@@ -957,6 +970,18 @@ export class ConversationDispatcher {
         return;
       }
       await this.hooks?.beforeExecutionStart?.(work);
+      if (worktreeRef) {
+        await this.worktrees!.verifyReference(worktreeRef);
+        assertStillDispatchable();
+        const cwd = this.worktrees!.resolveSessionCwd(session);
+        for (const sibling of this.store.listMemberTurns(work.run.id).filter(m => m.id !== work.memberTurn.id && m.state === "running")) {
+          const other = sibling.sessionAlias ? this.sessions.getLogicalSessionRecord(sibling.sessionAlias) : undefined;
+          if (!other?.execution_worktree || other.execution_worktree.worktreeId === worktreeRef.worktreeId
+            || this.worktrees!.resolveSessionCwd(other) === cwd) {
+            throw new ConversationError("worktree_identity_mismatch", "physical overlap requires distinct verified cwd bindings");
+          }
+        }
+      }
       if (this.runtime.executionPolicyFor(work.memberTurn, snapshot.execution.agent) !== session.execution_policy) {
         this.failOwnClaimBeforeStart(work, "runtime_revision_mismatch");
         return;
@@ -989,6 +1014,11 @@ export class ConversationDispatcher {
         throw error;
       }
       await this.hooks?.afterExecutionStart?.(started);
+      if (worktreeRef) {
+        this.worktrees!.resolveSessionCwd(session);
+        await this.worktrees!.mark(worktreeRef, "active");
+        this.worktrees!.resolveSessionCwd(session);
+      }
       const latestRun = this.store.getRun(work.run.id);
       const latestMember = this.store.getMemberTurn(started.id);
       if (
@@ -1045,6 +1075,9 @@ export class ConversationDispatcher {
       await this.hooks?.beforeResultPersist?.(work);
       this.persistResult(work, started, result);
     } catch (error) {
+      if (!started && error instanceof ConversationError && error.code.startsWith("worktree_")) {
+        this.failOwnClaimBeforeStart(work, error.code); return;
+      }
       if (!started && work.memberTurn.assignmentId && error instanceof BotError
         && ["group_member_not_member", "conversation_not_group", "bot_not_found", "bot_disabled"].includes(error.code)) {
         this.failOwnClaimBeforeStart(work, error.code);
@@ -1087,6 +1120,7 @@ export class ConversationDispatcher {
       this.deferredTopicIds.add(work.run.topicId);
     } finally {
       releaseGroupExecution?.();
+      if (worktreeRef) await this.worktrees!.mark(worktreeRef, "awaiting-integration");
     }
   }
 

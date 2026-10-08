@@ -111,6 +111,7 @@ There are two session concepts:
 - Runtime MCP: [`docs/runtime-mcp.md`](docs/runtime-mcp.md)
 - Instance desktop over RFB/VNC (setup, per-platform VNC servers, open-time errors): [`docs/desktop-rfb-setup.md`](docs/desktop-rfb-setup.md)
 - Conversation persistence + lifecycle: [`docs/conversation-runtime.md`](docs/conversation-runtime.md) (Direct, Group routing/handoff, and external channel bindings)
+- Managed Conversation worktrees/integration: [`docs/conversation-runtime.md#managed-worktrees-and-explicit-integration-phase-10c`](docs/conversation-runtime.md#managed-worktrees-and-explicit-integration-phase-10c)
 - External Conversation channel binding/admission seam: [`docs/conversation-runtime.md#external-channel-bindings-pr10`](docs/conversation-runtime.md#external-channel-bindings-pr10)
 - Control / Relay Bot + Conversation public API: [`docs/control-module.md`](docs/control-module.md), [`docs/relay-module.md`](docs/relay-module.md)
 ## Gotchas

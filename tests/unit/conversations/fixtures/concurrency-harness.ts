@@ -18,6 +18,8 @@ import { SessionService } from "../../../../src/sessions/session-service";
 import { createStrictOwnedSessionRelease } from "../../../../src/sessions/owned-session-release";
 import { createEmptyState, type AppState } from "../../../../src/state/types";
 import { AsyncMutex } from "../../../../src/orchestration/async-mutex";
+import { ConversationWorktreeManager, type WorktreeManagerHooks } from "../../../../src/conversations/conversation-worktree-manager";
+import { WorktreeIntegrationService } from "../../../../src/conversations/worktree-integration-service";
 
 export const NOW = "2026-10-07T00:00:00.000Z";
 export const HUMAN = { chatKey: "relay:human", accountId: "human", senderId: "human", isOwner: true };
@@ -58,14 +60,14 @@ export class ControlledRunner implements ConversationTurnRunner {
     return { outcome: "cancelled" as const };
   }
 }
-export async function harness(options: { path?: string; state?: AppState; hooks?: ConversationDispatcherHooks; router?: ConversationRouter; ownerId?: string; beforeAcceptPersist?: () => Promise<void>; transport?: Partial<AppConfig["transport"]>; acpxCommandMetadata?: AcpxCommandMetadata } = {}) {
+export async function harness(options: { path?: string; state?: AppState; hooks?: ConversationDispatcherHooks; router?: ConversationRouter; ownerId?: string; beforeAcceptPersist?: () => Promise<void>; transport?: Partial<AppConfig["transport"]>; acpxCommandMetadata?: AcpxCommandMetadata; workspaceCwd?: string; worktreeRoot?: string; worktreeHooks?: WorktreeManagerHooks } = {}) {
   const path = options.path ?? join(mkdtempSync(join(tmpdir(), "xacpx-concurrency-")), "conversations.sqlite");
   const store = await SqliteConversationStore.open(path);
   const state = options.state ?? createEmptyState();
   const stateStore = { async save(_s: AppState) {}, async saveNow(_s: AppState) {} };
   // The config key is an alias: synthetic reader fixtures now materialize the
   // actual supported restricted launch instead of treating Codex's mode as proof.
-  const config = { agents: { codex: { driver: "claude" } }, workspaces: { backend: { cwd: "/tmp/backend" } },
+  const config = { agents: { codex: { driver: "claude" } }, workspaces: { backend: { cwd: options.workspaceCwd ?? "/tmp/backend" } },
     // Pin the validated enforcement contract independently of release defaults.
     transport: { type: "acpx-cli", adapterVersions: { claude: "0.78.0" }, ...options.transport } } as AppConfig;
   const stateMutex = new AsyncMutex();
@@ -79,11 +81,15 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
   let clock = Date.parse(NOW);
   const now = () => new Date(clock++);
   const dispatcher = new ConversationDispatcher(store, runtime, runner, sessions, { now, hooks: options.hooks, ownerId: options.ownerId });
+  const worktrees = options.worktreeRoot ? new ConversationWorktreeManager(store.worktrees, options.worktreeRoot, config, options.worktreeHooks) : undefined;
+  if (worktrees) { dispatcher.setWorktreeManager(worktrees); sessions.setConversationWorktreeResolver(s => worktrees.resolveSessionCwd(s)); }
+  const integrations = worktrees ? new WorktreeIntegrationService(worktrees, store, state, runtime, releaseOwnedSession) : undefined;
   const routerEngine = options.router ? new ConversationRouterEngine(bindRouter(options.router), { store,
     readGroup: (id) => state.conversations[id], readTopic: (_id, tid) => state.conversation_topics[tid],
     readBot: (id) => bots.getBot(id), runLifecycleAll: (ids, fn) => bots.runLifecycleAll(ids, fn), now }) : undefined;
   const service = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, stateStore,
-    { now, stateMutex, autoKick: false, releaseOwnedSession, routerEngine, beforeAcceptPersist: options.beforeAcceptPersist });
+    { now, stateMutex, autoKick: false, releaseOwnedSession, routerEngine, beforeAcceptPersist: options.beforeAcceptPersist,
+      worktrees, beforeWorktreeCleanup: integrations ? (c, t) => integrations.cleanupScope(c, t) : undefined });
   dispatcher.setAutomaticRoutingHandler((id) => service.trackAutomaticRouting(id));
   const ids = Object.keys(state.bots);
   async function group(limit?: number) {
@@ -99,5 +105,5 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
       primaryMember: first, members: ids.slice(1, count).map(member), content: "one frozen request", now: NOW,
       maxMemberTurns: 24, authorityEpoch: dispatcher.authorityEpoch, humanIngress: HUMAN });
   }
-  return { path, config, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, ids, now, jump: (ms: number) => { clock += ms; } };
+  return { path, config, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, ids, now, worktrees, integrations, jump: (ms: number) => { clock += ms; } };
 }

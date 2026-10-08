@@ -66,6 +66,8 @@ import type {
 import { TERMINAL_MEMBER_STATES, TERMINAL_RUN_STATES } from "./conversation-types";
 
 export interface ConversationRunServiceOptions {
+  worktrees?: import("./conversation-worktree-manager").ConversationWorktreeManager;
+  beforeWorktreeCleanup?: (conversationId: string, topicId?: string) => Promise<void>;
   now?: () => Date;
   createTopicId?: () => string;
   stateMutex?: AsyncMutex;
@@ -104,6 +106,8 @@ export interface ConversationHistoryPage {
 type SessionWriter = Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
 
 export class ConversationRunService {
+  private readonly worktrees?: import("./conversation-worktree-manager").ConversationWorktreeManager;
+  private readonly beforeWorktreeCleanup?: (conversationId: string, topicId?: string) => Promise<void>;
   private readonly now: () => Date;
   private readonly createTopicIdFn: () => string;
   private readonly stateMutex: AsyncMutex;
@@ -140,6 +144,8 @@ export class ConversationRunService {
     options: ConversationRunServiceOptions,
   ) {
     this.now = options.now ?? (() => new Date());
+    this.worktrees = options.worktrees;
+    this.beforeWorktreeCleanup = options.beforeWorktreeCleanup;
     this.createTopicIdFn = options.createTopicId ?? (() => createTopicId());
     this.stateMutex = options.stateMutex ?? new AsyncMutex();
     this.beforeAcceptPersist = options.beforeAcceptPersist;
@@ -226,6 +232,7 @@ export class ConversationRunService {
   async activateAfterConsumerLock(): Promise<void> {
     this.assertOpen();
     try {
+      await this.worktrees?.reconcile();
       await this.recoverRootlessGroupMemberSessions();
       this.assertNoAmbiguousGroupMemberSessions();
       this.assertNonterminalWorkHasAuthority();
@@ -459,6 +466,8 @@ export class ConversationRunService {
         if (!target) {
           throw new ConversationError("execution_target_missing", `topic "${input.topicId}" has no execution target`);
         }
+        const worktreeBase = target.isolation === "worktree-per-member"
+          ? await (this.worktrees?.preflight(target.workspace) ?? Promise.reject(new ConversationError("worktree_unprovisioned", "worktree manager unavailable"))) : undefined;
         const snapshots = selected.map((botId) => {
           const bot = this.bots.getBot(botId);
           if (!bot.enabled) {
@@ -491,6 +500,7 @@ export class ConversationRunService {
         if (parsed.kind === "automatic") {
           this.assertAccepting();
           return this.store.acceptRequest({
+            ...(worktreeBase ? { worktreeBase } : {}),
             ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
             conversationId: input.conversationId,
             topicId: input.topicId,
@@ -517,6 +527,7 @@ export class ConversationRunService {
         // caller that CAN prove read-only has a visible seam to extend.
         this.assertAccepting();
         const created = this.store.acceptRequest({
+          ...(worktreeBase ? { worktreeBase } : {}),
           ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
           conversationId: input.conversationId,
           topicId: input.topicId,
@@ -800,11 +811,9 @@ export class ConversationRunService {
   /**
    * PR6 Group Topic lifecycle. Creates a Topic under a group Conversation
    * with an explicit ExecutionTarget. The workspace must be registered; the
-   * isolation policy is validated against the known enum. worktree-per-member
-   * is rejected at create with `invalid-isolation` (PR10 provisioning is
-   * unimplemented; materialization would fail closed with
-   * `worktree_unprovisioned`): legacy persisted rows stay readable, but no
-   * new Topic can carry it. Direct Conversations keep resolving execution
+   * isolation policy is validated against the known enum. Worktree mode
+   * requires the durable manager; arbitrary Topic cwd stays unsupported.
+   * Direct Conversations keep resolving execution
    * from the owning Bot profile and never take this path.
    */
   async createGroupTopic(
@@ -1130,11 +1139,9 @@ export class ConversationRunService {
     }
     this.bots.assertWorkspaceRegistered(target.workspace);
     if (target.isolation !== "shared"
-      && target.isolation !== "shared-single-writer") {
-      // worktree-per-member stays a rejected value here: PR10 provisioning is
-      // unimplemented, and materialization fails closed with
-      // `worktree_unprovisioned`. Persisting it would mint a Topic whose every
-      // Run is unexecutable (and requeues forever), so refuse it at create.
+      && target.isolation !== "shared-single-writer"
+      && !(target.isolation === "worktree-per-member" && this.worktrees)) {
+      // Refuse worktree mode in compositions without a provisioning manager.
       throw new ConversationError("invalid-isolation", `unknown isolation policy "${target.isolation}"`);
     }
     // Topic cwd is not honored by member session materialization yet (the
@@ -1440,6 +1447,7 @@ export class ConversationRunService {
     // re-checked at finalize: a controller row landing mid-teardown still
     // blocks the Group record delete with the barrier intact.)
     await this.releaseGroupResidue(conversationId);
+    await this.beforeWorktreeCleanup?.(conversationId);
     // Store rows AFTER verified release, BEFORE the Group record: if
     // deleteConversationRows throws (or the process crashes between the two
     // steps), the Group row and the deleting barrier are still present, so
@@ -2039,6 +2047,7 @@ export class ConversationRunService {
             await this.releaseAlias(alias);
           }
         }
+        await this.beforeWorktreeCleanup?.(conversationId, topicId);
         await this.stateMutex.run(async () => {
           // A controller row attributing to this Topic has no release path:
           // check INSIDE the final mutex with the Group path's atomicity — a

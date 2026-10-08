@@ -157,6 +157,7 @@ export const MSG = {
   groupTopicsTeardown: "control.group.topics.teardown",
   conversationPrompt: "control.conversation.prompt",
   conversationPromptWithPolicy: "control.conversation.prompt-with-policy",
+  conversationWorktree: "control.conversation.worktree",
   conversationBindingsList: "control.conversation.bindings.list",
   conversationBindingsSet: "control.conversation.bindings.set",
   conversationBindingsDelete: "control.conversation.bindings.delete",

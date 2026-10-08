@@ -776,6 +776,13 @@ export default {
       memberCompleted: "done",
       memberWaiting: "Waiting for turn",
     },
+    worktree: {
+      title: "Member worktrees", boundary: "Separate working directories, not an OS sandbox. Integration creates a candidate; it does not update main.",
+      base: "Base commit", refresh: "Refresh", preview: "Preview member changes", continue: "Continue after resolving and staging conflicts",
+      recover: "Inspect interrupted integration", abandon: "Abandon integration and retain all work", cleanup: "Clean integrated worktrees",
+      authorize: "Authorize Git snapshots of these uncommitted and untracked changes", integrate: "Create integration candidate",
+      candidate: "Candidate", conflict: "Resolve these conflicts in the candidate worktree", invalidResponse: "Invalid worktree response",
+    },
     topic: {
       createTitle: "Create New Group Topic",
       createHint: "A new topic keeps the members and settings but starts with fresh conversation context.",
@@ -783,6 +790,7 @@ export default {
       isolationLabel: "Filesystem isolation",
       isolationSingleWriter: "Shared single writer (recommended)",
       isolationShared: "Shared",
+      isolationWorktree: "Separate Git worktree per member",
       isolationHint: "Parallel execution requires an enforceably read-only member turn. Other turns are serialized.",
     },
     prompt: {

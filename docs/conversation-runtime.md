@@ -276,7 +276,8 @@ filesystem overlap is safe. Logical batch/dependency semantics remain unchanged:
 enforced readers can overlap within capacity; potentially mutating work excludes
 readers and writers under both shared policies. Recovery preserves the accepted
 ceiling and origin rules, with the existing bounded retry only for enforced
-read-only Group work. Worktree provisioning remains unsupported (Phase 10C).
+read-only Group work. Phase 10C adds separately verified worktree execution below;
+it never mints a read-only effect proof.
 
 The first production parallel scenario is an explicit Group batch with two or
 more managed Claude members requested read-only, under `shared` or
@@ -352,17 +353,107 @@ does not provide this ceiling.
 
 Group Conversations are durable membership records (`kind: "group"`, `botIds` ≥ 2 unique, optional lead in membership, opaque `conversation_` id). No execution, routing, or member sessions happen at Group CRUD time.
 
-Group Topics carry an explicit `ExecutionTarget` (`workspace` + optional `cwd` + `isolation`). `cwd` is forward-compatible persisted shape only: `createGroupTopic()` rejects any non-empty `cwd` with `cwd_unsupported`, and member materialization also fails closed on a persisted non-empty `cwd` — until launcher execution honors it. `shared-single-writer` is the engineering default. `worktree-per-member` remains readable as a legacy persisted enum value, but `createGroupTopic()` rejects it with `invalid-isolation` until Phase 10C provisioning exists. Topic teardown mirrors the direct order at Topic scope: mark deleting → cancel active Runs → reconcile expired claims for that Topic only → verified member-session release → remove member bindings → delete store rows → remove Topic metadata. Retryable on release failure. Group delete's final recovery pass uses the Group Conversation id, so ghost rows of that Group are included and other Conversations are not.
+Group Topics carry an explicit `ExecutionTarget` (`workspace` + optional `cwd` + `isolation`). Arbitrary non-empty Topic `cwd` remains unsupported (`cwd_unsupported`). `shared-single-writer` is the engineering default. Phase 10C supports `worktree-per-member` through a server-owned registry and verified session cwd, described below. Topic teardown orders mark deleting → cancel active Runs → reconcile expired claims for that Topic → verified physical session release → safe worktree cleanup → delete store rows/Topic metadata. Unsafe cleanup leaves the deleting barrier and ownership records for retry. Group delete's final recovery pass uses the Group Conversation id, including its ghost rows and excluding other Conversations.
 
 Group delete is barrier-first: mark the Group deleting in SQLite + AppState (new Topics and new Group work fail closed from there), teardown every remaining Topic, verified-release residual member runtime, delete residual Conversation-store rows, then remove the Group record last. Rows-after-release-before-record means a physical release failure leaves durable Run/message history intact, and a store-cleanup failure leaves the Group row and the barrier intact for retry; the fail-closed metadata delete reuses the same Topics/bindings/durable-rows guards.
 
-Member sessions run Bot agent/model/effort on the Topic workspace (Topic owns the work target; runs in the workspace root — per-Topic `cwd` is not honored yet). Member bindings scope `conversationId × topicId × botId` with a `group-member`-separated deterministic id, `brt_group_` aliases, and `group-member` session owners. Direct vs Group, Group A vs Group B, and Topic A vs Topic B all isolate. No Router/controller session exists.
+Member sessions run Bot agent/model/effort on the Topic workspace. Shared policies use the workspace root; worktree mode uses the verified member resource path. Member bindings scope `conversationId × topicId × botId` with a `group-member`-separated deterministic id, `brt_group_` aliases, and `group-member` session owners. Direct vs Group, Group A vs Group B, and Topic A vs Topic B all isolate. No Router/controller session exists.
 
 PR7 adds explicit Group routing with same-Run member cohorts: a Group prompt (`ConversationPromptRequestDto.target` via `control.promptConversation`, message `control.conversation.prompt`) carries a structured target — `{mode: "members", botIds}` (explicit assignment), `{mode: "everyone"}` (eligible-member expansion), or `{mode: "automatic"}` (rejected for explicit prompts; Direct-only preview surface). `{botId}` is the Direct variant of the same union. The wire validator, `parseGroupTarget`, and the public-Control sanitizer enforce the same mutually exclusive union: mixed shapes fail closed with `invalid-target` (never laundered, never dropped-then-defaulted). Target member IDs must be unique in caller order — duplicates are rejected with `invalid-target`, not deduplicated. `everyone` expansion is capped at `MAX_GROUP_TARGET_MEMBERS` (64); larger requests fail `target_too_large` before persisting anything.
 
 The filesystem seam (`conversation-filesystem-policy.ts`) classifies a declared `MemberTurnEffect` plus provenance: only `effect === "read-only"` **with** `effectProvenance === "declared-enforced"` is concurrency-safe under `shared`/`shared-single-writer`; every other combination takes the single-writer slot, so unproven work serializes against any in-flight execution on overlapping trees. The effect is never inferred from Bot names. Ordinary explicit prompts, Router work and handoffs retain unknown/absent proof and serialize. Phase 10B policy-aware explicit prompts can supply a server-enforced reader proof; see the execution effects contract above. The UI keeps the `Shared` option with copy that says exactly this.
 
 Request-snapshot integrity uses one unified invariant (`requestSnapshotMatches`): the `runs.request_message_id` row must exist with the Run's own Conversation AND Topic, the human role, **and** the Run's own `run_id`. A missing or mismatched row fails the claim terminally before execution start (`missing_request_snapshot` / `request_snapshot_mismatch`), in replay and transcript paths alike — a corrupted reference can never feed another message's content into a prompt. Claim reads LEFT JOIN the message so a poison row reaches that check instead of being silently skipped.
+
+## Managed worktrees and explicit integration (Phase 10C)
+
+Create a Group Topic with `target.isolation: "worktree-per-member"`. Acceptance
+requires a registered, clean Git root with a valid HEAD. It freezes one base SHA
+for the entire Run. Sparse checkouts, submodules and custom filter/merge drivers
+are rejected. A pending integration disposition blocks the next worktree Run on
+that Topic; explicitly integrate or abandon the previous Run first.
+
+`conversation_worktree_runs` is an additive table in the existing Conversation
+SQLite database, created automatically on old databases. It stores a validated
+versioned record with CAS revision, repository common-dir identity, base SHA,
+resources, preview and integration cursor. A resource belongs to `(runId, botId)`;
+later turns/handoffs to that Bot reuse it, while another Run gets a new resource.
+Malformed ownership/evidence fails closed. The audit registry does not cascade
+when Topic or Group rows are removed.
+
+Member paths live under `~/.xacpx/worktrees/conversations` (relative to the configured
+Conversation database location), with hashed repository/Run/member IDs and managed
+`xacpx/10c/…` branches. Intent is durable before `git worktree add --lock`. Readiness
+requires matching real paths, Git common-dir, branch, base ancestry, Git registration
+and an opaque ownership lock token. Client input cannot choose these paths/tokens.
+The state progression is planned → provisioning → ready → active →
+awaiting-integration → integrated → cleanup-pending → cleaned. Failures retain
+provision-failed, missing, recovery-required or cleanup-failed records and diagnostics.
+
+The hidden LogicalSession carries `execution_worktree` (Run/resource/generation).
+SessionService resolves it through the trusted manager into the actual launch cwd.
+CLI and Runtime both use that cwd in their existing physical identity. Changing
+Run/resource strictly releases and recreates the owned session; resolution and
+execution-start revalidate the binding. Missing/drifted resources never fall back
+to the workspace root. Two writers overlap only after proving distinct registered
+member directories; same-Bot serialization, dependencies, durable claim leases,
+Phase 10A capacity, origin and permission routing remain unchanged. Shared policies
+and Phase 10B proof/retry rules are unchanged.
+
+Logical collaboration parallelism != physical execution concurrency != filesystem
+write concurrency. Worktrees permit independent directory writes; they are **not an
+OS sandbox** and do not stop an unrestricted agent from using other absolute paths.
+
+After a settled Run, use Control `operateConversationWorktree` / Relay
+`control.conversation.worktree`. All operations require `files.writeEnabled: true`
+because even preview creates Git objects and releases owned sessions:
+
+1. `preview` with the complete ordered `botIds` returns files/diff and freezes HEAD
+   and tree identities. Private indexes leave user indexes and files untouched.
+2. `integrate` with `requestId`, `previewId`, and `snapshotUncommitted: true` explicitly
+   authorizes snapshots of tracked/untracked non-ignored changes. Changed previews
+   are rejected. Deterministic source commits and refs retain all authorized results.
+3. A separate managed candidate branch/worktree cherry-picks base-relative changes
+   in that order. Durable expected-parent/cursor plus exact commit evidence prevents
+   duplicate application after interruption. Completed MemberTurns do not mean code
+   has been integrated. Main and the source workspace are never implicitly changed.
+4. Conflicts persist `conflicted`, candidate path and conflict files in `getRun().worktree`.
+   Resolve and stage files in that candidate, then `continue`. No automatic ours/theirs
+   choice occurs. `recover` resumes only from matching Git evidence; ambiguity remains
+   recovery-required. `abandon` permits the next Run but preserves source/conflict data.
+5. `cleanup` first strictly releases physical sessions, then validates ownership and
+   clean status, including ignored files. It removes only a clean integrated resource
+   at the recorded snapshot/candidate HEAD, or an unchanged base resource without
+   results. Git removal is never forced. Branches/snapshot refs/audit records remain.
+
+Relay Web Group Topics offer the mode and an integration panel showing the base,
+member paths, preview, explicit snapshot consent, candidate and conflicts. Publishing
+the candidate into main is a separate human Git operation outside this feature.
+
+Activation reconciles durable intents against Git before dispatch recovery. A created
+but unrecorded worktree is adopted only after ownership verification; missing resources
+and unknown ownership require repair. Started unknown writable work stays indeterminate;
+only existing enforced read-only retry rules apply. Integration recovery is explicit
+and fences Git side effects through durable evidence. Interrupted cleanup can reconcile
+an already removed path, but never prunes an ambiguous Git registration. Unknown managed
+worktrees are reported as orphans and never automatically deleted.
+
+Residuals: same-OS-user trust boundary; external Git processes can race managed commands
+and must not edit candidate/source trees while operations run. Abandoned dirty/conflicted
+resources require manual preservation/disposition; there is no force-discard API, automatic
+GC, branch deletion, automatic conflict resolution, main merge, cross-machine ownership,
+or cross-Topic scheduling redesign. V1 retains one integration decision per Run. Large
+diff previews are marked truncated (32 Ki characters); inspect the member directory for
+the full diff. A Git subprocess exceeding its existing output/time limit fails explicitly.
+No live-model or real-WeChat smoke is claimed by loopback Git/ACP tests.
+The pinned acpx CLI's shared catalog can report Windows `EPERM` when separate
+queue owners rename `sessions/index.json` concurrently. This is an execution
+failure, never a shared-directory fallback or a reason to retry unknown writable
+work. Windows native CLI coverage validates both member cwd/write paths sequentially;
+the Runtime native test and dispatcher tests exercise concurrent writers there.
+CLI native prompts overlap on Linux/macOS. No upstream catalog rewrite is included.
+
+See [Phase 10C design](superpowers/specs/2026-10-08-conversation-worktree-isolation-design.md).
 
 ## Automatic collaboration and the stateless ConversationRouter (PR8)
 

@@ -8,6 +8,12 @@ this file. Create a Topic through Control/Relay with optional
 The limit is creation-only in Phase 10A. It caps physical member execution without
 granting filesystem parallelism. See [Conversation runtime](conversation-runtime.md#topic-execution-concurrency-phase-10a).
 
+Phase 10C `worktree-per-member` is also Topic metadata. It requires a clean registered
+Git root and uses managed member directories; there is no arbitrary path override.
+Explicit preview/integration/recovery/cleanup through Control/Relay requires
+`files.writeEnabled: true`. Agent permissions and Phase 10B effect policies remain
+separate. See [Managed worktrees](conversation-runtime.md#managed-worktrees-and-explicit-integration-phase-10c).
+
 If you want to manage WeChat/Feishu message channels, see [`docs/channel-management.md`](./channel-management.md). If you want to modify part of the configuration directly from chat instead of hand-editing JSON, see [`docs/config-command.md`](./config-command.md).
 
 ## Full Example
@@ -796,7 +802,7 @@ File tree operations configuration for relay-web file browser.
 
 | Field | Type | Required | Description |
 |------|------|------|------|
-| `writeEnabled` | `boolean` | No | Enable or disable file writes and structured Git mutations in relay-web. Git mutations include stage/unstage/commit, fetch, fast-forward-only pull, push, branch switch/create, and managed worktree creation. Read-only file browsing/download and Git status remain available. Defaults to `false` (write disabled). Requires daemon restart to take effect when changed |
+| `writeEnabled` | `boolean` | No | Enable or disable file writes and structured Git mutations in relay-web. Git mutations include stage/unstage/commit, fetch, fast-forward-only pull, push, branch switch/create, managed worktree creation, and Conversation worktree preview/integration/recovery/cleanup. Read-only file browsing/download and Git status remain available. Defaults to `false` (write disabled). Requires daemon restart to take effect when changed |
 
 ### Example
 

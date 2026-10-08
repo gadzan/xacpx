@@ -543,17 +543,23 @@ MemberTurn concurrency is the first selected slice, based on merged PR #376. Opt
 filesystem safety and provenance. No runtime limit mutation, cross-Topic dispatcher
 parallelism or other advanced capability is included. See `docs/conversation-runtime.md`.
 
-**Phase 10B status: implemented, awaiting code review.** A separate policy-aware
+**Phase 10B status: merged in PR #378 (`be14fce8`).** A separate policy-aware
 explicit prompt freezes per-member effect/proof in the existing durable columns.
 The initial supported runtime is pinned managed Claude ACP 0.78.0 / SDK 0.3.270,
 with an exclusive native tool set and ACP guard; unsupported adapters fail closed.
 Reader overlap uses the existing filesystem scheduler and Phase 10A capacity.
 The protocol fence, runtime identity, recovery and validation residuals are
-documented in `docs/conversation-runtime.md`. Worktree-per-member remains Phase 10C.
+documented in `docs/conversation-runtime.md`.
+
+**Phase 10C status: implemented, awaiting independent review.** Durable per-Run/member
+Git ownership and common base, verified CLI/Runtime cwd, capacity-constrained independent
+writers, explicit snapshot/integration candidate, persistent conflicts/continue/recovery,
+and non-forced cleanup are implemented. Shared policies and read-only proof are unchanged.
+See [Phase 10C design](../specs/2026-10-08-conversation-worktree-isolation-design.md)
+and `docs/conversation-runtime.md` for state machines, supported Git trees and residuals.
 
 Optional later capabilities:
 
-- `worktree-per-member` execution with explicit integration step;
 - richer read/write capability policies;
 - group templates;
 - workspace presets;

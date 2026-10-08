@@ -88,6 +88,7 @@ const CONNECTOR_TIMEOUT_EXEMPT_TYPES: ReadonlySet<string> = new Set([
   MSG.commandExecute,
   MSG.sessionModelSet,
   MSG.sessionEffortSet,
+  MSG.conversationWorktree,
   // `interactionRequest` is NOT here: it is a connector→hub request made through
   // `RelayClient.sendRequest` with its own ceiling (the window's `expiresAt` +
   // the shared response reserve), so this bridge never bounds it at all.
@@ -1157,6 +1158,12 @@ async function dispatchControlRequest(
       const input = parseControlPayload(MSG.runsGet, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.runsGet}: malformed payload`);
       return { run: control.getRun(input.runId) };
+    }
+    case MSG.conversationWorktree: {
+      const input = parseControlPayload(MSG.conversationWorktree, payload);
+      if (!input) return errorPayload("invalid-payload", "malformed worktree operation");
+      if (typeof control.operateConversationWorktree !== "function") return errorPayload("unsupported-worktree-operation", "daemon does not support Conversation worktrees");
+      return { worktree: await control.operateConversationWorktree(input) };
     }
     case MSG.runsList: {
       const input = parseControlPayload(MSG.runsList, payload);

@@ -144,6 +144,10 @@ export function hasPersistedRuntimeBindings(state: AppState): boolean {
 }
 
 export class SessionService {
+  private conversationWorktreeResolver?: (session: LogicalSession) => string;
+  setConversationWorktreeResolver(resolver: (session: LogicalSession) => string): void {
+    this.conversationWorktreeResolver = resolver;
+  }
   private readonly stateMutex: AsyncMutex;
   private readonly now: () => number;
   private readonly platform: NodeJS.Platform;
@@ -215,7 +219,7 @@ export class SessionService {
     alias: string,
     agent: string,
     workspace: string,
-    options?: { owner?: LogicalSessionOwner; model?: string; effort?: string; executionPolicy?: EnforcedExecutionPolicy },
+    options?: { owner?: LogicalSessionOwner; model?: string; effort?: string; executionPolicy?: EnforcedExecutionPolicy; executionWorktree?: LogicalSession["execution_worktree"] },
   ): Promise<ResolvedSession> {
     return await this.createLogicalSession(
       alias,
@@ -1285,7 +1289,9 @@ export class SessionService {
       modeId: session.mode_id,
       replyMode: session.reply_mode,
       effectiveReplyMode,
-      cwd: workspaceConfig.cwd,
+      cwd: session.execution_worktree
+        ? this.conversationWorktreeResolver?.(session) ?? (() => { throw new ConversationError("worktree_identity_mismatch", "worktree resolver is unavailable"); })()
+        : workspaceConfig.cwd,
       archived: session.archived === true,
       archivedAt: session.archived_at,
     };
@@ -1622,6 +1628,9 @@ export class SessionService {
    * repair/migration resolves them first.
    */
   private resolveEngineWithPhysicalInheritance(input: {
+    owner?: LogicalSessionOwner;
+    executionWorktree?: LogicalSession["execution_worktree"];
+    executionPolicy?: EnforcedExecutionPolicy;
     alias: string;
     agent: string;
     workspace: string;
@@ -1639,6 +1648,9 @@ export class SessionService {
       // future row will resolve with predicts its real dispatch identity —
       // guarded recordings restore guarded, bare rows resolve current.
       candidate = this.toResolvedSession({
+        ...(input.owner ? { owner: input.owner } : {}),
+        ...(input.executionWorktree ? { execution_worktree: input.executionWorktree } : {}),
+        ...(input.executionPolicy ? { execution_policy: input.executionPolicy } : {}),
         alias: input.alias,
         agent: input.agent,
         workspace: input.workspace,
@@ -1836,7 +1848,7 @@ export class SessionService {
     },
     transportAcpxAgent?: string,
     transportAgentArgv?: string[],
-    extras?: { owner?: LogicalSessionOwner; model?: string; effort?: string; executionPolicy?: EnforcedExecutionPolicy },
+    extras?: { owner?: LogicalSessionOwner; model?: string; effort?: string; executionPolicy?: EnforcedExecutionPolicy; executionWorktree?: LogicalSession["execution_worktree"] },
   ): Promise<ResolvedSession> {
     return await this.mutate(async () => {
       this.validateSession(alias, agent, workspace);
@@ -1860,6 +1872,7 @@ export class SessionService {
       const now = new Date(this.now()).toISOString();
       const normalizedTransportAgentCommand = transportAgentCommand?.trim();
       const session: LogicalSession = {
+        ...(extras?.executionWorktree ? { execution_worktree: extras.executionWorktree } : {}),
         ...(extras?.executionPolicy ? { execution_policy: extras.executionPolicy } : {}),
         alias,
         agent,
@@ -1904,6 +1917,9 @@ export class SessionService {
         // persisting affinity. If strict runtime is ineligible, an error is thrown
         // before state mutation (preventing durable binding).
         transport_engine: this.resolveEngineWithPhysicalInheritance({
+          ...(extras?.owner ? { owner: extras.owner } : {}),
+          ...(extras?.executionWorktree ? { executionWorktree: extras.executionWorktree } : {}),
+          ...(extras?.executionPolicy ? { executionPolicy: extras.executionPolicy } : {}),
           alias,
           agent,
           workspace,

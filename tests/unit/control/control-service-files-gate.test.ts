@@ -52,3 +52,12 @@ test("fsWrite is rejected with files-write-disabled when the gate is off", async
     svc.fsWrite("ws", "x.txt", "hello", { mtimeMs: 1, size: 1 }),
   ).rejects.toThrow("files-write-disabled");
 });
+
+test("Conversation worktree operations obey the existing Git write gate before runtime access", async () => {
+  const svc = make(false, []);
+  for (const action of ["continue", "recover", "abandon", "cleanup"] as const) {
+    await expect(svc.operateConversationWorktree({ action, runId: "run" })).rejects.toThrow("files-write-disabled");
+  }
+  await expect(svc.operateConversationWorktree({ action: "preview", runId: "run", botIds: ["bot"] })).rejects.toThrow("files-write-disabled");
+  await expect(svc.operateConversationWorktree({ action: "integrate", runId: "run", requestId: "q", previewId: "p", snapshotUncommitted: true })).rejects.toThrow("files-write-disabled");
+});

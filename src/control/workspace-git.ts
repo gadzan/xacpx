@@ -9,6 +9,15 @@ const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BUFFER = 8 * 1024 * 1024;
 
+/** Shared argv-only Git boundary for workspace and owned Conversation resources. */
+export async function runWorkspaceGit(root: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
+  const { stdout } = await execFileAsync("git", ["-C", root, "-c", "gc.auto=0", ...args], {
+    timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER, killSignal: "SIGKILL", windowsHide: true,
+    ...(env ? { env: { ...process.env, ...env } } : {}),
+  });
+  return stdout;
+}
+
 export interface GitWorkspaceRef {
   name: string;
   cwd: string;
@@ -163,12 +172,7 @@ export class WorkspaceGit {
     // Assemble the full argv before the test override so injected runners see it too.
     const fullArgs = ["-C", root, "-c", "gc.auto=0", ...args];
     if (this.runGitOverride) return await this.runGitOverride(root, fullArgs);
-    const result = await execFileAsync("git", fullArgs, {
-      timeout: GIT_TIMEOUT_MS,
-      killSignal: "SIGKILL",
-      maxBuffer: GIT_MAX_BUFFER,
-    });
-    return result.stdout;
+    return runWorkspaceGit(root, args);
   }
 
   private validatePaths(paths: string[]): string[] {

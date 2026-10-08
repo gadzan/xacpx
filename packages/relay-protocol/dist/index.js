@@ -188,6 +188,7 @@ var MSG = {
   groupTopicsTeardown: "control.group.topics.teardown",
   conversationPrompt: "control.conversation.prompt",
   conversationPromptWithPolicy: "control.conversation.prompt-with-policy",
+  conversationWorktree: "control.conversation.worktree",
   conversationBindingsList: "control.conversation.bindings.list",
   conversationBindingsSet: "control.conversation.bindings.set",
   conversationBindingsDelete: "control.conversation.bindings.delete",
@@ -693,7 +694,26 @@ function validConversationRun(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && (c.mode === "explicit" || c.mode === "automatic") && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number") && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number") && (c.failedBotIds === undefined || Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")) && (c.unavailableBotIds === undefined || Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")) && (c.quarantinedBotIds === undefined || Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))) && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt) && (c.waitingQuestion === undefined || c.mode === "automatic" && c.state === "waiting-human" && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0) && (c.activeBatch === undefined || typeof c.activeBatch === "number") && (c.routingState === undefined || c.routingState === "queued" || c.routingState === "routing" || c.routingState === "dispatching" || c.routingState === "done");
+  return typeof c.id === "string" && (c.worktree === undefined || isConversationWorktreeStatus(c.worktree)) && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && (c.mode === "explicit" || c.mode === "automatic") && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number") && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number") && (c.failedBotIds === undefined || Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")) && (c.unavailableBotIds === undefined || Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")) && (c.quarantinedBotIds === undefined || Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))) && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt) && (c.waitingQuestion === undefined || c.mode === "automatic" && c.state === "waiting-human" && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0) && (c.activeBatch === undefined || typeof c.activeBatch === "number") && (c.routingState === undefined || c.routingState === "queued" || c.routingState === "routing" || c.routingState === "dispatching" || c.routingState === "done");
+}
+function isConversationWorktreeStatus(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const v = value;
+  const str = (s) => typeof s === "string" && s.length <= 32768;
+  const list = (s) => Array.isArray(s) && s.length <= 1e5 && s.every(str);
+  const sha = (s) => typeof s === "string" && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(s);
+  const object = (s) => typeof s === "object" && s !== null && !Array.isArray(s);
+  if (!str(v.runId) || !sha(v.baseCommitSha) || !["pending", "integrated", "abandoned"].includes(v.disposition) || !Number.isSafeInteger(v.revision) || v.revision < 1 || !Array.isArray(v.resources) || v.resources.length > 256 || v.resources.some((r) => !object(r) || !["id", "botId", "worktreePath", "branchRef"].every((k) => str(r[k])) || !["member", "integration"].includes(r.kind) || !["planned", "provisioning", "ready", "active", "awaiting-integration", "integrated", "cleanup-pending", "cleaned", "provision-failed", "missing", "recovery-required", "cleanup-failed"].includes(r.state) || r.ownerToken !== undefined || r.gitDir !== undefined || r.snapshotSha !== undefined && !sha(r.snapshotSha) || r.lastError !== undefined && !str(r.lastError)))
+    return false;
+  if (v.preview !== undefined && (!object(v.preview) || !str(v.preview.id) || !str(v.preview.createdAt) || !Array.isArray(v.preview.members) || v.preview.members.length > 128 || v.preview.members.some((m) => !object(m) || !str(m.botId) || !str(m.worktreeId) || !sha(m.head) || !sha(m.tree) || !list(m.files) || !str(m.diff))))
+    return false;
+  const i = v.integration;
+  if (v.orphanWorktreePaths !== undefined && !list(v.orphanWorktreePaths))
+    return false;
+  if (i !== undefined && (!object(i) || !["id", "requestId", "previewId", "resourceId", "createdAt", "updatedAt"].every((k) => str(i[k])) || !Number.isSafeInteger(i.generation) || i.generation < 1 || i.operationSource !== "control" || !["preparing", "integrating", "integrated", "conflicted", "failed", "recovery-required", "abandoned"].includes(i.state) || !list(i.orderedBotIds) || !Array.isArray(i.patches) || !i.patches.every(sha) || !sha(i.candidateCommitSha) || !Number.isInteger(i.nextIndex) || i.nextIndex < 0 || i.nextIndex > i.orderedBotIds.length || !list(i.conflictFiles) || i.expectedParent !== undefined && !sha(i.expectedParent) || i.lastError !== undefined && !str(i.lastError)))
+    return false;
+  return true;
 }
 function validMemberTurnSummary(value) {
   if (typeof value !== "object" || value === null)
@@ -1206,7 +1226,7 @@ var validateTopicsCreate = (p) => {
   return o && isStr(o.conversationId) && isStr(o.title) && validMemberConcurrency(o.maxConcurrentMemberTurns) ? o : null;
 };
 var validMemberConcurrency = (v) => v === undefined || typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 64;
-var isCreateIsolation = (v) => v === "shared" || v === "shared-single-writer";
+var isCreateIsolation = (v) => v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
 var validateGroupsCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.title) && isStrArr(o.botIds) && (o.description === undefined || isStr(o.description)) && (o.leadBotId === undefined || isStr(o.leadBotId)) ? o : null;
@@ -1328,6 +1348,19 @@ var validateConversationHistory = (p) => {
 var validateRunsGet = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? o : null;
+};
+var validateConversationWorktree = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.runId) || !o.runId || !isStr(o.action))
+    return null;
+  const keys = o.action === "preview" ? ["action", "runId", "botIds"] : o.action === "integrate" ? ["action", "runId", "requestId", "previewId", "snapshotUncommitted"] : ["action", "runId"];
+  if (Object.keys(o).some((k) => !keys.includes(k)))
+    return null;
+  if (o.action === "preview")
+    return Array.isArray(o.botIds) && o.botIds.every((v) => typeof v === "string" && !!v) && o.botIds.length > 0 && o.botIds.length <= 128 && new Set(o.botIds).size === o.botIds.length ? o : null;
+  if (o.action === "integrate")
+    return typeof o.requestId === "string" && !!o.requestId && o.requestId.length <= 128 && typeof o.previewId === "string" && !!o.previewId && o.snapshotUncommitted === true ? o : null;
+  return ["continue", "recover", "abandon", "cleanup"].includes(o.action) ? o : null;
 };
 var validateRunsList = (p) => {
   const o = fields(p);
@@ -1632,6 +1665,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
   [MSG.conversationPrompt]: validateConversationPrompt,
   [MSG.conversationPromptWithPolicy]: validateConversationPolicyPrompt,
+  [MSG.conversationWorktree]: validateConversationWorktree,
   [MSG.conversationBindingsList]: validateConversationBindingsList,
   [MSG.conversationBindingsSet]: validateConversationBinding,
   [MSG.conversationBindingsDelete]: validateConversationBindingDelete,
@@ -1779,6 +1813,7 @@ export {
   encodeEnvelope,
   errorPayload,
   isBoundedStr,
+  isConversationWorktreeStatus,
   isErrorPayload,
   isIntInRange,
   isNonNegInt,
