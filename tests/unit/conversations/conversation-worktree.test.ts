@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdtemp, writeFile, readFile, readdir, rename, symlink, unlink, mkdir, chmod } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -13,6 +14,7 @@ import { worktreeStatus } from "../../../src/conversations/conversation-worktree
 import { AcpxCliTransport } from "../../../src/transport/acpx-cli/acpx-cli-transport";
 import { resolveAcpxCommand } from "../../../src/config/resolve-acpx-command";
 import { RuntimeEngine } from "../../../src/bridge/engine/runtime-engine";
+import { buildTestRuntimeWorker, classifyPreflightFailure, runEsmPreflight, TEST_ARTIFACT_ROOT } from "../../helpers/build-test-runtime-worker";
 import { GroupHandoffService } from "../../../src/conversations/group-handoff";
 import { parseState } from "../../../src/state/state-store";
 
@@ -556,22 +558,24 @@ for (const engine of ["cli", "runtime"] as const) {
         } else texts = await Promise.all(sessions.map(async (s, n) => (await transport.prompt(s, `worktree-write:${engine}-${n}`)).text));
       } finally { for (const s of sessions) await transport.deleteSession(s).catch(() => {}); }
     } else {
-      const out = join(h.dir, "worker");
-      const built = await Bun.build({ entrypoints: [resolve("src/bridge/engine/runtime/runtime-worker-main.ts")], outdir: out, target: "node", external: ["acpx", "node-pty", "fs-ext", "write-file-atomic"] });
-      expect(built.success).toBe(true);
-      const runtime = new RuntimeEngine({ workerEntryPath: join(out, "runtime-worker-main.js"), stateDir: join(h.dir, "runtime-state", "sessions"),
+      // The worker bundle must sit inside the repository's package scope: its
+      // external `acpx/runtime` import resolves from the bundle's own location,
+      // and the OS temp directory has no `node_modules` ancestor. The helper
+      // builds it there and preflights that resolution before the engine starts.
+      const worker = await buildTestRuntimeWorker();
+      const runtime = new RuntimeEngine({ workerEntryPath: worker.entryPath, stateDir: join(h.dir, "runtime-state", "sessions"),
         durableRootDir: join(h.dir, "runtime-durable"), permissionMode: "approve-all" });
       try {
         texts = await Promise.all(sessions.map(async (s, n) => (await runtime.prompt({ agent: s.agent, agentCommand: s.agentCommand, acpxAgent: s.acpxAgent,
           agentArgv: s.agentArgv, cwd: s.cwd, name: s.transportSession, logicalSessionId: s.logicalSessionId,
           text: `worktree-write:${engine}-${n}` }, async () => {})).text));
       } finally {
-        // Windows tree termination races two concurrent PowerShell workers on a
-        // loaded runner and can fail closed with "already-exited" for one root.
-        // That fail-closed path has dedicated coverage in the process-tree and
-        // runtime-worker suites; this test owns member cwd/writes, so teardown
-        // must not skip the assertions below.
-        await runtime.shutdown().catch(() => {});
+        // A failed teardown is a real failure: the durable ownership fence and
+        // the Windows descendant tree must be provably released, and this test
+        // asserts safe release. Swallowing it would hide an unsafe teardown.
+        await runtime.shutdown();
+        // The worker exited safely, so its bundle is no longer needed.
+        await worker.release();
       }
     }
     for (let n = 0; n < sessions.length; n++) {
@@ -584,3 +588,47 @@ for (const engine of ["cli", "runtime"] as const) {
     await drain; h.store.close();
   }, 90_000);
 }
+
+// The real-worker case above depends on the built bundle resolving its external
+// `acpx/runtime` import. These cases pin the helper that guarantees it, so a
+// regression in artifact placement fails here with a named stage instead of
+// surfacing as a bare "worker crashed (code 1)".
+test("the runtime worker build preflights acpx/runtime and releases only its own artifacts", async () => {
+  const first = await buildTestRuntimeWorker();
+  const second = await buildTestRuntimeWorker();
+  try {
+    // Unique directories: concurrent builds can never share or overwrite an entry.
+    expect(first.artifactDir).not.toBe(second.artifactDir);
+    expect(first.entryPath).not.toBe(second.entryPath);
+    for (const worker of [first, second]) {
+      expect(worker.artifactDir.startsWith(TEST_ARTIFACT_ROOT)).toBe(true);
+      expect(await readFile(worker.entryPath).then(() => true, () => false)).toBe(true);
+    }
+    // Releasing one build must not touch a sibling, dist/, or node_modules/.
+    await first.release();
+    expect(await readFile(second.entryPath).then(() => true, () => false)).toBe(true);
+    expect(existsSync(join(second.artifactDir, "esm-preflight.mjs"))).toBe(true);
+    expect(existsSync(resolve("node_modules/acpx/package.json"))).toBe(true);
+  } finally { await second.release(); }
+  // Artifacts are build output and must never reach version control.
+  expect(execFileSync("git", ["check-ignore", "-q", join(TEST_ARTIFACT_ROOT, "runtime-worker-x", "runtime-worker-main.js")]).length).toBe(0);
+}, 60_000);
+
+test("the ESM preflight rejects an unresolvable dependency instead of reporting success", async () => {
+  const probe = join(await mkdtemp(join(tmpdir(), "xacpx-preflight-neg-")), "neg.mjs");
+  await writeFile(probe, `import { missing } from "acpx-definitely-not-installed-xyz";\nconsole.log("unreachable");\n`, "utf8");
+  const preflight = await runEsmPreflight(probe);
+  expect(preflight.ok).toBe(false);
+  expect(classifyPreflightFailure(preflight.detail)).toBe("esm-resolve");
+  await unlink(probe);
+  // The real probe source resolves and exports the factory the worker needs.
+  const built = await buildTestRuntimeWorker();
+  try {
+    const real = await runEsmPreflight(join(built.artifactDir, "esm-preflight.mjs"));
+    expect(real.ok).toBe(true);
+    const report = JSON.parse(real.detail.split("\n").at(-1) ?? "{}") as { outcome?: string; resolved?: string };
+    expect(report.outcome).toBe("ok");
+    // Resolution must come from the repository's own node_modules.
+    expect(report.resolved).toContain("node_modules/acpx");
+  } finally { await built.release(); }
+}, 60_000);
