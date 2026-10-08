@@ -6,6 +6,7 @@ import { expect, spyOn, test } from "bun:test";
 import type { AppConfig } from "../../../src/config/types";
 import { ControlService, conversationKernel } from "../../../src/control/control-service";
 import { createControlEventBus, type ControlEvent } from "../../../src/control/control-event-bus";
+import { ConversationError } from "../../../src/conversations/conversation-error";
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
 import { createSqlDriver } from "../../../src/conversations/sql-driver";
 import { toConversationRun } from "../../../src/control/conversation-control-dtos";
@@ -24,7 +25,7 @@ import { ConsoleAgent } from "../../../src/console-agent";
 import { CommandRouter } from "../../../src/commands/command-router";
 import type { SessionTransport, ResolvedSession } from "../../../src/transport/types";
 import { isRunCancelling } from "../../../src/conversations/conversation-store";
-import type { ConversationDispatcherHooks } from "../../../src/conversations/conversation-dispatcher";
+import type { ConversationDispatcherHooks, LeaseScheduler } from "../../../src/conversations/conversation-dispatcher";
 import type { ConversationTurnRunner } from "../../../src/conversations/conversation-turn-runner";
 
 const RESTRICTED = { toolsDisabled: true, filesystemDisabled: true, terminalDisabled: true, permissionInteractionDisabled: true, messagingDisabled: true, orchestrationDisabled: true, structuredOutputOnly: true };
@@ -569,6 +570,9 @@ function createConfig(): AppConfig {
 
 async function compose(stateStore: BarrierStateStore, options: {
   router?: ConversationRouter; agent?: Agent; state?: AppState; sqlitePath?: string;
+  autoKick?: boolean; now?: () => Date; leaseMs?: number; leaseScheduler?: LeaseScheduler;
+  beforeLeaseRenewal?: () => void;
+  onSchedulingFailure?: (error: unknown) => void;
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "xacpx-compose-"));
   const state = options.state ?? createEmptyState();
@@ -604,8 +608,13 @@ async function compose(stateStore: BarrierStateStore, options: {
       transport: { async deleteSession() {}, async releaseLogicalSession() {} },
     }),
     onProductEvent: (event) => kernel.emitConversationProduct(event),
-    autoKick: false,
+    autoKick: options.autoKick ?? false,
     ...(options.router ? { router: options.router } : {}),
+    ...(options.now ? { now: options.now } : {}),
+    ...(options.leaseMs !== undefined ? { leaseMs: options.leaseMs } : {}),
+    ...(options.leaseScheduler ? { leaseScheduler: options.leaseScheduler } : {}),
+    ...(options.beforeLeaseRenewal ? { beforeLeaseRenewal: options.beforeLeaseRenewal } : {}),
+    ...(options.onSchedulingFailure ? { onSchedulingFailure: options.onSchedulingFailure } : {}),
     stateMutex,
   });
   kernel.bindConversationRuntime(runtime);
@@ -1183,4 +1192,359 @@ test("production composition with no Router leaves automatic mode unsupported", 
   kernel.bindConversationRuntime(runtime);
   await runtime.activateAfterConsumerLock();
   await runtime.shutdown();
+});
+
+test("production lease renewal I/O failure fail-closes accept and still closes SQLite", async () => {
+  const LEASE_MS = 30_000;
+  const start = Date.parse("2026-10-08T00:00:00.000Z");
+  const tasks: Array<{ due: number; cb: () => void; cancelled: boolean; fired: boolean }> = [];
+  let ms = start;
+  const clock = {
+    date: () => new Date(ms),
+    scheduler: {
+      schedule(delayMs: number, callback: () => void) {
+        const task = { due: ms + delayMs, cb: callback, cancelled: false, fired: false };
+        tasks.push(task);
+        return { cancel: () => { task.cancelled = true; } };
+      },
+    } satisfies LeaseScheduler,
+    async advance(by: number): Promise<void> {
+      const target = ms + by;
+      for (;;) {
+        const next = tasks
+          .filter((task) => !task.cancelled && !task.fired && task.due <= target)
+          .sort((left, right) => left.due - right.due)[0];
+        if (!next) break;
+        ms = next.due;
+        next.fired = true;
+        next.cb();
+        for (let step = 0; step < 8; step += 1) await Promise.resolve();
+      }
+      ms = target;
+    },
+  };
+  let renewals = 0;
+  let entered!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+  let release!: () => void;
+  const releasePromise = new Promise<void>((resolve) => { release = resolve; });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => { unhandled.push(error); };
+  process.on("unhandledRejection", onUnhandled);
+  const current = await compose(new BarrierStateStore(), {
+    autoKick: true,
+    now: () => clock.date(),
+    leaseMs: LEASE_MS,
+    leaseScheduler: clock.scheduler,
+    beforeLeaseRenewal: () => {
+      renewals += 1;
+      if (renewals === 1) throw new Error("sqlite disk I/O error");
+    },
+    agent: { async chat() {
+      entered();
+      await releasePromise;
+      return { text: "provider result" };
+    } },
+  });
+  let released = false;
+  const finishProvider = () => {
+    if (released) return;
+    released = true;
+    release();
+  };
+  try {
+    const bot = await current.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+    const helper = await current.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+    const group = await current.control.createGroup({ title: "Lease", botIds: [bot.id, helper.id] });
+    const topic = await current.control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
+    await current.runtime.activateAfterConsumerLock();
+    expect(current.runtime.runs.isConsumerActivated()).toBe(true);
+    const accepted = await current.control.promptConversation({
+      conversationId: group.id, topicId: topic.id, requestId: "live-turn", text: "work", target: { botId: bot.id },
+    });
+    await enteredPromise;
+    const turn = current.runtime.store.listMemberTurns(accepted.run.id)[0]!;
+    const dispatch = current.runtime.store.getDispatchForMemberTurn(turn.id)!;
+    const leaseBefore = dispatch.leaseExpiresAt;
+    const generationBefore = dispatch.generation;
+    expect(turn.state).toBe("running");
+    expect(current.runtime.store.getRun(accepted.run.id)?.state).toBe("running");
+    await clock.advance(Math.floor(LEASE_MS / 3));
+    expect(renewals).toBe(1);
+    expect(current.runtime.runs.isConsumerActivated()).toBe(false);
+    expect(unhandled).toEqual([]);
+    const sealed = current.runtime.store.getMemberTurn(turn.id)!;
+    const dispatchAfter = current.runtime.store.getDispatchForMemberTurn(turn.id)!;
+    expect(sealed.state).toBe("running");
+    expect(sealed.failureReason).toBeUndefined();
+    expect(current.runtime.store.getRun(accepted.run.id)).toMatchObject({ state: "running" });
+    expect(current.runtime.store.getRun(accepted.run.id)?.completionReason).toBeUndefined();
+    expect(dispatchAfter).toMatchObject({ state: "claimed", generation: generationBefore, leaseExpiresAt: leaseBefore });
+    await expect(current.control.promptConversation({
+      conversationId: group.id, topicId: topic.id, requestId: "after-lease-io", text: "more", target: { botId: helper.id },
+    })).rejects.toMatchObject({ code: "conversations_unavailable" });
+    expect(current.runtime.store.listRuns(group.id).map((run) => run.id)).toEqual([accepted.run.id]);
+    expect(unhandled).toEqual([]);
+    finishProvider();
+    for (let step = 0; step < 20 && current.runtime.store.getRun(accepted.run.id)?.state !== "completed"; step += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(current.runtime.store.getRun(accepted.run.id)).toMatchObject({ state: "completed", completionReason: "members-completed" });
+    expect(current.runtime.store.getMemberTurn(turn.id)?.state).toBe("completed");
+    expect(unhandled).toEqual([]);
+    await expect(current.runtime.shutdown()).rejects.toThrow("sqlite disk I/O error");
+    expect(() => current.runtime.store.getRun(accepted.run.id)).toThrow(/closed/);
+    const reopened = await SqliteConversationStore.open(current.sqlitePath);
+    try {
+      expect(reopened.getRun(accepted.run.id)).toMatchObject({ state: "completed", completionReason: "members-completed" });
+      expect(reopened.getMemberTurn(turn.id)?.state).toBe("completed");
+      expect(reopened.listRuns(group.id)).toHaveLength(1);
+    } finally { reopened.close(); }
+  } finally {
+    finishProvider();
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+async function observeShutdown(shutdown: Promise<void>): Promise<{ threw: boolean; error: unknown }> {
+  try {
+    await shutdown;
+    return { threw: false, error: undefined };
+  } catch (error) {
+    return { threw: true, error };
+  }
+}
+
+test("production claimNextDispatch failure fail-closes accept without an unhandled rejection", async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => { unhandled.push(error); };
+  process.on("unhandledRejection", onUnhandled);
+  const reported: unknown[] = [];
+  const current = await compose(new BarrierStateStore(), {
+    autoKick: true,
+    onSchedulingFailure: (error) => { reported.push(error); },
+    agent: { async chat() { return { text: "provider result" }; } },
+  });
+  const original = current.runtime.store.claimNextDispatch.bind(current.runtime.store);
+  let armed = false;
+  current.runtime.store.claimNextDispatch = ((input) => {
+    if (armed) throw new Error("claim dispatch I/O error");
+    return original(input);
+  }) as typeof current.runtime.store.claimNextDispatch;
+  try {
+    const bot = await current.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+    const helper = await current.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+    const group = await current.control.createGroup({ title: "Claim", botIds: [bot.id, helper.id] });
+    const topic = await current.control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
+    await current.runtime.activateAfterConsumerLock();
+    armed = true;
+    const accepted = await current.control.promptConversation({
+      conversationId: group.id, topicId: topic.id, requestId: "claim-fails", text: "work", target: { botId: bot.id },
+    });
+    for (let step = 0; step < 20 && current.runtime.runs.isConsumerActivated(); step += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(current.runtime.runs.isConsumerActivated()).toBe(false);
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toBeInstanceOf(Error);
+    expect((reported[0] as Error).message).toBe("claim dispatch I/O error");
+    expect(unhandled).toEqual([]);
+    expect(current.runtime.store.getRun(accepted.run.id)?.state).toBe("queued");
+    expect(current.runtime.store.getRun(accepted.run.id)?.completionReason).toBeUndefined();
+    await expect(current.control.promptConversation({
+      conversationId: group.id, topicId: topic.id, requestId: "after-claim-io", text: "more", target: { botId: helper.id },
+    })).rejects.toMatchObject({ code: "conversations_unavailable" });
+    expect(current.runtime.store.listRuns(group.id).map((run) => run.id)).toEqual([accepted.run.id]);
+    expect(unhandled).toEqual([]);
+    await current.runtime.shutdown();
+    expect(() => current.runtime.store.getRun(accepted.run.id)).toThrow(/closed/);
+    const reopened = await SqliteConversationStore.open(current.sqlitePath);
+    try {
+      expect(reopened.listRuns(group.id)).toHaveLength(1);
+      expect(reopened.getRun(accepted.run.id)?.state).toBe("queued");
+      expect(reopened.listMemberTurns(accepted.run.id).every((turn) => turn.state !== "indeterminate")).toBe(true);
+    } finally { reopened.close(); }
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("production scheduling failure records a thrown undefined value", async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => { unhandled.push(error); };
+  process.on("unhandledRejection", onUnhandled);
+  const LEASE_MS = 30_000;
+  const start = Date.parse("2026-10-08T00:00:00.000Z");
+  const tasks: Array<{ due: number; cb: () => void; cancelled: boolean; fired: boolean }> = [];
+  let ms = start;
+  const clock = {
+    date: () => new Date(ms),
+    scheduler: {
+      schedule(delayMs: number, callback: () => void) {
+        const task = { due: ms + delayMs, cb: callback, cancelled: false, fired: false };
+        tasks.push(task);
+        return { cancel: () => { task.cancelled = true; } };
+      },
+    } satisfies LeaseScheduler,
+    async advance(by: number): Promise<void> {
+      const target = ms + by;
+      for (;;) {
+        const next = tasks
+          .filter((task) => !task.cancelled && !task.fired && task.due <= target)
+          .sort((left, right) => left.due - right.due)[0];
+        if (!next) break;
+        ms = next.due;
+        next.fired = true;
+        next.cb();
+        for (let step = 0; step < 8; step += 1) await Promise.resolve();
+      }
+      ms = target;
+    },
+  };
+  let entered!: () => void;
+  const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+  let release!: () => void;
+  const releasePromise = new Promise<void>((resolve) => { release = resolve; });
+  let renewals = 0;
+  const reported: unknown[] = [];
+  const current = await compose(new BarrierStateStore(), {
+    autoKick: true,
+    onSchedulingFailure: (error) => { reported.push(error); },
+    now: () => clock.date(),
+    leaseMs: LEASE_MS,
+    leaseScheduler: clock.scheduler,
+    beforeLeaseRenewal: () => {
+      renewals += 1;
+      if (renewals === 1) {
+        const failure: unknown = undefined;
+        throw failure;
+      }
+    },
+    agent: { async chat() {
+      entered();
+      await releasePromise;
+      return { text: "provider result" };
+    } },
+  });
+  let released = false;
+  const finishProvider = () => {
+    if (released) return;
+    released = true;
+    release();
+  };
+  try {
+    const bot = await current.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+    const helper = await current.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+    const group = await current.control.createGroup({ title: "Undefined", botIds: [bot.id, helper.id] });
+    const topic = await current.control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
+    await current.runtime.activateAfterConsumerLock();
+    const accepted = await current.control.promptConversation({
+      conversationId: group.id, topicId: topic.id, requestId: "undefined-lease", text: "work", target: { botId: bot.id },
+    });
+    await enteredPromise;
+    const turn = current.runtime.store.listMemberTurns(accepted.run.id)[0]!;
+    expect(turn.state).toBe("running");
+    await clock.advance(Math.floor(LEASE_MS / 3));
+    expect(renewals).toBe(1);
+    expect(current.runtime.runs.isConsumerActivated()).toBe(false);
+    expect(reported).toEqual([undefined]);
+    expect(current.runtime.store.getMemberTurn(turn.id)?.state).toBe("running");
+    expect(current.runtime.store.getRun(accepted.run.id)?.state).toBe("running");
+    await expect(current.control.promptConversation({
+      conversationId: group.id, topicId: topic.id, requestId: "after-undefined", text: "more", target: { botId: helper.id },
+    })).rejects.toMatchObject({ code: "conversations_unavailable" });
+    expect(current.runtime.store.listRuns(group.id)).toHaveLength(1);
+    expect(unhandled).toEqual([]);
+    finishProvider();
+    for (let step = 0; step < 20 && current.runtime.store.getRun(accepted.run.id)?.state !== "completed"; step += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(current.runtime.store.getMemberTurn(turn.id)?.state).toBe("completed");
+    const shutdown = await observeShutdown(current.runtime.shutdown());
+    expect(shutdown.threw).toBe(true);
+    expect(shutdown.error).toBeUndefined();
+    expect(() => current.runtime.store.getRun(accepted.run.id)).toThrow(/closed/);
+  } finally {
+    finishProvider();
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("autoKick false still drains through wakePendingWork", async () => {
+  let calls = 0;
+  const current = await compose(new BarrierStateStore(), {
+    autoKick: false,
+    agent: { async chat() {
+      calls += 1;
+      return { text: "woken" };
+    } },
+  });
+  try {
+    const bot = await current.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+    const helper = await current.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+    const group = await current.control.createGroup({ title: "Wake", botIds: [bot.id, helper.id] });
+    const topic = await current.control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
+    await current.runtime.activateAfterConsumerLock();
+    const accepted = await current.control.promptConversation({
+      conversationId: group.id, topicId: topic.id, requestId: "queued-until-wake", text: "work", target: { botId: bot.id },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toBe(0);
+    expect(current.runtime.store.getRun(accepted.run.id)?.state).toBe("queued");
+    current.runtime.runs.wakePendingWork();
+    for (let step = 0; step < 30 && current.runtime.store.getRun(accepted.run.id)?.state !== "completed"; step += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(calls).toBe(1);
+    expect(current.runtime.store.getRun(accepted.run.id)?.state).toBe("completed");
+    await current.runtime.shutdown();
+  } finally {
+    await current.runtime.shutdown().catch(() => {});
+  }
+});
+
+test("a stale claim fence from kick does not fail-close accept", async () => {
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => { unhandled.push(error); };
+  process.on("unhandledRejection", onUnhandled);
+  const current = await compose(new BarrierStateStore(), {
+    autoKick: true,
+    agent: { async chat() { return { text: "provider result" }; } },
+  });
+  const original = current.runtime.store.claimNextDispatch.bind(current.runtime.store);
+  let armed = false;
+  let thrown = false;
+  current.runtime.store.claimNextDispatch = ((input) => {
+    if (armed && !thrown) {
+      thrown = true;
+      throw new ConversationError("stale_claim", "lost fence");
+    }
+    return original(input);
+  }) as typeof current.runtime.store.claimNextDispatch;
+  try {
+    const bot = await current.control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+    const helper = await current.control.createBot({ name: "Helper", agent: "codex", workspace: "backend" });
+    const group = await current.control.createGroup({ title: "Stale", botIds: [bot.id, helper.id] });
+    const topic = await current.control.createGroupTopic(group.id, "Sprint", { workspace: "backend", isolation: "shared-single-writer" });
+    await current.runtime.activateAfterConsumerLock();
+    armed = true;
+    const first = await current.control.promptConversation({
+      conversationId: group.id, topicId: topic.id, requestId: "stale-kick", text: "work", target: { botId: bot.id },
+    });
+    for (let step = 0; step < 20 && !thrown; step += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(thrown).toBe(true);
+    expect(current.runtime.runs.isConsumerActivated()).toBe(true);
+    expect(unhandled).toEqual([]);
+    const second = await current.control.promptConversation({
+      conversationId: group.id, topicId: topic.id, requestId: "after-stale", text: "more", target: { botId: helper.id },
+    });
+    expect(second.run.id).not.toBe(first.run.id);
+    expect(current.runtime.store.listRuns(group.id)).toHaveLength(2);
+    await current.runtime.shutdown();
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    await current.runtime.shutdown().catch(() => {});
+  }
 });

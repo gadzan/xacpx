@@ -87,6 +87,9 @@ export interface ConversationRunServiceOptions {
   /** Verified physical+logical release. Required; never LogicalSession-only. */
   releaseOwnedSession: ReleaseOwnedSession;
   onProductEvent?: ConversationProductEventSink;
+  /** First fatal lease or background-kick failure. Invoked once, synchronously,
+   *  with the original value (`undefined` included). Must not throw. */
+  onSchedulingFailure?: (error: unknown) => void;
 }
 
 export interface ConversationHistoryPage {
@@ -122,6 +125,7 @@ export class ConversationRunService {
   private readonly routingAbortControllers = new Map<string, AbortController>();
   private readonly releaseOwnedSession: ReleaseOwnedSession;
   private readonly onProductEvent?: ConversationProductEventSink;
+  private readonly onSchedulingFailure?: (error: unknown) => void;
   private closed = false;
 
   constructor(
@@ -146,7 +150,28 @@ export class ConversationRunService {
     this.routerEngine = options.routerEngine;
     this.releaseOwnedSession = options.releaseOwnedSession;
     this.onProductEvent = options.onProductEvent;
+    this.onSchedulingFailure = options.onSchedulingFailure;
     this.bots.setConversationWork(this.store);
+    this.dispatcher.setFatalSchedulingHandler((error) => {
+      this.markConsumerUnavailable();
+      try {
+        this.onSchedulingFailure?.(error);
+      } catch {
+        // Reporting the root cause must not replace the stored failure.
+      }
+    });
+  }
+
+  /** Sticky fail-closed after activation or a later scheduling failure. */
+  private markConsumerUnavailable(): void {
+    if (this.closed) return;
+    this.activation = "unavailable";
+  }
+
+  /** Accept-time and routing wakes. `autoKick: false` leaves accepted work queued. */
+  private kickInBackground(): void {
+    if (!this.autoKick || this.closed || this.activation !== "activated") return;
+    void this.dispatcher.kick().catch(() => {});
   }
 
   private assertOpen(): void {
@@ -168,9 +193,26 @@ export class ConversationRunService {
     }
     // Drain local attempts without failing resumable routing work. Activation
     // will recompute uncommitted decisions under a new generation.
-    await this.awaitRouting();
-    await this.dispatcher.shutdown();
-    this.store.close();
+    // In-flight provider turns are awaited inside dispatcher.shutdown before
+    // it reports a saved lease-keeper error. SQLite still closes afterward.
+    let shutdownFailed = false;
+    let shutdownError: unknown;
+    try {
+      await this.awaitRouting();
+      await this.dispatcher.shutdown();
+    } catch (error) {
+      shutdownFailed = true;
+      shutdownError = error;
+    }
+    try {
+      this.store.close();
+    } catch (error) {
+      if (!shutdownFailed) {
+        shutdownFailed = true;
+        shutdownError = error;
+      }
+    }
+    if (shutdownFailed) throw shutdownError;
   }
 
   /**
@@ -210,19 +252,18 @@ export class ConversationRunService {
       throw error;
     }
     this.activation = "activated";
-    if (this.autoKick && !this.closed) void this.dispatcher.kick().catch(() => {});
+    this.kickInBackground();
   }
 
   isConsumerActivated(): boolean {
     return this.activation === "activated";
   }
 
-  /** Wake pending durable work (e.g. after a Bot re-enables). Activation-
-   *  aware: when the consumer never activated (initial recovery failure),
-   *  Conversation work must stay parked — a Bot lifecycle event must not
-   *  bypass the fail-closed unavailable gate via a direct dispatcher kick. */
+  /** Wake pending durable work (e.g. after a Bot re-enables or a handoff).
+   *  Independent of `autoKick`: that flag only suppresses accept-time and
+   *  routing kicks. An unavailable or closed consumer stays parked. */
   wakePendingWork(): void {
-    if (this.activation !== "activated" || this.closed) return;
+    if (this.closed || this.activation !== "activated") return;
     void this.dispatcher.kick().catch(() => {});
   }
   private assertAccepting(): void {
@@ -230,7 +271,7 @@ export class ConversationRunService {
     if (this.activation === "unavailable") {
       throw new ConversationError(
         "conversations_unavailable",
-        "Conversation consumer failed to activate; new work is not accepted",
+        "Conversation consumer is unavailable; new work is not accepted",
       );
     }
   }
@@ -287,6 +328,7 @@ export class ConversationRunService {
       await this.beforeAcceptPersist?.();
       if (input.channelAbortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel request stopped before acceptance");
       const humanIngress = parseHumanIngress(input.humanIngress);
+      this.assertAccepting();
       const created = this.store.acceptRequest({
         ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
         conversationId,
@@ -305,9 +347,7 @@ export class ConversationRunService {
     if (!accepted.reused) {
       this.emitAcceptProjection(accepted);
     }
-    if (this.autoKick && this.activation === "activated") {
-      void this.dispatcher.kick();
-    }
+    this.kickInBackground();
     return accepted;
   }
   /**
@@ -434,6 +474,7 @@ export class ConversationRunService {
         // zero members and `mode: "automatic"` carries the 24-turn budget
         // default. Routing begins only after this transaction commits.
         if (parsed.kind === "automatic") {
+          this.assertAccepting();
           return this.store.acceptRequest({
             ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
             conversationId: input.conversationId,
@@ -459,6 +500,7 @@ export class ConversationRunService {
         // enforceably proven in PR7, so the scheduler must serialize under
         // shared-single-writer. Persisted explicitly (not omitted) so a later
         // caller that CAN prove read-only has a visible seam to extend.
+        this.assertAccepting();
         const created = this.store.acceptRequest({
           ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
           conversationId: input.conversationId,
@@ -491,9 +533,7 @@ export class ConversationRunService {
         if (!accepted.reused) {
           this.emitAcceptProjection(accepted);
         }
-        if (this.autoKick && this.activation === "activated") {
-          void this.dispatcher.kick();
-        }
+        this.kickInBackground();
         // PR8: an automatic Run's first dispatch decision is the Router's.
         // Routed AFTER the accept transaction commits and after the accept
         // projection, so a Router failure surfaces as a Run-level failure the
@@ -1141,13 +1181,11 @@ export class ConversationRunService {
       return;
     }
     const outcome = await engine.route(runId, signal);
-    if (!this.closed && outcome.outcome === "dispatched" && kick && this.autoKick && this.activation === "activated") {
-      void this.dispatcher.kick().catch(() => {});
-    }
+    if (outcome.outcome === "dispatched" && kick) this.kickInBackground();
     this.emitRoutingOutcome(outcome);
     if (TERMINAL_RUN_STATES.includes(outcome.run.state)) {
       this.trackReadyAutomaticRuns();
-      if (!this.closed && kick && this.autoKick && this.activation === "activated") void this.dispatcher.kick().catch(() => {});
+      if (kick) this.kickInBackground();
     }
   }
 
@@ -1254,7 +1292,8 @@ export class ConversationRunService {
         await this.cancelRunAndAbortRouting(run.id);
       }
     }
-    this.store.recoverExpiredClaims(this.now().toISOString());
+    await this.dispatcher.flushOwnedClaimLeases();
+    this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId });
     const remaining = this.store.listRuns(conversationId);
     const indeterminate = remaining.filter((run) => run.state === "indeterminate");
     if (indeterminate.length > 0) {
@@ -1351,7 +1390,8 @@ export class ConversationRunService {
     for (const run of ghostRuns) {
       await this.cancelRunAndAbortRouting(run.id);
     }
-    this.store.recoverExpiredClaims(this.now().toISOString());
+    await this.dispatcher.flushOwnedClaimLeases();
+    this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId });
     const unsettled = this.store.listRuns(conversationId)
       .filter((run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human");
     if (unsettled.length > 0) {
@@ -1927,7 +1967,8 @@ export class ConversationRunService {
         await this.cancelRunAndAbortRouting(run.id);
       }
     }
-    this.store.recoverExpiredClaims(this.now().toISOString());
+    await this.dispatcher.flushOwnedClaimLeases();
+    this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId, topicId });
     const remaining = this.store.listRuns(conversationId, topicId);
     const blocking = remaining.filter(
       (run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human",

@@ -6549,6 +6549,49 @@ test("PR7 scheduler: held writer-slot claim survives a lease boundary with prove
 });
 
 
+test("a real stale held-claim fence still settles the in-flight member without another prompt", async () => {
+  // claimNextDispatch never throws stale_claim. The production fence is the
+  // held-claim renewal: a lost generation drops that hold and the same kick
+  // continues, so the member already running still finishes.
+  const first = await createLifecycle({ autoKick: false, leaseMs: 30_000 });
+  await first.service.activateAfterConsumerLock();
+  seedTesterBot(first.state);
+  const group = await first.bots.createGroup({ title: "StaleFence", botIds: [BOT_ID, TESTER_ID] });
+  const topic = await first.service.createGroupTopic(group.id, "S", {
+    workspace: "backend",
+    isolation: "shared-single-writer",
+  });
+  const hang = deferred<void>();
+  fakeRunner(first.runner).hang = hang;
+  const accepted = await first.service.acceptGroupPrompt({
+    conversationId: group.id,
+    topicId: topic.id,
+    requestId: "req-stale-fence-live",
+    text: "ordered",
+    target: { mode: "members", botIds: [BOT_ID, TESTER_ID] },
+    humanIngress: HUMAN_INGRESS,
+  });
+  const drain = first.dispatcher.kick();
+  await waitUntil(() => fakeRunner(first.runner).runs.length === 1);
+  const leader = first.store.listMemberTurns(accepted.run.id).find((turn) => turn.botId === BOT_ID)!;
+  const held = first.store.listMemberTurns(accepted.run.id).find((turn) => turn.botId === TESTER_ID)!;
+  expect(leader.state).toBe("running");
+  const heldDispatch = first.store.getDispatchForMemberTurn(held.id)!;
+  expect(heldDispatch.state).toBe("claimed");
+  // Recheck renews with the row's current generation, so a generation bump
+  // still belongs to this owner. A different owner is the real lost fence.
+  first.store.directWriteForTest("pending_dispatches", heldDispatch.id, {
+    owner: "other-owner",
+  });
+  hang.resolve();
+  await drain;
+  expect(first.service.isConsumerActivated()).toBe(true);
+  expect(first.store.getMemberTurn(leader.id)?.state).toBe("completed");
+  expect(fakeRunner(first.runner).runs).toHaveLength(1);
+  expect(first.store.listRuns(group.id)).toHaveLength(1);
+  first.store.close();
+});
+
 test("PR7 scheduler: shutdown retires held claims so a fast restart executes without recovery rewrite", async () => {
   // B is held behind A; the hold-time renewal fails so the drain rejects with
   // B registered-but-unrenewed. Resolve A, let it settle, then shut down with
