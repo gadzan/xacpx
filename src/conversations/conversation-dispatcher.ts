@@ -40,6 +40,35 @@ export interface ConversationDispatcherHooks {
   beforeResultPersist?: (work: ClaimedWork) => Promise<void>;
 }
 
+/** Injected so tests can fire lease renewal without a wall-clock sleep. */
+export interface LeaseScheduler {
+  schedule(delayMs: number, callback: () => void): { cancel(): void };
+}
+
+/**
+ * Renewal period for a live claim. At most one third of the lease, and at
+ * least 1ms, so a single delayed tick cannot by itself expire a lease of
+ * 3ms or more.
+ */
+export function claimLeaseRenewalDelayMs(leaseMs: number): number {
+  if (!Number.isFinite(leaseMs) || leaseMs < 1) {
+    throw new Error("leaseMs must be a positive number of milliseconds");
+  }
+  return Math.max(1, Math.floor(leaseMs / 3));
+}
+
+function defaultLeaseScheduler(): LeaseScheduler {
+  return {
+    schedule(delayMs, callback) {
+      const handle = setTimeout(callback, delayMs);
+      if (typeof handle === "object" && handle !== null && "unref" in handle && typeof handle.unref === "function") {
+        handle.unref();
+      }
+      return { cancel: () => clearTimeout(handle) };
+    },
+  };
+}
+
 export interface ConversationDispatcherOptions {
   now?: () => Date;
   leaseMs?: number;
@@ -48,6 +77,8 @@ export interface ConversationDispatcherOptions {
   authorityEpoch?: string;
   hooks?: ConversationDispatcherHooks;
   onProductEvent?: ConversationProductEventSink;
+  /** Defaults to an unref'd timer. Tests pass a manual clock. */
+  leaseScheduler?: LeaseScheduler;
 }
 
 /**
@@ -93,6 +124,12 @@ export class ConversationDispatcher {
    *  `finally` so a throw can never strand the set (and with it the drain). */
   private readonly inFlightExecutions = new Map<string, Promise<void>>();
   private readonly inFlightWork = new Map<string, ClaimedWork>();
+  private readonly leaseScheduler: LeaseScheduler;
+  private leaseTicket: { cancel(): void } | undefined;
+  /** Serializes renewal ticks so shutdown can wait for the one in progress. */
+  private leaseRenewalTask: Promise<void> = Promise.resolve();
+  private leaseKeeperStopped = false;
+  private leaseKeeperError: unknown;
 
   constructor(
     private readonly store: ConversationStore,
@@ -107,9 +144,12 @@ export class ConversationDispatcher {
     this.authorityEpoch = options?.authorityEpoch ?? randomUUID();
     this.hooks = options?.hooks;
     this.onProductEvent = options?.onProductEvent;
+    this.leaseScheduler = options?.leaseScheduler ?? defaultLeaseScheduler();
+    this.armLeaseKeeper();
   }
 
   async kick(): Promise<void> {
+    this.surfaceLeaseKeeperError();
     this.wakeGeneration += 1;
     if (this.closed) {
       return;
@@ -136,6 +176,8 @@ export class ConversationDispatcher {
 
   async shutdown(): Promise<void> {
     this.closed = true;
+    this.stopLeaseKeeper();
+    await this.leaseRenewalTask;
     if (this.drainTask) {
       await this.drainTask.catch(() => undefined);
     }
@@ -184,6 +226,7 @@ export class ConversationDispatcher {
       }
       this.heldWriterSlotClaims.delete(dispatchId);
     }
+    this.surfaceLeaseKeeperError();
   }
 
   private async runDrain(): Promise<void> {
@@ -275,7 +318,7 @@ export class ConversationDispatcher {
             this.heldWriterSlotClaims.delete(dispatchId);
           }
         }
-        this.renewHeldClaims();
+        this.renewOwnedClaims();
         // Sibling cohort for this drain: the first launch goes out globally
         // (previous sequencing); afterwards only the SAME Run's siblings are
         // claimable until the cohort settles. The runtime contract reserves
@@ -291,19 +334,11 @@ export class ConversationDispatcher {
             return;
           }
           const limits = this.runtime.topicConcurrencyLimits();
-          // Configured cohorts can refill while a long-lived sibling is still
-          // executing. Protect the exact live promises before lease recovery;
-          // restart has no such promises and uses normal durable convergence.
-          for (const active of this.inFlightWork.values()) {
-            if (limits[active.run.topicId] === undefined) continue;
-            try {
-              this.store.renewInFlightClaim({ dispatchId: active.dispatch.id, owner: this.ownerId,
-                generation: active.dispatch.generation, now: this.now().toISOString(),
-                leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString() });
-            } catch (error) {
-              if (!(error instanceof ConversationError && error.code === "stale_claim")) throw error;
-            }
-          }
+          // Every claim this process still holds is renewed before recovery,
+          // including Topics with no concurrency cap and writer-slot holds.
+          // A long provider turn must not look like process death. Restart
+          // has no in-memory promises and uses normal durable convergence.
+          this.renewOwnedClaims();
           this.store.recoverExpiredClaims(this.now().toISOString());
           const claimed = this.claimOne(cohortRunId);
           if (!claimed) {
@@ -413,6 +448,7 @@ export class ConversationDispatcher {
     } finally {
       this.draining = false;
     }
+    this.surfaceLeaseKeeperError();
     if (!this.closed && seen !== this.wakeGeneration) {
       await this.kick();
     }
@@ -557,11 +593,91 @@ export class ConversationDispatcher {
    *  held claim parked until a later kick reaps it through the normal
    *  pre-start fences in execute(). */
   private readonly heldWriterSlotClaims = new Map<string, ClaimedWork>();
-  /** Extend every live held claim's lease. Called once per drain pass,
-   *  BEFORE recoverExpiredClaims(): while this drain is alive and holds the
-   *  claim object, the owner is by definition not dead, so expiry must not
-   *  trigger crash recovery. Holds that fail the fence (lost race, recovered
-   *  elsewhere, Run terminal) are dropped; the normal paths reap them. */
+  /**
+   * Refresh every claim this process still holds: in-flight provider turns
+   * and writer-slot waits. The timer is independent of provider completion
+   * and of whether the Topic configured maxConcurrentMemberTurns. Teardown
+   * calls the public flush so its scoped recovery cannot observe a stale
+   * lease for work this process is still executing.
+   */
+  async flushOwnedClaimLeases(): Promise<void> {
+    await this.leaseRenewalTask;
+    this.surfaceLeaseKeeperError();
+    if (this.leaseKeeperStopped && this.inFlightWork.size === 0 && this.heldWriterSlotClaims.size === 0) {
+      return;
+    }
+    this.renewOwnedClaims();
+  }
+
+  private armLeaseKeeper(): void {
+    if (this.leaseKeeperStopped || this.leaseTicket) return;
+    this.leaseTicket = this.leaseScheduler.schedule(claimLeaseRenewalDelayMs(this.leaseMs), () => {
+      this.leaseTicket = undefined;
+      if (this.leaseKeeperStopped) return;
+      this.leaseRenewalTask = this.leaseRenewalTask.then(() => {
+        if (this.leaseKeeperStopped) return;
+        this.renewOwnedClaims();
+      }).then(() => {
+        if (!this.leaseKeeperStopped) this.armLeaseKeeper();
+      }, (error: unknown) => {
+        this.leaseKeeperError ??= error;
+        this.stopLeaseKeeper();
+      });
+    });
+  }
+
+  private stopLeaseKeeper(): void {
+    this.leaseKeeperStopped = true;
+    this.leaseTicket?.cancel();
+    this.leaseTicket = undefined;
+  }
+
+  private surfaceLeaseKeeperError(): void {
+    if (this.leaseKeeperError !== undefined) {
+      throw this.leaseKeeperError;
+    }
+  }
+
+  private renewOwnedClaims(): void {
+    try {
+      this.renewHeldClaims();
+      this.renewInFlightClaims();
+    } catch (error) {
+      this.leaseKeeperError ??= error;
+      this.stopLeaseKeeper();
+      throw error;
+    }
+  }
+
+  private renewInFlightClaims(): void {
+    const now = this.now().toISOString();
+    const leaseExpiresAt = new Date(this.now().getTime() + this.leaseMs).toISOString();
+    for (const active of this.inFlightWork.values()) {
+      try {
+        const renewed = this.store.renewInFlightClaim({
+          dispatchId: active.dispatch.id,
+          owner: this.ownerId,
+          generation: active.dispatch.generation,
+          now,
+          leaseExpiresAt,
+        });
+        this.inFlightWork.set(active.dispatch.id, { ...active, dispatch: renewed });
+      } catch (error) {
+        if (error instanceof ConversationError && error.code === "stale_claim") {
+          this.inFlightWork.delete(active.dispatch.id);
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  /** Extend every live held claim's lease. Called from the owned-claim
+   *  renewal pass, BEFORE recoverExpiredClaims(): while this drain is alive
+   *  and holds the claim object, the owner is by definition not dead, so
+   *  expiry must not trigger crash recovery. Holds that fail the fence (lost
+   *  race, recovered elsewhere, Run terminal) are dropped; the normal paths
+   *  reap them. */
   private renewHeldClaims(): void {
     const now = this.now().toISOString();
     const leaseExpiresAt = new Date(this.now().getTime() + this.leaseMs).toISOString();

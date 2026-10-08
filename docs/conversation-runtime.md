@@ -46,12 +46,21 @@ Only the existing `read-only` + `declared-enforced` proof can permit overlap.
 Capacity is reserved by the existing durable `claimed` dispatches (including
 pre-start materialization); the claim transaction checks the per-Topic count.
 Full capacity leaves work pending without stripping ingress or changing origin.
-Configured cohorts refill after an individual execution settles; live claims are
-renewed before lease recovery during refill. Cancel/delete fences remain part of
-claim and physical start. Restart first converges previous-owner claims under the
-exclusive consumer lock, then reconstructs reservations from SQLite. Started unknown
-writers remain indeterminate; bounded proven read-only recovery uses the same limit.
-No semaphore count, second queue or additional executor is persisted.
+Configured cohorts refill after an individual execution settles. Every claim
+this process still holds — in-flight provider turns and writer-slot waits,
+with or without `maxConcurrentMemberTurns` — has its lease extended on a
+period of at most one third of the lease. That renewal is independent of the
+provider round completing and of the drain loop being inside `Promise.race`.
+It is fenced on dispatch id + owner + generation and only moves
+`leaseExpiresAt`. Terminal, cancelled, recovered, and lost-owner claims are
+not renewed. The dispatcher also renews those same claims immediately before
+its own `recoverExpiredClaims`. A closed SQLite store stops renewal; the
+timer error fails the next `kick` / `shutdown` instead of becoming an
+unhandled rejection. Restart has no in-memory promises, so it still converges
+previous-owner claims under the exclusive consumer lock and then reconstructs
+reservations from SQLite. Started unknown writers remain indeterminate;
+bounded proven read-only recovery uses the same limit. No semaphore count,
+second queue or additional executor is persisted.
 
 ```text
 accept transaction commits request + pending dispatch
@@ -174,7 +183,7 @@ Order:
 
 1. Mark Conversation/Topic deleting (SQLite is authoritative for accept/dispatch; AppState flag is bounded metadata). This uses the per-Bot lifecycle gate briefly, shared with accept **and** `createDirectTopic`.
 2. Stop future accept/dispatch/topic creation. Cancel/drain active turns **without** holding the lifecycle gate (so runtime materialize is not deadlocked). `createDirectTopic` during this window fails `conversation_deleting` and never returns an active Topic that final teardown would immediately remove.
-3. Reconcile indeterminate.
+3. Reconcile indeterminate by recovering **expired** claims in the teardown scope only. The scope is enforced in the SQLite query, not by recovering every claim and filtering the result. Direct teardown passes its Conversation id. Group Topic teardown passes that Conversation and Topic. Group teardown passes the Group Conversation id, which includes every Topic and ghost durable work of that Group and no other Group or Direct Conversation. Before that recovery, the dispatcher flushes leases for claims this process still holds, so a live provider turn is not classified as a crash merely because the teardown clock moved. A claim with no live owner whose lease has actually expired still seals or requeues under the existing rules. Cancel/delete fences remain part of claim and physical start.
 4. Verified owned-session release via `releaseOwnedSession(alias)` (production wiring: `createStrictOwnedSessionRelease` → `removeAliasWithPhysicalLifecycle` with `physicalFailurePolicy: "strict"`). Any physical Runtime **or CLI** release/delete failure throws **before** the LogicalSession row disappears. Ordinary `/session rm` keeps the helper's default legacy CLI best-effort path and is not this seam. `SessionService.removeSession` is logical-only. `BotRuntimeManager.releaseDirectBinding` uses the same strict seam under the per-Bot lifecycle gate.
 5. Per-Bot lifecycle gate for finalization: remaining ownership release through that same seam, AppState binding/topic/conversation cleanup, **then** delete ConversationStore rows / deleting tombstone.
 
@@ -188,7 +197,7 @@ Injected release failure leaves `deleting` + ownership in place for retry.
 
 Group Conversations are durable membership records (`kind: "group"`, `botIds` ≥ 2 unique, optional lead in membership, opaque `conversation_` id). No execution, routing, or member sessions happen at Group CRUD time.
 
-Group Topics carry an explicit `ExecutionTarget` (`workspace` + optional `cwd` + `isolation`). `cwd` is forward-compatible persisted shape only: `createGroupTopic()` rejects any non-empty `cwd` with `cwd_unsupported`, and member materialization also fails closed on a persisted non-empty `cwd` — until launcher execution honors it. `shared-single-writer` is the engineering default. `worktree-per-member` remains readable as a legacy persisted enum value, but `createGroupTopic()` rejects it with `invalid-isolation` until PR10 provisioning exists. Topic teardown mirrors the direct order at Topic scope: mark deleting → cancel active Runs → reconcile indeterminate → verified member-session release → remove member bindings → delete store rows → remove Topic metadata. Retryable on release failure.
+Group Topics carry an explicit `ExecutionTarget` (`workspace` + optional `cwd` + `isolation`). `cwd` is forward-compatible persisted shape only: `createGroupTopic()` rejects any non-empty `cwd` with `cwd_unsupported`, and member materialization also fails closed on a persisted non-empty `cwd` — until launcher execution honors it. `shared-single-writer` is the engineering default. `worktree-per-member` remains readable as a legacy persisted enum value, but `createGroupTopic()` rejects it with `invalid-isolation` until PR10 provisioning exists. Topic teardown mirrors the direct order at Topic scope: mark deleting → cancel active Runs → reconcile expired claims for that Topic only → verified member-session release → remove member bindings → delete store rows → remove Topic metadata. Retryable on release failure. Group delete's final recovery pass uses the Group Conversation id, so ghost rows of that Group are included and other Conversations are not.
 
 Group delete is barrier-first: mark the Group deleting in SQLite + AppState (new Topics and new Group work fail closed from there), teardown every remaining Topic, verified-release residual member runtime, delete residual Conversation-store rows, then remove the Group record last. Rows-after-release-before-record means a physical release failure leaves durable Run/message history intact, and a store-cleanup failure leaves the Group row and the barrier intact for retry; the fail-closed metadata delete reuses the same Topics/bindings/durable-rows guards.
 

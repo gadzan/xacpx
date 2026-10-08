@@ -1254,7 +1254,8 @@ export class ConversationRunService {
         await this.cancelRunAndAbortRouting(run.id);
       }
     }
-    this.store.recoverExpiredClaims(this.now().toISOString());
+    await this.dispatcher.flushOwnedClaimLeases();
+    this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId });
     const remaining = this.store.listRuns(conversationId);
     const indeterminate = remaining.filter((run) => run.state === "indeterminate");
     if (indeterminate.length > 0) {
@@ -1351,7 +1352,8 @@ export class ConversationRunService {
     for (const run of ghostRuns) {
       await this.cancelRunAndAbortRouting(run.id);
     }
-    this.store.recoverExpiredClaims(this.now().toISOString());
+    await this.dispatcher.flushOwnedClaimLeases();
+    this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId });
     const unsettled = this.store.listRuns(conversationId)
       .filter((run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human");
     if (unsettled.length > 0) {
@@ -1927,7 +1929,8 @@ export class ConversationRunService {
         await this.cancelRunAndAbortRouting(run.id);
       }
     }
-    this.store.recoverExpiredClaims(this.now().toISOString());
+    await this.dispatcher.flushOwnedClaimLeases();
+    this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId, topicId });
     const remaining = this.store.listRuns(conversationId, topicId);
     const blocking = remaining.filter(
       (run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human",

@@ -372,6 +372,12 @@ export interface ReconcileLateResult {
   reconciled: boolean;
 }
 
+/** SQL-enforced lease-recovery scope. Unset fields are not filters. */
+export interface ClaimRecoveryScope {
+  conversationId?: string;
+  topicId?: string;
+}
+
 export interface ConversationStore {
   /** Internal trusted execution input. No public caller supplies its identity. */
   acceptPublicHandoff(input: AcceptPublicHandoffInput): PublicHandoffReceipt;
@@ -390,7 +396,14 @@ export interface ConversationStore {
   getDispatchForRun(runId: string): PendingDispatch | undefined;
   getDispatchForMemberTurn(memberTurnId: string): PendingDispatch | undefined;
   listDispatchesForRun(runId: string): PendingDispatch[];
-  recoverExpiredClaims(now: string): RecoveredClaim[];
+  /**
+   * Lease recovery. Omit `scope` for the dispatcher's global pass.
+   * Teardown must pass a scope that the SQLite query itself enforces:
+   * a Conversation id limits rows to that Conversation (including ghost
+   * Topics), and a Topic id limits rows to that Topic. Recovery must not
+   * load every expired claim and then filter in memory.
+   */
+  recoverExpiredClaims(now: string, scope?: ClaimRecoveryScope): RecoveredClaim[];
   /** Converge `claimed` dispatches whose owner can no longer be alive: the
    *  startup handoff after acquiring the exclusive consumer lock, before the
    *  first drain. Any `claimed` row whose owner differs from the live
@@ -430,7 +443,12 @@ export interface ConversationStore {
    *  `stale_claim`, so a lost race can never extend a lease it no longer owns.
    *  Scheduling waits must never look like crash recovery. */
   renewHeldClaim(input: RenewHeldClaimInput): PendingDispatch;
-  /** Renew a physical execution still owned by the live drain before refill/recovery. */
+  /**
+   * Extend the lease of a claim this process is still executing. Fenced on
+   * dispatch id + owner + generation. Refuses terminal Runs, terminal
+   * members, and any claim that was recovered, cancelled, or lost: the
+   * update never moves a row back to `claimed`. Only `leaseExpiresAt` changes.
+   */
   renewInFlightClaim(input: RenewHeldClaimInput): PendingDispatch;
   /** Retire one unstarted held claim at graceful shutdown WITHOUT touching
    *  provenance: the dispatch returns to `pending` with owner cleared and a

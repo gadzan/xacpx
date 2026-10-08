@@ -33,6 +33,7 @@ import type {
   MarkExecutionStartedInput,
   ApplyRoutingDecisionInput,
   ApplyRoutingDecisionResult,
+  ClaimRecoveryScope,
   RecoveredClaim,
   ReleaseClaimToPendingInput,
   RenewHeldClaimInput,
@@ -1158,17 +1159,9 @@ export class SqliteConversationStore implements ConversationStore {
     ).map(mapDispatch);
   }
 
-  recoverExpiredClaims(now: string): RecoveredClaim[] {
+  recoverExpiredClaims(now: string, scope?: ClaimRecoveryScope): RecoveredClaim[] {
     return this.sqlite.transaction(() => {
-      const claimed = this.sqlite.all<DispatchRow>(
-        `SELECT * FROM pending_dispatches
-         WHERE state = 'claimed'
-           AND (
-             (lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
-             OR (owner IS NULL AND lease_expires_at IS NULL)
-           )`,
-        [now],
-      );
+      const claimed = this.expiredClaimRows(now, scope);
       const recovered: RecoveredClaim[] = [];
       for (const row of claimed) {
         const member = this.requireMemberTurn(row.member_turn_id);
@@ -1224,6 +1217,37 @@ export class SqliteConversationStore implements ConversationStore {
       }
       return recovered;
     });
+  }
+
+  /**
+   * Candidate selection is the scope fence. A Conversation or Topic teardown
+   * must not see another resource's claims, even when those leases are already
+   * expired. Unscoped recovery keeps the original dispatch scan so a corrupt
+   * claim with no Run still fails closed inside the loop.
+   */
+  private expiredClaimRows(now: string, scope?: ClaimRecoveryScope): DispatchRow[] {
+    const leasePredicate = `d.state = 'claimed'
+           AND (
+             (d.lease_expires_at IS NOT NULL AND d.lease_expires_at <= ?)
+             OR (d.owner IS NULL AND d.lease_expires_at IS NULL)
+           )`;
+    if (scope?.conversationId === undefined && scope?.topicId === undefined) {
+      return this.sqlite.all<DispatchRow>(
+        `SELECT d.* FROM pending_dispatches d
+         WHERE ${leasePredicate}`,
+        [now],
+      );
+    }
+    const conversationId = scope.conversationId ?? null;
+    const topicId = scope.topicId ?? null;
+    return this.sqlite.all<DispatchRow>(
+      `SELECT d.* FROM pending_dispatches d
+       JOIN runs r ON r.id = d.run_id
+       WHERE ${leasePredicate}
+         AND (? IS NULL OR r.conversation_id = ?)
+         AND (? IS NULL OR r.topic_id = ?)`,
+      [now, conversationId, conversationId, topicId, topicId],
+    );
   }
 
   convergePreviousOwnerClaims(owner: string, now: string): RecoveredClaim[] {
@@ -1602,13 +1626,17 @@ export class SqliteConversationStore implements ConversationStore {
         owner: input.owner,
         generation: input.generation,
       });
+      const run = this.requireRun(dispatch.run_id);
+      if (TERMINAL_RUN_STATES.includes(run.state)) {
+        throw new ConversationError("stale_claim", "held claim belongs to a terminal run");
+      }
       this.sqlite.run(
         `UPDATE pending_dispatches
          SET lease_expires_at = ?
-         WHERE id = ?`,
-        [input.leaseExpiresAt, dispatch.id],
+         WHERE id = ? AND state = 'claimed' AND owner = ? AND generation = ?`,
+        [input.leaseExpiresAt, dispatch.id, input.owner, input.generation],
       );
-      return this.requireDispatch(dispatch.id);
+      return this.requireLiveRenewal(dispatch.id, input.owner, input.generation);
     });
   }
 
@@ -1619,12 +1647,35 @@ export class SqliteConversationStore implements ConversationStore {
         || Number(dispatch.generation) !== input.generation) {
         throw new ConversationError("stale_claim", "execution no longer owns its reservation");
       }
+      const member = this.requireMemberTurn(dispatch.member_turn_id);
+      const run = this.requireRun(dispatch.run_id);
+      // A terminal row must not have its lease extended: that would hide it
+      // from recovery and look like the execution was still admitted. A
+      // cancelling Run whose member is still running stays renewable until
+      // that member actually reaches a terminal state.
+      if (TERMINAL_RUN_STATES.includes(run.state) || TERMINAL_MEMBER_STATES.includes(member.state)) {
+        throw new ConversationError("stale_claim", "execution no longer owns its reservation");
+      }
       // The caller still awaits this exact execute() promise. Its lease expiry
       // is elapsed provider time, not process-death evidence. CAS identity is
-      // still required; never renew a recovered/replaced claim.
-      this.sqlite.run("UPDATE pending_dispatches SET lease_expires_at = ? WHERE id = ?", [input.leaseExpiresAt, dispatch.id]);
-      return this.requireDispatch(dispatch.id);
+      // still required; never renew a recovered/replaced claim. The UPDATE
+      // itself is fenced so a lost race cannot move lease_expires_at.
+      this.sqlite.run(
+        `UPDATE pending_dispatches
+         SET lease_expires_at = ?
+         WHERE id = ? AND state = 'claimed' AND owner = ? AND generation = ?`,
+        [input.leaseExpiresAt, dispatch.id, input.owner, input.generation],
+      );
+      return this.requireLiveRenewal(dispatch.id, input.owner, input.generation);
     });
+  }
+
+  private requireLiveRenewal(dispatchId: string, owner: string, generation: number): PendingDispatch {
+    const updated = this.requireDispatch(dispatchId);
+    if (updated.state !== "claimed" || updated.owner !== owner || updated.generation !== generation) {
+      throw new ConversationError("stale_claim", "execution no longer owns its reservation");
+    }
+    return updated;
   }
 
   retireHeldClaim(input: ClaimFenceInput): PendingDispatch {
