@@ -1941,3 +1941,45 @@ test("PR7 groups.list dispatches and structured prompt target passes through", a
     target: { mode: "members", botIds: [] },
   }))).toMatchObject({ error: { code: "invalid-payload" } });
 });
+
+test("indeterminate resolution requires a hub-stamped actor and direct teardown stays a separate call", async () => {
+  const { control, calls } = makeFakeControl({
+    resolveIndeterminateRun: async (runId: string, input: unknown) => {
+      calls.resolve ??= [];
+      calls.resolve.push({ runId, input });
+      return { id: runId, state: "indeterminate", indeterminateResolution: { action: "accept-unknown" } };
+    },
+    teardownDirectConversation: async (id: string) => {
+      calls.teardownDirect ??= [];
+      calls.teardownDirect.push(id);
+      return { ok: true };
+    },
+    deleteBot: async (id: string) => {
+      calls.deleteBot ??= [];
+      calls.deleteBot.push(id);
+      return { ok: true };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.runsResolveIndeterminate, {
+    runId: "run_1", action: "accept-unknown", reason: "checked the workspace",
+  }))).toMatchObject({ error: { code: "resolution_forbidden" } });
+  expect(calls.resolve).toBeUndefined();
+  expect(await dispatch(bridge, req(MSG.runsResolveIndeterminate, {
+    runId: "run_1",
+    action: "accept-unknown",
+    reason: "checked the workspace",
+    actor: { accountId: "acct_1", senderName: "Ada" },
+  }))).toMatchObject({ run: { state: "indeterminate" } });
+  expect(calls.resolve).toEqual([{
+    runId: "run_1",
+    input: { action: "accept-unknown", reason: "checked the workspace", actorAccountId: "acct_1", actorName: "Ada" },
+  }]);
+  expect(await dispatch(bridge, req(MSG.botsTeardownDirect, { id: "bot_1" }))).toEqual({ ok: true });
+  expect(await dispatch(bridge, req(MSG.botsDelete, { id: "bot_1" }))).toEqual({ ok: true });
+  expect(calls.teardownDirect).toEqual(["bot_1"]);
+  expect(calls.deleteBot).toEqual(["bot_1"]);
+  expect(await dispatch(bridge, req(MSG.runsResolveIndeterminate, {
+    runId: "run_1", action: "accept-unknown", reason: "x", actor: { accountId: "bot:forged" },
+  }))).toMatchObject({ error: { code: "resolution_forbidden" } });
+});

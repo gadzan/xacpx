@@ -1959,6 +1959,34 @@ export class ControlService {
     });
   }
 
+  async teardownDirectConversation(id: string): Promise<{ ok: true }> {
+    return this.runConversationMutation(async (runtime) => {
+      await runtime.runs.teardownDirectConversation(id);
+      this.deps.events.emit({ type: "bots-changed" });
+      this.deps.events.emit({ type: "conversations-changed" });
+      return { ok: true };
+    });
+  }
+
+  async teardownDirectTopic(conversationId: string, topicId: string): Promise<{ ok: true }> {
+    return this.runConversationMutation(async (runtime) => {
+      await runtime.runs.teardownDirectTopic(conversationId, topicId);
+      this.deps.events.emit({ type: "conversations-changed" });
+      return { ok: true };
+    });
+  }
+
+  async resolveIndeterminateRun(
+    runId: string,
+    input: { action: "accept-unknown"; reason: string; actorAccountId: string; actorName?: string },
+  ) {
+    return this.runConversationMutation(async (runtime) => {
+      const resolution = runtime.runs.resolveIndeterminateRun({ runId, ...input });
+      const result = runtime.runs.getRun(runId);
+      return toRunDetail(result.run, result.memberTurns, resolution);
+    });
+  }
+
   async deleteBot(id: string): Promise<{ ok: true }> {
     return this.runConversationMutation(async (runtime) => {
       await runtime.bots.deleteBot(id);
@@ -2144,8 +2172,9 @@ export class ControlService {
   }
 
   getRun(runId: string) {
-    const result = this.requireConversations().runs.getRun(runId);
-    return toRunDetail(result.run, result.memberTurns);
+    const runtime = this.requireConversations();
+    const result = runtime.runs.getRun(runId);
+    return toRunDetail(result.run, result.memberTurns, runtime.store.getRunResolution(runId));
   }
 
   listTopicRuns(conversationId: string, topicId: string, limit?: number) {

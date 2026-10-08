@@ -697,6 +697,27 @@ function validInteractionField(value: unknown): boolean {
   return true;
 }
 
+function validIndeterminateResolution(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null) return false;
+  const record = value as Record<string, unknown>;
+  return record.action === "accept-unknown"
+    && typeof record.id === "string"
+    && typeof record.reason === "string"
+    && record.reason.length > 0
+    && record.reason.length <= 2000
+    && typeof record.actorAccountId === "string"
+    && record.actorAccountId.length > 0
+    && record.runState === "indeterminate"
+    && typeof record.createdAt === "string"
+    && typeof record.consumedMemberTurns === "number"
+    && Array.isArray(record.failedBotIds)
+    && record.failedBotIds.every((entry) => typeof entry === "string")
+    && Array.isArray(record.members)
+    && optStr(record.actorName)
+    && optStr(record.completionReason);
+}
+
 function validConversationRun(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const c = value as Record<string, unknown>;
@@ -720,6 +741,7 @@ function validConversationRun(value: unknown): boolean {
       || (Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))))
     && typeof c.createdAt === "string"
     && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt)
+    && validIndeterminateResolution(c.indeterminateResolution)
     && (c.waitingQuestion === undefined || (c.mode === "automatic" && c.state === "waiting-human"
       && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0))
     && (c.activeBatch === undefined || typeof c.activeBatch === "number")

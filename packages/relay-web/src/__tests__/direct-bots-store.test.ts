@@ -446,6 +446,61 @@ describe("useDirectBotsStore", () => {
       expect(store.botsByInstance["inst_1"]).toEqual([]);
     });
 
+    it("tears down the direct conversation before deleting the bot", async () => {
+      const store = useDirectBotsStore();
+      const calls: string[] = [];
+      mockRpc.mockImplementation((_inst: string, type: string) => {
+        calls.push(type);
+        if (type === "control.bots.teardown-direct") return Promise.resolve({ ok: true });
+        if (type === "control.bots.delete") return Promise.resolve({ ok: true });
+        return Promise.resolve({});
+      });
+      await store.deleteDirectBot("inst_1", "bot_1");
+      expect(calls).toEqual(["control.bots.teardown-direct", "control.bots.delete"]);
+    });
+
+    it("does not delete the bot when teardown reports an unresolved indeterminate run and the operator declines", async () => {
+      const store = useDirectBotsStore();
+      mockRpc.mockImplementation((_inst: string, type: string) => {
+        if (type === "control.bots.teardown-direct") {
+          return Promise.resolve({
+            error: { code: "conversation_indeterminate", message: "unknown", details: { runIds: ["run_1"] } },
+          });
+        }
+        return Promise.resolve({ ok: true });
+      });
+      await expect(store.deleteDirectBot("inst_1", "bot_1", { acceptUnknown: async () => false })).rejects.toMatchObject({
+        code: "conversation_indeterminate",
+      });
+      expect(mockRpc.mock.calls.map((call) => call[1])).toEqual(["control.bots.teardown-direct"]);
+    });
+
+    it("resolves unknown runs and retries teardown before delete when the operator accepts", async () => {
+      const store = useDirectBotsStore();
+      let teardowns = 0;
+      const calls: string[] = [];
+      mockRpc.mockImplementation((_inst: string, type: string) => {
+        calls.push(type);
+        if (type === "control.bots.teardown-direct") {
+          teardowns += 1;
+          if (teardowns === 1) {
+            return Promise.resolve({
+              error: { code: "conversation_indeterminate", message: "unknown", details: { runIds: ["run_1"] } },
+            });
+          }
+          return Promise.resolve({ ok: true });
+        }
+        return Promise.resolve({ ok: true });
+      });
+      await store.deleteDirectBot("inst_1", "bot_1", { acceptUnknown: async () => true });
+      expect(calls).toEqual([
+        "control.bots.teardown-direct",
+        "control.runs.resolve-indeterminate",
+        "control.bots.teardown-direct",
+        "control.bots.delete",
+      ]);
+    });
+
     it("surfaces bot_in_use as a coded error for delete mapping", async () => {
       const store = useDirectBotsStore();
       mockRpc.mockResolvedValueOnce({ error: { code: "bot_in_use", message: 'bot "bot_1" still has durable conversation work' } });

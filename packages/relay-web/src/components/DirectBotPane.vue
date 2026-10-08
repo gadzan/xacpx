@@ -38,19 +38,17 @@ const botDriver = computed(() => {
 const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
 
-const botHasRuntime = computed(() =>
-  (bot.value && "hasRuntime" in bot.value && bot.value.hasRuntime) === true,
-);
+function deleteErrorText(err: unknown): string {
+  const code = err instanceof Error && "code" in err ? String(err.code ?? "") : "";
+  if (code === "bot_in_use" || code === "bot_in_group") return t("bot.lifecycle.deleteBlocked");
+  if (code === "session_release_failed") return t("bot.delete.releaseFailed");
+  if (code === "execution_still_active" || code === "conversation_not_settled") return t("bot.delete.stillActive");
+  if (code === "conversation_indeterminate") return t("bot.delete.indeterminate", { runId: "" });
+  return err instanceof Error ? err.message : String(err);
+}
 
 async function handleDeleteBot(): Promise<void> {
   if (!bot.value || !directBotsStore.instanceId) return;
-  // Fail-closed backends reject deleting a used Bot (bot_in_use).
-  // Teardown/rebind is a later lifecycle surface, so say so before confirming
-  // instead of failing after.
-  if (botHasRuntime.value) {
-    directBotsStore.generalError = t("bot.lifecycle.deleteBlocked");
-    return;
-  }
   const confirmed = await confirm({
     title: t("bot.delete.confirmTitle"),
     message: t("bot.delete.confirmMessage", { name: bot.value.name }),
@@ -60,16 +58,16 @@ async function handleDeleteBot(): Promise<void> {
   if (!confirmed) return;
 
   try {
-    await directBotsStore.deleteBot(directBotsStore.instanceId, bot.value.id);
+    await directBotsStore.deleteDirectBot(directBotsStore.instanceId, bot.value.id, {
+      acceptUnknown: async (runIds) => confirm({
+        title: t("bot.delete.confirmTitle"),
+        message: t("bot.delete.indeterminate", { runId: runIds.join(", ") }),
+        confirmLabel: t("common.delete"),
+        tone: "danger",
+      }),
+    });
   } catch (err: unknown) {
-    // A Bot with only a persisted Conversation row (topic created, never run)
-    // has hasRuntime=false yet still fails closed backend-side (bot_in_use).
-    // Map that code to the explanatory deleteBlocked copy instead of a raw
-    // backend message.
-    const code = err instanceof Error && "code" in err ? String(err.code ?? "") : "";
-    directBotsStore.generalError = code === "bot_in_use"
-      ? t("bot.lifecycle.deleteBlocked")
-      : err instanceof Error ? err.message : String(err);
+    directBotsStore.generalError = deleteErrorText(err);
   }
 }
 </script>
@@ -128,10 +126,9 @@ async function handleDeleteBot(): Promise<void> {
         <button
           type="button"
           data-test="delete-bot-button"
-          :title="botHasRuntime ? $t('bot.lifecycle.deleteBlocked') : $t('bot.actions.delete')"
+          :title="$t('bot.actions.delete')"
           :aria-label="$t('bot.actions.delete')"
-          :disabled="botHasRuntime"
-          class="grid h-8 w-8 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
+          class="grid h-8 w-8 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger"
           @click="handleDeleteBot"
         >
           <Trash2 :size="14" />

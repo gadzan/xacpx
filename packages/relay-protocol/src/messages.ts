@@ -163,6 +163,12 @@ export const MSG = {
   runsGet: "control.runs.get",
   runsList: "control.runs.list",
   runsCancel: "control.runs.cancel",
+  /** Administrator acceptance of an indeterminate Run. Hub stamps actor. */
+  runsResolveIndeterminate: "control.runs.resolve-indeterminate",
+  /** Tear down a Direct Conversation before metadata delete. */
+  botsTeardownDirect: "control.bots.teardown-direct",
+  /** Tear down one non-default Direct Topic. */
+  directTopicsTeardown: "control.direct.topics.teardown",
   /**
    * Connector -> hub: OPEN one interaction. Core's broker is the only production
    * caller (`RelayChannel.requestElicitation`), so the direction is dial-out:
@@ -206,11 +212,15 @@ export const MSG = {
 export type MessageType = (typeof MSG)[keyof typeof MSG];
 
 export interface ErrorPayload {
-  error: { code: string; message: string };
+  error: { code: string; message: string; details?: Record<string, unknown> };
 }
 
-export function errorPayload(code: string, message: string): ErrorPayload {
-  return { error: { code, message } };
+export function errorPayload(
+  code: string,
+  message: string,
+  details?: Record<string, unknown>,
+): ErrorPayload {
+  return { error: { code, message, ...(details ? { details } : {}) } };
 }
 
 export function isErrorPayload(payload: unknown): payload is ErrorPayload {
@@ -632,6 +642,20 @@ export interface RunsCancelPayload {
 }
 export interface RunsCancelResult {
   run: ConversationRunDetailDto;
+}
+export interface RunsResolveIndeterminatePayload {
+  runId: string;
+  action: "accept-unknown";
+  reason: string;
+  /** Stamped by Relay Hub from the authenticated account. Clients must not supply it. */
+  actor?: { accountId: string; senderName?: string };
+}
+export interface BotsTeardownDirectPayload {
+  id: string;
+}
+export interface DirectTopicsTeardownPayload {
+  conversationId: string;
+  topicId: string;
 }
 
 export interface OkResult {

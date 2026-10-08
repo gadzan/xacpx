@@ -694,6 +694,17 @@ export function createApp(deps: AppDeps): Hono<Vars> {
         chatType: "direct",
       };
     }
+    if (body.type === MSG.runsResolveIndeterminate) {
+      const raw = { ...(payload as Record<string, unknown>) };
+      delete raw.actor;
+      payload = {
+        ...raw,
+        actor: {
+          accountId: account.id,
+          senderName: account.username,
+        },
+      };
+    }
     if (body.type === MSG.conversationPrompt) {
       payload = {
         ...(payload as Record<string, unknown>),

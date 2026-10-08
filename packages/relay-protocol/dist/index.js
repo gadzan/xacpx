@@ -194,12 +194,15 @@ var MSG = {
   runsGet: "control.runs.get",
   runsList: "control.runs.list",
   runsCancel: "control.runs.cancel",
+  runsResolveIndeterminate: "control.runs.resolve-indeterminate",
+  botsTeardownDirect: "control.bots.teardown-direct",
+  directTopicsTeardown: "control.direct.topics.teardown",
   interactionRequest: "control.interaction.request",
   interactionRespond: "control.interaction.respond",
   interactionWithdraw: "control.interaction.withdraw"
 };
-function errorPayload(code, message) {
-  return { error: { code, message } };
+function errorPayload(code, message, details) {
+  return { error: { code, message, ...details ? { details } : {} } };
 }
 function isErrorPayload(payload) {
   if (typeof payload !== "object" || payload === null)
@@ -276,11 +279,11 @@ function decodeCanonicalBase64(encoded) {
     const binary = globalThis.atob(encoded);
     if (globalThis.btoa(binary) !== encoded)
       return null;
-    const decoded = new Uint8Array(binary.length);
+    const decoded2 = new Uint8Array(binary.length);
     for (let i = 0;i < binary.length; i++) {
-      decoded[i] = binary.charCodeAt(i) & 255;
+      decoded2[i] = binary.charCodeAt(i) & 255;
     }
-    return decoded;
+    return decoded2;
   }
   const BufferCtor = globalThis.Buffer;
   if (!BufferCtor)
@@ -688,11 +691,19 @@ function validInteractionField(value) {
   }
   return true;
 }
+function validIndeterminateResolution(value) {
+  if (value === undefined)
+    return true;
+  if (typeof value !== "object" || value === null)
+    return false;
+  const record = value;
+  return record.action === "accept-unknown" && typeof record.id === "string" && typeof record.reason === "string" && record.reason.length > 0 && record.reason.length <= 2000 && typeof record.actorAccountId === "string" && record.actorAccountId.length > 0 && record.runState === "indeterminate" && typeof record.createdAt === "string" && typeof record.consumedMemberTurns === "number" && Array.isArray(record.failedBotIds) && record.failedBotIds.every((entry) => typeof entry === "string") && Array.isArray(record.members) && optStr(record.actorName) && optStr(record.completionReason);
+}
 function validConversationRun(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && (c.mode === "explicit" || c.mode === "automatic") && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number") && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number") && (c.failedBotIds === undefined || Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")) && (c.unavailableBotIds === undefined || Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")) && (c.quarantinedBotIds === undefined || Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))) && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt) && (c.waitingQuestion === undefined || c.mode === "automatic" && c.state === "waiting-human" && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0) && (c.activeBatch === undefined || typeof c.activeBatch === "number") && (c.routingState === undefined || c.routingState === "queued" || c.routingState === "routing" || c.routingState === "dispatching" || c.routingState === "done");
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.requestMessageId === "string" && typeof c.requestId === "string" && (c.mode === "explicit" || c.mode === "automatic") && (c.state === "queued" || c.state === "running" || c.state === "waiting-human" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.profileRevision === "number" && (c.maxMemberTurns === undefined || typeof c.maxMemberTurns === "number") && (c.consumedMemberTurns === undefined || typeof c.consumedMemberTurns === "number") && (c.failedBotIds === undefined || Array.isArray(c.failedBotIds) && c.failedBotIds.every((entry) => typeof entry === "string")) && (c.unavailableBotIds === undefined || Array.isArray(c.unavailableBotIds) && c.unavailableBotIds.every((entry) => typeof entry === "string")) && (c.quarantinedBotIds === undefined || Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))) && typeof c.createdAt === "string" && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt) && validIndeterminateResolution(c.indeterminateResolution) && (c.waitingQuestion === undefined || c.mode === "automatic" && c.state === "waiting-human" && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0) && (c.activeBatch === undefined || typeof c.activeBatch === "number") && (c.routingState === undefined || c.routingState === "queued" || c.routingState === "routing" || c.routingState === "dispatching" || c.routingState === "done");
 }
 function validMemberTurnSummary(value) {
   if (typeof value !== "object" || value === null)
@@ -1321,6 +1332,27 @@ var validateRunsCancel = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? o : null;
 };
+var validateRunsResolveIndeterminate = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.runId) || o.action !== "accept-unknown" || !isBoundedStr(o.reason, 2000))
+    return null;
+  if (o.actor !== undefined) {
+    if (!isObj(o.actor))
+      return null;
+    const actor = o.actor;
+    if (!isBoundedStr(actor.accountId, 256) || !optStr(actor.senderName))
+      return null;
+  }
+  return o;
+};
+var validateBotsTeardownDirect = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? o : null;
+};
+var validateDirectTopicsTeardown = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.topicId) ? o : null;
+};
 var optObj = (v) => v === undefined || isObj(v);
 var isTimestamp = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
 var INTERACTION_KINDS = ["permission", "elicitation"];
@@ -1622,6 +1654,9 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.runsGet]: validateRunsGet,
   [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel,
+  [MSG.runsResolveIndeterminate]: validateRunsResolveIndeterminate,
+  [MSG.botsTeardownDirect]: validateBotsTeardownDirect,
+  [MSG.directTopicsTeardown]: validateDirectTopicsTeardown,
   [MSG.interactionRequest]: validateInteractionRequest,
   [MSG.interactionRespond]: validateInteractionResponse,
   [MSG.interactionWithdraw]: validateInteractionWithdraw
@@ -1704,87 +1739,87 @@ function parseDesktopEventPayload(type, payload) {
   return validate(payload);
 }
 export {
-  CONTROL_PAYLOAD_VALIDATORS,
-  DESKTOP_BUFFERED_HARD_CLOSE_BYTES,
-  DESKTOP_BUFFERED_SOFT_PAUSE_BYTES,
-  DESKTOP_ERROR_CODES,
-  DESKTOP_EVENT_PAYLOAD_VALIDATORS,
-  DESKTOP_HUB_REQUEST_TIMEOUT_MS,
-  DESKTOP_MAX_STREAMS_PER_ACCOUNT,
-  DESKTOP_MAX_STREAMS_PER_INSTANCE,
-  DESKTOP_RPC_TIMEOUT_MS,
-  DESKTOP_TCP_CHUNK_BYTES,
-  DESKTOP_TICKET_TTL_MS,
-  DESKTOP_WS_MAX_PAYLOAD_BYTES,
-  INTERACTION_WIRE_LIMITS,
-  MAX_BOT_ID_LENGTH,
-  MAX_CAPABILITIES,
-  MAX_CAPABILITY_LENGTH,
-  MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
-  MAX_DESKTOP_REQUEST_ID_LENGTH,
-  MAX_DESKTOP_STREAM_ID_LENGTH,
-  MAX_DESKTOP_TICKET_LENGTH,
-  MAX_DESKTOP_WS_PATH_LENGTH,
-  MAX_GROUP_TARGET_MEMBERS,
-  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
-  MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
-  MAX_TERMINAL_COLS,
-  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
-  MAX_TERMINAL_GENERATION_LENGTH,
-  MAX_TERMINAL_ID_LENGTH,
-  MAX_TERMINAL_INPUT_BYTES,
-  MAX_TERMINAL_REBASE_TOTAL_BYTES,
-  MAX_TERMINAL_REQUEST_ID_LENGTH,
-  MAX_TERMINAL_ROWS,
-  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
-  MAX_TERMINAL_VIEWER_ID_LENGTH,
-  MAX_TOOL_STEPS,
-  MAX_WEB_INSTANCE_ID_LENGTH,
-  MIN_TERMINAL_COLS,
-  MIN_TERMINAL_ROWS,
-  MSG,
-  REASONING_CAP,
-  RECOVERY_RETENTION_MS,
-  RELAY_CAPABILITIES,
-  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
-  RELAY_PROTOCOL_VERSION,
-  STATE_SYNC_PARTS_CAP,
-  STATE_SYNC_TEXT_CAP,
-  TERMINAL_ERROR_CODES,
-  TERMINAL_EVENT_PAYLOAD_VALIDATORS,
-  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
-  TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
-  TERMINAL_REBASE_CHUNK_BYTES,
-  TERMINAL_RPC_TIMEOUT_MS,
-  WEB_CLIENT_TYPE,
-  WEB_EVENT_TYPE,
-  decodeEnvelope,
-  encodeEnvelope,
-  errorPayload,
-  isBoundedStr,
-  isErrorPayload,
-  isIntInRange,
-  isNonNegInt,
-  isObj,
-  isStr,
-  maxBase64EncodedLength,
-  normalizeCapabilities,
-  optBool,
-  optNonNegInt,
-  optNum,
-  optStr,
-  optStrArr,
-  parseCanonicalBase64,
-  parseControlPayload,
-  parseDesktopEventPayload,
-  parseTerminalEventPayload,
-  parseWebClientMessage,
-  parseWebServerEvent,
-  validControlEvent,
-  validInstanceStateSync,
-  validateInteractionRequest,
-  validateInteractionResponse,
-  validateInteractionWithdraw,
+  webEventEnvelope,
   webClientEnvelope,
-  webEventEnvelope
+  validateInteractionWithdraw,
+  validateInteractionResponse,
+  validateInteractionRequest,
+  validInstanceStateSync,
+  validControlEvent,
+  parseWebServerEvent,
+  parseWebClientMessage,
+  parseTerminalEventPayload,
+  parseDesktopEventPayload,
+  parseControlPayload,
+  parseCanonicalBase64,
+  optStrArr,
+  optStr,
+  optNum,
+  optNonNegInt,
+  optBool,
+  normalizeCapabilities,
+  maxBase64EncodedLength,
+  isStr,
+  isObj,
+  isNonNegInt,
+  isIntInRange,
+  isErrorPayload,
+  isBoundedStr,
+  errorPayload,
+  encodeEnvelope,
+  decodeEnvelope,
+  WEB_EVENT_TYPE,
+  WEB_CLIENT_TYPE,
+  TERMINAL_RPC_TIMEOUT_MS,
+  TERMINAL_REBASE_CHUNK_BYTES,
+  TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
+  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
+  TERMINAL_EVENT_PAYLOAD_VALIDATORS,
+  TERMINAL_ERROR_CODES,
+  STATE_SYNC_TEXT_CAP,
+  STATE_SYNC_PARTS_CAP,
+  RELAY_PROTOCOL_VERSION,
+  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
+  RELAY_CAPABILITIES,
+  RECOVERY_RETENTION_MS,
+  REASONING_CAP,
+  MSG,
+  MIN_TERMINAL_ROWS,
+  MIN_TERMINAL_COLS,
+  MAX_WEB_INSTANCE_ID_LENGTH,
+  MAX_TOOL_STEPS,
+  MAX_TERMINAL_VIEWER_ID_LENGTH,
+  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
+  MAX_TERMINAL_ROWS,
+  MAX_TERMINAL_REQUEST_ID_LENGTH,
+  MAX_TERMINAL_REBASE_TOTAL_BYTES,
+  MAX_TERMINAL_INPUT_BYTES,
+  MAX_TERMINAL_ID_LENGTH,
+  MAX_TERMINAL_GENERATION_LENGTH,
+  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
+  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
+  MAX_GROUP_TARGET_MEMBERS,
+  MAX_DESKTOP_WS_PATH_LENGTH,
+  MAX_DESKTOP_TICKET_LENGTH,
+  MAX_DESKTOP_STREAM_ID_LENGTH,
+  MAX_DESKTOP_REQUEST_ID_LENGTH,
+  MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
+  MAX_CAPABILITY_LENGTH,
+  MAX_CAPABILITIES,
+  MAX_BOT_ID_LENGTH,
+  INTERACTION_WIRE_LIMITS,
+  DESKTOP_WS_MAX_PAYLOAD_BYTES,
+  DESKTOP_TICKET_TTL_MS,
+  DESKTOP_TCP_CHUNK_BYTES,
+  DESKTOP_RPC_TIMEOUT_MS,
+  DESKTOP_MAX_STREAMS_PER_INSTANCE,
+  DESKTOP_MAX_STREAMS_PER_ACCOUNT,
+  DESKTOP_HUB_REQUEST_TIMEOUT_MS,
+  DESKTOP_EVENT_PAYLOAD_VALIDATORS,
+  DESKTOP_ERROR_CODES,
+  DESKTOP_BUFFERED_SOFT_PAUSE_BYTES,
+  DESKTOP_BUFFERED_HARD_CLOSE_BYTES,
+  CONTROL_PAYLOAD_VALIDATORS
 };

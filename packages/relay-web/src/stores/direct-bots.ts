@@ -159,18 +159,20 @@ function missingInteractionFields(state: PendingInteractionState): InteractionFi
 
 class DirectBotRpcError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly details?: Record<string, unknown>;
+  constructor(code: string, message: string, details?: Record<string, unknown>) {
     super(message || code);
     this.name = "DirectBotRpcError";
     this.code = code;
+    this.details = details;
   }
 }
-function unwrapRpc<T>(result: T | { error: { code: string; message: string } }): T {
+function unwrapRpc<T>(result: T | { error: { code: string; message: string; details?: Record<string, unknown> } }): T {
   if (isErrorPayload(result)) {
     if (result.error.code === "unknown-type") {
       throw new DirectBotRpcError(result.error.code, "connectorOutdated");
     }
-    throw new DirectBotRpcError(result.error.code, result.error.message || result.error.code);
+    throw new DirectBotRpcError(result.error.code, result.error.message || result.error.code, result.error.details);
   }
   return result;
 }
@@ -1027,6 +1029,61 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // merge locally and refresh best-effort instead of failing the save.
     void loadBots(targetInstanceId).catch(() => {});
     return res.bot;
+  }
+
+  async function teardownDirectBot(targetInstanceId: string, botId: string): Promise<void> {
+    unwrapRpc(await api.rpc<{ ok: boolean }>(targetInstanceId, MSG.botsTeardownDirect, { id: botId }));
+  }
+
+  async function resolveIndeterminateRun(
+    targetInstanceId: string,
+    runId: string,
+    reason: string,
+  ): Promise<ConversationRunDetailDto> {
+    const res = unwrapRpc(
+      await api.rpc<{ run: ConversationRunDetailDto }>(targetInstanceId, MSG.runsResolveIndeterminate, {
+        runId,
+        action: "accept-unknown",
+        reason,
+      }),
+    );
+    return res.run;
+  }
+
+  /**
+   * Product delete: tear down the Direct Conversation first, then the
+   * metadata-only Bot delete. A teardown failure leaves the Bot in place.
+   * When the only blocker is an unresolved indeterminate Run, `acceptUnknown`
+   * may record the administrator acceptance and the teardown is retried once.
+   */
+  async function deleteDirectBot(
+    targetInstanceId: string,
+    botId: string,
+    options?: { acceptUnknown?: (runIds: string[]) => Promise<boolean> },
+  ): Promise<void> {
+    try {
+      await teardownDirectBot(targetInstanceId, botId);
+    } catch (error: unknown) {
+      const coded = error as { code?: string; details?: { runIds?: unknown } };
+      const runIds = Array.isArray(coded.details?.runIds)
+        ? coded.details.runIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+        : [];
+      if (coded.code !== "conversation_indeterminate" || runIds.length === 0 || !options?.acceptUnknown) {
+        throw error;
+      }
+      if (!await options.acceptUnknown(runIds)) {
+        throw error;
+      }
+      for (const runId of runIds) {
+        await resolveIndeterminateRun(
+          targetInstanceId,
+          runId,
+          "operator accepted unknown side effects during Direct Bot delete",
+        );
+      }
+      await teardownDirectBot(targetInstanceId, botId);
+    }
+    await deleteBot(targetInstanceId, botId);
   }
 
   async function deleteBot(targetInstanceId: string, botId: string): Promise<void> {
@@ -3577,6 +3634,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     createBot,
     updateBot,
     deleteBot,
+    teardownDirectBot,
+    deleteDirectBot,
+    resolveIndeterminateRun,
     loadConversations,
     loadTopics,
     createTopic,

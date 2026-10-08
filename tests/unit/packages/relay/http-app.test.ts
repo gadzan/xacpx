@@ -348,6 +348,36 @@ test("conversation.prompt Hub-stamps humanIngress from the authenticated account
   });
 });
 
+test("resolve-indeterminate Hub overwrites a client actor with the authenticated account", async () => {
+  const { app, instances, loginToken, login, rpcCalls, admin } = await makeApp();
+  const { cookie } = await login(loginToken);
+  const tokenRes = await app.request("/api/instances/pairing-token", {
+    method: "POST", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ name: "pc" }),
+  });
+  const { token } = (await tokenRes.json()) as { token: string };
+  const redeemed = instances.redeemPairingToken(token)!;
+  rpcCalls.length = 0;
+  const rpcRes = await app.request(`/api/instances/${redeemed.instanceId}/rpc`, {
+    method: "POST", headers: { cookie, "content-type": "application/json" },
+    body: JSON.stringify({
+      type: MSG.runsResolveIndeterminate,
+      payload: {
+        runId: "run_1",
+        action: "accept-unknown",
+        reason: "checked the workspace",
+        actor: { accountId: "forged", senderName: "forged" },
+      },
+    }),
+  });
+  expect(rpcRes.status).toBe(200);
+  expect(rpcCalls[0]?.payload).toMatchObject({
+    runId: "run_1",
+    action: "accept-unknown",
+    reason: "checked the workspace",
+    actor: { accountId: redeemed.accountId, senderName: admin.username },
+  });
+});
+
 test("session archive/unarchive RPCs are chat-scoped (chatKey stamped, else the connector crashes)", async () => {
   const { app, instances, loginToken, login, rpcCalls } = await makeApp();
   const { cookie } = await login(loginToken);
