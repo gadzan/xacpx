@@ -14,7 +14,8 @@ const digest = (s: string): string => createHash("sha256").update(s).digest("hex
 const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e)).replace(/xacpx-conversation:[a-f0-9-]{36}/g, "[worktree owner]").slice(0, 8192);
 const now = (): string => new Date().toISOString();
 function fail(code: string, message: string): never { throw new ConversationError(code, message); }
-const safeGit = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "commit.gpgSign=false", "-c", "rerere.enabled=false", "-c", "merge.default=text"];
+const safeGit = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "commit.gpgSign=false",
+  "-c", "rerere.enabled=false", "-c", "merge.default=text", "-c", "gc.auto=0", "-c", "maintenance.auto=false"];
 export interface WorktreeManagerHooks { checkpoint?: (point: string, runId: string) => Promise<void> }
 
 /** One durable owner, backed by Git registration and an opaque worktree lock. */
