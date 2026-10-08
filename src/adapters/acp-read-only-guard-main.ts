@@ -33,12 +33,12 @@ async function write(stream: NodeJS.WritableStream, message: Record<string, unkn
 const input = pumpAcpStdout(process.stdin, async (line) => {
   const decision = guardReadOnlyClientMessage(JSON.parse(line.toString("utf8")));
   if ("forward" in decision) await write(child.stdin, decision.forward);
-  else if ("id" in decision.reply && decision.reply.id !== undefined) await write(process.stdout, decision.reply);
+  else if ("reply" in decision && "id" in decision.reply && decision.reply.id !== undefined) await write(process.stdout, decision.reply);
 }, MAX_RAW_ACP_LINE_BYTES).then(() => child.stdin.end()).catch(fail);
 const output = pumpAcpStdout(child.stdout, async (line) => {
   const decision = guardReadOnlyAgentMessage(JSON.parse(line.toString("utf8")));
   if ("forward" in decision) await write(process.stdout, decision.forward);
-  else await write(child.stdin, decision.reply);
+  else if ("reply" in decision) await write(child.stdin, decision.reply);
 }, MAX_RAW_ACP_LINE_BYTES).catch(fail);
 child.stderr.pipe(process.stderr);
 child.stdin.on("error", fail);

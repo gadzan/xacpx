@@ -54,7 +54,7 @@ export function claudeReadOnlyOptions(): Record<string, unknown> {
 }
 
 type Rpc = Record<string, any>;
-export type PolicyDecision = { forward: Rpc } | { reply: Rpc };
+export type PolicyDecision = { forward: Rpc } | { reply: Rpc } | { drop: true };
 const denied = (message: Rpc): PolicyDecision => ({ reply: {
   jsonrpc: "2.0", id: message.id,
   error: { code: -32601, message: "accepted read-only execution forbids this capability" },
@@ -117,7 +117,12 @@ export function guardReadOnlyAgentMessage(message: Rpc): PolicyDecision {
       authMethods: [],
     } } };
   }
-  if (typeof message.method !== "string" || !("id" in message)) return { forward: message };
+  if (typeof message.method !== "string") return { forward: message };
+  if (!("id" in message)) {
+    // Notifications receive no reply. Only the supported progress method may
+    // cross this boundary; omitting an id cannot grant another capability.
+    return message.method === "session/update" ? { forward: message } : { drop: true };
+  }
   if (message.method === "fs/read_text_file") return { forward: message };
   if (message.method === "session/request_permission") return { reply: {
     jsonrpc: "2.0", id: message.id, result: { outcome: { outcome: "cancelled" } },

@@ -289,6 +289,14 @@ raise the ceiling. The native SDK exclusive `tools` option removes Write/Edit,
 unrestricted Bash, agents/skills and MCP tools; `allowedTools` alone would be
 insufficient. Bare mode suppresses filesystem/plugin/policy hooks and settings
 discovery. These constraints apply on new sessions, warm reuse and resume.
+Agent-to-client method messages are filtered even when they omit an RPC id.
+Only `session/update` is forwarded as a notification; other no-id methods,
+including filesystem, terminal, permission and unknown extensions, are dropped
+without a response. Supported `fs/read_text_file` requests require an id;
+forbidden requests with an id receive the existing denial or permission
+cancellation. This keeps the guard's capability ceiling independent of
+downstream handling of malformed notifications and follows
+[JSON-RPC notification semantics](https://www.jsonrpc.org/specification#notification).
 An existing writable owned session is strictly physically released and recreated
 before a restricted turn; the policy participates in the persisted launch argv,
 derived agent identity and existing Runtime/CLI construction fingerprints.
