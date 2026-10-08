@@ -231,6 +231,47 @@ async function dispatch(
   return await new Promise((resolve) => bridge(envelope, resolve));
 }
 
+test("new policy RPC cannot fall back to an old core or old trusted callback", async () => {
+  let oldCalls = 0;
+  const { control } = makeFakeControl({ promptConversation: async () => { oldCalls++; } });
+  const bridge = createControlBridge(control as never, { trustedConversationPrompt: async () => { oldCalls++; return {} as never; } });
+  const result = await dispatch(bridge, req(MSG.conversationPromptWithPolicy, {
+    conversationId: "c", topicId: "t", requestId: "r", text: "review", memberPolicies: [{ botId: "a", filesystem: "read-only" }],
+    humanIngress: { chatKey: "relay:a", senderId: "a", accountId: "a", isOwner: true },
+  }));
+  expect(result).toMatchObject({ error: { code: "unsupported-effect-policy" } }); expect(oldCalls).toBe(0);
+});
+
+for (const human of [false, true]) {
+  test(`new policy RPC retains the ${human ? "trusted human" : "public orchestration"} producer path`, async () => {
+    const calls: unknown[] = [];
+    const { control } = makeFakeControl({ promptConversationWithPolicy: async (input: unknown) => { calls.push(["public", input]); return { effective: "ack" }; } });
+    const bridge = createControlBridge(control as never, {
+      trustedConversationPolicyPrompt: async (input, ingress) => { calls.push(["trusted", input, ingress]); return { effective: "ack" } as never; },
+      trustedConversationPrompt: async () => { throw new Error("cannot use old policy-blind ingress"); },
+    });
+    const payload = { conversationId: "c", topicId: "t", requestId: "r", text: "review", memberPolicies: [{ botId: "a", filesystem: "read-only" }],
+      ...(human ? { humanIngress: { chatKey: "relay:a", senderId: "a", accountId: "a", isOwner: true } } : {}) };
+    expect(await dispatch(bridge, req(MSG.conversationPromptWithPolicy, payload))).toEqual({ effective: "ack" });
+    expect(calls).toHaveLength(1); expect((calls[0] as unknown[])[0]).toBe(human ? "trusted" : "public");
+    expect((calls[0] as unknown[])[1]).toMatchObject({ memberPolicies: payload.memberPolicies });
+  });
+}
+
+test("policy RPC with trusted ingress rejects a missing dedicated callback without public downgrade", async () => {
+  let publicCalls = 0, oldTrustedCalls = 0;
+  const { control } = makeFakeControl({ promptConversationWithPolicy: async () => { publicCalls++; return {} as never; } });
+  const bridge = createControlBridge(control as never, {
+    trustedConversationPrompt: async () => { oldTrustedCalls++; return {} as never; },
+  });
+  expect(await dispatch(bridge, req(MSG.conversationPromptWithPolicy, {
+    conversationId: "c", topicId: "t", requestId: "r", text: "review",
+    memberPolicies: [{ botId: "a", filesystem: "read-only" }],
+    humanIngress: { chatKey: "relay:a", senderId: "a", accountId: "a", isOwner: true },
+  }))).toMatchObject({ error: { code: "unsupported-effect-policy" } });
+  expect(publicCalls).toBe(0); expect(oldTrustedCalls).toBe(0);
+});
+
 test("sessions.list / prompt / command.execute dispatch and shape results", async () => {
   const { control, calls } = makeFakeControl();
   const bridge = createControlBridge(control as never);

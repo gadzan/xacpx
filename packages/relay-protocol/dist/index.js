@@ -187,6 +187,7 @@ var MSG = {
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
   conversationPrompt: "control.conversation.prompt",
+  conversationPromptWithPolicy: "control.conversation.prompt-with-policy",
   conversationBindingsList: "control.conversation.bindings.list",
   conversationBindingsSet: "control.conversation.bindings.set",
   conversationBindingsDelete: "control.conversation.bindings.delete",
@@ -698,7 +699,7 @@ function validMemberTurnSummary(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && optNonNegInt(c.memberIndex) && typeof c.attempt === "number" && (c.origin === "human-explicit" || c.origin === "human" || c.origin === "router" || c.origin === "handoff" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput) && optStrArr(c.dependsOn) && optStr(c.failureReason) && (c.blockedReason === undefined || c.blockedReason === "human-authority-required" || c.blockedReason === "human-authority-unknown");
+  return typeof c.id === "string" && typeof c.runId === "string" && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && typeof c.batch === "number" && optNonNegInt(c.memberIndex) && (c.effect === undefined || c.effect === "unknown" || c.effect === "read-only" || c.effect === "mutating") && (c.effectProvenance === undefined || c.effect === "read-only" && c.effectProvenance === "declared-enforced") && typeof c.attempt === "number" && (c.origin === "human-explicit" || c.origin === "human" || c.origin === "router" || c.origin === "handoff" || c.origin === "followup" || c.origin === "retry" || c.origin === "recovery") && (c.state === "queued" || c.state === "dispatched" || c.state === "running" || c.state === "completed" || c.state === "failed" || c.state === "cancelled" || c.state === "indeterminate") && typeof c.createdAt === "string" && optStr(c.promptRequestId) && optStr(c.startedAt) && optStr(c.finishedAt) && optStr(c.assignmentId) && optStr(c.task) && optStr(c.expectedOutput) && optStrArr(c.dependsOn) && optStr(c.failureReason) && (c.blockedReason === undefined || c.blockedReason === "human-authority-required" || c.blockedReason === "human-authority-unknown");
 }
 function validInteractionOpenShape(c) {
   return typeof c.chatKey === "string" && typeof c.sessionAlias === "string" && validInteractionRequest(c.interaction);
@@ -1294,6 +1295,21 @@ var validateConversationBinding = (p) => {
     ...o.topicId !== undefined ? { topicId: o.topicId } : {}
   } : null;
 };
+var validateConversationPolicyPrompt = (p) => {
+  const o = fields(p);
+  if (!o || !validateConversationPrompt(p) || !Array.isArray(o.memberPolicies) || o.memberPolicies.length < 1 || o.memberPolicies.length > MAX_GROUP_TARGET_MEMBERS)
+    return null;
+  const ids = new Set;
+  for (const entry of o.memberPolicies) {
+    const policy = fields(entry);
+    if (!policy || Object.keys(policy).length !== 2 || !isBoundedStr(policy.botId, MAX_BOT_ID_LENGTH) || ids.has(policy.botId) || policy.filesystem !== "read-only" && policy.filesystem !== "read-write")
+      return null;
+    ids.add(policy.botId);
+  }
+  if (o.effectProvenance !== undefined || o.trustedReadOnly !== undefined || o.effect !== undefined)
+    return null;
+  return o;
+};
 var validateConversationBindingDelete = (p) => {
   const o = fields(p);
   return o && isBoundedStr(o.chatKey, 2048) ? { chatKey: o.chatKey } : null;
@@ -1615,6 +1631,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
   [MSG.conversationPrompt]: validateConversationPrompt,
+  [MSG.conversationPromptWithPolicy]: validateConversationPolicyPrompt,
   [MSG.conversationBindingsList]: validateConversationBindingsList,
   [MSG.conversationBindingsSet]: validateConversationBinding,
   [MSG.conversationBindingsDelete]: validateConversationBindingDelete,

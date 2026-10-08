@@ -176,6 +176,8 @@ export interface ConversationRunDetailDto extends ConversationRunDto {
 }
 
 export interface MemberTurnSummaryDto {
+  effect?: MemberTurnRecord["effect"];
+  effectProvenance?: MemberTurnRecord["effectProvenance"];
   id: string;
   runId: string;
   conversationId: string;
@@ -255,6 +257,11 @@ export interface ConversationPromptResponseDto {
    *  as unconfirmed and re-run discovery before cancelling it. */
   activeRunId?: string;
   activeRun?: ConversationRunDto;
+}
+
+/** A distinct operation is required: old daemons must reject, never ignore a safety request. */
+export interface ConversationPolicyPromptRequestDto extends ConversationPromptRequestDto {
+  memberPolicies: import("../conversations/conversation-effect-request").ConversationMemberPolicy[];
 }
 
 export interface ConversationHistoryRequestDto {
@@ -412,6 +419,8 @@ export function toConversationRun(run: ConversationRun): ConversationRunDto {
 
 export function toMemberTurnSummary(turn: MemberTurnRecord): MemberTurnSummaryDto {
   return {
+    ...(turn.effect ? { effect: turn.effect } : {}),
+    ...(turn.effectProvenance ? { effectProvenance: turn.effectProvenance } : {}),
     id: turn.id,
     runId: turn.runId,
     conversationId: turn.conversationId,

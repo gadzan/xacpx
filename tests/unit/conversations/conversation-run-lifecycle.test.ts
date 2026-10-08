@@ -176,6 +176,7 @@ class FakeRunner implements ConversationTurnRunner {
 }
 
 async function createLifecycle(options: {
+  enforcedReaders?: boolean;
   runner?: ConversationTurnRunner;
   hooks?: ConversationDispatcherHooks;
   beforeAcceptPersist?: () => Promise<void>;
@@ -199,6 +200,11 @@ async function createLifecycle(options: {
   const stateStore = new MemoryStateStore();
   const stateMutex = new AsyncMutex();
   const config = createConfig();
+  if (options.enforcedReaders) {
+    delete config.transport.command;
+    config.agents.codex!.driver = "claude";
+    config.transport.adapterVersions = { claude: "0.78.0" };
+  }
   const sessions = new SessionService(config, stateStore, state, { now: () => Date.parse(NOW), stateMutex });
   const physical = {
     fail: false,
@@ -276,7 +282,7 @@ async function createLifecycle(options: {
     releaseOwnedSession,
   });
   await bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend", instructions: "Focus on races." });
-  return { path, store, state, stateStore, sessions, bots, runtime, runner, dispatcher, service, nowFn, jump, physical };
+  return { path, config, store, state, stateStore, sessions, bots, runtime, runner, dispatcher, service, nowFn, jump, physical };
 }
 
 function fakeRunner(runner: ConversationTurnRunner): FakeRunner {
@@ -2800,6 +2806,7 @@ test("teardownGroupTopic emits conversations-changed once on success", async () 
   const stateStore = { save: async () => {} };
   const stateMutex = new AsyncMutex();
   const config = {
+    transport: { type: "acpx-cli" },
     agents: { codex: { driver: "codex" }, claude: { driver: "claude" } },
     workspaces: { backend: { root: "/tmp/backend" } },
   } as never;
@@ -7167,7 +7174,7 @@ test("PR7 scheduler: sealed run preserves a concurrently started sibling complet
   // indeterminate (A still unknown). The seal blocks scheduling, not evidence
   // from an execution that was already admitted.
   const hangA = deferred<void>();
-  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old" });
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old", enforcedReaders: true });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
   const group = await first.bots.createGroup({ title: "SealEvidence", botIds: [BOT_ID, TESTER_ID] });
@@ -7191,6 +7198,7 @@ test("PR7 scheduler: sealed run preserves a concurrently started sibling complet
     conversationId: group.id,
     topicId: topic.id,
     requestId: "req-seal-evidence",
+    primaryMember: { effect: "read-only", effectProvenance: "declared-enforced" },
     botId: botA.id,
     content: "together",
     profileSnapshot: snapshotBotProfile(botA, NOW),
@@ -7242,7 +7250,7 @@ test("PR7 scheduler: sealed run preserves a concurrently started sibling failure
   // proven failure is already durable — failed state + failedBotIds survive
   // the seal and the Run re-derives indeterminate on A's unknown.
   const hangA = deferred<void>();
-  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old" });
+  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old", enforcedReaders: true });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
   const group = await first.bots.createGroup({ title: "SealEvidenceFail", botIds: [BOT_ID, TESTER_ID] });
@@ -7266,6 +7274,7 @@ test("PR7 scheduler: sealed run preserves a concurrently started sibling failure
     conversationId: group.id,
     topicId: topic.id,
     requestId: "req-seal-evidence-fail",
+    primaryMember: { effect: "read-only", effectProvenance: "declared-enforced" },
     botId: botA.id,
     content: "together",
     profileSnapshot: snapshotBotProfile(botA, NOW),
@@ -7915,11 +7924,11 @@ test("PR7 scheduler: bare read-only without proof stays serialized, proven read-
     expect(proven.memberTurns.find((m) => m.botId === TESTER_ID)?.effect).toBe("read-only");
     first.store.close();
   }
-  // Scheduler second: under shared-single-writer, proven read-only overlaps a
-  // hung sibling while bare read-only (normalized to unknown) still serializes.
+  // Scheduler second: two proven readers may overlap; a reader never overlaps
+  // an unknown writer merely because the candidate carries proof.
   // Proven overlap:
   {
-    const first = await createLifecycle({ autoKick: false });
+    const first = await createLifecycle({ autoKick: false, enforcedReaders: true });
     await first.service.activateAfterConsumerLock();
     seedTesterBot(first.state);
     const group = await first.bots.createGroup({ title: "Overlap", botIds: [BOT_ID, TESTER_ID] });
@@ -7937,6 +7946,7 @@ test("PR7 scheduler: bare read-only without proof stays serialized, proven read-
       conversationId: group.id,
       topicId: topic.id,
       requestId: "req-overlap",
+      primaryMember: { effect: "read-only", effectProvenance: "declared-enforced" },
       botId: botA.id,
       content: "overlap",
       profileSnapshot: snapshotBotProfile(botA, NOW),

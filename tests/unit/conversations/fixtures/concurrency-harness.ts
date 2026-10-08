@@ -5,6 +5,7 @@ import { BotService } from "../../../../src/bots/bot-service";
 import { BotRuntimeManager } from "../../../../src/bots/bot-runtime-manager";
 import { snapshotBotProfile } from "../../../../src/bots/bot-types";
 import type { AppConfig } from "../../../../src/config/types";
+import type { AcpxCommandMetadata } from "../../../../src/config/resolve-acpx-command";
 import { ConversationDispatcher, type ConversationDispatcherHooks } from "../../../../src/conversations/conversation-dispatcher";
 import { ConversationRunService } from "../../../../src/conversations/conversation-run-service";
 import { ConversationRouterEngine } from "../../../../src/conversations/conversation-router-engine";
@@ -57,15 +58,18 @@ export class ControlledRunner implements ConversationTurnRunner {
     return { outcome: "cancelled" as const };
   }
 }
-export async function harness(options: { path?: string; state?: AppState; hooks?: ConversationDispatcherHooks; router?: ConversationRouter; ownerId?: string } = {}) {
+export async function harness(options: { path?: string; state?: AppState; hooks?: ConversationDispatcherHooks; router?: ConversationRouter; ownerId?: string; beforeAcceptPersist?: () => Promise<void>; transport?: Partial<AppConfig["transport"]>; acpxCommandMetadata?: AcpxCommandMetadata } = {}) {
   const path = options.path ?? join(mkdtempSync(join(tmpdir(), "xacpx-concurrency-")), "conversations.sqlite");
   const store = await SqliteConversationStore.open(path);
   const state = options.state ?? createEmptyState();
   const stateStore = { async save(_s: AppState) {}, async saveNow(_s: AppState) {} };
-  const config = { agents: { codex: { driver: "codex" } }, workspaces: { backend: { cwd: "/tmp/backend" } },
-    transport: { type: "acpx-cli", command: "acpx" } } as AppConfig;
+  // The config key is an alias: synthetic reader fixtures now materialize the
+  // actual supported restricted launch instead of treating Codex's mode as proof.
+  const config = { agents: { codex: { driver: "claude" } }, workspaces: { backend: { cwd: "/tmp/backend" } },
+    // Pin the validated enforcement contract independently of release defaults.
+    transport: { type: "acpx-cli", adapterVersions: { claude: "0.78.0" }, ...options.transport } } as AppConfig;
   const stateMutex = new AsyncMutex();
-  const sessions = new SessionService(config, stateStore, state, { stateMutex });
+  const sessions = new SessionService(config, stateStore, state, { stateMutex, acpxCommandMetadata: options.acpxCommandMetadata });
   const releaseOwnedSession = createStrictOwnedSessionRelease({ sessions, transport: { async deleteSession() {}, async releaseLogicalSession() {} } });
   let id = Object.keys(state.bots).length;
   const bots = new BotService(config, state, stateStore, { stateMutex, createId: () => `bot_limit_${++id}` });
@@ -79,7 +83,7 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
     readGroup: (id) => state.conversations[id], readTopic: (_id, tid) => state.conversation_topics[tid],
     readBot: (id) => bots.getBot(id), runLifecycleAll: (ids, fn) => bots.runLifecycleAll(ids, fn), now }) : undefined;
   const service = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, stateStore,
-    { now, stateMutex, autoKick: false, releaseOwnedSession, routerEngine });
+    { now, stateMutex, autoKick: false, releaseOwnedSession, routerEngine, beforeAcceptPersist: options.beforeAcceptPersist });
   dispatcher.setAutomaticRoutingHandler((id) => service.trackAutomaticRouting(id));
   const ids = Object.keys(state.bots);
   async function group(limit?: number) {
@@ -95,5 +99,5 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
       primaryMember: first, members: ids.slice(1, count).map(member), content: "one frozen request", now: NOW,
       maxMemberTurns: 24, authorityEpoch: dispatcher.authorityEpoch, humanIngress: HUMAN });
   }
-  return { path, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, ids, now, jump: (ms: number) => { clock += ms; } };
+  return { path, config, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, ids, now, jump: (ms: number) => { clock += ms; } };
 }

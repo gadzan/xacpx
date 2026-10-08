@@ -12,7 +12,7 @@ import type { ConfigMutationMutex } from "./commands/router-types";
 import { ConfigStore } from "./config/config-store";
 import { ensureConfigExists } from "./config/ensure-config";
 import { loadConfig } from "./config/load-config";
-import { resolveAcpxCommand } from "./config/resolve-acpx-command";
+import { resolveAcpxCommandMetadata } from "./config/resolve-acpx-command";
 import { ConsoleAgent } from "./console-agent";
 import { isRestartRequiredTransportChange } from "./config/transport-topology";
 import type { AppConfig, LoggingLevel } from "./config/types";
@@ -477,9 +477,10 @@ export async function buildApp(
     config,
     logger,
   );
-  const acpxCommand = resolveAcpxCommand({
+  const acpxCommandMetadata = resolveAcpxCommandMetadata({
     configuredCommand: config.transport.command,
   });
+  const acpxCommand = acpxCommandMetadata.command;
   const stateStore = new StateStore(paths.statePath);
   const state = await stateStore.load();
   const stateLoadReport = stateStore.lastLoadReport;
@@ -654,6 +655,7 @@ export async function buildApp(
   const sessions = new SessionService(config, debouncedStateStore, state, {
     stateMutex,
     runtimeRoot,
+    acpxCommandMetadata,
     // True capability only: escalation MAY be Runtime-routed somewhere.
     // Per-request fail-closed still applies for unsupported channels and
     // non-human turns.

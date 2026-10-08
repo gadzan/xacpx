@@ -95,6 +95,10 @@ const CONNECTOR_TIMEOUT_EXEMPT_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 export interface ControlBridgeOptions {
+  trustedConversationPolicyPrompt?: (
+    input: import("@ganglion/xacpx-relay-protocol").ConversationPolicyPromptPayload,
+    ingress: Parameters<NonNullable<ControlBridgeOptions["trustedConversationPrompt"]>>[1],
+  ) => Promise<unknown>;
   timeoutMs?: number;
   /** Test seams for the dispatch timeout timer and request-deadline conversion. */
   setTimeoutFn?: (fn: () => void, ms: number) => unknown;
@@ -196,6 +200,7 @@ export function createControlBridge(
       envelope,
       deadlineAt,
       options.trustedConversationPrompt,
+      options.trustedConversationPolicyPrompt,
     )
       .then(respondOnce)
       .catch((error: unknown) => {
@@ -252,6 +257,7 @@ async function dispatchControlRequest(
   envelope: RelayEnvelope,
   deadlineAt?: number,
   trustedConversationPrompt?: ControlBridgeOptions["trustedConversationPrompt"],
+  trustedConversationPolicyPrompt?: ControlBridgeOptions["trustedConversationPolicyPrompt"],
 ): Promise<unknown> {
   const payload = envelope.payload;
   switch (envelope.type) {
@@ -1088,10 +1094,13 @@ async function dispatchControlRequest(
       await control.teardownGroupTopic(input.conversationId, input.topicId);
       return { ok: true };
     }
-    case MSG.conversationPrompt: {
-      const input = parseControlPayload(MSG.conversationPrompt, payload);
+    case MSG.conversationPrompt:
+    case MSG.conversationPromptWithPolicy: {
+      const policyOperation = envelope.type === MSG.conversationPromptWithPolicy;
+      const input = policyOperation ? parseControlPayload(MSG.conversationPromptWithPolicy, payload) : parseControlPayload(MSG.conversationPrompt, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.conversationPrompt}: malformed payload`);
       const publicInput = {
+        ...(policyOperation && "memberPolicies" in input ? { memberPolicies: input.memberPolicies } : {}),
         conversationId: input.conversationId,
         topicId: input.topicId,
         requestId: input.requestId,
@@ -1099,9 +1108,20 @@ async function dispatchControlRequest(
         ...(input.target ? { target: input.target } : {}),
       };
       const ingress = readHubHumanIngress(payload);
-      if (ingress && trustedConversationPrompt) {
-        return await trustedConversationPrompt(publicInput, ingress);
+      if (policyOperation) {
+        if (!("memberPolicies" in publicInput) || typeof control.promptConversationWithPolicy !== "function") {
+          return errorPayload("unsupported-effect-policy", "daemon does not support policy-aware Conversation execution");
+        }
+        const policyInput = { ...publicInput, memberPolicies: publicInput.memberPolicies as { botId: string; filesystem: "read-only" | "read-write" }[] };
+        if (ingress) {
+          if (!trustedConversationPolicyPrompt) {
+            return errorPayload("unsupported-effect-policy", "trusted policy-aware Conversation ingress is not configured");
+          }
+          return await trustedConversationPolicyPrompt(policyInput, ingress);
+        }
+        return await control.promptConversationWithPolicy(policyInput);
       }
+      if (ingress && trustedConversationPrompt) return await trustedConversationPrompt(publicInput, ingress);
       return await control.promptConversation(publicInput);
     }
     case MSG.conversationBindingsList: {

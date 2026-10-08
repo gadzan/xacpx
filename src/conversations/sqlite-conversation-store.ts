@@ -600,6 +600,13 @@ function isMemberTurnEffect(value: unknown): value is MemberTurnEffect {
 }
 
 function mapMemberTurn(row: MemberTurnRow): MemberTurnRecord {
+  // Effects now carry an accepted security ceiling. Corruption cannot be
+  // normalized to writable unknown work; only genuinely absent legacy data
+  // may use the unproven default.
+  if ((row.effect !== undefined && !isMemberTurnEffect(row.effect))
+    || (row.effect_provenance != null && (row.effect_provenance !== "declared-enforced" || row.effect !== "read-only"))) {
+    throw new ConversationError("invalid_effect_policy", `member turn "${row.id}" has a malformed execution ceiling`);
+  }
   const dependsOn = parseDependsOn(row.depends_on_json);
   const snapshot = parseMemberSnapshot(row.profile_snapshot_json);
   return {
@@ -3181,11 +3188,11 @@ export class SqliteConversationStore implements ConversationStore {
           input.now,
           // Normalize at the durable boundary: only `read-only` backed by the
           // exact `declared-enforced` proof persists as proven. A bare
-          // `read-only` (missing/invalid provenance) or any other combination
-          // persists as `unknown` with no proof — fail-closed for scheduling.
+          // `read-only` without proof persists as `unknown`; explicit mutating
+          // persists without proof. Both remain conservative for scheduling.
           ...(member.effect === "read-only" && member.effectProvenance === "declared-enforced"
             ? ["read-only", "declared-enforced"]
-            : ["unknown", null]),
+            : [member.effect === "mutating" ? "mutating" : "unknown", null]),
           member.assignmentId ?? null,
           member.task ?? null,
           member.expectedOutput ?? null,

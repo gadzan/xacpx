@@ -7,6 +7,22 @@ import {
   CONTROL_PAYLOAD_VALIDATORS,
 } from "../../../../packages/relay-protocol/src/index";
 
+test("policy RPC accepts requests, never trusted proof, and keeps the legacy RPC distinct", () => {
+  const base = { conversationId: "c", topicId: "t", requestId: "r", text: "review" };
+  const policies = [{ botId: "a", filesystem: "read-only" }, { botId: "b", filesystem: "read-write" }];
+  expect(MSG.conversationPromptWithPolicy).not.toBe(MSG.conversationPrompt);
+  expect(parseControlPayload(MSG.conversationPromptWithPolicy, { ...base, memberPolicies: policies })).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationPromptWithPolicy, base)).toBeNull();
+  for (const memberPolicies of [[], null, [{ botId: "a", filesystem: "unknown" }], [...policies, policies[0]],
+    [{ ...policies[0], effectProvenance: "declared-enforced" }], [{ ...policies[0], trustedReadOnly: true }]]) {
+    expect(parseControlPayload(MSG.conversationPromptWithPolicy, { ...base, memberPolicies })).toBeNull();
+  }
+  for (const forged of [{ effectProvenance: "declared-enforced" }, { trustedReadOnly: true }, { effect: "read-only" }]) {
+    expect(parseControlPayload(MSG.conversationPromptWithPolicy, { ...base, memberPolicies: policies, ...forged })).toBeNull();
+  }
+  expect(parseControlPayload(MSG.conversationPromptWithPolicy, { ...base, memberPolicies: policies, unrelatedLegacyExtra: true })).not.toBeNull();
+});
+
 test("Topic concurrency limits validate on both creation RPCs without changing extra-field handling", () => {
   for (const kind of [MSG.topicsCreate, MSG.groupTopicsCreate]) {
     const base = { conversationId: "c", title: "t", ...(kind === MSG.groupTopicsCreate

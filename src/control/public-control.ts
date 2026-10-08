@@ -26,6 +26,7 @@ const TRUSTED_CONTROL_METHODS = [
   "bindConversationRuntime",
   "emitConversationProduct",
   "promptConversationFromHumanIngress",
+  "promptConversationWithPolicyFromHumanIngress",
 ] as const;
 
 type TrustedControlMethod = (typeof TRUSTED_CONTROL_METHODS)[number];

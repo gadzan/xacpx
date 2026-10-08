@@ -127,6 +127,7 @@ export type {
   ConversationHistoryResponseDto,
   ConversationMessageDto,
   ConversationPromptRequestDto,
+  ConversationPolicyPromptRequestDto,
   ConversationPromptResponseDto,
   ConversationRunDetailDto,
   ConversationRunDto,

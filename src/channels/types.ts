@@ -181,6 +181,10 @@ export interface ChannelStartInput {
     input: ConversationPromptRequestDto,
     ingress: HumanIngressContext,
   ) => Promise<ConversationPromptResponseDto>;
+  trustedConversationPolicyPrompt?: (
+    input: import("../control/conversation-control-dtos").ConversationPolicyPromptRequestDto,
+    ingress: HumanIngressContext,
+  ) => Promise<ConversationPromptResponseDto>;
   /**
    * Generic catalog of logical-session resources: immutable logical session
    * IDs, internal/display aliases, authoritative workspace cwd, archived flag,

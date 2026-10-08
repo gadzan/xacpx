@@ -18,6 +18,7 @@ import {
   type CommandExecutePayload,
   type ConversationHistoryPayload,
   type ConversationPromptPayload,
+  type ConversationPolicyPromptPayload,
   type ConversationsGetPayload,
   type ConversationsListPayload,
   type DesktopCancelPayload,
@@ -557,6 +558,21 @@ const validateConversationBinding: Validator<{ chatKey: string; conversationId: 
     ? { chatKey: o.chatKey as string, conversationId: o.conversationId as string,
       ...(o.topicId !== undefined ? { topicId: o.topicId as string } : {}) } : null;
 };
+
+const validateConversationPolicyPrompt: Validator<ConversationPolicyPromptPayload> = (p) => {
+  const o = fields(p);
+  if (!o || !validateConversationPrompt(p) || !Array.isArray(o.memberPolicies)
+    || o.memberPolicies.length < 1 || o.memberPolicies.length > MAX_GROUP_TARGET_MEMBERS) return null;
+  const ids = new Set<string>();
+  for (const entry of o.memberPolicies) {
+    const policy = fields(entry);
+    if (!policy || Object.keys(policy).length !== 2 || !isBoundedStr(policy.botId, MAX_BOT_ID_LENGTH)
+      || ids.has(policy.botId as string) || (policy.filesystem !== "read-only" && policy.filesystem !== "read-write")) return null;
+    ids.add(policy.botId as string);
+  }
+  if (o.effectProvenance !== undefined || o.trustedReadOnly !== undefined || o.effect !== undefined) return null;
+  return o as unknown as ConversationPolicyPromptPayload;
+};
 const validateConversationBindingDelete: Validator<{ chatKey: string }> = (p) => {
   const o = fields(p);
   return o && isBoundedStr(o.chatKey, 2048) ? { chatKey: o.chatKey as string } : null;
@@ -907,7 +923,7 @@ export type ControlRpcType =
   | typeof MSG.groupsCreate | typeof MSG.groupsUpdate | typeof MSG.groupsDelete | typeof MSG.groupsGet
   | typeof MSG.groupsList
   | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown
-  | typeof MSG.conversationPrompt | typeof MSG.conversationHistory
+  | typeof MSG.conversationPrompt | typeof MSG.conversationPromptWithPolicy | typeof MSG.conversationHistory
   | typeof MSG.conversationBindingsList | typeof MSG.conversationBindingsSet | typeof MSG.conversationBindingsDelete
   | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel
   | typeof MSG.interactionRequest | typeof MSG.interactionRespond
@@ -988,6 +1004,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.groupTopicsArchive]: validateGroupTopicsArchive,
   [MSG.groupTopicsTeardown]: validateGroupTopicsTeardown,
   [MSG.conversationPrompt]: validateConversationPrompt,
+  [MSG.conversationPromptWithPolicy]: validateConversationPolicyPrompt,
   [MSG.conversationBindingsList]: validateConversationBindingsList,
   [MSG.conversationBindingsSet]: validateConversationBinding,
   [MSG.conversationBindingsDelete]: validateConversationBindingDelete,

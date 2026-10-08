@@ -4,6 +4,8 @@ import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isLegacyCodexCommand, resolveAgentCommand, resolveConfiguredAgentLaunch } from "../config/resolve-agent-command";
 import { isAcpOutputGuardArgv, wrapAcpOutputGuardArgv } from "../adapters/acp-output-guard";
+import { CLAUDE_READ_ONLY_POLICY, supportsEnforcedReadOnly, wrapReadOnlyAgentArgv, type EnforcedExecutionPolicy } from "../adapters/conversation-effect-policy";
+import { ConversationError } from "../conversations/conversation-error";
 import {
   classifyRecordedPreinstalledAdapterCommand,
   isManagedAdapterCommand,
@@ -11,6 +13,7 @@ import {
 import { isDefaultHermesCommand, isHermesShimCommand } from "../adapters/hermes-shim";
 import { deriveAgentAlias, isDerivedAgentArgv, renderAgentArgvIdentity, type AgentLaunchSpec } from "../config/agent-launch";
 import { resolveConfigPathForCurrentEnv } from "../config/config-path";
+import { resolveAcpxCommandMetadata, type AcpxCommandMetadata } from "../config/resolve-acpx-command";
 import type { AgentConfig, AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
 import { AsyncMutex } from "../orchestration/async-mutex";
@@ -91,6 +94,8 @@ interface SessionServiceOptions {
   platform?: NodeJS.Platform;
   /** Trusted root for classifying persisted preinstalled adapter identities. */
   runtimeRoot?: string;
+  /** Trusted startup resolution used to construct this daemon's transport. */
+  acpxCommandMetadata?: AcpxCommandMetadata;
   /** Whether interactive permission confirmation is available. */
   permissionInteractionCapable?: boolean;
   /**
@@ -143,6 +148,7 @@ export class SessionService {
   private readonly now: () => number;
   private readonly platform: NodeJS.Platform;
   private readonly runtimeRoot: string;
+  private readonly acpxCommandMetadata: Readonly<AcpxCommandMetadata>;
   private readonly permissionInteractionCapable?: boolean;
   private runtimeCapability?: SessionServiceOptions["runtimeCapability"];
   private readonly pendingSessionAliasOperations = new Set<string>();
@@ -157,6 +163,10 @@ export class SessionService {
     this.now = options.now ?? (() => Date.now());
     this.platform = options.platform ?? process.platform;
     this.runtimeRoot = options.runtimeRoot ?? dirname(resolveConfigPathForCurrentEnv());
+    // A later resolver result must not attest a different executable than the
+    // transport selected at startup. Copy so caller-owned metadata cannot drift.
+    this.acpxCommandMetadata = Object.freeze({ ...(options.acpxCommandMetadata
+      ?? resolveAcpxCommandMetadata({ configuredCommand: config.transport?.command })) });
     this.permissionInteractionCapable = options.permissionInteractionCapable;
     this.runtimeCapability = options.runtimeCapability;
   }
@@ -197,11 +207,15 @@ export class SessionService {
     }).engine;
   }
 
+  supportsConversationReadOnly(agent: string): boolean {
+    return supportsEnforcedReadOnly(this.config.agents[agent], this.config.transport, this.acpxCommandMetadata);
+  }
+
   async createSession(
     alias: string,
     agent: string,
     workspace: string,
-    options?: { owner?: LogicalSessionOwner; model?: string; effort?: string },
+    options?: { owner?: LogicalSessionOwner; model?: string; effort?: string; executionPolicy?: EnforcedExecutionPolicy },
   ): Promise<ResolvedSession> {
     return await this.createLogicalSession(
       alias,
@@ -1290,6 +1304,18 @@ export class SessionService {
     platform: NodeJS.Platform = this.platform,
     options: ResolveSessionOptions = {},
   ): AgentLaunchSpec {
+    if (session.execution_policy !== undefined) {
+      if (session.execution_policy !== CLAUDE_READ_ONLY_POLICY || !isHiddenProductSessionOwner(session.owner)
+        || !this.supportsConversationReadOnly(session.agent)) {
+        throw new ConversationError("runtime_revision_mismatch", "accepted read-only runtime contract is unavailable");
+      }
+      const base = resolveConfiguredAgentLaunch(agentConfig, this.config.transport, {
+        platform, runtimeRoot: this.runtimeRoot,
+      });
+      if (!base.agentArgv) throw new ConversationError("runtime_revision_mismatch", "restricted runtime requires structured managed argv");
+      const argv = wrapReadOnlyAgentArgv(base.agentArgv);
+      return { agentArgv: argv, agentCommand: renderAgentArgvIdentity(argv), acpxAgent: deriveAgentAlias(agentConfig.driver, argv) };
+    }
     const current = resolveConfiguredAgentLaunch(agentConfig, this.config.transport, {
       platform,
       runtimeRoot: this.runtimeRoot,
@@ -1810,10 +1836,14 @@ export class SessionService {
     },
     transportAcpxAgent?: string,
     transportAgentArgv?: string[],
-    extras?: { owner?: LogicalSessionOwner; model?: string; effort?: string },
+    extras?: { owner?: LogicalSessionOwner; model?: string; effort?: string; executionPolicy?: EnforcedExecutionPolicy },
   ): Promise<ResolvedSession> {
     return await this.mutate(async () => {
       this.validateSession(alias, agent, workspace);
+      if (extras?.executionPolicy !== undefined && (extras.executionPolicy !== CLAUDE_READ_ONLY_POLICY
+        || !isHiddenProductSessionOwner(extras.owner) || !this.supportsConversationReadOnly(agent))) {
+        throw new ConversationError("runtime_revision_mismatch", "restricted execution requires a supported owned runtime");
+      }
       if (
         Object.keys(this.state.orchestration.externalCoordinators).some((coordinatorSession) =>
           sameCoordinatorSession(coordinatorSession, transportSession),
@@ -1830,6 +1860,7 @@ export class SessionService {
       const now = new Date(this.now()).toISOString();
       const normalizedTransportAgentCommand = transportAgentCommand?.trim();
       const session: LogicalSession = {
+        ...(extras?.executionPolicy ? { execution_policy: extras.executionPolicy } : {}),
         alias,
         agent,
         workspace,

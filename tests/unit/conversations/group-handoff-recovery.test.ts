@@ -30,6 +30,7 @@ const RESTRICTED = { toolsDisabled: true, filesystemDisabled: true, terminalDisa
   permissionInteractionDisabled: true, messagingDisabled: true, orchestrationDisabled: true, structuredOutputOnly: true } as const;
 
 async function harness(options: { onRun?: (input: ConversationTurnRunInput) => Promise<ConversationTurnRunResult>;
+  enforcedReaders?: boolean;
   onCancel?: (input: ConversationTurnCancelInput) => Promise<ConversationTurnCancelResult>;
   beforeCommitGates?: () => Promise<void>; router?: ConversationRouter; pr8Fixture?: "queued" | "claimed" } = {}) {
   const path = join(mkdtempSync(join(tmpdir(), "xacpx-pr9-")), "conversations.sqlite");
@@ -43,6 +44,10 @@ async function harness(options: { onRun?: (input: ConversationTurnRunInput) => P
   const config = { agents: { codex: { driver: "codex" } }, workspaces: { backend: { cwd: tmpdir() } },
     transport: { type: "acpx-cli" }, channel: { type: "weixin" }, channels: [], plugins: [] } as unknown as AppConfig;
   const stateStore = { async save(_state: AppState) {}, async saveNow(_state: AppState) {} };
+  if (options.enforcedReaders) {
+    config.agents.codex!.driver = "claude";
+    config.transport.adapterVersions = { claude: "0.78.0" };
+  }
   const stateMutex = new AsyncMutex();
   const sessions = new SessionService(config, stateStore, state, { stateMutex });
   const releaseOwnedSession = createStrictOwnedSessionRelease({ sessions, transport: {
@@ -433,7 +438,7 @@ test("durable budget stops an A B handoff loop and survives reopen", async () =>
 });
 
 async function startedStore(effect: "unknown" | "read-only" = "unknown", proof = false, max = 4) {
-  const h = await harness();
+  const h = await harness({ enforcedReaders: effect === "read-only" && proof });
   const accepted = h.store.acceptRequest({ conversationId: h.group.id, topicId: h.topic.id, requestId: "store-request", botId: A,
     content: "human", profileSnapshot: snapshotGroupMemberProfile(h.bots.getBot(A), h.topic.executionTarget!, NOW),
     maxMemberTurns: max, primaryMember: { provenance: "router", assignmentId: "original", task: "ORIGINAL TASK", expectedOutput: "ORIGINAL OUTPUT",

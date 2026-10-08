@@ -46,6 +46,10 @@ Only the existing `read-only` + `declared-enforced` proof can permit overlap.
 Capacity is reserved by the existing durable `claimed` dispatches (including
 pre-start materialization); the claim transaction checks the per-Topic count.
 Full capacity leaves work pending without stripping ingress or changing origin.
+Filesystem-held writers retain their claimed capacity reservation. With limit 2,
+one active reader plus one held writer leaves no slot for a later compatible
+reader. This reservation/fairness tradeoff is intentional; spare capacity may
+admit later readers, but filesystem compatibility alone cannot reclaim a slot.
 Configured cohorts refill after an individual execution settles. Every claim
 this process still holds — in-flight provider turns and writer-slot waits,
 with or without `maxConcurrentMemberTurns` — has its lease extended on a
@@ -206,11 +210,149 @@ Injected release failure leaves `deleting` + ownership in place for retry.
 
 **Remaining Bot-delete boundary:** `BotService.deleteBot` stays fail-closed (`bot_in_use` / `bot_in_group`) and does **not** auto-teardown. It consults AppState runtime references **and** ConversationStore durable work (`hasDurableBotWork`) so an accepted Run/outbox cannot outlive a deleted Bot through a crash-before-materialize window. Call `ConversationRunService.teardownDirectConversation` first, then delete the Bot.
 
+## Enforced execution effects (Phase 10B)
+
+Phase 10B adds an explicit policy-aware prompt on top of merged Phase 10A (PR #377).
+Requested read-only != enforced read-only. Model text saying read-only and a
+Bot named Reviewer do not grant a capability. Ordinary prompts, Router work
+and public handoffs retain `unknown` / absent proof by default.
+
+The first supported enforcement contract requires the bundled acpx 0.16.0
+executor and managed Claude ACP 0.78.0 adapter (Claude Agent SDK 0.3.270),
+launched through a core-owned ACP policy
+guard. It restricts the SDK's **tool set**, rather than its auto-approval list,
+to Read/Glob/Grep, enables bare mode, disables commands, settings discovery,
+plugins, agents and MCP, and rejects ACP terminal/write/permission-escalation
+requests. Explicit `transport.command`, a missing bundled executor with PATH
+fallback, and bundled executors with an absent or different package version
+cannot receive this proof. The daemon captures the same resolved executor
+metadata used to construct its transport; later configuration checks cannot
+replace that startup identity with a newly discovered bundled executable.
+Custom agent launches, other adapter versions and other drivers also cannot
+receive this proof. Codex ACP 1.12.0's mode named `read-only` uses
+`workspaceWrite`; its name is not an enforcement contract.
+
+Policy belongs to an accepted execution, not a Bot identity. The server freezes
+`effect` and `effectProvenance` in the existing MemberTurn columns. Only
+`read-only` + `declared-enforced` is a reader. Explicit read-write policy is
+`mutating` without reader proof. The runtime must satisfy the frozen ceiling
+again before materialization and physical start; drift fails closed. Restricted
+and writable sessions have different launch identities and cannot be reused
+across a ceiling change. Legacy data remains unknown/unproven.
+
+`ControlService.promptConversationWithPolicy` / Relay
+`control.conversation.prompt-with-policy` is a **distinct operation**, using the
+ordinary prompt shape plus `memberPolicies: [{botId, filesystem: "read-only" |
+"read-write"}]`. Policies must match the complete explicit selection (Direct:
+one Bot; Group: `target` selects the same 1–64 unique Bots). Automatic routing
+with this policy operation is rejected. The response's MemberTurn summaries
+acknowledge the durable effective `effect` / `effectProvenance`. Clients cannot
+submit trusted proof. Replay with an incompatible accepted ceiling fails
+`effect_policy_conflict`; unsupported read-only fails `effect_policy_unsupported`
+before creating a Run. There is no silent fallback to writable execution.
+
+Replay compares policies with the original explicit acceptance: batch 1 members
+without an assignment id. Router/handoff work has durable assignment ids and
+does not expand that original request set, even when it targets the same Bot.
+Recovery preserves these identities while changing origin/attempt. Policy
+presence is part of request identity: ordinary and policy-aware prompts cannot
+reuse each other's request id. Every acceptance return is checked, including
+concurrent store replay and the SQLite unique-key fallback; conflicting losers
+receive no successful acknowledgement or new scheduling/projection.
+
+The operation name provides a cross-version fence: an old daemon/hub rejects an
+unknown RPC; a new relay connector checks for the new core method and never
+falls back to the older, policy-blind trusted-ingress callback. Only the separate
+core-private policy ingress callback can carry authenticated human authority;
+public Control still yields orchestration. Old clients and the ordinary prompt
+operation retain their defaults. No Router, handoff or external binding schema
+expansion is included; those producers continue to accept unknown/unproven work.
+When trusted human ingress is present, a connector without the dedicated trusted
+policy callback rejects `unsupported-effect-policy`; it cannot discard ingress
+and fall back to public orchestration.
+
+`maxConcurrentMemberTurns` sets a physical ceiling. Effect policy decides whether
+filesystem overlap is safe. Logical batch/dependency semantics remain unchanged:
+enforced readers can overlap within capacity; potentially mutating work excludes
+readers and writers under both shared policies. Recovery preserves the accepted
+ceiling and origin rules, with the existing bounded retry only for enforced
+read-only Group work. Worktree provisioning remains unsupported (Phase 10C).
+
+The first production parallel scenario is an explicit Group batch with two or
+more managed Claude members requested read-only, under `shared` or
+`shared-single-writer`. With `maxConcurrentMemberTurns: 2`, three such members
+enter the existing runner at peak two. A mutating/unknown member never overlaps
+a reader; the dispatcher checks **both** participants. A filesystem-held writer
+is a durable capacity reservation, not a physical execution, and cannot make
+later readers deadlock. No new executor, queue or RW lock is introduced.
+
+The guard advertises only supported capabilities: acpx cold recovery selects
+guarded load rather than the adapter's otherwise preferred resume. Typed terminal
+failure metadata is retained. It replaces session creation/load metadata, strips all MCP launch data,
+rejects non-text and command-shaped prompts, denies mode/extension changes and
+answers ACP permission requests with cancellation. Model/effort changes cannot
+raise the ceiling. The native SDK exclusive `tools` option removes Write/Edit,
+unrestricted Bash, agents/skills and MCP tools; `allowedTools` alone would be
+insufficient. Bare mode suppresses filesystem/plugin/policy hooks and settings
+discovery. These constraints apply on new sessions, warm reuse and resume.
+Agent-to-client method messages are filtered even when they omit an RPC id.
+Only `session/update` is forwarded as a notification; other no-id methods,
+including filesystem, terminal, permission and unknown extensions, are dropped
+without a response. Supported `fs/read_text_file` requests require an id;
+forbidden requests with an id receive the existing denial or permission
+cancellation. This keeps the guard's capability ceiling independent of
+downstream handling of malformed notifications and follows
+[JSON-RPC notification semantics](https://www.jsonrpc.org/specification#notification).
+Client-to-agent frames preserve permitted prompt and file-read response contents
+after capability filtering. They do not pass through the lossy output limiter.
+The existing 64 MiB raw-frame byte ceiling still applies; a frame exceeding it
+before or after policy rewriting fails the guard explicitly without forwarding
+a truncated success. Agent-to-client output retains the existing 2 Mi-character
+limiter, including text chunk splitting and marked truncation of oversized tool
+output.
+An existing writable owned session is strictly physically released and recreated
+before a restricted turn; the policy participates in the persisted launch argv,
+derived agent identity and existing Runtime/CLI construction fingerprints.
+
+No new SQLite columns are needed: existing effect columns are reused; migration
+of legacy rows continues to produce unknown/absent proof.
+Malformed stored effects/proofs reject reads and claims with `invalid_effect_policy`;
+they are never normalized into writable unknown work. Such corruption requires
+repair instead of a capability downgrade. The optional owned
+LogicalSession `execution_policy` records the versioned runtime ceiling; invalid
+values are quarantined by AppState parsing. Current adapter support is checked
+again at materialization/start and session resolution. Drift fails
+`runtime_revision_mismatch`, preserving the accepted effect instead of rewriting
+it. Enforced Group read-only recovery retains the existing at-most-one started
+retry, budget, retired-source, cancellation and authority fences. Direct recovery
+keeps its existing conservative started-unknown rule.
+
+Residuals: only bundled acpx 0.16.0 with the exact managed Claude ACP 0.78.0 /
+SDK 0.3.270 implementation from the default registry qualifies. Custom
+transport commands, PATH acpx, custom agent commands/argv/registry/version,
+Codex, Hermes and other adapters remain unsupported for requested read-only;
+ordinary requests on them remain unknown. Bare Claude needs explicit supported
+API/provider authentication; absent credentials fail rather than relaunching in
+writable mode. Terminal, MCP (including `group_send`), skills, plugins, subagents,
+slash commands and media input are unavailable in this first restricted runtime.
+The trusted boundary is the bundled executor, pinned adapter/SDK implementation
+and same OS user;
+this is a tool capability ceiling, not a new OS sandbox. SDK bookkeeping may
+write its own state outside the target workspace. Live-provider and real channel
+smokes are not part of the loopback enforcement regression.
+
+Safety references: Claude's [CLI tools and bare/restricted options](https://code.claude.com/docs/en/cli-reference)
+and the pinned [Claude ACP adapter](https://github.com/agentclientprotocol/claude-agent-acp)
+are exercised by `tests/compat/conversation-read-only.test.ts` with the real native
+SDK and an adversarial local provider. The similarly named
+[Codex ACP mode](https://github.com/agentclientprotocol/codex-acp/blob/v1.12.0/src/AgentMode.ts)
+does not provide this ceiling.
+
 ## Group foundations and explicit routing (PR6 + PR7)
 
 Group Conversations are durable membership records (`kind: "group"`, `botIds` ≥ 2 unique, optional lead in membership, opaque `conversation_` id). No execution, routing, or member sessions happen at Group CRUD time.
 
-Group Topics carry an explicit `ExecutionTarget` (`workspace` + optional `cwd` + `isolation`). `cwd` is forward-compatible persisted shape only: `createGroupTopic()` rejects any non-empty `cwd` with `cwd_unsupported`, and member materialization also fails closed on a persisted non-empty `cwd` — until launcher execution honors it. `shared-single-writer` is the engineering default. `worktree-per-member` remains readable as a legacy persisted enum value, but `createGroupTopic()` rejects it with `invalid-isolation` until PR10 provisioning exists. Topic teardown mirrors the direct order at Topic scope: mark deleting → cancel active Runs → reconcile expired claims for that Topic only → verified member-session release → remove member bindings → delete store rows → remove Topic metadata. Retryable on release failure. Group delete's final recovery pass uses the Group Conversation id, so ghost rows of that Group are included and other Conversations are not.
+Group Topics carry an explicit `ExecutionTarget` (`workspace` + optional `cwd` + `isolation`). `cwd` is forward-compatible persisted shape only: `createGroupTopic()` rejects any non-empty `cwd` with `cwd_unsupported`, and member materialization also fails closed on a persisted non-empty `cwd` — until launcher execution honors it. `shared-single-writer` is the engineering default. `worktree-per-member` remains readable as a legacy persisted enum value, but `createGroupTopic()` rejects it with `invalid-isolation` until Phase 10C provisioning exists. Topic teardown mirrors the direct order at Topic scope: mark deleting → cancel active Runs → reconcile expired claims for that Topic only → verified member-session release → remove member bindings → delete store rows → remove Topic metadata. Retryable on release failure. Group delete's final recovery pass uses the Group Conversation id, so ghost rows of that Group are included and other Conversations are not.
 
 Group delete is barrier-first: mark the Group deleting in SQLite + AppState (new Topics and new Group work fail closed from there), teardown every remaining Topic, verified-release residual member runtime, delete residual Conversation-store rows, then remove the Group record last. Rows-after-release-before-record means a physical release failure leaves durable Run/message history intact, and a store-cleanup failure leaves the Group row and the barrier intact for retry; the fail-closed metadata delete reuses the same Topics/bindings/durable-rows guards.
 
@@ -218,7 +360,7 @@ Member sessions run Bot agent/model/effort on the Topic workspace (Topic owns th
 
 PR7 adds explicit Group routing with same-Run member cohorts: a Group prompt (`ConversationPromptRequestDto.target` via `control.promptConversation`, message `control.conversation.prompt`) carries a structured target — `{mode: "members", botIds}` (explicit assignment), `{mode: "everyone"}` (eligible-member expansion), or `{mode: "automatic"}` (rejected for explicit prompts; Direct-only preview surface). `{botId}` is the Direct variant of the same union. The wire validator, `parseGroupTarget`, and the public-Control sanitizer enforce the same mutually exclusive union: mixed shapes fail closed with `invalid-target` (never laundered, never dropped-then-defaulted). Target member IDs must be unique in caller order — duplicates are rejected with `invalid-target`, not deduplicated. `everyone` expansion is capped at `MAX_GROUP_TARGET_MEMBERS` (64); larger requests fail `target_too_large` before persisting anything.
 
-The filesystem seam (`conversation-filesystem-policy.ts`) classifies a declared `MemberTurnEffect` plus provenance: only `effect === "read-only"` **with** `effectProvenance === "declared-enforced"` is concurrency-safe under `shared`/`shared-single-writer`; every other combination takes the single-writer slot, so unproven work serializes against any in-flight execution on overlapping trees. The effect is never inferred from Bot names. PR7 accept persists every member as `unknown` provenance, so current user Group turns serialize — sharing a tree today means taking turns, not overlapping. The UI keeps the `Shared` option with copy that says exactly this.
+The filesystem seam (`conversation-filesystem-policy.ts`) classifies a declared `MemberTurnEffect` plus provenance: only `effect === "read-only"` **with** `effectProvenance === "declared-enforced"` is concurrency-safe under `shared`/`shared-single-writer`; every other combination takes the single-writer slot, so unproven work serializes against any in-flight execution on overlapping trees. The effect is never inferred from Bot names. Ordinary explicit prompts, Router work and handoffs retain unknown/absent proof and serialize. Phase 10B policy-aware explicit prompts can supply a server-enforced reader proof; see the execution effects contract above. The UI keeps the `Shared` option with copy that says exactly this.
 
 Request-snapshot integrity uses one unified invariant (`requestSnapshotMatches`): the `runs.request_message_id` row must exist with the Run's own Conversation AND Topic, the human role, **and** the Run's own `run_id`. A missing or mismatched row fails the claim terminally before execution start (`missing_request_snapshot` / `request_snapshot_mismatch`), in replay and transcript paths alike — a corrupted reference can never feed another message's content into a prompt. Claim reads LEFT JOIN the message so a poison row reaches that check instead of being silently skipped.
 

@@ -42,6 +42,7 @@ function assertSessionKeyMatchesAlias(key: string, session: LogicalSession): voi
   }
 }
 import { ConversationError } from "./conversation-error";
+import { assertAcceptedPolicies, assertPolicySelection, parseMemberPolicies, type ConversationMemberPolicy } from "./conversation-effect-request";
 import { memberConcurrencyLimit, type TopicSchedulingOptions } from "./conversation-scheduling-policy";
 import type { ConversationDispatcher } from "./conversation-dispatcher";
 import type { ConversationRouterEngine, RoutingAttemptOutcome } from "./conversation-router-engine";
@@ -288,6 +289,7 @@ export class ConversationRunService {
   }
 
   async acceptDirectPrompt(input: {
+    memberPolicies?: ConversationMemberPolicy[];
     channelAbortSignal?: AbortSignal;
     externalRequest?: AcceptRequestInput["externalRequest"];
     botId: string;
@@ -298,6 +300,7 @@ export class ConversationRunService {
     humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
     this.assertAccepting();
+    const memberPolicies = input.memberPolicies === undefined ? undefined : parseMemberPolicies(input.memberPolicies);
     const accepted = await this.bots.runLifecycle(input.botId, async () => {
       const bot = this.bots.getBot(input.botId);
       const timestamp = this.now().toISOString();
@@ -310,7 +313,7 @@ export class ConversationRunService {
       const existing = this.store.getAcceptedRequest(conversationId, topicId, input.requestId);
       if (existing) {
         if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
-        return existing;
+        return assertAcceptedPolicies(existing, memberPolicies);
       }
       if (!bot.enabled) {
         throw new BotError("bot_disabled", `bot "${input.botId}" is disabled`);
@@ -325,6 +328,8 @@ export class ConversationRunService {
         throw new ConversationError("conversation_deleting", "conversation is deleting");
       }
       const snapshot = snapshotBotProfile(bot, timestamp);
+      assertPolicySelection([bot.id], memberPolicies);
+      const effect = this.runtime.resolveMemberEffect(snapshot.execution.agent, memberPolicies?.[0]?.filesystem);
       await this.beforeAcceptPersist?.();
       if (input.channelAbortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel request stopped before acceptance");
       const humanIngress = parseHumanIngress(input.humanIngress);
@@ -337,6 +342,7 @@ export class ConversationRunService {
         botId: bot.id,
         content: input.content,
         profileSnapshot: snapshot,
+        primaryMember: effect,
         now: timestamp,
         ...(humanIngress
           ? { authorityEpoch: this.dispatcher.authorityEpoch, humanIngress }
@@ -344,6 +350,9 @@ export class ConversationRunService {
       });
       return created;
     });
+    // The store may reuse an acceptance committed during the final await,
+    // including its SQLite unique-key fallback. Validate before acknowledgement.
+    assertAcceptedPolicies(accepted, memberPolicies);
     if (!accepted.reused) {
       this.emitAcceptProjection(accepted);
     }
@@ -369,6 +378,7 @@ export class ConversationRunService {
    *  partially-routed Run).
    */
   async acceptGroupPrompt(input: {
+    memberPolicies?: ConversationMemberPolicy[];
     channelAbortSignal?: AbortSignal;
     externalRequest?: AcceptRequestInput["externalRequest"];
     /** Internal channel name assertion, never a public prompt field. */
@@ -381,17 +391,19 @@ export class ConversationRunService {
     humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
     this.assertAccepting();
+    const memberPolicies = input.memberPolicies === undefined ? undefined : parseMemberPolicies(input.memberPolicies);
     // Durable replay precedes mutable Router/configuration and live-state gates.
     const alreadyAccepted = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
     if (alreadyAccepted) {
       if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
-      return alreadyAccepted;
+      return assertAcceptedPolicies(alreadyAccepted, memberPolicies);
     }
     const conversation = this.requireConversation(input.conversationId);
     if (conversation.kind !== "group") {
       throw new ConversationError("conversation_not_group", `conversation "${input.conversationId}" is not a Group`);
     }
     const parsed = this.parseGroupTarget(input.target, conversation);
+    if (memberPolicies && parsed.kind === "automatic") throw new ConversationError("invalid-effect-policy", "effect policy requires explicit members");
     // PR8 capability gate, BEFORE any durable write: automatic mode requires
     // a Router that can prove its capability restriction up front. An
     // unprovable configuration is unsupported, never "accepted and hoped".
@@ -440,7 +452,7 @@ export class ConversationRunService {
         const existing = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
         if (existing) {
           if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
-          return existing;
+          return assertAcceptedPolicies(existing, memberPolicies);
         }
         const timestamp = this.now().toISOString();
         const target = topic.executionTarget;
@@ -454,6 +466,9 @@ export class ConversationRunService {
           }
           return snapshotGroupMemberProfile(bot, target, timestamp);
         });
+        assertPolicySelection(selected, memberPolicies);
+        const effects = snapshots.map((snapshot, index) => this.runtime.resolveMemberEffect(snapshot.execution.agent,
+          memberPolicies?.find((p) => p.botId === selected[index])?.filesystem));
         await this.beforeAcceptPersist?.();
         if (input.channelAbortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel request stopped before acceptance");
         const humanIngress = parseHumanIngress(input.humanIngress);
@@ -509,7 +524,7 @@ export class ConversationRunService {
           botId: firstId,
           content: input.text,
           profileSnapshot: firstSnapshot,
-          primaryMember: { effect: "unknown" },
+          primaryMember: effects[0],
           // Headroom is a guardrail, never automatic continuation. Explicit
           // Runs still settle their accepted members when no handoff occurs.
           maxMemberTurns: Math.max(selected.length, MAX_AUTOMATIC_MEMBER_TURNS),
@@ -518,7 +533,7 @@ export class ConversationRunService {
               members: restIds.map((botId, index) => ({
                 botId,
                 profileSnapshot: restSnapshots[index]!,
-                effect: "unknown" as const,
+                ...effects[index + 1],
               })),
             }
             : {}),
@@ -530,6 +545,7 @@ export class ConversationRunService {
         return created;
       });
       if (accepted !== null) {
+        assertAcceptedPolicies(accepted, memberPolicies);
         if (!accepted.reused) {
           this.emitAcceptProjection(accepted);
         }
@@ -549,6 +565,7 @@ export class ConversationRunService {
 
 
   async acceptConversationPrompt(input: {
+    memberPolicies?: ConversationMemberPolicy[];
     channelAbortSignal?: AbortSignal;
     externalRequest?: AcceptRequestInput["externalRequest"];
     externalAddress?: { botId: string; name: string };
@@ -564,6 +581,7 @@ export class ConversationRunService {
     const conversation = this.requireConversation(input.conversationId);
     if (conversation.kind === "group") {
       return this.acceptGroupPrompt({
+        ...(input.memberPolicies ? { memberPolicies: input.memberPolicies } : {}),
         ...(input.channelAbortSignal ? { channelAbortSignal: input.channelAbortSignal } : {}),
         ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
         ...(input.externalAddress ? { externalAddress: input.externalAddress } : {}),
@@ -595,6 +613,7 @@ export class ConversationRunService {
       );
     }
     return this.acceptDirectPrompt({
+      ...(input.memberPolicies ? { memberPolicies: input.memberPolicies } : {}),
       ...(input.channelAbortSignal ? { channelAbortSignal: input.channelAbortSignal } : {}),
       ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
       botId,

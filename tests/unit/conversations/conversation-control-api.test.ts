@@ -43,7 +43,7 @@ class MemoryStateStore {
 
 function createConfig(): AppConfig {
   return {
-    transport: { type: "acpx-cli", command: "acpx", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+    transport: { type: "acpx-cli", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
     logging: { level: "info", maxSizeBytes: 1024, maxFiles: 2, retentionDays: 1, perf: { enabled: false } },
     channel: { type: "weixin", replyMode: "stream" },
     channels: [{ id: "weixin", type: "weixin", enabled: true }],
@@ -170,6 +170,7 @@ async function wire(options?: {
   return {
     dir,
     sqlitePath,
+    config,
     state,
     sessions,
     control,
@@ -196,6 +197,39 @@ test("Control Topic creation persists and projects optional concurrency without 
   await expect(control.createGroupTopic(group.id, "bad", { workspace: "backend", isolation: "shared" }, { maxConcurrentMemberTurns: 0 })).rejects.toMatchObject({ code: "invalid_concurrency_limit" });
   expect("updateTopic" in control).toBe(false);
   await runtime.shutdown();
+});
+
+test("dedicated policy Control operation accepts a durable effective ceiling and preserves ingress authority", async () => {
+  const { control, runtime, origins, config } = await wire();
+  config.transport.adapterVersions = { claude: "0.78.0" };
+  try {
+    const bot = await control.createBot({ name: "Reviewer", agent: "claude", workspace: "backend" });
+    const input = { conversationId: createDirectConversationId(bot.id), topicId: createDirectTopicId(bot.id),
+      requestId: "policy-human", text: "review", memberPolicies: [{ botId: bot.id, filesystem: "read-only" as const }] };
+    const accepted = await conversationKernel(control).promptConversationWithPolicyFromHumanIngress(input,
+      { chatKey: "relay:account", senderId: "owner", accountId: "account", isOwner: true });
+    expect(accepted.memberTurn).toMatchObject({ effect: "read-only", effectProvenance: "declared-enforced" });
+    await waitUntil(() => control.getRun(accepted.run.id).state === "completed");
+    expect(origins).toEqual(["human"]);
+    expect((await control.promptConversationWithPolicy(input)).reused).toBe(true);
+    const publicView = asPublicControl(control);
+    expect("promptConversationWithPolicyFromHumanIngress" in publicView).toBe(false);
+    expect(typeof publicView.promptConversationWithPolicy).toBe("function");
+  } finally { await runtime.shutdown(); }
+});
+
+test("policy Control rejects unsupported adapter and forged proof before creating a Run", async () => {
+  const { control, runtime } = await wire({ autoKick: false });
+  try {
+    const bot = await control.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+    const input = { conversationId: createDirectConversationId(bot.id), topicId: createDirectTopicId(bot.id),
+      requestId: "unsupported", text: "do not edit", memberPolicies: [{ botId: bot.id, filesystem: "read-only" as const }] };
+    await expect(control.promptConversationWithPolicy(input)).rejects.toMatchObject({ code: "effect_policy_unsupported" });
+    await expect(control.promptConversationWithPolicy({ ...input,
+      memberPolicies: [{ ...input.memberPolicies[0], effectProvenance: "declared-enforced" }] } as never))
+      .rejects.toMatchObject({ code: "invalid-effect-policy" });
+    expect(control.listTopicRuns(input.conversationId, input.topicId).runs).toHaveLength(0);
+  } finally { await runtime.shutdown(); }
 });
 
 test("Bot CRUD is a BotService DTO wrapper and rename keeps product IDs", async () => {

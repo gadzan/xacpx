@@ -276,6 +276,9 @@ export class RelayChannel implements MessageChannelRuntime {
     if (this.bootstrapDesktop())
       capabilities.push(RELAY_CAPABILITIES.desktopRfbV1);
     const bridge = createControlBridge(control, {
+      ...(input.trustedConversationPolicyPrompt
+        ? { trustedConversationPolicyPrompt: input.trustedConversationPolicyPrompt }
+        : {}),
       ...(input.trustedConversationPrompt
         ? { trustedConversationPrompt: input.trustedConversationPrompt }
         : {}),

@@ -318,6 +318,9 @@ export async function runConsole(paths: RuntimePaths, deps: RunConsoleDeps): Pro
         ? (input, ingress) =>
           conversationKernel(controlService).promptConversationFromHumanIngress(input, ingress)
         : undefined,
+      trustedConversationPolicyPrompt: controlService
+        ? (input, ingress) => conversationKernel(controlService).promptConversationWithPolicyFromHumanIngress(input, ingress)
+        : undefined,
     }, (id, agent) => conversationRuntime && controlService && id !== "relay"
       ? createConversationChannelRouter(id, agent, conversationRuntime, controlService.events, shutdownController.signal)
       : undefined);
