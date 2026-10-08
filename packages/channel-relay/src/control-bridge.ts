@@ -199,15 +199,34 @@ export function createControlBridge(
     )
       .then(respondOnce)
       .catch((error: unknown) => {
-        const code = (error as Error & { code?: string }).code ?? "internal";
+        const coded = error as Error & { code?: string; details?: unknown };
+        const code = coded.code ?? "internal";
+        const details = coded.details && typeof coded.details === "object" && !Array.isArray(coded.details)
+          ? coded.details as Record<string, unknown>
+          : undefined;
         respondOnce(
           errorPayload(
             code,
             error instanceof Error ? error.message : String(error),
+            details,
           ),
         );
       });
   };
+}
+
+function readResolutionActor(payload: unknown): { accountId: string; senderName?: string } | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const actor = (payload as { actor?: unknown }).actor;
+  if (!actor || typeof actor !== "object" || Array.isArray(actor)) return undefined;
+  const record = actor as Record<string, unknown>;
+  if (typeof record.accountId !== "string" || !record.accountId.trim() || record.accountId.startsWith("bot:")) {
+    return undefined;
+  }
+  const senderName = typeof record.senderName === "string" && record.senderName.trim()
+    ? record.senderName.trim()
+    : undefined;
+  return { accountId: record.accountId.trim(), ...(senderName ? { senderName } : {}) };
 }
 
 function readHubHumanIngress(payload: unknown): {
@@ -1157,6 +1176,32 @@ async function dispatchControlRequest(
       const input = parseControlPayload(MSG.runsCancel, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.runsCancel}: malformed payload`);
       return { run: await control.cancelRun(input.runId) };
+    }
+    case MSG.runsResolveIndeterminate: {
+      const input = parseControlPayload(MSG.runsResolveIndeterminate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.runsResolveIndeterminate}: malformed payload`);
+      const actor = readResolutionActor(payload);
+      if (!actor) {
+        return errorPayload("resolution_forbidden", "indeterminate resolution requires a hub-stamped administrator");
+      }
+      return {
+        run: await control.resolveIndeterminateRun(input.runId, {
+          action: input.action,
+          reason: input.reason,
+          actorAccountId: actor.accountId,
+          ...(actor.senderName ? { actorName: actor.senderName } : {}),
+        }),
+      };
+    }
+    case MSG.botsTeardownDirect: {
+      const input = parseControlPayload(MSG.botsTeardownDirect, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.botsTeardownDirect}: malformed payload`);
+      return await control.teardownDirectConversation(input.id);
+    }
+    case MSG.directTopicsTeardown: {
+      const input = parseControlPayload(MSG.directTopicsTeardown, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.directTopicsTeardown}: malformed payload`);
+      return await control.teardownDirectTopic(input.conversationId, input.topicId);
     }
     default:
       return errorPayload(

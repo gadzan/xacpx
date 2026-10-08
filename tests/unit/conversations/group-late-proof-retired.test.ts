@@ -87,11 +87,15 @@ for (const outcome of ["completed", "failed"] as const) {
         expect(store.listDispatchesForRun(runId)).toEqual(beforeDispatches);
         expect(store.listMessages({ conversationId: "conversation_group", topicId: "topic_group", limit: 100 })).toEqual(beforeMessages);
         // Exact proof for the still-current sibling remains durable. The
-        // unstarted retry stays sealed and cannot falsely complete the Run.
+        // unstarted retry is cancelled, not labeled unknown, and its absence
+        // cannot be reported as a successful Run.
         expect(store.reconcileLateResult({ runId, memberTurnId: bId, outcome: "completed", content: "B CURRENT RESULT",
           sourceTurn: { sessionAlias: "session_b", turnId: "live_b" }, now: EXPIRED }).reconciled).toBe(true);
-        expect(store.getMemberTurn(aId)).toMatchObject({ attempt: 2, state: "indeterminate" });
-        expect(store.getRun(runId)).toMatchObject({ state: "indeterminate", consumedMemberTurns: 3 });
+        expect(store.getMemberTurn(aId)).toMatchObject({ attempt: 2, state: "cancelled" });
+        expect(store.getMemberTurn(aId)?.startedAt).toBeUndefined();
+        expect(store.getRun(runId)).toMatchObject({
+          state: "cancelled", completionReason: "execution-cancelled", consumedMemberTurns: 2,
+        });
         expect(store.getMemberResult(store.getMemberTurn(bId)!)?.content).toBe("B CURRENT RESULT");
         expect(store.getMemberResult(store.getMemberTurn(aId)!)).toBeUndefined();
         expect(store.claimNextDispatch({ owner: "next", now: EXPIRED, leaseExpiresAt: EXPIRED })).toBeUndefined();

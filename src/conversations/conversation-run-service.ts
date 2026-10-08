@@ -225,6 +225,7 @@ export class ConversationRunService {
   async activateAfterConsumerLock(): Promise<void> {
     this.assertOpen();
     try {
+      this.store.clearOrphanDirectBotDeleteIntents(Object.keys(this.state.bots));
       await this.recoverRootlessGroupMemberSessions();
       this.assertNoAmbiguousGroupMemberSessions();
       this.assertNonterminalWorkHasAuthority();
@@ -321,7 +322,11 @@ export class ConversationRunService {
           throw new BotError("topic_not_found", `topic "${topicId}" does not belong to this Bot conversation`);
         }
       }
-      if (this.store.isConversationDeleting(conversationId) || this.store.isTopicDeleting(topicId)) {
+      if (
+        this.store.isConversationDeleting(conversationId)
+        || this.store.isTopicDeleting(topicId)
+        || this.store.hasDirectBotDeleteIntent(input.botId)
+      ) {
         throw new ConversationError("conversation_deleting", "conversation is deleting");
       }
       const snapshot = snapshotBotProfile(bot, timestamp);
@@ -777,6 +782,105 @@ export class ConversationRunService {
 
   async createTopic(conversationId: string, title: string, options?: TopicSchedulingOptions): Promise<ConversationTopic> {
     return this.createDirectTopic(this.resolveDirectBotId(conversationId), title, options);
+  }
+
+  /**
+   * Remove one non-default Direct Topic. The default Topic is the Bot's
+   * durable conversation identity and is removed only by
+   * teardownDirectConversation. This path releases hidden sessions bound to
+   * the Topic, then deletes that Topic's rows. Other Topics and the Direct
+   * Conversation stay.
+   */
+  async teardownDirectTopic(conversationId: string, topicId: string): Promise<void> {
+    this.assertOpen();
+    const botId = this.resolveDirectBotId(conversationId);
+    if (topicId === createDirectTopicId(botId)) {
+      throw new ConversationError(
+        "default_topic_permanent",
+        "the Direct default Topic is removed only by tearing down the Direct Conversation",
+      );
+    }
+    const topic = this.state.conversation_topics[topicId];
+    if (!topic || topic.conversationId !== conversationId) {
+      if (this.store.isTopicDeletingIn(conversationId, topicId)) {
+        await this.finishDanglingDirectTopic(botId, conversationId, topicId);
+        return;
+      }
+      throw new ConversationError("topic_not_found", `topic "${topicId}" does not belong to this conversation`);
+    }
+    // Read-only: an already-indeterminate Topic must not enter the deleting
+    // barrier until the operator accepts the unknown result and retries.
+    this.throwIfUnresolvedIndeterminate(conversationId, topicId);
+    const timestamp = this.now().toISOString();
+    await this.bots.runLifecycle(botId, async () => {
+      // The gate wait is outside this callback. Re-read and mark in one
+      // transaction so a Run sealed while we waited does not pass the barrier.
+      this.store.markTopicDeletingIfSettled(topicId, conversationId, timestamp);
+      await this.stateMutex.run(async () => {
+        const live = this.state.conversation_topics[topicId];
+        if (live && live.conversationId === conversationId && live.status === "active") {
+          const next = structuredClone(this.state);
+          next.conversation_topics[topicId] = { ...live, status: "deleting", updatedAt: timestamp };
+          await this.persist(next);
+        }
+      });
+    });
+    await this.afterTeardownMarkedDeleting?.();
+    for (const run of this.store.listRuns(conversationId, topicId)) {
+      if (run.state === "queued" || run.state === "running" || run.state === "waiting-human") {
+        await this.cancelRunAndAbortRouting(run.id);
+      }
+    }
+    await this.dispatcher.flushOwnedClaimLeases();
+    this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId, topicId });
+    const remaining = this.store.listRuns(conversationId, topicId);
+    const blocking = remaining.filter(
+      (run) => run.state === "queued" || run.state === "running" || run.state === "waiting-human",
+    );
+    if (blocking.length > 0) {
+      throw new ConversationError("conversation_not_settled", "topic has unsettled runs", {
+        runIds: blocking.map((run) => run.id),
+      });
+    }
+    // A Run that became indeterminate while this teardown was already past
+    // the barrier stays fail-closed. The barrier remains for retry.
+    this.throwIfUnresolvedIndeterminate(conversationId, topicId);
+    for (const alias of this.directTopicAliases(botId, conversationId, topicId)) {
+      if (this.sessions.getLogicalSessionRecord(alias)) {
+        await this.releaseAlias(alias);
+      }
+    }
+    await this.bots.runLifecycle(botId, async () => {
+      await this.beforeTeardownFinalize?.();
+      for (const alias of this.directTopicAliases(botId, conversationId, topicId)) {
+        if (this.sessions.getLogicalSessionRecord(alias)) {
+          await this.releaseAlias(alias);
+        }
+      }
+      await this.stateMutex.run(async () => {
+        const leftover = this.directTopicAliases(botId, conversationId, topicId);
+        if (leftover.length > 0) {
+          throw new ConversationError("session_release_failed", "direct topic still has a hidden session", {
+            aliases: leftover,
+          });
+        }
+        const next = structuredClone(this.state);
+        for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
+          if (
+            binding.scope === "bot-direct"
+            && binding.conversationId === conversationId
+            && binding.topicId === topicId
+          ) {
+            delete next.bot_runtime_bindings[id];
+          }
+        }
+        delete next.conversation_topics[topicId];
+        await this.persist(next);
+        this.store.deleteTopicContent(conversationId, topicId);
+        this.store.clearTopicLifecycle(conversationId, topicId);
+      });
+    });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
   }
   /**
    * PR6 Group Topic lifecycle. Creates a Topic under a group Conversation
@@ -1267,22 +1371,56 @@ export class ConversationRunService {
     }
   }
 
+  /**
+   * Administrator acceptance of an indeterminate Run. Ordinary chat does not
+   * reach this method. The Run stays `indeterminate`; the resolution row is
+   * the audit that unknown side effects were accepted.
+   */
+  resolveIndeterminateRun(input: {
+    runId: string;
+    action: "accept-unknown";
+    reason: string;
+    actorAccountId: string;
+    actorName?: string;
+  }) {
+    this.assertOpen();
+    const resolved = this.store.resolveIndeterminateRun({
+      ...input,
+      now: this.now().toISOString(),
+    });
+    const run = this.store.getRun(resolved.runId);
+    if (run) {
+      emitConversationProductEvent(this.onProductEvent, { type: "conversation-run-changed", run });
+    }
+    return resolved;
+  }
+
   async teardownDirectConversation(botId: string): Promise<void> {
     this.assertOpen();
     const bot = this.bots.getBot(botId);
+    // Group membership and Group-member runtimes survive Direct teardown.
+    // Refuse before any deleting barrier or history removal. deleteBot
+    // repeats the check.
+    this.bots.assertDirectHistoryDeleteAllowed(botId);
     const timestamp = this.now().toISOString();
     const planned = this.planDirect(bot);
     const conversationId = planned.conversation.id;
+    // Already-indeterminate work is a read-only refusal. Declining the
+    // operator prompt must leave the Conversation active.
+    this.throwIfUnresolvedIndeterminate(conversationId);
     await this.bots.runLifecycle(botId, async () => {
-      // Validate every ownership signal before making teardown externally visible.
-      // A contradiction must leave the Conversation active and all physical state intact.
-      // A group-controller row pointing at this Direct root is a cross-kind
-      // contradiction: Direct teardown owns no controller release path, and
-      // deleting the Direct metadata would orphan the hidden session.
-      this.assertNoDirectControllerResidue(botId, conversationId);
-      this.ownedAliases(botId, conversationId);
-      this.store.markConversationDeleting(conversationId, timestamp);
-      await this.markAppStateDeleting(conversationId);
+      // Membership, the indeterminate recheck, and the SQLite barrier commit
+      // before this critical section releases the state mutex. Group
+      // create/update also write membership under that mutex and refuse a
+      // Bot whose Direct Conversation is already deleting, so they cannot
+      // land between this check and session release.
+      await this.stateMutex.run(async () => {
+        this.bots.assertDirectHistoryDeleteAllowed(botId);
+        this.assertNoDirectControllerResidue(botId, conversationId);
+        this.ownedAliases(botId, conversationId);
+        this.store.markConversationDeletingIfSettled(conversationId, botId, timestamp);
+        await this.persistConversationDeleting(conversationId);
+      });
     });
     await this.afterTeardownMarkedDeleting?.();
 
@@ -1294,13 +1432,13 @@ export class ConversationRunService {
     }
     await this.dispatcher.flushOwnedClaimLeases();
     this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId });
-    const remaining = this.store.listRuns(conversationId);
-    const indeterminate = remaining.filter((run) => run.state === "indeterminate");
-    if (indeterminate.length > 0) {
-      throw new ConversationError("conversation_indeterminate", "conversation has indeterminate work", {
-        runIds: indeterminate.map((run) => run.id),
-      });
-    }
+    // Cancel can still seal a started Run as indeterminate after the barrier
+    // is up. That refusal stays fail-closed and retryable.
+    this.throwIfUnresolvedIndeterminate(conversationId);
+    // A Group add that raced the barrier is refused on the write side.
+    // Re-check before any session release so a missed add cannot destroy
+    // hidden sessions and then fail the delete.
+    this.bots.assertDirectHistoryDeleteAllowed(botId);
 
     for (const alias of this.ownedAliases(botId, conversationId)) {
       if (this.sessions.getLogicalSessionRecord(alias)) {
@@ -1316,6 +1454,9 @@ export class ConversationRunService {
         }
       }
       await this.stateMutex.run(async () => {
+        // A Group add that landed during drain must not destroy Direct
+        // history that deleteBot would then refuse to follow.
+        this.bots.assertDirectHistoryDeleteAllowed(botId);
         const next = structuredClone(this.state);
         for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
           if (
@@ -1399,8 +1540,7 @@ export class ConversationRunService {
         runIds: unsettled.map((run) => run.id),
       });
     }
-    const ghostIndeterminate = this.store.listRuns(conversationId)
-      .filter((run) => run.state === "indeterminate");
+    const ghostIndeterminate = this.unresolvedIndeterminate(this.store.listRuns(conversationId));
     if (ghostIndeterminate.length > 0) {
       throw new ConversationError("conversation_indeterminate", "group has indeterminate work", {
         runIds: ghostIndeterminate.map((run) => run.id),
@@ -1920,15 +2060,21 @@ export class ConversationRunService {
   }
   /**
    * PR6 Group Topic teardown (§9.7): mark deleting → stop/settle active Runs
-   * → release all member runtimes → remove bindings → remove
-   * Conversation-store rows → remove Topic metadata. Failure at any step
-   * leaves the deleting barrier in place so teardown is retryable. No Router
-   * or controller session exists in PR6; only group-member bindings are
+   * → release all member runtimes → remove bindings → persist Topic removal
+   * from AppState → delete Conversation-store rows → clear the Topic
+   * barrier. A failed AppState save leaves SQLite rows and the barrier.
+   * Failure at any earlier step also leaves the barrier so teardown is
+   * retryable. No Router or controller session exists in PR6; only group-member bindings are
    * released. A contradictory binding/session link fails closed and leaves
    * everything in place for retry.
    */
   async teardownGroupTopic(conversationId: string, topicId: string): Promise<void> {
     this.assertOpen();
+    const listed = this.state.conversation_topics[topicId];
+    if ((!listed || listed.conversationId !== conversationId) && this.store.isTopicDeletingIn(conversationId, topicId)) {
+      await this.finishDanglingGroupTopic(conversationId, topicId);
+      return;
+    }
     this.requireGroupTopic(conversationId, topicId);
     // Pre-checks before the deleting barrier: a provisional controller row
     // attributing to this Topic is that Topic's only cleanup root, and an
@@ -1982,7 +2128,7 @@ export class ConversationRunService {
         runIds: blocking.map((run) => run.id),
       });
     }
-    const indeterminate = remaining.filter((run) => run.state === "indeterminate");
+    const indeterminate = this.unresolvedIndeterminate(remaining);
     if (indeterminate.length > 0) {
       throw new ConversationError("conversation_indeterminate", "topic has indeterminate work", {
         runIds: indeterminate.map((run) => run.id),
@@ -2041,9 +2187,10 @@ export class ConversationRunService {
               delete next.bot_runtime_bindings[id];
             }
           }
-          this.store.deleteTopicRows(conversationId, topicId);
           delete next.conversation_topics[topicId];
           await this.persist(next);
+          this.store.deleteTopicContent(conversationId, topicId);
+          this.store.clearTopicLifecycle(conversationId, topicId);
         });
       },
     );
@@ -2301,6 +2448,7 @@ export class ConversationRunService {
   private assertConversationNotDeleting(conversationId: string): void {
     if (
       this.store.isConversationDeleting(conversationId)
+      || this.store.hasDirectDeleteIntentForConversation(conversationId)
       || this.state.conversations[conversationId]?.lifecycle === "deleting"
     ) {
       throw new ConversationError("conversation_deleting", "conversation is deleting");
@@ -2309,22 +2457,126 @@ export class ConversationRunService {
 
   private async markAppStateDeleting(conversationId: string): Promise<void> {
     await this.stateMutex.run(async () => {
-      const conversation = this.state.conversations[conversationId];
-      if (!conversation) {
-        return;
+      await this.persistConversationDeleting(conversationId);
+    });
+  }
+
+  /** Caller holds the state mutex. */
+  private async persistConversationDeleting(conversationId: string): Promise<void> {
+    const conversation = this.state.conversations[conversationId];
+    if (!conversation) {
+      return;
+    }
+    const next = structuredClone(this.state);
+    next.conversations[conversationId] = {
+      ...conversation,
+      lifecycle: "deleting",
+      updatedAt: this.now().toISOString(),
+    };
+    for (const [id, topic] of Object.entries(next.conversation_topics)) {
+      if (topic.conversationId === conversationId && topic.status === "active") {
+        next.conversation_topics[id] = { ...topic, status: "deleting", updatedAt: this.now().toISOString() };
       }
-      const next = structuredClone(this.state);
-      next.conversations[conversationId] = {
-        ...conversation,
-        lifecycle: "deleting",
-        updatedAt: this.now().toISOString(),
-      };
-      for (const [id, topic] of Object.entries(next.conversation_topics)) {
-        if (topic.conversationId === conversationId && topic.status === "active") {
-          next.conversation_topics[id] = { ...topic, status: "deleting", updatedAt: this.now().toISOString() };
+    }
+    await this.persist(next);
+  }
+
+  private unresolvedIndeterminate(runs: ConversationRun[]): ConversationRun[] {
+    return runs.filter((run) => {
+      if (run.state !== "indeterminate") return false;
+      if (!this.store.getRunResolution(run.id)) return true;
+      return this.store.listMemberTurns(run.id).some((member) => !TERMINAL_MEMBER_STATES.includes(member.state));
+    });
+  }
+
+  private throwIfUnresolvedIndeterminate(conversationId: string, topicId?: string): void {
+    const indeterminate = this.unresolvedIndeterminate(this.store.listRuns(conversationId, topicId));
+    if (indeterminate.length === 0) return;
+    const deleting = topicId
+      ? this.store.isTopicDeleting(topicId)
+      : this.store.isConversationDeleting(conversationId);
+    throw new ConversationError(
+      "conversation_indeterminate",
+      topicId ? "topic has indeterminate work" : "conversation has indeterminate work",
+      { runIds: indeterminate.map((run) => run.id), deleting },
+    );
+  }
+
+  /**
+   * AppState already dropped the Topic, but the SQLite deleting barrier is
+   * still present. Finish the row cleanup without treating that as a missing
+   * Topic. A leftover session keeps the barrier.
+   */
+  private async finishDanglingDirectTopic(botId: string, conversationId: string, topicId: string): Promise<void> {
+    await this.bots.runLifecycle(botId, async () => {
+      for (const alias of this.directTopicAliases(botId, conversationId, topicId)) {
+        if (this.sessions.getLogicalSessionRecord(alias)) {
+          await this.releaseAlias(alias);
         }
       }
-      await this.persist(next);
+      await this.stateMutex.run(async () => {
+        const leftover = this.directTopicAliases(botId, conversationId, topicId);
+        if (leftover.length > 0) {
+          throw new ConversationError("session_release_failed", "direct topic still has a hidden session", {
+            aliases: leftover,
+          });
+        }
+        this.store.deleteTopicContent(conversationId, topicId);
+        this.store.clearTopicLifecycle(conversationId, topicId);
+      });
+    });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+  }
+
+  /**
+   * Same recovery as finishDanglingDirectTopic for a Group Topic whose
+   * AppState row is already gone and whose deleting barrier remains.
+   */
+  private async finishDanglingGroupTopic(conversationId: string, topicId: string): Promise<void> {
+    const conversation = this.state.conversations[conversationId];
+    if (!conversation || conversation.kind !== "group") {
+      throw new ConversationError("conversation_not_group", `conversation "${conversationId}" is not a Group`);
+    }
+    this.assertNoTopicControllerResidue(conversationId, topicId);
+    this.assertNoUnattributableGroupMemberSessions();
+    await this.bots.runLifecycleAll(this.groupTopicMemberBotIds(conversationId, topicId), async () => {
+      for (const alias of this.groupMemberAliases(conversationId, topicId)) {
+        if (this.sessions.getLogicalSessionRecord(alias)) {
+          await this.releaseAlias(alias);
+        }
+      }
+      await this.stateMutex.run(async () => {
+        this.assertNoTopicControllerResidue(conversationId, topicId);
+        this.assertNoUnattributableGroupMemberSessions();
+        const leftover = this.groupMemberAliases(conversationId, topicId);
+        if (leftover.length > 0) {
+          throw new ConversationError("session_release_failed", "group topic still has a member session", {
+            aliases: leftover,
+          });
+        }
+        const topic = this.state.conversation_topics[topicId];
+        if (topic && topic.conversationId === conversationId) {
+          const next = structuredClone(this.state);
+          delete next.conversation_topics[topicId];
+          await this.persist(next);
+        }
+        this.store.deleteTopicContent(conversationId, topicId);
+        this.store.clearTopicLifecycle(conversationId, topicId);
+      });
+    });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+  }
+
+  /** Hidden sessions whose binding or owner names this Direct Topic only. */
+  private directTopicAliases(botId: string, conversationId: string, topicId: string): string[] {
+    return this.ownedAliases(botId, conversationId).filter((alias) => {
+      const owner = this.state.sessions[alias]?.owner;
+      if (owner?.kind === "bot-direct" && owner.topicId === topicId) return true;
+      return Object.values(this.state.bot_runtime_bindings).some((binding) =>
+        binding.scope === "bot-direct"
+        && binding.sessionAlias === alias
+        && binding.conversationId === conversationId
+        && binding.topicId === topicId);
     });
   }
 

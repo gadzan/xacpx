@@ -633,8 +633,11 @@ export default {
     },
     delete: {
       confirmTitle: "删除 Bot",
-      confirmMessage: "确定要删除 Bot「{name}」吗？此操作不可撤销。",
+      confirmMessage: "删除 Bot「{name}」及其 Direct 会话？进行中的工作会被取消，该 Bot 的历史和隐藏 session 会被清理，且不可撤销。",
       failedTitle: "删除 Bot 失败",
+      indeterminate: "该 Bot 有一次副作用未知的执行（{runId}）。接受未知结果不会把它记为成功。仍要继续删除吗？",
+      releaseFailed: "隐藏 session 未能释放，Bot 已保留。可以重试删除。",
+      stillActive: "该 Bot 仍有已启动的执行。请等它结束后再删除。",
     },
     dialog: {
       createTitle: "新建 Bot",

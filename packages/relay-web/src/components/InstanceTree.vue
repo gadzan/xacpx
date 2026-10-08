@@ -86,18 +86,7 @@ function onBotSaved(bot: BotDetailDto): void {
   }
   botDialogFor.value = null;
 }
-function botHasRuntime(bot: BotSummaryDto): boolean {
-  return ("hasRuntime" in bot && (bot as { hasRuntime?: unknown }).hasRuntime) === true;
-}
-
 async function deleteBotWithConfirm(instanceId: string, bot: BotSummaryDto): Promise<void> {
-  // Same fail-closed rule as the pane: a used Bot cannot be deleted
-  // (backend bot_in_use); teardown/rebind is a later lifecycle surface.
-  // Surface it, don't fail it.
-  if (botHasRuntime(bot)) {
-    pushToast("error", "bot.lifecycle.deleteBlocked");
-    return;
-  }
   const confirmed = await confirm({
     title: t("bot.delete.confirmTitle"),
     message: t("bot.delete.confirmMessage", { name: bot.name }),
@@ -106,10 +95,24 @@ async function deleteBotWithConfirm(instanceId: string, bot: BotSummaryDto): Pro
   });
   if (!confirmed) return;
   try {
-    await directBotsStore.deleteBot(instanceId, bot.id);
+    await directBotsStore.deleteDirectBot(instanceId, bot.id, {
+      acceptUnknown: async (runIds) => confirm({
+        title: t("bot.delete.confirmTitle"),
+        message: t("bot.delete.indeterminate", { runId: runIds.join(", ") }),
+        confirmLabel: t("common.delete"),
+        tone: "danger",
+      }),
+    });
   } catch (err: unknown) {
     const code = err instanceof Error && "code" in err ? String(err.code ?? "") : "";
-    pushToast("error", code === "bot_in_use" ? "bot.lifecycle.deleteBlocked" : "bot.delete.failedTitle");
+    const key = code === "bot_in_use" || code === "bot_in_group"
+      ? "bot.lifecycle.deleteBlocked"
+      : code === "session_release_failed"
+        ? "bot.delete.releaseFailed"
+        : code === "execution_still_active" || code === "conversation_not_settled"
+          ? "bot.delete.stillActive"
+          : "bot.delete.failedTitle";
+    pushToast("error", key);
   }
 }
 

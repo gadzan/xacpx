@@ -301,4 +301,13 @@ test("parseControlPayload validates group RPC shapes and rejects junk isolation"
     conversationId: "conversation_g", topicId: "topic_1",
   })).not.toBeNull();
   expect(parseControlPayload(MSG.groupTopicsTeardown, { conversationId: "conversation_g" })).toBeNull();
+  expect(parseControlPayload(MSG.runsResolveIndeterminate, {
+    runId: "run_1", action: "accept-unknown", reason: "checked",
+  })).not.toBeNull();
+  expect(parseControlPayload(MSG.runsResolveIndeterminate, {
+    runId: "run_1", action: "cancel", reason: "checked",
+  })).toBeNull();
+  expect(parseControlPayload(MSG.botsTeardownDirect, { id: "bot_1" })).not.toBeNull();
+  expect(parseControlPayload(MSG.directTopicsTeardown, { conversationId: "c", topicId: "t" })).not.toBeNull();
+  expect(parseControlPayload(MSG.directTopicsTeardown, { conversationId: "c" })).toBeNull();
 });

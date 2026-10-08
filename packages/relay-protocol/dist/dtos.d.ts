@@ -397,6 +397,27 @@ export interface ConversationRunDto {
     createdAt: string;
     startedAt?: string;
     finishedAt?: string;
+    /** Audit of an administrator accepting unknown side effects. Run state stays indeterminate. */
+    indeterminateResolution?: {
+        id: string;
+        action: "accept-unknown";
+        reason: string;
+        actorAccountId: string;
+        actorName?: string;
+        createdAt: string;
+        runState: "indeterminate";
+        completionReason?: string;
+        consumedMemberTurns: number;
+        failedBotIds: string[];
+        members: Array<{
+            id: string;
+            botId: string;
+            state: string;
+            startedAt?: string;
+            finishedAt?: string;
+            failureReason?: string;
+        }>;
+    };
 }
 export interface BotProfileSnapshotDto {
     revision: number;

@@ -3,6 +3,7 @@ import { ref } from "vue";
 import {
   MSG,
   isErrorPayload,
+  type ErrorPayload,
   type GitCheckoutPayload,
   type GitCommitResult,
   type GitFetchPayload,
@@ -37,7 +38,7 @@ export interface GitOperationResult {
   finishedAt: number;
 }
 
-function unwrap<T>(result: T | { error: { code: string; message: string } }): T {
+function unwrap<T>(result: T | ErrorPayload): T {
   if (isErrorPayload(result)) throw new Error(result.error.message || result.error.code);
   return result;
 }

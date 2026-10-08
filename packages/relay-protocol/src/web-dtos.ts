@@ -697,6 +697,48 @@ function validInteractionField(value: unknown): boolean {
   return true;
 }
 
+const RESOLUTION_MEMBER_STATES = [
+  "queued", "dispatched", "running", "completed", "failed", "cancelled", "indeterminate",
+] as const;
+const MAX_RESOLUTION_MEMBERS = 64;
+
+function optBounded(value: unknown, maxLen: number): boolean {
+  return value === undefined || isBoundedStr(value, maxLen);
+}
+
+function validResolutionMember(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const member = value as Record<string, unknown>;
+  return isBoundedStr(member.id, 128)
+    && isBoundedStr(member.botId, 128)
+    && typeof member.state === "string"
+    && (RESOLUTION_MEMBER_STATES as readonly string[]).includes(member.state)
+    && optBounded(member.startedAt, 64)
+    && optBounded(member.finishedAt, 64)
+    && optBounded(member.failureReason, 2000);
+}
+
+function validIndeterminateResolution(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return record.action === "accept-unknown"
+    && isBoundedStr(record.id, 128)
+    && isBoundedStr(record.reason, 2000)
+    && isBoundedStr(record.actorAccountId, 128)
+    && record.runState === "indeterminate"
+    && isBoundedStr(record.createdAt, 64)
+    && isNonNegInt(record.consumedMemberTurns)
+    && Array.isArray(record.failedBotIds)
+    && record.failedBotIds.length <= MAX_RESOLUTION_MEMBERS
+    && record.failedBotIds.every((entry) => isBoundedStr(entry, 128))
+    && Array.isArray(record.members)
+    && record.members.length <= MAX_RESOLUTION_MEMBERS
+    && record.members.every(validResolutionMember)
+    && optBounded(record.actorName, 200)
+    && optBounded(record.completionReason, 2000);
+}
+
 function validConversationRun(value: unknown): boolean {
   if (typeof value !== "object" || value === null) return false;
   const c = value as Record<string, unknown>;
@@ -720,6 +762,7 @@ function validConversationRun(value: unknown): boolean {
       || (Array.isArray(c.quarantinedBotIds) && c.quarantinedBotIds.every((entry) => isBoundedStr(entry, 128))))
     && typeof c.createdAt === "string"
     && optStr(c.completionReason) && optStr(c.startedAt) && optStr(c.finishedAt)
+    && validIndeterminateResolution(c.indeterminateResolution)
     && (c.waitingQuestion === undefined || (c.mode === "automatic" && c.state === "waiting-human"
       && typeof c.waitingQuestion === "string" && c.waitingQuestion.trim().length > 0))
     && (c.activeBatch === undefined || typeof c.activeBatch === "number")

@@ -3,6 +3,7 @@ import { computed, ref } from "vue";
 import {
   MSG,
   isErrorPayload,
+  type ErrorPayload,
   type BotSummaryDto,
   type ConversationHistoryResponseDto,
   type ConversationMessageDto,
@@ -85,7 +86,7 @@ class GroupRpcError extends Error {
   }
 }
 
-function unwrapRpc<T>(result: T | { error: { code: string; message: string } }): T {
+function unwrapRpc<T>(result: T | ErrorPayload): T {
   if (isErrorPayload(result)) {
     if (result.error.code === "unknown-type") {
       throw new GroupRpcError(result.error.code, "connectorOutdated");

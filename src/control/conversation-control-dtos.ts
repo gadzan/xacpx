@@ -1,4 +1,5 @@
 import type { BotProfile, BotProfileSnapshot } from "../bots/bot-types";
+import type { IndeterminateResolution } from "../conversations/conversation-store";
 import type {
   ConversationMessage,
   ConversationRecord,
@@ -168,6 +169,32 @@ export interface ConversationRunDto {
   createdAt: string;
   startedAt?: string;
   finishedAt?: string;
+  /**
+   * Present only after an administrator accepted an unknown result.
+   * The Run state stays `indeterminate`; this record is the audit, not a success.
+   */
+  indeterminateResolution?: IndeterminateResolutionDto;
+}
+
+export interface IndeterminateResolutionDto {
+  id: string;
+  action: "accept-unknown";
+  reason: string;
+  actorAccountId: string;
+  actorName?: string;
+  createdAt: string;
+  runState: "indeterminate";
+  completionReason?: string;
+  consumedMemberTurns: number;
+  failedBotIds: string[];
+  members: Array<{
+    id: string;
+    botId: string;
+    state: string;
+    startedAt?: string;
+    finishedAt?: string;
+    failureReason?: string;
+  }>;
 }
 
 export interface ConversationRunDetailDto extends ConversationRunDto {
@@ -435,9 +462,30 @@ export function toMemberTurnSummary(turn: MemberTurnRecord): MemberTurnSummaryDt
   };
 }
 
-export function toRunDetail(run: ConversationRun, memberTurns: MemberTurnRecord[]): ConversationRunDetailDto {
+export function toIndeterminateResolution(record: IndeterminateResolution): IndeterminateResolutionDto {
+  return {
+    id: record.id,
+    action: record.action,
+    reason: record.reason,
+    actorAccountId: record.actorAccountId,
+    ...(record.actorName ? { actorName: record.actorName } : {}),
+    createdAt: record.createdAt,
+    runState: record.runState,
+    ...(record.completionReason ? { completionReason: record.completionReason } : {}),
+    consumedMemberTurns: record.consumedMemberTurns,
+    failedBotIds: [...record.failedBotIds],
+    members: record.members.map((member) => ({ ...member })),
+  };
+}
+
+export function toRunDetail(
+  run: ConversationRun,
+  memberTurns: MemberTurnRecord[],
+  resolution?: IndeterminateResolution,
+): ConversationRunDetailDto {
   return {
     ...toConversationRun(run),
+    ...(resolution ? { indeterminateResolution: toIndeterminateResolution(resolution) } : {}),
     profileSnapshot: run.profileSnapshot,
     memberTurns: memberTurns.map(toMemberTurnSummary),
   };

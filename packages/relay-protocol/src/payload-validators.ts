@@ -57,6 +57,9 @@ import {
   type PromptPayload,
   type QueueCancelPayload,
   type RunsCancelPayload,
+  type RunsResolveIndeterminatePayload,
+  type BotsTeardownDirectPayload,
+  type DirectTopicsTeardownPayload,
   type RunsGetPayload,
   type RunsListPayload,
   type ScheduledCancelPayload,
@@ -589,6 +592,25 @@ const validateRunsCancel: Validator<RunsCancelPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.runId) ? (o as unknown as RunsCancelPayload) : null;
 };
+const validateRunsResolveIndeterminate: Validator<RunsResolveIndeterminatePayload> = (p) => {
+  const o = fields(p);
+  if (!o || !isStr(o.runId) || o.action !== "accept-unknown" || !isBoundedStr(o.reason, 2000)) return null;
+  if (o.actor !== undefined) {
+    if (!isObj(o.actor)) return null;
+    const actor = o.actor as Record<string, unknown>;
+    if (!isBoundedStr(actor.accountId, 256) || !optStr(actor.senderName)) return null;
+  }
+  return o as unknown as RunsResolveIndeterminatePayload;
+};
+const validateBotsTeardownDirect: Validator<BotsTeardownDirectPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? (o as unknown as BotsTeardownDirectPayload) : null;
+};
+const validateDirectTopicsTeardown: Validator<DirectTopicsTeardownPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.conversationId) && isStr(o.topicId)
+    ? (o as unknown as DirectTopicsTeardownPayload) : null;
+};
 
 /* --- relay interaction transport (shared by permission + elicitation) --- */
 
@@ -910,6 +932,7 @@ export type ControlRpcType =
   | typeof MSG.conversationPrompt | typeof MSG.conversationHistory
   | typeof MSG.conversationBindingsList | typeof MSG.conversationBindingsSet | typeof MSG.conversationBindingsDelete
   | typeof MSG.runsGet | typeof MSG.runsList | typeof MSG.runsCancel
+  | typeof MSG.runsResolveIndeterminate | typeof MSG.botsTeardownDirect | typeof MSG.directTopicsTeardown
   | typeof MSG.interactionRequest | typeof MSG.interactionRespond
   | typeof MSG.interactionWithdraw;
 
@@ -995,6 +1018,9 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.runsGet]: validateRunsGet,
   [MSG.runsList]: validateRunsList,
   [MSG.runsCancel]: validateRunsCancel,
+  [MSG.runsResolveIndeterminate]: validateRunsResolveIndeterminate,
+  [MSG.botsTeardownDirect]: validateBotsTeardownDirect,
+  [MSG.directTopicsTeardown]: validateDirectTopicsTeardown,
   [MSG.interactionRequest]: validateInteractionRequest,
   [MSG.interactionRespond]: validateInteractionResponse,
   [MSG.interactionWithdraw]: validateInteractionWithdraw,

@@ -538,12 +538,80 @@ export interface ConversationStore {
    *  first kick; a missing root is fail-closed actionable recovery. */
   listNonterminalRunRoots(): Array<{ conversationId: string; topicId: string }>;
   markConversationDeleting(conversationId: string, now: string): void;
+  /** Same as markConversationDeleting, but refuses without writing when an
+   *  unresolved indeterminate Run is already visible. The read and the write
+   *  are one transaction. A successful mark also records the Bot delete
+   *  intent, which outlives conversation_lifecycle. */
+  markConversationDeletingIfSettled(conversationId: string, botId: string, now: string): void;
   markTopicDeleting(topicId: string, conversationId: string, now: string): void;
+  /** Topic-scoped form of markConversationDeletingIfSettled. */
+  markTopicDeletingIfSettled(topicId: string, conversationId: string, now: string): void;
   isConversationDeleting(conversationId: string): boolean;
+  /** True after Direct teardown has committed to removing the Bot, including
+   *  after conversation_lifecycle has been cleared. */
+  hasDirectBotDeleteIntent(botId: string): boolean;
+  /** True when this Conversation id is the Direct root named by a delete intent. */
+  hasDirectDeleteIntentForConversation(conversationId: string): boolean;
+  clearDirectBotDeleteIntent(botId: string): void;
+  /** Drop intents whose Bot row is already gone. A crash between the metadata
+   *  delete and the intent clear leaves that row; bot ids are not reused. */
+  clearOrphanDirectBotDeleteIntents(liveBotIds: readonly string[]): void;
   isTopicDeleting(topicId: string): boolean;
+  /** True when this Conversation's Topic row is the one marked deleting. */
+  isTopicDeletingIn(conversationId: string, topicId: string): boolean;
   deleteTopicRows(conversationId: string, topicId: string): void;
+  /**
+   * Deletes a Topic's durable rows and leaves `topic_lifecycle` in place.
+   * The barrier stays until AppState has dropped the Topic and
+   * `clearTopicLifecycle` runs, so a failed AppState save can still find
+   * the Topic and retry.
+   */
+  deleteTopicContent(conversationId: string, topicId: string): void;
+  /** Drops the Topic deleting barrier after both stores have dropped the Topic. */
+  clearTopicLifecycle(conversationId: string, topicId: string): void;
   deleteConversationRows(conversationId: string): void;
+  /** Human acceptance of an indeterminate Run. Does not change Run state. */
+  getRunResolution(runId: string): IndeterminateResolution | undefined;
+  /**
+   * Record that an administrator accepted the unknown result. The original
+   * Run and MemberTurn rows stay indeterminate. Repeat calls with the same
+   * action return the existing record and write nothing else. A started
+   * member that is still non-terminal refuses the call.
+   */
+  resolveIndeterminateRun(input: ResolveIndeterminateRunInput): IndeterminateResolution;
   close(): void;
+}
+
+/** Audit record for a human acceptance of unknown side effects. */
+export interface IndeterminateResolution {
+  id: string;
+  runId: string;
+  action: "accept-unknown";
+  reason: string;
+  actorAccountId: string;
+  actorName?: string;
+  createdAt: string;
+  runState: "indeterminate";
+  completionReason?: string;
+  consumedMemberTurns: number;
+  failedBotIds: string[];
+  members: Array<{
+    id: string;
+    botId: string;
+    state: string;
+    startedAt?: string;
+    finishedAt?: string;
+    failureReason?: string;
+  }>;
+}
+
+export interface ResolveIndeterminateRunInput {
+  runId: string;
+  action: "accept-unknown";
+  reason: string;
+  actorAccountId: string;
+  actorName?: string;
+  now: string;
 }
 
 /** Entire model-visible contract. Strict decoding rejects every other field. */

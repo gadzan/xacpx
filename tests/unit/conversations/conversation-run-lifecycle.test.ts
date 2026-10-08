@@ -3101,7 +3101,11 @@ test("unknown settlement and lease recovery converge on the same indeterminate s
     const run = first.store.completeCancel(accepted.run.id, accepted.memberTurns[0]!.id, NOW, true);
     expect(run.state).toBe("indeterminate");
     expect(run.completionReason).toBe("started_result_unknown");
-    expect(first.store.getMemberTurn(accepted.memberTurns[1]!.id)?.state).toBe("indeterminate");
+    // The sibling never entered a provider. Unknown side effects stay on the
+    // settled member; the unstarted sibling is cancelled and unclaimable.
+    const sibling = first.store.getMemberTurn(accepted.memberTurns[1]!.id);
+    expect(sibling?.state).toBe("cancelled");
+    expect(sibling?.startedAt).toBeUndefined();
     expect(first.store.claimNextDispatch({
       now: NOW, owner: "dispatcher-a", leaseExpiresAt: "2026-09-15T12:05:00.000Z", authorityEpoch: "epoch-a",
     })).toBeUndefined();
@@ -3123,7 +3127,9 @@ test("unknown settlement and lease recovery converge on the same indeterminate s
     const run = first.store.getRun(accepted.run.id)!;
     expect(run.state).toBe("indeterminate");
     expect(run.completionReason).toBe("started_result_unknown");
-    expect(first.store.getMemberTurn(accepted.memberTurns[1]!.id)?.state).toBe("indeterminate");
+    const sibling = first.store.getMemberTurn(accepted.memberTurns[1]!.id);
+    expect(sibling?.state).toBe("cancelled");
+    expect(sibling?.startedAt).toBeUndefined();
     expect(first.store.claimNextDispatch({
       now: "2026-09-15T12:06:00.000Z", owner: "dispatcher-a",
       leaseExpiresAt: "2026-09-15T12:07:00.000Z", authorityEpoch: "epoch-a",
@@ -7091,8 +7097,9 @@ test("PR7 scheduler: activation seals explicit two-member run when a started sib
   // Explicit Group Run [A, B] under shared-single-writer: A starts (provider
   // turn hung, unproven), B is claimed and writer-slot-held (dispatched,
   // unstarted), then the daemon crashes with both leases still live. On
-  // restart A must converge to indeterminate AND seal the Run — B must stay
-  // indeterminate, never execute — even though the Run is explicit.
+  // restart A must converge to indeterminate AND seal the Run. B never
+  // started, so it is cancelled rather than marked as an unknown side effect,
+  // and it must not execute.
   const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-old" });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
@@ -7146,7 +7153,9 @@ test("PR7 scheduler: activation seals explicit two-member run when a started sib
   expect(run.state).toBe("indeterminate");
   expect(run.completionReason).toBe("started_result_unknown");
   expect(reopenedStore.getMemberTurn(turnA.id)?.state).toBe("indeterminate");
-  expect(reopenedStore.getMemberTurn(turnB.id)?.state).toBe("indeterminate");
+  expect(reopenedStore.getMemberTurn(turnB.id)?.state).toBe("cancelled");
+  expect(reopenedStore.getMemberTurn(turnB.id)?.startedAt).toBeUndefined();
+  expect(run.consumedMemberTurns).toBe(1);
   expect(reopenedStore.getDispatchForMemberTurn(turnA.id)?.state).toBe("completed");
   expect(reopenedStore.getDispatchForMemberTurn(turnB.id)?.state).toBe("completed");
   expect(reopenedRunner.runs).toHaveLength(0);

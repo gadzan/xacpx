@@ -3,6 +3,7 @@ import { ref } from "vue";
 import {
   RELAY_CAPABILITIES,
   isErrorPayload,
+  type ErrorPayload,
   type AgentCatalogEntryDto,
   type AgentDto,
   type NativeSessionDto,
@@ -22,7 +23,7 @@ import { loadGroupMode, saveGroupMode, type SidebarGroupMode } from "../lib/side
 // An instance-side RPC error comes back as a 200 with an `{error:{code,message}}`
 // payload (the gateway resolves, it does not reject), so api.rpc won't throw.
 // Surface it as a real rejection so callers (the create-session dialog) can show it.
-function unwrap<T>(result: T | { error: { code: string; message: string } }): T {
+function unwrap<T>(result: T | ErrorPayload): T {
   if (isErrorPayload(result)) {
     // `unknown-type` means the connector's relay channel doesn't implement this RPC —
     // i.e. it runs an older xacpx core than the features this dashboard expects. Turn

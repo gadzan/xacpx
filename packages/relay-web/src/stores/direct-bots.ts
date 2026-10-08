@@ -3,6 +3,7 @@ import { computed, markRaw, ref } from "vue";
 import {
   MSG,
   isErrorPayload,
+  type ErrorPayload,
   type BotDetailDto,
   type BotSummaryDto,
   type ConversationDetailDto,
@@ -26,6 +27,7 @@ import {
   type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
+import { directDeleteDeclineIsCleanCancel } from "../lib/direct-delete-cancel";
 
 export type DirectBotRunState = ConversationRunStateDto;
 
@@ -159,18 +161,20 @@ function missingInteractionFields(state: PendingInteractionState): InteractionFi
 
 class DirectBotRpcError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  readonly details?: Record<string, unknown>;
+  constructor(code: string, message: string, details?: Record<string, unknown>) {
     super(message || code);
     this.name = "DirectBotRpcError";
     this.code = code;
+    this.details = details;
   }
 }
-function unwrapRpc<T>(result: T | { error: { code: string; message: string } }): T {
+function unwrapRpc<T>(result: T | ErrorPayload): T {
   if (isErrorPayload(result)) {
     if (result.error.code === "unknown-type") {
       throw new DirectBotRpcError(result.error.code, "connectorOutdated");
     }
-    throw new DirectBotRpcError(result.error.code, result.error.message || result.error.code);
+    throw new DirectBotRpcError(result.error.code, result.error.message || result.error.code, result.error.details);
   }
   return result;
 }
@@ -1027,6 +1031,67 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     // merge locally and refresh best-effort instead of failing the save.
     void loadBots(targetInstanceId).catch(() => {});
     return res.bot;
+  }
+
+  async function teardownDirectBot(targetInstanceId: string, botId: string): Promise<void> {
+    unwrapRpc(await api.rpc<{ ok: boolean }>(targetInstanceId, MSG.botsTeardownDirect, { id: botId }));
+  }
+
+  async function resolveIndeterminateRun(
+    targetInstanceId: string,
+    runId: string,
+    reason: string,
+  ): Promise<ConversationRunDetailDto> {
+    const res = unwrapRpc(
+      await api.rpc<{ run: ConversationRunDetailDto }>(targetInstanceId, MSG.runsResolveIndeterminate, {
+        runId,
+        action: "accept-unknown",
+        reason,
+      }),
+    );
+    return res.run;
+  }
+
+  /**
+   * Product delete: tear down the Direct Conversation first, then the
+   * metadata-only Bot delete. The server refuses Group membership before it
+   * marks the Conversation deleting, so a `bot_in_group` error leaves Direct
+   * history in place. An already-indeterminate Run is also refused before
+   * that barrier. When the operator accepts, `acceptUnknown` records it and
+   * the teardown is retried once. Declining returns normally only when the
+   * server explicitly reports `deleting: false`. A missing flag or
+   * `deleting: true` still rejects, because the Conversation may already be
+   * unable to accept new work.
+   */
+  async function deleteDirectBot(
+    targetInstanceId: string,
+    botId: string,
+    options?: { acceptUnknown?: (runIds: string[]) => Promise<boolean> },
+  ): Promise<void> {
+    try {
+      await teardownDirectBot(targetInstanceId, botId);
+    } catch (error: unknown) {
+      const coded = error as { code?: string; details?: { runIds?: unknown; deleting?: unknown } };
+      const runIds = Array.isArray(coded.details?.runIds)
+        ? coded.details.runIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+        : [];
+      if (coded.code !== "conversation_indeterminate" || runIds.length === 0 || !options?.acceptUnknown) {
+        throw error;
+      }
+      if (!await options.acceptUnknown(runIds)) {
+        if (directDeleteDeclineIsCleanCancel(coded.details)) return;
+        throw error;
+      }
+      for (const runId of runIds) {
+        await resolveIndeterminateRun(
+          targetInstanceId,
+          runId,
+          "operator accepted unknown side effects during Direct Bot delete",
+        );
+      }
+      await teardownDirectBot(targetInstanceId, botId);
+    }
+    await deleteBot(targetInstanceId, botId);
   }
 
   async function deleteBot(targetInstanceId: string, botId: string): Promise<void> {
@@ -3577,6 +3642,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     createBot,
     updateBot,
     deleteBot,
+    teardownDirectBot,
+    deleteDirectBot,
+    resolveIndeterminateRun,
     loadConversations,
     loadTopics,
     createTopic,

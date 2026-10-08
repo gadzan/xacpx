@@ -636,8 +636,11 @@ export default {
     },
     delete: {
       confirmTitle: "Delete Bot",
-      confirmMessage: "Are you sure you want to delete \"{name}\"? This cannot be undone.",
+      confirmMessage: "Delete \"{name}\" and its Direct Conversation? Running work is cancelled, history and hidden sessions for this Bot are removed, and this cannot be undone.",
       failedTitle: "Failed to delete Bot",
+      indeterminate: "This Bot has an execution whose side effects are unknown ({runId}). Accepting that unknown result does not mark the run successful. Continue with delete?",
+      releaseFailed: "A hidden session could not be released. The Bot was kept. Retry the delete.",
+      stillActive: "This Bot still has a started execution. Wait for it to finish, then retry the delete.",
     },
     dialog: {
       createTitle: "New Bot",
