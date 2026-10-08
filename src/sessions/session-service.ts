@@ -166,7 +166,7 @@ export class SessionService {
     // A later resolver result must not attest a different executable than the
     // transport selected at startup. Copy so caller-owned metadata cannot drift.
     this.acpxCommandMetadata = Object.freeze({ ...(options.acpxCommandMetadata
-      ?? resolveAcpxCommandMetadata({ configuredCommand: config.transport.command })) });
+      ?? resolveAcpxCommandMetadata({ configuredCommand: config.transport?.command })) });
     this.permissionInteractionCapable = options.permissionInteractionCapable;
     this.runtimeCapability = options.runtimeCapability;
   }
