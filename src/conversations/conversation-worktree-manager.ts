@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
-import { lstat, mkdir, mkdtemp, realpath, unlink } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rmdir, unlink } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { runWorkspaceGit, worktreePathsEqual, worktreePathIsWithin } from "../control/workspace-git";
+import { runWorkspaceGit, runWorkspaceGitPreview, runWorkspaceGitSync, worktreePathsEqual, worktreePathIsWithin } from "../control/workspace-git";
 import type { AppConfig } from "../config/types";
 import type { LogicalSession } from "../state/types";
 import { AsyncMutex } from "../orchestration/async-mutex";
@@ -30,10 +30,17 @@ export class ConversationWorktreeManager {
     finally { if (--entry.users === 0) this.gates.delete(id); }
   }
   git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
-    return runWorkspaceGit(cwd, [...safeGit, ...args], { GIT_DIR: undefined, GIT_WORK_TREE: undefined,
-      GIT_COMMON_DIR: undefined, GIT_INDEX_FILE: undefined, GIT_OBJECT_DIRECTORY: undefined,
-      GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined, GIT_CONFIG_PARAMETERS: undefined, GIT_CONFIG_COUNT: undefined, ...env })
+    return runWorkspaceGit(cwd, [...safeGit, ...args], this.gitEnvironment(env))
       .catch(error => { throw new ConversationError("worktree_git_failed", errorText(error)); });
+  }
+  private gitEnvironment(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    return { GIT_DIR: undefined, GIT_WORK_TREE: undefined,
+      GIT_COMMON_DIR: undefined, GIT_INDEX_FILE: undefined, GIT_OBJECT_DIRECTORY: undefined,
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined, GIT_CONFIG_PARAMETERS: undefined, GIT_CONFIG_COUNT: undefined, ...env };
+  }
+  private currentBranch(cwd: string): string {
+    try { return runWorkspaceGitSync(cwd, [...safeGit, "symbolic-ref", "--quiet", "HEAD"], this.gitEnvironment()).trim(); }
+    catch (error) { throw new ConversationError("worktree_git_failed", errorText(error)); }
   }
   async checkpoint(point: string, id: string): Promise<void> { await this.hooks.checkpoint?.(point, id); }
   async preflight(workspace: string): Promise<ConversationWorktreeBase> {
@@ -134,7 +141,7 @@ export class ConversationWorktreeManager {
     if (!pointer.startsWith("gitdir: ") || !worktreePathsEqual(realpathSync(resolve(r.worktreePath, pointer.slice(8))), r.gitDir)
       || !worktreePathsEqual(realpathSync(resolve(r.gitDir, readFileSync(join(r.gitDir, "commondir"), "utf8").trim())), run.commonDir)
       || !worktreePathsEqual(realpathSync(readFileSync(join(r.gitDir, "gitdir"), "utf8").trim()), join(r.worktreePath, ".git"))
-      || readFileSync(join(r.gitDir, "HEAD"), "utf8").trim() !== `ref: ${r.branchRef}`
+      || this.currentBranch(r.worktreePath) !== r.branchRef
       || (!allowUnlocked && readFileSync(join(r.gitDir, "locked"), "utf8").trim() !== r.ownerToken)
       || (allowUnlocked && existsSync(join(r.gitDir, "locked")) && readFileSync(join(r.gitDir, "locked"), "utf8").trim() !== r.ownerToken)) {
       fail("worktree_identity_mismatch", "worktree registration, branch or owner token changed");
@@ -228,10 +235,16 @@ export class ConversationWorktreeManager {
       const tree = (await this.git(r.worktreePath, ["write-tree"], env)).trim();
       if ((await this.git(r.worktreePath, ["ls-tree", "-r", tree])).split("\n").some(line => line.startsWith("160000 "))) fail("worktree_unsupported_tree", "snapshot contains an unmanaged nested repository");
       const files = (await this.git(r.worktreePath, ["diff", "--name-only", "-z", run.baseCommitSha, tree])).split("\0").filter(Boolean);
-      const rawDiff = await this.git(r.worktreePath, ["diff", "--no-ext-diff", "--no-textconv", "--stat", "--patch", run.baseCommitSha, tree]);
-      const diff = rawDiff.length > 32_768 ? rawDiff.slice(0, 32_700) + "\n[Preview truncated; inspect the member worktree for the full diff.]" : rawDiff;
+      const preview = await runWorkspaceGitPreview(r.worktreePath,
+        [...safeGit, "diff", "--no-ext-diff", "--no-textconv", "--stat", "--patch", run.baseCommitSha, tree], this.gitEnvironment())
+        .catch(error => { throw new ConversationError("worktree_git_failed", errorText(error)); });
+      const diff = preview.truncated ? preview.stdout.slice(0, 32_700).replace(/[\uD800-\uDBFF]$/, "")
+        + "\n[Preview truncated; inspect the member worktree for the full diff.]" : preview.stdout;
       return { botId: r.botId, worktreeId: r.id, head, tree, files, diff };
-    } finally { await unlink(index).catch(() => {}); /* empty private index dirs are harmless; never recursively delete */ }
+    } finally {
+      await unlink(index).catch(() => {});
+      await rmdir(directory).catch(() => {}); // exact owned directory, empty only; never recursively delete
+    }
   }
   async cleanup(runId: string): Promise<ConversationWorktreeRun> {
     return this.exclusive(runId, async () => {

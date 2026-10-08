@@ -27,6 +27,10 @@ Resource IDs determine paths and branch names; caller strings never become paths
 or Git arguments. Git's worktree lock reason records an opaque durable ownership
 token. Verification compares canonical path, registration, common-dir, branch,
 base ancestry and that token. Unknown/malformed ownership fails closed.
+Branch checks use Git's actual symbolic ref at every resolution boundary. Both
+files and reftable ref storage are supported: [reftable's HEAD file is a dummy](https://git-scm.com/docs/reftable),
+so reading that file cannot prove the current branch. The synchronous SessionService
+resolver uses the same bounded argv-only Git boundary for this read-only check.
 
 Run acceptance and its base intent commit in the same transaction. A Run with
 unresolved member results blocks the next worktree Run in its Topic until explicit
@@ -100,6 +104,12 @@ uncommitted/untracked changes. It revalidates the preview and records intent fir
 Private Git indexes capture complete trees without discarding existing files.
 Controlled snapshot commits and base-parent patch commits preserve member results.
 No implicit write to the source worktree or main occurs.
+
+Diff previews use bounded streaming collection, drain the remaining output and check
+Git's final exit status. A large legal patch cannot fail merely by exceeding the
+buffered-command output limit; integration uses the complete captured Git tree.
+Capture removes its private index and exact empty temporary directory without
+recursive deletion, including on failure.
 
 `preparing -> integrating -> integrated`, with `conflicted`, `failed`,
 `recovery-required` and `abandoned`. The candidate uses an owned integration

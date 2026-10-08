@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -16,6 +16,46 @@ export async function runWorkspaceGit(root: string, args: string[], env?: NodeJS
     ...(env ? { env: { ...process.env, ...env } } : {}),
   });
   return stdout;
+}
+
+/** Read-only identity checks required by synchronous session resolution. */
+export function runWorkspaceGitSync(root: string, args: string[], env?: NodeJS.ProcessEnv): string {
+  return execFileSync("git", ["-C", root, "-c", "gc.auto=0", ...args], {
+    encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER, killSignal: "SIGKILL", windowsHide: true,
+    ...(env ? { env: { ...process.env, ...env } } : {}),
+  });
+}
+
+/** Display-only prefix: drain both pipes and verify exit, even after truncation. */
+export function runWorkspaceGitPreview(root: string, args: string[], env?: NodeJS.ProcessEnv): Promise<{ stdout: string; truncated: boolean }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", ["-C", root, "-c", "gc.auto=0", ...args], {
+      stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+      ...(env ? { env: { ...process.env, ...env } } : {}),
+    });
+    let stdout = "", stderr = "", truncated = false, timedOut = false;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      const remaining = 32_768 - stdout.length;
+      stdout += chunk.slice(0, remaining);
+      if (chunk.length > remaining) truncated = true;
+    });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk.slice(0, Math.max(0, 8192 - stderr.length)); });
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, GIT_TIMEOUT_MS);
+    timer.unref();
+    child.once("error", error => { clearTimeout(timer); reject(error); });
+    child.once("close", (code, signal) => {
+      clearTimeout(timer);
+      if (timedOut) reject(new Error(`Git preview timed out after ${GIT_TIMEOUT_MS}ms`));
+      else if (code !== 0) reject(new Error(`Git preview exited ${code ?? signal}: ${stderr.trim()}`));
+      else {
+        // Do not expose half of a UTF-16 surrogate pair at the display boundary.
+        if (truncated && /[\uD800-\uDBFF]$/.test(stdout)) stdout = stdout.slice(0, -1);
+        resolve({ stdout, truncated });
+      }
+    });
+  });
 }
 
 export interface GitWorkspaceRef {

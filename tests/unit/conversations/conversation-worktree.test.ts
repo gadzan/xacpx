@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, writeFile, readFile, rename, symlink, unlink, mkdir, chmod } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { mkdtemp, writeFile, readFile, readdir, rename, symlink, unlink, mkdir, chmod } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { runWorkspaceGit } from "../../../src/control/workspace-git";
+import { runWorkspaceGit, runWorkspaceGitPreview, runWorkspaceGitSync } from "../../../src/control/workspace-git";
 import { harness, deferred, HUMAN } from "./fixtures/concurrency-harness";
 import { SqliteConversationStore } from "../../../src/conversations/sqlite-conversation-store";
 import { ConversationWorktreeManager } from "../../../src/conversations/conversation-worktree-manager";
@@ -15,9 +15,9 @@ import { RuntimeEngine } from "../../../src/bridge/engine/runtime-engine";
 import { GroupHandoffService } from "../../../src/conversations/group-handoff";
 import { parseState } from "../../../src/state/state-store";
 
-async function gitFixture(options: Parameters<typeof harness>[0] = {}) {
+async function gitFixture(options: Parameters<typeof harness>[0] = {}, refFormat?: "reftable") {
   const dir = await mkdtemp(join(tmpdir(), "xacpx-10c-")), source = join(dir, "source");
-  await runWorkspaceGit(dir, ["init", "--initial-branch=main", source]);
+  await runWorkspaceGit(dir, ["init", ...(refFormat ? [`--ref-format=${refFormat}`] : []), "--initial-branch=main", source]);
   await runWorkspaceGit(source, ["config", "core.autocrlf", "false"]);
   await writeFile(join(source, "same.txt"), "first\nsecond\nthird\n");
   await runWorkspaceGit(source, ["add", "."]);
@@ -114,6 +114,74 @@ test("explicit snapshots integrate nonconflicting results into a candidate and s
   expect(replay.integration!.candidateCommitSha).toBe(r.integration!.candidateCommitSha);
   r = await h.integrations!.operate({ action: "cleanup", runId: r.runId }); expect(r.resources.every(r => r.state === "cleaned")).toBe(true);
   const next = await h.accept("next"); expect(next.run.id).not.toBe(r.runId); h.store.close();
+}, 90_000);
+
+const gitVersion = /git version (\d+)\.(\d+)/.exec(runWorkspaceGitSync(process.cwd(), ["--version"]))!;
+const supportsReftable = Number(gitVersion[1]) > 2 || (Number(gitVersion[1]) === 2 && Number(gitVersion[2]) >= 45);
+test.skipIf(!supportsReftable)("reftable members verify the real branch and reject drift despite the placeholder HEAD file", async () => {
+  const h = await gitFixture({}, "reftable"); const accepted = await h.accept("reftable", 1);
+  const drain = h.dispatcher.kick(); await wait(() => h.runner.calls.length === 1);
+  const session = h.sessions.getLogicalSessionRecord(h.runner.calls[0]!.sessionAlias)!;
+  const resource = h.store.worktrees.get(accepted.run.id)!.resources[0]!;
+  expect(h.worktrees!.resolveSessionCwd(session)).toBe(resource.worktreePath);
+  expect((await h.worktrees!.git(resource.worktreePath, ["symbolic-ref", "HEAD"])).trim()).toBe(resource.branchRef);
+  h.runner.finish(0); await drain;
+  await h.worktrees!.git(resource.worktreePath, ["checkout", "-b", "changed-branch"]);
+  expect(() => h.worktrees!.resolveSessionCwd(session)).toThrow("worktree registration, branch or owner token changed");
+  h.store.close();
+}, 60_000);
+
+test("a text patch larger than 8 MiB previews with a bounded prefix and integrates its complete tree", async () => {
+  const h = await gitFixture(); const accepted = await h.accept("large-patch", 1);
+  const drain = h.dispatcher.kick(); await wait(() => h.runner.calls.length === 1);
+  const cwd = h.sessions.getResolvedSessionByInternalAlias(h.runner.calls[0]!.sessionAlias)!.cwd;
+  const content = ("x".repeat(255) + "\n").repeat(36 * 1024);
+  expect(Buffer.byteLength(content)).toBeGreaterThan(8 * 1024 * 1024);
+  await writeFile(join(cwd, "large.txt"), content); h.runner.finish(0); await drain;
+  let r = await h.integrations!.operate({ action: "preview", runId: accepted.run.id, botIds: [h.ids[0]!] });
+  const preview = r.preview!.members[0]!;
+  expect(preview.diff).toContain("[Preview truncated;");
+  expect(preview.diff.length).toBeLessThanOrEqual(32_768);
+  expect(preview.files).toContain("large.txt");
+  // An error exit after a truncated stdout must never look like a valid preview.
+  await expect(runWorkspaceGitPreview(cwd, ["diff", "--exit-code", r.baseCommitSha, preview.tree])).rejects.toThrow("Git preview exited 1");
+  r = await h.integrations!.operate({ action: "integrate", runId: r.runId, requestId: "large", previewId: r.preview!.id, snapshotUncommitted: true });
+  expect(r.integration!.state).toBe("integrated");
+  const candidate = r.resources.find(resource => resource.kind === "integration")!;
+  expect(await readFile(join(candidate.worktreePath, "large.txt"), "utf8")).toBe(content);
+  await expect(readFile(join(h.source, "large.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  h.store.close();
+}, 90_000);
+
+test("repeated previews and failed captures remove only their exact empty snapshot directories", async () => {
+  const h = await gitFixture(); const accepted = await h.accept("private-index-cleanup", 1);
+  const drain = h.dispatcher.kick(); await wait(() => h.runner.calls.length === 1);
+  h.runner.finish(0); await drain;
+  const indexes = join(h.worktrees!.root, ".indexes");
+  for (let i = 0; i < 4; i++) {
+    await h.integrations!.operate({ action: "preview", runId: accepted.run.id, botIds: [h.ids[0]!] });
+    expect(await readdir(indexes)).toEqual([]);
+  }
+  const original = h.worktrees!.git.bind(h.worktrees!); let retained: string | undefined;
+  let preserveUnexpectedFile = false;
+  h.worktrees!.git = async (cwd, args, env) => {
+    if (args[0] === "write-tree") {
+      if (preserveUnexpectedFile) {
+        retained = join(dirname(env!.GIT_INDEX_FILE!), "unexpected.txt");
+        await writeFile(retained, "preserve unexpected contents");
+      }
+      throw new Error("injected snapshot index failure");
+    }
+    return original(cwd, args, env);
+  };
+  try {
+    await expect(h.integrations!.operate({ action: "preview", runId: accepted.run.id, botIds: [h.ids[0]!] })).rejects.toThrow("injected snapshot index failure");
+    expect(await readdir(indexes)).toEqual([]);
+    preserveUnexpectedFile = true;
+    await expect(h.integrations!.operate({ action: "preview", runId: accepted.run.id, botIds: [h.ids[0]!] })).rejects.toThrow("injected snapshot index failure");
+    expect(await readFile(retained!, "utf8")).toBe("preserve unexpected contents");
+    expect(await readdir(indexes)).toHaveLength(1);
+  } finally { h.worktrees!.git = original; h.store.close(); }
 }, 90_000);
 
 test("same-line conflicts persist, survive reopen and continue explicitly without duplicate application", async () => {

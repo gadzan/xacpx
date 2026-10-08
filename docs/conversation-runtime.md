@@ -386,6 +386,8 @@ Conversation database location), with hashed repository/Run/member IDs and manag
 `xacpx/10c/…` branches. Intent is durable before `git worktree add --lock`. Readiness
 requires matching real paths, Git common-dir, branch, base ancestry, Git registration
 and an opaque ownership lock token. Client input cannot choose these paths/tokens.
+Branch identity comes from Git's `symbolic-ref`, including at synchronous session
+resolution; it does not interpret a reftable repository's placeholder HEAD file.
 The state progression is planned → provisioning → ready → active →
 awaiting-integration → integrated → cleanup-pending → cleaned. Failures retain
 provision-failed, missing, recovery-required or cleanup-failed records and diagnostics.
@@ -443,8 +445,12 @@ and must not edit candidate/source trees while operations run. Abandoned dirty/c
 resources require manual preservation/disposition; there is no force-discard API, automatic
 GC, branch deletion, automatic conflict resolution, main merge, cross-machine ownership,
 or cross-Topic scheduling redesign. V1 retains one integration decision per Run. Large
-diff previews are marked truncated (32 Ki characters); inspect the member directory for
-the full diff. A Git subprocess exceeding its existing output/time limit fails explicitly.
+diff previews are collected as a bounded stream (32 Ki characters), marked truncated,
+and continue draining until Git exits successfully. The complete captured tree, rather
+than the display prefix, supplies integration. Inspect the member directory for the
+full diff. Other Git output limits and subprocess timeouts still fail explicitly.
+Private snapshot indexes and their exact temporary directories are removed after
+capture using non-recursive cleanup; unexpected contents are never forcibly removed.
 No live-model or real-WeChat smoke is claimed by loopback Git/ACP tests.
 The pinned acpx CLI's shared catalog can report Windows `EPERM` when separate
 queue owners rename `sessions/index.json` concurrently. This is an execution
