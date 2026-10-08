@@ -60,6 +60,8 @@ export interface CreateConversationRuntimeInput {
   sqlitePath: string;
   releaseOwnedSession: ReleaseOwnedSession;
   onProductEvent?: ConversationProductEventSink;
+  /** First fatal lease or background scheduling error. `undefined` is a real value. */
+  onSchedulingFailure?: (error: unknown) => void;
   authorityEpoch?: string;
   ownerId?: string;
   autoKick?: boolean;
@@ -173,6 +175,7 @@ export async function createConversationRuntime(
       autoKick: input.autoKick ?? true,
       ...(routerEngine ? { routerEngine } : {}),
       ...(input.onProductEvent ? { onProductEvent: input.onProductEvent } : {}),
+      ...(input.onSchedulingFailure ? { onSchedulingFailure: input.onSchedulingFailure } : {}),
       ...shared,
     },
   );

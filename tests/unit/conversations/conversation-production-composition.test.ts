@@ -572,6 +572,7 @@ async function compose(stateStore: BarrierStateStore, options: {
   router?: ConversationRouter; agent?: Agent; state?: AppState; sqlitePath?: string;
   autoKick?: boolean; now?: () => Date; leaseMs?: number; leaseScheduler?: LeaseScheduler;
   beforeLeaseRenewal?: () => void;
+  onSchedulingFailure?: (error: unknown) => void;
 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "xacpx-compose-"));
   const state = options.state ?? createEmptyState();
@@ -613,6 +614,7 @@ async function compose(stateStore: BarrierStateStore, options: {
     ...(options.leaseMs !== undefined ? { leaseMs: options.leaseMs } : {}),
     ...(options.leaseScheduler ? { leaseScheduler: options.leaseScheduler } : {}),
     ...(options.beforeLeaseRenewal ? { beforeLeaseRenewal: options.beforeLeaseRenewal } : {}),
+    ...(options.onSchedulingFailure ? { onSchedulingFailure: options.onSchedulingFailure } : {}),
     stateMutex,
   });
   kernel.bindConversationRuntime(runtime);
@@ -1317,8 +1319,10 @@ test("production claimNextDispatch failure fail-closes accept without an unhandl
   const unhandled: unknown[] = [];
   const onUnhandled = (error: unknown) => { unhandled.push(error); };
   process.on("unhandledRejection", onUnhandled);
+  const reported: unknown[] = [];
   const current = await compose(new BarrierStateStore(), {
     autoKick: true,
+    onSchedulingFailure: (error) => { reported.push(error); },
     agent: { async chat() { return { text: "provider result" }; } },
   });
   const original = current.runtime.store.claimNextDispatch.bind(current.runtime.store);
@@ -1341,6 +1345,9 @@ test("production claimNextDispatch failure fail-closes accept without an unhandl
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
     expect(current.runtime.runs.isConsumerActivated()).toBe(false);
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toBeInstanceOf(Error);
+    expect((reported[0] as Error).message).toBe("claim dispatch I/O error");
     expect(unhandled).toEqual([]);
     expect(current.runtime.store.getRun(accepted.run.id)?.state).toBe("queued");
     expect(current.runtime.store.getRun(accepted.run.id)?.completionReason).toBeUndefined();
@@ -1399,8 +1406,10 @@ test("production scheduling failure records a thrown undefined value", async () 
   let release!: () => void;
   const releasePromise = new Promise<void>((resolve) => { release = resolve; });
   let renewals = 0;
+  const reported: unknown[] = [];
   const current = await compose(new BarrierStateStore(), {
     autoKick: true,
+    onSchedulingFailure: (error) => { reported.push(error); },
     now: () => clock.date(),
     leaseMs: LEASE_MS,
     leaseScheduler: clock.scheduler,
@@ -1438,6 +1447,7 @@ test("production scheduling failure records a thrown undefined value", async () 
     await clock.advance(Math.floor(LEASE_MS / 3));
     expect(renewals).toBe(1);
     expect(current.runtime.runs.isConsumerActivated()).toBe(false);
+    expect(reported).toEqual([undefined]);
     expect(current.runtime.store.getMemberTurn(turn.id)?.state).toBe("running");
     expect(current.runtime.store.getRun(accepted.run.id)?.state).toBe("running");
     await expect(current.control.promptConversation({

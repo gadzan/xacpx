@@ -122,6 +122,7 @@ import {
   resolveConversationStorePath,
   type ConversationRuntime,
 } from "./conversations/conversation-composition";
+import { ConversationError } from "./conversations/conversation-error";
 import { SessionWarmthTracker } from "./control/session-warmth-tracker";
 import { createTerminalService } from "./control/terminal-service";
 import { UploadStore } from "./control/upload-store.js";
@@ -2149,6 +2150,17 @@ export async function buildApp(
     sqlitePath: resolveConversationStorePath(paths.configPath),
     releaseOwnedSession: createProductionOwnedSessionRelease({ sessions, transport }),
     onProductEvent: (event) => conversationKernel(control).emitConversationProduct(event),
+    onSchedulingFailure: (error) => {
+      const code = error instanceof ConversationError ? error.code : undefined;
+      void logger.error(
+        "conversations.scheduling_failed",
+        "Conversation dispatcher hit a fatal scheduling error and stopped accepting new Runs",
+        {
+          error: error instanceof Error ? error.message : String(error),
+          ...(code ? { code } : {}),
+        },
+      ).catch(() => {});
+    },
     autoKick: true,
     stateMutex,
   });

@@ -87,6 +87,9 @@ export interface ConversationRunServiceOptions {
   /** Verified physical+logical release. Required; never LogicalSession-only. */
   releaseOwnedSession: ReleaseOwnedSession;
   onProductEvent?: ConversationProductEventSink;
+  /** First fatal lease or background-kick failure. Invoked once, synchronously,
+   *  with the original value (`undefined` included). Must not throw. */
+  onSchedulingFailure?: (error: unknown) => void;
 }
 
 export interface ConversationHistoryPage {
@@ -122,6 +125,7 @@ export class ConversationRunService {
   private readonly routingAbortControllers = new Map<string, AbortController>();
   private readonly releaseOwnedSession: ReleaseOwnedSession;
   private readonly onProductEvent?: ConversationProductEventSink;
+  private readonly onSchedulingFailure?: (error: unknown) => void;
   private closed = false;
 
   constructor(
@@ -146,9 +150,15 @@ export class ConversationRunService {
     this.routerEngine = options.routerEngine;
     this.releaseOwnedSession = options.releaseOwnedSession;
     this.onProductEvent = options.onProductEvent;
+    this.onSchedulingFailure = options.onSchedulingFailure;
     this.bots.setConversationWork(this.store);
-    this.dispatcher.setFatalSchedulingHandler(() => {
+    this.dispatcher.setFatalSchedulingHandler((error) => {
       this.markConsumerUnavailable();
+      try {
+        this.onSchedulingFailure?.(error);
+      } catch {
+        // Reporting the root cause must not replace the stored failure.
+      }
     });
   }
 

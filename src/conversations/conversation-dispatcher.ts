@@ -134,8 +134,8 @@ export class ConversationDispatcher {
   /** Unexpected drain failure that is not a dead lease keeper. A later explicit
    *  kick may still drain work already accepted; accept stays fail-closed. */
   private schedulingFailure: { error: unknown } | undefined;
-  /** Set by ConversationRunService so a fatal scheduling error fail-closes accept. */
-  private onFatalSchedulingError?: () => void;
+  /** Set by ConversationRunService so the first fatal scheduling error fail-closes accept and can be logged. */
+  private onFatalSchedulingError?: (error: unknown) => void;
 
   constructor(
     private readonly store: ConversationStore,
@@ -155,8 +155,9 @@ export class ConversationDispatcher {
   }
 
   /** The Run service registers this before activation. The first fatal
-   *  scheduling error invokes it once, synchronously, before the error is rethrown. */
-  setFatalSchedulingHandler(handler: () => void): void {
+   *  scheduling error invokes it once, synchronously, with the original
+   *  value, before that value is rethrown. */
+  setFatalSchedulingHandler(handler: (error: unknown) => void): void {
     this.onFatalSchedulingError = handler;
   }
 
@@ -656,15 +657,17 @@ export class ConversationDispatcher {
   }
 
   /** Lost owner/generation and a run that is no longer runnable are fences
-   *  the drain already handles. They must not fail-close the consumer. */
+   *  the drain already handles inside renew, recheck, hold, and execution
+   *  start. `claimNextDispatch` does not throw them. They must not fail-close
+   *  the consumer or end the kick. */
   private isBenignSchedulingError(error: unknown): boolean {
     return error instanceof ConversationError
       && (error.code === "stale_claim" || error.code === "run_not_runnable");
   }
 
-  private notifyFatalScheduling(): void {
+  private notifyFatalScheduling(error: unknown): void {
     try {
-      this.onFatalSchedulingError?.();
+      this.onFatalSchedulingError?.(error);
     } catch {
       // The stored error remains the failure kick and shutdown report.
     }
@@ -689,7 +692,7 @@ export class ConversationDispatcher {
     if (!this.leaseFailure) this.leaseFailure = { error };
     this.stopLeaseKeeper();
     if (!first) return;
-    this.notifyFatalScheduling();
+    this.notifyFatalScheduling(error);
   }
 
   /** Drain failure that does not by itself prove the lease keeper is dead.
@@ -698,7 +701,7 @@ export class ConversationDispatcher {
     if (this.isBenignSchedulingError(error)) return;
     if (this.leaseFailure || this.schedulingFailure) return;
     this.schedulingFailure = { error };
-    this.notifyFatalScheduling();
+    this.notifyFatalScheduling(error);
   }
 
   private renewOwnedClaims(): void {
