@@ -765,10 +765,12 @@ export class ConversationRunService {
     }
     // Read-only: an already-indeterminate Topic must not enter the deleting
     // barrier until the operator accepts the unknown result and retries.
-    this.throwIfUnresolvedIndeterminate(conversationId, topicId);
+    this.throwIfUnresolvedIndeterminate(conversationId, topicId, false);
     const timestamp = this.now().toISOString();
     await this.bots.runLifecycle(botId, async () => {
-      this.store.markTopicDeleting(topicId, conversationId, timestamp);
+      // The gate wait is outside this callback. Re-read and mark in one
+      // transaction so a Run sealed while we waited does not pass the barrier.
+      this.store.markTopicDeletingIfSettled(topicId, conversationId, timestamp);
       await this.stateMutex.run(async () => {
         const live = this.state.conversation_topics[topicId];
         if (live && live.conversationId === conversationId && live.status === "active") {
@@ -797,7 +799,7 @@ export class ConversationRunService {
     }
     // A Run that became indeterminate while this teardown was already past
     // the barrier stays fail-closed. The barrier remains for retry.
-    this.throwIfUnresolvedIndeterminate(conversationId, topicId);
+    this.throwIfUnresolvedIndeterminate(conversationId, topicId, true);
     for (const alias of this.directTopicAliases(botId, conversationId, topicId)) {
       if (this.sessions.getLogicalSessionRecord(alias)) {
         await this.releaseAlias(alias);
@@ -1362,18 +1364,20 @@ export class ConversationRunService {
     const conversationId = planned.conversation.id;
     // Already-indeterminate work is a read-only refusal. Declining the
     // operator prompt must leave the Conversation active.
-    this.throwIfUnresolvedIndeterminate(conversationId);
+    this.throwIfUnresolvedIndeterminate(conversationId, undefined, false);
     await this.bots.runLifecycle(botId, async () => {
-      // Validate every ownership signal before making teardown externally visible.
-      // A contradiction must leave the Conversation active and all physical state intact.
-      // A group-controller row pointing at this Direct root is a cross-kind
-      // contradiction: Direct teardown owns no controller release path, and
-      // deleting the Direct metadata would orphan the hidden session.
-      this.bots.assertDirectHistoryDeleteAllowed(botId);
-      this.assertNoDirectControllerResidue(botId, conversationId);
-      this.ownedAliases(botId, conversationId);
-      this.store.markConversationDeleting(conversationId, timestamp);
-      await this.markAppStateDeleting(conversationId);
+      // Membership, the indeterminate recheck, and the SQLite barrier commit
+      // before this critical section releases the state mutex. Group
+      // create/update also write membership under that mutex and refuse a
+      // Bot whose Direct Conversation is already deleting, so they cannot
+      // land between this check and session release.
+      await this.stateMutex.run(async () => {
+        this.bots.assertDirectHistoryDeleteAllowed(botId);
+        this.assertNoDirectControllerResidue(botId, conversationId);
+        this.ownedAliases(botId, conversationId);
+        this.store.markConversationDeletingIfSettled(conversationId, timestamp);
+        await this.persistConversationDeleting(conversationId);
+      });
     });
     await this.afterTeardownMarkedDeleting?.();
 
@@ -1387,7 +1391,11 @@ export class ConversationRunService {
     this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId });
     // Cancel can still seal a started Run as indeterminate after the barrier
     // is up. That refusal stays fail-closed and retryable.
-    this.throwIfUnresolvedIndeterminate(conversationId);
+    this.throwIfUnresolvedIndeterminate(conversationId, undefined, true);
+    // A Group add that raced the barrier is refused on the write side.
+    // Re-check before any session release so a missed add cannot destroy
+    // hidden sessions and then fail the delete.
+    this.bots.assertDirectHistoryDeleteAllowed(botId);
 
     for (const alias of this.ownedAliases(botId, conversationId)) {
       if (this.sessions.getLogicalSessionRecord(alias)) {
@@ -2405,23 +2413,28 @@ export class ConversationRunService {
 
   private async markAppStateDeleting(conversationId: string): Promise<void> {
     await this.stateMutex.run(async () => {
-      const conversation = this.state.conversations[conversationId];
-      if (!conversation) {
-        return;
-      }
-      const next = structuredClone(this.state);
-      next.conversations[conversationId] = {
-        ...conversation,
-        lifecycle: "deleting",
-        updatedAt: this.now().toISOString(),
-      };
-      for (const [id, topic] of Object.entries(next.conversation_topics)) {
-        if (topic.conversationId === conversationId && topic.status === "active") {
-          next.conversation_topics[id] = { ...topic, status: "deleting", updatedAt: this.now().toISOString() };
-        }
-      }
-      await this.persist(next);
+      await this.persistConversationDeleting(conversationId);
     });
+  }
+
+  /** Caller holds the state mutex. */
+  private async persistConversationDeleting(conversationId: string): Promise<void> {
+    const conversation = this.state.conversations[conversationId];
+    if (!conversation) {
+      return;
+    }
+    const next = structuredClone(this.state);
+    next.conversations[conversationId] = {
+      ...conversation,
+      lifecycle: "deleting",
+      updatedAt: this.now().toISOString(),
+    };
+    for (const [id, topic] of Object.entries(next.conversation_topics)) {
+      if (topic.conversationId === conversationId && topic.status === "active") {
+        next.conversation_topics[id] = { ...topic, status: "deleting", updatedAt: this.now().toISOString() };
+      }
+    }
+    await this.persist(next);
   }
 
   private unresolvedIndeterminate(runs: ConversationRun[]): ConversationRun[] {
@@ -2432,13 +2445,13 @@ export class ConversationRunService {
     });
   }
 
-  private throwIfUnresolvedIndeterminate(conversationId: string, topicId?: string): void {
+  private throwIfUnresolvedIndeterminate(conversationId: string, topicId: string | undefined, deleting: boolean): void {
     const indeterminate = this.unresolvedIndeterminate(this.store.listRuns(conversationId, topicId));
     if (indeterminate.length === 0) return;
     throw new ConversationError(
       "conversation_indeterminate",
       topicId ? "topic has indeterminate work" : "conversation has indeterminate work",
-      { runIds: indeterminate.map((run) => run.id) },
+      { runIds: indeterminate.map((run) => run.id), deleting },
     );
   }
 

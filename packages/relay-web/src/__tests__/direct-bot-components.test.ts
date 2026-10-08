@@ -1812,6 +1812,48 @@ describe("Direct Bot Components", () => {
       await flushPromises();
       expect(deleteSpy).toHaveBeenCalledWith("i1", "b1", expect.any(Object));
     });
+
+    it("does not show a delete failure when the operator declines the unknown-result confirm", async () => {
+      const instances = useInstancesStore();
+      instances.instances = [
+        {
+          id: "i1",
+          name: "Local",
+          online: true,
+          lastSeenAt: null,
+          sessions: [],
+          agents: [{ name: "codex", driver: "codex" }],
+          workspaces: [{ name: "repo", cwd: "/repo" }],
+        } as never,
+      ];
+      const directBots = useDirectBotsStore();
+      directBots.instanceId = "i1";
+      directBots.selectedBotId = "b1";
+      directBots.generalError = null;
+      directBots.botsByInstance["i1"] = [
+        {
+          id: "b1",
+          name: "ReviewerBot",
+          agent: "codex",
+          workspace: "repo",
+          enabled: true,
+          updatedAt: "now",
+        },
+      ];
+      vi.spyOn(directBots, "deleteDirectBot").mockImplementation(async (_instanceId, _botId, options) => {
+        const accepted = await options?.acceptUnknown?.(["run_unknown"]);
+        if (!accepted) return;
+      });
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      await wrapper.get('[data-test="delete-bot-button"]').trigger("click");
+      settleConfirm(true);
+      await flushPromises();
+      expect(useConfirmState().value?.message).toContain("run_unknown");
+      settleConfirm(false);
+      await flushPromises();
+      expect(wrapper.text()).not.toContain("does not mark the run successful");
+      expect(directBots.generalError).toBeNull();
+    });
     it("opens the New Topic dialog with focus, traps Tab, and restores focus on Escape", async () => {
       const instances = useInstancesStore();
       instances.instances = [

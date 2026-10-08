@@ -1051,6 +1051,47 @@ test("validControlEvent accepts Conversation product events and optional turn co
   })).toBe(false);
 });
 
+test("indeterminate resolution members must be bounded objects", () => {
+  const member = {
+    id: "mturn_1",
+    botId: "bot_1",
+    state: "indeterminate",
+    startedAt: "2026-09-16T00:00:00.000Z",
+    failureReason: "provider result unknown",
+  };
+  const run = {
+    id: "run_1",
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    requestMessageId: "cmsg_1",
+    requestId: "req",
+    mode: "explicit",
+    state: "indeterminate",
+    profileRevision: 1,
+    createdAt: "2026-09-16T00:00:00.000Z",
+    indeterminateResolution: {
+      id: "res_1",
+      action: "accept-unknown",
+      reason: "operator checked the workspace",
+      actorAccountId: "acct",
+      actorName: "Ada",
+      createdAt: "2026-09-16T00:01:00.000Z",
+      runState: "indeterminate",
+      consumedMemberTurns: 1,
+      failedBotIds: [],
+      members: [member],
+    },
+  };
+  const valid = (value: unknown) => validControlEvent({ type: "conversation-run-changed", run: value });
+  expect(valid(run)).toBe(true);
+  expect(valid({ ...run, indeterminateResolution: { ...run.indeterminateResolution, members: [null] } })).toBe(false);
+  expect(valid({ ...run, indeterminateResolution: { ...run.indeterminateResolution, members: [{}] } })).toBe(false);
+  expect(valid({ ...run, indeterminateResolution: { ...run.indeterminateResolution, members: [{ ...member, id: "" }] } })).toBe(false);
+  expect(valid({ ...run, indeterminateResolution: { ...run.indeterminateResolution, members: [{ ...member, state: "exploded" }] } })).toBe(false);
+  expect(valid({ ...run, indeterminateResolution: { ...run.indeterminateResolution, members: [{ ...member, failureReason: "x".repeat(2001) }] } })).toBe(false);
+  expect(valid({ ...run, indeterminateResolution: { ...run.indeterminateResolution, members: Array.from({ length: 65 }, () => member) } })).toBe(false);
+});
+
 test("accepts the new optional tool-step and tool-detail fields", () => {
   const step = {
     toolCallId: "t1", toolName: "Bash", kind: "execute", status: "running", title: "npm test",

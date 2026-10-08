@@ -697,25 +697,46 @@ function validInteractionField(value: unknown): boolean {
   return true;
 }
 
+const RESOLUTION_MEMBER_STATES = [
+  "queued", "dispatched", "running", "completed", "failed", "cancelled", "indeterminate",
+] as const;
+const MAX_RESOLUTION_MEMBERS = 64;
+
+function optBounded(value: unknown, maxLen: number): boolean {
+  return value === undefined || isBoundedStr(value, maxLen);
+}
+
+function validResolutionMember(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const member = value as Record<string, unknown>;
+  return isBoundedStr(member.id, 128)
+    && isBoundedStr(member.botId, 128)
+    && typeof member.state === "string"
+    && (RESOLUTION_MEMBER_STATES as readonly string[]).includes(member.state)
+    && optBounded(member.startedAt, 64)
+    && optBounded(member.finishedAt, 64)
+    && optBounded(member.failureReason, 2000);
+}
+
 function validIndeterminateResolution(value: unknown): boolean {
   if (value === undefined) return true;
-  if (typeof value !== "object" || value === null) return false;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   return record.action === "accept-unknown"
-    && typeof record.id === "string"
-    && typeof record.reason === "string"
-    && record.reason.length > 0
-    && record.reason.length <= 2000
-    && typeof record.actorAccountId === "string"
-    && record.actorAccountId.length > 0
+    && isBoundedStr(record.id, 128)
+    && isBoundedStr(record.reason, 2000)
+    && isBoundedStr(record.actorAccountId, 128)
     && record.runState === "indeterminate"
-    && typeof record.createdAt === "string"
-    && typeof record.consumedMemberTurns === "number"
+    && isBoundedStr(record.createdAt, 64)
+    && isNonNegInt(record.consumedMemberTurns)
     && Array.isArray(record.failedBotIds)
-    && record.failedBotIds.every((entry) => typeof entry === "string")
+    && record.failedBotIds.length <= MAX_RESOLUTION_MEMBERS
+    && record.failedBotIds.every((entry) => isBoundedStr(entry, 128))
     && Array.isArray(record.members)
-    && optStr(record.actorName)
-    && optStr(record.completionReason);
+    && record.members.length <= MAX_RESOLUTION_MEMBERS
+    && record.members.every(validResolutionMember)
+    && optBounded(record.actorName, 200)
+    && optBounded(record.completionReason, 2000);
 }
 
 function validConversationRun(value: unknown): boolean {

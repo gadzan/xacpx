@@ -538,7 +538,13 @@ export interface ConversationStore {
    *  first kick; a missing root is fail-closed actionable recovery. */
   listNonterminalRunRoots(): Array<{ conversationId: string; topicId: string }>;
   markConversationDeleting(conversationId: string, now: string): void;
+  /** Same as markConversationDeleting, but refuses without writing when an
+   *  unresolved indeterminate Run is already visible. The read and the write
+   *  are one transaction. */
+  markConversationDeletingIfSettled(conversationId: string, now: string): void;
   markTopicDeleting(topicId: string, conversationId: string, now: string): void;
+  /** Topic-scoped form of markConversationDeletingIfSettled. */
+  markTopicDeletingIfSettled(topicId: string, conversationId: string, now: string): void;
   isConversationDeleting(conversationId: string): boolean;
   isTopicDeleting(topicId: string): boolean;
   /** True when this Conversation's Topic row is the one marked deleting. */

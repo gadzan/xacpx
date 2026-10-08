@@ -1565,6 +1565,10 @@ export class SqliteConversationStore implements ConversationStore {
     });
   }
 
+  isDirectConversationDeleting(botId: string): boolean {
+    return this.isConversationDeleting(createDirectConversationId(botId));
+  }
+
   hasDurableBotWork(botId: string): boolean {
     const conversationId = createDirectConversationId(botId);
     if (this.sqlite.get("SELECT 1 AS ok FROM conversation_bindings WHERE conversation_id = ? LIMIT 1", [conversationId])) return true;
@@ -2664,24 +2668,100 @@ export class SqliteConversationStore implements ConversationStore {
 
   markConversationDeleting(conversationId: string, now: string): void {
     this.sqlite.transaction(() => {
-      this.sqlite.run(
-        `INSERT INTO conversation_lifecycle (conversation_id, state, updated_at)
-         VALUES (?, 'deleting', ?)
-         ON CONFLICT(conversation_id) DO UPDATE SET state = 'deleting', updated_at = excluded.updated_at`,
-        [conversationId, now],
-      );
+      this.insertConversationDeleting(conversationId, now);
+    });
+  }
+
+  /**
+   * Read unresolved indeterminate Runs and mark the Conversation deleting in
+   * one transaction. A Run that becomes indeterminate while teardown waits
+   * for the lifecycle gate is visible here and blocks the barrier. A throw
+   * rolls the mark back.
+   */
+  markConversationDeletingIfSettled(conversationId: string, now: string): void {
+    this.sqlite.transaction(() => {
+      const blocked = this.unresolvedIndeterminateRunIds(conversationId);
+      if (blocked.length > 0) {
+        throw new ConversationError("conversation_indeterminate", "conversation has indeterminate work", {
+          runIds: blocked,
+          deleting: false,
+        });
+      }
+      this.insertConversationDeleting(conversationId, now);
+    });
+  }
+
+  markTopicDeletingIfSettled(topicId: string, conversationId: string, now: string): void {
+    this.sqlite.transaction(() => {
+      const blocked = this.unresolvedIndeterminateRunIds(conversationId, topicId);
+      if (blocked.length > 0) {
+        throw new ConversationError("conversation_indeterminate", "topic has indeterminate work", {
+          runIds: blocked,
+          deleting: false,
+        });
+      }
+      this.insertTopicDeleting(topicId, conversationId, now);
     });
   }
 
   markTopicDeleting(topicId: string, conversationId: string, now: string): void {
     this.sqlite.transaction(() => {
-      this.sqlite.run(
-        `INSERT INTO topic_lifecycle (topic_id, conversation_id, state, updated_at)
-         VALUES (?, ?, 'deleting', ?)
-         ON CONFLICT(topic_id) DO UPDATE SET state = 'deleting', updated_at = excluded.updated_at`,
-        [topicId, conversationId, now],
-      );
+      this.insertTopicDeleting(topicId, conversationId, now);
     });
+  }
+
+  private insertConversationDeleting(conversationId: string, now: string): void {
+    this.sqlite.run(
+      `INSERT INTO conversation_lifecycle (conversation_id, state, updated_at)
+       VALUES (?, 'deleting', ?)
+       ON CONFLICT(conversation_id) DO UPDATE SET state = 'deleting', updated_at = excluded.updated_at`,
+      [conversationId, now],
+    );
+  }
+
+  private insertTopicDeleting(topicId: string, conversationId: string, now: string): void {
+    this.sqlite.run(
+      `INSERT INTO topic_lifecycle (topic_id, conversation_id, state, updated_at)
+       VALUES (?, ?, 'deleting', ?)
+       ON CONFLICT(topic_id) DO UPDATE SET state = 'deleting', updated_at = excluded.updated_at`,
+      [topicId, conversationId, now],
+    );
+  }
+
+  /** Runs whose unknown result has not been accepted, or whose resolution
+   *  still has a non-terminal member. Matches ConversationRunService. */
+  private unresolvedIndeterminateRunIds(conversationId: string, topicId?: string): string[] {
+    const rows = topicId === undefined
+      ? this.sqlite.all<{ id: string }>(
+        `SELECT r.id AS id FROM runs r
+         WHERE r.conversation_id = ?
+           AND r.state = 'indeterminate'
+           AND (
+             NOT EXISTS (SELECT 1 FROM run_resolutions res WHERE res.run_id = r.id)
+             OR EXISTS (
+               SELECT 1 FROM member_turns m
+               WHERE m.run_id = r.id
+                 AND m.state NOT IN ('completed', 'failed', 'cancelled', 'indeterminate')
+             )
+           )`,
+        [conversationId],
+      )
+      : this.sqlite.all<{ id: string }>(
+        `SELECT r.id AS id FROM runs r
+         WHERE r.conversation_id = ?
+           AND r.topic_id = ?
+           AND r.state = 'indeterminate'
+           AND (
+             NOT EXISTS (SELECT 1 FROM run_resolutions res WHERE res.run_id = r.id)
+             OR EXISTS (
+               SELECT 1 FROM member_turns m
+               WHERE m.run_id = r.id
+                 AND m.state NOT IN ('completed', 'failed', 'cancelled', 'indeterminate')
+             )
+           )`,
+        [conversationId, topicId],
+      );
+    return rows.map((row) => row.id);
   }
 
   isConversationDeleting(conversationId: string): boolean {

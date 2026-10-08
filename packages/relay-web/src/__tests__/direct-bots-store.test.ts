@@ -483,6 +483,24 @@ describe("useDirectBotsStore", () => {
         }
         return Promise.resolve({ ok: true });
       });
+      await store.deleteDirectBot("inst_1", "bot_1", { acceptUnknown: async () => false });
+      expect(mockRpc.mock.calls.map((call) => call[1])).toEqual(["control.bots.teardown-direct"]);
+    });
+
+    it("still rejects when the operator declines after the deleting barrier is already up", async () => {
+      const store = useDirectBotsStore();
+      mockRpc.mockImplementation((_inst: string, type: string) => {
+        if (type === "control.bots.teardown-direct") {
+          return Promise.resolve({
+            error: {
+              code: "conversation_indeterminate",
+              message: "unknown",
+              details: { runIds: ["run_1"], deleting: true },
+            },
+          });
+        }
+        return Promise.resolve({ ok: true });
+      });
       await expect(store.deleteDirectBot("inst_1", "bot_1", { acceptUnknown: async () => false })).rejects.toMatchObject({
         code: "conversation_indeterminate",
       });

@@ -199,7 +199,9 @@ Order:
 
 A crash before step 5 leaves the SQLite `deleting` barrier in place: new accepts fail closed and teardown is retryable.
 
-Direct Conversation teardown checks two read-only blockers before step 1. Group membership and a Group-member runtime (`bot_in_group` / `bot_in_use`) cannot be cleared by Direct teardown, so they throw while the Conversation is still active. An already-unresolved `indeterminate` Run also throws `conversation_indeterminate` before the barrier, so declining that confirmation leaves the Conversation usable. `deleteBot` repeats the Group checks. A Run that becomes indeterminate only after the barrier is up (for example a cancel that returns unknown) still keeps the barrier for retry.
+Direct Conversation teardown checks two read-only blockers before step 1. Group membership and a Group-member runtime (`bot_in_group` / `bot_in_use`) cannot be cleared by Direct teardown, so they throw while the Conversation is still active. An already-unresolved `indeterminate` Run also throws `conversation_indeterminate` before the barrier, so declining that confirmation leaves the Conversation usable. The same read is repeated inside the Bot lifecycle gate, in the same SQLite transaction as the deleting mark, so a Run that becomes indeterminate while teardown waits for that gate does not enter the barrier. `deleteBot` repeats the Group checks. A Run that becomes indeterminate only after the barrier is up (for example a cancel that returns unknown) still keeps the barrier for retry.
+
+`createGroup` and `updateGroup` refuse to add a Bot whose Direct Conversation is already deleting (`bot_direct_deleting`). That write shares the state mutex with the section that marks the barrier, and teardown re-checks membership before it releases hidden sessions. A Group add therefore cannot commit, release those sessions, and then fail the Bot delete.
 
 Injected release failure leaves `deleting` + ownership in place for retry.
 

@@ -1057,7 +1057,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
    * marks the Conversation deleting, so a `bot_in_group` error leaves Direct
    * history in place. An already-indeterminate Run is also refused before
    * that barrier. When the operator accepts, `acceptUnknown` records it and
-   * the teardown is retried once. Declining does not call delete.
+   * the teardown is retried once. Declining a refusal that has not entered
+   * the deleting barrier returns normally. Declining after the barrier is
+   * already up still rejects, because the Conversation is no longer accepting
+   * work until the operator accepts the unknown result and retries.
    */
   async function deleteDirectBot(
     targetInstanceId: string,
@@ -1067,7 +1070,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     try {
       await teardownDirectBot(targetInstanceId, botId);
     } catch (error: unknown) {
-      const coded = error as { code?: string; details?: { runIds?: unknown } };
+      const coded = error as { code?: string; details?: { runIds?: unknown; deleting?: unknown } };
       const runIds = Array.isArray(coded.details?.runIds)
         ? coded.details.runIds.filter((id): id is string => typeof id === "string" && id.length > 0)
         : [];
@@ -1075,7 +1078,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         throw error;
       }
       if (!await options.acceptUnknown(runIds)) {
-        throw error;
+        if (coded.details?.deleting === true) throw error;
+        return;
       }
       for (const runId of runIds) {
         await resolveIndeterminateRun(

@@ -264,6 +264,11 @@ export interface BotConversationWork {
    *  its claims would requeue forever). Optional so older implementers
    *  (tests) keep working; absence means "unknown, do not block". */
   hasNonterminalGroupMemberWork?: (conversationId: string, botId: string) => boolean;
+  /** True when this Bot's Direct Conversation is in the SQLite deleting
+   *  barrier. Group membership writes refuse to add such a Bot. Optional so
+   *  older test doubles keep working; absence means the caller has no
+   *  Conversation store yet. */
+  isDirectConversationDeleting?: (botId: string) => boolean;
 }
 
 export interface BotServiceOptions {
@@ -515,6 +520,7 @@ export class BotService {
     return await this.mutate(async () => {
       this.assertOpen();
       const membership = this.requireGroupMembership(input.botIds);
+      this.assertBotsNotDirectDeleting(membership);
       const leadBotId = this.requireGroupLead(input.leadBotId, membership);
       const title = this.requireGroupTitle(input.title);
       const description = this.optionalGroupDescription(input.description);
@@ -609,7 +615,8 @@ export class BotService {
           // claims would requeue forever (materialize fails
           // group_member_not_member; the generic pre-start path releases the
           // claim back to pending). Refuse the removal; retry once the Run
-          // terminals or is cancelled. Adding members is never blocked.
+          // terminals or is cancelled. Adding a Bot whose Direct Conversation
+          // is deleting is refused later, inside the state-mutex write.
           const removed = live.botIds.filter((botId) => !patch.botIds!.includes(botId));
           for (const botId of removed) {
             if (this.conversationWork?.hasNonterminalGroupMemberWork?.(id, botId)) {
@@ -647,6 +654,10 @@ export class BotService {
         throw new BotError("conversation_deleting", `group "${id}" is deleting`);
       }
       const membership = patch.botIds !== undefined ? this.requireGroupMembership(patch.botIds) : existing.botIds;
+      if (patch.botIds !== undefined) {
+        const added = membership.filter((botId) => !existing.botIds.includes(botId));
+        this.assertBotsNotDirectDeleting(added);
+      }
       const leadBotId = patch.leadBotId !== undefined
         ? this.requireGroupLead(patch.leadBotId, membership)
         : this.requireGroupLead(existing.leadBotId, membership);
@@ -801,6 +812,22 @@ export class BotService {
       throw new BotError("description_too_long", `group description must be at most ${TEXT_MAX} characters`);
     }
     return trimmed;
+  }
+
+  /**
+   * A Bot whose Direct Conversation is already deleting must not gain Group
+   * membership. Direct teardown releases hidden sessions only after this
+   * barrier is visible, and still re-checks membership before that release.
+   */
+  private assertBotsNotDirectDeleting(botIds: readonly string[]): void {
+    for (const botId of botIds) {
+      if (!this.conversationWork?.isDirectConversationDeleting?.(botId)) continue;
+      throw new BotError(
+        "bot_direct_deleting",
+        `bot "${botId}" cannot join a group while its Direct conversation is deleting`,
+        { botId, conversationIds: [createDirectConversationId(botId)] },
+      );
+    }
   }
 
   private requireGroupMembership(botIds: string[]): string[] {
