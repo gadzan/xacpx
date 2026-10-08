@@ -25,20 +25,32 @@ function fail(error: unknown): void {
   forceKill.unref();
   process.exitCode = 1;
 }
-async function write(stream: NodeJS.WritableStream, message: Record<string, unknown>): Promise<void> {
+async function writeLine(stream: NodeJS.WritableStream, line: string): Promise<void> {
+  if (!stream.write(`${line}\n`)) await new Promise<void>((resolve) => stream.once("drain", resolve));
+}
+async function writeClientMessage(message: Record<string, unknown>): Promise<void> {
   for (const line of guardAcpStdoutLine(JSON.stringify(message))) {
-    if (!stream.write(`${line}\n`)) await new Promise<void>((resolve) => stream.once("drain", resolve));
+    await writeLine(process.stdout, line);
   }
+}
+async function writeAgentMessage(message: Record<string, unknown>): Promise<void> {
+  // Output bounding may truncate fields or arrays. Client input is execution
+  // data: preserve all permitted contents after filtering, or fail explicitly.
+  const line = JSON.stringify(message);
+  if (Buffer.byteLength(line, "utf8") > MAX_RAW_ACP_LINE_BYTES) {
+    throw new Error(`client-to-agent ACP frame exceeded ${MAX_RAW_ACP_LINE_BYTES} bytes after policy filtering`);
+  }
+  await writeLine(child.stdin, line);
 }
 const input = pumpAcpStdout(process.stdin, async (line) => {
   const decision = guardReadOnlyClientMessage(JSON.parse(line.toString("utf8")));
-  if ("forward" in decision) await write(child.stdin, decision.forward);
-  else if ("reply" in decision && "id" in decision.reply && decision.reply.id !== undefined) await write(process.stdout, decision.reply);
+  if ("forward" in decision) await writeAgentMessage(decision.forward);
+  else if ("reply" in decision && "id" in decision.reply && decision.reply.id !== undefined) await writeClientMessage(decision.reply);
 }, MAX_RAW_ACP_LINE_BYTES).then(() => child.stdin.end()).catch(fail);
 const output = pumpAcpStdout(child.stdout, async (line) => {
   const decision = guardReadOnlyAgentMessage(JSON.parse(line.toString("utf8")));
-  if ("forward" in decision) await write(process.stdout, decision.forward);
-  else if ("reply" in decision) await write(child.stdin, decision.reply);
+  if ("forward" in decision) await writeClientMessage(decision.forward);
+  else if ("reply" in decision) await writeAgentMessage(decision.reply);
 }, MAX_RAW_ACP_LINE_BYTES).catch(fail);
 child.stderr.pipe(process.stderr);
 child.stdin.on("error", fail);

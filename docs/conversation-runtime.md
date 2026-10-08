@@ -297,6 +297,13 @@ forbidden requests with an id receive the existing denial or permission
 cancellation. This keeps the guard's capability ceiling independent of
 downstream handling of malformed notifications and follows
 [JSON-RPC notification semantics](https://www.jsonrpc.org/specification#notification).
+Client-to-agent frames preserve permitted prompt and file-read response contents
+after capability filtering. They do not pass through the lossy output limiter.
+The existing 64 MiB raw-frame byte ceiling still applies; a frame exceeding it
+before or after policy rewriting fails the guard explicitly without forwarding
+a truncated success. Agent-to-client output retains the existing 2 Mi-character
+limiter, including text chunk splitting and marked truncation of oversized tool
+output.
 An existing writable owned session is strictly physically released and recreated
 before a restricted turn; the policy participates in the persisted launch argv,
 derived agent identity and existing Runtime/CLI construction fingerprints.
