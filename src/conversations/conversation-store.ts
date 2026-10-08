@@ -540,12 +540,17 @@ export interface ConversationStore {
   markConversationDeleting(conversationId: string, now: string): void;
   /** Same as markConversationDeleting, but refuses without writing when an
    *  unresolved indeterminate Run is already visible. The read and the write
-   *  are one transaction. */
-  markConversationDeletingIfSettled(conversationId: string, now: string): void;
+   *  are one transaction. A successful mark also records the Bot delete
+   *  intent, which outlives conversation_lifecycle. */
+  markConversationDeletingIfSettled(conversationId: string, botId: string, now: string): void;
   markTopicDeleting(topicId: string, conversationId: string, now: string): void;
   /** Topic-scoped form of markConversationDeletingIfSettled. */
   markTopicDeletingIfSettled(topicId: string, conversationId: string, now: string): void;
   isConversationDeleting(conversationId: string): boolean;
+  /** True after Direct teardown has committed to removing the Bot, including
+   *  after conversation_lifecycle has been cleared. */
+  hasDirectBotDeleteIntent(botId: string): boolean;
+  clearDirectBotDeleteIntent(botId: string): void;
   isTopicDeleting(topicId: string): boolean;
   /** True when this Conversation's Topic row is the one marked deleting. */
   isTopicDeletingIn(conversationId: string, topicId: string): boolean;

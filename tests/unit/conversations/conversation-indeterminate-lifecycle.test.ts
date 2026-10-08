@@ -23,8 +23,9 @@ import { createDirectConversationId, createDirectTopicId } from "../../../src/do
 import { AsyncMutex } from "../../../src/orchestration/async-mutex";
 import { createStrictOwnedSessionRelease } from "../../../src/sessions/owned-session-release";
 import { SessionService } from "../../../src/sessions/session-service";
-import type { StateStore } from "../../../src/state/state-store";
-import { createEmptyState } from "../../../src/state/types";
+import { StateStore } from "../../../src/state/state-store";
+import { createEmptyState, type AppState } from "../../../src/state/types";
+import { directDeleteDeclineIsCleanCancel } from "../../../packages/relay-web/src/lib/direct-delete-cancel";
 
 const NOW = "2026-09-15T12:00:00.000Z";
 const LATER = "2026-09-15T12:05:00.000Z";
@@ -261,6 +262,7 @@ test("resolution keeps the unknown evidence, is idempotent, and then allows dire
   expect(recovered.map((entry) => entry.outcome)).toEqual(["indeterminate"]);
   await expect(harness.service.teardownDirectConversation(harness.reviewer.id)).rejects.toMatchObject({
     code: "conversation_indeterminate",
+    details: { deleting: false },
   });
   expect(harness.store.isConversationDeleting(conversationId)).toBe(false);
   expect(harness.state.conversations[conversationId]?.lifecycle).not.toBe("deleting");
@@ -545,65 +547,157 @@ test("a run sealed indeterminate while teardown waits for the lifecycle gate doe
   harness.store.close();
 });
 
-test("topic sqlite cleanup resumes after the process reloads persisted app state", async () => {
-  const harness = await createHarness();
+test("a second delete after a post-barrier unknown result still reports the live barrier", async () => {
+  const runner = new FakeRunner();
+  const harness = await createHarness(runner);
   const conversationId = createDirectConversationId(harness.reviewer.id);
-  const extra = await harness.service.createDirectTopic(harness.reviewer.id, "Notes");
+  const hang = deferred();
+  runner.hang = hang;
   const accepted = await harness.service.acceptDirectPrompt({
     botId: harness.reviewer.id,
+    requestId: "req-retry-delete",
+    content: "work",
+  });
+  void harness.dispatcher.kick();
+  await waitUntil(() => runner.runs.length === 1);
+  runner.cancelOutcome = { outcome: "unknown" };
+  await expect(harness.service.teardownDirectConversation(harness.reviewer.id)).rejects.toMatchObject({
+    code: "conversation_indeterminate",
+    details: { deleting: true, runIds: [accepted.run.id] },
+  });
+  expect(harness.store.isConversationDeleting(conversationId)).toBe(true);
+  const second = await harness.service.teardownDirectConversation(harness.reviewer.id).then(
+    () => { throw new Error("second teardown should fail"); },
+    (error: unknown) => error,
+  );
+  expect(second).toMatchObject({
+    code: "conversation_indeterminate",
+    details: { deleting: true, runIds: [accepted.run.id] },
+  });
+  const details = (second as { details?: { deleting?: unknown } }).details;
+  expect(directDeleteDeclineIsCleanCancel(details)).toBe(false);
+  expect(harness.store.isConversationDeleting(conversationId)).toBe(true);
+  await expect(harness.service.acceptDirectPrompt({
+    botId: harness.reviewer.id,
+    requestId: "req-blocked",
+    content: "still deleting",
+  })).rejects.toMatchObject({ code: "conversation_deleting" });
+  harness.store.close();
+});
+
+test("createGroup between direct teardown and deleteBot cannot adopt the bot", async () => {
+  const harness = await createHarness();
+  const conversationId = createDirectConversationId(harness.reviewer.id);
+  const accepted = await harness.service.acceptDirectPrompt({
+    botId: harness.reviewer.id,
+    requestId: "req-gap",
+    content: "history",
+  });
+  void harness.dispatcher.kick();
+  await waitUntil(() => harness.store.getRun(accepted.run.id)?.state === "completed");
+  await harness.service.teardownDirectConversation(harness.reviewer.id);
+  expect(harness.store.getRun(accepted.run.id)).toBeUndefined();
+  expect(harness.store.isConversationDeleting(conversationId)).toBe(false);
+  expect(harness.store.hasDirectBotDeleteIntent(harness.reviewer.id)).toBe(true);
+  await expect(harness.bots.createGroup({
+    title: "After teardown",
+    botIds: [harness.reviewer.id, harness.tester.id],
+  })).rejects.toMatchObject({ code: "bot_direct_deleting" });
+  await expect(harness.service.acceptDirectPrompt({
+    botId: harness.reviewer.id,
+    requestId: "req-after-history",
+    content: "must not start",
+  })).rejects.toMatchObject({ code: "conversation_deleting" });
+  expect(harness.bots.getBot(harness.reviewer.id).id).toBe(harness.reviewer.id);
+  await harness.bots.deleteBot(harness.reviewer.id);
+  expect(harness.bots.listBots().some((bot) => bot.id === harness.reviewer.id)).toBe(false);
+  expect(harness.store.hasDirectBotDeleteIntent(harness.reviewer.id)).toBe(false);
+  harness.store.close();
+});
+
+async function openDiskConversationStack(dir: string, sqlitePath: string, state: AppState, runner: FakeRunner) {
+  const stateStore = new StateStore(join(dir, "state.json"));
+  const store = await SqliteConversationStore.open(sqlitePath);
+  const stateMutex = new AsyncMutex();
+  const config = createConfig();
+  const sessions = new SessionService(config, stateStore, state, { now: () => Date.parse(NOW), stateMutex });
+  const releaseOwnedSession = createStrictOwnedSessionRelease({
+    sessions,
+    transport: { async deleteSession() {}, async releaseLogicalSession() {} },
+  });
+  let n = 0;
+  const ids = ["bot_reviewer", "bot_tester"];
+  const bots = new BotService(config, state, stateStore, {
+    now: () => new Date(NOW),
+    createId: () => ids[n++] ?? `bot_${n}`,
+    stateMutex,
+  });
+  const runtime = new BotRuntimeManager(bots, sessions, state, stateStore, {
+    now: () => new Date(NOW),
+    stateMutex,
+    releaseOwnedSession,
+  });
+  const dispatcher = new ConversationDispatcher(store, runtime, runner, sessions, {
+    now: () => new Date(NOW),
+    ownerId: "dispatcher-disk",
+    leaseMs: 30_000,
+  });
+  const service = new ConversationRunService(store, bots, runtime, dispatcher, sessions, state, stateStore, {
+    now: () => new Date(NOW),
+    stateMutex,
+    autoKick: false,
+    releaseOwnedSession,
+  });
+  return { store, bots, dispatcher, service };
+}
+
+test("topic sqlite cleanup resumes from a reloaded state file and new services", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-restart-"));
+  const sqlitePath = join(dir, "conversation.sqlite");
+  const runner = new FakeRunner();
+  const firstState = createEmptyState();
+  const first = await openDiskConversationStack(dir, sqlitePath, firstState, runner);
+  const reviewer = await first.bots.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  await first.bots.createBot({ name: "Tester", agent: "codex", workspace: "backend" });
+  await first.service.activateAfterConsumerLock();
+  const conversationId = createDirectConversationId(reviewer.id);
+  const extra = await first.service.createDirectTopic(reviewer.id, "Notes");
+  const accepted = await first.service.acceptDirectPrompt({
+    botId: reviewer.id,
     requestId: "req-restart",
     content: "note",
     topicId: extra.id,
   });
-  void harness.dispatcher.kick();
-  await waitUntil(() => harness.store.getRun(accepted.run.id)?.state === "completed");
+  void first.dispatcher.kick();
+  await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "completed");
   let failSqlite = true;
-  const original = harness.store.deleteTopicContent.bind(harness.store);
-  harness.store.deleteTopicContent = (cid, tid) => {
+  const original = first.store.deleteTopicContent.bind(first.store);
+  first.store.deleteTopicContent = (cid, tid) => {
     if (failSqlite) {
       failSqlite = false;
       throw new Error("injected sqlite topic delete failure");
     }
     original(cid, tid);
   };
-  await expect(harness.service.teardownDirectTopic(conversationId, extra.id)).rejects.toThrow(
+  await expect(first.service.teardownDirectTopic(conversationId, extra.id)).rejects.toThrow(
     "injected sqlite topic delete failure",
   );
-  expect(harness.state.conversation_topics[extra.id]).toBeUndefined();
-  expect(harness.store.isTopicDeletingIn(conversationId, extra.id)).toBe(true);
-  const persisted = structuredClone(harness.state);
-  harness.dispatcher.stop();
-  harness.store.close();
-  const reopened = await SqliteConversationStore.open(harness.path);
-  const releaseOwnedSession = createStrictOwnedSessionRelease({
-    sessions: harness.sessions,
-    transport: { async deleteSession() {}, async releaseLogicalSession() {} },
-  });
-  const dispatcher = new ConversationDispatcher(reopened, harness.runtime, harness.runner, harness.sessions, {
-    now: () => new Date(NOW),
-    ownerId: "dispatcher-restart",
-    leaseMs: 30_000,
-  });
-  const restarted = new ConversationRunService(
-    reopened,
-    harness.bots,
-    harness.runtime,
-    dispatcher,
-    harness.sessions,
-    persisted,
-    harness.stateStore,
-    {
-      now: () => new Date(NOW),
-      stateMutex: new AsyncMutex(),
-      autoKick: false,
-      releaseOwnedSession,
-    },
-  );
-  await restarted.teardownDirectTopic(conversationId, extra.id);
-  expect(reopened.getRun(accepted.run.id)).toBeUndefined();
-  expect(reopened.isTopicDeletingIn(conversationId, extra.id)).toBe(false);
-  expect(persisted.conversation_topics[createDirectTopicId(harness.reviewer.id)]).toBeDefined();
-  reopened.close();
+  expect(firstState.conversation_topics[extra.id]).toBeUndefined();
+  expect(first.store.isTopicDeletingIn(conversationId, extra.id)).toBe(true);
+  first.dispatcher.stop();
+  first.store.close();
+
+  const loaded = await new StateStore(join(dir, "state.json")).load();
+  expect(loaded.bots[reviewer.id]?.name).toBe("Reviewer");
+  expect(loaded.conversation_topics[extra.id]).toBeUndefined();
+  expect(loaded.conversation_topics[createDirectTopicId(reviewer.id)]).toBeDefined();
+  const second = await openDiskConversationStack(dir, sqlitePath, loaded, new FakeRunner());
+  expect(second.bots.getBot(reviewer.id).name).toBe("Reviewer");
+  await second.service.teardownDirectTopic(conversationId, extra.id);
+  expect(second.store.getRun(accepted.run.id)).toBeUndefined();
+  expect(second.store.isTopicDeletingIn(conversationId, extra.id)).toBe(false);
+  expect(loaded.conversation_topics[createDirectTopicId(reviewer.id)]).toBeDefined();
+  second.store.close();
 });
 
 test("shutdown does not nest the state mutex with direct teardown", async () => {

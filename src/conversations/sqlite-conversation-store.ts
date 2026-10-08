@@ -246,6 +246,16 @@ CREATE TABLE IF NOT EXISTS conversation_lifecycle (
   updated_at TEXT NOT NULL
 );
 
+-- Survives deleteConversationRows. Cleared only when deleteBot commits, so a
+-- Group cannot adopt the Bot in the gap after Direct history is gone.
+CREATE TABLE IF NOT EXISTS direct_bot_delete_intent (
+  bot_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_direct_bot_delete_intent_conversation
+  ON direct_bot_delete_intent (conversation_id);
+
 CREATE TABLE IF NOT EXISTS topic_lifecycle (
   topic_id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
@@ -1566,7 +1576,19 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   isDirectConversationDeleting(botId: string): boolean {
-    return this.isConversationDeleting(createDirectConversationId(botId));
+    const conversationId = createDirectConversationId(botId);
+    return this.isConversationDeleting(conversationId) || this.hasDirectBotDeleteIntent(botId);
+  }
+
+  hasDirectBotDeleteIntent(botId: string): boolean {
+    return this.sqlite.get(
+      "SELECT 1 AS ok FROM direct_bot_delete_intent WHERE bot_id = ? LIMIT 1",
+      [botId],
+    ) !== undefined;
+  }
+
+  clearDirectBotDeleteIntent(botId: string): void {
+    this.sqlite.run("DELETE FROM direct_bot_delete_intent WHERE bot_id = ?", [botId]);
   }
 
   hasDurableBotWork(botId: string): boolean {
@@ -2678,16 +2700,17 @@ export class SqliteConversationStore implements ConversationStore {
    * for the lifecycle gate is visible here and blocks the barrier. A throw
    * rolls the mark back.
    */
-  markConversationDeletingIfSettled(conversationId: string, now: string): void {
+  markConversationDeletingIfSettled(conversationId: string, botId: string, now: string): void {
     this.sqlite.transaction(() => {
       const blocked = this.unresolvedIndeterminateRunIds(conversationId);
       if (blocked.length > 0) {
         throw new ConversationError("conversation_indeterminate", "conversation has indeterminate work", {
           runIds: blocked,
-          deleting: false,
+          deleting: this.isConversationDeleting(conversationId),
         });
       }
       this.insertConversationDeleting(conversationId, now);
+      this.upsertDirectBotDeleteIntent(botId, conversationId, now);
     });
   }
 
@@ -2697,7 +2720,7 @@ export class SqliteConversationStore implements ConversationStore {
       if (blocked.length > 0) {
         throw new ConversationError("conversation_indeterminate", "topic has indeterminate work", {
           runIds: blocked,
-          deleting: false,
+          deleting: this.isTopicDeleting(topicId),
         });
       }
       this.insertTopicDeleting(topicId, conversationId, now);
@@ -2717,6 +2740,24 @@ export class SqliteConversationStore implements ConversationStore {
        ON CONFLICT(conversation_id) DO UPDATE SET state = 'deleting', updated_at = excluded.updated_at`,
       [conversationId, now],
     );
+  }
+
+  private upsertDirectBotDeleteIntent(botId: string, conversationId: string, now: string): void {
+    this.sqlite.run(
+      `INSERT INTO direct_bot_delete_intent (bot_id, conversation_id, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(bot_id) DO UPDATE SET
+         conversation_id = excluded.conversation_id,
+         updated_at = excluded.updated_at`,
+      [botId, conversationId, now],
+    );
+  }
+
+  private hasDirectDeleteIntentForConversation(conversationId: string): boolean {
+    return this.sqlite.get(
+      "SELECT 1 AS ok FROM direct_bot_delete_intent WHERE conversation_id = ? LIMIT 1",
+      [conversationId],
+    ) !== undefined;
   }
 
   private insertTopicDeleting(topicId: string, conversationId: string, now: string): void {
@@ -2884,6 +2925,8 @@ export class SqliteConversationStore implements ConversationStore {
       this.sqlite.run("DELETE FROM topic_seq WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM topic_lifecycle WHERE conversation_id = ?", [conversationId]);
       this.sqlite.run("DELETE FROM conversation_lifecycle WHERE conversation_id = ?", [conversationId]);
+      // direct_bot_delete_intent stays until deleteBot commits. Clearing it
+      // here would let a Group adopt the Bot before the metadata delete.
     });
   }
 
@@ -3210,7 +3253,7 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   private assertLifecycleAcceptable(conversationId: string, topicId: string): void {
-    if (this.isConversationDeleting(conversationId)) {
+    if (this.isConversationDeleting(conversationId) || this.hasDirectDeleteIntentForConversation(conversationId)) {
       throw new ConversationError("conversation_deleting", `conversation "${conversationId}" is deleting`);
     }
     if (this.isTopicDeleting(topicId)) {

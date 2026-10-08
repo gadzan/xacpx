@@ -269,6 +269,9 @@ export interface BotConversationWork {
    *  older test doubles keep working; absence means the caller has no
    *  Conversation store yet. */
   isDirectConversationDeleting?: (botId: string) => boolean;
+  /** Drops the intent recorded for a Direct teardown. Call only after the
+   *  Bot metadata delete has committed. */
+  clearDirectBotDeleteIntent?: (botId: string) => void;
 }
 
 export interface BotServiceOptions {
@@ -502,6 +505,7 @@ export class BotService {
         const next = structuredClone(this.state);
         delete next.bots[id];
         await this.persist(next);
+        this.conversationWork?.clearDirectBotDeleteIntent?.(id);
       });
     });
   }

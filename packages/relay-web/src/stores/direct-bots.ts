@@ -27,6 +27,7 @@ import {
   type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
+import { directDeleteDeclineIsCleanCancel } from "../lib/direct-delete-cancel";
 
 export type DirectBotRunState = ConversationRunStateDto;
 
@@ -1057,10 +1058,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
    * marks the Conversation deleting, so a `bot_in_group` error leaves Direct
    * history in place. An already-indeterminate Run is also refused before
    * that barrier. When the operator accepts, `acceptUnknown` records it and
-   * the teardown is retried once. Declining a refusal that has not entered
-   * the deleting barrier returns normally. Declining after the barrier is
-   * already up still rejects, because the Conversation is no longer accepting
-   * work until the operator accepts the unknown result and retries.
+   * the teardown is retried once. Declining returns normally only when the
+   * server explicitly reports `deleting: false`. A missing flag or
+   * `deleting: true` still rejects, because the Conversation may already be
+   * unable to accept new work.
    */
   async function deleteDirectBot(
     targetInstanceId: string,
@@ -1078,8 +1079,8 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         throw error;
       }
       if (!await options.acceptUnknown(runIds)) {
-        if (coded.details?.deleting === true) throw error;
-        return;
+        if (directDeleteDeclineIsCleanCancel(coded.details)) return;
+        throw error;
       }
       for (const runId of runIds) {
         await resolveIndeterminateRun(

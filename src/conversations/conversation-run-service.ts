@@ -280,7 +280,11 @@ export class ConversationRunService {
           throw new BotError("topic_not_found", `topic "${topicId}" does not belong to this Bot conversation`);
         }
       }
-      if (this.store.isConversationDeleting(conversationId) || this.store.isTopicDeleting(topicId)) {
+      if (
+        this.store.isConversationDeleting(conversationId)
+        || this.store.isTopicDeleting(topicId)
+        || this.store.hasDirectBotDeleteIntent(input.botId)
+      ) {
         throw new ConversationError("conversation_deleting", "conversation is deleting");
       }
       const snapshot = snapshotBotProfile(bot, timestamp);
@@ -765,7 +769,7 @@ export class ConversationRunService {
     }
     // Read-only: an already-indeterminate Topic must not enter the deleting
     // barrier until the operator accepts the unknown result and retries.
-    this.throwIfUnresolvedIndeterminate(conversationId, topicId, false);
+    this.throwIfUnresolvedIndeterminate(conversationId, topicId);
     const timestamp = this.now().toISOString();
     await this.bots.runLifecycle(botId, async () => {
       // The gate wait is outside this callback. Re-read and mark in one
@@ -799,7 +803,7 @@ export class ConversationRunService {
     }
     // A Run that became indeterminate while this teardown was already past
     // the barrier stays fail-closed. The barrier remains for retry.
-    this.throwIfUnresolvedIndeterminate(conversationId, topicId, true);
+    this.throwIfUnresolvedIndeterminate(conversationId, topicId);
     for (const alias of this.directTopicAliases(botId, conversationId, topicId)) {
       if (this.sessions.getLogicalSessionRecord(alias)) {
         await this.releaseAlias(alias);
@@ -1364,7 +1368,7 @@ export class ConversationRunService {
     const conversationId = planned.conversation.id;
     // Already-indeterminate work is a read-only refusal. Declining the
     // operator prompt must leave the Conversation active.
-    this.throwIfUnresolvedIndeterminate(conversationId, undefined, false);
+    this.throwIfUnresolvedIndeterminate(conversationId);
     await this.bots.runLifecycle(botId, async () => {
       // Membership, the indeterminate recheck, and the SQLite barrier commit
       // before this critical section releases the state mutex. Group
@@ -1375,7 +1379,7 @@ export class ConversationRunService {
         this.bots.assertDirectHistoryDeleteAllowed(botId);
         this.assertNoDirectControllerResidue(botId, conversationId);
         this.ownedAliases(botId, conversationId);
-        this.store.markConversationDeletingIfSettled(conversationId, timestamp);
+        this.store.markConversationDeletingIfSettled(conversationId, botId, timestamp);
         await this.persistConversationDeleting(conversationId);
       });
     });
@@ -1391,7 +1395,7 @@ export class ConversationRunService {
     this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId });
     // Cancel can still seal a started Run as indeterminate after the barrier
     // is up. That refusal stays fail-closed and retryable.
-    this.throwIfUnresolvedIndeterminate(conversationId, undefined, true);
+    this.throwIfUnresolvedIndeterminate(conversationId);
     // A Group add that raced the barrier is refused on the write side.
     // Re-check before any session release so a missed add cannot destroy
     // hidden sessions and then fail the delete.
@@ -2445,9 +2449,12 @@ export class ConversationRunService {
     });
   }
 
-  private throwIfUnresolvedIndeterminate(conversationId: string, topicId: string | undefined, deleting: boolean): void {
+  private throwIfUnresolvedIndeterminate(conversationId: string, topicId?: string): void {
     const indeterminate = this.unresolvedIndeterminate(this.store.listRuns(conversationId, topicId));
     if (indeterminate.length === 0) return;
+    const deleting = topicId
+      ? this.store.isTopicDeleting(topicId)
+      : this.store.isConversationDeleting(conversationId);
     throw new ConversationError(
       "conversation_indeterminate",
       topicId ? "topic has indeterminate work" : "conversation has indeterminate work",
