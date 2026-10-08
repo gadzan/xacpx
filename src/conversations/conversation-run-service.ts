@@ -147,6 +147,22 @@ export class ConversationRunService {
     this.releaseOwnedSession = options.releaseOwnedSession;
     this.onProductEvent = options.onProductEvent;
     this.bots.setConversationWork(this.store);
+    this.dispatcher.setFatalLeaseErrorHandler(() => {
+      this.markConsumerUnavailable();
+    });
+  }
+
+  /** Sticky fail-closed after activation or a later lease-keeper I/O failure. */
+  private markConsumerUnavailable(): void {
+    if (this.closed) return;
+    this.activation = "unavailable";
+  }
+
+  /** Background drain wake. The rejection is always consumed so a kick that
+   *  immediately rethrows a saved lease error cannot become unhandled. */
+  private kickInBackground(): void {
+    if (!this.autoKick || this.closed || this.activation !== "activated") return;
+    void this.dispatcher.kick().catch(() => {});
   }
 
   private assertOpen(): void {
@@ -168,9 +184,21 @@ export class ConversationRunService {
     }
     // Drain local attempts without failing resumable routing work. Activation
     // will recompute uncommitted decisions under a new generation.
-    await this.awaitRouting();
-    await this.dispatcher.shutdown();
-    this.store.close();
+    // In-flight provider turns are awaited inside dispatcher.shutdown before
+    // it reports a saved lease-keeper error. SQLite still closes afterward.
+    let shutdownError: unknown;
+    try {
+      await this.awaitRouting();
+      await this.dispatcher.shutdown();
+    } catch (error) {
+      shutdownError = error;
+    }
+    try {
+      this.store.close();
+    } catch (error) {
+      shutdownError ??= error;
+    }
+    if (shutdownError !== undefined) throw shutdownError;
   }
 
   /**
@@ -210,7 +238,7 @@ export class ConversationRunService {
       throw error;
     }
     this.activation = "activated";
-    if (this.autoKick && !this.closed) void this.dispatcher.kick().catch(() => {});
+    this.kickInBackground();
   }
 
   isConsumerActivated(): boolean {
@@ -222,15 +250,14 @@ export class ConversationRunService {
    *  Conversation work must stay parked — a Bot lifecycle event must not
    *  bypass the fail-closed unavailable gate via a direct dispatcher kick. */
   wakePendingWork(): void {
-    if (this.activation !== "activated" || this.closed) return;
-    void this.dispatcher.kick().catch(() => {});
+    this.kickInBackground();
   }
   private assertAccepting(): void {
     this.assertOpen();
     if (this.activation === "unavailable") {
       throw new ConversationError(
         "conversations_unavailable",
-        "Conversation consumer failed to activate; new work is not accepted",
+        "Conversation consumer is unavailable; new work is not accepted",
       );
     }
   }
@@ -287,6 +314,7 @@ export class ConversationRunService {
       await this.beforeAcceptPersist?.();
       if (input.channelAbortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel request stopped before acceptance");
       const humanIngress = parseHumanIngress(input.humanIngress);
+      this.assertAccepting();
       const created = this.store.acceptRequest({
         ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
         conversationId,
@@ -305,9 +333,7 @@ export class ConversationRunService {
     if (!accepted.reused) {
       this.emitAcceptProjection(accepted);
     }
-    if (this.autoKick && this.activation === "activated") {
-      void this.dispatcher.kick();
-    }
+    this.kickInBackground();
     return accepted;
   }
   /**
@@ -434,6 +460,7 @@ export class ConversationRunService {
         // zero members and `mode: "automatic"` carries the 24-turn budget
         // default. Routing begins only after this transaction commits.
         if (parsed.kind === "automatic") {
+          this.assertAccepting();
           return this.store.acceptRequest({
             ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
             conversationId: input.conversationId,
@@ -459,6 +486,7 @@ export class ConversationRunService {
         // enforceably proven in PR7, so the scheduler must serialize under
         // shared-single-writer. Persisted explicitly (not omitted) so a later
         // caller that CAN prove read-only has a visible seam to extend.
+        this.assertAccepting();
         const created = this.store.acceptRequest({
           ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
           conversationId: input.conversationId,
@@ -491,9 +519,7 @@ export class ConversationRunService {
         if (!accepted.reused) {
           this.emitAcceptProjection(accepted);
         }
-        if (this.autoKick && this.activation === "activated") {
-          void this.dispatcher.kick();
-        }
+        this.kickInBackground();
         // PR8: an automatic Run's first dispatch decision is the Router's.
         // Routed AFTER the accept transaction commits and after the accept
         // projection, so a Router failure surfaces as a Run-level failure the
@@ -1141,13 +1167,11 @@ export class ConversationRunService {
       return;
     }
     const outcome = await engine.route(runId, signal);
-    if (!this.closed && outcome.outcome === "dispatched" && kick && this.autoKick && this.activation === "activated") {
-      void this.dispatcher.kick().catch(() => {});
-    }
+    if (outcome.outcome === "dispatched" && kick) this.kickInBackground();
     this.emitRoutingOutcome(outcome);
     if (TERMINAL_RUN_STATES.includes(outcome.run.state)) {
       this.trackReadyAutomaticRuns();
-      if (!this.closed && kick && this.autoKick && this.activation === "activated") void this.dispatcher.kick().catch(() => {});
+      if (kick) this.kickInBackground();
     }
   }
 

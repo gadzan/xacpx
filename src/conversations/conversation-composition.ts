@@ -14,7 +14,7 @@ import type { SessionService } from "../sessions/session-service";
 import type { StateStore } from "../state/state-store";
 import type { AppState } from "../state/types";
 import type { SessionTransport } from "../transport/types";
-import { ConversationDispatcher } from "./conversation-dispatcher";
+import { ConversationDispatcher, type LeaseScheduler } from "./conversation-dispatcher";
 import { conversationExecutionOrigin } from "./conversation-execution";
 import { bindRouter } from "./conversation-router-gate";
 import { ConversationRouterEngine } from "./conversation-router-engine";
@@ -77,12 +77,18 @@ export interface CreateConversationRuntimeInput {
    */
   stateMutex?: AsyncMutex;
   now?: () => Date;
+  leaseMs?: number;
+  leaseScheduler?: LeaseScheduler;
+  /** Test seam: throw once from inside a live lease renewal transaction. */
+  beforeLeaseRenewal?: () => void;
 }
 
 export async function createConversationRuntime(
   input: CreateConversationRuntimeInput,
 ): Promise<ConversationRuntime> {
-  const store = await SqliteConversationStore.open(input.sqlitePath);
+  const store = await SqliteConversationStore.open(input.sqlitePath, {
+    ...(input.beforeLeaseRenewal ? { beforeLeaseRenewal: input.beforeLeaseRenewal } : {}),
+  });
   const shared = {
     ...(input.stateMutex ? { stateMutex: input.stateMutex } : {}),
     ...(input.now ? { now: input.now } : {}),
@@ -143,6 +149,9 @@ export async function createConversationRuntime(
     authorityEpoch: input.authorityEpoch ?? randomUUID(),
     ...(input.ownerId ? { ownerId: input.ownerId } : {}),
     ...(input.onProductEvent ? { onProductEvent: input.onProductEvent } : {}),
+    ...(input.now ? { now: input.now } : {}),
+    ...(input.leaseMs !== undefined ? { leaseMs: input.leaseMs } : {}),
+    ...(input.leaseScheduler ? { leaseScheduler: input.leaseScheduler } : {}),
   });
   // §14.3 late-result evidence: a provider settling after the cancel-settle
   // deadline sealed the Run must reach the store's indeterminate

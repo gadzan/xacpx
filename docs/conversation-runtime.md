@@ -54,9 +54,14 @@ provider round completing and of the drain loop being inside `Promise.race`.
 It is fenced on dispatch id + owner + generation and only moves
 `leaseExpiresAt`. Terminal, cancelled, recovered, and lost-owner claims are
 not renewed. The dispatcher also renews those same claims immediately before
-its own `recoverExpiredClaims`. A closed SQLite store stops renewal; the
-timer error fails the next `kick` / `shutdown` instead of becoming an
-unhandled rejection. Restart has no in-memory promises, so it still converges
+its own `recoverExpiredClaims`. A closed SQLite store stops renewal. Any
+other renewal I/O error stops the keeper, marks the Conversation consumer
+unavailable (`conversations_unavailable`), and is retained for the next
+`kick` and for shutdown. Later accept fails closed before a new Run is
+persisted. Background `kick` rejections are caught. Shutdown still drains
+in-flight execution and closes SQLite, then reports that saved error. The
+I/O failure does not seal the live provider turn as `indeterminate`.
+Restart has no in-memory promises, so it still converges
 previous-owner claims under the exclusive consumer lock and then reconstructs
 reservations from SQLite. Started unknown writers remain indeterminate;
 bounded proven read-only recovery uses the same limit. No semaphore count,
@@ -274,7 +279,8 @@ Terminal pre-start member failures also wake eligible automatic routing through 
 - `BotService` create/update/delete is durability-gated COW: clone → mutate next → `stateStore.saveNow(next)` → `replaceRuntimeState`. `createBot` / `updateBot` returning success means the Bot (including `profileRevision` / execution identity) is already on disk. Conversation SQLite accept may snapshot that Bot; it must not depend on a pending `DebouncedStateStore.save()` flush.
 - `buildApp` must **not** call `dispatcher.kick()` / `conversations.kick()`. Accept-time `autoKick` stays inert until activation.
 - `runConsole` acquires the daemon consumer lock, runs stale-owner / orphan convergence, **then** `runtime.conversations.activateAfterConsumerLock()` (recovery kick), **then** starts channels. A process that loses the lock must not claim or execute durable Conversation work.
-- `activateAfterConsumerLock` sets the consumer activated **only after** the initial `dispatcher.kick()` succeeds. A failed first drain marks the Conversation consumer unavailable (`conversations_unavailable`): later accept fails closed and does not `autoKick`. `runConsole` logs `conversations.recover_failed` and may still start ordinary channels; it must not leave Conversation APIs in an activated+accepting state.
+- `activateAfterConsumerLock` sets the consumer activated **only after** the initial `dispatcher.kick()` succeeds. A failed first drain marks the Conversation consumer unavailable (`conversations_unavailable`): later accept fails closed and does not `autoKick`. The same unavailable state is set if a later lease renewal hits a non-`stale_claim` I/O error, so accept cannot persist a Run this process can no longer schedule. `runConsole` logs `conversations.recover_failed` and may still start ordinary channels; it must not leave Conversation APIs in an activated+accepting state.
+- `ConversationRunService.shutdown()` awaits dispatcher shutdown (which waits for in-flight provider turns) and then closes SQLite even when that shutdown reports a saved lease-keeper error. The error is thrown after the connection is closed.
 - Crash-before-first-claim work recovered after activation is claimed as `recovery` / `orchestration` (new epoch; saved human ingress discarded).
 - Shutdown stops the dispatcher, waits for in-flight drain, then closes SQLite **before** disposing `state.json`. The composition marks the runtime `stopping` first so **new** Control Bot/Conversation APIs fail `runtime_closed` immediately, then **waits for in-flight public mutations** (operation lease) before `bots.close()` / dispatcher shutdown / SQLite close. Concurrent `shutdown()` callers share one promise. `shutdown()` resolving means the Bot/Conversation subsystem is quiescent: no later `replaceRuntimeState` from a mutation that entered before shutdown.
 

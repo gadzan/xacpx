@@ -79,6 +79,9 @@ export interface SqliteConversationStoreOptions {
   /** Fault-injection seam for migration crash tests. Throwing inside aborts
    *  the dispatch table rebuild before it commits. */
   beforeDispatchMigrationCommit?: () => void;
+  /** Fault-injection seam for lease renewal. Throwing aborts the renewal
+   *  transaction before lease_expires_at changes. Not a closed database. */
+  beforeLeaseRenewal?: () => void;
 }
 
 export interface ExternalStopRequest {
@@ -663,6 +666,7 @@ export class SqliteConversationStore implements ConversationStore {
   private readonly ids: ConversationIdFactory;
   private readonly beforeAcceptCommit?: () => void;
   private readonly beforeDispatchMigrationCommit?: () => void;
+  private readonly beforeLeaseRenewal?: () => void;
 
   private closed = false;
 
@@ -673,6 +677,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.ids = options?.ids ?? defaultIds();
     this.beforeAcceptCommit = options?.beforeAcceptCommit;
     this.beforeDispatchMigrationCommit = options?.beforeDispatchMigrationCommit;
+    this.beforeLeaseRenewal = options?.beforeLeaseRenewal;
     this.sqlite.exec(SCHEMA);
     this.ensureDispatchAuthorityEpochColumn();
     this.ensureDispatchHumanIngressColumn();
@@ -1630,6 +1635,7 @@ export class SqliteConversationStore implements ConversationStore {
       if (TERMINAL_RUN_STATES.includes(run.state)) {
         throw new ConversationError("stale_claim", "held claim belongs to a terminal run");
       }
+      this.beforeLeaseRenewal?.();
       this.sqlite.run(
         `UPDATE pending_dispatches
          SET lease_expires_at = ?
@@ -1656,6 +1662,7 @@ export class SqliteConversationStore implements ConversationStore {
       if (TERMINAL_RUN_STATES.includes(run.state) || TERMINAL_MEMBER_STATES.includes(member.state)) {
         throw new ConversationError("stale_claim", "execution no longer owns its reservation");
       }
+      this.beforeLeaseRenewal?.();
       // The caller still awaits this exact execute() promise. Its lease expiry
       // is elapsed provider time, not process-death evidence. CAS identity is
       // still required; never renew a recovered/replaced claim. The UPDATE
