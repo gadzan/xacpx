@@ -1591,6 +1591,20 @@ export class SqliteConversationStore implements ConversationStore {
     this.sqlite.run("DELETE FROM direct_bot_delete_intent WHERE bot_id = ?", [botId]);
   }
 
+  hasDirectDeleteIntentForConversation(conversationId: string): boolean {
+    return this.hasDirectDeleteIntentForConversationRow(conversationId);
+  }
+
+  clearOrphanDirectBotDeleteIntents(liveBotIds: readonly string[]): void {
+    const live = new Set(liveBotIds);
+    const rows = this.sqlite.all<{ bot_id: string }>("SELECT bot_id FROM direct_bot_delete_intent");
+    this.sqlite.transaction(() => {
+      for (const row of rows) {
+        if (!live.has(row.bot_id)) this.clearDirectBotDeleteIntent(row.bot_id);
+      }
+    });
+  }
+
   hasDurableBotWork(botId: string): boolean {
     const conversationId = createDirectConversationId(botId);
     if (this.sqlite.get("SELECT 1 AS ok FROM conversation_bindings WHERE conversation_id = ? LIMIT 1", [conversationId])) return true;
@@ -2753,7 +2767,7 @@ export class SqliteConversationStore implements ConversationStore {
     );
   }
 
-  private hasDirectDeleteIntentForConversation(conversationId: string): boolean {
+  private hasDirectDeleteIntentForConversationRow(conversationId: string): boolean {
     return this.sqlite.get(
       "SELECT 1 AS ok FROM direct_bot_delete_intent WHERE conversation_id = ? LIMIT 1",
       [conversationId],
@@ -3253,7 +3267,7 @@ export class SqliteConversationStore implements ConversationStore {
   }
 
   private assertLifecycleAcceptable(conversationId: string, topicId: string): void {
-    if (this.isConversationDeleting(conversationId) || this.hasDirectDeleteIntentForConversation(conversationId)) {
+    if (this.isConversationDeleting(conversationId) || this.hasDirectDeleteIntentForConversationRow(conversationId)) {
       throw new ConversationError("conversation_deleting", `conversation "${conversationId}" is deleting`);
     }
     if (this.isTopicDeleting(topicId)) {

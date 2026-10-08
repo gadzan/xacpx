@@ -183,6 +183,7 @@ export class ConversationRunService {
   async activateAfterConsumerLock(): Promise<void> {
     this.assertOpen();
     try {
+      this.store.clearOrphanDirectBotDeleteIntents(Object.keys(this.state.bots));
       await this.recoverRootlessGroupMemberSessions();
       this.assertNoAmbiguousGroupMemberSessions();
       this.assertNonterminalWorkHasAuthority();
@@ -2409,6 +2410,7 @@ export class ConversationRunService {
   private assertConversationNotDeleting(conversationId: string): void {
     if (
       this.store.isConversationDeleting(conversationId)
+      || this.store.hasDirectDeleteIntentForConversation(conversationId)
       || this.state.conversations[conversationId]?.lifecycle === "deleting"
     ) {
       throw new ConversationError("conversation_deleting", "conversation is deleting");

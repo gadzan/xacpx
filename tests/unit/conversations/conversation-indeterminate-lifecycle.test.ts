@@ -651,6 +651,53 @@ async function openDiskConversationStack(dir: string, sqlitePath: string, state:
   return { store, bots, dispatcher, service };
 }
 
+test("createDirectTopic between direct teardown and deleteBot cannot recreate the conversation", async () => {
+  const harness = await createHarness();
+  const conversationId = createDirectConversationId(harness.reviewer.id);
+  const accepted = await harness.service.acceptDirectPrompt({
+    botId: harness.reviewer.id,
+    requestId: "req-topic-gap",
+    content: "history",
+  });
+  void harness.dispatcher.kick();
+  await waitUntil(() => harness.store.getRun(accepted.run.id)?.state === "completed");
+  await harness.service.teardownDirectConversation(harness.reviewer.id);
+  expect(harness.state.conversations[conversationId]).toBeUndefined();
+  expect(harness.store.isConversationDeleting(conversationId)).toBe(false);
+  expect(harness.store.hasDirectBotDeleteIntent(harness.reviewer.id)).toBe(true);
+  await expect(harness.service.createDirectTopic(harness.reviewer.id, "New Topic")).rejects.toMatchObject({
+    code: "conversation_deleting",
+  });
+  expect(harness.state.conversations[conversationId]).toBeUndefined();
+  expect(harness.state.conversation_topics[createDirectTopicId(harness.reviewer.id)]).toBeUndefined();
+  await harness.bots.deleteBot(harness.reviewer.id);
+  expect(harness.bots.listBots().some((bot) => bot.id === harness.reviewer.id)).toBe(false);
+  expect(harness.store.hasDirectBotDeleteIntent(harness.reviewer.id)).toBe(false);
+  harness.store.close();
+});
+
+test("activation drops a delete intent whose bot row is already gone", async () => {
+  const harness = await createHarness();
+  const accepted = await harness.service.acceptDirectPrompt({
+    botId: harness.reviewer.id,
+    requestId: "req-orphan-intent",
+    content: "history",
+  });
+  void harness.dispatcher.kick();
+  await waitUntil(() => harness.store.getRun(accepted.run.id)?.state === "completed");
+  await harness.service.teardownDirectConversation(harness.reviewer.id);
+  await harness.service.teardownDirectConversation(harness.tester.id);
+  expect(harness.store.hasDirectBotDeleteIntent(harness.reviewer.id)).toBe(true);
+  expect(harness.store.hasDirectBotDeleteIntent(harness.tester.id)).toBe(true);
+  delete harness.state.bots[harness.reviewer.id];
+  await harness.service.activateAfterConsumerLock();
+  expect(harness.store.hasDirectBotDeleteIntent(harness.reviewer.id)).toBe(false);
+  expect(harness.store.hasDirectBotDeleteIntent(harness.tester.id)).toBe(true);
+  await harness.bots.deleteBot(harness.tester.id);
+  expect(harness.store.hasDirectBotDeleteIntent(harness.tester.id)).toBe(false);
+  harness.store.close();
+});
+
 test("topic sqlite cleanup resumes from a reloaded state file and new services", async () => {
   const dir = mkdtempSync(join(tmpdir(), "xacpx-restart-"));
   const sqlitePath = join(dir, "conversation.sqlite");

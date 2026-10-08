@@ -550,7 +550,12 @@ export interface ConversationStore {
   /** True after Direct teardown has committed to removing the Bot, including
    *  after conversation_lifecycle has been cleared. */
   hasDirectBotDeleteIntent(botId: string): boolean;
+  /** True when this Conversation id is the Direct root named by a delete intent. */
+  hasDirectDeleteIntentForConversation(conversationId: string): boolean;
   clearDirectBotDeleteIntent(botId: string): void;
+  /** Drop intents whose Bot row is already gone. A crash between the metadata
+   *  delete and the intent clear leaves that row; bot ids are not reused. */
+  clearOrphanDirectBotDeleteIntents(liveBotIds: readonly string[]): void;
   isTopicDeleting(topicId: string): boolean;
   /** True when this Conversation's Topic row is the one marked deleting. */
   isTopicDeletingIn(conversationId: string, topicId: string): boolean;
