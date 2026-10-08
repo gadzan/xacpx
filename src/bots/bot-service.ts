@@ -532,7 +532,12 @@ export class BotService {
     for (;;) {
       const probe = this.state.conversations[id];
       if (!probe || probe.kind !== "group") {
-        return await this.mutate(async () => this.updateGroupInner(id, patch));
+        // updateGroupInner takes stateMutex itself. An outer mutate() here
+        // deadlocks the non-reentrant daemon lock for a missing id or a
+        // Direct Conversation id, and that lock is shared with Session writes.
+        // getGroup() inside the inner critical section remains the authority
+        // for group_not_found.
+        return await this.updateGroupInner(id, patch);
       }
       const previewMembership = patch.botIds !== undefined ? [...patch.botIds] : [...probe.botIds];
       const previewLead = patch.leadBotId !== undefined ? patch.leadBotId : probe.leadBotId;

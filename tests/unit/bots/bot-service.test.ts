@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 
 import { BotError } from "../../../src/bots/bot-error";
 import { BotService } from "../../../src/bots/bot-service";
+import type { AppConfig } from "../../../src/config/types";
 import { createDirectBindingId } from "../../../src/domain/ids";
+import { AsyncMutex } from "../../../src/orchestration/async-mutex";
+import { SessionService } from "../../../src/sessions/session-service";
 import { createEmptyState } from "../../../src/state/types";
 import type { AppState } from "../../../src/state/types";
 import type { StateStore } from "../../../src/state/state-store";
@@ -678,4 +681,118 @@ test("group member classifiers prove exact triple ownership and fail closed on m
   expect(
     classifyGroupMemberSessionOwnership({ owner: { kind: "bot-direct", bindingId: binding.id } }, "bot_a", binding.id, "conv_g", "topic_t"),
   ).toBe("foreign");
+});
+
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 30; i += 1) await Promise.resolve();
+}
+
+function createNumberedService(state = createEmptyState(), stateMutex?: AsyncMutex) {
+  const store = new MemoryStateStore();
+  let n = 0;
+  const service = new BotService(
+    {
+      agents: { codex: { driver: "codex" }, claude: { driver: "claude" } },
+      workspaces: { backend: { cwd: "/tmp/backend" }, frontend: { cwd: "/tmp/frontend" } },
+    },
+    state,
+    store,
+    {
+      now: () => new Date(NOW),
+      createId: () => `bot_${(n += 1)}`,
+      ...(stateMutex ? { stateMutex } : {}),
+    },
+  );
+  return { service, store, state, stateMutex };
+}
+
+test("updateGroup on a missing id or a Direct conversation returns group_not_found and releases the shared mutex", async () => {
+  const stateMutex = new AsyncMutex();
+  const { service, state } = createNumberedService(createEmptyState(), stateMutex);
+  const bot = await service.createBot({ name: "Reviewer", agent: "codex", workspace: "backend" });
+  state.conversations.direct_1 = {
+    id: "direct_1",
+    kind: "bot",
+    title: "Direct",
+    botIds: [bot.id],
+    createdAt: NOW,
+    updatedAt: NOW,
+  };
+  const sessions = new SessionService(
+    {
+      agents: { codex: { driver: "codex" } },
+      workspaces: { backend: { cwd: "/tmp/backend" } },
+    } as AppConfig,
+    { async save() {} },
+    state,
+    { stateMutex, now: () => Date.parse(NOW) },
+  );
+
+  for (const id of ["missing-group", "direct_1"]) {
+    let settled = false;
+    let error: unknown;
+    const update = service.updateGroup(id, { title: "Nope" }).then(
+      () => { settled = true; },
+      (caught: unknown) => { settled = true; error = caught; },
+    );
+    await flushMicrotasks();
+    expect(settled).toBe(true);
+    expect(error).toBeInstanceOf(BotError);
+    expect(error).toMatchObject({ code: "group_not_found" });
+    await update;
+
+    const created = await service.createBot({ name: "Next", agent: "codex", workspace: "backend" });
+    expect(created.id.startsWith("bot_")).toBe(true);
+
+    let wrote = false;
+    await sessions.withSessionLock(async () => { wrote = true; });
+    expect(wrote).toBe(true);
+  }
+  expect(state.conversations.direct_1?.kind).toBe("bot");
+});
+
+test("concurrent updateGroup calls keep membership and lifecycle exclusion", async () => {
+  const { service } = createNumberedService();
+  const a = await service.createBot({ name: "A", agent: "codex", workspace: "backend" });
+  const b = await service.createBot({ name: "B", agent: "codex", workspace: "backend" });
+  const c = await service.createBot({ name: "C", agent: "codex", workspace: "backend" });
+  const group = await service.createGroup({ title: "Team", botIds: [a.id, b.id] });
+
+  const release = { current: () => {} };
+  const hold = new Promise<void>((resolve) => { release.current = resolve; });
+  let entered = false;
+  const gate = service.runLifecycle(a.id, async () => {
+    entered = true;
+    await hold;
+  });
+  await flushMicrotasks();
+  expect(entered).toBe(true);
+
+  let settled = false;
+  const blocked = service.updateGroup(group.id, { title: "Held", botIds: [a.id, b.id] }).then(
+    () => { settled = true; },
+    () => { settled = true; },
+  );
+  await flushMicrotasks();
+  expect(settled).toBe(false);
+  expect(service.getGroup(group.id).title).toBe("Team");
+  release.current();
+  await gate;
+  await blocked;
+  expect(service.getGroup(group.id).title).toBe("Held");
+
+  const first = service.updateGroup(group.id, { title: "AB", botIds: [a.id, b.id] });
+  const second = service.updateGroup(group.id, { title: "AC", botIds: [a.id, c.id] });
+  const [left, right] = await Promise.all([first, second]);
+  const live = service.getGroup(group.id);
+  expect([left.botIds, right.botIds]).toContainEqual(live.botIds);
+  expect(live.botIds).toHaveLength(2);
+  expect(new Set(live.botIds).size).toBe(2);
+  if (live.botIds.includes(b.id)) {
+    expect(live.botIds).toEqual([a.id, b.id]);
+    expect(live.title).toBe("AB");
+  } else {
+    expect(live.botIds).toEqual([a.id, c.id]);
+    expect(live.title).toBe("AC");
+  }
 });
