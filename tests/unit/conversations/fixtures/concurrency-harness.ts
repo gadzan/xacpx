@@ -5,6 +5,7 @@ import { BotService } from "../../../../src/bots/bot-service";
 import { BotRuntimeManager } from "../../../../src/bots/bot-runtime-manager";
 import { snapshotBotProfile } from "../../../../src/bots/bot-types";
 import type { AppConfig } from "../../../../src/config/types";
+import type { AcpxCommandMetadata } from "../../../../src/config/resolve-acpx-command";
 import { ConversationDispatcher, type ConversationDispatcherHooks } from "../../../../src/conversations/conversation-dispatcher";
 import { ConversationRunService } from "../../../../src/conversations/conversation-run-service";
 import { ConversationRouterEngine } from "../../../../src/conversations/conversation-router-engine";
@@ -57,7 +58,7 @@ export class ControlledRunner implements ConversationTurnRunner {
     return { outcome: "cancelled" as const };
   }
 }
-export async function harness(options: { path?: string; state?: AppState; hooks?: ConversationDispatcherHooks; router?: ConversationRouter; ownerId?: string; beforeAcceptPersist?: () => Promise<void> } = {}) {
+export async function harness(options: { path?: string; state?: AppState; hooks?: ConversationDispatcherHooks; router?: ConversationRouter; ownerId?: string; beforeAcceptPersist?: () => Promise<void>; transport?: Partial<AppConfig["transport"]>; acpxCommandMetadata?: AcpxCommandMetadata } = {}) {
   const path = options.path ?? join(mkdtempSync(join(tmpdir(), "xacpx-concurrency-")), "conversations.sqlite");
   const store = await SqliteConversationStore.open(path);
   const state = options.state ?? createEmptyState();
@@ -66,9 +67,9 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
   // actual supported restricted launch instead of treating Codex's mode as proof.
   const config = { agents: { codex: { driver: "claude" } }, workspaces: { backend: { cwd: "/tmp/backend" } },
     // Pin the validated enforcement contract independently of release defaults.
-    transport: { type: "acpx-cli", command: "acpx", adapterVersions: { claude: "0.78.0" } } } as AppConfig;
+    transport: { type: "acpx-cli", adapterVersions: { claude: "0.78.0" }, ...options.transport } } as AppConfig;
   const stateMutex = new AsyncMutex();
-  const sessions = new SessionService(config, stateStore, state, { stateMutex });
+  const sessions = new SessionService(config, stateStore, state, { stateMutex, acpxCommandMetadata: options.acpxCommandMetadata });
   const releaseOwnedSession = createStrictOwnedSessionRelease({ sessions, transport: { async deleteSession() {}, async releaseLogicalSession() {} } });
   let id = Object.keys(state.bots).length;
   const bots = new BotService(config, state, stateStore, { stateMutex, createId: () => `bot_limit_${++id}` });

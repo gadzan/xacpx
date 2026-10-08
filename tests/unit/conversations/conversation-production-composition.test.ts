@@ -582,6 +582,7 @@ async function compose(stateStore: BarrierStateStore, options: {
   const sqlitePath = options.sqlitePath ?? join(dir, "conversations.sqlite");
   const config = createConfig();
   if (options.enforcedReaders) {
+    delete config.transport.command;
     config.agents.codex!.driver = "claude";
     config.transport.adapterVersions = { claude: "0.78.0" };
   }

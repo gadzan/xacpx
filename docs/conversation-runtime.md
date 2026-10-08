@@ -217,12 +217,18 @@ Requested read-only != enforced read-only. Model text saying read-only and a
 Bot named Reviewer do not grant a capability. Ordinary prompts, Router work
 and public handoffs retain `unknown` / absent proof by default.
 
-The first supported enforcement contract is the managed Claude ACP 0.78.0
-adapter (Claude Agent SDK 0.3.270), launched through a core-owned ACP policy
+The first supported enforcement contract requires the bundled acpx 0.16.0
+executor and managed Claude ACP 0.78.0 adapter (Claude Agent SDK 0.3.270),
+launched through a core-owned ACP policy
 guard. It restricts the SDK's **tool set**, rather than its auto-approval list,
 to Read/Glob/Grep, enables bare mode, disables commands, settings discovery,
 plugins, agents and MCP, and rejects ACP terminal/write/permission-escalation
-requests. Custom launches, other adapter versions and other drivers cannot
+requests. Explicit `transport.command`, a missing bundled executor with PATH
+fallback, and bundled executors with an absent or different package version
+cannot receive this proof. The daemon captures the same resolved executor
+metadata used to construct its transport; later configuration checks cannot
+replace that startup identity with a newly discovered bundled executable.
+Custom agent launches, other adapter versions and other drivers also cannot
 receive this proof. Codex ACP 1.12.0's mode named `read-only` uses
 `workspaceWrite`; its name is not an enforcement contract.
 
@@ -321,14 +327,16 @@ it. Enforced Group read-only recovery retains the existing at-most-one started
 retry, budget, retired-source, cancellation and authority fences. Direct recovery
 keeps its existing conservative started-unknown rule.
 
-Residuals: only the exact managed Claude ACP 0.78.0 / SDK 0.3.270 implementation
-from the default registry qualifies. Custom commands/argv/registry/version,
+Residuals: only bundled acpx 0.16.0 with the exact managed Claude ACP 0.78.0 /
+SDK 0.3.270 implementation from the default registry qualifies. Custom
+transport commands, PATH acpx, custom agent commands/argv/registry/version,
 Codex, Hermes and other adapters remain unsupported for requested read-only;
 ordinary requests on them remain unknown. Bare Claude needs explicit supported
 API/provider authentication; absent credentials fail rather than relaunching in
 writable mode. Terminal, MCP (including `group_send`), skills, plugins, subagents,
 slash commands and media input are unavailable in this first restricted runtime.
-The trusted boundary is the pinned adapter/SDK implementation and same OS user;
+The trusted boundary is the bundled executor, pinned adapter/SDK implementation
+and same OS user;
 this is a tool capability ceiling, not a new OS sandbox. SDK bookkeeping may
 write its own state outside the target workspace. Live-provider and real channel
 smokes are not part of the loopback enforcement regression.

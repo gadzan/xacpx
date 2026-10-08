@@ -13,6 +13,7 @@ import {
 import { isDefaultHermesCommand, isHermesShimCommand } from "../adapters/hermes-shim";
 import { deriveAgentAlias, isDerivedAgentArgv, renderAgentArgvIdentity, type AgentLaunchSpec } from "../config/agent-launch";
 import { resolveConfigPathForCurrentEnv } from "../config/config-path";
+import { resolveAcpxCommandMetadata, type AcpxCommandMetadata } from "../config/resolve-acpx-command";
 import type { AgentConfig, AppConfig, WechatReplyMode } from "../config/types";
 import { t } from "../i18n/index.js";
 import { AsyncMutex } from "../orchestration/async-mutex";
@@ -93,6 +94,8 @@ interface SessionServiceOptions {
   platform?: NodeJS.Platform;
   /** Trusted root for classifying persisted preinstalled adapter identities. */
   runtimeRoot?: string;
+  /** Trusted startup resolution used to construct this daemon's transport. */
+  acpxCommandMetadata?: AcpxCommandMetadata;
   /** Whether interactive permission confirmation is available. */
   permissionInteractionCapable?: boolean;
   /**
@@ -145,6 +148,7 @@ export class SessionService {
   private readonly now: () => number;
   private readonly platform: NodeJS.Platform;
   private readonly runtimeRoot: string;
+  private readonly acpxCommandMetadata: Readonly<AcpxCommandMetadata>;
   private readonly permissionInteractionCapable?: boolean;
   private runtimeCapability?: SessionServiceOptions["runtimeCapability"];
   private readonly pendingSessionAliasOperations = new Set<string>();
@@ -159,6 +163,10 @@ export class SessionService {
     this.now = options.now ?? (() => Date.now());
     this.platform = options.platform ?? process.platform;
     this.runtimeRoot = options.runtimeRoot ?? dirname(resolveConfigPathForCurrentEnv());
+    // A later resolver result must not attest a different executable than the
+    // transport selected at startup. Copy so caller-owned metadata cannot drift.
+    this.acpxCommandMetadata = Object.freeze({ ...(options.acpxCommandMetadata
+      ?? resolveAcpxCommandMetadata({ configuredCommand: config.transport.command })) });
     this.permissionInteractionCapable = options.permissionInteractionCapable;
     this.runtimeCapability = options.runtimeCapability;
   }
@@ -200,7 +208,7 @@ export class SessionService {
   }
 
   supportsConversationReadOnly(agent: string): boolean {
-    return supportsEnforcedReadOnly(this.config.agents[agent], this.config.transport);
+    return supportsEnforcedReadOnly(this.config.agents[agent], this.config.transport, this.acpxCommandMetadata);
   }
 
   async createSession(

@@ -201,6 +201,7 @@ async function createLifecycle(options: {
   const stateMutex = new AsyncMutex();
   const config = createConfig();
   if (options.enforcedReaders) {
+    delete config.transport.command;
     config.agents.codex!.driver = "claude";
     config.transport.adapterVersions = { claude: "0.78.0" };
   }
@@ -2805,6 +2806,7 @@ test("teardownGroupTopic emits conversations-changed once on success", async () 
   const stateStore = { save: async () => {} };
   const stateMutex = new AsyncMutex();
   const config = {
+    transport: { type: "acpx-cli" },
     agents: { codex: { driver: "codex" }, claude: { driver: "claude" } },
     workspaces: { backend: { root: "/tmp/backend" } },
   } as never;

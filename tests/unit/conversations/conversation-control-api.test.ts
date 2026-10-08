@@ -43,7 +43,7 @@ class MemoryStateStore {
 
 function createConfig(): AppConfig {
   return {
-    transport: { type: "acpx-cli", command: "acpx", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
+    transport: { type: "acpx-cli", permissionMode: "approve-all", nonInteractivePermissions: "deny" },
     logging: { level: "info", maxSizeBytes: 1024, maxFiles: 2, retentionDays: 1, perf: { enabled: false } },
     channel: { type: "weixin", replyMode: "stream" },
     channels: [{ id: "weixin", type: "weixin", enabled: true }],

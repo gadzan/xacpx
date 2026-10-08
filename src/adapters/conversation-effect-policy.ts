@@ -1,5 +1,6 @@
 import { fileURLToPath } from "node:url";
 import type { AgentConfig, TransportConfig } from "../config/types";
+import type { AcpxCommandMetadata } from "../config/resolve-acpx-command";
 import { effectiveAdapterVersion } from "./adapter-catalog";
 import { DEFAULT_ADAPTER_REGISTRY, effectiveAdapterRegistry } from "./adapter-registry";
 import { unwrapAcpOutputGuardArgv } from "./acp-output-guard";
@@ -11,9 +12,14 @@ export type RequestedFilesystemPolicy = "read-only" | "read-write";
 
 export function supportsEnforcedReadOnly(
   agent: Pick<AgentConfig, "driver" | "command" | "argv"> | undefined,
-  transport?: Pick<TransportConfig, "adapterVersions" | "adapterRegistry">,
+  transport?: Pick<TransportConfig, "command" | "adapterVersions" | "adapterRegistry">,
+  executor?: Pick<AcpxCommandMetadata, "source" | "packageVersion">,
 ): boolean {
   return agent?.driver === "claude" && !agent.command && agent.argv === undefined
+    // Proof includes the actual startup executor: arbitrary acpx programs can
+    // ignore guarded agent argv. Do not attest a custom/PATH binary by version.
+    && transport?.command === undefined
+    && executor?.source === "bundled" && executor.packageVersion === "0.16.0"
     && effectiveAdapterVersion("claude", transport?.adapterVersions) === "0.78.0"
     && effectiveAdapterRegistry(transport?.adapterRegistry) === DEFAULT_ADAPTER_REGISTRY;
 }

@@ -93,7 +93,7 @@ How xacpx communicates with the acpx backend.
 | Field | Type | Required | Description |
 |------|------|------|------|
 | `type` | `"acpx-cli"` \| `"acpx-bridge"` | No | Communication method, defaults to `"acpx-bridge"`. See notes below |
-| `command` | `string` | No | Explicitly specify the acpx binary path. When omitted, it is looked up automatically by priority |
+| `command` | `string` | No | Explicitly specify the acpx binary path. When omitted, it is looked up automatically by priority. Custom commands remain supported for ordinary requests but cannot provide Conversation enforced read-only proof |
 | `sessionInitTimeoutMs` | `number` | No | Session initialization timeout (milliseconds), defaults to `120000` (2 minutes) |
 | `permissionMode` | `"approve-all"` \| `"approve-reads"` \| `"deny-all"` | No | Permission mode, defaults to `"approve-all"` |
 | `nonInteractivePermissions` | `"deny"` \| `"fail"` | No | Permission policy for non-interactive scenarios, defaults to `"deny"` |
@@ -107,6 +107,13 @@ How xacpx communicates with the acpx backend.
 | `acpxTerminalMaxOutputBytes` | `number` \| `null` | No | Advanced: host ceiling on retained terminal stdout+stderr bytes. `null`/absent follows upstream behavior. Same lane coverage and recycle requirement as above |
 
 ### Managed ACP adapter versions
+
+Conversation enforced read-only additionally requires the bundled acpx 0.16.0
+executor, managed Claude ACP 0.78.0 and the default registry. Explicit
+`transport.command`, PATH fallback, and unknown or different bundled executor
+versions reject read-only policy before Run acceptance. Ordinary requests retain
+the existing command resolution and execution behavior. See
+[execution effects](conversation-runtime.md#enforced-execution-effects-phase-10b).
 
 xacpx does not install the Codex or Claude adapter as a package dependency by default. For these two drivers it normally passes an exact `npx -y --registry=<registry> <package>@<version>` command to acpx. Users may opt in to an immutable local release with `xacpx adapter preinstall <codex|claude> [version]`; a validated active local release then replaces the generated npx command. Resolution priority is:
 

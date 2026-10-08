@@ -7,6 +7,7 @@ import { parseRoutingDecision } from "../../../src/conversations/conversation-ro
 import { GroupHandoffService } from "../../../src/conversations/group-handoff";
 import { snapshotBotProfile } from "../../../src/bots/bot-types";
 import { createDirectConversationId, createDirectTopicId } from "../../../src/domain/ids";
+import { resolveAcpxCommandMetadata } from "../../../src/config/resolve-acpx-command";
 
 test("a Router cannot submit an effect request or mint enforcement provenance", () => {
   for (const forged of [{ effectProvenance: "declared-enforced" }, { effectProvenance: "human" }, { trustedReadOnly: true }, { effect: "read-only" }]) {
@@ -97,7 +98,114 @@ for (const agent of [{ driver: "codex" }, { driver: "hermes" }, { driver: "claud
 
 for (const transport of [{ adapterVersions: { claude: "0.77.0" } }, { adapterRegistry: "https://registry.example.test" }]) {
   test(`unverified managed adapter ${JSON.stringify(transport)} stays unsupported`, () => {
-    expect(supportsEnforcedReadOnly({ driver: "claude" }, transport)).toBe(false);
+    expect(supportsEnforcedReadOnly({ driver: "claude" }, transport, resolveAcpxCommandMetadata())).toBe(false);
+  });
+}
+
+test("read-only classification requires trusted executor metadata as well as the adapter contract", () => {
+  const agent = { driver: "claude" }, transport = { adapterVersions: { claude: "0.78.0" } };
+  expect(supportsEnforcedReadOnly(agent, transport)).toBe(false);
+  expect(supportsEnforcedReadOnly(agent, transport, resolveAcpxCommandMetadata())).toBe(true);
+  for (const source of ["config", "PATH"] as const) {
+    expect(supportsEnforcedReadOnly(agent, transport, { source, packageVersion: "0.16.0" })).toBe(false);
+  }
+});
+
+test("executor snapshot cannot be upgraded by mutating the startup metadata object", async () => {
+  const startup = resolveAcpxCommandMetadata({ configuredCommand: "custom-acpx" });
+  const h = await harness({ acpxCommandMetadata: startup }); const { group, topic } = await h.group(2);
+  try {
+    Object.assign(startup, resolveAcpxCommandMetadata());
+    await expect(accept(h, group.id, topic.id, ["read-only"]))
+      .rejects.toMatchObject({ code: "effect_policy_unsupported" });
+    expect(h.store.listRuns({ conversationId: group.id, topicId: topic.id })).toHaveLength(0);
+  } finally { h.store.close(); }
+});
+
+for (const transport of [{ command: "custom-acpx" }, { command: "acpx" }, { command: "" }]) {
+  test(`explicit transport ${JSON.stringify(transport)} rejects read-only before persistence and preserves ordinary work`, async () => {
+    const h = await harness({ transport }); const { group, topic } = await h.group(2);
+    try {
+      await expect(accept(h, group.id, topic.id, ["read-only"]))
+        .rejects.toMatchObject({ code: "effect_policy_unsupported" });
+      expect(h.store.listRuns({ conversationId: group.id, topicId: topic.id })).toHaveLength(0);
+      // The rejected safety request must not consume the ordinary request id.
+      const ordinary = await h.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+        requestId: "policy-request", text: "ordinary work", target: { mode: "members", botIds: [h.ids[0]!] } });
+      expect(ordinary.memberTurn.effect ?? "unknown").toBe("unknown");
+      expect(ordinary.memberTurn.effectProvenance).toBeUndefined();
+      const drain = h.dispatcher.kick(); await until(() => h.runner.calls.length === 1);
+      h.runner.finish(0); await drain;
+      expect(h.store.getRun(ordinary.run.id)?.state).toBe("completed");
+    } finally { h.store.close(); }
+  });
+}
+
+test("PATH fallback cannot acquire read-only proof when a bundled executor is later discoverable", async () => {
+  const startup = resolveAcpxCommandMetadata({ resolvePackageJson: () => { throw new Error("bundled acpx absent at startup"); } });
+  expect(startup.source).toBe("PATH");
+  const h = await harness({ acpxCommandMetadata: startup }); const { group, topic } = await h.group(2);
+  try {
+    // The installed dependency is now available, but this transport uses the
+    // already-selected PATH command, not a fresh resolver result.
+    expect(resolveAcpxCommandMetadata().source).toBe("bundled");
+    await expect(accept(h, group.id, topic.id, ["read-only"]))
+      .rejects.toMatchObject({ code: "effect_policy_unsupported" });
+    expect(h.store.listRuns({ conversationId: group.id, topicId: topic.id })).toHaveLength(0);
+  } finally { h.store.close(); }
+});
+
+test("clearing custom transport config cannot replace the executor captured at startup", async () => {
+  const h = await harness({ transport: { command: "custom-acpx" } }); const { group, topic } = await h.group(2);
+  try {
+    delete h.config.transport.command;
+    await expect(accept(h, group.id, topic.id, ["read-only"]))
+      .rejects.toMatchObject({ code: "effect_policy_unsupported" });
+    expect(h.store.listRuns({ conversationId: group.id, topicId: topic.id })).toHaveLength(0);
+  } finally { h.store.close(); }
+});
+
+for (const source of ["config", "PATH"] as const) {
+  test(`accepted read-only work fails closed after restart with a ${source} executor`, async () => {
+    const first = await harness(); const { group, topic } = await first.group(2);
+    const accepted = await accept(first, group.id, topic.id, ["read-only"]);
+    const state = parseState(structuredClone(first.state)); first.store.close();
+    const startup = source === "config"
+      ? resolveAcpxCommandMetadata({ configuredCommand: "custom-acpx" })
+      : resolveAcpxCommandMetadata({ resolvePackageJson: () => { throw new Error("bundled package missing"); } });
+    const second = await harness({ path: first.path, state, acpxCommandMetadata: startup });
+    try {
+      await second.service.activateAfterConsumerLock();
+      expect(second.runner.calls).toHaveLength(0);
+      expect(second.store.getMemberTurn(accepted.memberTurn.id)).toMatchObject({
+        effect: "read-only", effectProvenance: "declared-enforced", failureReason: "runtime_revision_mismatch",
+      });
+    } finally { second.store.close(); }
+  });
+}
+
+for (const version of [undefined, "0.15.0", "0.17.0"]) {
+  test(`bundled executor version ${version ?? "missing"} cannot mint read-only proof`, async () => {
+    const startup = resolveAcpxCommandMetadata({ resolvePackageJson: () => "/installed/acpx/package.json",
+      readPackageJson: () => ({ version, bin: "dist/cli.js" }) });
+    const h = await harness({ acpxCommandMetadata: startup }); const { group, topic } = await h.group(2);
+    try {
+      await expect(accept(h, group.id, topic.id, ["read-only"]))
+        .rejects.toMatchObject({ code: "effect_policy_unsupported" });
+      expect(h.store.listRuns({ conversationId: group.id, topicId: topic.id })).toHaveLength(0);
+    } finally { h.store.close(); }
+  });
+}
+
+for (const phase of ["beforeRuntimeMaterialize", "beforeExecutionStart"] as const) {
+  test(`custom transport drift at ${phase} makes zero provider calls`, async () => {
+    let h!: Awaited<ReturnType<typeof harness>>;
+    h = await harness({ hooks: { [phase]: async () => { h.config.transport.command = "custom-acpx"; } } });
+    try {
+      const { group, topic } = await h.group(2); const a = await accept(h, group.id, topic.id, ["read-only"]);
+      await h.dispatcher.kick(); expect(h.runner.calls).toHaveLength(0);
+      expect(h.store.getMemberTurn(a.memberTurns[0]!.id)?.failureReason).toBe("runtime_revision_mismatch");
+    } finally { h.store.close(); }
   });
 }
 
