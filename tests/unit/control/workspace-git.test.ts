@@ -154,6 +154,41 @@ describe("worktreePathIsWithin", () => {
   });
 });
 
+// GitHub's Windows runners expose TMP as an 8.3 short-name path
+// (C:\Users\RUNNER~1\AppData\Local\Temp). fs.realpathSync keeps the short
+// spelling while Git canonicalizes it to the long form, so a managed root built
+// there used to compare unequal against Git's own .git pointer and
+// `worktree list` output, failing every owned-worktree verification.
+test("Windows 8.3 short-name and long-name spellings of one directory compare equal", () => {
+  if (process.platform !== "win32") return;
+  const long = temp("wsgit-short-");
+  const segments = long.slice(3).split("\\");
+  // Query the short name of the deepest existing component.
+  let short = long.slice(0, 3);
+  for (const segment of segments) {
+    short += segment;
+    const resolved = execFileSync(
+      "powershell",
+      [
+        "-NoProfile",
+        "-Command",
+        `(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${short}').ShortPath`,
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    ).trim();
+    if (resolved && resolved !== short) short = resolved;
+    short += "\\";
+  }
+  short = short.slice(0, -1);
+  expect(short).not.toBe(long);
+  expect(realpathSync(short)).toBe(short); // realpathSync keeps the short spelling
+  expect(worktreePathsEqual(short, long, "win32")).toBe(true);
+  expect(worktreePathIsWithin(short, `${long}\\worktrees\\abc`, "win32")).toBe(true);
+  expect(worktreePathsEqual(`${short}\\worktrees\\abc`, `${long}\\worktrees\\abc`, "win32")).toBe(true);
+  // A genuinely different directory must still compare unequal.
+  expect(worktreePathsEqual(short, `${long}-other`, "win32")).toBe(false);
+});
+
 describe("WorkspaceGit status", () => {
   test("matches Windows-shaped Git worktree output through the status wiring", async () => {
     const { repo } = initRepo();

@@ -27,8 +27,11 @@ Resource IDs determine paths and branch names; caller strings never become paths
 or Git arguments. Git's worktree lock reason records an opaque durable ownership
 token. Verification compares canonical path, registration, common-dir, branch,
 base ancestry and that token. Unknown/malformed ownership fails closed.
-Branch checks use Git's actual symbolic ref at every resolution boundary. Both
-files and reftable ref storage are supported: [reftable's HEAD file is a dummy](https://git-scm.com/docs/reftable),
+Canonical path comparison expands Windows 8.3 short-name components to their long
+form, so a managed root or workspace spelled through a short name still matches
+Git's recorded paths. Branch checks use Git's actual symbolic ref at every
+resolution boundary. Both files and reftable ref storage are supported:
+[reftable's HEAD file is a dummy](https://git-scm.com/docs/reftable),
 so reading that file cannot prove the current branch. The synchronous SessionService
 resolver uses the same bounded argv-only Git boundary for this read-only check.
 

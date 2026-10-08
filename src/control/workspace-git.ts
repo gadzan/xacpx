@@ -1,5 +1,6 @@
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve, sep, win32 } from "node:path";
@@ -167,7 +168,33 @@ function normalizeWindowsWorktreePath(path: string): string {
   while (normalized.length > root.length && normalized.endsWith(win32.sep)) {
     normalized = normalized.slice(0, -1);
   }
+  // A managed root can live under an 8.3 short-name component (GitHub's
+  // C:\Users\RUNNER~1\...). fs.realpathSync keeps short names verbatim while Git
+  // canonicalizes them to their long form in the worktree .git pointer, so the
+  // two spellings of one directory would otherwise compare unequal. Resolving
+  // through the nearest existing ancestor expands every short component.
+  normalized = expandShortNameComponents(normalized);
   return normalized.toLowerCase();
+}
+
+/**
+ * Expands 8.3 short-name components of an existing or partially existing path.
+ * Each segment is resolved through the nearest existing ancestor, so a leaf that
+ * does not exist yet still inherits the long form of its existing parents.
+ */
+function expandShortNameComponents(path: string): string {
+  const root = win32.parse(path).root;
+  if (!/^[a-z]:\\/i.test(root)) return path; // UNC and device roots have no 8.3 names
+  const segments = path.slice(root.length).split(win32.sep).filter(Boolean);
+  if (!segments.some(segment => segment.includes("~"))) return path; // nothing short to expand
+  let current = root;
+  for (const segment of segments) {
+    current += segment;
+    try { current = realpathSync.native(current); } catch { /* leaf may not exist yet */ }
+    current += win32.sep;
+  }
+  const expanded = current.slice(0, -1);
+  return expanded.length > root.length ? expanded : path;
 }
 
 export interface WorkspaceGitOptions {

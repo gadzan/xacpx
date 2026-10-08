@@ -386,8 +386,11 @@ Conversation database location), with hashed repository/Run/member IDs and manag
 `xacpx/10c/…` branches. Intent is durable before `git worktree add --lock`. Readiness
 requires matching real paths, Git common-dir, branch, base ancestry, Git registration
 and an opaque ownership lock token. Client input cannot choose these paths/tokens.
-Branch identity comes from Git's `symbolic-ref`, including at synchronous session
-resolution; it does not interpret a reftable repository's placeholder HEAD file.
+Windows path comparison canonicalizes 8.3 short-name components to their long form,
+so a managed root or workspace spelled through a short name (as on some CI hosts)
+still matches Git's own recorded paths. Branch identity comes from Git's
+`symbolic-ref`, including at synchronous session resolution; it does not interpret
+a reftable repository's placeholder HEAD file.
 The state progression is planned → provisioning → ready → active →
 awaiting-integration → integrated → cleanup-pending → cleaned. Failures retain
 provision-failed, missing, recovery-required or cleanup-failed records and diagnostics.

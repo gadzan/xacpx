@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, writeFile, readFile, readdir, rename, symlink, unlink, mkdir, chmod } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -22,12 +23,24 @@ async function gitFixture(options: Parameters<typeof harness>[0] = {}, refFormat
   await writeFile(join(source, "same.txt"), "first\nsecond\nthird\n");
   await runWorkspaceGit(source, ["add", "."]);
   await runWorkspaceGit(source, ["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "base"]);
-  const h = await harness({ ...options, workspaceCwd: source, worktreeRoot: join(dir, "managed") });
+  const h = await harness({ ...options, workspaceCwd: source, worktreeRoot: options.worktreeRoot ?? join(dir, "managed") });
   const g = await h.bots.createGroup({ title: "Worktrees", botIds: h.ids });
   const topic = await h.service.createGroupTopic(g.id, "Isolated", { workspace: "backend", isolation: "worktree-per-member" }, { maxConcurrentMemberTurns: 2 });
   const accept = (id = "request", count = 2) => h.service.acceptGroupPrompt({ conversationId: g.id, topicId: topic.id, requestId: id,
     text: "modify independently", target: { mode: "members", botIds: h.ids.slice(0, count) }, humanIngress: HUMAN });
   return { ...h, dir, source, topic, g, accept };
+}
+/** Creates a directory and returns its 8.3 short-name spelling, as a runner's TMP has. */
+async function shortNameWorktreeRoot(): Promise<string | undefined> {
+  if (process.platform !== "win32") return undefined;
+  const holder = await mkdtemp(join(tmpdir(), "xacpx-10c-short-"));
+  const resolved = execFileSync("powershell", ["-NoProfile", "-Command",
+    `(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${holder}').ShortPath`],
+    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  // Without 8.3 generation the short spelling equals the long one, so there is
+  // nothing to exercise.
+  if (!resolved || resolved.toLowerCase() === holder.toLowerCase()) return undefined;
+  return join(resolved, "managed");
 }
 async function wait(check: () => boolean) {
   const end = Date.now() + 20_000; while (!check()) { if (Date.now() > end) throw new Error("worktree execution timed out"); await new Promise(r => setTimeout(r, 5)); }
@@ -130,6 +143,32 @@ test.skipIf(!supportsReftable)("reftable members verify the real branch and reje
   expect(() => h.worktrees!.resolveSessionCwd(session)).toThrow("worktree registration, branch or owner token changed");
   h.store.close();
 }, 60_000);
+
+// GitHub's Windows runners expose TMP as C:\Users\RUNNER~1\AppData\Local\Temp.
+// fs.realpathSync keeps that short spelling, but Git canonicalizes it to the long
+// form when writing the worktree .git pointer and `worktree list`, so every owned
+// verification used to fail identity checks on that platform.
+test("a managed root under an 8.3 short-name component still verifies, resolves and integrates", async () => {
+  const shortRoot = await shortNameWorktreeRoot();
+  if (!shortRoot) return; // this host exposes no 8.3 short name
+  const h = await gitFixture({ worktreeRoot: shortRoot });
+  const accepted = await h.accept("short-name", 1);
+  const drain = h.dispatcher.kick(); await wait(() => h.runner.calls.length === 1);
+  const cwd = h.sessions.getResolvedSessionByInternalAlias(h.runner.calls[0]!.sessionAlias)!.cwd;
+  const resource = h.store.worktrees.get(accepted.run.id)!.resources[0]!;
+  expect(cwd).toBe(resource.worktreePath);
+  expect(h.worktrees!.resolveSessionCwd(h.sessions.getLogicalSessionRecord(h.runner.calls[0]!.sessionAlias)!)).toBe(resource.worktreePath);
+  await writeFile(join(cwd, "same.txt"), "member A\n"); h.runner.finish(0); await drain;
+  let r = await h.integrations!.operate({ action: "preview", runId: accepted.run.id, botIds: [h.ids[0]!] });
+  expect(r.preview!.members[0]!.files).toContain("same.txt");
+  r = await h.integrations!.operate({ action: "integrate", runId: r.runId, requestId: "short", previewId: r.preview!.id, snapshotUncommitted: true });
+  expect(r.integration!.state).toBe("integrated");
+  const candidate = r.resources.find(resource => resource.kind === "integration")!;
+  expect(await readFile(join(candidate.worktreePath, "same.txt"), "utf8")).toBe("member A\n");
+  expect(await readFile(join(h.source, "same.txt"), "utf8")).toBe("first\nsecond\nthird\n");
+  r = await h.integrations!.operate({ action: "cleanup", runId: r.runId }); expect(r.resources.every(resource => resource.state === "cleaned")).toBe(true);
+  h.store.close();
+}, 90_000);
 
 test("a text patch larger than 8 MiB previews with a bounded prefix and integrates its complete tree", async () => {
   const h = await gitFixture(); const accepted = await h.accept("large-patch", 1);
