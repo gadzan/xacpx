@@ -129,9 +129,13 @@ export class ConversationDispatcher {
   /** Serializes renewal ticks so shutdown can wait for the one in progress. */
   private leaseRenewalTask: Promise<void> = Promise.resolve();
   private leaseKeeperStopped = false;
-  private leaseKeeperError: unknown;
-  /** Set by ConversationRunService so a fatal renewal I/O error fail-closes accept. */
-  private onFatalLeaseError?: (error: unknown) => void;
+  /** Separate from the error value so `throw undefined` is still a recorded failure. */
+  private leaseFailure: { error: unknown } | undefined;
+  /** Unexpected drain failure that is not a dead lease keeper. A later explicit
+   *  kick may still drain work already accepted; accept stays fail-closed. */
+  private schedulingFailure: { error: unknown } | undefined;
+  /** Set by ConversationRunService so a fatal scheduling error fail-closes accept. */
+  private onFatalSchedulingError?: () => void;
 
   constructor(
     private readonly store: ConversationStore,
@@ -150,14 +154,14 @@ export class ConversationDispatcher {
     this.armLeaseKeeper();
   }
 
-  /** The Run service registers this before activation. A non-stale renewal
-   *  failure invokes it once, synchronously, before the error is rethrown. */
-  setFatalLeaseErrorHandler(handler: (error: unknown) => void): void {
-    this.onFatalLeaseError = handler;
+  /** The Run service registers this before activation. The first fatal
+   *  scheduling error invokes it once, synchronously, before the error is rethrown. */
+  setFatalSchedulingHandler(handler: () => void): void {
+    this.onFatalSchedulingError = handler;
   }
 
   async kick(): Promise<void> {
-    this.surfaceLeaseKeeperError();
+    this.surfaceLeaseFailure();
     this.wakeGeneration += 1;
     if (this.closed) {
       return;
@@ -170,6 +174,14 @@ export class ConversationDispatcher {
     this.drainTask = task;
     try {
       await task;
+      // A completed drain recovered from a previous claim/execute failure.
+      // The lease-keeper failure stays sticky. Accept stays fail-closed
+      // until process restart; this only stops shutdown from re-reporting
+      // an error a later kick already got past.
+      this.schedulingFailure = undefined;
+    } catch (error) {
+      this.noteSchedulingFailure(error);
+      throw error;
     } finally {
       if (this.drainTask === task) {
         this.drainTask = undefined;
@@ -234,7 +246,7 @@ export class ConversationDispatcher {
       }
       this.heldWriterSlotClaims.delete(dispatchId);
     }
-    this.surfaceLeaseKeeperError();
+    this.surfaceShutdownFailure();
   }
 
   private async runDrain(): Promise<void> {
@@ -456,7 +468,7 @@ export class ConversationDispatcher {
     } finally {
       this.draining = false;
     }
-    this.surfaceLeaseKeeperError();
+    this.surfaceLeaseFailure();
     if (!this.closed && seen !== this.wakeGeneration) {
       await this.kick();
     }
@@ -610,7 +622,7 @@ export class ConversationDispatcher {
    */
   async flushOwnedClaimLeases(): Promise<void> {
     await this.leaseRenewalTask;
-    this.surfaceLeaseKeeperError();
+    this.surfaceLeaseFailure();
     if (this.leaseKeeperStopped && this.inFlightWork.size === 0 && this.heldWriterSlotClaims.size === 0) {
       return;
     }
@@ -629,10 +641,10 @@ export class ConversationDispatcher {
         if (!this.leaseKeeperStopped) this.armLeaseKeeper();
       }, (error: unknown) => {
         // The rejection is handled here so a timer tick cannot become an
-        // unhandled rejection. noteFatalLeaseError fail-closes the consumer
-        // and stops the keeper; a stale fence is not fatal and keeps renewing.
-        this.noteFatalLeaseError(error);
-        if (this.leaseKeeperError === undefined && !this.leaseKeeperStopped) this.armLeaseKeeper();
+        // unhandled rejection. A non-benign error fail-closes the consumer
+        // and stops the keeper; a stale fence keeps renewing.
+        this.noteLeaseFailure(error);
+        if (!this.leaseFailure && !this.leaseKeeperStopped) this.armLeaseKeeper();
       });
     });
   }
@@ -643,36 +655,59 @@ export class ConversationDispatcher {
     this.leaseTicket = undefined;
   }
 
-  private surfaceLeaseKeeperError(): void {
-    if (this.leaseKeeperError !== undefined) {
-      throw this.leaseKeeperError;
+  /** Lost owner/generation and a run that is no longer runnable are fences
+   *  the drain already handles. They must not fail-close the consumer. */
+  private isBenignSchedulingError(error: unknown): boolean {
+    return error instanceof ConversationError
+      && (error.code === "stale_claim" || error.code === "run_not_runnable");
+  }
+
+  private notifyFatalScheduling(): void {
+    try {
+      this.onFatalSchedulingError?.();
+    } catch {
+      // The stored error remains the failure kick and shutdown report.
     }
   }
 
-  /** Record a renewal failure that is not a lost owner/generation fence.
-   *  The consumer callback runs once, before any later kick observes it. */
-  private noteFatalLeaseError(error: unknown): void {
-    if (error instanceof ConversationError && error.code === "stale_claim") return;
-    const first = this.leaseKeeperError === undefined;
-    this.leaseKeeperError ??= error;
+  private surfaceLeaseFailure(): void {
+    if (this.leaseFailure) throw this.leaseFailure.error;
+  }
+
+  private surfaceShutdownFailure(): void {
+    // A drain failure was already returned by kick(). Repeating it here would
+    // skip hold retirement. A lease-keeper failure is only stored on the
+    // timer path, so shutdown is the place that reports it.
+    if (this.leaseFailure) throw this.leaseFailure.error;
+  }
+
+  /** Renewal I/O that is not a lost fence. The presence flag is the object,
+   *  so the stored error may itself be `undefined`. */
+  private noteLeaseFailure(error: unknown): void {
+    if (this.isBenignSchedulingError(error)) return;
+    const first = this.leaseFailure === undefined && this.schedulingFailure === undefined;
+    if (!this.leaseFailure) this.leaseFailure = { error };
     this.stopLeaseKeeper();
     if (!first) return;
-    try {
-      this.onFatalLeaseError?.(error);
-    } catch {
-      // The store error remains the failure kick and shutdown report.
-    }
+    this.notifyFatalScheduling();
+  }
+
+  /** Drain failure that does not by itself prove the lease keeper is dead.
+   *  A later explicit kick may still drain accepted work. */
+  private noteSchedulingFailure(error: unknown): void {
+    if (this.isBenignSchedulingError(error)) return;
+    if (this.leaseFailure || this.schedulingFailure) return;
+    this.schedulingFailure = { error };
+    this.notifyFatalScheduling();
   }
 
   private renewOwnedClaims(): void {
-    if (this.leaseKeeperError !== undefined) {
-      throw this.leaseKeeperError;
-    }
+    if (this.leaseFailure) throw this.leaseFailure.error;
     try {
       this.renewHeldClaims();
       this.renewInFlightClaims();
     } catch (error) {
-      this.noteFatalLeaseError(error);
+      this.noteLeaseFailure(error);
       throw error;
     }
   }
@@ -1171,8 +1206,8 @@ export class ConversationDispatcher {
     this.kickInBackground();
   }
 
-  /** Fire-and-forget drain wake. The rejection is consumed here. A fatal
-   *  lease-keeper error has already fail-closed the consumer. */
+  /** Fire-and-forget drain wake. kick() records a non-benign rejection and
+   *  fail-closes accept before this catch consumes the rejection. */
   private kickInBackground(): void {
     void this.kick().catch(() => {});
   }

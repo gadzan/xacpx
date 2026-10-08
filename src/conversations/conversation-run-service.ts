@@ -147,19 +147,18 @@ export class ConversationRunService {
     this.releaseOwnedSession = options.releaseOwnedSession;
     this.onProductEvent = options.onProductEvent;
     this.bots.setConversationWork(this.store);
-    this.dispatcher.setFatalLeaseErrorHandler(() => {
+    this.dispatcher.setFatalSchedulingHandler(() => {
       this.markConsumerUnavailable();
     });
   }
 
-  /** Sticky fail-closed after activation or a later lease-keeper I/O failure. */
+  /** Sticky fail-closed after activation or a later scheduling failure. */
   private markConsumerUnavailable(): void {
     if (this.closed) return;
     this.activation = "unavailable";
   }
 
-  /** Background drain wake. The rejection is always consumed so a kick that
-   *  immediately rethrows a saved lease error cannot become unhandled. */
+  /** Accept-time and routing wakes. `autoKick: false` leaves accepted work queued. */
   private kickInBackground(): void {
     if (!this.autoKick || this.closed || this.activation !== "activated") return;
     void this.dispatcher.kick().catch(() => {});
@@ -186,19 +185,24 @@ export class ConversationRunService {
     // will recompute uncommitted decisions under a new generation.
     // In-flight provider turns are awaited inside dispatcher.shutdown before
     // it reports a saved lease-keeper error. SQLite still closes afterward.
+    let shutdownFailed = false;
     let shutdownError: unknown;
     try {
       await this.awaitRouting();
       await this.dispatcher.shutdown();
     } catch (error) {
+      shutdownFailed = true;
       shutdownError = error;
     }
     try {
       this.store.close();
     } catch (error) {
-      shutdownError ??= error;
+      if (!shutdownFailed) {
+        shutdownFailed = true;
+        shutdownError = error;
+      }
     }
-    if (shutdownError !== undefined) throw shutdownError;
+    if (shutdownFailed) throw shutdownError;
   }
 
   /**
@@ -245,12 +249,12 @@ export class ConversationRunService {
     return this.activation === "activated";
   }
 
-  /** Wake pending durable work (e.g. after a Bot re-enables). Activation-
-   *  aware: when the consumer never activated (initial recovery failure),
-   *  Conversation work must stay parked — a Bot lifecycle event must not
-   *  bypass the fail-closed unavailable gate via a direct dispatcher kick. */
+  /** Wake pending durable work (e.g. after a Bot re-enables or a handoff).
+   *  Independent of `autoKick`: that flag only suppresses accept-time and
+   *  routing kicks. An unavailable or closed consumer stays parked. */
   wakePendingWork(): void {
-    this.kickInBackground();
+    if (this.closed || this.activation !== "activated") return;
+    void this.dispatcher.kick().catch(() => {});
   }
   private assertAccepting(): void {
     this.assertOpen();

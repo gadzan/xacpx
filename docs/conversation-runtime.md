@@ -55,12 +55,20 @@ It is fenced on dispatch id + owner + generation and only moves
 `leaseExpiresAt`. Terminal, cancelled, recovered, and lost-owner claims are
 not renewed. The dispatcher also renews those same claims immediately before
 its own `recoverExpiredClaims`. A closed SQLite store stops renewal. Any
-other renewal I/O error stops the keeper, marks the Conversation consumer
-unavailable (`conversations_unavailable`), and is retained for the next
-`kick` and for shutdown. Later accept fails closed before a new Run is
-persisted. Background `kick` rejections are caught. Shutdown still drains
-in-flight execution and closes SQLite, then reports that saved error. The
-I/O failure does not seal the live provider turn as `indeterminate`.
+other renewal I/O error, including a rejection whose value is `undefined`,
+stops the keeper, marks the Conversation consumer unavailable
+(`conversations_unavailable`), and is retained for the next `kick` and for
+shutdown. The failure flag is separate from the error value, so `undefined`
+is still saved and rethrown. An unexpected background `kick()` failure that
+is not a stale owner/generation fence or `run_not_runnable` also marks the
+consumer unavailable. That drain error is already returned by `kick()`;
+shutdown does not throw it again, so hold retirement still runs. A later
+explicit kick may drain work that was already accepted. Handled cancellation
+and those fences do not fail-close accept. Later accept fails closed before
+a new Run is persisted. Background `kick` rejections are caught. Shutdown
+still drains in-flight execution and closes SQLite, then reports a saved
+lease-keeper error, including when that error value is `undefined`. The
+failure does not seal the live provider turn as `indeterminate`.
 Restart has no in-memory promises, so it still converges
 previous-owner claims under the exclusive consumer lock and then reconstructs
 reservations from SQLite. Started unknown writers remain indeterminate;
@@ -277,9 +285,9 @@ Terminal pre-start member failures also wake eligible automatic routing through 
 - Each daemon process mints a fresh `authorityEpoch`.
 - The daemon-wide AppState `stateMutex` is injected into `SessionService`, `BotService`, `BotRuntimeManager`, and `ConversationRunService`. Conversation COW publication uses that same mutex for short `structuredClone` → `saveNow` → `replaceRuntimeState` sections only; it is never held across `SessionService` awaits. Do not invent a Conversation-only mutex.
 - `BotService` create/update/delete is durability-gated COW: clone → mutate next → `stateStore.saveNow(next)` → `replaceRuntimeState`. `createBot` / `updateBot` returning success means the Bot (including `profileRevision` / execution identity) is already on disk. Conversation SQLite accept may snapshot that Bot; it must not depend on a pending `DebouncedStateStore.save()` flush.
-- `buildApp` must **not** call `dispatcher.kick()` / `conversations.kick()`. Accept-time `autoKick` stays inert until activation.
+- `buildApp` must **not** call `dispatcher.kick()` / `conversations.kick()`. Accept-time `autoKick` stays inert until activation. `autoKick: false` also suppresses accept-time and routing kicks, so an accepted Run stays queued until something calls `wakePendingWork()` or `dispatcher.kick()`. `wakePendingWork()` itself does not consult `autoKick`; Bot re-enable and handoff use it, and it still no-ops when the consumer is unavailable or closed.
 - `runConsole` acquires the daemon consumer lock, runs stale-owner / orphan convergence, **then** `runtime.conversations.activateAfterConsumerLock()` (recovery kick), **then** starts channels. A process that loses the lock must not claim or execute durable Conversation work.
-- `activateAfterConsumerLock` sets the consumer activated **only after** the initial `dispatcher.kick()` succeeds. A failed first drain marks the Conversation consumer unavailable (`conversations_unavailable`): later accept fails closed and does not `autoKick`. The same unavailable state is set if a later lease renewal hits a non-`stale_claim` I/O error, so accept cannot persist a Run this process can no longer schedule. `runConsole` logs `conversations.recover_failed` and may still start ordinary channels; it must not leave Conversation APIs in an activated+accepting state.
+- `activateAfterConsumerLock` sets the consumer activated **only after** the initial `dispatcher.kick()` succeeds. A failed first drain marks the Conversation consumer unavailable (`conversations_unavailable`): later accept fails closed and does not `autoKick`. The same unavailable state is set if a later lease renewal or an unexpected background `kick()` hits an error that is not a stale fence or `run_not_runnable`, including when the thrown value is `undefined`. Accept cannot persist a Run this process can no longer schedule. `runConsole` logs `conversations.recover_failed` and may still start ordinary channels; it must not leave Conversation APIs in an activated+accepting state.
 - `ConversationRunService.shutdown()` awaits dispatcher shutdown (which waits for in-flight provider turns) and then closes SQLite even when that shutdown reports a saved lease-keeper error. The error is thrown after the connection is closed.
 - Crash-before-first-claim work recovered after activation is claimed as `recovery` / `orchestration` (new epoch; saved human ingress discarded).
 - Shutdown stops the dispatcher, waits for in-flight drain, then closes SQLite **before** disposing `state.json`. The composition marks the runtime `stopping` first so **new** Control Bot/Conversation APIs fail `runtime_closed` immediately, then **waits for in-flight public mutations** (operation lease) before `bots.close()` / dispatcher shutdown / SQLite close. Concurrent `shutdown()` callers share one promise. `shutdown()` resolving means the Bot/Conversation subsystem is quiescent: no later `replaceRuntimeState` from a mutation that entered before shutdown.
