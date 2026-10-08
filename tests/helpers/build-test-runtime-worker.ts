@@ -56,8 +56,8 @@ export type RuntimeWorkerBuildStage =
   | "preflight-spawn";
 
 export class RuntimeWorkerBuildError extends Error {
-  constructor(readonly stage: RuntimeWorkerBuildStage, message: string) {
-    super(`runtime test worker ${stage} failed: ${message}`);
+  constructor(readonly stage: RuntimeWorkerBuildStage, message: string, options?: { cause?: unknown }) {
+    super(`runtime test worker ${stage} failed: ${message}`, options);
     this.name = "RuntimeWorkerBuildError";
   }
 }
@@ -122,44 +122,72 @@ const PREFLIGHT_SOURCE = [
 ].join("\n");
 
 /**
+ * Outcome of one preflight probe run.
+ *
+ * `spawnFailed` reports that the probe process could not be started or timed
+ * out, as distinct from the process running and reporting a load failure. The
+ * caller wraps the former in the declared `preflight-spawn` stage so a missing
+ * runtime is never reported as a module-resolution problem.
+ */
+export interface EsmPreflightOutcome {
+  ok: boolean;
+  detail: string;
+  spawnFailed?: { cause: string };
+}
+
+/**
  * Runs one ESM probe module and reports how its imports resolved. Exported so a
  * regression test can prove the preflight rejects an unresolvable dependency
  * instead of always reporting success.
  *
+ * `runtime` defaults to `process.execPath`; overriding it lets a test simulate
+ * an unspawnable runtime without touching the real one.
+ *
  * Bounded by a hard deadline: an unresponsive probe must fail the build with a
  * named stage rather than hang the whole test file.
  */
-export async function runEsmPreflight(probePath: string, deadlineMs = 30_000): Promise<{ ok: boolean; detail: string }> {
-  const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolvePromise, rejectPromise) => {
-    const child = spawn(process.execPath, [probePath], {
-      // cwd is deliberately outside the repository: resolution must come from
-      // the probe's own location, not from the process working directory.
-      cwd: tmpdir(),
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-      env: process.env,
-    });
-    let stdout = "", stderr = "";
-    let settled = false;
-    const finish = (outcome: () => { code: number | null; stdout: string; stderr: string }) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolvePromise(outcome());
-    };
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      finish(() => ({ code: null, stdout, stderr: `${stderr}\n[preflight timed out after ${deadlineMs}ms]`.trim() }));
-    }, deadlineMs);
-    timer.unref?.();
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", chunk => { stdout += chunk; });
-    child.stderr.on("data", chunk => { stderr += chunk; });
-    child.once("error", error => { if (settled) return; settled = true; clearTimeout(timer); rejectPromise(error); });
-    child.once("close", code => finish(() => ({ code, stdout, stderr })));
+export async function runEsmPreflight(probePath: string, options: { runtime?: string; deadlineMs?: number } = {}): Promise<EsmPreflightOutcome> {
+  const { runtime = process.execPath, deadlineMs = 30_000 } = options;
+  const { promise, resolve } = Promise.withResolvers<EsmPreflightOutcome>();
+  let stdout = "", stderr = "";
+  let settled = false;
+  let timer: NodeJS.Timeout | undefined;
+
+  const child = spawn(runtime, [probePath], {
+    // cwd is deliberately outside the repository: resolution must come from
+    // the probe's own location, not from the process working directory.
+    cwd: tmpdir(),
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+    env: process.env,
   });
-  return { ok: result.code === 0, detail: result.stderr.trim() || result.stdout.trim() };
+
+  const settle = (outcome: EsmPreflightOutcome) => {
+    if (settled) return;
+    settled = true;
+    clearTimeout(timer);
+    resolve(outcome);
+  };
+  timer = setTimeout(() => {
+    // Kill first: an unresponsive probe must not outlive the preflight.
+    child.kill("SIGKILL");
+    settle({ ok: false, detail: `${stderr}\n[preflight timed out after ${deadlineMs}ms]`.trim(), spawnFailed: { cause: `timed out after ${deadlineMs}ms` } });
+  }, deadlineMs);
+  timer.unref?.();
+
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", chunk => { stdout += chunk; });
+  child.stderr.on("data", chunk => { stderr += chunk; });
+  child.once("error", error => {
+    // Spawn itself failed (e.g. execPath missing/not executable). Reported
+    // distinctly so the caller can wrap it as `preflight-spawn` with the
+    // original cause preserved, instead of blaming module resolution.
+    settle({ ok: false, detail: String(error instanceof Error ? error.message : error), spawnFailed: { cause: String(error instanceof Error ? error.stack ?? error.message : error) } });
+  });
+  child.once("close", code => settle({ ok: code === 0, detail: (code === 0 ? stdout : stderr).trim() || stdout.trim() }));
+
+  return promise;
 }
 
 /** Classifies a failed preflight into the stage that actually broke. */
@@ -181,6 +209,16 @@ async function assertExternalsResolveFrom(bundleDir: string): Promise<void> {
   await writeFile(probe, PREFLIGHT_SOURCE, "utf8");
 
   const preflight = await runEsmPreflight(probe);
+  if (preflight.spawnFailed) {
+    // The probe process never ran (or never answered). This is an environment
+    // problem, not a module-resolution one, so it gets its own stage and keeps
+    // the original cause instead of being blamed on `acpx/runtime`.
+    throw new RuntimeWorkerBuildError(
+      "preflight-spawn",
+      `${process.execPath} (${process.version}) could not run the preflight probe in ${bundleDir}: ${preflight.detail}`,
+      { cause: new Error(preflight.spawnFailed.cause) },
+    );
+  }
   if (!preflight.ok) {
     // A failed static import names the specifier it could not resolve, which is
     // exactly the CI symptom this preflight exists to explain.

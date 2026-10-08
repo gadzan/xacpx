@@ -50,3 +50,56 @@ it("ignores an old Run response after selection changes", async () => {
   await wrapper.setProps({ runId: "new" }); await flushPromises(); finish({ run: { worktree: status(10) } }); await flushPromises();
   expect(wrapper.find("summary").text()).toContain("abandoned");
 });
+
+it("clears a stale error once a later poll succeeds", async () => {
+  await open(status(2)); rpc.mockRejectedValueOnce(new Error("network down"));
+  await button("refresh").trigger("click"); await flushPromises();
+  // The failed poll leaves the error visible beside the last good status.
+  expect(wrapper!.find("[role='alert']").exists()).toBe(true);
+  expect(wrapper!.text()).toContain("network down");
+  // Recovery: the next accepted response must drop the stale error, not stack a
+  // stale failure on top of current data.
+  rpc.mockResolvedValueOnce({ run: { worktree: status(3) } });
+  await button("refresh").trigger("click"); await flushPromises();
+  expect(wrapper!.find("[role='alert']").exists()).toBe(false);
+  expect(wrapper!.text()).not.toContain("network down");
+  expect(wrapper!.find("summary").text()).toContain("pending");
+});
+
+it("keeps the error when a poll fails after a stale error was cleared", async () => {
+  await open(status(2));
+  // Two consecutive failures must both surface; the fix only clears on success.
+  rpc.mockRejectedValueOnce(new Error("first down")); await button("refresh").trigger("click"); await flushPromises();
+  expect(wrapper!.text()).toContain("first down");
+  rpc.mockRejectedValueOnce(new Error("second down")); await button("refresh").trigger("click"); await flushPromises();
+  expect(wrapper!.text()).toContain("second down");
+  expect(wrapper!.text()).not.toContain("first down");
+});
+
+it("clears the error only when the newer response is actually accepted", async () => {
+  await open(status(5)); rpc.mockRejectedValueOnce(new Error("network down"));
+  await button("refresh").trigger("click"); await flushPromises();
+  expect(wrapper!.text()).toContain("network down");
+  // A stale (lower-revision) response must not clear the error, because it is
+  // not accepted as the current status either.
+  rpc.mockResolvedValueOnce({ run: { worktree: { ...status(2), disposition: "abandoned" } } });
+  await button("refresh").trigger("click"); await flushPromises();
+  expect(wrapper!.find("summary").text()).toContain("pending");
+  expect(wrapper!.text()).toContain("network down");
+  // An accepted newer response clears it.
+  rpc.mockResolvedValueOnce({ run: { worktree: status(6) } });
+  await button("refresh").trigger("click"); await flushPromises();
+  expect(wrapper!.find("[role='alert']").exists()).toBe(false);
+});
+
+it("keeps a failed operation visible and clears it when a later poll succeeds", async () => {
+  await open(status(2));
+  // operate() failure: the error must survive, and status must stay unchanged.
+  rpc.mockRejectedValueOnce(new Error("integrate rejected"));
+  await button("preview").trigger("click"); await flushPromises();
+  expect(wrapper!.text()).toContain("integrate rejected");
+  // A successful poll must clear it, since the panel is polling again.
+  rpc.mockResolvedValueOnce({ run: { worktree: status(3) } });
+  await button("refresh").trigger("click"); await flushPromises();
+  expect(wrapper!.find("[role='alert']").exists()).toBe(false);
+});

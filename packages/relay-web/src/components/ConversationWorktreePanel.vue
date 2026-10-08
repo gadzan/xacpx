@@ -19,6 +19,11 @@ async function load(): Promise<void> {
       && (!status.value || result.run.worktree.revision >= status.value.revision)) {
       if (status.value?.preview?.id !== result.run.worktree.preview?.id) authorized.value = false;
       status.value = result.run.worktree;
+      // A valid, accepted response supersedes any earlier failure: the status is
+      // current, so a stale error must not keep rendering beside fresh data.
+      // Epoch and revision guards above already prevent older responses from
+      // overwriting newer state, so clearing here cannot lose a real failure.
+      error.value = "";
     }
   } catch (e) { if (expected === epoch) error.value = e instanceof Error ? e.message : String(e); }
 }

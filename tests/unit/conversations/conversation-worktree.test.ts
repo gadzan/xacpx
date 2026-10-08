@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, writeFile, readFile, readdir, rename, symlink, unlink, mkdir, chmod } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, readdir, rename, symlink, unlink, mkdir, chmod, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { runWorkspaceGit, runWorkspaceGitPreview, runWorkspaceGitSync } from "../../../src/control/workspace-git";
@@ -615,20 +615,51 @@ test("the runtime worker build preflights acpx/runtime and releases only its own
 }, 60_000);
 
 test("the ESM preflight rejects an unresolvable dependency instead of reporting success", async () => {
-  const probe = join(await mkdtemp(join(tmpdir(), "xacpx-preflight-neg-")), "neg.mjs");
-  await writeFile(probe, `import { missing } from "acpx-definitely-not-installed-xyz";\nconsole.log("unreachable");\n`, "utf8");
-  const preflight = await runEsmPreflight(probe);
-  expect(preflight.ok).toBe(false);
-  expect(classifyPreflightFailure(preflight.detail)).toBe("esm-resolve");
-  await unlink(probe);
+  const negativeDir = await mkdtemp(join(tmpdir(), "xacpx-preflight-neg-"));
+  const probe = join(negativeDir, "neg.mjs");
+  try {
+    await writeFile(probe, `import { missing } from "acpx-definitely-not-installed-xyz";\nconsole.log("unreachable");\n`, "utf8");
+    const preflight = await runEsmPreflight(probe);
+    expect(preflight.ok).toBe(false);
+    expect(classifyPreflightFailure(preflight.detail)).toBe("esm-resolve");
+  } finally {
+    // Remove the whole scratch directory, not just the probe file inside it.
+    await rm(negativeDir, { recursive: true, force: true });
+  }
   // The real probe source resolves and exports the factory the worker needs.
   const built = await buildTestRuntimeWorker();
   try {
     const real = await runEsmPreflight(join(built.artifactDir, "esm-preflight.mjs"));
     expect(real.ok).toBe(true);
+    expect(real.spawnFailed).toBeUndefined();
     const report = JSON.parse(real.detail.split("\n").at(-1) ?? "{}") as { outcome?: string; resolved?: string };
     expect(report.outcome).toBe("ok");
     // Resolution must come from the repository's own node_modules.
     expect(report.resolved).toContain("node_modules/acpx");
   } finally { await built.release(); }
 }, 60_000);
+
+test("the preflight reports a spawn failure as its own stage instead of a load failure", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "xacpx-preflight-stage-"));
+  const probe = join(scratch, "noisy.mjs");
+  try {
+    // A probe that exits 0 but prints nothing the caller can parse is an
+    // unreadable-output failure, distinct from a resolution failure.
+    await writeFile(probe, `console.log("not json");\n`, "utf8");
+    const outcome = await runEsmPreflight(probe);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.spawnFailed).toBeUndefined();
+    expect(classifyPreflightFailure(outcome.detail)).toBe("esm-import");
+
+    // An unspawnable runtime must be reported as preflight-spawn, never as a
+    // module-resolution failure, and must preserve the original cause. The probe
+    // is valid; only the runtime is missing, so this isolates the spawn stage.
+    const bad = await runEsmPreflight(probe, { runtime: "C:\\definitely\\not\\a\\runtime.exe", deadlineMs: 15_000 });
+    expect(bad.ok).toBe(false);
+    expect(bad.spawnFailed).toBeDefined();
+    expect(bad.spawnFailed!.cause.length).toBeGreaterThan(0);
+    // The detail must not be mistaken for a resolution failure.
+    expect(bad.detail).not.toMatch(/Cannot find package|ERR_MODULE_NOT_FOUND|ERR_PACKAGE_PATH_NOT_EXPORTED/i);
+  } finally { await rm(scratch, { recursive: true, force: true }); }
+}, 60_000);
+
