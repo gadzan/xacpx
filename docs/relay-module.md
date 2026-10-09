@@ -484,3 +484,28 @@ operations. They configure exact external channel routes and cannot supply
 human ingress or execution capabilities. Actual messages still pass the external
 adapter's own admission before reaching the existing Conversation dispatcher.
 See [Conversation runtime](conversation-runtime.md#external-channel-bindings-pr10).
+
+## Bot / Group beta acceptance (PR8)
+
+Cross-PR acceptance for the bot/group beta stack (not a release gate by itself; parent issue #385 stays open).
+
+```bash
+bun run test:acceptance:bot-group-beta
+```
+
+The harness uses a temporary xacpx home, SQLite file, and workspace under the OS temp directory. It does not touch `~/.xacpx`, does not WeChat-login, and does not run `tests/smoke`.
+
+Measured today (Control + Relay layers, written to `PR8_ARTIFACT_DIR` default `/opt/cursor/artifacts/pr8/steps.json`):
+
+- empty bot catalog, pairing, two-bot create/list via relay RPC
+- instructions round-trip on `control.bots.update` / `get`
+- group + topic create, lead and multi-member prompts, group refresh
+- topic rename / archive / restore, extra topic teardown, default direct topic clear
+- bot disable + re-enable, removal preview, router default `disabled-by-config`, `automatic` target rejected
+- direct conversation prompt
+
+Skipped in this harness (documented in `steps.json`):
+
+- public handoff (needs a live member-turn mock runner)
+- full Web UI walkthrough (Playwright `mock-hub` has no honest bot/group RPC yet)
+- restricted Router binary path (no live router in CI)

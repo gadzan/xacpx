@@ -218,13 +218,16 @@ if (openTimeDetail) applyDetail(openTimeDetail);
 onMounted(() => {
   void (async () => {
     const generation = ++dialogGeneration;
+    if (!detailHydrated.value) void hydrateDetail(generation);
     try {
       await instancesStore.loadFormOptions(props.instanceId);
     } catch {
       // Ignore options load error; validation surfaces missing agent/workspace.
     }
     if (generation !== dialogGeneration) return;
-    if (!detailHydrated.value) await hydrateDetail(generation);
+    if (props.bot && !directBotsStore.isBotDetailHydrated(props.instanceId, props.bot.id)) {
+      await hydrateDetail(generation);
+    }
     if (generation !== dialogGeneration) return;
     syncFromStore();
     if (!agent.value && availableAgents.value.length > 0) {

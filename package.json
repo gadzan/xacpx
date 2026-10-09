@@ -60,6 +60,7 @@
     "clean:relay-web": "node -e \"require('node:fs').rmSync('packages/relay-web/dist',{recursive:true,force:true})\"",
     "build:relay-web": "bun run build:relay-protocol && bun run clean:relay-web && bun run --cwd packages/relay-web build",
     "test:web": "bun run --cwd packages/relay-web test",
+    "test:acceptance:bot-group-beta": "bun test tests/acceptance/bot-group-beta-pr8.test.ts",
     "build:packages": "bun run build && bun run build:channel-yuanbao && bun run build:channel-feishu && bun run build:channel-discord && bun run build:relay-protocol && bun run build:relay && bun run build:channel-relay",
     "verify:publish": "bun run build:packages && node ./scripts/verify-publish.mjs",
     "publish:xacpx": "bun publish --cwd .",

@@ -19,14 +19,12 @@ import BotDialog from "./BotDialog.vue";
 import BotRemovalDialog from "./BotRemovalDialog.vue";
 import NewTopicDialog from "./NewTopicDialog.vue";
 import TopicManager from "./TopicManager.vue";
-import { useI18n } from "vue-i18n";
 
 const emit = defineEmits<{
   navigateBot: [instanceId: string, botId: string];
   navigateGroup: [instanceId: string, groupId: string];
 }>();
 
-const { t } = useI18n();
 const directBotsStore = useDirectBotsStore();
 const groupsStore = useGroupsStore();
 const instancesStore = useInstancesStore();
