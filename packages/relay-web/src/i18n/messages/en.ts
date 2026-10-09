@@ -857,6 +857,7 @@ export default {
       createTitle: "Create New Group Topic",
       createHint: "A new topic keeps the members and settings but starts with fresh conversation context.",
       workspacePlaceholder: "Select a workspace",
+      workspacesFailed: "Could not load the workspaces for this instance.",
       isolationLabel: "Filesystem isolation",
       isolationSingleWriter: "Shared single writer (recommended)",
       isolationShared: "Shared",
