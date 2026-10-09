@@ -13,6 +13,12 @@ import {
 } from "../bots/bot-service";
 import { classifyConversationRoot } from "./conversation-roots";
 import { planDirectConversation, presentDefaultDirectTopic, presentDirectConversation } from "./direct-conversation";
+import {
+  topicContextGeneration,
+  topicLifecycleFrom,
+  transitionTopic,
+  type TopicRole,
+} from "./topic-lifecycle";
 import { createDirectBindingId, createDirectTopicId, createScopedGroupMemberBindingId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import { MAX_BOT_ID_LENGTH, MAX_GROUP_TARGET_MEMBERS } from "@ganglion/xacpx-relay-protocol";
@@ -322,17 +328,33 @@ export class ConversationRunService {
         if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
         return assertAcceptedPolicies(existing, memberPolicies);
       }
+      if (this.store.hasRetiredPrompt(conversationId, topicId, input.requestId)) {
+        throw new ConversationError("request_retired", "request was retired with its topic context");
+      }
       if (!bot.enabled) {
         throw new BotError("bot_disabled", `bot "${input.botId}" is disabled`);
       }
-      if (topicId !== planned.topic.id) {
-        const topic = this.state.conversation_topics[topicId];
-        if (!topic || topic.conversationId !== conversationId) {
-          throw new BotError("topic_not_found", `topic "${topicId}" does not belong to this Bot conversation`);
-        }
+      const storedTopic = this.state.conversation_topics[topicId];
+      const topic = storedTopic && storedTopic.conversationId === conversationId
+        ? storedTopic
+        : topicId === planned.topic.id
+          ? planned.topic
+          : undefined;
+      if (!topic) {
+        throw new BotError("topic_not_found", `topic "${topicId}" does not belong to this Bot conversation`);
       }
-      if (this.store.isConversationDeleting(conversationId) || this.store.isTopicDeleting(topicId)) {
-        throw new ConversationError("conversation_deleting", "conversation is deleting");
+      if (topic.status !== "active") {
+        throw new ConversationError("topic_not_active", `topic "${topicId}" is not active`);
+      }
+      if (
+        this.store.isConversationDeleting(conversationId)
+        || this.store.isTopicDeleting(topicId)
+        || this.store.isTopicResetting(topicId)
+      ) {
+        throw new ConversationError(
+          this.store.isTopicResetting(topicId) ? "topic_resetting" : "conversation_deleting",
+          "conversation is deleting",
+        );
       }
       const snapshot = snapshotBotProfile(bot, timestamp);
       assertPolicySelection([bot.id], memberPolicies);
@@ -405,6 +427,9 @@ export class ConversationRunService {
       if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
       return assertAcceptedPolicies(alreadyAccepted, memberPolicies);
     }
+    if (this.store.hasRetiredPrompt(input.conversationId, input.topicId, input.requestId)) {
+      throw new ConversationError("request_retired", "request was retired with its topic context");
+    }
     const conversation = this.requireConversation(input.conversationId);
     if (conversation.kind !== "group") {
       throw new ConversationError("conversation_not_group", `conversation "${input.conversationId}" is not a Group`);
@@ -433,8 +458,15 @@ export class ConversationRunService {
         if (topic.status !== "active") {
           throw new ConversationError("topic_not_active", `topic "${input.topicId}" is not active`);
         }
-        if (this.store.isConversationDeleting(input.conversationId) || this.store.isTopicDeleting(input.topicId)) {
-          throw new ConversationError("conversation_deleting", "conversation is deleting");
+        if (
+          this.store.isConversationDeleting(input.conversationId)
+          || this.store.isTopicDeleting(input.topicId)
+          || this.store.isTopicResetting(input.topicId)
+        ) {
+          throw new ConversationError(
+            this.store.isTopicResetting(input.topicId) ? "topic_resetting" : "conversation_deleting",
+            "conversation is deleting",
+          );
         }
         // Automatic admission snapshots only a carrier, never a MemberTurn.
         // Re-derive it under the probed gate and retry if its identity changed.
@@ -690,7 +722,7 @@ export class ConversationRunService {
     const topics = Object.values(this.state.conversation_topics)
       .filter((topic) => topic.conversationId === conversationId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-      .map((topic) => this.presentDefaultTopic(topic, conversation));
+      .map((topic) => this.withDurableGeneration(this.presentDefaultTopic(topic, conversation)));
     if (topics.length > 0) {
       return topics;
     }
@@ -702,7 +734,7 @@ export class ConversationRunService {
     }
     const botId = this.resolveDirectBotId(conversationId);
     const bot = this.bots.getBot(botId);
-    return [this.planDirect(bot).topic];
+    return [this.withDurableGeneration(this.planDirect(bot).topic)];
   }
 
   defaultTopicId(conversationId: string): string | undefined {
@@ -919,6 +951,151 @@ export class ConversationRunService {
         return archived;
       }
     }
+  }
+
+  async updateTopic(conversationId: string, topicId: string, title: string): Promise<ConversationTopic> {
+    this.assertOpen();
+    const role = this.topicRole(conversationId, topicId);
+    if (role === "group") {
+      return this.mutateGroupTopic(conversationId, topicId, (topic) => transitionTopic(topicLifecycleFrom(topic, "group"), { type: "rename", title }));
+    }
+    return this.mutateDirectTopic(conversationId, topicId, (topic, directRole) =>
+      transitionTopic(topicLifecycleFrom(topic, directRole), { type: "rename", title }));
+  }
+
+  async archiveTopic(conversationId: string, topicId: string): Promise<ConversationTopic> {
+    this.assertOpen();
+    const conversation = this.requireConversation(conversationId);
+    if (conversation.kind === "group") {
+      return this.archiveGroupTopic(conversationId, topicId);
+    }
+    return this.archiveDirectTopic(conversationId, topicId);
+  }
+
+  async restoreTopic(conversationId: string, topicId: string): Promise<ConversationTopic> {
+    this.assertOpen();
+    this.assertTopicHasNoIndeterminate(conversationId, topicId);
+    const conversation = this.requireConversation(conversationId);
+    if (conversation.kind === "group") {
+      return this.mutateGroupTopic(conversationId, topicId, (topic) => transitionTopic(topicLifecycleFrom(topic, "group"), { type: "restore" }));
+    }
+    return this.mutateDirectTopic(conversationId, topicId, (topic, role) =>
+      transitionTopic(topicLifecycleFrom(topic, role), { type: "restore" }));
+  }
+
+  async teardownTopic(
+    conversationId: string,
+    topicId: string,
+    options?: { requestId?: string; releaseBindings?: boolean },
+  ): Promise<void> {
+    this.assertOpen();
+    const requestId = options?.requestId;
+    if (requestId && this.store.getOperationReceipt(conversationId, topicId, requestId, "teardown")) {
+      await this.dropRetiredTopicMetadata(conversationId, topicId);
+      return;
+    }
+    const conversation = this.requireConversation(conversationId);
+    if (conversation.kind === "bot" && topicId === this.defaultTopicId(conversationId)) {
+      throw new ConversationError(
+        "topic_clear_required",
+        "the default topic stays; clear its context instead of deleting it",
+      );
+    }
+    this.assertBindingsAck(conversationId, topicId, options?.releaseBindings === true);
+    if (conversation.kind === "group") {
+      await this.teardownGroupTopic(conversationId, topicId, requestId);
+      return;
+    }
+    await this.teardownDirectExtraTopic(conversationId, topicId, requestId);
+  }
+
+  async clearDefaultTopic(
+    conversationId: string,
+    topicId: string,
+    options: { requestId: string; confirm: true; releaseBindings?: boolean },
+  ): Promise<ConversationTopic> {
+    this.assertOpen();
+    if (options.confirm !== true) {
+      throw new ConversationError("topic_clear_unconfirmed", "clearing the default topic requires confirm: true");
+    }
+    const botId = this.resolveDirectBotId(conversationId);
+    if (topicId !== createDirectTopicId(botId)) {
+      throw new ConversationError("topic_not_default", "only the default topic can be cleared");
+    }
+    const existing = this.store.getOperationReceipt(conversationId, topicId, options.requestId, "clear");
+    if (existing) {
+      return this.convergeClearedTopic(conversationId, topicId, botId, existing.contextGeneration);
+    }
+    this.assertBindingsAck(conversationId, topicId, options.releaseBindings === true);
+    const timestamp = this.now().toISOString();
+    await this.bots.runLifecycle(botId, async () => {
+      transitionTopic(
+        topicLifecycleFrom(this.directTopicOrPlanned(botId, conversationId, topicId), "default-direct"),
+        { type: "begin-clear" },
+      );
+      this.directTopicAliases(botId, conversationId, topicId);
+      this.store.markTopicResetting(topicId, conversationId, timestamp);
+    });
+    await this.afterTeardownMarkedDeleting?.();
+    await this.cancelTopicRuns(conversationId, topicId);
+    await this.releaseDirectTopicAliases(botId, conversationId, topicId);
+    const cleared = await this.bots.runLifecycle(botId, async () => {
+        await this.beforeTeardownFinalize?.();
+        await this.releaseDirectTopicAliases(botId, conversationId, topicId);
+        await this.beforeWorktreeCleanup?.(conversationId, topicId);
+        const retired = this.store.retireTopicContext({
+          conversationId,
+          topicId,
+          requestId: options.requestId,
+          releaseBindings: options.releaseBindings === true,
+          now: timestamp,
+        });
+        const topic = await this.stateMutex.run(async () => {
+          const bot = this.bots.getBot(botId);
+          const planned = this.planDirect(bot);
+          const current = this.state.conversation_topics[topicId] ?? planned.topic;
+          if (!retired.reused) {
+            transitionTopic(topicLifecycleFrom(current, "default-direct"), { type: "finish-clear" });
+          }
+          const next = structuredClone(this.state);
+          next.conversations[planned.conversation.id] = next.conversations[planned.conversation.id] ?? planned.conversation;
+          const stored: ConversationTopic = {
+            ...current,
+            conversationId,
+            id: topicId,
+            contextGeneration: retired.contextGeneration,
+            managedAt: timestamp,
+            updatedAt: timestamp,
+          };
+          next.conversation_topics[topicId] = stored;
+          this.deleteDirectTopicBindings(next, conversationId, topicId);
+          await this.persist(next);
+          return next.conversation_topics[topicId]!;
+        });
+        this.store.clearTopicResetting(topicId);
+        return topic;
+      });
+      const presented = this.presentDefaultTopic(cleared, this.requireConversation(conversationId));
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: presented });
+    return presented;
+  }
+
+  previewTopic(conversationId: string, topicId: string): {
+    unsettledRunIds: string[];
+    indeterminateRunIds: string[];
+    bindingChatKeys: string[];
+    worktreeRunIds: string[];
+  } {
+    this.assertOpen();
+    this.requireListedTopic(conversationId, topicId);
+    const runs = this.store.listRuns(conversationId, topicId);
+    return {
+      unsettledRunIds: runs.filter((run) => this.isUnsettledRun(run.state)).map((run) => run.id),
+      indeterminateRunIds: runs.filter((run) => run.state === "indeterminate").map((run) => run.id),
+      bindingChatKeys: this.topicBindingChatKeys(conversationId, topicId),
+      worktreeRunIds: this.store.listWorktreeRunIds(conversationId, topicId),
+    };
   }
 
   /** Normalize the wire target into an explicit selection. Legacy Direct
@@ -1954,7 +2131,7 @@ export class ConversationRunService {
    * released. A contradictory binding/session link fails closed and leaves
    * everything in place for retry.
    */
-  async teardownGroupTopic(conversationId: string, topicId: string): Promise<void> {
+  async teardownGroupTopic(conversationId: string, topicId: string, requestId?: string): Promise<void> {
     this.assertOpen();
     this.requireGroupTopic(conversationId, topicId);
     // Pre-checks before the deleting barrier: a provisional controller row
@@ -2069,7 +2246,11 @@ export class ConversationRunService {
               delete next.bot_runtime_bindings[id];
             }
           }
-          this.store.deleteTopicRows(conversationId, topicId);
+          this.store.deleteTopicRows(
+            conversationId,
+            topicId,
+            requestId ? { requestId, now: this.now().toISOString() } : undefined,
+          );
           delete next.conversation_topics[topicId];
           await this.persist(next);
         });
@@ -2286,6 +2467,14 @@ export class ConversationRunService {
       return conversation;
     }
     return presentDirectConversation(conversation, bot);
+  }
+
+  private withDurableGeneration(topic: ConversationTopic): ConversationTopic {
+    const durable = this.store.topicContextGeneration(topic.id);
+    if (durable <= topicContextGeneration(topic)) {
+      return topic;
+    }
+    return { ...topic, contextGeneration: durable };
   }
 
   private presentDefaultTopic(topic: ConversationTopic, conversation: ConversationRecord): ConversationTopic {
@@ -2624,6 +2813,396 @@ export class ConversationRunService {
         })),
       },
     );
+  }
+
+  private topicRole(conversationId: string, topicId: string): TopicRole {
+    const conversation = this.requireConversation(conversationId);
+    if (conversation.kind === "group") {
+      return "group";
+    }
+    return topicId === this.defaultTopicId(conversationId) ? "default-direct" : "extra-direct";
+  }
+
+  private directTopicOrPlanned(botId: string, conversationId: string, topicId: string): ConversationTopic {
+    const existing = this.state.conversation_topics[topicId];
+    if (existing && existing.conversationId === conversationId) {
+      return existing;
+    }
+    const planned = this.planDirect(this.bots.getBot(botId));
+    if (topicId === planned.topic.id && planned.topic.conversationId === conversationId) {
+      return planned.topic;
+    }
+    throw new ConversationError("topic_not_found", `topic "${topicId}" does not belong to this conversation`);
+  }
+
+  private requireListedTopic(conversationId: string, topicId: string): ConversationTopic {
+    const topic = this.listTopics(conversationId).find((item) => item.id === topicId);
+    if (!topic) {
+      throw new ConversationError("topic_not_found", `topic "${topicId}" does not belong to this conversation`);
+    }
+    return topic;
+  }
+
+  private isUnsettledRun(state: ConversationRun["state"]): boolean {
+    return state === "queued" || state === "running" || state === "waiting-human";
+  }
+
+  private assertTopicSettledForArchive(conversationId: string, topicId: string): void {
+    const nonterminal = this.store.listRuns(conversationId, topicId).filter((run) => this.isUnsettledRun(run.state));
+    if (nonterminal.length > 0) {
+      throw new ConversationError(
+        "conversation_not_settled",
+        `topic "${topicId}" has unsettled runs; settle or teardown before archiving`,
+        { runIds: nonterminal.map((run) => run.id) },
+      );
+    }
+  }
+
+  private assertTopicHasNoIndeterminate(conversationId: string, topicId: string): void {
+    const indeterminate = this.store.listRuns(conversationId, topicId).filter((run) => run.state === "indeterminate");
+    if (indeterminate.length > 0) {
+      throw new ConversationError("conversation_indeterminate", "topic has indeterminate work", {
+        runIds: indeterminate.map((run) => run.id),
+      });
+    }
+  }
+
+  private topicBindingChatKeys(conversationId: string, topicId: string): string[] {
+    return this.store.listConversationBindings()
+      .filter((binding) => binding.conversationId === conversationId && binding.topicId === topicId)
+      .map((binding) => binding.chatKey);
+  }
+
+  private assertBindingsAck(conversationId: string, topicId: string, releaseBindings: boolean): void {
+    const chatKeys = this.topicBindingChatKeys(conversationId, topicId);
+    if (chatKeys.length > 0 && !releaseBindings) {
+      throw new ConversationError(
+        "topic_bindings_present",
+        "topic has external bindings; confirm before disconnecting them",
+        { chatKeys },
+      );
+    }
+  }
+
+  private async mutateGroupTopic(
+    conversationId: string,
+    topicId: string,
+    apply: (topic: ConversationTopic) => ReturnType<typeof transitionTopic>,
+  ): Promise<ConversationTopic> {
+    for (;;) {
+      const botIds = this.groupTopicMemberBotIds(conversationId, topicId);
+      const gateSet = new Set(botIds);
+      await this.beforeArchiveGatesAcquired?.();
+      const updated = await this.bots.runLifecycleAll(botIds, async () => {
+        const liveIds = this.groupTopicMemberBotIds(conversationId, topicId);
+        if (liveIds.some((id) => !gateSet.has(id))) {
+          return null;
+        }
+        const topic = this.requireGroupTopic(conversationId, topicId);
+        if (this.store.isConversationDeleting(conversationId) || this.store.isTopicDeleting(topicId)) {
+          throw new ConversationError("topic_deleting", `topic "${topicId}" is deleting`);
+        }
+        const nextState = apply(topic);
+        if (topic.status === nextState.phase && topic.title === nextState.title) {
+          return topic;
+        }
+        const timestamp = this.now().toISOString();
+        const stored: ConversationTopic = {
+          ...topic,
+          status: nextState.phase,
+          title: nextState.title,
+          updatedAt: timestamp,
+        };
+        const next = structuredClone(this.state);
+        next.conversation_topics[topicId] = stored;
+        await this.persist(next);
+        return stored;
+      });
+      if (updated) {
+        emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+        emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: updated });
+        return updated;
+      }
+    }
+  }
+
+  private async mutateDirectTopic(
+    conversationId: string,
+    topicId: string,
+    apply: (topic: ConversationTopic, role: TopicRole) => ReturnType<typeof transitionTopic>,
+    options?: { requireSettled?: boolean },
+  ): Promise<ConversationTopic> {
+    const botId = this.resolveDirectBotId(conversationId);
+    const updated = await this.bots.runLifecycle(botId, async () => {
+      this.assertConversationNotDeleting(conversationId);
+      if (this.store.isTopicDeleting(topicId) || this.store.isTopicResetting(topicId)) {
+        throw new ConversationError("topic_deleting", `topic "${topicId}" is deleting`);
+      }
+      if (options?.requireSettled) {
+        this.assertTopicSettledForArchive(conversationId, topicId);
+      }
+      return this.stateMutex.run(async () => {
+        const role = this.topicRole(conversationId, topicId);
+        const current = this.directTopicOrPlanned(botId, conversationId, topicId);
+        const nextState = apply(current, role);
+        const unchanged = this.state.conversation_topics[topicId]
+          && current.status === nextState.phase
+          && current.title === nextState.title
+          && topicContextGeneration(current) === nextState.contextGeneration;
+        if (unchanged) {
+          return this.presentDefaultTopic(current, this.requireConversation(conversationId));
+        }
+        const timestamp = this.now().toISOString();
+        const stored: ConversationTopic = {
+          ...current,
+          status: nextState.phase,
+          title: nextState.title,
+          updatedAt: timestamp,
+          ...(nextState.contextGeneration > 1 ? { contextGeneration: nextState.contextGeneration } : {}),
+          ...(role === "default-direct" ? { managedAt: timestamp } : {}),
+        };
+        const next = structuredClone(this.state);
+        const planned = this.planDirect(this.bots.getBot(botId));
+        next.conversations[planned.conversation.id] = next.conversations[planned.conversation.id] ?? planned.conversation;
+        next.conversation_topics[topicId] = stored;
+        await this.persist(next);
+        return this.presentDefaultTopic(stored, this.requireConversation(conversationId));
+      });
+    });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: updated });
+    return updated;
+  }
+
+  private async archiveDirectTopic(conversationId: string, topicId: string): Promise<ConversationTopic> {
+    return this.mutateDirectTopic(
+      conversationId,
+      topicId,
+      (topic, role) => transitionTopic(topicLifecycleFrom(topic, role), { type: "archive" }),
+      { requireSettled: true },
+    );
+  }
+
+  private async cancelTopicRuns(conversationId: string, topicId: string): Promise<void> {
+    const runs = this.store.listRuns(conversationId, topicId);
+    for (const run of runs) {
+      if (this.isUnsettledRun(run.state)) {
+        await this.cancelRunAndAbortRouting(run.id);
+      }
+    }
+    await this.dispatcher.flushOwnedClaimLeases();
+    this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId, topicId });
+    const remaining = this.store.listRuns(conversationId, topicId);
+    const blocking = remaining.filter((run) => this.isUnsettledRun(run.state));
+    if (blocking.length > 0) {
+      throw new ConversationError("conversation_not_settled", "topic has unsettled runs", {
+        runIds: blocking.map((run) => run.id),
+      });
+    }
+    const indeterminate = remaining.filter((run) => run.state === "indeterminate");
+    if (indeterminate.length > 0) {
+      throw new ConversationError("conversation_indeterminate", "topic has indeterminate work", {
+        runIds: indeterminate.map((run) => run.id),
+      });
+    }
+  }
+
+  private async releaseDirectTopicAliases(botId: string, conversationId: string, topicId: string): Promise<void> {
+    for (const alias of this.directTopicAliases(botId, conversationId, topicId)) {
+      if (this.sessions.getLogicalSessionRecord(alias)) {
+        await this.releaseAlias(alias);
+      }
+    }
+  }
+
+  private deleteDirectTopicBindings(next: AppState, conversationId: string, topicId: string): void {
+    for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
+      if (binding.conversationId === conversationId && binding.topicId === topicId) {
+        delete next.bot_runtime_bindings[id];
+      }
+    }
+  }
+
+  private async dropRetiredTopicMetadata(conversationId: string, topicId: string): Promise<void> {
+    if (!this.state.conversation_topics[topicId] && !Object.values(this.state.bot_runtime_bindings).some(
+      (binding) => binding.conversationId === conversationId && binding.topicId === topicId,
+    )) {
+      return;
+    }
+    await this.stateMutex.run(async () => {
+      const next = structuredClone(this.state);
+      delete next.conversation_topics[topicId];
+      this.deleteDirectTopicBindings(next, conversationId, topicId);
+      await this.persist(next);
+    });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+  }
+
+  private async convergeClearedTopic(
+    conversationId: string,
+    topicId: string,
+    botId: string,
+    contextGeneration: number,
+  ): Promise<ConversationTopic> {
+    const topic = await this.bots.runLifecycle(botId, async () => {
+      this.store.clearTopicResetting(topicId);
+      return this.stateMutex.run(async () => {
+        const planned = this.planDirect(this.bots.getBot(botId));
+        const current = this.state.conversation_topics[topicId] ?? planned.topic;
+        if (topicContextGeneration(current) === contextGeneration && this.state.conversation_topics[topicId]) {
+          return this.presentDefaultTopic(current, this.requireConversation(conversationId));
+        }
+        const timestamp = this.now().toISOString();
+        const next = structuredClone(this.state);
+        next.conversations[planned.conversation.id] = next.conversations[planned.conversation.id] ?? planned.conversation;
+        next.conversation_topics[topicId] = {
+          ...current,
+          conversationId,
+          id: topicId,
+          contextGeneration,
+          managedAt: current.managedAt ?? timestamp,
+          updatedAt: current.updatedAt,
+        };
+        this.deleteDirectTopicBindings(next, conversationId, topicId);
+        await this.persist(next);
+        return this.presentDefaultTopic(next.conversation_topics[topicId]!, this.requireConversation(conversationId));
+      });
+    });
+    return topic;
+  }
+
+  private async teardownDirectExtraTopic(conversationId: string, topicId: string, requestId?: string): Promise<void> {
+    const botId = this.resolveDirectBotId(conversationId);
+    const existing = this.state.conversation_topics[topicId];
+    if (!existing || existing.conversationId !== conversationId) {
+      throw new ConversationError("topic_not_found", `topic "${topicId}" does not belong to this conversation`);
+    }
+    transitionTopic(topicLifecycleFrom(existing, "extra-direct"), { type: "begin-teardown" });
+    const timestamp = this.now().toISOString();
+    await this.bots.runLifecycle(botId, async () => {
+      this.directTopicAliases(botId, conversationId, topicId);
+      this.store.markTopicDeleting(topicId, conversationId, timestamp);
+      await this.stateMutex.run(async () => {
+        const live = this.state.conversation_topics[topicId];
+        if (live && live.conversationId === conversationId && live.status !== "deleting") {
+          const next = structuredClone(this.state);
+          next.conversation_topics[topicId] = { ...live, status: "deleting", updatedAt: timestamp };
+          await this.persist(next);
+        }
+      });
+    });
+    await this.afterTeardownMarkedDeleting?.();
+    await this.cancelTopicRuns(conversationId, topicId);
+    await this.releaseDirectTopicAliases(botId, conversationId, topicId);
+    await this.bots.runLifecycle(botId, async () => {
+      await this.beforeTeardownFinalize?.();
+      await this.releaseDirectTopicAliases(botId, conversationId, topicId);
+      await this.beforeWorktreeCleanup?.(conversationId, topicId);
+      await this.stateMutex.run(async () => {
+        this.store.deleteTopicRows(
+          conversationId,
+          topicId,
+          requestId ? { requestId, now: timestamp } : undefined,
+        );
+        const next = structuredClone(this.state);
+        this.deleteDirectTopicBindings(next, conversationId, topicId);
+        delete next.conversation_topics[topicId];
+        await this.persist(next);
+      });
+    });
+    emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
+  }
+
+  private directTopicAliases(botId: string, conversationId: string, topicId: string): string[] {
+    const aliases = new Set<string>();
+    const ownedBindingIds = new Set<string>();
+    if (topicId === createDirectTopicId(botId)) {
+      ownedBindingIds.add(createDirectBindingId(botId));
+    }
+    const ownedBindings: DirectBotRuntimeBinding[] = [];
+    for (const binding of Object.values(this.state.bot_runtime_bindings)) {
+      if (binding.topicId !== topicId) {
+        continue;
+      }
+      const ownership = classifyDirectBotRuntimeBindingOwnership(binding, botId, conversationId);
+      if (ownership === "conflict") {
+        throw new ConversationError(
+          "runtime_ownership_conflict",
+          "direct runtime binding ownership metadata is contradictory",
+          { botId, binding },
+        );
+      }
+      if (ownership === "owned" && binding.scope === "bot-direct") {
+        ownedBindingIds.add(binding.id);
+        ownedBindings.push(binding);
+      }
+    }
+    const allEntries = Object.entries(this.state.sessions);
+    for (const [key, session] of allEntries) {
+      assertSessionKeyMatchesAlias(key, session);
+    }
+    for (const binding of ownedBindings) {
+      const byAlias = this.state.sessions[binding.sessionAlias];
+      const byIdMatches = allEntries
+        .filter(([, session]) => session.logical_session_id === binding.logicalSessionId)
+        .map(([key]) => key);
+      if (!byAlias && byIdMatches.length === 0) {
+        continue;
+      }
+      if (byAlias) {
+        assertSessionKeyMatchesAlias(binding.sessionAlias, byAlias);
+      }
+      if (
+        !byAlias
+        || byIdMatches.length !== 1
+        || byIdMatches[0] !== binding.sessionAlias
+        || classifyDirectBotBindingSessionLink(binding, byAlias, ownedBindingIds) !== "owned"
+      ) {
+        throw new ConversationError(
+          "runtime_ownership_conflict",
+          "direct runtime binding/session link is contradictory",
+          { botId, binding, sessionAlias: byAlias?.alias },
+        );
+      }
+      aliases.add(binding.sessionAlias);
+    }
+    for (const [key, session] of allEntries) {
+      const owner = session.owner;
+      if (owner?.kind !== "bot-direct") {
+        continue;
+      }
+      if (owner.topicId !== undefined && owner.topicId !== topicId) {
+        continue;
+      }
+      if (owner.topicId === undefined) {
+        const bound = owner.bindingId ? this.state.bot_runtime_bindings[owner.bindingId] : undefined;
+        if (bound && bound.topicId !== topicId) {
+          continue;
+        }
+        if (!bound && topicId !== createDirectTopicId(botId)) {
+          continue;
+        }
+        if (!bound && owner.bindingId !== createDirectBindingId(botId)) {
+          throw new ConversationError(
+            "runtime_ownership_conflict",
+            "direct session has no topic scope",
+            { alias: session.alias, owner },
+          );
+        }
+      }
+      const ownership = classifyDirectBotSessionOwnership(session, botId, ownedBindingIds, conversationId);
+      if (ownership === "conflict") {
+        throw new ConversationError(
+          "runtime_ownership_conflict",
+          "direct session ownership metadata is contradictory",
+          { botId, alias: session.alias, owner },
+        );
+      }
+      if (ownership === "owned") {
+        aliases.add(key);
+      }
+    }
+    return [...aliases];
   }
 
   private async persist(next: AppState): Promise<void> {

@@ -87,6 +87,10 @@ export interface CreateConversationRuntimeInput {
   leaseScheduler?: LeaseScheduler;
   /** Test seam: throw once from inside a live lease renewal transaction. */
   beforeLeaseRenewal?: () => void;
+  /** Test seam forwarded to ConversationRunService. Production leaves it unset. */
+  beforeAcceptPersist?: () => Promise<void>;
+  afterTeardownMarkedDeleting?: () => Promise<void>;
+  beforeTeardownFinalize?: () => Promise<void>;
 }
 
 export async function createConversationRuntime(
@@ -188,6 +192,9 @@ export async function createConversationRuntime(
       ...(routerEngine ? { routerEngine } : {}),
       ...(input.onProductEvent ? { onProductEvent: input.onProductEvent } : {}),
       ...(input.onSchedulingFailure ? { onSchedulingFailure: input.onSchedulingFailure } : {}),
+      ...(input.beforeAcceptPersist ? { beforeAcceptPersist: input.beforeAcceptPersist } : {}),
+      ...(input.afterTeardownMarkedDeleting ? { afterTeardownMarkedDeleting: input.afterTeardownMarkedDeleting } : {}),
+      ...(input.beforeTeardownFinalize ? { beforeTeardownFinalize: input.beforeTeardownFinalize } : {}),
       ...shared,
     },
   );

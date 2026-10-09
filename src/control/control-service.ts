@@ -1894,6 +1894,18 @@ export class ControlService {
     this.deps.terminal.close(terminalId);
   }
 
+  private topicSummary(topic: Parameters<typeof toTopicSummary>[0]) {
+    let defaultDirect = false;
+    try {
+      defaultDirect = this.conversationRuntime?.runs.defaultTopicId(topic.conversationId) === topic.id;
+    } catch (error) {
+      if (!(error instanceof ConversationError) || error.code !== "conversation_not_found") {
+        throw error;
+      }
+    }
+    return toTopicSummary(topic, { defaultDirect });
+  }
+
   private requireConversations(): ConversationRuntime {
     if (!this.conversationRuntime) {
       throw new ConversationError(
@@ -1919,7 +1931,7 @@ export class ControlService {
         this.deps.events.emit({ type: "conversations-changed" });
         return;
       case "conversation-topic-changed":
-        this.deps.events.emit({ type: "conversation-topic-changed", topic: toTopicSummary(event.topic) });
+        this.deps.events.emit({ type: "conversation-topic-changed", topic: this.topicSummary(event.topic) });
         return;
       case "conversation-message":
         this.deps.events.emit({ type: "conversation-message", message: toConversationMessage(event.message) });
@@ -2014,7 +2026,7 @@ export class ControlService {
   getGroup(id: string): GroupDetailDto {
     const runtime = this.requireConversations();
     const group = runtime.bots.getGroup(id);
-    const topics = runtime.runs.listTopics(id).map(toTopicSummary);
+    const topics = runtime.runs.listTopics(id).map((topic) => this.topicSummary(topic));
     return { ...toGroupSummary(group), topics };
   }
 
@@ -2030,22 +2042,95 @@ export class ControlService {
   ) {
     return this.runConversationMutation(async (runtime) => {
       const topic = await runtime.runs.createGroupTopic(conversationId, title, target, options);
-      return toTopicSummary(topic);
+      return this.topicSummary(topic);
     });
   }
 
   async archiveGroupTopic(conversationId: string, topicId: string) {
     return this.runConversationMutation(async (runtime) => {
       const topic = await runtime.runs.archiveGroupTopic(conversationId, topicId);
-      return toTopicSummary(topic);
+      return this.topicSummary(topic);
     });
   }
 
   async teardownGroupTopic(conversationId: string, topicId: string): Promise<{ ok: true }> {
     return this.runConversationMutation(async (runtime) => {
-      await runtime.runs.teardownGroupTopic(conversationId, topicId);
+      await runtime.runs.teardownTopic(conversationId, topicId, { releaseBindings: true });
       return { ok: true };
     });
+  }
+
+  async updateTopic(conversationId: string, topicId: string, title: string) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.updateTopic(conversationId, topicId, title);
+      return this.topicSummary(topic);
+    });
+  }
+
+  async archiveTopic(conversationId: string, topicId: string) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.archiveTopic(conversationId, topicId);
+      return this.topicSummary(topic);
+    });
+  }
+
+  async restoreTopic(conversationId: string, topicId: string) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.restoreTopic(conversationId, topicId);
+      return this.topicSummary(topic);
+    });
+  }
+
+  async teardownTopic(
+    conversationId: string,
+    topicId: string,
+    input: { requestId: string; releaseBindings?: boolean },
+  ): Promise<{ ok: true; requestId: string }> {
+    return this.runConversationMutation(async (runtime) => {
+      await runtime.runs.teardownTopic(conversationId, topicId, input);
+      return { ok: true, requestId: input.requestId };
+    });
+  }
+
+  async clearTopic(
+    conversationId: string,
+    topicId: string,
+    input: { requestId: string; confirm: true; releaseBindings?: boolean },
+  ) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.clearDefaultTopic(conversationId, topicId, input);
+      return {
+        ok: true as const,
+        requestId: input.requestId,
+        contextGeneration: topic.contextGeneration ?? 1,
+        topic: this.topicSummary(topic),
+      };
+    });
+  }
+
+  previewTopic(conversationId: string, topicId: string) {
+    const runtime = this.requireConversations();
+    const topic = runtime.runs.listTopics(conversationId).find((item) => item.id === topicId);
+    if (!topic) {
+      throw new ConversationError("topic_not_found", `topic "${topicId}" does not belong to this conversation`);
+    }
+    const impact = runtime.runs.previewTopic(conversationId, topicId);
+    const summary = this.topicSummary(topic);
+    const deleting = topic.status === "deleting";
+    return {
+      topic: summary,
+      bindings: impact.bindingChatKeys.map((chatKey) => ({ chatKey })),
+      unsettledRunIds: impact.unsettledRunIds,
+      indeterminateRunIds: impact.indeterminateRunIds,
+      worktreeRunIds: impact.worktreeRunIds,
+      actions: {
+        rename: !deleting,
+        archive: topic.status === "active" && impact.unsettledRunIds.length === 0,
+        restore: topic.status === "archived" && impact.indeterminateRunIds.length === 0,
+        teardown: summary.defaultDirect !== true && !deleting,
+        clear: summary.defaultDirect === true && !deleting,
+      },
+    };
   }
 
   listConversations(filter?: { botId?: string }) {
@@ -2058,7 +2143,7 @@ export class ControlService {
   getConversation(conversationId: string) {
     const runtime = this.requireConversations();
     const conversation = runtime.runs.getConversation(conversationId);
-    const topics = runtime.runs.listTopics(conversationId).map(toTopicSummary);
+    const topics = runtime.runs.listTopics(conversationId).map((topic) => this.topicSummary(topic));
     return {
       ...toConversationSummary(conversation, runtime.runs.defaultTopicId(conversation.id)),
       ...(conversation.description ? { description: conversation.description } : {}),
@@ -2067,13 +2152,13 @@ export class ControlService {
   }
 
   listTopics(conversationId: string) {
-    return this.requireConversations().runs.listTopics(conversationId).map(toTopicSummary);
+    return this.requireConversations().runs.listTopics(conversationId).map((topic) => this.topicSummary(topic));
   }
 
   async createTopic(conversationId: string, title: string, options?: TopicSchedulingOptions) {
     return this.runConversationMutation(async (runtime) => {
       const topic = await runtime.runs.createTopic(conversationId, title, options);
-      return toTopicSummary(topic);
+      return this.topicSummary(topic);
     });
   }
 

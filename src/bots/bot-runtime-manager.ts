@@ -332,7 +332,10 @@ export class BotRuntimeManager {
     const scope = this.resolveScope(bot.id, input);
     const scopedId = createScopedDirectBindingId(scope.conversationId, scope.topicId, bot.id);
     const existing = this.findScopedBinding(scope.conversationId, scope.topicId, bot.id);
-    if (existing && this.bindingSessionIsLive(existing)) {
+    const generation = this.state.conversation_topics[scope.topicId]?.contextGeneration ?? 1;
+    if (existing && this.bindingSessionIsLive(existing) && (existing.contextGeneration ?? 1) !== generation) {
+      await this.releaseDirectBindingInternal(existing, existing.id);
+    } else if (existing && this.bindingSessionIsLive(existing)) {
       const session = this.sessions.getLogicalSessionRecord(existing.sessionAlias)
         ?? this.sessions.getLogicalSessionById(existing.logicalSessionId);
       const target = input.execution ?? bot;
@@ -345,7 +348,9 @@ export class BotRuntimeManager {
       }
     }
     const adopted = this.findAdoptableLegacyBinding(bot.id, scope);
-    if (adopted && this.bindingSessionIsLive(adopted)) {
+    if (adopted && this.bindingSessionIsLive(adopted) && generation > 1) {
+      await this.releaseDirectBindingInternal(adopted, adopted.id);
+    } else if (adopted && this.bindingSessionIsLive(adopted)) {
       const session = this.sessions.getLogicalSessionById(adopted.logicalSessionId)
         ?? this.findOwnedSession(adopted.id, bot.id, scope.conversationId);
       const target = input.execution ?? bot;
@@ -1219,6 +1224,7 @@ export class BotRuntimeManager {
         sessionAlias: session.alias,
         createdAt: live?.createdAt ?? timestamp,
         updatedAt: timestamp,
+        contextGeneration: this.state.conversation_topics[scope.topicId]?.contextGeneration ?? 1,
       };
       const next = structuredClone(this.state);
       next.conversations[conversation.id] = next.conversations[conversation.id] ?? conversation;
