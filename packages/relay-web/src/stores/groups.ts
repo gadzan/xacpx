@@ -2465,7 +2465,12 @@ export const useGroupsStore = defineStore("groups", () => {
     if (e.type === "bots-changed") {
       return;
     }
-    if (event.instanceId !== instanceId.value) return;
+    if (event.instanceId !== instanceId.value) {
+      if (e.type === "conversations-changed" && groupsLoaded.value[event.instanceId]) {
+        void loadGroups(event.instanceId).catch(() => {});
+      }
+      return;
+    }
 
     if (e.type === "conversations-changed") {
       const groupIdAtEvent = selectedGroupId.value;

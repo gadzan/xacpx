@@ -2537,3 +2537,34 @@ describe("useGroupsStore", () => {
     expect(store.activeRun?.waitingQuestion).toBe("Which branch?");
   });
 });
+
+describe("useGroupsStore Group list sync", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    mockRpc.mockReset();
+    localStorage.clear();
+  });
+
+  it("refreshes a loaded Group list on another instance's conversations-changed with nothing selected", async () => {
+    const store = useGroupsStore();
+    store.groupsLoaded["inst_2"] = true;
+    store.groupsByInstance["inst_2"] = [];
+    mockRpc.mockImplementation(async (_instance: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [{ ...GROUP, id: "conversation_remote" }] };
+      throw new Error(`unexpected ${type}`);
+    });
+
+    store.applyEvent({ kind: "control-event", instanceId: "inst_2", event: { type: "conversations-changed" } } as never);
+    await flushPromises();
+
+    expect(mockRpc).toHaveBeenCalledWith("inst_2", "control.groups.list", {});
+    expect(store.groupsByInstance["inst_2"]?.map((g) => g.id)).toEqual(["conversation_remote"]);
+  });
+
+  it("leaves a never-opened instance's Group list alone on conversations-changed", async () => {
+    const store = useGroupsStore();
+    store.applyEvent({ kind: "control-event", instanceId: "inst_2", event: { type: "conversations-changed" } } as never);
+    await flushPromises();
+    expect(mockRpc).not.toHaveBeenCalled();
+  });
+});
