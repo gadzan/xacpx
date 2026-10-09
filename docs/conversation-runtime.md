@@ -12,7 +12,9 @@ mode, so token chunks concatenate without inserted paragraph breaks or Weixin
 message quotas. Conversation settlement returns the accumulated full reply for
 durable public messages, even when the streaming adapter returns an empty final
 `response.text`. External bound channels deliver this settled result through their
-own outbound presentation path.
+own outbound presentation path. If the adapter emits no nonempty text segment,
+its final response text is delivered and persisted once; an entirely empty reply
+remains empty.
 
 ## Store ownership
 

@@ -81,6 +81,7 @@ export class AcpxBridgeTransport implements SessionTransport {
           })
       : null;
     const transcriptEvents = createSerializedCallbackQueue();
+    let receivedTextSegment = false;
     let planError: unknown;
     let planChain = Promise.resolve();
     let usageError: unknown;
@@ -109,6 +110,7 @@ export class AcpxBridgeTransport implements SessionTransport {
       if (event.type === "prompt.segment") {
         const onSegment = options?.onSegment;
         const segmentText = event.text;
+        receivedTextSegment ||= segmentText.length > 0;
         transcriptEvents.enqueue(async () => {
           const segmentResult = onSegment?.(segmentText);
           sink?.feedSegment(segmentText);
@@ -204,6 +206,11 @@ export class AcpxBridgeTransport implements SessionTransport {
       }
       if (commandsError) {
         throw commandsError;
+      }
+      // Some adapters only return final text. With no nonempty stream segment,
+      // nothing has been delivered yet, so retain that result for the caller.
+      if (streamMode && !receivedTextSegment) {
+        return result;
       }
       return { text: summary ? `${summary}\n\n${result.text}` : "" };
     }
