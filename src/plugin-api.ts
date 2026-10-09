@@ -134,6 +134,7 @@ export type {
   ConversationSummaryDto,
   ConversationTurnCorrelation,
   MemberTurnSummaryDto,
+  TopicImpactDto,
   TopicSummaryDto,
 } from "./control/conversation-control-dtos.js";
 

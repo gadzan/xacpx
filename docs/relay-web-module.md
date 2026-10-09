@@ -738,12 +738,22 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 ### 导航与 Bot 管理
 
 - **实例侧栏模式切换**：在左栏实例卡片中支持 `Sessions | Bots` 模式切换；切到 Bots 时展示 Bot 列表，包含名称、角色、agent、workspace 与启用状态；
-- **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd）。model / effort 使用 `ModelPicker` 和 `control.agents.capabilities.get`，不再使用写死的 effort 列表。agent/workspace 复用实例已有目录与工作区配置；支持删除确认与 fail-closed 错误提示。
+- **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd）。model / effort 使用 `ModelPicker` 和 `control.agents.capabilities.get`，不再使用写死的 effort 列表。agent/workspace 复用实例已有目录与工作区配置。编辑时按 `profileRevision` 回填 instructions，只提交用户改过的字段。旧的 `control.bots.delete` 仍只删除没有依赖的 Bot。
+- **受控移除（`BotRemovalDialog.vue`）**：侧栏、Direct 页面和 Bot 对话框都能打开。先调用 `control.bots.remove.preview`，再由用户确认 `control.bots.remove`。文案说明群组历史保留，私聊历史是单独勾选。两人组成员关系会挡住确认，不会自动删群或踢掉另一名成员。清理失败或结果不确定时用同一个 `requestId` 重试。`lifecycle.operations.get` 可在刷新后查看这次清理。已移除 Bot 在列表和群组记录里显示为 removed bot，composer 不再发送。
+
+### 禁用 Bot 的整理与恢复
+
+复用 `enabled` 开关，不新增后端状态，权限与调度语义保持不变。
+
+- **侧栏过滤**：Bots 模式的日常列表只显示启用的 Bot。底栏的「已禁用（N）」按钮展开或收起禁用列表；当前选中的禁用 Bot 在收起时仍保留一行，避免禁用后从侧栏消失。全部禁用时显示 `no-enabled-bots` 提示，而不是空列表。实例标签上的数量仍是 Bot 总数。
+- **恢复入口**：禁用行常驻「启用」按钮，调用 `bots.update({ enabled: true })`。成功后提示「禁用期间排队的工作可能立即开始」；失败或超时提示无法确认，并重新拉取 Bot 列表，以列表为准。
+- **`BotDialog` 说明**：与已保存的 `enabled`（优先取已加载的详情）比较。由启用改为禁用时说明：新消息被拒绝；已在运行的 Run 会继续，直到结束或在对话中点 Stop；排队的工作等待，重新启用后可能开始；禁用期间其他 Bot 交接给它的任务会失败。由禁用改为启用时提示可能唤醒排队工作。
+- **Group 成员状态（`GroupPane.vue`）**：Group 成员配置不受侧栏过滤影响，成员数和目标菜单仍包含禁用成员。Bot 目录已确认时，面板列出禁用成员；Lead 被禁用时，用与 Composer 默认目标相同的 `eligibleTargetFor` 规则说明新消息默认发给谁（启用成员中按 ID 排序的第一个）；全部成员禁用时提示无法发送新工作。目录未确认时不显示，避免把「未加载」误报为「全部禁用」。
 
 ### 话题与消息流（`DirectBotPane.vue`）
 
 - **顶部栏**：展示 Bot 头像、名称、角色、工作区/Agent 徽标与操作入口；
-- **话题栏**：展示默认话题及已有额外话题，支持点击切换与「新建话题」模态框；切换话题时按 `conversationId + topicId` 隔离历史与实时 Run；
+- **话题栏**：当前话题显示在一个按钮里。桌面端打开下拉列表，窄屏打开底部列表面板。列表可以搜索，并提供重命名、收起、恢复。额外话题可以删除。默认话题只提供清空，并要求确认。删除和清空会先预览外部绑定与 worktree。有绑定且未确认时不能提交。有未结束的 worktree 时不能提交。切换话题时按 `conversationId + topicId` 隔离历史与实时 Run。已删除话题的迟到列表或 `conversation-topic-changed` 不会把它加回缓存。清空默认话题提升 generation 后，当前历史缓存会被丢掉并重新加载；
 - **消息列表（`ConversationMessageList.vue`）**：
   - 历史消息严格按 `seq` 排序并按 message `id` 去重；
   - 支持向上拉取更早消息，保持当前滚动位置不跳动；
@@ -760,6 +770,16 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 - WebSocket 重连后自动调用 `reconcileOnReconnect()`，重新拉取实例 Bots、Topics、当前话题历史与在途 Run 的最新状态；
 - WebSocket `state-snapshot` 中包含的 Conversation-correlated live turn 正确恢复；若在离线期间已完成，则自动刷新权威历史，消除残留 spinner；
 - 国际化：所有新增文本均提供 `en.ts` 与 `zh-CN.ts` 完整对齐。
+
+### Group 创建、编辑与删除（`GroupDialog.vue`）
+
+- **入口**：实例侧栏 Groups 模式底部常驻「新建群组」（空列表、加载失败时同样可见）；群组行悬停出现编辑按钮；`GroupPane` 顶栏的编辑按钮是移动端入口。新建成功后自动选中该群组，没有话题时 `GroupPane` 以「创建第一个话题」引导打开 `GroupTopicDialog`。该对话框打开时自行拉取实例工作区（`loadWorkspaces`），不依赖之前是否打开过 Bot 或会话表单；拉取失败时显示重试。
+- **表单**：名称（≤80）、说明、至少两个不同成员、可选 Lead。成员行展示角色、Agent 与启用状态，同名 Bot 附带稳定 ID。新建时 Lead 默认取第一个已启用成员，直到用户手动选择；移除当前 Lead 时改选下一个已启用成员（没有则清空）并提示。实例不足两个 Bot 时给出「新建 Bot」引导，Bot 表单关闭后回到群组表单。
+- **编辑**：只发送与打开时快照不同的字段，避免回滚其他客户端的并发修改；`groups.update` 成功后才合并列表，并从当前发送目标中剔除已移除成员。
+- **成员仍有任务**：`group_member_has_work` 时，按话题调用 `runs.list`（`limit: 200`，并合并 `activeRun`）和 `runs.get`，列出持有被移除成员 `queued` / `dispatched` / `running` MemberTurn 的 Run（含 `indeterminate` Run），提供逐个 Stop（`runs.cancel`）后重新查询。
+- **删除**：内联确认列出话题数、先停止排队/执行中的任务、含未提交或未整合修改的成员工作树不会被丢弃（删除停在 `deleting` 等待处理后重试）、成员 Bot 与私聊保留。`groups.delete` 失败或超时后先重新读取列表：群组已消失按成功处理；仍在列表中则报告未完成，`lifecycle: "deleting"` 的群组在侧栏和顶栏显示「删除中」，对话框提供「重试删除」。
+- **超时语义**：`timeout` / `instance-offline` / `instance-reconnected` 的创建与保存结果未知（`groups.create` 没有 requestId），界面提示先查看已刷新的列表，不显示为成功或失败。
+- **跨页面同步**：`conversations-changed` 会刷新任何已加载过的实例群组列表，即使当前没有选中群组。
 
 ## 阶段范围边界
 

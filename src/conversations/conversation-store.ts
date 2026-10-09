@@ -434,6 +434,35 @@ export interface ConversationStore {
   retirePreviousOwnerClaims(owner: string): string[];
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined;
   hasDurableBotWork(botId: string): boolean;
+  /** Barrier phase for accept and dispatch. Absent means the bot may take new work. */
+  botRemovalPhase(botId: string): "deleting" | "indeterminate" | "retired" | undefined;
+  setBotRemovalBarrier(botId: string, phase: "deleting" | "indeterminate" | "retired", now: string): void;
+  getLifecycleOperation(id: string): import("./lifecycle-operation").LifecycleOperation | undefined;
+  findLifecycleOperation(
+    kind: import("./lifecycle-operation").LifecycleOperationKind,
+    requestId: string,
+  ): import("./lifecycle-operation").LifecycleOperation | undefined;
+  latestLifecycleOperation(
+    kind: import("./lifecycle-operation").LifecycleOperationKind,
+    subjectId: string,
+  ): import("./lifecycle-operation").LifecycleOperation | undefined;
+  saveLifecycleOperation(operation: import("./lifecycle-operation").LifecycleOperation): void;
+  botHistoryCounts(botId: string, directConversationId: string): {
+    directMessages: number;
+    directRuns: number;
+    groupMessages: number;
+    groupRuns: number;
+  };
+  listBotMemberTurns(botId: string): Array<{
+    runId: string;
+    conversationId: string;
+    topicId: string;
+    state: string;
+  }>;
+  listExternalRequests(conversationId: string): Array<{ sourceKey: string; conversationId: string; topicId: string }>;
+  hasOpenBotDispatch(botId: string): boolean;
+  /** Drop direct-conversation bindings and external receipts. Group rows stay. */
+  deleteDirectIngress(conversationId: string): void;
   /** True when any durable rows exist for a Group Conversation (runs,
    *  messages, dispatches, lifecycle, or seq allocation). Guards Group
    *  metadata delete against orphaning history the Group row is needed to
@@ -542,11 +571,49 @@ export interface ConversationStore {
   listNonterminalRunRoots(): Array<{ conversationId: string; topicId: string }>;
   markConversationDeleting(conversationId: string, now: string): void;
   markTopicDeleting(topicId: string, conversationId: string, now: string): void;
+  markTopicResetting(topicId: string, conversationId: string, now: string): void;
   isConversationDeleting(conversationId: string): boolean;
   isTopicDeleting(topicId: string): boolean;
-  deleteTopicRows(conversationId: string, topicId: string): void;
+  isTopicResetting(topicId: string): boolean;
+  clearTopicResetting(topicId: string): void;
+  topicContextGeneration(topicId: string): number;
+  hasRetiredPrompt(conversationId: string, topicId: string, requestId: string): boolean;
+  getOperationReceipt(
+    conversationId: string,
+    topicId: string,
+    requestId: string,
+    kind: TopicOperationKind,
+  ): TopicOperationReceipt | undefined;
+  listWorktreeRunIds(conversationId: string, topicId: string): string[];
+  listConversationBindings(): Array<{ chatKey: string; conversationId: string; topicId: string }>;
+  deleteTopicRows(conversationId: string, topicId: string, retirement?: TopicTeardownRetirement): void;
+  /**
+   * Drop one topic's history, keep its id, and record receipts in the same
+   * transaction. A second call with the same clear requestId does not bump
+   * the generation again.
+   */
+  retireTopicContext(input: TopicClearRetirement): TopicOperationReceipt & { reused: boolean };
   deleteConversationRows(conversationId: string): void;
   close(): void;
+}
+
+export type TopicOperationKind = "clear" | "teardown";
+
+export interface TopicOperationReceipt {
+  contextGeneration: number;
+}
+
+export interface TopicTeardownRetirement {
+  requestId: string;
+  now: string;
+}
+
+export interface TopicClearRetirement {
+  conversationId: string;
+  topicId: string;
+  requestId: string;
+  releaseBindings: boolean;
+  now: string;
 }
 
 /** Entire model-visible contract. Strict decoding rejects every other field. */

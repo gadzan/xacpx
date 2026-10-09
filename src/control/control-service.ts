@@ -85,6 +85,7 @@ import {
 import type { AppLogger } from "../logging/app-logger";
 import type { ConversationRuntime } from "../conversations/conversation-composition";
 import { ConversationError } from "../conversations/conversation-error";
+import { lifecycleOperationId, type LifecycleOperation } from "../conversations/lifecycle-operation";
 import type { TopicSchedulingOptions } from "../conversations/conversation-scheduling-policy";
 import { parseHumanIngress } from "../conversations/conversation-execution";
 import type { ConversationProductEvent } from "../conversations/conversation-product-events";
@@ -102,7 +103,10 @@ import {
   toRunDetail,
   toTopicSummary,
   type BotCreateRequestDto,
+  type BotRemovalPreviewDto,
   type BotUpdateRequestDto,
+  type LifecycleOperationDto,
+  type RemoveBotRequestDto,
   type ConversationHistoryRequestDto,
   type ConversationPromptRequestDto,
   type ConversationPolicyPromptRequestDto,
@@ -476,6 +480,25 @@ export interface ControlExecuteCommandInput {
   accountId?: string;
   senderId: string;
   isOwner?: boolean;
+}
+
+function toLifecycleOperationDto(operation: LifecycleOperation): LifecycleOperationDto {
+  return {
+    id: operation.id,
+    kind: operation.kind,
+    subjectId: operation.subjectId,
+    requestId: operation.requestId,
+    phase: operation.phase,
+    updatedAt: operation.updatedAt,
+    ...(operation.error ? { error: operation.error } : {}),
+    ...(operation.previewRevision ? { previewRevision: operation.previewRevision } : {}),
+    ...(operation.params
+      ? {
+        clearDirectHistory: operation.params.clearDirectHistory,
+        releaseDirectBindings: operation.params.releaseDirectBindings,
+      }
+      : {}),
+  };
 }
 
 // Thin structured facade over core services for non-text consumers (the relay
@@ -1903,6 +1926,18 @@ export class ControlService {
     this.deps.terminal.close(terminalId);
   }
 
+  private topicSummary(topic: Parameters<typeof toTopicSummary>[0]) {
+    let defaultDirect = false;
+    try {
+      defaultDirect = this.conversationRuntime?.runs.defaultTopicId(topic.conversationId) === topic.id;
+    } catch (error) {
+      if (!(error instanceof ConversationError) || error.code !== "conversation_not_found") {
+        throw error;
+      }
+    }
+    return toTopicSummary(topic, { defaultDirect });
+  }
+
   private requireConversations(): ConversationRuntime {
     if (!this.conversationRuntime) {
       throw new ConversationError(
@@ -1928,7 +1963,7 @@ export class ControlService {
         this.deps.events.emit({ type: "conversations-changed" });
         return;
       case "conversation-topic-changed":
-        this.deps.events.emit({ type: "conversation-topic-changed", topic: toTopicSummary(event.topic) });
+        this.deps.events.emit({ type: "conversation-topic-changed", topic: this.topicSummary(event.topic) });
         return;
       case "conversation-message":
         this.deps.events.emit({ type: "conversation-message", message: toConversationMessage(event.message) });
@@ -1994,12 +2029,45 @@ export class ControlService {
 
   listBots() {
     const bots = this.requireConversations().bots;
-    return bots.listBots().map((bot) => toBotSummary(bot, bots.hasRuntime(bot.id)));
+    const live = bots.listBots().map((bot) => toBotSummary(bot, bots.hasRuntime(bot.id)));
+    const retired = bots.listTombstones().map((tomb) => ({
+      id: tomb.id,
+      name: tomb.name,
+      ...(tomb.avatar ? { avatar: tomb.avatar } : {}),
+      ...(tomb.role ? { role: tomb.role } : {}),
+      agent: tomb.agent,
+      workspace: tomb.workspace,
+      enabled: false,
+      updatedAt: tomb.retiredAt,
+      retired: true as const,
+    }));
+    return [...live, ...retired];
   }
 
   getBot(id: string) {
     const bots = this.requireConversations().bots;
-    return toBotDetail(bots.getBot(id), bots.hasRuntime(id));
+    try {
+      return toBotDetail(bots.getBot(id), bots.hasRuntime(id));
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? String(error.code) : "";
+      const tomb = code === "bot_not_found" ? bots.listTombstones().find((item) => item.id === id) : undefined;
+      if (!tomb) {
+        throw error;
+      }
+      return {
+        id: tomb.id,
+        name: tomb.name,
+        ...(tomb.avatar ? { avatar: tomb.avatar } : {}),
+        ...(tomb.role ? { role: tomb.role } : {}),
+        agent: tomb.agent,
+        workspace: tomb.workspace,
+        enabled: false,
+        updatedAt: tomb.retiredAt,
+        createdAt: tomb.retiredAt,
+        profileRevision: 1,
+        retired: true as const,
+      };
+    }
   }
 
   async createBot(input: BotCreateRequestDto) {
@@ -2029,6 +2097,29 @@ export class ControlService {
     });
   }
 
+  previewBotRemoval(id: string): Promise<BotRemovalPreviewDto> {
+    return this.requireConversations().removals.preview(id);
+  }
+
+  async removeBot(input: RemoveBotRequestDto): Promise<{ operation: LifecycleOperationDto }> {
+    return this.runConversationMutation(async (runtime) => {
+      const operation = await runtime.removals.remove({
+        botId: input.botId,
+        requestId: input.requestId,
+        previewRevision: input.previewRevision,
+        clearDirectHistory: input.clearDirectHistory === true,
+        releaseDirectBindings: input.releaseDirectBindings === true,
+      });
+      this.deps.events.emit({ type: "bots-changed" });
+      this.deps.events.emit({ type: "conversations-changed" });
+      return { operation: toLifecycleOperationDto(operation) };
+    });
+  }
+
+  getLifecycleOperation(id: string): LifecycleOperationDto {
+    return toLifecycleOperationDto(this.requireConversations().removals.getOperation(id));
+  }
+
   async createGroup(input: { title: string; description?: string; botIds: string[]; leadBotId?: string }) {
     return this.runConversationMutation(async (runtime) => {
       const group = await runtime.bots.createGroup(input);
@@ -2050,19 +2141,19 @@ export class ControlService {
     });
   }
 
-  async deleteGroup(id: string): Promise<{ ok: true }> {
+  async deleteGroup(id: string): Promise<{ ok: true; operationId: string }> {
     return this.runConversationMutation(async (runtime) => {
       await runtime.runs.teardownGroupConversation(id);
       this.deps.events.emit({ type: "bots-changed" });
       this.deps.events.emit({ type: "conversations-changed" });
-      return { ok: true };
+      return { ok: true, operationId: lifecycleOperationId("group-teardown", id) };
     });
   }
 
   getGroup(id: string): GroupDetailDto {
     const runtime = this.requireConversations();
     const group = runtime.bots.getGroup(id);
-    const topics = runtime.runs.listTopics(id).map(toTopicSummary);
+    const topics = runtime.runs.listTopics(id).map((topic) => this.topicSummary(topic));
     return { ...toGroupSummary(group), topics };
   }
 
@@ -2078,22 +2169,100 @@ export class ControlService {
   ) {
     return this.runConversationMutation(async (runtime) => {
       const topic = await runtime.runs.createGroupTopic(conversationId, title, target, options);
-      return toTopicSummary(topic);
+      return this.topicSummary(topic);
     });
   }
 
   async archiveGroupTopic(conversationId: string, topicId: string) {
     return this.runConversationMutation(async (runtime) => {
       const topic = await runtime.runs.archiveGroupTopic(conversationId, topicId);
-      return toTopicSummary(topic);
+      return this.topicSummary(topic);
     });
   }
 
   async teardownGroupTopic(conversationId: string, topicId: string): Promise<{ ok: true }> {
     return this.runConversationMutation(async (runtime) => {
-      await runtime.runs.teardownGroupTopic(conversationId, topicId);
+      await runtime.runs.teardownTopic(conversationId, topicId, { releaseBindings: true });
       return { ok: true };
     });
+  }
+
+  async updateTopic(conversationId: string, topicId: string, title: string) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.updateTopic(conversationId, topicId, title);
+      return this.topicSummary(topic);
+    });
+  }
+
+  async archiveTopic(conversationId: string, topicId: string) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.archiveTopic(conversationId, topicId);
+      return this.topicSummary(topic);
+    });
+  }
+
+  async restoreTopic(conversationId: string, topicId: string) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.restoreTopic(conversationId, topicId);
+      return this.topicSummary(topic);
+    });
+  }
+
+  async teardownTopic(
+    conversationId: string,
+    topicId: string,
+    input: { requestId: string; releaseBindings?: boolean },
+  ): Promise<{ ok: true; requestId: string }> {
+    return this.runConversationMutation(async (runtime) => {
+      await runtime.runs.teardownTopic(conversationId, topicId, input);
+      return {
+        ok: true as const,
+        requestId: input.requestId,
+        operationId: lifecycleOperationId("topic-teardown", input.requestId),
+      };
+    });
+  }
+
+  async clearTopic(
+    conversationId: string,
+    topicId: string,
+    input: { requestId: string; confirm: true; releaseBindings?: boolean },
+  ) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.clearDefaultTopic(conversationId, topicId, input);
+      return {
+        ok: true as const,
+        requestId: input.requestId,
+        operationId: lifecycleOperationId("topic-clear", input.requestId),
+        contextGeneration: topic.contextGeneration ?? 1,
+        topic: this.topicSummary(topic),
+      };
+    });
+  }
+
+  previewTopic(conversationId: string, topicId: string) {
+    const runtime = this.requireConversations();
+    const topic = runtime.runs.listTopics(conversationId).find((item) => item.id === topicId);
+    if (!topic) {
+      throw new ConversationError("topic_not_found", `topic "${topicId}" does not belong to this conversation`);
+    }
+    const impact = runtime.runs.previewTopic(conversationId, topicId);
+    const summary = this.topicSummary(topic);
+    const deleting = topic.status === "deleting";
+    return {
+      topic: summary,
+      bindings: impact.bindingChatKeys.map((chatKey) => ({ chatKey })),
+      unsettledRunIds: impact.unsettledRunIds,
+      indeterminateRunIds: impact.indeterminateRunIds,
+      worktreeRunIds: impact.worktreeRunIds,
+      actions: {
+        rename: !deleting,
+        archive: topic.status === "active" && impact.unsettledRunIds.length === 0,
+        restore: topic.status === "archived" && impact.indeterminateRunIds.length === 0,
+        teardown: summary.defaultDirect !== true && !deleting,
+        clear: summary.defaultDirect === true && !deleting,
+      },
+    };
   }
 
   listConversations(filter?: { botId?: string }) {
@@ -2106,7 +2275,7 @@ export class ControlService {
   getConversation(conversationId: string) {
     const runtime = this.requireConversations();
     const conversation = runtime.runs.getConversation(conversationId);
-    const topics = runtime.runs.listTopics(conversationId).map(toTopicSummary);
+    const topics = runtime.runs.listTopics(conversationId).map((topic) => this.topicSummary(topic));
     return {
       ...toConversationSummary(conversation, runtime.runs.defaultTopicId(conversation.id)),
       ...(conversation.description ? { description: conversation.description } : {}),
@@ -2115,13 +2284,13 @@ export class ControlService {
   }
 
   listTopics(conversationId: string) {
-    return this.requireConversations().runs.listTopics(conversationId).map(toTopicSummary);
+    return this.requireConversations().runs.listTopics(conversationId).map((topic) => this.topicSummary(topic));
   }
 
   async createTopic(conversationId: string, title: string, options?: TopicSchedulingOptions) {
     return this.runConversationMutation(async (runtime) => {
       const topic = await runtime.runs.createTopic(conversationId, title, options);
-      return toTopicSummary(topic);
+      return this.topicSummary(topic);
     });
   }
 

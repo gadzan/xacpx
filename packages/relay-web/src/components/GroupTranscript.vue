@@ -59,7 +59,10 @@ function driverForBot(botId: string): string | undefined {
 
 function senderName(botId: string | undefined): string {
   if (!botId) return "Bot";
-  return botById.value[botId]?.name ?? botId;
+  const bot = botById.value[botId];
+  if (!bot) return botId;
+  if (bot.retired) return t("bot.removal.removedName", { name: bot.name });
+  return bot.name;
 }
 
 const runningNames = computed(() => turns.value.map((turn) => senderName(turn.botId)).join(", "));

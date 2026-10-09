@@ -4,7 +4,9 @@ import {
   MSG,
   isErrorPayload,
   type BotDetailDto,
+  type BotRemovalPreviewDto,
   type BotSummaryDto,
+  type LifecycleOperationDto,
   type ConversationDetailDto,
   type ConversationHistoryResponseDto,
   type ConversationMessageDto,
@@ -21,6 +23,7 @@ import {
   type MemberTurnSummaryDto,
   type PlanEntryDto,
   type ToolStepDto,
+  type TopicImpactDto,
   type TopicSummaryDto,
   type TurnPartDto,
   type WebServerEvent,
@@ -417,6 +420,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // revision. A late list snapshot must merge into — never replace — newer
   // WS-merged rows.
   const topicsSeq: Record<string, number> = {};
+  const retiredTopicIds: Record<string, Set<string>> = {};
   // Messages / History state for active conversation & topic
   const messages = ref<ConversationMessageDto[]>([]);
   const oldestSeq = ref<number | undefined>(undefined);
@@ -1049,6 +1053,63 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     }
   }
 
+  async function previewBotRemoval(targetInstanceId: string, botId: string): Promise<BotRemovalPreviewDto> {
+    const res = unwrapRpc(await api.rpc<{ impact: BotRemovalPreviewDto }>(
+      targetInstanceId,
+      MSG.botsRemovePreview,
+      { id: botId },
+    ));
+    return res.impact;
+  }
+
+  async function removeBot(
+    targetInstanceId: string,
+    input: {
+      botId: string;
+      requestId: string;
+      previewRevision: string;
+      clearDirectHistory: boolean;
+      releaseDirectBindings: boolean;
+    },
+  ): Promise<LifecycleOperationDto> {
+    const res = unwrapRpc(await api.rpc<{ operation: LifecycleOperationDto }>(
+      targetInstanceId,
+      MSG.botsRemove,
+      {
+        id: input.botId,
+        requestId: input.requestId,
+        previewRevision: input.previewRevision,
+        clearDirectHistory: input.clearDirectHistory,
+        releaseDirectBindings: input.releaseDirectBindings,
+      },
+    ));
+    if (res.operation.phase === "completed") {
+      const list = botsByInstance.value[targetInstanceId] ?? [];
+      botsByInstance.value = {
+        ...botsByInstance.value,
+        [targetInstanceId]: list.map((bot) => bot.id === input.botId
+          ? { ...bot, enabled: false, retired: true }
+          : bot),
+      };
+    }
+    try {
+      await loadBots(targetInstanceId);
+    } catch {
+      // Removal already returned a durable operation. A catalog refresh
+      // failure must not look like the removal itself failed.
+    }
+    return res.operation;
+  }
+
+  async function getLifecycleOperation(targetInstanceId: string, id: string): Promise<LifecycleOperationDto> {
+    const res = unwrapRpc(await api.rpc<{ operation: LifecycleOperationDto }>(
+      targetInstanceId,
+      MSG.lifecycleOperationsGet,
+      { id },
+    ));
+    return res.operation;
+  }
+
   // RPC: Conversations & Topics
   async function loadConversations(
     targetInstanceId: string,
@@ -1075,24 +1136,207 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     const res = unwrapRpc(
       await api.rpc<{ topics: TopicSummaryDto[] }>(targetInstanceId, MSG.topicsList, { conversationId }),
     );
+    const incoming = withoutRetiredTopics(key, res.topics);
     if (topicsSeq[key] !== seq) {
       // A newer write (create merge or WS event) landed while this snapshot
       // was in flight: merge the snapshot into the newer rows by id instead
       // of replacing them, so a late T1 cannot delete Topic B. Newer rows win
-      // on id conflict.
-      const currentList = topicsByConversation.value[key] ?? [];
+      // on id conflict. Retired ids stay out, so a late list cannot resurrect
+      // a topic this client already deleted.
+      const currentList = withoutRetiredTopics(key, topicsByConversation.value[key] ?? []);
       const merged: Record<string, TopicSummaryDto> = {};
-      for (const t of res.topics) merged[t.id] = t;
+      for (const t of incoming) merged[t.id] = t;
       for (const t of currentList) merged[t.id] = t;
       const next = Object.values(merged);
       topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
       return next;
     }
+    noteDroppedTopics(key, topicsByConversation.value[key] ?? [], incoming);
     topicsByConversation.value = {
       ...topicsByConversation.value,
-      [key]: res.topics,
+      [key]: incoming,
     };
-    return res.topics;
+    reconcileMissingActiveTopic(targetInstanceId, conversationId, incoming);
+    return incoming;
+  }
+
+  function noteDroppedTopics(key: string, previous: TopicSummaryDto[], next: TopicSummaryDto[]): void {
+    for (const topic of previous) {
+      if (next.some((item) => item.id === topic.id)) continue;
+      const retired = retiredTopicIds[key] ?? new Set<string>();
+      retired.add(topic.id);
+      retiredTopicIds[key] = retired;
+    }
+  }
+
+  function withoutRetiredTopics(key: string, topics: TopicSummaryDto[]): TopicSummaryDto[] {
+    const retired = retiredTopicIds[key];
+    if (!retired || retired.size === 0) return topics;
+    return topics.filter((topic) => !retired.has(topic.id));
+  }
+
+  function reconcileMissingActiveTopic(
+    targetInstanceId: string,
+    conversationId: string,
+    topics: TopicSummaryDto[],
+  ): void {
+    if (instanceId.value !== targetInstanceId || activeConversationId.value !== conversationId) return;
+    if (!activeTopicId.value || topics.some((topic) => topic.id === activeTopicId.value)) return;
+    const fallback = topics.find((topic) => topic.status === "active") ?? topics[0];
+    if (fallback) {
+      void switchTopic(fallback.id);
+      return;
+    }
+    activeTopicId.value = null;
+    messages.value = [];
+    activeRun.value = null;
+    activeMemberTurn.value = null;
+    liveTurn.value = null;
+    topicReady.value = true;
+  }
+
+  function upsertTopic(targetInstanceId: string, topic: TopicSummaryDto): void {
+    const key = `${targetInstanceId}:${topic.conversationId}`;
+    if (retiredTopicIds[key]?.has(topic.id)) return;
+    topicsSeq[key] = (topicsSeq[key] ?? 0) + 1;
+    const currentList = topicsByConversation.value[key] ?? [];
+    const previous = currentList.find((item) => item.id === topic.id);
+    const idx = currentList.findIndex((item) => item.id === topic.id);
+    const next = idx >= 0 ? currentList.map((item, index) => (index === idx ? topic : item)) : [...currentList, topic];
+    topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
+    const generationAdvanced = (topic.contextGeneration ?? 1) > (previous?.contextGeneration ?? 1);
+    if (
+      generationAdvanced
+      && instanceId.value === targetInstanceId
+      && activeConversationId.value === topic.conversationId
+      && activeTopicId.value === topic.id
+    ) {
+      void reloadActiveTopic();
+    }
+  }
+
+  async function reloadActiveTopic(): Promise<void> {
+    const topicId = activeTopicId.value;
+    const conversationId = activeConversationId.value;
+    const targetInstanceId = instanceId.value;
+    if (!topicId || !conversationId || !targetInstanceId) return;
+    const generation = ++currentSelectionGeneration;
+    historyRequestSequence += 1;
+    discoverySequence += 1;
+    retireOlderRequest();
+    touchTranscript();
+    topicReady.value = false;
+    messages.value = [];
+    oldestSeq.value = undefined;
+    newestSeq.value = undefined;
+    contiguousNewestSeq.value = undefined;
+    hasMoreBefore.value = false;
+    hasMoreAfter.value = false;
+    activeRun.value = null;
+    activeMemberTurn.value = null;
+    liveTurn.value = null;
+    latestPlanRunId.value = null;
+    cancellingRunId.value = null;
+    cancelUncertaintyRunId.value = null;
+    cancelError.value = null;
+    ownershipUncertain.value = false;
+    promptInFlight.value = false;
+    promptError.value = null;
+    promptErrorDetail.value = null;
+    currentDraftRequestId.value = null;
+    lastPromptText.value = "";
+    await loadHistory(targetInstanceId, conversationId, topicId);
+    if (generation !== currentSelectionGeneration || activeTopicId.value !== topicId) return;
+  }
+
+  function retireTopic(targetInstanceId: string, conversationId: string, topicId: string): void {
+    const key = `${targetInstanceId}:${conversationId}`;
+    const retired = retiredTopicIds[key] ?? new Set<string>();
+    retired.add(topicId);
+    retiredTopicIds[key] = retired;
+    topicsSeq[key] = (topicsSeq[key] ?? 0) + 1;
+    const next = (topicsByConversation.value[key] ?? []).filter((topic) => topic.id !== topicId);
+    topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
+    reconcileMissingActiveTopic(targetInstanceId, conversationId, next);
+  }
+
+  async function updateTopic(
+    targetInstanceId: string,
+    conversationId: string,
+    topicId: string,
+    title: string,
+  ): Promise<TopicSummaryDto> {
+    const res = unwrapRpc(await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.topicsUpdate, {
+      conversationId,
+      topicId,
+      title,
+    }));
+    upsertTopic(targetInstanceId, res.topic);
+    return res.topic;
+  }
+
+  async function archiveTopic(targetInstanceId: string, conversationId: string, topicId: string): Promise<TopicSummaryDto> {
+    const res = unwrapRpc(await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.topicsArchive, {
+      conversationId,
+      topicId,
+    }));
+    upsertTopic(targetInstanceId, res.topic);
+    return res.topic;
+  }
+
+  async function restoreTopic(targetInstanceId: string, conversationId: string, topicId: string): Promise<TopicSummaryDto> {
+    const res = unwrapRpc(await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.topicsRestore, {
+      conversationId,
+      topicId,
+    }));
+    upsertTopic(targetInstanceId, res.topic);
+    return res.topic;
+  }
+
+  async function previewTopic(
+    targetInstanceId: string,
+    conversationId: string,
+    topicId: string,
+  ): Promise<TopicImpactDto> {
+    const res = unwrapRpc(await api.rpc<{ impact: TopicImpactDto }>(targetInstanceId, MSG.topicsPreview, {
+      conversationId,
+      topicId,
+    }));
+    return res.impact;
+  }
+
+  async function teardownTopic(
+    targetInstanceId: string,
+    conversationId: string,
+    topicId: string,
+    requestId: string,
+    releaseBindings = false,
+  ): Promise<void> {
+    unwrapRpc(await api.rpc(targetInstanceId, MSG.topicsTeardown, {
+      conversationId,
+      topicId,
+      requestId,
+      ...(releaseBindings ? { releaseBindings: true } : {}),
+    }));
+    retireTopic(targetInstanceId, conversationId, topicId);
+  }
+
+  async function clearTopic(
+    targetInstanceId: string,
+    conversationId: string,
+    topicId: string,
+    requestId: string,
+    releaseBindings = false,
+  ): Promise<TopicSummaryDto> {
+    const res = unwrapRpc(await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.topicsClear, {
+      conversationId,
+      topicId,
+      requestId,
+      confirm: true,
+      ...(releaseBindings ? { releaseBindings: true } : {}),
+    }));
+    upsertTopic(targetInstanceId, res.topic);
+    return res.topic;
   }
 
   async function createTopic(
@@ -3222,23 +3466,16 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
     if (e.type === "conversations-changed") {
       void loadConversations(event.instanceId, selectedBotId.value ? { botId: selectedBotId.value } : undefined);
+      if (activeConversationId.value && instanceId.value === event.instanceId) {
+        void loadTopics(event.instanceId, activeConversationId.value);
+      }
       return;
     }
 
     if (e.type === "conversation-topic-changed") {
       const topic = e.topic;
       if (topic.conversationId === activeConversationId.value) {
-        const key = `${event.instanceId}:${topic.conversationId}`;
-        topicsSeq[key] = (topicsSeq[key] ?? 0) + 1;
-        const currentList = topicsByConversation.value[key] ?? [];
-        const idx = currentList.findIndex((t) => t.id === topic.id);
-        if (idx >= 0) {
-          const next = [...currentList];
-          next[idx] = topic;
-          topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
-        } else {
-          topicsByConversation.value = { ...topicsByConversation.value, [key]: [...currentList, topic] };
-        }
+        upsertTopic(event.instanceId, topic);
       }
       return;
     }
@@ -3591,9 +3828,18 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     createBot,
     updateBot,
     deleteBot,
+    previewBotRemoval,
+    removeBot,
+    getLifecycleOperation,
     loadConversations,
     loadTopics,
     createTopic,
+    updateTopic,
+    archiveTopic,
+    restoreTopic,
+    previewTopic,
+    teardownTopic,
+    clearTopic,
     loadHistory,
     loadOlder,
     selectBot,

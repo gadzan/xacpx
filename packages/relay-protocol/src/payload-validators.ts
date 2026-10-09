@@ -14,7 +14,10 @@ import {
   type BotsCreatePayload,
   type BotsDeletePayload,
   type BotsGetPayload,
+  type BotsRemovePayload,
+  type BotsRemovePreviewPayload,
   type BotsUpdatePayload,
+  type LifecycleOperationsGetPayload,
   type CommandExecutePayload,
   type ConversationHistoryPayload,
   type ConversationPromptPayload,
@@ -90,8 +93,14 @@ import {
   type TerminalTerminatePayload,
   type TerminalViewerEventInner,
   type TerminalViewerEventPayload,
+  type TopicsArchivePayload,
+  type TopicsClearPayload,
   type TopicsCreatePayload,
   type TopicsListPayload,
+  type TopicsPreviewPayload,
+  type TopicsRestorePayload,
+  type TopicsTeardownPayload,
+  type TopicsUpdatePayload,
   type UploadPayload,
   type WorkspacesCreatePayload,
   type WorkspacesRemovePayload,
@@ -462,6 +471,21 @@ const validateBotsDelete: Validator<BotsDeletePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.id) ? (o as unknown as BotsDeletePayload) : null;
 };
+const validateBotsRemovePreview: Validator<BotsRemovePreviewPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? (o as unknown as BotsRemovePreviewPayload) : null;
+};
+const validateBotsRemove: Validator<BotsRemovePayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) && isBoundedStr(o.requestId, 128) && isBoundedStr(o.previewRevision, 64)
+    && (o.clearDirectHistory === undefined || o.clearDirectHistory === true || o.clearDirectHistory === false)
+    && (o.releaseDirectBindings === undefined || o.releaseDirectBindings === true || o.releaseDirectBindings === false)
+    ? (o as unknown as BotsRemovePayload) : null;
+};
+const validateLifecycleOperationsGet: Validator<LifecycleOperationsGetPayload> = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.id, 220) ? (o as unknown as LifecycleOperationsGetPayload) : null;
+};
 const validateConversationsList: Validator<ConversationsListPayload> = (p) => {
   const o = fields(p);
   return o && optStr(o.botId) ? (o as unknown as ConversationsListPayload) : null;
@@ -478,6 +502,36 @@ const validateTopicsCreate: Validator<TopicsCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.title) && validMemberConcurrency(o.maxConcurrentMemberTurns)
     ? (o as unknown as TopicsCreatePayload) : null;
+};
+const validateTopicRef = (o: Record<string, unknown> | null): boolean =>
+  !!o && isStr(o.conversationId) && isStr(o.topicId);
+const validateTopicsUpdate: Validator<TopicsUpdatePayload> = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.title, 200) ? (o as unknown as TopicsUpdatePayload) : null;
+};
+const validateTopicsArchive: Validator<TopicsArchivePayload> = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? (o as unknown as TopicsArchivePayload) : null;
+};
+const validateTopicsRestore: Validator<TopicsRestorePayload> = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? (o as unknown as TopicsRestorePayload) : null;
+};
+const validateTopicsTeardown: Validator<TopicsTeardownPayload> = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.requestId, 128)
+    && (o.releaseBindings === undefined || o.releaseBindings === true || o.releaseBindings === false)
+    ? (o as unknown as TopicsTeardownPayload) : null;
+};
+const validateTopicsClear: Validator<TopicsClearPayload> = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.requestId, 128) && o.confirm === true
+    && (o.releaseBindings === undefined || o.releaseBindings === true || o.releaseBindings === false)
+    ? (o as unknown as TopicsClearPayload) : null;
+};
+const validateTopicsPreview: Validator<TopicsPreviewPayload> = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? (o as unknown as TopicsPreviewPayload) : null;
 };
 const validMemberConcurrency = (v: unknown): boolean => v === undefined ||
   (typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 64);
@@ -954,8 +1008,11 @@ export type ControlRpcType =
   | typeof MSG.desktopPrepare
   | typeof MSG.upload
   | typeof MSG.botsGet | typeof MSG.botsCreate | typeof MSG.botsUpdate | typeof MSG.botsDelete
+  | typeof MSG.botsRemovePreview | typeof MSG.botsRemove | typeof MSG.lifecycleOperationsGet
   | typeof MSG.conversationsList | typeof MSG.conversationsGet
   | typeof MSG.topicsList | typeof MSG.topicsCreate
+  | typeof MSG.topicsUpdate | typeof MSG.topicsArchive | typeof MSG.topicsRestore
+  | typeof MSG.topicsTeardown | typeof MSG.topicsClear | typeof MSG.topicsPreview
   | typeof MSG.groupsCreate | typeof MSG.groupsUpdate | typeof MSG.groupsDelete | typeof MSG.groupsGet
   | typeof MSG.groupsList
   | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown
@@ -1030,10 +1087,19 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.botsCreate]: validateBotsCreate,
   [MSG.botsUpdate]: validateBotsUpdate,
   [MSG.botsDelete]: validateBotsDelete,
+  [MSG.botsRemovePreview]: validateBotsRemovePreview,
+  [MSG.botsRemove]: validateBotsRemove,
+  [MSG.lifecycleOperationsGet]: validateLifecycleOperationsGet,
   [MSG.conversationsList]: validateConversationsList,
   [MSG.conversationsGet]: validateConversationsGet,
   [MSG.topicsList]: validateTopicsList,
   [MSG.topicsCreate]: validateTopicsCreate,
+  [MSG.topicsUpdate]: validateTopicsUpdate,
+  [MSG.topicsArchive]: validateTopicsArchive,
+  [MSG.topicsRestore]: validateTopicsRestore,
+  [MSG.topicsTeardown]: validateTopicsTeardown,
+  [MSG.topicsClear]: validateTopicsClear,
+  [MSG.topicsPreview]: validateTopicsPreview,
   [MSG.groupsCreate]: validateGroupsCreate,
   [MSG.groupsUpdate]: validateGroupsUpdate,
   [MSG.groupsDelete]: validateGroupsDelete,

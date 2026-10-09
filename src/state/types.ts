@@ -1,3 +1,4 @@
+import type { BotRemovalRecord } from "../bots/bot-removal";
 import type { BotProfile, BotRuntimeBinding } from "../bots/bot-types";
 import type { ConversationRecord, ConversationTopic } from "../conversations/conversation-types";
 import { createEmptyOrchestrationState, type OrchestrationState } from "../orchestration/orchestration-types";
@@ -140,6 +141,8 @@ export interface AppState {
   orchestration: OrchestrationState;
   scheduled_tasks: Record<string, ScheduledTaskRecord>;
   bots: Record<string, BotProfile>;
+  /** Recoverable removal metadata. SQLite `bot_removal_barrier` is the accept authority. */
+  bot_removals: Record<string, BotRemovalRecord>;
   conversations: Record<string, ConversationRecord>;
   conversation_topics: Record<string, ConversationTopic>;
   bot_runtime_bindings: Record<string, BotRuntimeBinding>;
@@ -153,6 +156,7 @@ export function createEmptyState(): AppState {
     orchestration: createEmptyOrchestrationState(),
     scheduled_tasks: {},
     bots: {},
+    bot_removals: {},
     conversations: {},
     conversation_topics: {},
     bot_runtime_bindings: {},

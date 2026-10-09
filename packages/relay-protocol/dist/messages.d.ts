@@ -1,4 +1,4 @@
-import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, InteractionWithdrawDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotSummaryDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationTargetDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, GroupDetailDto, GroupSummaryDto, GroupTopicCreateTargetDto, TopicSummaryDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, InteractionWithdrawDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotRemovalPreviewDto, BotSummaryDto, LifecycleOperationDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationTargetDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, GroupDetailDto, GroupSummaryDto, GroupTopicCreateTargetDto, TopicImpactDto, TopicSummaryDto } from "./dtos.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
     readonly instanceAuth: "instance.auth";
@@ -94,10 +94,19 @@ export declare const MSG: {
     readonly botsCreate: "control.bots.create";
     readonly botsUpdate: "control.bots.update";
     readonly botsDelete: "control.bots.delete";
+    readonly botsRemovePreview: "control.bots.remove.preview";
+    readonly botsRemove: "control.bots.remove";
+    readonly lifecycleOperationsGet: "control.lifecycle.operations.get";
     readonly conversationsList: "control.conversations.list";
     readonly conversationsGet: "control.conversations.get";
     readonly topicsList: "control.topics.list";
     readonly topicsCreate: "control.topics.create";
+    readonly topicsUpdate: "control.topics.update";
+    readonly topicsArchive: "control.topics.archive";
+    readonly topicsRestore: "control.topics.restore";
+    readonly topicsTeardown: "control.topics.teardown";
+    readonly topicsClear: "control.topics.clear";
+    readonly topicsPreview: "control.topics.preview";
     readonly groupsCreate: "control.groups.create";
     readonly groupsUpdate: "control.groups.update";
     readonly groupsDelete: "control.groups.delete";
@@ -449,6 +458,28 @@ export interface BotsUpdateResult {
 export interface BotsDeletePayload {
     id: string;
 }
+export interface BotsRemovePreviewPayload {
+    id: string;
+}
+export interface BotsRemovePreviewResult {
+    impact: BotRemovalPreviewDto;
+}
+export interface BotsRemovePayload {
+    id: string;
+    requestId: string;
+    previewRevision: string;
+    clearDirectHistory?: boolean;
+    releaseDirectBindings?: boolean;
+}
+export interface BotsRemoveResult {
+    operation: LifecycleOperationDto;
+}
+export interface LifecycleOperationsGetPayload {
+    id: string;
+}
+export interface LifecycleOperationsGetResult {
+    operation: LifecycleOperationDto;
+}
 export interface ConversationsListPayload {
     botId?: string;
 }
@@ -474,6 +505,58 @@ export interface TopicsCreatePayload {
 }
 export interface TopicsCreateResult {
     topic: TopicSummaryDto;
+}
+export interface TopicsUpdatePayload {
+    conversationId: string;
+    topicId: string;
+    title: string;
+}
+export interface TopicsUpdateResult {
+    topic: TopicSummaryDto;
+}
+export interface TopicsArchivePayload {
+    conversationId: string;
+    topicId: string;
+}
+export interface TopicsArchiveResult {
+    topic: TopicSummaryDto;
+}
+export interface TopicsRestorePayload {
+    conversationId: string;
+    topicId: string;
+}
+export interface TopicsRestoreResult {
+    topic: TopicSummaryDto;
+}
+export interface TopicsTeardownPayload {
+    conversationId: string;
+    topicId: string;
+    requestId: string;
+    releaseBindings?: boolean;
+}
+export interface TopicsTeardownResult {
+    ok: true;
+    requestId: string;
+}
+export interface TopicsClearPayload {
+    conversationId: string;
+    topicId: string;
+    requestId: string;
+    confirm: true;
+    releaseBindings?: boolean;
+}
+export interface TopicsClearResult {
+    ok: true;
+    requestId: string;
+    contextGeneration: number;
+    topic: TopicSummaryDto;
+}
+export interface TopicsPreviewPayload {
+    conversationId: string;
+    topicId: string;
+}
+export interface TopicsPreviewResult {
+    impact: TopicImpactDto;
 }
 export interface GroupsCreatePayload {
     title: string;

@@ -1,6 +1,7 @@
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
+import { BotRemovalService } from "../bots/bot-removal-service";
 import { ROUTER_CONFIG_PATH, type RouterAvailability } from "@ganglion/xacpx-relay-protocol";
 
 import { BotRuntimeManager } from "../bots/bot-runtime-manager";
@@ -54,6 +55,7 @@ export interface ConversationRuntime {
   botRuntime: BotRuntimeManager;
   dispatcher: ConversationDispatcher;
   runs: ConversationRunService;
+  removals: BotRemovalService;
   handoffs: GroupHandoffService;
   bindings: ConversationBindingService;
   /** Startup snapshot. The composer reads this instead of guessing. */
@@ -111,6 +113,12 @@ export interface CreateConversationRuntimeInput {
   leaseScheduler?: LeaseScheduler;
   /** Test seam: throw once from inside a live lease renewal transaction. */
   beforeLeaseRenewal?: () => void;
+  /** Test seam forwarded to ConversationRunService. Production leaves it unset. */
+  beforeAcceptPersist?: () => Promise<void>;
+  afterTeardownMarkedDeleting?: () => Promise<void>;
+  beforeTeardownFinalize?: () => Promise<void>;
+  /** Test seam: runs after the removal barrier is durable and before cleanup. */
+  afterBotRemovalBarrier?: () => Promise<void>;
 }
 
 export async function createConversationRuntime(
@@ -213,10 +221,21 @@ export async function createConversationRuntime(
       ...(routerEngine ? { routerEngine } : {}),
       ...(input.onProductEvent ? { onProductEvent: input.onProductEvent } : {}),
       ...(input.onSchedulingFailure ? { onSchedulingFailure: input.onSchedulingFailure } : {}),
+      ...(input.beforeAcceptPersist ? { beforeAcceptPersist: input.beforeAcceptPersist } : {}),
+      ...(input.afterTeardownMarkedDeleting ? { afterTeardownMarkedDeleting: input.afterTeardownMarkedDeleting } : {}),
+      ...(input.beforeTeardownFinalize ? { beforeTeardownFinalize: input.beforeTeardownFinalize } : {}),
       ...shared,
     },
   );
   runsRef = runs;
+  const removals = new BotRemovalService(
+    bots,
+    runs,
+    store,
+    input.state,
+    input.now ?? (() => new Date()),
+    input.afterBotRemovalBarrier,
+  );
   const handoffs = new GroupHandoffService({ store, bots, state: input.state, now: input.now,
     onProductEvent: input.onProductEvent, wake: () => runs.wakePendingWork() });
   dispatcher.setHandoffService(handoffs);
@@ -263,6 +282,7 @@ export async function createConversationRuntime(
     botRuntime,
     dispatcher,
     runs,
+    removals,
     handoffs,
     bindings: new ConversationBindingService(store, runs, bots, input.config),
     routerAvailability: settled.availability,

@@ -13,6 +13,8 @@ import type { StateStore } from "../state/state-store";
 import { replaceRuntimeState } from "../state/replace-runtime-state";
 import type { AppState, LogicalSession } from "../state/types";
 import { BotError } from "./bot-error";
+import type { BotRemovalRecord, BotTombstone } from "./bot-removal";
+import { removalBlocksWork } from "./bot-removal";
 import { BotLifecycleGate } from "./bot-lifecycle-gate";
 import type { BotProfile, BotRuntimeBinding } from "./bot-types";
 import type { ConversationRecord } from "../conversations/conversation-types";
@@ -264,6 +266,14 @@ export interface BotConversationWork {
    *  its claims would requeue forever). Optional so older implementers
    *  (tests) keep working; absence means "unknown, do not block". */
   hasNonterminalGroupMemberWork?: (conversationId: string, botId: string) => boolean;
+  /** SQLite removal barrier. Absence means the store has no row. */
+  botRemovalPhase?: (botId: string) => "deleting" | "indeterminate" | "retired" | undefined;
+  /** Install the SQLite barrier when AppState is ahead of it. */
+  rememberBotRemovalBarrier?: (
+    botId: string,
+    phase: "deleting" | "indeterminate" | "retired",
+    now: string,
+  ) => void;
 }
 
 export interface BotServiceOptions {
@@ -309,6 +319,7 @@ export class BotService {
     this.beforeGroupGatesAcquired = options?.beforeGroupGatesAcquired;
     this._onBotReenabled = options?.onBotReenabled;
     this.conversationWork = options?.conversationWork;
+    this.state.bot_removals ??= {};
   }
 
   /** Shared with BotRuntimeManager: one botId, one exclusive lifecycle. */
@@ -351,6 +362,44 @@ export class BotService {
       throw new BotError("bot_not_found", `bot "${id}" does not exist`);
     }
     return bot;
+  }
+
+  removal(id: string): BotRemovalRecord | undefined {
+    return this.state.bot_removals?.[id];
+  }
+
+  listTombstones(): BotTombstone[] {
+    const tombs: BotTombstone[] = [];
+    for (const record of Object.values(this.state.bot_removals ?? {})) {
+      if (record.phase === "retired" && record.tombstone) {
+        tombs.push(record.tombstone);
+      }
+    }
+    return tombs.sort((left, right) => left.retiredAt.localeCompare(right.retiredAt) || left.id.localeCompare(right.id));
+  }
+
+  /**
+   * Refuse new execution, enablement, or membership when a removal barrier
+   * exists. If AppState is ahead of SQLite, install the barrier first so the
+   * next accept sees it even though the two files are not one transaction.
+   */
+  assertAcceptsWork(botId: string): void {
+    const phase = this.blockingRemovalPhase(botId);
+    if (phase) {
+      throw new BotError("bot_removing", `bot "${botId}" is ${phase}`, { phase });
+    }
+  }
+
+  async writeRemoval(record: BotRemovalRecord, dropProfile: boolean): Promise<void> {
+    await this.mutate(async () => {
+      const next = structuredClone(this.state);
+      next.bot_removals ??= {};
+      next.bot_removals[record.botId] = record;
+      if (dropProfile) {
+        delete next.bots[record.botId];
+      }
+      await this.persist(next);
+    });
   }
 
   /** True once the Bot materialized any runtime (direct or group-member).
@@ -410,6 +459,7 @@ export class BotService {
           agent: this.requirePatchString(patch.agent, existing.agent, "agent"),
           workspace: this.requirePatchString(patch.workspace, existing.workspace, "workspace"),
         });
+        this.assertAcceptsWork(id);
         const next: BotProfile = {
           ...existing,
           ...identity,
@@ -437,6 +487,7 @@ export class BotService {
       await this.mutate(async () => {
         this.assertOpen();
         this.getBot(id);
+        this.assertAcceptsWork(id);
         const groups = Object.values(this.state.conversations).filter(
           (conversation) => conversation.kind === "group" && conversation.botIds.includes(id),
         );
@@ -586,6 +637,10 @@ export class BotService {
           // group_member_not_member; the generic pre-start path releases the
           // claim back to pending). Refuse the removal; retry once the Run
           // terminals or is cancelled. Adding members is never blocked.
+          const added = patch.botIds.filter((botId) => !live.botIds.includes(botId));
+          for (const botId of added) {
+            this.assertAcceptsWork(botId);
+          }
           const removed = live.botIds.filter((botId) => !patch.botIds!.includes(botId));
           for (const botId of removed) {
             if (this.conversationWork?.hasNonterminalGroupMemberWork?.(id, botId)) {
@@ -902,6 +957,29 @@ export class BotService {
     }
   }
 
+  private blockingRemovalPhase(botId: string): "deleting" | "indeterminate" | "retired" | undefined {
+    let sqlite: "deleting" | "indeterminate" | "retired" | undefined;
+    try {
+      sqlite = this.conversationWork?.botRemovalPhase?.(botId);
+    } catch (error) {
+      // A closed store belongs to a previous process handle. The open store
+      // still rejects the claim. This read must not abort that later dispatch.
+      const code = error instanceof Error && "code" in error ? String(error.code) : "";
+      if (code !== "store_closed") {
+        throw error;
+      }
+    }
+    if (sqlite) {
+      return sqlite;
+    }
+    const local = this.state.bot_removals?.[botId];
+    if (!local || !removalBlocksWork(local.phase)) {
+      return undefined;
+    }
+    this.conversationWork?.rememberBotRemovalBarrier?.(botId, local.phase, this.now().toISOString());
+    return this.conversationWork?.botRemovalPhase?.(botId) ?? local.phase;
+  }
+
   private hasMaterializedRuntime(botId: string): boolean {
     const refs = this.directRuntimeRefs(botId);
     return refs.bindingIds.length > 0 || refs.sessionAliases.length > 0
@@ -953,6 +1031,10 @@ export class BotService {
    * owners (no conversation, no live binding, no live topic link) fail
    * every delete closed — deleting any root could strand them.
    */
+  directControllerResidue(botId: string): { bindingIds: string[]; sessionAliases: string[] } {
+    return this.controllerResidueForDirectRoot(botId);
+  }
+
   private controllerResidueForDirectRoot(botId: string): { bindingIds: string[]; sessionAliases: string[] } {
     const conversationId = createDirectConversationId(botId);
     const directTopicIds = new Set(

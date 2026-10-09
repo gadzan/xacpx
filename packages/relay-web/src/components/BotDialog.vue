@@ -8,6 +8,7 @@ import { useDirectBotsStore } from "../stores/direct-bots";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { mergeEffortRefresh } from "../lib/capability-view";
 import ModelPicker from "./ModelPicker.vue";
+import BotRemovalDialog from "./BotRemovalDialog.vue";
 
 const props = defineProps<{
   instanceId: string;
@@ -77,7 +78,13 @@ const modelDirty = ref(false);
 const effortDirty = ref(false);
 const enabled = ref(props.bot?.enabled ?? true);
 const enabledDirty = ref(false);
+const storedEnabled = computed(() =>
+  props.bot
+    ? directBotsStore.botDetails[`${props.instanceId}:${props.bot.id}`]?.enabled ?? props.bot.enabled
+    : undefined,
+);
 const submitting = ref(false);
+const removalOpen = ref(false);
 const errorMessage = ref<string | null>(null);
 const capability = ref<{ status: "loading" } | AgentCapabilityState>({ status: "loading" });
 const carriedEfforts = ref<Array<{ id: string; name: string }>>([]);
@@ -137,40 +144,33 @@ const availableAgents = computed(() => {
 
 // Available workspaces from instance
 const availableWorkspaces = computed(() => inst.value?.workspaces ?? []);
-// Detail hydration for summary-backed edits: the form must not submit
-// until the authoritative detail arrives. Otherwise an early Save would send
-// instructions=null and silently wipe backend instructions the user never
-// saw. Gated on the store's authoritative-hydration flag — never on the
-// optional instructions field itself, which a complete detail legitimately
-// omits when empty.
-const detailHydrated = ref(
-  !props.bot || directBotsStore.isBotDetailHydrated(props.instanceId, props.bot.id),
-);
+// Revision of the authoritative detail that the untouched fields show. A
+// summary never carries instructions, so Save stays gated while this is null.
+// Submitting then could wipe instructions the user never saw.
+const filledRevision = ref<number | null>(null);
+const detailHydrated = computed(() => !props.bot || filledRevision.value !== null);
 const detailLoading = ref(false);
 const detailLoadError = ref<string | null>(null);
 
-// Prepopulate defaults if create mode. A generation counter fences the async
-// form-options + instructions loads: closing/reopening (or switching bots) must
-// not let a stale response overwrite the current dialog's fields. Unmount bumps
-// the generation so a late resolution after close is dropped.
+// Unmount bumps the generation so a load that resolves after close (or after
+// switching Bots) cannot write into this dialog's fields.
 let dialogGeneration = 0;
 onUnmounted(() => { dialogGeneration++; });
-// Retryable detail hydration: a transient bots.get failure must surface a
-// visible error + Retry instead of silently wedging Save disabled. A late
-// background success (e.g. bots-changed converging the store) also releases
-// the gate via syncHydratedFromStore(). Untouched-fields-only fill preserves
-// user edits across retries.
-function fillUntouchedFromDetail(detail: BotDetailDto): void {
-  // Full hydration from the authoritative detail: the open-time summary
-  // may predate a remote update (rev2 landed after the sidebar rendered
-  // rev1). Overwrite only fields the user has not touched since open;
-  // every field uses an explicit dirty flag because type-then-revert
-  // (old -> tmp -> old) looks pristine under value comparison but is a
-  // real user choice that must survive hydration.
-  if (!instructionsDirty.value) {
-    if (detail.instructions) instructions.value = detail.instructions;
-    else if (props.bot && detail.profileRevision !== props.bot.profileRevision) instructions.value = "";
-  }
+
+function cachedDetail(): BotDetailDto | undefined {
+  if (!props.bot || !directBotsStore.isBotDetailHydrated(props.instanceId, props.bot.id)) return undefined;
+  return directBotsStore.botDetails[`${props.instanceId}:${props.bot.id}`];
+}
+function summaryRevision(): number | undefined {
+  const botId = props.bot?.id;
+  return directBotsStore.botsByInstance[props.instanceId]?.find((b) => b.id === botId)?.profileRevision;
+}
+// Each field has an explicit dirty flag because type-then-revert
+// (old -> tmp -> old) looks pristine under value comparison but is a real
+// user choice.
+function applyDetail(detail: BotDetailDto): void {
+  if (filledRevision.value !== null && detail.profileRevision <= filledRevision.value) return;
+  if (!instructionsDirty.value) instructions.value = detail.instructions ?? "";
   if (!nameDirty.value) name.value = detail.name;
   if (!avatarDirty.value) avatar.value = detail.avatar ?? "";
   if (!roleDirty.value) role.value = detail.role ?? "";
@@ -179,92 +179,78 @@ function fillUntouchedFromDetail(detail: BotDetailDto): void {
   if (!modelDirty.value) model.value = detail.model ?? "";
   if (!effortDirty.value) effort.value = detail.effort ?? "";
   if (!enabledDirty.value) enabled.value = detail.enabled;
-  // detail load also converges authoritative lifecycle (hasRuntime);
-  // identityLocked reads the store, so no local copy is needed.
-}
-function syncHydratedFromStore(): boolean {
-  if (!props.bot || detailHydrated.value) return detailHydrated.value;
-  if (directBotsStore.isBotDetailHydrated(props.instanceId, props.bot.id)) {
-    const detail = directBotsStore.botDetails[`${props.instanceId}:${props.bot.id}`];
-    if (detail) fillUntouchedFromDetail(detail);
-    detailHydrated.value = true;
-    detailLoadError.value = null;
-    return true;
-  }
-  return false;
+  filledRevision.value = detail.profileRevision;
+  detailLoadError.value = null;
 }
 async function hydrateDetail(generation: number): Promise<void> {
-  if (!props.bot || syncHydratedFromStore()) return;
+  if (!props.bot || detailLoading.value) return;
   detailLoading.value = true;
   detailLoadError.value = null;
   try {
     const detail = await directBotsStore.loadBotDetail(props.instanceId, props.bot.id);
     if (generation !== dialogGeneration) return;
-    fillUntouchedFromDetail(detail);
-    detailHydrated.value = true;
+    applyDetail(detail);
   } catch (err: unknown) {
     if (generation !== dialogGeneration) return;
-    // Fail-closed with a recovery path: Save stays gated (it cannot wipe
-    // unseen instructions), but the user gets an explicit Retry instead of
-    // a silently dead form.
     detailLoadError.value = err instanceof Error ? err.message : String(err);
   } finally {
     if (generation === dialogGeneration) detailLoading.value = false;
   }
 }
-onMounted(async () => {
-  const generation = ++dialogGeneration;
-  // instructionsDirty tracks real user edits (value comparison is
-  // insufficient: type-then-clear returns to the pristine value).
-  try {
-    await instancesStore.loadFormOptions(props.instanceId);
-  } catch {
-    // Ignore options load error; validation surfaces missing agent/workspace.
+// The store refetches detail only for the selected Bot, so a dialog opened
+// from the sidebar for another Bot refetches itself on a newer revision.
+function syncFromStore(): void {
+  if (!props.bot) return;
+  const cached = cachedDetail();
+  if (cached) {
+    applyDetail(cached);
+    return;
   }
-  if (generation !== dialogGeneration) return;
-  if (props.bot && !directBotsStore.isBotDetailHydrated(props.instanceId, props.bot.id)) {
-    await hydrateDetail(generation);
+  const rev = summaryRevision();
+  if (filledRevision.value !== null && typeof rev === "number" && rev > filledRevision.value) {
+    void hydrateDetail(dialogGeneration);
   }
-  // A background bots-changed may converge authority while this dialog sits
-  // in the failed state: release the gate without requiring a manual retry.
-  syncHydratedFromStore();
-  if (!agent.value && availableAgents.value.length > 0) {
-    agent.value = availableAgents.value[0]?.name ?? "";
-  }
-  if (!workspace.value && availableWorkspaces.value.length > 0) {
-    workspace.value = availableWorkspaces.value[0]?.name ?? "";
-  }
-  await loadCapabilities(false);
+}
+
+const openTimeDetail = cachedDetail();
+if (openTimeDetail) applyDetail(openTimeDetail);
+
+onMounted(() => {
+  void (async () => {
+    const generation = ++dialogGeneration;
+    if (!detailHydrated.value) void hydrateDetail(generation);
+    try {
+      await instancesStore.loadFormOptions(props.instanceId);
+    } catch {
+      // Ignore options load error; validation surfaces missing agent/workspace.
+    }
+    if (generation !== dialogGeneration) return;
+    syncFromStore();
+    if (!agent.value && availableAgents.value.length > 0) {
+      agent.value = availableAgents.value[0]?.name ?? "";
+    }
+    if (!workspace.value && availableWorkspaces.value.length > 0) {
+      workspace.value = availableWorkspaces.value[0]?.name ?? "";
+    }
+    await loadCapabilities(false);
+  })();
 });
 watch([agent, workspace, () => props.bot?.id], () => {
   void loadCapabilities(false);
 });
 
 function retryHydrate(): void {
-  // Reuse the mount generation: the dialog is still open, so the in-flight
-  // fence stays valid; a close/reopen bumps it and drops late resolutions.
   void hydrateDetail(dialogGeneration);
 }
-// Reactive bridge for background authority convergence: bots-changed (or any
-// other path) may hydrate the store while this dialog sits in the failed
-// state. The plain botDetailHydrated map is non-reactive, so watch the
-// reactive sources that always change alongside it — the cached detail row
-// and the summary revision. syncHydratedFromStore() is sync and generation
-// fenced by mount/unmount disposal, so late store writes cannot leak into a
-// closed dialog.
+// botDetailHydrated in the store is not reactive; the cached row and the
+// summary revision always change alongside it.
 watch(
   () => {
     const botId = props.bot?.id;
     if (!botId) return null;
-    const key = `${props.instanceId}:${botId}`;
-    return [
-      directBotsStore.botDetails[key],
-      directBotsStore.botsByInstance[props.instanceId]?.find((b) => b.id === botId)?.profileRevision,
-    ] as const;
+    return [directBotsStore.botDetails[`${props.instanceId}:${botId}`], summaryRevision()] as const;
   },
-  () => {
-    syncHydratedFromStore();
-  },
+  syncFromStore,
 );
 async function submit(): Promise<void> {
   const trimmedName = name.value.trim();
@@ -482,8 +468,9 @@ async function submit(): Promise<void> {
             id="bot-instructions"
             v-model="instructions"
             rows="4"
-            :placeholder="$t('bot.fields.instructionsPlaceholder')"
-            class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none transition-colors focus:border-accent resize-y"
+            :disabled="!detailHydrated"
+            :placeholder="detailHydrated ? $t('bot.fields.instructionsPlaceholder') : $t('bot.fields.instructionsLoading')"
+            class="w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm outline-none transition-colors focus:border-accent resize-y disabled:cursor-wait disabled:opacity-60"
             @input="instructionsDirty = true"
           />
           <p class="mt-1 text-[11px] text-fg-muted">
@@ -531,10 +518,29 @@ async function submit(): Promise<void> {
             </label>
           </div>
         </div>
+        <p v-if="storedEnabled === true && !enabled"
+           data-test="bot-dialog-disable-note"
+           class="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-fg">
+          {{ $t("bot.lifecycle.disableNote") }}
+        </p>
+        <p v-else-if="storedEnabled === false && enabled"
+           data-test="bot-dialog-reenable-note"
+           class="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-fg">
+          {{ $t("bot.lifecycle.reenableNote") }}
+        </p>
       </form>
 
       <!-- Footer -->
       <div class="flex items-center justify-end gap-2.5 border-t border-border px-5 py-3 bg-surface/50">
+        <button
+          v-if="isEditing && props.bot && props.bot.retired !== true"
+          type="button"
+          data-test="bot-dialog-remove"
+          class="mr-auto rounded-lg border border-danger/40 px-3 py-1.5 text-xs font-medium text-danger"
+          @click="removalOpen = true"
+        >
+          {{ $t("bot.removal.action") }}
+        </button>
         <button
           type="button"
           class="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
@@ -553,5 +559,14 @@ async function submit(): Promise<void> {
         </button>
       </div>
     </div>
+    <BotRemovalDialog
+      v-if="removalOpen && props.bot"
+      :bot-name="props.bot.name"
+      :preview="() => directBotsStore.previewBotRemoval(props.instanceId, props.bot!.id)"
+      :remove="(input) => directBotsStore.removeBot(props.instanceId, { botId: props.bot!.id, ...input })"
+      :get-operation="(id) => directBotsStore.getLifecycleOperation(props.instanceId, id)"
+      @close="removalOpen = false"
+      @removed="removalOpen = false; emit('close')"
+    />
   </div>
 </template>

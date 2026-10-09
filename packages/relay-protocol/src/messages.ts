@@ -26,7 +26,9 @@ import type {
   UsageCostDto,
   WorkspaceDto,
   BotDetailDto,
+  BotRemovalPreviewDto,
   BotSummaryDto,
+  LifecycleOperationDto,
   ConversationDetailDto,
   ConversationHistoryResponseDto,
   ConversationPromptResponseDto,
@@ -39,6 +41,7 @@ import type {
   GroupDetailDto,
   GroupSummaryDto,
   GroupTopicCreateTargetDto,
+  TopicImpactDto,
   TopicSummaryDto,
 } from "./dtos.js";
 
@@ -145,10 +148,19 @@ export const MSG = {
   botsCreate: "control.bots.create",
   botsUpdate: "control.bots.update",
   botsDelete: "control.bots.delete",
+  botsRemovePreview: "control.bots.remove.preview",
+  botsRemove: "control.bots.remove",
+  lifecycleOperationsGet: "control.lifecycle.operations.get",
   conversationsList: "control.conversations.list",
   conversationsGet: "control.conversations.get",
   topicsList: "control.topics.list",
   topicsCreate: "control.topics.create",
+  topicsUpdate: "control.topics.update",
+  topicsArchive: "control.topics.archive",
+  topicsRestore: "control.topics.restore",
+  topicsTeardown: "control.topics.teardown",
+  topicsClear: "control.topics.clear",
+  topicsPreview: "control.topics.preview",
   groupsCreate: "control.groups.create",
   groupsUpdate: "control.groups.update",
   groupsDelete: "control.groups.delete",
@@ -536,6 +548,28 @@ export interface BotsUpdateResult {
 export interface BotsDeletePayload {
   id: string;
 }
+export interface BotsRemovePreviewPayload {
+  id: string;
+}
+export interface BotsRemovePreviewResult {
+  impact: BotRemovalPreviewDto;
+}
+export interface BotsRemovePayload {
+  id: string;
+  requestId: string;
+  previewRevision: string;
+  clearDirectHistory?: boolean;
+  releaseDirectBindings?: boolean;
+}
+export interface BotsRemoveResult {
+  operation: LifecycleOperationDto;
+}
+export interface LifecycleOperationsGetPayload {
+  id: string;
+}
+export interface LifecycleOperationsGetResult {
+  operation: LifecycleOperationDto;
+}
 export interface ConversationsListPayload {
   botId?: string;
 }
@@ -561,6 +595,58 @@ export interface TopicsCreatePayload {
 }
 export interface TopicsCreateResult {
   topic: TopicSummaryDto;
+}
+export interface TopicsUpdatePayload {
+  conversationId: string;
+  topicId: string;
+  title: string;
+}
+export interface TopicsUpdateResult {
+  topic: TopicSummaryDto;
+}
+export interface TopicsArchivePayload {
+  conversationId: string;
+  topicId: string;
+}
+export interface TopicsArchiveResult {
+  topic: TopicSummaryDto;
+}
+export interface TopicsRestorePayload {
+  conversationId: string;
+  topicId: string;
+}
+export interface TopicsRestoreResult {
+  topic: TopicSummaryDto;
+}
+export interface TopicsTeardownPayload {
+  conversationId: string;
+  topicId: string;
+  requestId: string;
+  releaseBindings?: boolean;
+}
+export interface TopicsTeardownResult {
+  ok: true;
+  requestId: string;
+}
+export interface TopicsClearPayload {
+  conversationId: string;
+  topicId: string;
+  requestId: string;
+  confirm: true;
+  releaseBindings?: boolean;
+}
+export interface TopicsClearResult {
+  ok: true;
+  requestId: string;
+  contextGeneration: number;
+  topic: TopicSummaryDto;
+}
+export interface TopicsPreviewPayload {
+  conversationId: string;
+  topicId: string;
+}
+export interface TopicsPreviewResult {
+  impact: TopicImpactDto;
 }
 export interface GroupsCreatePayload {
   title: string;

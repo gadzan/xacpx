@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile, rename, writeFile } from "node:fs/promises";
 
+import { parseBotRemovalRecord, type BotRemovalRecord } from "../bots/bot-removal";
 import type { BotProfile, BotRuntimeBinding } from "../bots/bot-types";
 import type { ConversationRecord, ConversationTopic } from "../conversations/conversation-types";
 import { classifyConversationRoot } from "../conversations/conversation-roots";
@@ -952,6 +953,23 @@ function parseBotProfiles(
   return bots;
 }
 
+function parseBotRemovals(
+  raw: unknown,
+  dropped: StateLoadDroppedRecord[],
+): Record<string, BotRemovalRecord> {
+  const source = sectionRecord(raw, "bot_removals", dropped);
+  const removals: Record<string, BotRemovalRecord> = {};
+  for (const [id, value] of Object.entries(source)) {
+    const parsed = parseBotRemovalRecord(value, id);
+    if (!parsed) {
+      dropped.push({ section: "bot_removals", key: id, reason: "malformed bot removal record" });
+      continue;
+    }
+    removals[id] = parsed;
+  }
+  return removals;
+}
+
 function isUniqueStringArray(value: unknown): value is string[] {
   return isStringArray(value) && new Set(value).size === value.length;
 }
@@ -1030,7 +1048,12 @@ function isConversationTopic(value: unknown): value is ConversationTopic {
     isString(value.createdAt) &&
     isString(value.updatedAt) &&
     isExecutionTarget(value.executionTarget) &&
-    (value.maxConcurrentMemberTurns === undefined || isMemberConcurrencyLimit(value.maxConcurrentMemberTurns))
+    (value.maxConcurrentMemberTurns === undefined || isMemberConcurrencyLimit(value.maxConcurrentMemberTurns)) &&
+    (value.contextGeneration === undefined
+      || (typeof value.contextGeneration === "number"
+        && Number.isInteger(value.contextGeneration)
+        && value.contextGeneration >= 1)) &&
+    (value.managedAt === undefined || isString(value.managedAt))
   );
 }
 
@@ -1061,7 +1084,11 @@ function isBotRuntimeBinding(value: unknown): value is BotRuntimeBinding {
     !isString(value.logicalSessionId) ||
     !isString(value.sessionAlias) ||
     !isString(value.createdAt) ||
-    !isString(value.updatedAt)
+    !isString(value.updatedAt) ||
+    (value.contextGeneration !== undefined
+      && (typeof value.contextGeneration !== "number"
+        || !Number.isInteger(value.contextGeneration)
+        || value.contextGeneration < 1))
   ) {
     return false;
   }
@@ -1113,6 +1140,7 @@ export function parseState(
   repairExternalCoordinatorIdentityCollisions(parsedSessions, orchestration, dropped);
 
   const bots = parseBotProfiles(raw.bots, dropped);
+  const botRemovals = parseBotRemovals(raw.bot_removals, dropped);
   const conversations = parseConversations(raw.conversations, dropped);
   const conversationTopics = parseConversationTopics(raw.conversation_topics, dropped);
   const bindings = parseBotRuntimeBindings(raw.bot_runtime_bindings, dropped);
@@ -1125,6 +1153,7 @@ export function parseState(
     orchestration,
     scheduled_tasks: parseScheduledTasks(raw.scheduled_tasks, dropped),
     bots,
+    bot_removals: botRemovals,
     conversations,
     conversation_topics: conversationTopics,
     bot_runtime_bindings: bindings,
