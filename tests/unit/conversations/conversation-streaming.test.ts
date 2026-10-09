@@ -90,6 +90,41 @@ for (const kind of ["bot-direct", "group-member"] as const) {
       const outcome = await runReply({ kind, replyMode, chunks: tokenChunks, finalText: expected });
       expectReply(outcome, tokenChunks, expected);
     });
+
+    test(`${kind} completes a partially streamed reply with global ${replyMode} mode`, async () => {
+      const chunks = ["你", "好"];
+      const suffix = "世界\n\n第二段。";
+      const expected = chunks.join("") + suffix;
+      const outcome = await runReply({ kind, replyMode, chunks, finalText: expected });
+      expectReply(outcome, [...chunks, suffix], expected);
+    });
+  }
+
+  for (const fixture of [
+    {
+      name: "preserves the missing Markdown suffix verbatim",
+      chunks: ["| 列 |", " 值 |\n"],
+      finalText: "| 列 | 值 |\n| --- | --- |\n| 中文 | 世界 |\n",
+      suffix: "| --- | --- |\n| 中文 | 世界 |\n",
+    },
+    {
+      name: "does not replay a shorter final response",
+      chunks: ["你好", "世界"], finalText: "你好", suffix: "",
+    },
+    {
+      name: "does not guess a trailing delta from a nonmatching settled response",
+      chunks: ["你好"], finalText: "世界", suffix: "",
+    },
+    {
+      name: "preserves streamed text when the final response is empty",
+      chunks: ["你好", "世界"], finalText: "", suffix: "",
+    },
+  ]) {
+    test(`${kind} ${fixture.name}`, async () => {
+      const { chunks, finalText, suffix } = fixture;
+      const outcome = await runReply({ kind, replyMode: "verbose", chunks, finalText });
+      expectReply(outcome, suffix ? [...chunks, suffix] : chunks, chunks.join("") + suffix);
+    });
   }
 
   for (const chunks of [[], [""]] as string[][]) {
@@ -107,11 +142,13 @@ for (const kind of ["bot-direct", "group-member"] as const) {
 }
 
 for (const replyMode of ["verbose", "final", "stream"] as const) {
-  test(`trusted Group execution token preserves streaming with global ${replyMode} mode`, async () => {
+  test(`trusted Group execution token preserves streaming and the final suffix with global ${replyMode} mode`, async () => {
     const expected = tokenChunks.join("");
+    const chunks = tokenChunks.slice(0, -1);
+    const suffix = tokenChunks.at(-1)!;
     const groupExecutionToken = "private-group-execution-test";
-    const outcome = await runReply({ kind: "group-member", replyMode, chunks: tokenChunks, finalText: expected, groupExecutionToken });
-    expectReply(outcome, tokenChunks, expected);
+    const outcome = await runReply({ kind: "group-member", replyMode, chunks, finalText: expected, groupExecutionToken });
+    expectReply(outcome, [...chunks, suffix], expected);
     expect(outcome.bridgeParams[0]).toMatchObject({
       mcpCoordinatorSession: groupExecutionToken, mcpSourceHandle: groupExecutionToken,
     });

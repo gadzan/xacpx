@@ -12,9 +12,17 @@ mode, so token chunks concatenate without inserted paragraph breaks or Weixin
 message quotas. Conversation settlement returns the accumulated full reply for
 durable public messages, even when the streaming adapter returns an empty final
 `response.text`. External bound channels deliver this settled result through their
-own outbound presentation path. If the adapter emits no nonempty text segment,
-its final response text is delivered and persisted once; an entirely empty reply
-remains empty.
+own outbound presentation path.
+
+The Bridge prompt result is settled whole-turn agent text, not a trailing delta:
+Runtime accumulates non-thought text deltas, and CLI extracts agent message chunks
+from the complete stdout before sanitizing the result. Streamed segments can
+include separate text rendering or transcript boundaries, so the two forms are
+not guaranteed to match. In stream mode, the transport appends only the missing
+suffix when the final result starts with the exact concatenated segments. An
+equal result is not replayed, and a shorter or nonmatching result leaves the
+streamed reply intact. With no text segments the entire final response is
+delivered and persisted once; an entirely empty reply remains empty.
 
 ## Store ownership
 

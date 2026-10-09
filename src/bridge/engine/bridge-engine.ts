@@ -16,6 +16,12 @@ export interface BridgeEngine {
   listAgentSessions(input: EngineListInput): Promise<AgentSessionListResult | undefined>;
   ensureSession(input: EngineSessionInput, onProgress?: (progress: EnsureEngineSessionProgress) => void): Promise<Record<string, never>>;
   resumeAgentSession(input: EngineSessionInput & { agentSessionId: string }): Promise<Record<string, never>>;
+  /**
+   * Returns the settled whole-turn agent text, not an unstreamed tail.
+   * Streamed segments may also include text rendering or boundary normalization,
+   * while CLI result extraction sanitizes the final text. Consumers must verify
+   * an exact stream prefix before appending a missing suffix.
+   */
   prompt(
     input: EnginePromptInput,
     onEvent?: (event: EnginePromptStreamEvent) => void,
