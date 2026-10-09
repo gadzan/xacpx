@@ -172,6 +172,14 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - **取消运行中回合**：可从聊天面板取消在途回合（`control.prompt.cancel`）。
 - **会话创建/删除 UI**：可从左栏实例树创建/删除逻辑会话（补齐 §4.5）。
 
+## 模型选择（`ModelPicker.vue`）
+
+Bot 对话框和新建 Session 对话框共用 `ModelPicker`。它读取 `control.agents.capabilities.get`，状态为 loading、ready、unsupported、needs-setup 或 error。默认选项和自定义 id 始终可以填写。配置里的 `modelCandidates` 标成建议，不显示成适配器结果。选中的 id 和实际生效的 id 分开显示。无效的显式 id 在运行时退回默认时显示为未生效。
+
+Bot 的 model / effort 在保存后作用于之后接受的 Run。已有 Session 作曲器仍用 `control.session.model.set` 做即时切换，不走这条能力 RPC。
+
+effort 随模型结果刷新。刷新失败时保留上一次已经拿到的合法 effort 列表。
+
 ## 会话创建对话框（`NewSessionDialog.vue`）
 
 - 点击实例树 `+ new session` 打开一个弹窗（取代原先简陋的内联三输入框）。打开时经
@@ -709,7 +717,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 ### 导航与 Bot 管理
 
 - **实例侧栏模式切换**：在左栏实例卡片中支持 `Sessions | Bots` 模式切换；切到 Bots 时展示 Bot 列表，包含名称、角色、agent、workspace 与启用状态；
-- **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd），agent/workspace 复用实例已有目录与工作区配置；支持删除确认与 fail-closed 错误提示。
+- **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd）。model / effort 使用 `ModelPicker` 和 `control.agents.capabilities.get`，不再使用写死的 effort 列表。agent/workspace 复用实例已有目录与工作区配置；支持删除确认与 fail-closed 错误提示。
 
 ### 话题与消息流（`DirectBotPane.vue`）
 

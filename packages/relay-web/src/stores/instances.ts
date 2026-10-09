@@ -2,13 +2,16 @@ import { defineStore } from "pinia";
 import { ref } from "vue";
 import {
   RELAY_CAPABILITIES,
+  errorCapability,
   isErrorPayload,
+  parseAgentCapabilityState,
+  unsupportedCapability,
+  type AgentCapabilityState,
   type AgentCatalogEntryDto,
   type AgentDto,
   type NativeSessionDto,
   type PublishedAgentEndpointDto,
   type SessionDto,
-  type SessionModelResult,
   type WebAgentDirectoryEndpointDto,
   type WebServerEvent,
   type WorkspaceDto,
@@ -727,39 +730,33 @@ export const useInstancesStore = defineStore("instances", () => {
     return sessions;
   }
 
-  // Best-effort model suggestions for the new-session form's datalist. acpx can't list
-  // an agent's models without a live session, so we reuse the advertised `available`
-  // list from an EXISTING session of the same agent + workspace. Returns [] when there
-  // is no such session (e.g. a brand-new agent) or on any failure — the form then falls
-  // back to a plain free-text input defaulting to "default".
-  async function listModelSuggestions(instanceId: string, agent: string, workspace: string): Promise<string[]> {
-    const inst = byId(instanceId);
-    // Only consider live (non-archived) same-agent+workspace sessions — a fresh session
-    // resembles a live one, not an archived rollout.
-    const candidates = (inst?.sessions ?? []).filter((s) => s.agent === agent && s.workspace === workspace && !s.archived);
-    if (candidates.length === 0) return [];
-    // Different adapter versions of the same agent advertise model ids in incompatible
-    // formats (e.g. codex: `gpt-5.5[high]` vs `gpt-5.5/high`). Seeding a NEW session's
-    // picker from a session running a DIFFERENT adapter would propose ids the new adapter
-    // rejects. We can't know the new session's adapter ahead of creation, so this is a
-    // best-effort gate: only reuse when every candidate shares ONE resolved adapter
-    // command; suppress (→ free-text default) when they visibly diverge. It can't catch
-    // every case — `agentCommand` is undefined whenever acpx didn't record the session's
-    // adapter (so two such sessions collapse to one value and still reuse) — but the
-    // transport's model-not-advertised fallback (drop the rejected `--model`, use the
-    // agent default) is the actual guarantee that a bad pick never bricks creation.
-    if (new Set(candidates.map((s) => s.agentCommand ?? "")).size > 1) return [];
-    const match = candidates[0];
+  async function getAgentCapabilities(
+    instanceId: string,
+    input: { agent: string; workspace: string; botId?: string; probe?: boolean },
+  ): Promise<AgentCapabilityState> {
+    const fetchedAt = new Date().toISOString();
     try {
-      const r = unwrap(await api.rpc<SessionModelResult>(instanceId, "control.session.model.get", { sessionAlias: match.alias }));
-      const seen = new Set<string>();
-      const out: string[] = [];
-      for (const m of [...(r.current ? [r.current] : []), ...r.available]) {
-        if (m && !seen.has(m)) { seen.add(m); out.push(m); }
+      const raw = unwrap(await api.rpc(instanceId, "control.agents.capabilities.get", {
+        agent: input.agent,
+        workspace: input.workspace,
+        ...(input.botId ? { botId: input.botId } : {}),
+        ...(input.probe ? { probe: true } : {}),
+      }));
+      return parseAgentCapabilityState(raw);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("newer connector")) {
+        return unsupportedCapability(
+          { code: "probe-unavailable", message },
+          "Rebuild and reconnect the relay channel on that instance.",
+          { fetchedAt },
+        );
       }
-      return out;
-    } catch {
-      return [];
+      return errorCapability(
+        { code: "transport", message },
+        "Retry. An old or failed response is not an empty model list.",
+        { fetchedAt },
+      );
     }
   }
 
@@ -965,5 +962,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return undefined;
   }
 
-  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, listModelSuggestions, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
+  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
 });

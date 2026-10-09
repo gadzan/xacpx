@@ -26,7 +26,15 @@ function mountDialog() {
   }] as never;
   vi.spyOn(store, "loadFormOptions").mockResolvedValue();
   vi.spyOn(store, "listNativeSessions").mockResolvedValue([]);
-  vi.spyOn(store, "listModelSuggestions").mockResolvedValue([]);
+  vi.spyOn(store, "getAgentCapabilities").mockResolvedValue({
+    status: "needs-setup",
+    reason: { code: "discovery-available", message: "no saved model list" },
+    recovery: "Fetch the model list.",
+    fetchedAt: "2026-10-09T00:00:00.000Z",
+    suggestions: [],
+    efforts: { status: "unavailable" },
+    effect: { kind: "default" },
+  });
   const wrapper = mount(NewSessionDialog, {
     props: { instanceId: "i1", instanceName: "pc" },
     attachTo: document.body,
