@@ -660,4 +660,81 @@ describe("desktop store", () => {
     expect(view.lastErrorCode).toBe("desktop-instance-offline");
     expect(view.lastErrorMessage).toContain("offline");
   });
+
+  it("a macOS challenge is a prompt, and signIn is the only sender of a credential", async () => {
+    const store = useDesktopStore();
+    const { requestDesktop } = await import("../api/events");
+    const opens: Array<Record<string, unknown>> = [];
+    (requestDesktop as unknown as { mockImplementation: (fn: (msg: unknown) => Promise<unknown>) => void })
+      .mockImplementation(async (msg: unknown) => {
+        const record = msg as Record<string, unknown>;
+        opens.push(record);
+        if (!record.credential) {
+          throw new DesktopRequestError("desktop-credentials-required", "macOS Screen Sharing needs an account name and password");
+        }
+        if (opens.length === 2) {
+          throw new DesktopRequestError("desktop-credentials-rejected", "nope");
+        }
+        return {
+          requestId: record.requestId,
+          instanceId: "i-mac",
+          streamId: "s-mac",
+          wsPath: "/desktop/observe?ticket=t",
+          expiresAt: 1,
+          security: "ard",
+        };
+      });
+
+    const host = document.createElement("div");
+    await expect(store.open("i-mac", {}, { target: host })).rejects.toBeInstanceOf(DesktopRequestError);
+    const challenged = store.viewFor("i-mac");
+    expect(challenged.status).toBe("auth-required");
+    if (challenged.status === "auth-required") {
+      expect(challenged.prompt).toEqual({ kind: "macos-account", rejected: false });
+    }
+    expect(JSON.stringify(challenged)).not.toContain("secret");
+    expect(opens[0]?.credential).toBeUndefined();
+
+    store.signIn("i-mac", { username: "dana", password: "secret" });
+    await vi.waitFor(() => {
+      const row = store.viewFor("i-mac");
+      expect(row.status).toBe("auth-required");
+      if (row.status === "auth-required" && row.prompt.kind === "macos-account") {
+        expect(row.prompt.rejected).toBe(true);
+      }
+    });
+    expect(opens[1]?.credential).toEqual({ kind: "ard", username: "dana", password: "secret" });
+    const rejected = store.viewFor("i-mac");
+    expect(rejected.status).toBe("auth-required");
+    if (rejected.status === "auth-required") {
+      expect(rejected.prompt).toEqual({ kind: "macos-account", rejected: true });
+    }
+    expect(rejected.ardUsername).toBe("dana");
+    expect(JSON.stringify(rejected)).not.toContain("secret");
+    expect(JSON.stringify(store.sessions.get("i-mac"))).not.toContain("secret");
+
+    store.reconnect("i-mac");
+    await vi.waitFor(() => {
+      expect(opens).toHaveLength(3);
+      const row = store.viewFor("i-mac");
+      expect(row.status).toBe("auth-required");
+      if (row.status === "auth-required" && row.prompt.kind === "macos-account") {
+        expect(row.prompt.rejected).toBe(false);
+      }
+    });
+    expect(opens[2]?.credential).toBeUndefined();
+    const again = store.viewFor("i-mac");
+    expect(again.status).toBe("auth-required");
+    expect(again.ardUsername).toBe("dana");
+    if (again.status === "auth-required") {
+      expect(again.prompt).toEqual({ kind: "macos-account", rejected: false });
+    }
+    expect(JSON.stringify(again)).not.toContain("secret");
+  });
+
+  it("an ard noVNC security failure is a protocol error", async () => {
+    const { classifySecurityFailure } = await import("../stores/desktop");
+    expect(classifySecurityFailure({ status: 1, reason: "authentication failure" }, "ard"))
+      .toEqual({ code: "desktop-protocol-error", retryable: false });
+  });
 });

@@ -6,6 +6,8 @@ import { onScopeDispose, ref } from "vue";
 
 import {
   DESKTOP_RPC_TIMEOUT_MS,
+  parseDesktopCredential,
+  type DesktopCredential,
   type DesktopSecurityKind,
 } from "@ganglion/xacpx-relay-protocol";
 import {
@@ -28,16 +30,28 @@ export type DesktopStatus =
   | "closed"
   | "error";
 
-export interface DesktopSessionView {
+export type DesktopAuthPrompt =
+  | { kind: "vnc-password" }
+  | { kind: "macos-account"; rejected: boolean };
+
+type DesktopSessionBase = {
   instanceId: string;
-  status: DesktopStatus;
   streamId?: string;
   security?: DesktopSecurityKind;
-  needsPassword: boolean;
+  /** Last macOS account name typed in this tab. Prefill only. Never a password. */
+  ardUsername?: string;
   lastErrorCode?: string;
   lastErrorMessage?: string;
   fit: boolean;
-}
+};
+
+export type DesktopSessionView =
+  | (DesktopSessionBase & { status: "auth-required"; prompt: DesktopAuthPrompt })
+  | (DesktopSessionBase & { status: Exclude<DesktopStatus, "auth-required"> });
+
+type DesktopSessionPatch =
+  | (Partial<DesktopSessionBase> & { status: "auth-required"; prompt: DesktopAuthPrompt })
+  | (Partial<DesktopSessionBase> & { status?: Exclude<DesktopStatus, "auth-required"> });
 
 /**
  * Browser-local error code for a VNC password the server rejected. Distinct from
@@ -64,15 +78,30 @@ export const DESKTOP_AUTH_FAILED_CODE = "desktop-auth-failed";
  * So the discriminator is the phase: only a failure AFTER the user submitted a
  * VncAuth password is a rejected password.
  */
-export function classifySecurityFailure(failure: {
-  status?: number;
-  reason?: string;
-  credentialsSubmitted?: boolean;
-}): { code: string; retryable: boolean } {
+export function classifySecurityFailure(
+  failure: {
+    status?: number;
+    reason?: string;
+    credentialsSubmitted?: boolean;
+  },
+  security: DesktopSecurityKind = "vnc-auth",
+): { code: string; retryable: boolean } {
+  if (security === "ard") return { code: "desktop-protocol-error", retryable: false };
   if (failure.credentialsSubmitted === true) {
     return { code: DESKTOP_AUTH_FAILED_CODE, retryable: true };
   }
   return { code: "desktop-auth-unsupported", retryable: false };
+}
+
+function rowAfterOpenFailure(code: string): DesktopSessionPatch {
+  if (code === "desktop-credentials-required") {
+    return { status: "auth-required", prompt: { kind: "macos-account", rejected: false } };
+  }
+  if (code === "desktop-credentials-rejected") {
+    return { status: "auth-required", prompt: { kind: "macos-account", rejected: true } };
+  }
+  if (isRetryableDesktopError(code)) return { status: "closed", lastErrorCode: code };
+  return { status: "error", lastErrorCode: code };
 }
 
 function errorMessageFor(code: string, fallback: string): string {
@@ -111,14 +140,37 @@ export const useDesktopStore = defineStore("desktop", () => {
   function viewFor(instanceId: string): DesktopSessionView {
     let view = sessions.value.get(instanceId);
     if (!view) {
-      view = { instanceId, status: "idle", needsPassword: false, fit: true };
+      view = { instanceId, status: "idle", fit: true };
       sessions.value.set(instanceId, view);
     }
     return view;
   }
 
-  function patch(instanceId: string, patch: Partial<DesktopSessionView>): DesktopSessionView {
-    const view = { ...viewFor(instanceId), ...patch, instanceId };
+  function patch(instanceId: string, next: DesktopSessionPatch): DesktopSessionView {
+    const prev = viewFor(instanceId);
+    const status = next.status ?? prev.status;
+    const merged: DesktopSessionBase = { instanceId, fit: next.fit ?? prev.fit };
+    const streamId = "streamId" in next ? next.streamId : prev.streamId;
+    if (streamId !== undefined) merged.streamId = streamId;
+    const security = "security" in next ? next.security : prev.security;
+    if (security !== undefined) merged.security = security;
+    const ardUsername = "ardUsername" in next ? next.ardUsername : prev.ardUsername;
+    if (ardUsername !== undefined) merged.ardUsername = ardUsername;
+    const lastErrorCode = "lastErrorCode" in next ? next.lastErrorCode : prev.lastErrorCode;
+    if (lastErrorCode !== undefined) merged.lastErrorCode = lastErrorCode;
+    const lastErrorMessage = "lastErrorMessage" in next ? next.lastErrorMessage : prev.lastErrorMessage;
+    if (lastErrorMessage !== undefined) merged.lastErrorMessage = lastErrorMessage;
+    let view: DesktopSessionView;
+    if (status === "auth-required") {
+      const prompt = next.status === "auth-required"
+        ? next.prompt
+        : (prev.status === "auth-required" ? prev.prompt : undefined);
+      view = prompt
+        ? { ...merged, status: "auth-required", prompt }
+        : { ...merged, status: "error", lastErrorCode: merged.lastErrorCode ?? "desktop-protocol-error" };
+    } else {
+      view = { ...merged, status };
+    }
     sessions.value.set(instanceId, view);
     return view;
   }
@@ -168,6 +220,25 @@ export const useDesktopStore = defineStore("desktop", () => {
     hooks: DesktopRfbHooks,
     opts: { signal?: AbortSignal; target?: HTMLElement | null; fit?: boolean } = {},
   ): Promise<void> {
+    await beginOpen(instanceId, hooks, opts);
+  }
+
+  function signIn(instanceId: string, account: { username: string; password: string }): void {
+    const parsed = parseDesktopCredential({ kind: "ard", username: account.username, password: account.password });
+    if (!parsed) return;
+    const context = reconnectContext.get(instanceId);
+    if (!context) return;
+    const fit = sessions.value.get(instanceId)?.fit ?? true;
+    patch(instanceId, { ardUsername: parsed.username });
+    void beginOpen(instanceId, context.hooks, { target: context.target, fit }, parsed).catch(() => undefined);
+  }
+
+  async function beginOpen(
+    instanceId: string,
+    hooks: DesktopRfbHooks,
+    opts: { signal?: AbortSignal; target?: HTMLElement | null; fit?: boolean } = {},
+    credential?: DesktopCredential,
+  ): Promise<void> {
     const existing = connections.get(instanceId);
     if (existing) return;
     ensureReconnectHook();
@@ -203,7 +274,12 @@ export const useDesktopStore = defineStore("desktop", () => {
     let opened;
     try {
       opened = await requestDesktop(
-        { kind: "desktop-open", requestId, instanceId },
+        {
+          kind: "desktop-open",
+          requestId,
+          instanceId,
+          ...(credential ? { credential } : {}),
+        },
         { timeoutMs: DESKTOP_RPC_TIMEOUT_MS },
       );
     } catch (err) {
@@ -228,11 +304,20 @@ export const useDesktopStore = defineStore("desktop", () => {
         throw err;
       }
       const code = err instanceof DesktopRequestError ? err.code : "desktop-protocol-error";
-      patch(instanceId, {
-        status: isRetryableDesktopError(code) ? "closed" : "error",
-        lastErrorCode: code,
-        lastErrorMessage: errorMessageFor(code, err instanceof Error ? err.message : String(err)),
-      });
+      const failure = rowAfterOpenFailure(code);
+      const message = errorMessageFor(code, err instanceof Error ? err.message : String(err));
+      if (failure.status === "auth-required") {
+        patch(instanceId, {
+          status: "auth-required",
+          prompt: failure.prompt,
+          lastErrorCode: undefined,
+          lastErrorMessage: undefined,
+        });
+      } else if (failure.status === "closed") {
+        patch(instanceId, { status: "closed", lastErrorCode: code, lastErrorMessage: message });
+      } else {
+        patch(instanceId, { status: "error", lastErrorCode: code, lastErrorMessage: message });
+      }
       throw err;
     } finally {
       // Identity-safe cleanup: a newer open() for the same instance may have
@@ -258,15 +343,10 @@ export const useDesktopStore = defineStore("desktop", () => {
     // a later close from naming a stream the hub already knows by streamId.
     if (pendingRequestId.get(instanceId) === requestId) pendingRequestId.delete(instanceId);
     patch(instanceId, {
-      status: opened.security === "ard" ? "error" : "connecting",
+      status: "connecting",
       streamId: opened.streamId,
       security: opened.security,
-      needsPassword: false,
-      ...(opened.security === "ard"
-        ? { lastErrorCode: "desktop-auth-unsupported", lastErrorMessage: "ARD auth needs Phase B" }
-        : {}),
     });
-    if (opened.security !== "vnc-auth") return;
     const url = desktopBinaryUrl(opened.wsPath);
     // Only this attempt may touch the row from now on: a superseding open()
     // bumps the generation, so a late hook from a stale connection must not
@@ -280,7 +360,7 @@ export const useDesktopStore = defineStore("desktop", () => {
       hooks: {
         onConnect: () => {
           if (!mine()) return;
-          patch(instanceId, { status: "open", needsPassword: false });
+          patch(instanceId, { status: "open" });
           hooks.onConnect?.();
         },
         onDisconnect: (detail) => {
@@ -296,7 +376,11 @@ export const useDesktopStore = defineStore("desktop", () => {
           // desktop-stream-timeout and the user would reconnect forever into
           // the same wall.
           const settled = viewFor(instanceId).lastErrorCode;
-          if (settled === DESKTOP_AUTH_FAILED_CODE || settled === "desktop-auth-unsupported") {
+          if (
+            settled === DESKTOP_AUTH_FAILED_CODE
+            || settled === "desktop-auth-unsupported"
+            || settled === "desktop-protocol-error"
+          ) {
             hooks.onDisconnect?.(detail);
             return;
           }
@@ -308,7 +392,7 @@ export const useDesktopStore = defineStore("desktop", () => {
         },
         onCredentialsRequired: () => {
           if (!mine()) return;
-          patch(instanceId, { status: "auth-required", needsPassword: true });
+          patch(instanceId, { status: "auth-required", prompt: { kind: "vnc-password" } });
           hooks.onCredentialsRequired?.();
         },
         onSecurityFailure: (failure) => {
@@ -318,10 +402,9 @@ export const useDesktopStore = defineStore("desktop", () => {
           // together with whether a password was actually submitted — never on
           // the server's wording, which noVNC documents as optional and of
           // unspecified language.
-          const failed = classifySecurityFailure(failure);
+          const failed = classifySecurityFailure(failure, viewFor(instanceId).security ?? "vnc-auth");
           patch(instanceId, {
             status: "error",
-            needsPassword: false,
             lastErrorCode: failed.code,
             lastErrorMessage: failure.reason ?? "authentication failed",
           });
@@ -337,7 +420,7 @@ export const useDesktopStore = defineStore("desktop", () => {
   function sendCredentials(instanceId: string, password: string): void {
     const connection = connections.get(instanceId);
     if (!connection) return;
-    patch(instanceId, { status: "connecting", needsPassword: false });
+    patch(instanceId, { status: "connecting" });
     connection.sendCredentials(password);
   }
 
@@ -421,6 +504,17 @@ export const useDesktopStore = defineStore("desktop", () => {
    * — must be carried across verbatim, or the reconnect renders into a detached
    * div and the tab stays black while reporting success.
    */
+  function reconnect(instanceId: string): void {
+    const view = sessions.value.get(instanceId);
+    const context = reconnectContext.get(instanceId);
+    const fit = view?.fit ?? true;
+    const ardUsername = view?.ardUsername;
+    close(instanceId);
+    if (!context) return;
+    void open(instanceId, context.hooks, { target: context.target, fit }).catch(() => undefined);
+    if (ardUsername) patch(instanceId, { ardUsername });
+  }
+
   function reopenAfterWsReconnect(): void {
     const live = [...sessions.value.entries()].filter(([, view]) => {
       // A prepare interrupted by the SAME drop (`events-offline`) leaves a
@@ -431,20 +525,10 @@ export const useDesktopStore = defineStore("desktop", () => {
       if (view.status !== "closed") return true;
       return view.lastErrorCode === "events-offline";
     });
-    for (const [instanceId, view] of live) {
-      const context = reconnectContext.get(instanceId);
-      // Actual/Fit is a presentation preference the user toggles at any time via
-      // setFit(), which updates the session row — not the reconnect context. So
-      // read the CURRENT value here, before close() deletes the row it lives on,
-      // otherwise a transport reconnect silently reverts the user's choice.
-      const fit = view.fit;
-      close(instanceId);
-      if (!context) continue;
-      void open(instanceId, context.hooks, { target: context.target, fit });
-    }
+    for (const [instanceId] of live) reconnect(instanceId);
   }
 
-  return { sessions, viewFor, canOpen, open, sendCredentials, setFit, close, applyEvent, reopenAfterWsReconnect, ensureReconnectHook };
+  return { sessions, viewFor, canOpen, open, signIn, reconnect, sendCredentials, setFit, close, applyEvent, reopenAfterWsReconnect, ensureReconnectHook };
 });
 
 export function desktopBinaryUrl(wsPath: string): string {
