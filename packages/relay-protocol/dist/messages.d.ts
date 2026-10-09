@@ -985,10 +985,6 @@ export declare const RELAY_CAPABILITIES: {
     readonly terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1";
     readonly terminalMultiViewV1: "terminal.multi-view.v1";
     readonly desktopRfbV1: "desktop.rfb.v1";
-    /** The connector accepts a `credential` on `instance.desktop.prepare` and runs Apple
-     *  Remote Desktop (RFB type 30) itself. The hub forwards a credential only to an
-     *  instance that declares this, because an older connector was never written to
-     *  keep one out of its logs. */
     readonly desktopArdAuthV1: "desktop.ard-auth.v1";
     /** This side can open an ACP form elicitation for a human and carry the
      *  decision back. Both halves (hub and web) must declare it: a hub without it
@@ -1146,8 +1142,6 @@ export declare const DESKTOP_INNER_RFB_SCHEME: {
 };
 export type DesktopSecurityKind = keyof typeof DESKTOP_INNER_RFB_SCHEME;
 export declare function isDesktopSecurityKind(value: unknown): value is DesktopSecurityKind;
-/** A macOS account for one Apple Remote Desktop sign-in. Never stored, logged, or
- *  put in a URL, ticket, or RPC result. Build one only through `parseDesktopCredential`. */
 export type DesktopCredential = {
     kind: "ard";
     username: string;
@@ -1162,7 +1156,6 @@ export interface DesktopPreparePayload {
     ticket: string;
     /** Epoch ms when the ticket/stream reservation expires. */
     expiresAt: number;
-    /** Sent only after the browser answered `desktop-credentials-required`. */
     credential?: DesktopCredential;
 }
 export interface DesktopPrepareResult {

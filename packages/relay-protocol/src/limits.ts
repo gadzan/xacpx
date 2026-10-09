@@ -79,8 +79,6 @@ export const MAX_DESKTOP_TICKET_LENGTH = 128;
 /** `desktop-opened` wsPath (`/desktop/observe?ticket=…`); tickets stay opaque in the query. */
 export const MAX_DESKTOP_WS_PATH_LENGTH = 512;
 export const MAX_DESKTOP_ERROR_MESSAGE_LENGTH = 512;
-/** ARD packs each credential field NUL-terminated into 64 bytes. Longer input is
- *  refused, not truncated, so a cut password never fails as "rejected". */
 export const MAX_DESKTOP_CREDENTIAL_FIELD_BYTES = 63;
 /** Single-use desktop ticket TTL (hub ticket store + `expiresAt` stamped on prepare). */
 export const DESKTOP_TICKET_TTL_MS = 60_000;

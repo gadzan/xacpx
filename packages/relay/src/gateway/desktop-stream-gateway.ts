@@ -220,7 +220,6 @@ export class DesktopStreamGateway {
     this.logger.info("relay.desktop.stream_active", "desktop stream active", { streamId, security });
   }
 
-  /** Connector finished prepare. Both kinds go live: for `ard` it already authenticated. */
   reportConnectorReady(streamId: string, security: DesktopSecurityKind): boolean {
     const record = this.streams.get(streamId);
     if (!record || record.state === "closed") return false;

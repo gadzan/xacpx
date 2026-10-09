@@ -17,11 +17,6 @@ import {
   RFB_SECURITY_ARD,
 } from "./rfb-probe.js";
 
-/**
- * Whole ARD exchange, independent of `connectTimeoutMs` (default 1500). A stall
- * while macOS builds ServerInit has to stay a timeout, not a permission refusal,
- * and 1500ms is shorter than a cold Screen Sharing session.
- */
 export const ARD_PREAUTH_MAX_MS = 5_000;
 
 export type ArdPhase = "banner" | "security-types" | "challenge" | "security-result" | "server-init";
@@ -34,12 +29,6 @@ export type ArdRefusalCode = Extract<DesktopErrorCode,
   | "desktop-credentials-rejected"
   | "desktop-permission-denied">;
 
-/**
- * Phase picks the code. macOS reason text is optional and may be localised, so
- * it never decides credentials-rejected versus permission-denied.
- * `failed`: the server said no or closed. `stalled`: ARD_PREAUTH_MAX_MS ran out.
- * A close after a good SecurityResult is permission-denied; a stall there is a timeout.
- */
 const REFUSAL: Record<ArdPhase, { failed: ArdRefusalCode; stalled: ArdRefusalCode }> = {
   banner: { failed: "desktop-not-rfb", stalled: "desktop-stream-timeout" },
   "security-types": { failed: "desktop-protocol-error", stalled: "desktop-stream-timeout" },
@@ -54,11 +43,6 @@ export type ArdPreauthOutcome =
 
 const secretFields = new WeakMap<ArdSecret, { username: Buffer; password: Buffer }>();
 
-/**
- * Connector-side holder for one macOS account. `toJSON` and `util.inspect` print
- * a fixed placeholder so a log of the tunnel auth cannot spill the password.
- * `wipe()` zeroes the copies. `answerArdChallenge` is the only reader.
- */
 export class ArdSecret {
   constructor(credential: DesktopCredential) {
     secretFields.set(this, {
@@ -93,11 +77,6 @@ function readSecret(secret: ArdSecret): { username: Buffer; password: Buffer } |
   };
 }
 
-/**
- * Run the client half of ARD on a connected tunnel socket that nothing else is reading.
- * On success the socket is paused, this function's listeners are gone, and the next
- * readable bytes are ServerInit. On abort, rejects; the caller destroys `tcp`.
- */
 export async function preauthArd(
   tcp: net.Socket,
   secret: ArdSecret,
@@ -181,12 +160,7 @@ interface ArdChallenge {
   serverPublicKey: Uint8Array;
 }
 
-/**
- * 128-byte AES-128-ECB ciphertext, then the client DH public key.
- * noVNC 1.7.0 `_negotiateARDAuthAsync` sends that order; the reverse derives
- * the wrong secret on a real Mac. The key is MD5 of the shared secret left-padded
- * to `keyLength`. Each credential half is 64 bytes: UTF-8, a NUL, random fill.
- */
+// Ciphertext, then the client public key. noVNC 1.7.0 `_negotiateARDAuth` sends that order.
 function answerArdChallenge(challenge: ArdChallenge, secret: ArdSecret): Buffer {
   const fields = readSecret(secret);
   if (!fields) throw new ArdFramingError("ARD secret is gone");
@@ -356,11 +330,6 @@ const ARD_BROWSER_REPLY_PREFIX = Buffer.concat([
   Buffer.from([DESKTOP_INNER_RFB_SCHEME.ard]),
 ]);
 
-/**
- * noVNC answers the greeting with 14 bytes: version, its None choice, and ClientInit.
- * The first 13 are checked. All 14 are dropped — the Mac already has ClientInit
- * from this connector — and every later byte is returned unchanged.
- */
 export function createArdBrowserReplyFilter(): (chunk: Buffer) => Buffer | "mismatch" {
   let seen = 0;
   return (chunk) => {

@@ -151,7 +151,6 @@ function evaluateSecurityTypes(
   return classifySecurityTypes([securityType], banner.version);
 }
 
-/** Probe order: invalid, then type 2, then Tight-only, then Apple Remote Desktop, then the rest. */
 export function classifySecurityTypes(types: readonly number[], version: string): RfbProbeVerdict {
   if (types.includes(RFB_SECURITY_INVALID)) {
     return { ok: false, code: "desktop-rfb-unavailable", detail: "RFB server reported an invalid security type" };

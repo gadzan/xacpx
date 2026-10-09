@@ -1275,8 +1275,6 @@ export function parseWebClientMessage(envelope: RelayEnvelope): WebClientMessage
         ? (p as WebClientMessage)
         : null;
     case "desktop-open": {
-      // Closed schema: a browser-stamped streamId or wsPath, or a stray top-level
-      // password, is refused instead of riding along to the hub.
       if (!hasOnlyKeys(c, DESKTOP_OPEN_KEYS)
         || !isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH)
         || !isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)) return null;

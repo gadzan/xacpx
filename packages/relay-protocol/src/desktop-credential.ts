@@ -6,11 +6,6 @@ const CREDENTIAL_KEYS = { kind: true, username: true, password: true } satisfies
 
 const utf8 = new TextEncoder();
 
-/**
- * The only credential validator: the web `desktop-open` parser, the connector's prepare
- * validator, and the relay-web form all call it. Returns a freshly built object, so a key
- * that a looser caller let through never rides along.
- */
 export function parseDesktopCredential(value: unknown): DesktopCredential | null {
   if (!isObj(value) || !hasOnlyKeys(value, CREDENTIAL_KEYS)) return null;
   if (value.kind !== "ard" || !isCredentialField(value.username) || !isCredentialField(value.password)) return null;

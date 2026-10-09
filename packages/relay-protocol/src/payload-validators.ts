@@ -402,8 +402,6 @@ const validateTerminalTerminate: Validator<TerminalTerminatePayload> = (p) => {
 };
 const DESKTOP_PREPARE_KEYS = { streamId: true, ticket: true, expiresAt: true, credential: true } satisfies Record<keyof DesktopPreparePayload, true>;
 
-// Closed schema, so a hub-chosen host/port/target is refused like any other unknown key
-// and the connector keeps dialing only its own loopback config.
 const validateDesktopPrepare: Validator<DesktopPreparePayload> = (p) => {
   const o = fields(p);
   if (!o || !hasOnlyKeys(o, DESKTOP_PREPARE_KEYS)) return null;

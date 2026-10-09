@@ -113,10 +113,6 @@ export type TunnelAuth =
   | { security: "vnc-auth" }
   | { security: "ard"; secret: ArdSecret };
 
-/**
- * vnc-auth drops any credential. ard without a holder is the challenge: open nothing.
- * ard with a holder is the only value that carries the secret, and answerArdChallenge is its only reader.
- */
 function chooseTunnelAuth(security: DesktopSecurityKind, secret: ArdSecret | undefined): TunnelAuth | null {
   if (security === "vnc-auth") return { security: "vnc-auth" };
   if (!secret) return null;
@@ -430,7 +426,6 @@ export class DesktopTunnelRuntime {
   ): Promise<net.Socket> {
     const config = this.deps.config;
     const tcp = net.createConnection({ host: RFB_LOOPBACK_HOST, port: config.port });
-    // Before the await: an abort between create and connect must still close this socket.
     sockets.push({ kind: "tcp", sock: tcp });
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -477,7 +472,6 @@ export class DesktopTunnelRuntime {
       tcp.destroy();
       throw err instanceof Error ? err : new Error(String(err));
     }
-    // Before the upgrade await: closeAll during the dial must close this socket now.
     sockets.push({ kind: "ws", sock: socket });
     try {
       await openHubSocket(socket, pending.signal, config.connectTimeoutMs);
@@ -497,11 +491,6 @@ export class DesktopTunnelRuntime {
     return { socket, tunnel };
   }
 
-  /**
-   * Browser frames reach the Mac only through `fromBrowser`. VncAuth passes
-   * identity. ARD passes the greeting filter. The function takes no bytes, so
-   * it cannot be handed the Apple handshake.
-   */
   private spliceRaw(
     tunnel: ActiveTunnel,
     fromBrowser: (chunk: Buffer) => Buffer | "mismatch",

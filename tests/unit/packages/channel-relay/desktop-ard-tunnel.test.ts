@@ -157,8 +157,6 @@ function prepare(streamId: string, credential?: { kind: "ard"; username: string;
 }
 
 test("ARD prepare challenges with no tunnel, then greets the browser with ServerInit", async () => {
-  // Another desktop test replaces node:net.createConnection for the process.
-  // Call the real Socket so this Mac is the peer the connector dials.
   const previousConnect = net.createConnection;
   net.createConnection = ((options: { host?: string; port?: number }) => {
     const socket = new net.Socket();
