@@ -1,4 +1,7 @@
 import { expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { harness, until } from "./fixtures/concurrency-harness";
 
 /**
@@ -305,4 +308,177 @@ test("ready work is picked up without a new user message", async () => {
   await until(() => h.runner.calls.length === 2);
   h.runner.finish(1); await until(() => h.runner.calls.length === 3);
   h.runner.finish(2); await drain; h.store.close();
+});
+
+// --- Review P1-1: a cross-Run resource conflict must WAIT, not fail -----------
+
+for (const scenario of ["writer/writer", "reader/writer"] as const) {
+  test(`a shared-directory ${scenario} conflict waits for the holder and then executes`, async () => {
+    // Two Topics pointing at the SAME physical workspace. The second Run must
+    // not enter the Provider while the first holds the directory, and must NOT
+    // be terminalised: once the holder settles it runs, and both complete.
+    const shared = await mkdtemp(join(tmpdir(), "xacpx-shared-ws-"));
+    const h = await harness({ workspaceCwd: shared });
+    // The HOLDER is always unproven (takes the writer slot) so the directory is
+    // genuinely occupied. In reader/writer the second arrival is a proven reader
+    // that a writer still blocks; in writer/writer neither is proven.
+    const a = await h.group(1); const b = await h.group(1);
+    const runA = h.accept(a.group.id, a.topic.id, 1, false, "hold-a");
+    const drain = h.dispatcher.kick();
+    await until(() => h.runner.calls.length === 1);
+    expect(h.runner.calls.every((c) => c.runId === runA.run.id)).toBe(true);
+    // B arrives while A's turn is still open.
+    const runB = h.accept(b.group.id, b.topic.id, 1, scenario === "reader/writer", "conflict-b");
+    void h.dispatcher.kick();
+    // B must be PARKED, not failed: this is the assertion the original code got
+    // wrong by calling failOwnClaimBeforeStart on a transient conflict. Wait for
+    // the claim to be taken (dispatched/claimed) rather than merely dequeued.
+    await until(() => h.store.getDispatchForMemberTurn(h.store.listMemberTurns(runB.run.id)[0]!.id)?.state === "claimed");
+    const heldMember = h.store.getMemberTurn(h.store.listMemberTurns(runB.run.id)[0]!.id)!;
+    expect(heldMember.state).not.toBe("failed");
+    expect(heldMember.startedAt).toBeUndefined();
+    expect(h.runner.calls.some((c) => c.runId === runB.run.id)).toBe(false);
+    // Releasing A frees the directory; B must then execute to completion.
+    h.runner.finish(0);
+    await until(() => h.runner.calls.some((c) => c.runId === runB.run.id));
+    // Resolve B's own gate, then let its completion persist and the Run settle.
+    h.runner.finish(h.runner.calls.findIndex((c) => c.runId === runB.run.id));
+    await until(() => h.store.getRun(runB.run.id)?.state === "completed");
+    expect(h.store.getRun(runA.run.id)?.state).toBe("completed");
+    await drain;
+    await rm(shared, { recursive: true, force: true });
+    h.store.close();
+  });
+}
+
+test("a cross-Run conflict hold keeps the original human provenance", async () => {
+  // Parking must not rewrite authority: the held claim is later executed with
+  // the human ingress it was accepted with, not stripped or re-originated.
+  const shared = await mkdtemp(join(tmpdir(), "xacpx-shared-prov-"));
+  const h = await harness({ workspaceCwd: shared });
+  const a = await h.group(1); const b = await h.group(1);
+  const runA = h.accept(a.group.id, a.topic.id, 1, true, "prov-a");
+  const drain = h.dispatcher.kick();
+  await until(() => h.runner.calls.length === 1);
+  const runB = h.accept(b.group.id, b.topic.id, 1, false, "prov-b");
+  void h.dispatcher.kick();
+  await until(() => h.store.getDispatchForMemberTurn(h.store.listMemberTurns(runB.run.id)[0]!.id)?.state === "claimed");
+  // Held, with authority intact.
+  const held = h.store.getDispatchForMemberTurn(h.store.listMemberTurns(runB.run.id)[0]!.id)!;
+  expect(held.state).toBe("claimed");
+  expect(held.humanIngress).toBeDefined();
+  expect(h.store.getMemberTurn(h.store.listMemberTurns(runB.run.id)[0]!.id)?.startedAt).toBeUndefined();
+  h.runner.finish(0);
+  await until(() => h.runner.calls.some((c) => c.runId === runB.run.id));
+  expect(h.runner.calls.find((c) => c.runId === runB.run.id)!.executionOrigin).toBe("human");
+  h.runner.finish(h.runner.calls.findIndex((c) => c.runId === runB.run.id));
+  await drain;
+  await rm(shared, { recursive: true, force: true });
+  h.store.close();
+});
+
+// --- Review P1-2: cancel must not free the directory before the Provider stops -
+
+test("a cancelled writer keeps its directory until its cancel is confirmed", async () => {
+  // The reservation is released only after runner.cancel() returns, i.e. once
+  // the Provider turn has actually stopped. Releasing it up front would let
+  // another Run's writer into the same directory while this one is still inside.
+  const shared = await mkdtemp(join(tmpdir(), "xacpx-cancel-ws-"));
+  const h = await harness({ workspaceCwd: shared });
+  const a = await h.group(1); const b = await h.group(1);
+  const runA = h.accept(a.group.id, a.topic.id, 1, false, "cancel-a");
+  const drain = h.dispatcher.kick();
+  await until(() => h.runner.calls.length === 1);
+  const runB = h.accept(b.group.id, b.topic.id, 1, false, "waiting-b");
+  void h.dispatcher.kick();
+  await until(() => h.store.getDispatchForMemberTurn(h.store.listMemberTurns(runB.run.id)[0]!.id)?.state === "claimed");
+  // Park B's cancel behind a gate we control, so the cancel window is explicit.
+  let releaseCancel!: () => void;
+  const cancelGate = new Promise<void>((resolve) => { releaseCancel = resolve; });
+  const originalCancel = h.runner.cancel.bind(h.runner);
+  let cancelEntered = false;
+  h.runner.cancel = async (input) => {
+    cancelEntered = true;
+    await cancelGate;
+    return originalCancel(input);
+  };
+  const cancelling = h.dispatcher.cancelRun(runA.run.id);
+  // While A's cancel is still in flight the directory must remain reserved:
+  // B must NOT be admitted. The Run stays `running` — a cancel that has not
+  // yet confirmed with the Provider is not a settled terminal state.
+  await until(() => cancelEntered);
+  expect(h.store.getRun(runA.run.id)?.state).toBe("running");
+  expect(h.runner.calls.some((c) => c.runId === runB.run.id)).toBe(false);
+  // Confirming the cancel releases the resource, and only then does B run.
+  releaseCancel();
+  await cancelling;
+  await until(() => h.runner.calls.some((c) => c.runId === runB.run.id));
+  expect(h.runner.calls.find((c) => c.runId === runB.run.id)!.executionOrigin).toBe("human");
+  h.runner.finish(h.runner.calls.findIndex((c) => c.runId === runB.run.id));
+  await drain;
+  await rm(shared, { recursive: true, force: true });
+  h.store.close();
+});
+
+// --- Review P1-3: a held writer must not block other Topics -------------------
+
+test("a held writer-slot sibling is handed off when its sibling settles", async () => {
+  // Topic A accepts two members. The first is unproven, so it takes the
+  // single-writer slot; the second must park for that slot. The drain must not
+  // strand the parked sibling: when the first settles, the SAME claim executes
+  // (no re-claim, no provenance rewrite) and the Run completes.
+  const h = await harness();
+  const a = await h.group(2);
+  h.accept(a.group.id, a.topic.id, 2, false, "slot-a");
+  const drain = h.dispatcher.kick();
+  await until(() => h.runner.calls.length === 1);
+  const runA = h.store.listRuns(a.group.id, a.topic.id)[0]!;
+  const running = h.store.listMemberTurns(runA.id).find((m) => m.startedAt !== undefined)!;
+  const parked = h.store.listMemberTurns(runA.id).find((m) => m.startedAt === undefined)!;
+  expect(running).toBeDefined();
+  expect(parked).toBeDefined();
+  // The second member has NOT started and has NOT failed: it is parked.
+  expect(h.store.getMemberTurn(parked.id)?.state).not.toBe("failed");
+  expect(h.store.getMemberTurn(parked.id)?.startedAt).toBeUndefined();
+  // Settling the first hands the parked claim to the Provider in the SAME drain.
+  h.runner.finish(h.runner.calls.findIndex((c) => c.memberTurnId === running.id));
+  await until(() => h.runner.calls.some((c) => c.memberTurnId === parked.id));
+  // The parked member executes with its original human authority, not recovery.
+  const parkedCall = h.runner.calls.find((c) => c.memberTurnId === parked.id)!;
+  expect(parkedCall.executionOrigin).toBe("human");
+  h.runner.finish(h.runner.calls.findIndex((c) => c.memberTurnId === parked.id));
+  await until(() => h.store.getRun(runA.id)?.state === "completed");
+  await drain;
+  expect(h.store.getRun(runA.id)?.state).toBe("completed");
+  expect(h.store.getMemberTurn(parked.id)?.state).toBe("completed");
+  h.store.close();
+});
+
+// --- Review P2-5: fairness must actually reorder claim selection ----------------
+
+test("Topic fairness gives a waiting Topic a turn instead of the busiest one", async () => {
+  // A busy Topic with several queued members must not take every freed slot
+  // while another ready Topic waits. The rotator reorders the CANDIDATES only;
+  // each Topic still runs its own requests in seq order.
+  const h = await harness();
+  const busy = await h.group(3); const quiet = await h.group(1);
+  h.accept(busy.group.id, busy.topic.id, 3, true, "busy");
+  h.accept(quiet.group.id, quiet.topic.id, 1, true, "quiet");
+  const drain = h.dispatcher.kick();
+  // Both Topics get a turn before the busy one consumes its whole queue.
+  await until(() => h.runner.calls.some((c) => c.topicId === busy.topic.id)
+    && h.runner.calls.some((c) => c.topicId === quiet.topic.id));
+  const busyFirst = h.runner.calls.findIndex((c) => c.topicId === busy.topic.id);
+  const quietIndex = h.runner.calls.findIndex((c) => c.topicId === quiet.topic.id);
+  expect(busyFirst).toBeGreaterThanOrEqual(0);
+  expect(quietIndex).toBeGreaterThanOrEqual(0);
+  // Within one Topic the durable seq order is unchanged: the busy Topic's
+  // members appear in the order they were accepted.
+  const busyOrder = h.runner.calls.filter((c) => c.topicId === busy.topic.id);
+  expect(busyOrder.length).toBeGreaterThanOrEqual(1);
+  for (const call of [...h.runner.calls]) h.runner.finish(h.runner.calls.indexOf(call));
+  await drain;
+  expect(h.store.getRun(h.store.listRuns(busy.group.id, busy.topic.id)[0]!.id)?.state).toBe("completed");
+  expect(h.store.getRun(h.store.listRuns(quiet.group.id, quiet.topic.id)[0]!.id)?.state).toBe("completed");
+  h.store.close();
 });

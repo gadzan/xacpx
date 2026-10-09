@@ -14,6 +14,7 @@ import { publicMessageMatchesRunScope, requestSnapshotMatches, type ClaimedWork,
 import { isEffectConcurrencySafe } from "./conversation-filesystem-policy";
 import {
   ResourceReservationTable,
+  canonicalizePhysicalPath,
   physicalResourceKey,
   type PhysicalResourceIdentity,
   type ResourceReservation,
@@ -165,9 +166,15 @@ export class ConversationDispatcher {
   private readonly maxConcurrentRunExecutions: number;
   /** PR C: Topic round-robin so a high-traffic Topic cannot starve the rest. */
   private readonly fairness = new TopicFairnessRotator();
-  /** PR C: cross-Run physical resource reservations. In-memory only — the
+  /** Cross-Run physical resource reservations. In-memory only — the
    *  durable claim, lease and generation fences remain the sole authority. */
   private readonly resourceReservations = new ResourceReservationTable();
+  /** Held claims parked by a CROSS-RUN resource conflict, keyed by this
+   *  dispatch id → the blocking holder's dispatch id. Lets the recheck tell a
+   *  resource wait (retry when the blocker settles) apart from a same-Run
+   *  writer-slot hold (retry when the sibling settles) without re-deriving
+   *  either, and lets a blocker's release wake exactly the claims it blocked. */
+  private readonly resourceConflictHolds = new Map<string, string>();
 
   constructor(
     private readonly store: ConversationStore,
@@ -313,6 +320,7 @@ export class ConversationDispatcher {
     // them, and this process is going away, so they cannot gate any future
     // work. The next process converges through the durable claim/lease path.
     this.resourceReservations.clear();
+    this.resourceConflictHolds.clear();
   }
 
   private async runDrain(): Promise<void> {
@@ -332,17 +340,23 @@ export class ConversationDispatcher {
     }> = [];
     const launchExecution = (work: ClaimedWork): void => {
       const outcome: { status: "pending" | "fulfilled" | "rejected"; reason?: unknown } = { status: "pending" };
+      const releasePhysicalResource = (): void => {
+        // The resource is free the moment the Provider turn settles, whether the
+        // turn completed, failed, or was cancelled. Leaving it held would
+        // serialize unrelated Runs behind a finished one. Any claim this one was
+        // blocking must also be re-runnable, so drop its conflict marker too.
+        this.resourceReservations.release(work.dispatch.id);
+        for (const [held, blocker] of [...this.resourceConflictHolds]) {
+          if (blocker === work.dispatch.id) this.resourceConflictHolds.delete(held);
+        }
+      };
       // The guard never rejects (both handlers settle normally), so no
       // `finally` child can leak an unhandled rejection; it settles only
       // AFTER its handler ran, so awaiting every guard means every outcome
       // cell is final.
       const guard = this.execute(work).then(
         () => {
-          // Release the cross-Run physical reservation unconditionally: the
-          // resource is free the moment the Provider turn settles, whether the
-          // turn completed, failed, or was cancelled. Leaving it held would
-          // serialize unrelated Runs behind a finished one.
-          this.resourceReservations.release(work.dispatch.id);
+          releasePhysicalResource();
           if (this.inFlightExecutions.get(work.dispatch.id) === guard) {
             this.inFlightExecutions.delete(work.dispatch.id);
             this.inFlightWork.delete(work.dispatch.id);
@@ -351,7 +365,7 @@ export class ConversationDispatcher {
         (error: unknown) => {
           outcome.status = "rejected";
           outcome.reason = error;
-          this.resourceReservations.release(work.dispatch.id);
+          releasePhysicalResource();
           if (this.inFlightExecutions.get(work.dispatch.id) === guard) {
             this.inFlightExecutions.delete(work.dispatch.id);
             this.inFlightWork.delete(work.dispatch.id);
@@ -460,7 +474,7 @@ export class ConversationDispatcher {
           // a global scan can only ever return a Run from a different Topic —
           // which is precisely the overlap this change enables. The old code
           // pinned the scan to the first Run's id, which is what prevented it.
-          const claimed = this.claimOne();
+          const claimed = this.claimNextFair();
           if (!claimed) {
             // Nothing more is claimable right now. Keep the drain alive while
             // our own work is in flight, so a finishing member refills its
@@ -504,16 +518,15 @@ export class ConversationDispatcher {
               this.deferredTopicIds.delete(claimed.run.topicId);
               continue;
             }
-            // The held Run is parked for this drain — but only until a cohort
-            // launches. Before any launch, sequencing stays global so an
-            // unrelated Topic is still drainable (pre-PR behavior); once a
-            // cohort is in flight its scope is kept, so unrelated work waits
-            // for the next drain. Either way the held Run's own rows are
-            // excluded (its Topic is deferred for this drain).
-            if (cohortRunIds.size === 0) {
-              continue;
-            }
-            break;
+            // The held Run's own Topic is deferred so its remaining rows are not
+            // re-claimed in this pass, and the scan CONTINUES. Stopping here
+            // would fall through to awaitCohortInFlight(), which waits for the
+            // whole cohort with no wake race — so a long sibling turn on this
+            // Topic would block every other Topic for its entire duration.
+            // Deferring and continuing keeps the drain scanning globally, which
+            // is the whole point of cross-Run admission.
+            this.deferredTopicIds.add(claimed.run.topicId);
+            continue;
           }
           // Executions of independent Runs run concurrently: the drain
           // launches each claim and keeps admitting further Runs whose Topics
@@ -522,7 +535,6 @@ export class ConversationDispatcher {
           // by drain ordering.
           launchExecution(claimed);
           cohortRunIds.add(claimed.run.id);
-          this.fairness.served(claimed.run.topicId);
           passProgress = true;
         }
         // Settle launched executions, then re-check held writer-slot claims —
@@ -601,17 +613,32 @@ export class ConversationDispatcher {
     emitConversationProductEvent(this.onProductEvent, event);
   }
 
-  async cancelRun(runId: string): Promise<void> {
-    // A cancelled Run must not keep holding cross-Run physical resources: the
-    // remaining members are about to be cancelled, and an unrelated Run must
-    // be able to use that directory immediately.
+  /** Release every physical reservation and conflict marker belonging to a Run. */
+  private releaseRunPhysicalResources(runId: string): void {
     this.resourceReservations.releaseRun(runId);
+    // A held claim blocked by THIS Run must become re-runnable the moment the
+    // Run's reservations go, otherwise it would stay parked forever.
+    for (const [held, blocker] of [...this.resourceConflictHolds]) {
+      const blockerRun = this.resourceReservations.runOf(blocker);
+      if (blockerRun === runId || blocker === runId) this.resourceConflictHolds.delete(held);
+    }
+    // Also drop markers whose blocker is simply gone (settled and released).
+    for (const [held, blocker] of [...this.resourceConflictHolds]) {
+      if (!this.resourceReservations.has(blocker)) this.resourceConflictHolds.delete(held);
+    }
+  }
+
+  async cancelRun(runId: string): Promise<void> {
     const now = this.now().toISOString();
     const outcome = this.store.cancelRun(runId, now);
     if (outcome.alreadyTerminal) {
       return;
     }
     if (!outcome.executionStarted || outcome.activeMembers.length === 0) {
+      // Nothing ever entered the Provider for this Run, so nothing holds a
+      // physical resource. Releasing here is safe and lets a waiting Run on
+      // another Topic proceed immediately.
+      this.releaseRunPhysicalResources(runId);
       if (outcome.memberTurn) this.emitRunAndMember(outcome.run, outcome.memberTurn.id);
       else this.emitProduct({ type: "conversation-run-changed", run: outcome.run });
       await this.kick();
@@ -678,6 +705,14 @@ export class ConversationDispatcher {
         this.emitRunAndMember(settled.run, entry.member.id);
       }
     }
+    // Release the physical reservations only now: every active member's
+    // `runner.cancel()` has returned, so each Provider turn has actually
+    // stopped. Releasing earlier would open a window where the cancelled Run's
+    // writer is still inside the directory while another Run is admitted to it
+    // — the exact overlap cross-Run admission exists to prevent. `execute()`'s
+    // own settle path also releases, so this is the belt to that braces: it
+    // covers a cancel that ended the turn before execute() observed it.
+    this.releaseRunPhysicalResources(runId);
     if (cancelFailed) {
       throw firstError;
     }
@@ -694,6 +729,50 @@ export class ConversationDispatcher {
       ...(cohortRunId !== undefined ? { runId: cohortRunId } : {}),
       ...(this.deferredTopicIds.size > 0 ? { skipTopicIds: [...this.deferredTopicIds] } : {}),
     });
+  }
+
+  /**
+   * Claim the next execution, preferring the Topic the fairness rotator chooses.
+   *
+   * The durable order is `msg.seq`, which alone lets one high-traffic Topic take
+   * every freed slot while another ready Topic waits. The rotator reorders the
+   * *candidates* only: it peeks which Topics are claimable, moves the Topic that
+   * just received capacity behind the others, and claims from the winner. The
+   * chosen Topic's own internal order is still `seq`, so a Topic never runs its
+   * requests out of order, and a Topic with no ready work is simply absent from
+   * the peek.
+   *
+   * Falls back to the plain claim when the peek is empty or the preferred Topic
+   * turns out not to be claimable (a concurrent claim, a capacity change): the
+   * durable claim remains the authority on admissibility.
+   */
+  private claimNextFair(): ClaimedWork | undefined {
+    const base = {
+      now: this.now().toISOString(),
+      owner: this.ownerId,
+      leaseExpiresAt: new Date(this.now().getTime() + this.leaseMs).toISOString(),
+      authorityEpoch: this.authorityEpoch,
+      topicConcurrencyLimits: this.runtime.topicConcurrencyLimits(),
+      ...(this.deferredTopicIds.size > 0 ? { skipTopicIds: [...this.deferredTopicIds] } : {}),
+    };
+    const candidates = this.store.peekClaimableTopicIds(base, 8);
+    if (candidates.length === 0) {
+      return undefined;
+    }
+    const ordered = this.fairness.order(candidates.map((topicId) => ({ topicId })));
+    for (const candidate of ordered) {
+      const claimed = this.store.claimNextDispatch({
+        ...base,
+        topicId: candidate.topicId,
+      });
+      if (claimed) {
+        this.fairness.served(candidate.topicId);
+        return claimed;
+      }
+    }
+    // Every peeked Topic refused the claim (raced away). Fall back to the plain
+    // durable claim so a stale peek can never stall the drain.
+    return this.claimOne();
   }
 
   /**
@@ -947,10 +1026,11 @@ export class ConversationDispatcher {
   /**
    * Cross-Run physical resource identity for one claimed execution (PR C).
    *
-   * Returns undefined when the identity cannot be verified, which fails
-   * admission closed. Never guesses from a Topic id, Bot name or declared
-   * effect: only a worktree binding this manager has verified, or the
-   * workspace cwd the session was actually materialized against.
+   * `session` is the materialized logical session when admission has one; the
+   * recheck path passes the session it can resolve from durable state, or
+   * undefined when none is resolvable. Returns undefined when the identity
+   * cannot be verified, which fails admission closed. Never guesses from a
+   * Topic id, Bot name or declared effect.
    *
    * Worktree-bound executions key on the verified worktree id, so two
    * different owned worktrees are never conflated even if their paths share a
@@ -959,7 +1039,7 @@ export class ConversationDispatcher {
    */
   private resolvePhysicalResourceIdentity(
     work: ClaimedWork,
-    session: LogicalSession,
+    session: LogicalSession | undefined,
     worktreeRef: import("./conversation-worktree-types").ConversationWorktreeRef | undefined,
   ): PhysicalResourceIdentity | undefined {
     const isolation = this.runtime.groupTopicIsolation(work.run.conversationId, work.run.topicId);
@@ -968,6 +1048,7 @@ export class ConversationDispatcher {
       // registered to this durable owner at this generation. resolveSessionCwd
       // re-asserts that binding and returns the verified physical path; a throw
       // here means the identity is not verifiable and must not be admitted.
+      if (!session) return undefined;
       let cwd: string;
       try {
         cwd = this.worktrees!.resolveSessionCwd(session);
@@ -981,22 +1062,35 @@ export class ConversationDispatcher {
     // service so an unregistered workspace reads as unverifiable rather than
     // being guessed from a name.
     //
-    // A resolution failure here is NOT treated as unverifiable identity: config
-    // drift is already owned by the runtime-revision checks that ran earlier in
-    // execute(), against the frozen claim snapshot. Re-reporting it as a
-    // resource failure would both duplicate that diagnosis and mask the real
-    // cause. Only a genuinely absent session is unverifiable.
+    // The configured cwd is only LEXICALLY normalized by the config layer, so
+    // two workspaces reached through a symlink, a junction or a Windows path
+    // alias can be different strings for the SAME directory. Comparing the raw
+    // strings would then treat one physical directory as two resources and let
+    // two writers run concurrently on it. Canonicalize the real path and fold
+    // it with the same helper the worktree manager uses, which already handles
+    // Windows 8.3 short names, extended-length prefixes and separator
+    // differences. A path that cannot be canonicalized is unverifiable.
     if (!session) return undefined;
     const resolved = this.sessions.getResolvedSessionByInternalAlias(session.alias);
     if (!resolved) {
       // The session exists but its workspace no longer resolves: that is config
-      // drift, already diagnosed. Fall back to the workspace NAME so the
-      // reservation still keys consistently — two Runs whose sessions resolve
-      // to the same workspace still conflict — and let the revision check own
-      // the verdict.
+      // drift, already owned by the runtime-revision checks that ran earlier in
+      // execute() against the frozen claim snapshot. Fall back to the workspace
+      // NAME so the reservation still keys consistently — two Runs whose
+      // sessions resolve to the same workspace still conflict — and let the
+      // revision check own the verdict.
       return { cwd: `workspace:${session.workspace}`, isolation };
     }
-    return { cwd: resolved.cwd, isolation };
+    const canonical = canonicalizePhysicalPath(resolved.cwd);
+    if (!canonical) return undefined;
+    return { cwd: canonical, isolation };
+  }
+  /** Identity for the reservation recheck, derived without a Provider turn. */
+  private reservationIdentityFor(work: ClaimedWork): PhysicalResourceIdentity | undefined {
+    const alias = work.memberTurn.sessionAlias;
+    const session = alias ? this.sessions.getLogicalSessionRecord(alias) : undefined;
+    const worktreeRef = session?.execution_worktree;
+    return this.resolvePhysicalResourceIdentity(work, session ?? undefined, worktreeRef);
   }
 
   private recheckHeldClaims(): ClaimedWork | undefined {
@@ -1010,6 +1104,7 @@ export class ConversationDispatcher {
       if (!run || (TERMINAL_RUN_STATES as readonly string[]).includes(run.state)
         || !live || live.id !== dispatchId || live.state !== "claimed" || live.owner !== this.ownerId) {
         this.heldWriterSlotClaims.delete(dispatchId);
+        this.resourceConflictHolds.delete(dispatchId);
         continue;
       }
       // Renew first: an already-recovered held claim must NOT execute — its
@@ -1030,6 +1125,7 @@ export class ConversationDispatcher {
       } catch (error) {
         if (error instanceof ConversationError && error.code === "stale_claim") {
           this.heldWriterSlotClaims.delete(dispatchId);
+          this.resourceConflictHolds.delete(dispatchId);
           continue;
         }
         throw error;
@@ -1038,10 +1134,31 @@ export class ConversationDispatcher {
         this.deferredTopicIds.add(work.run.topicId);
         continue;
       }
+      // A claim parked by a CROSS-RUN resource conflict stays parked until the
+      // conflicting reservation is actually gone. Re-deriving the identity here
+      // would need the materialized session, which this claim never got; the
+      // reservation table is the authority, so ask it directly.
+      if (this.resourceConflictHolds.has(dispatchId) && this.reservationStillBlocked(work)) {
+        continue;
+      }
       this.heldWriterSlotClaims.delete(dispatchId);
+      this.resourceConflictHolds.delete(dispatchId);
       return { ...work, dispatch: renewed };
     }
     return undefined;
+  }
+
+  /**
+   * True when any live reservation still conflicts with `work`'s physical
+   * resource. Uses the same identity derivation as admission, so a claim parked
+   * on a shared directory is released exactly when that directory's writer slot
+   * frees — and never on a guess.
+   */
+  private reservationStillBlocked(work: ClaimedWork): boolean {
+    const identity = this.reservationIdentityFor(work);
+    if (!identity) return false;
+    const reader = work.memberTurn.effect === "read-only" && work.memberTurn.effectProvenance === "declared-enforced";
+    return this.resourceReservations.conflicts(identity, reader) !== undefined;
   }
 
 
@@ -1178,11 +1295,21 @@ export class ConversationDispatcher {
       const blocking = this.resourceReservations.conflicts(reservation.identity, reservation.reader);
       if (blocking) {
         // Another Run already holds this physical resource in an incompatible
-        // mode. This claim has not started, so it fails closed BEFORE any
-        // Provider turn — no partial execution, no indeterminate seal. The
-        // durable row stays `claimed` under our lease and the pre-start fences
-        // reap it on the next pass.
-        this.failOwnClaimBeforeStart(work, "resource_admission_denied");
+        // mode. This is a TRANSIENT scheduling condition, not an execution
+        // failure: the holder is a live Provider turn that will settle, and the
+        // directory becomes free then.
+        //
+        // Fail-closed means "do not enter the Provider now" — it must NOT mean
+        // "fail the user's request". Terminalising here would make a shared
+        // workspace unusable under concurrency: any Topic B request arriving
+        // while Topic A holds the directory would fail permanently, even after
+        // A completes. Instead the claim is parked exactly like a same-Run
+        // writer-slot hold: durably `claimed` under our lease with provenance
+        // untouched, registered in the hold set, and re-run by the recheck the
+        // moment the conflicting reservation is released. No Provider turn, no
+        // partial execution, no indeterminate seal.
+        this.holdClaimForWriterSlot(work);
+        this.resourceConflictHolds.set(work.dispatch.id, blocking.dispatchId);
         return;
       }
       this.resourceReservations.add(reservation);

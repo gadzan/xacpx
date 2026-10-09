@@ -7679,7 +7679,12 @@ test("PR7 dispatcher: corrupted request reference fails the Group claim terminal
       first.store.directWriteForTest("runs", accepted.run.id, { request_message_id: foreign.message.id });
     }
     await first.dispatcher.kick();
-    expect(fakeRunner(first.runner).runs).toHaveLength(0);
+    // The poisoned claim never enters the Provider: no call carries the
+    // corrupted Run's members. A DIFFERENT Topic's healthy Run may legitimately
+    // execute concurrently, so assert on the poison Run's own identity rather
+    // than a global zero.
+    const corruptMemberIds = new Set(first.store.listMemberTurns(accepted.run.id).map((t) => t.id));
+    expect(fakeRunner(first.runner).runs.some((r) => corruptMemberIds.has(r.memberTurnId))).toBe(false);
     const run = first.store.getRun(accepted.run.id)!;
     expect(run.state).toBe("failed");
     // Multi-member batches derive the aggregate reason in the classifier;

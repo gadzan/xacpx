@@ -1430,37 +1430,42 @@ export class SqliteConversationStore implements ConversationStore {
     return true;
   }
 
-  claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined {
-    return this.sqlite.transaction(() => {
-      const limits = input.topicConcurrencyLimits ?? {};
-      for (const limit of Object.values(limits)) {
-        memberConcurrencyLimit(limit);
-      }
-      const capacityClause = Object.keys(limits).length === 0 ? "" : `AND NOT EXISTS (
-        SELECT 1 FROM json_each(?) capacity WHERE capacity.key = r.topic_id
-          AND (SELECT COUNT(*) FROM pending_dispatches reserved
-            JOIN runs reserved_run ON reserved_run.id = reserved.run_id
-            WHERE reserved_run.topic_id = r.topic_id AND reserved.state = 'claimed') >= capacity.value
-      )`;
-      const skipTopicIds = input.skipTopicIds ?? [];
-      const skipClause = skipTopicIds.length === 0
-        ? ""
-        : `AND r.topic_id NOT IN (${skipTopicIds.map(() => "?").join(",")})`;
-      const params: string[] = [...skipTopicIds];
-      // Same-batch sibling cohort: once the drain launched one execution,
-      // only siblings of that Run may be admitted concurrently. Unrelated
-      // Topics/Bots wait for the next pass (global sequencing preserved).
-      const runClause = input.runId !== undefined ? `AND r.id = ?` : "";
-      if (input.runId !== undefined) {
-        params.push(input.runId);
-      }
-      if (capacityClause) params.push(JSON.stringify(limits));
-      const row = this.sqlite.get<DispatchRow>(
-        `SELECT d.* FROM pending_dispatches d
-         JOIN runs r ON r.id = d.run_id
-         JOIN member_turns m ON m.id = d.member_turn_id
-         LEFT JOIN messages msg ON msg.id = r.request_message_id
-         WHERE d.state = 'pending'
+  /**
+   * The claim-eligibility predicate and ordering, shared by claimNextDispatch
+   * and peekClaimableTopicIds so the two can never disagree about what is
+   * claimable. Returns the SQL fragment plus the params it binds, in order.
+   *
+   * Keeping one definition matters for fairness: peekClaimableTopicIds decides
+   * which Topic to claim from, and claimNextDispatch must then be willing to
+   * claim exactly that row. A second, subtly different predicate would let the
+   * peek advertise a Topic the claim then refuses.
+   */
+  private claimEligibility(input: ClaimNextDispatchInput): { where: string; order: string; params: string[] } {
+    const limits = input.topicConcurrencyLimits ?? {};
+    for (const limit of Object.values(limits)) {
+      memberConcurrencyLimit(limit);
+    }
+    const capacityClause = Object.keys(limits).length === 0 ? "" : `AND NOT EXISTS (
+      SELECT 1 FROM json_each(?) capacity WHERE capacity.key = r.topic_id
+        AND (SELECT COUNT(*) FROM pending_dispatches reserved
+          JOIN runs reserved_run ON reserved_run.id = reserved.run_id
+          WHERE reserved_run.topic_id = r.topic_id AND reserved.state = 'claimed') >= capacity.value
+    )`;
+    const skipTopicIds = input.skipTopicIds ?? [];
+    const skipClause = skipTopicIds.length === 0
+      ? ""
+      : `AND r.topic_id NOT IN (${skipTopicIds.map(() => "?").join(",")})`;
+    const params: string[] = [...skipTopicIds];
+    const runClause = input.runId !== undefined ? `AND r.id = ?` : "";
+    if (input.runId !== undefined) {
+      params.push(input.runId);
+    }
+    const topicClause = input.topicId !== undefined ? `AND r.topic_id = ?` : "";
+    if (input.topicId !== undefined) {
+      params.push(input.topicId);
+    }
+    if (capacityClause) params.push(JSON.stringify(limits));
+    const where = `WHERE d.state = 'pending'
            AND r.state IN ('queued', 'running')
            AND r.completion_reason IS NULL
            AND m.started_at IS NULL
@@ -1499,9 +1504,26 @@ export class SqliteConversationStore implements ConversationStore {
            )
            ${skipClause}
            ${runClause}
+           ${topicClause}
            ${capacityClause}
-           ${SEQUENTIAL_DEPENDENCY_FENCE}
-         ORDER BY msg.seq ASC, r.created_at ASC, r.topic_id ASC, m.batch ASC, m.member_index ASC, d.id ASC
+           ${SEQUENTIAL_DEPENDENCY_FENCE}`;
+    const order = `ORDER BY msg.seq ASC, r.created_at ASC, r.topic_id ASC, m.batch ASC, m.member_index ASC, d.id ASC`;
+    return { where, order, params };
+  }
+
+  /** Shared FROM/JOIN for every claim-eligibility query. */
+  private static readonly CLAIM_SOURCES = `FROM pending_dispatches d
+         JOIN runs r ON r.id = d.run_id
+         JOIN member_turns m ON m.id = d.member_turn_id
+         LEFT JOIN messages msg ON msg.id = r.request_message_id`;
+
+  claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined {
+    return this.sqlite.transaction(() => {
+      const { where, order, params } = this.claimEligibility(input);
+      const row = this.sqlite.get<DispatchRow>(
+        `SELECT d.* ${SqliteConversationStore.CLAIM_SOURCES}
+         ${where}
+         ${order}
          LIMIT 1`,
         params,
       );
@@ -1541,6 +1563,32 @@ export class SqliteConversationStore implements ConversationStore {
           ?? this.requireRun(row.run_id).profileSnapshot,
       };
     });
+  }
+
+  peekClaimableTopicIds(input: ClaimNextDispatchInput, limit: number): string[] {
+    // Read-only: same predicate as claimNextDispatch, projected to the Topic of
+    // each claimable row IN CLAIM ORDER, then de-duplicated preserving that
+    // order. `SELECT DISTINCT ... ORDER BY <non-selected>` would let SQLite
+    // pick an arbitrary row per group, which is not the claim order the
+    // fairness rotator must respect. No transaction — this must never mutate a
+    // row; a concurrent claim simply means the Topic is absent next time.
+    const { where, order, params } = this.claimEligibility(input);
+    const rows = this.sqlite.all<{ topic_id: string }>(
+      `SELECT r.topic_id AS topic_id ${SqliteConversationStore.CLAIM_SOURCES}
+       ${where}
+       ${order}
+       LIMIT ?`,
+      [...params, Math.max(limit * 8, limit)],
+    );
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    for (const row of rows) {
+      if (seen.has(row.topic_id)) continue;
+      seen.add(row.topic_id);
+      ordered.push(row.topic_id);
+      if (ordered.length >= limit) break;
+    }
+    return ordered;
   }
 
   hasDurableBotWork(botId: string): boolean {

@@ -157,6 +157,10 @@ export interface ClaimNextDispatchInput {
   /** Restrict the claim to one Run's dispatches: the same-batch sibling
    *  cohort. Unset claims globally (previous sequencing). */
   runId?: string;
+  /** Restrict the claim to one Topic. Used by the fairness rotator, which
+   *  chooses which ready Topic receives capacity next; the Topic's own request
+   *  order is unchanged. Unset claims globally. */
+  topicId?: string;
   /** Durable Topic configuration. Missing keys preserve legacy admission. */
   topicConcurrencyLimits?: Readonly<Record<string, number>>;
 }
@@ -433,6 +437,16 @@ export interface ConversationStore {
    *  Returns the retired dispatch ids. */
   retirePreviousOwnerClaims(owner: string): string[];
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined;
+  /**
+   * Topic ids with a claimable dispatch right now, in the same order
+   * claimNextDispatch would consider them. Read-only: no row is mutated.
+   *
+   * Exists so the dispatcher can apply Topic-granular fairness before choosing
+   * which claim to take. Without it the claim order is purely durable `seq`,
+   * so one high-traffic Topic could keep taking every freed slot. Returns at
+   * most `limit` entries; an empty array means nothing is claimable.
+   */
+  peekClaimableTopicIds(input: ClaimNextDispatchInput, limit: number): string[];
   hasDurableBotWork(botId: string): boolean;
   /** True when any durable rows exist for a Group Conversation (runs,
    *  messages, dispatches, lifecycle, or seq allocation). Guards Group

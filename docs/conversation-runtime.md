@@ -956,6 +956,15 @@ materialization is asynchronous and two Runs can both conclude a directory looks
 free before either has started. A rejected claim has not started, so it fails
 closed before any side effect — no partial execution, no indeterminate seal.
 
+A **transient** conflict is parked, not failed. When the blocking incumbent is
+another Run's live Provider turn, the claim stays durably `claimed` under this
+owner's lease with provenance untouched, is registered in the hold set, and is
+re-run by the recheck the moment the conflicting reservation is released. The
+reservation table is the authority for that recheck, because re-deriving the
+identity would need the materialized session the parked claim never got. No
+Provider turn, no partial execution, no indeterminate seal — and no terminal
+failure for a directory that is merely busy.
+
 Reservations live in memory only (`ResourceReservationTable`). They are released
 when the turn settles, when the claim is lost, when the Run is cancelled, and at
 shutdown. Nothing durable depends on them: a crashed process leaves nothing

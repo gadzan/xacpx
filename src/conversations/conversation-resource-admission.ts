@@ -1,3 +1,6 @@
+import { realpathSync } from "node:fs";
+import { win32 } from "node:path";
+
 import { ConversationError } from "./conversation-error";
 import type { WorkspaceIsolationPolicy } from "./conversation-types";
 
@@ -79,6 +82,38 @@ export function physicalResourceKey(identity: PhysicalResourceIdentity): string 
 }
 
 /**
+ * Canonicalize a configured workspace cwd into a stable physical identity.
+ *
+ * The config layer only normalizes lexically, so two workspaces reached through
+ * a symlink, a junction or a Windows path alias are different strings for the
+ * SAME directory. Keying reservations on those raw strings would let two writers
+ * run concurrently on one physical directory — the exact failure cross-Run
+ * admission exists to prevent.
+ *
+ * Resolves the real path when the directory exists, so a junction and its target
+ * produce the same key. When it does not exist there is nothing to conflate yet,
+ * and refusing to run would break legitimate setups (a workspace created later,
+ * a test fixture, a remote path); fall back to the lexically normalized path so
+ * admission still works, and fold for case/separator on Windows.
+ *
+ * The result is always non-empty for a non-empty input, so an identity is only
+ * ever "unverifiable" when the workspace is genuinely absent from the session.
+ */
+export function canonicalizePhysicalPath(cwd: string): string {
+  const trimmed = cwd.trim();
+  if (!trimmed) return "";
+  let real: string;
+  try {
+    real = realpathSync(trimmed);
+  } catch {
+    real = trimmed;
+  }
+  // Windows paths are case-insensitive and tolerate either separator, so fold
+  // both; POSIX paths are already exact.
+  return process.platform === "win32" ? win32.normalize(real).toLowerCase() : real;
+}
+
+/**
  * Decide whether `candidate` may physically execute alongside `incumbent`.
  *
  * Fail-closed on every unknown: an unproven effect serializes, and a
@@ -119,6 +154,16 @@ export class ResourceReservationTable {
   /** All reservations currently held, in insertion order. */
   values(): IterableIterator<ResourceReservation> {
     return this.byDispatch.values();
+  }
+
+  /** The Run owning a reservation, or undefined when nothing holds it. */
+  runOf(dispatchId: string): string | undefined {
+    return this.byDispatch.get(dispatchId)?.runId;
+  }
+
+  /** True when a reservation is currently held for this dispatch id. */
+  has(dispatchId: string): boolean {
+    return this.byDispatch.has(dispatchId);
   }
 
   /** The first incumbent that blocks `candidate`, if any. */
