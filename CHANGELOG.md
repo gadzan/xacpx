@@ -1,5 +1,54 @@
 # Changelog
-## [0.24.7-beta.0] - 2026-10-09
+## [0.24.8-beta.0] - 2026-10-10
+
+### Added
+
+- Bot-controlled removal (PR #392): Bot removal modeled as a durable phase machine behind a removal barrier — `bot removal RPCs`, Bot dialog confirmation, closed-store reads skipped at the barrier.
+- Agent capability discovery (PR #393) and automatic collaboration gating (PR #395): agent models reported as capability state, model picker sourced from it; automatic routing gated on a capability probe and selected in Relay Web only when the router is ready (`xacpx doctor` covers the router check).
+- Adapter slash commands by topic (PR #394): per-topic advertised slash commands restored through the dispatcher with conversation snapshots emitted by relay-protocol; Relay Web completes slash and member mentions in conversation with member-slash refresh coverage.
+- Shared topic lifecycle (PR #391): topics managed from a searchable list with workspaces loaded on dialog open, dropped topics kept out of late events, Group create/edit/delete via `GroupDialog` with create-update-delete store actions.
+- Disabled-bot filtering (PR #389) and group create/manage (PR #388): disabled Bots hidden behind a Disabled list with re-enable, disabled Group members and disabled Lead explained; Bot dialog instruction backfill (PR #387).
+
+### Fixed
+
+- Bot reply streaming preserved verbatim with final-only fallback; missing suffix recovered from complete Bridge replies; final-only replies and Group execution covered.
+- Relay Web `BotDialog` no longer auto-retries hydrate after parallel start.
+
+## [relay-protocol 0.6.2-beta.0] - 2026-10-10
+
+### Added
+
+- Conversation slash-command snapshots, topic-lifecycle RPC DTOs, bot-removal RPC types, agent-model capability state fields.
+
+## [relay 0.14.10-beta.0] - 2026-10-10
+
+### Added
+
+- Relay Web: Group create/edit/delete dialog with store actions, searchable topic management with workspace loading, model picker from capability state, slash + member-mention completion, automatic-collaboration selector gated on router readiness, bot-removal confirmation dialog, disabled-Bot list with re-enable.
+
+### Fixed
+
+- `BotDialog` hydrate no longer auto-retries after a parallel start; dropped topics kept out of late events.
+
+## [channel-relay 0.7.6-beta.0] - 2026-10-10
+
+### Added
+
+- Capability-probe and slash-command bridge coverage; `minXacpxVersion` raised to `0.24.8-beta.0`.
+
+## [channel-feishu 0.8.5-beta.0] - 2026-10-10
+
+### Changed
+
+- Compatibility floor raised to `0.24.8-beta.0` with no behavior change (peer + `minXacpxVersion` only, released so the published floor tracks core).
+
+## [channel-discord 0.8.5-beta.0] - 2026-10-10
+
+### Changed
+
+- Compatibility floor raised to `0.24.8-beta.0` with no behavior change (peer + `minXacpxVersion` only, released so the published floor tracks core).
+
+## [Unreleased]
 
 ### Added
 
