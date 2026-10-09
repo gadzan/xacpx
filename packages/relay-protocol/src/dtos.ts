@@ -334,6 +334,25 @@ export interface TopicSummaryDto {
   createdAt: string;
   updatedAt: string;
   executionTarget?: ExecutionTargetDto;
+  /** Absent means generation 1. */
+  contextGeneration?: number;
+  /** Present only for the Direct default topic. */
+  defaultDirect?: true;
+}
+
+export interface TopicImpactDto {
+  topic: TopicSummaryDto;
+  bindings: Array<{ chatKey: string }>;
+  unsettledRunIds: string[];
+  indeterminateRunIds: string[];
+  worktreeRunIds: string[];
+  actions: {
+    rename: boolean;
+    archive: boolean;
+    restore: boolean;
+    teardown: boolean;
+    clear: boolean;
+  };
 }
 
 export interface GroupSummaryDto {
