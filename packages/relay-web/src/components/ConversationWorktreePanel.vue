@@ -14,15 +14,21 @@ let epoch = 0;
 // latest request, or an older one that already lost its race.
 let requestSeq = 0;
 let latestSeq = 0;
+// Bumped when an operation starts, so a poll already in flight is invalidated
+// for the duration: it must neither overwrite the operation's result nor
+// resurrect an error beside a successful status update.
+let operationSeq = 0;
 const candidate = computed(() => status.value?.resources.find(r => r.kind === "integration"));
 async function load(): Promise<void> {
   const expected = epoch, instance = props.instanceId, runId = props.runId;
   const seq = ++requestSeq; latestSeq = seq;
+  const operation = operationSeq;
   try {
     const result = await api.rpc<{ run: { worktree?: unknown } }>(instance, MSG.runsGet, { runId });
-    // A newer request has started (or the selection changed): this reply is
-    // stale and must not touch any rendered state, in either direction.
-    if (seq !== latestSeq || expected !== epoch || busy.value) return;
+    // A newer request has started, the selection changed, an operation took over
+    // while this poll was in flight, or an operation is currently running: this
+    // reply is stale and must not touch any rendered state, in either direction.
+    if (seq !== latestSeq || expected !== epoch || busy.value || operation !== operationSeq) return;
     if (isErrorPayload(result)) throw new Error(result.error.message);
     if (isConversationWorktreeStatus(result.run?.worktree) && result.run.worktree.runId === runId
       && (!status.value || result.run.worktree.revision >= status.value.revision)) {
@@ -35,9 +41,12 @@ async function load(): Promise<void> {
       error.value = "";
     }
   } catch (e) {
-    // Only the latest request may set the error. An older poll that fails after
-    // a newer one succeeded would otherwise resurrect a stale message.
-    if (seq === latestSeq && expected === epoch) error.value = e instanceof Error ? e.message : String(e);
+    // Only the latest request may set the error, and never a poll that an
+    // operation took over mid-flight. Such a poll failing after the operation
+    // succeeded would resurrect a stale message beside current status.
+    if (seq === latestSeq && expected === epoch && operation === operationSeq) {
+      error.value = e instanceof Error ? e.message : String(e);
+    }
   }
 }
 async function operate(action: ConversationWorktreePayload["action"]): Promise<void> {
@@ -47,6 +56,9 @@ async function operate(action: ConversationWorktreePayload["action"]): Promise<v
     : action === "integrate" ? { action, runId: props.runId, requestId: crypto.randomUUID(), previewId: current.preview!.id, snapshotUncommitted: true }
     : { action, runId: props.runId };
   const expected = epoch; busy.value = true; error.value = "";
+  // Invalidate polls already in flight: this operation now owns the panel, and
+  // their late replies must not overwrite its result or resurrect an error.
+  operationSeq++;
   try {
     const result = await api.rpc<{ worktree: unknown }>(props.instanceId, MSG.conversationWorktree, input);
     if (expected !== epoch) return;
@@ -61,12 +73,19 @@ const timer = setInterval(() => { if (!busy.value) void load(); }, 5000);
 onUnmounted(() => { epoch++; clearInterval(timer); });
 </script>
 <template>
-  <details v-if="status" class="border-t border-border px-4 py-2 text-xs" data-test="worktree-panel">
-    <summary>{{ t("group.worktree.title") }} · {{ status.integration?.state ?? status.disposition }}</summary>
-    <p class="my-2 text-fg-muted">{{ t("group.worktree.boundary") }}</p>
-    <p>{{ t("group.worktree.base") }}: <code>{{ status.baseCommitSha }}</code></p>
-    <div v-for="r in status.resources" :key="r.id" class="my-1 break-all">{{ r.botId }} · {{ r.state }} · {{ r.worktreePath }}</div>
-    <p v-if="error" role="alert" class="my-2 text-danger">{{ error }}</p>
+  <div data-test="worktree-panel">
+    <!-- Rendered outside the status gate: a failed first load has no status yet,
+         so without this the user sees nothing at all and cannot retry manually. -->
+    <p v-if="error && !status" role="alert" class="border-t border-border px-4 py-2 text-xs text-danger">
+      {{ error }}
+      <button class="ml-2" :disabled="busy" @click="load">{{ t("group.worktree.refresh") }}</button>
+    </p>
+    <details v-if="status" class="border-t border-border px-4 py-2 text-xs">
+      <summary>{{ t("group.worktree.title") }} · {{ status.integration?.state ?? status.disposition }}</summary>
+      <p class="my-2 text-fg-muted">{{ t("group.worktree.boundary") }}</p>
+      <p>{{ t("group.worktree.base") }}: <code>{{ status.baseCommitSha }}</code></p>
+      <div v-for="r in status.resources" :key="r.id" class="my-1 break-all">{{ r.botId }} · {{ r.state }} · {{ r.worktreePath }}</div>
+      <p v-if="error" role="alert" class="my-2 text-danger">{{ error }}</p>
     <div class="my-2 flex flex-wrap gap-3">
       <button :disabled="busy" @click="load">{{ t("group.worktree.refresh") }}</button>
       <button v-if="!status.integration && status.disposition === 'pending'" :disabled="busy" @click="operate('preview')">{{ t("group.worktree.preview") }}</button>
@@ -81,6 +100,7 @@ onUnmounted(() => { epoch++; clearInterval(timer); });
       <button class="my-2" :disabled="busy || !authorized" @click="operate('integrate')">{{ t("group.worktree.integrate") }}</button>
     </template>
     <p v-if="candidate" class="break-all">{{ t("group.worktree.candidate") }}: {{ candidate.branchRef }} · {{ status.integration?.candidateCommitSha }}</p>
-    <p v-if="status.integration?.state === 'conflicted'" role="alert" class="text-danger">{{ t("group.worktree.conflict") }}: {{ status.integration.conflictFiles.join(', ') }}</p>
-  </details>
+      <p v-if="status.integration?.state === 'conflicted'" role="alert" class="text-danger">{{ t("group.worktree.conflict") }}: {{ status.integration.conflictFiles.join(', ') }}</p>
+    </details>
+  </div>
 </template>

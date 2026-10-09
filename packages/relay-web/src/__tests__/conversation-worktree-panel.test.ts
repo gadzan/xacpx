@@ -141,3 +141,70 @@ it("still surfaces a failure when no newer request has started", async () => {
   expect(wrapper!.find("[role='alert']").exists()).toBe(true);
   expect(wrapper!.text()).toContain("only poll failed");
 });
+
+it("does not let a poll that fails during an operation resurrect an error beside a successful result", async () => {
+  // Full interleaving the reviewer described: poll issued while busy=false, then
+  // an operation starts, then the poll fails, then the operation succeeds.
+  vi.useFakeTimers();
+  try {
+    await open(status(3));
+    // The poll is issued first and stays pending, so its failure can land after
+    // the operation has already produced a successful status.
+    let rejectPoll!: (reason: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectPoll = reject; }));
+    await button("refresh").trigger("click");
+    // The operation starts and succeeds while the poll is still in flight.
+    rpc.mockResolvedValueOnce({ worktree: { ...status(5), preview: { id: "p", createdAt: "now", members: [{ botId: "a", worktreeId: "wa", head: "a".repeat(40), tree: "b".repeat(40), files: ["f.txt"], diff: "+change" }] } } });
+    await button("preview").trigger("click"); await flushPromises();
+    // The operation's successful result is showing and no error is present.
+    expect(wrapper!.find("summary").text()).toContain("pending");
+    expect(wrapper!.text()).toContain("+change");
+    expect(wrapper!.find("[role='alert']").exists()).toBe(false);
+    // Now the older poll fails. It must not resurrect an error beside the
+    // successful operation result.
+    rejectPoll(new Error("poll failed during operation"));
+    await flushPromises();
+    expect(wrapper!.find("[role='alert']").exists()).toBe(false);
+    expect(wrapper!.text()).not.toContain("poll failed during operation");
+    expect(wrapper!.text()).toContain("+change");
+  } finally { vi.useRealTimers(); }
+});
+
+it("still surfaces a poll failure that happens while no operation is running", async () => {
+  // Counterpart to the case above: the same failure must remain visible when it
+  // is not racing an operation, so the guard is not simply swallowing errors.
+  vi.useFakeTimers();
+  try {
+    await open(status(3));
+    let rejectPoll!: (reason: unknown) => void;
+    rpc.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectPoll = reject; }));
+    await button("refresh").trigger("click");
+    rejectPoll(new Error("poll failed with no operation"));
+    await flushPromises();
+    expect(wrapper!.find("[role='alert']").exists()).toBe(true);
+    expect(wrapper!.text()).toContain("poll failed with no operation");
+  } finally { vi.useRealTimers(); }
+});
+
+it("shows the error and a retry when the very first load fails", async () => {
+  // The panel body is gated on `status`, so a failed first load has nothing to
+  // render. The error and a manual refresh must live outside that gate, or the
+  // user sees a blank panel and cannot recover without waiting for a poll.
+  rpc.mockRejectedValueOnce(new Error("first load failed"));
+  wrapper = mount(Panel, { props: { instanceId: "i", runId: "r" }, global: { plugins: [i18n] } });
+  await flushPromises();
+  // No status yet, so the details panel is absent, but the error is visible.
+  expect(wrapper!.find("details").exists()).toBe(false);
+  expect(wrapper!.find("[role='alert']").exists()).toBe(true);
+  expect(wrapper!.text()).toContain("first load failed");
+  // A manual retry is offered and works.
+  rpc.mockResolvedValueOnce({ run: { worktree: status(2) } });
+  await wrapper!.find("[role='alert'] button").trigger("click");
+  await flushPromises();
+  expect(wrapper!.find("details").exists()).toBe(true);
+  expect(wrapper!.find("[role='alert']").exists()).toBe(false);
+  expect(wrapper!.find("summary").text()).toContain("pending");
+});
+
+
+
