@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { adapterFacingPrompt, isAdvertisedRuntimeCommand } from "./advertised-commands";
 import { composeBotTurnPromptFromSnapshot } from "../bots/bot-profile-prompt";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
@@ -1040,9 +1041,17 @@ export class ConversationDispatcher {
       }
       this.emitProduct({ type: "conversation-run-changed", run: latestRun });
       this.emitProduct({ type: "member-turn-started", run: latestRun, memberTurn: latestMember });
-      const text = isGroup
+      const userText = this.requestText(work.run.requestMessageId);
+      const commandIdentity = {
+        conversationId: work.run.conversationId,
+        topicId: work.run.topicId,
+        botId: work.memberTurn.botId,
+      };
+      const rawCommand = isAdvertisedRuntimeCommand(commandIdentity, userText);
+      const wrapped = isGroup
         ? composeBotTurnPromptFromSnapshot(snapshot, groupPrompt!)
-        : composeBotTurnPromptFromSnapshot(snapshot, this.requestText(work.run.requestMessageId));
+        : composeBotTurnPromptFromSnapshot(snapshot, userText);
+      const text = adapterFacingPrompt(commandIdentity, userText, wrapped);
       const groupExecution = isGroup ? this.handoffs?.bindExecution({ senderMemberTurnId: started.id, sourceTurnId,
         dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation }) : undefined;
       releaseGroupExecution = groupExecution?.release;
@@ -1055,7 +1064,9 @@ export class ConversationDispatcher {
         memberTurnId: started.id,
         sessionAlias: binding.sessionAlias,
         logicalSessionId: binding.logicalSessionId,
-        text: groupExecution ? `${this.handoffs!.memberContext(groupExecution.token)}\n\n${text}` : text,
+        text: groupExecution && !rawCommand
+          ? `${this.handoffs!.memberContext(groupExecution.token)}\n\n${text}`
+          : text,
         executionOrigin: conversationExecutionOrigin(
           this.store.getDispatchForMemberTurn(started.id)?.authorityEpoch,
           this.authorityEpoch,

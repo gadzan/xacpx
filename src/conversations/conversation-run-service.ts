@@ -47,6 +47,7 @@ function assertSessionKeyMatchesAlias(key: string, session: LogicalSession): voi
     );
   }
 }
+import { refusesMultiMemberSlash } from "./advertised-commands";
 import { ConversationError } from "./conversation-error";
 import { lifecycleOperationId, transitionLifecycleOperation, type LifecycleOperationKind } from "./lifecycle-operation";
 import { assertAcceptedPolicies, assertPolicySelection, parseMemberPolicies, type ConversationMemberPolicy } from "./conversation-effect-request";
@@ -489,6 +490,18 @@ export class ConversationRunService {
         const uncovered = selected.filter((botId) => !gateSet.has(botId));
         if (uncovered.length > 0) {
           return null;
+        }
+        const explicitSingleMember = parsed.kind === "members" && selected.length === 1;
+        const slashIdentities = (explicitSingleMember ? selected : this.groupEligibleMembers(live)).map((botId) => ({
+          conversationId: input.conversationId,
+          topicId: input.topicId,
+          botId,
+        }));
+        if (refusesMultiMemberSlash(input.text, explicitSingleMember, slashIdentities)) {
+          throw new ConversationError(
+            "slash_requires_single_member",
+            "an adapter slash command runs for one selected member",
+          );
         }
         const existing = this.store.getAcceptedRequest(input.conversationId, input.topicId, input.requestId);
         if (existing) {

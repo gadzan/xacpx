@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import type { BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
 import { useDirectBotsStore } from "../stores/direct-bots";
+import { useConversationCommandsStore } from "../stores/conversation-commands";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
 import GroupPane from "../components/GroupPane.vue";
@@ -721,6 +722,56 @@ describe("Group Components", () => {
       await wrapper.setProps({ bots: [dup[0]!] });
       await textarea.setValue("@Same ");
       expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+    });
+
+    it("refreshes slash commands when the selected member changes and keeps a rejected draft", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const commands = useConversationCommandsStore();
+      commands.remember({
+        instanceId: "i1", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_a",
+      }, [{ name: "compact", description: "Compact" }]);
+      commands.remember({
+        instanceId: "i1", conversationId: "conversation_g", topicId: "topic_1", botId: "bot_b",
+      }, [{ name: "diff", description: "Diff" }]);
+      const gate = Promise.withResolvers<GroupSendOutcome>();
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS.filter((b) => b.enabled), sendOutcome: () => gate.promise },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find('[data-test="group-composer-textarea"]');
+      await textarea.setValue("/co");
+      expect(wrapper.find('[data-test="group-cmd-item"]').text()).toContain("/compact");
+      await textarea.trigger("keydown", { key: "Enter" });
+      expect(wrapper.emitted("send")).toBeUndefined();
+      expect((textarea.element as HTMLTextAreaElement).value).toBe("/compact ");
+      groups.targetSelection = { mode: "members", botIds: ["bot_b"] };
+      await textarea.setValue("/d");
+      await wrapper.vm.$nextTick();
+      expect(wrapper.find('[data-test="group-cmd-item"]').text()).toContain("/diff");
+      groups.targetSelection = { mode: "everyone" };
+      await textarea.setValue("/compact");
+      expect(wrapper.find('[data-test="group-slash-hint"]').exists()).toBe(true);
+      await textarea.trigger("keydown", { key: "Enter" });
+      expect(wrapper.emitted("send")).toBeUndefined();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      await textarea.setValue("keep me");
+      await wrapper.find('[data-test="group-send-prompt-button"]').trigger("click");
+      gate.resolve("rejected");
+      await flushPromises();
+      expect((textarea.element as HTMLTextAreaElement).value).toBe("keep me");
+    });
+
+    it("shows feedback for an unresolved mention and drops the previous target", async () => {
+      const groups = seedGroupSelection();
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-composer-textarea"]').setValue("@Nobody ");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: [] });
+      expect(groups.promptError).toBe("mentionUnresolved");
     });
   });
 

@@ -160,6 +160,29 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
   const turns = new Map<string, MirrorTurn>();
   const usage = new Map<string, { chatKey: string; used: number; size: number; cost?: UsageCostDto; breakdown?: UsageBreakdownDto }>();
   const commands = new Map<string, { chatKey: string; commands: AgentCommandDto[] }>();
+  const conversationCommands = new Map<string, {
+    conversationId: string;
+    topicId: string;
+    botId: string;
+    commands: AgentCommandDto[];
+  }>();
+  const conversationCommandKey = (conversationId: string, topicId: string, botId: string): string =>
+    `${conversationId}\0${topicId}\0${botId}`;
+  const rememberConversationCommands = (
+    conversationId: string,
+    topicId: string,
+    botId: string,
+    advertised: AgentCommandDto[],
+  ): void => {
+    const key = conversationCommandKey(conversationId, topicId, botId);
+    conversationCommands.delete(key);
+    conversationCommands.set(key, { conversationId, topicId, botId, commands: advertised });
+    while (conversationCommands.size > 512) {
+      const oldest = conversationCommands.keys().next().value;
+      if (oldest === undefined) break;
+      conversationCommands.delete(oldest);
+    }
+  };
   const pendingFinished: PendingFinishedTurn[] = [];
   // Per-session receive-order counter. Incremented on turn-started (and each
   // inbound agent-message) so Hub restart can map `startedAfterSeq` to insert
@@ -181,7 +204,9 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
   /** Product-owned Conversation turns keep reconnect recovery by correlation,
    *  not by ordinary Session visibility. Ordinary usage/commands snapshots are
    *  session-namespace state: they follow `liveAliases` only. A Conversation
-   *  turn on a hidden alias must not pull usage/commands into instance.state.sync. */
+   *  turn on a hidden alias must not pull usage/commands into instance.state.sync.
+   *  Adapter slash lists for those runtimes travel in `conversationCommands`,
+   *  keyed by conversation, topic, and bot, not by the hidden alias. */
   const conversationOwned = (alias: string): boolean => {
     const turn = turns.get(alias);
     if (turn?.conversation) return true;
@@ -301,6 +326,15 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         bump(event.sessionAlias);
         return;
       case "agent-commands":
+        if (event.conversation?.botId) {
+          rememberConversationCommands(
+            event.conversation.conversationId,
+            event.conversation.topicId,
+            event.conversation.botId,
+            event.commands,
+          );
+          return;
+        }
         if (event.conversation) return;
         commands.set(event.sessionAlias, { chatKey: event.chatKey, commands: event.commands });
         bump(event.sessionAlias);
@@ -390,6 +424,7 @@ export function createStateMirror(deps: StateMirrorDeps): StateMirror {
         turns: [],
         usage: [],
         commands: [],
+        conversationCommands: [...conversationCommands.values()],
         finishedOffline: [],
       };
       const aliases = new Map<string, number>();

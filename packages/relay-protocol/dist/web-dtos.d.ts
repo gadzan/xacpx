@@ -116,6 +116,15 @@ export interface SessionCommandsSnapshotDto {
     sessionAlias: string;
     commands: AgentCommandDto[];
 }
+/** Latest adapter slash commands for one Bot runtime on one Topic.
+ *  Restored on reconnect. The hidden session alias is not part of this row. */
+export interface ConversationCommandsSnapshotDto {
+    instanceId: string;
+    conversationId: string;
+    topicId: string;
+    botId: string;
+    commands: AgentCommandDto[];
+}
 /** Authoritative per-instance state sent on the same WebSocket immediately after
  *  a browser subscription is installed. Because the snapshot and later deltas
  *  share one ordered channel, the browser can safely replace stale pre-disconnect
@@ -124,6 +133,8 @@ export interface InstanceStateSnapshotDto {
     turns: LiveTurnSnapshotDto[];
     usage: SessionUsageSnapshotDto[];
     commands: SessionCommandsSnapshotDto[];
+    /** Absent on hubs that predate conversation slash restore. */
+    conversationCommands?: ConversationCommandsSnapshotDto[];
 }
 /** Dashboard instance row (HTTP `/api/instances` and web store seed). */
 export interface InstanceSummaryDto {

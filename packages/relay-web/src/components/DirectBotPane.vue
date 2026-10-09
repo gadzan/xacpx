@@ -9,6 +9,7 @@ import {
   X,
 } from "lucide-vue-next";
 import { useDirectBotsStore } from "../stores/direct-bots";
+import { useGroupsStore } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
 import type { InteractionValueDto } from "@ganglion/xacpx-relay-protocol";
 import AgentIcon from "./AgentIcon.vue";
@@ -19,8 +20,15 @@ import BotRemovalDialog from "./BotRemovalDialog.vue";
 import NewTopicDialog from "./NewTopicDialog.vue";
 import TopicManager from "./TopicManager.vue";
 
+const emit = defineEmits<{
+  navigateBot: [instanceId: string, botId: string];
+  navigateGroup: [instanceId: string, groupId: string];
+}>();
+
 const directBotsStore = useDirectBotsStore();
+const groupsStore = useGroupsStore();
 const instancesStore = useInstancesStore();
+const navOpen = ref(false);
 
 const bot = computed(() => directBotsStore.currentBot);
 const instance = computed(() =>
@@ -46,6 +54,34 @@ async function previewTopic(topicId: string) {
   const ctx = requireTopicContext();
   if (!ctx) throw new Error("topic unavailable");
   return directBotsStore.previewTopic(ctx.instanceId, ctx.conversationId, topicId);
+}
+
+const otherBots = computed(() => {
+  const instanceId = directBotsStore.instanceId;
+  const currentId = bot.value?.id;
+  if (!instanceId || !currentId) return [];
+  return (directBotsStore.botsByInstance[instanceId] ?? []).filter((row) => row.id !== currentId);
+});
+
+const memberGroups = computed(() => {
+  const instanceId = directBotsStore.instanceId;
+  const currentId = bot.value?.id;
+  if (!instanceId || !currentId) return [];
+  return (groupsStore.groupsByInstance[instanceId] ?? []).filter((group) => group.botIds.includes(currentId));
+});
+
+function openOtherBot(botId: string): void {
+  const instanceId = directBotsStore.instanceId;
+  if (!instanceId) return;
+  navOpen.value = false;
+  emit("navigateBot", instanceId, botId);
+}
+
+function openGroup(groupId: string): void {
+  const instanceId = directBotsStore.instanceId;
+  if (!instanceId) return;
+  navOpen.value = false;
+  emit("navigateGroup", instanceId, groupId);
 }
 
 async function renameTopic(topicId: string, title: string) {
@@ -127,6 +163,46 @@ function openRemoval(): void {
 
       <!-- Actions: Edit, Delete -->
       <div class="flex items-center gap-1">
+        <div class="relative">
+          <button
+            type="button"
+            data-test="direct-nav-button"
+            class="rounded-lg px-2 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+            @click="navOpen = !navOpen"
+          >
+            {{ $t("bot.nav.talkWith") }}
+          </button>
+          <div
+            v-if="navOpen"
+            data-test="direct-nav-menu"
+            class="absolute right-0 z-20 mt-1 w-64 overflow-hidden rounded-xl border border-border bg-surface shadow-xl"
+          >
+            <div class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.talkWith") }}</div>
+            <button
+              v-for="other in otherBots"
+              :key="other.id"
+              type="button"
+              data-test="direct-nav-bot"
+              class="block w-full truncate px-3 py-1.5 text-left text-xs hover:bg-raised"
+              @click="openOtherBot(other.id)"
+            >
+              {{ other.name }}
+            </button>
+            <p v-if="otherBots.length === 0" class="px-3 py-1.5 text-xs text-fg-muted">{{ $t("bot.nav.noOtherBot") }}</p>
+            <div class="border-t border-border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.collaborate") }}</div>
+            <button
+              v-for="group in memberGroups"
+              :key="group.id"
+              type="button"
+              data-test="direct-nav-group"
+              class="block w-full truncate px-3 py-1.5 text-left text-xs hover:bg-raised"
+              @click="openGroup(group.id)"
+            >
+              {{ group.title }}
+            </button>
+            <p v-if="memberGroups.length === 0" class="px-3 py-1.5 text-xs text-fg-muted">{{ $t("bot.nav.noGroup") }}</p>
+          </div>
+        </div>
         <button
           type="button"
           data-test="edit-bot-button"
@@ -206,7 +282,7 @@ function openRemoval(): void {
     <!-- Prompt Composer -->
     <ConversationPromptInput
       :disabled="bot?.retired === true || !directBotsStore.activeTopicId || !directBotsStore.topicReady || directBotsStore.currentTopic?.status !== 'active'"
-      @send="(text) => directBotsStore.sendPrompt(text)"
+      :deliver="(text) => directBotsStore.sendPrompt(text)"
       @cancel="directBotsStore.cancelCurrentRun"
     />
     <!-- History failure: Retry reloads the topic (history + durable run

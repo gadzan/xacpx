@@ -114,6 +114,36 @@ test("a hub-capped sync mirror emits truncated on the live turn snapshot", async
   runtime.close();
 });
 
+test("state sync restores conversation slash commands without putting them on the session alias", async () => {
+  const { runtime } = await seeded();
+  sync(runtime, {
+    turns: [],
+    usage: [],
+    commands: [{ sessionAlias: "backend", commands: [{ name: "status" }] }],
+    conversationCommands: [{
+      conversationId: "conversation_1",
+      topicId: "topic_1",
+      botId: "bot_1",
+      commands: [{ name: "compact" }],
+    }],
+    finishedOffline: [],
+  });
+  const snapshot = runtime.stateSnapshot("i1");
+  expect(snapshot.commands).toEqual([{
+    instanceId: "i1",
+    sessionAlias: "backend",
+    commands: [{ name: "status" }],
+  }]);
+  expect(snapshot.conversationCommands).toEqual([{
+    instanceId: "i1",
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    botId: "bot_1",
+    commands: [{ name: "compact" }],
+  }]);
+  runtime.close();
+});
+
 test("Conversation-correlated live usage/commands stay out of ordinary sessionUsage/sessionCommands", async () => {
   const { runtime } = await seeded();
   const fire = (event: unknown) => runtime.gateway["deps"].onEvent!("i1", "a1", {
@@ -150,6 +180,13 @@ test("Conversation-correlated live usage/commands stay out of ordinary sessionUs
   }]);
   expect(snapshot.usage.some((row) => row.sessionAlias === "brt_hidden")).toBe(false);
   expect(snapshot.commands.some((row) => row.sessionAlias === "brt_hidden")).toBe(false);
+  expect(snapshot.conversationCommands).toEqual([{
+    instanceId: "i1",
+    conversationId: "conversation_1",
+    topicId: "topic_1",
+    botId: "bot_1",
+    commands: [{ name: "compact" }],
+  }]);
   runtime.close();
 });
 

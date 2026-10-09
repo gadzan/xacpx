@@ -23,6 +23,7 @@ import {
   rankAgentMentions,
   type AgentAutocompleteContext,
 } from "../lib/agent-mention-ranking";
+import { completionKey, mentionQueryAt, replaceRange, slashQuery } from "../lib/composer-completion";
 import { loadDraft, saveDraft } from "../lib/composer-drafts";
 import { createDebouncedFlush } from "../lib/debounce-flush";
 import { clampPanelWidth, createBottomPanelResize } from "../lib/resize-panel";
@@ -208,12 +209,8 @@ function onDesktopChange(e: MediaQueryListEvent | MediaQueryList) {
 // prompt (the agent interprets it). No commands / no match → no menu, composer unchanged.
 const cmdMenuOpen = ref(false);
 const cmdActiveIdx = ref(0);
-const cmdQuery = computed(() => {
-  const v = text.value;
-  if (!v.startsWith("/") || v.includes("\n") || v.slice(1).includes(" "))
-    return null;
-  return v.slice(1).toLowerCase();
-});
+const composing = ref(false);
+const cmdQuery = computed(() => slashQuery(text.value)?.query ?? null);
 const cmdMatches = computed(() => {
   const q = cmdQuery.value;
   if (q === null) return [];
@@ -226,9 +223,14 @@ watch(cmdMatches, (m) => {
   cmdActiveIdx.value = 0;
 });
 function pickCommand(name: string) {
-  text.value = `/${name} `;
+  const query = slashQuery(text.value);
+  const replaced = replaceRange(text.value, query?.range ?? { start: 0, end: text.value.length }, `/${name} `);
+  text.value = replaced.text;
   cmdMenuOpen.value = false;
-  void nextTick(() => textarea.value?.focus());
+  void nextTick(() => {
+    textarea.value?.focus();
+    textarea.value?.setSelectionRange(replaced.cursor, replaced.cursor);
+  });
 }
 
 interface AgentMentionItem {
@@ -450,29 +452,15 @@ function updateMentionState() {
   }
   const pos = el.selectionStart ?? 0;
   mentionCursorPos.value = pos;
-  const beforeCursor = text.value.slice(0, pos);
-  const lastAtIdx = beforeCursor.lastIndexOf("@");
-  if (lastAtIdx === -1) {
+  const query = mentionQueryAt(text.value, pos);
+  if (!query) {
     mentionMenuOpen.value = false;
     mentionQuery.value = null;
     mentionStartPos.value = -1;
     return;
   }
-  if (lastAtIdx > 0 && !/[\s(]/.test(beforeCursor[lastAtIdx - 1]!)) {
-    mentionMenuOpen.value = false;
-    mentionQuery.value = null;
-    mentionStartPos.value = -1;
-    return;
-  }
-  const query = beforeCursor.slice(lastAtIdx + 1);
-  if (/[\s\n]/.test(query)) {
-    mentionMenuOpen.value = false;
-    mentionQuery.value = null;
-    mentionStartPos.value = -1;
-    return;
-  }
-  mentionStartPos.value = lastAtIdx;
-  mentionQuery.value = query.toLowerCase();
+  mentionStartPos.value = query.range.start;
+  mentionQuery.value = query.query;
 }
 
 const mentionMatches = computed(() => {
@@ -491,13 +479,12 @@ watch(mentionMatches, (m) => {
 
 function pickMention(agentItem: AgentMentionItem) {
   if (mentionStartPos.value < 0) return;
-  const before = text.value.slice(0, mentionStartPos.value);
-  const after = text.value.slice(mentionCursorPos.value);
   const targetToken = `@${agentItem.displayName}`;
   const insertion = `${targetToken} `;
+  const replaced = replaceRange(text.value, { start: mentionStartPos.value, end: mentionCursorPos.value }, insertion);
   const start = mentionStartPos.value;
   const end = start + targetToken.length;
-  text.value = before + insertion + after;
+  text.value = replaced.text;
   recordedMentions.value.push({
     handle: agentItem.handle,
     displayName: agentItem.displayName,
@@ -510,8 +497,7 @@ function pickMention(agentItem: AgentMentionItem) {
   void nextTick(() => {
     if (textarea.value) {
       textarea.value.focus();
-      const newPos = before.length + insertion.length;
-      textarea.value.setSelectionRange(newPos, newPos);
+      textarea.value.setSelectionRange(replaced.cursor, replaced.cursor);
     }
   });
 }
@@ -671,88 +657,67 @@ function recallHistory(dir: -1 | 1) {
 }
 
 function onKeydown(e: KeyboardEvent) {
-  // IME guard: never intercept keys mid-composition (CJK input) — Enter here confirms
-  // the candidate, it must not submit. `isComposing` covers all input engines.
-  if (e.isComposing) return;
-  // Mention autocomplete takes keys while menu is open
-  if (mentionMenuOpen.value && mentionMatches.value.length > 0) {
-    if (e.key === "ArrowDown") {
-      mentionActiveIdx.value =
-        (mentionActiveIdx.value + 1) % mentionMatches.value.length;
-      e.preventDefault();
-      return;
-    }
-    if (e.key === "ArrowUp") {
-      mentionActiveIdx.value =
-        (mentionActiveIdx.value - 1 + mentionMatches.value.length) %
-        mentionMatches.value.length;
-      e.preventDefault();
-      return;
-    }
-    if (e.key === "Enter" || e.key === "Tab") {
-      const m = mentionMatches.value[mentionActiveIdx.value];
-      if (m) pickMention(m);
-      e.preventDefault();
-      return;
-    }
-    if (e.key === "Escape") {
-      mentionMenuOpen.value = false;
-      e.preventDefault();
-      return;
-    }
-  }
-  // Command autocomplete takes the arrow/enter/tab/esc keys while its menu is open.
-  if (cmdMenuOpen.value && cmdMatches.value.length > 0) {
-    if (e.key === "ArrowDown") {
-      cmdActiveIdx.value = (cmdActiveIdx.value + 1) % cmdMatches.value.length;
-      e.preventDefault();
-      return;
-    }
-    if (e.key === "ArrowUp") {
-      cmdActiveIdx.value =
-        (cmdActiveIdx.value - 1 + cmdMatches.value.length) %
-        cmdMatches.value.length;
-      e.preventDefault();
-      return;
-    }
-    if (e.key === "Enter" || e.key === "Tab") {
-      const c = cmdMatches.value[cmdActiveIdx.value];
-      if (c) pickCommand(c.name);
-      e.preventDefault();
-      return;
-    }
-    if (e.key === "Escape") {
-      cmdMenuOpen.value = false;
-      e.preventDefault();
-      return;
-    }
-  }
-  if (e.key === "Escape") {
-    if (props.busy) {
-      emit("cancel");
-      e.preventDefault();
-    }
+  const caretAtStart =
+    (textarea.value?.selectionStart ?? 0) === 0 &&
+    (textarea.value?.selectionEnd ?? 0) === 0;
+  const collapsed = (textarea.value?.selectionStart ?? 0) === (textarea.value?.selectionEnd ?? 0);
+  const mentionOpen = mentionMenuOpen.value && mentionMatches.value.length > 0;
+  const slashOpen = !mentionOpen && cmdMenuOpen.value && cmdMatches.value.length > 0;
+  const action = completionKey({
+    key: e.key,
+    shiftKey: e.shiftKey,
+    isComposing: e.isComposing,
+    composing: composing.value,
+    menu: mentionOpen ? "mention" : slashOpen ? "slash" : "closed",
+    itemCount: mentionOpen ? mentionMatches.value.length : slashOpen ? cmdMatches.value.length : 0,
+    activeIndex: mentionOpen ? mentionActiveIdx.value : cmdActiveIdx.value,
+    holdKeys: false,
+    collapsedCaret: collapsed,
+    busy: props.busy,
+    caretAtStart,
+    historyArmed: historyIdx !== -1,
+  });
+  if (action.type === "ignore" || action.type === "passthrough") return;
+  if (action.type === "blocked") {
+    e.preventDefault();
     return;
   }
-  // Plain Enter submits; Shift+Enter inserts a newline (default behavior).
-  if (e.key === "Enter" && !e.shiftKey) {
+  if (action.type === "move") {
+    if (mentionOpen) mentionActiveIdx.value = action.index;
+    else cmdActiveIdx.value = action.index;
+    e.preventDefault();
+    return;
+  }
+  if (action.type === "commit") {
+    if (mentionOpen) {
+      const row = mentionMatches.value[action.index];
+      if (row) pickMention(row);
+    } else {
+      const row = cmdMatches.value[action.index];
+      if (row) pickCommand(row.name);
+    }
+    e.preventDefault();
+    return;
+  }
+  if (action.type === "dismiss") {
+    mentionMenuOpen.value = false;
+    cmdMenuOpen.value = false;
+    e.preventDefault();
+    return;
+  }
+  if (action.type === "cancel") {
+    emit("cancel");
+    e.preventDefault();
+    return;
+  }
+  if (action.type === "send") {
     submit();
     e.preventDefault();
     return;
   }
-  // History recall only when the caret sits at the very start of the input.
-  const caretAtStart =
-    (textarea.value?.selectionStart ?? 0) === 0 &&
-    (textarea.value?.selectionEnd ?? 0) === 0;
-  if (e.key === "ArrowUp" && caretAtStart) {
-    recallHistory(-1);
+  if (action.type === "history") {
+    recallHistory(action.dir);
     e.preventDefault();
-    return;
-  }
-  if (e.key === "ArrowDown" && historyIdx !== -1 && caretAtStart) {
-    recallHistory(1);
-    e.preventDefault();
-    return;
   }
 }
 
@@ -934,6 +899,8 @@ function onInput() {
         @click="updateMentionState"
         @keyup="updateMentionState"
         @keydown="onKeydown"
+        @compositionstart="composing = true"
+        @compositionend="composing = false"
         @paste="onPaste"
       />
       <div class="flex items-center justify-between gap-2 px-2.5 pb-2.5 pt-0.5">

@@ -1,8 +1,18 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { AtSign, Bot, Check, ChevronDown, Users, X } from "lucide-vue-next";
 import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import { completionKey, replaceRange, slashQuery } from "../lib/composer-completion";
+import {
+  filterMentionMembers,
+  groupMentionQuery,
+  mentionDisplayToken,
+  reconcileMentions,
+  type GroupMentionMember,
+  type MentionBinding,
+} from "../lib/group-mention";
+import { useConversationCommandsStore } from "../stores/conversation-commands";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
 import AgentIcon from "./AgentIcon.vue";
@@ -26,14 +36,17 @@ const emit = defineEmits<{
 const { t } = useI18n();
 const groupsStore = useGroupsStore();
 const instancesStore = useInstancesStore();
+const commandStore = useConversationCommandsStore();
 const promptText = ref("");
 const menuOpen = ref(false);
 const textareaEl = ref<HTMLTextAreaElement | null>(null);
-
-/** Serialized target last derived from the mention text. Lets an unchanged
- *  text (caret moves, resize) skip the store write, and lets the text be
- *  edited away without a stale suppression. */
-const lastDerivedTarget = ref<string | null>(null);
+const composing = ref(false);
+const mentionBindings = ref<MentionBinding[]>([]);
+const mentionOwned = ref(false);
+const mentionActiveIdx = ref(0);
+const cmdActiveIdx = ref(0);
+const cmdDismissed = ref(false);
+const mentionDismissed = ref(false);
 
 const selection = computed(() => groupsStore.targetSelection);
 const isEveryone = computed(() => selection.value?.mode === "everyone");
@@ -60,7 +73,10 @@ const selectionLabel = computed(() => {
  *  Topic changes underneath the composer. */
 function clearSentDraft(): void {
   promptText.value = "";
-  lastDerivedTarget.value = null;
+  mentionBindings.value = [];
+  mentionOwned.value = false;
+  cmdDismissed.value = false;
+  mentionDismissed.value = false;
   if (textareaEl.value) textareaEl.value.style.height = "auto";
   closeMenu();
 }
@@ -83,6 +99,7 @@ function closeMenu(): void {
 }
 
 function pickEveryone(): void {
+  mentionOwned.value = false;
   groupsStore.mentionEveryone();
   closeMenu();
 }
@@ -95,11 +112,13 @@ function pickLead(): void {
   // eligibleTargetFor applies the store's catalog-known state: an unconfirmed
   // catalog must widen to Everyone under no circumstances.
   const selection = groupsStore.eligibleTargetFor(group, props.bots);
+  mentionOwned.value = false;
   groupsStore.setTarget(selection);
   closeMenu();
 }
 
 function toggleMember(botId: string): void {
+  mentionOwned.value = false;
   groupsStore.toggleTargetMember(botId);
 }
 
@@ -117,124 +136,191 @@ function driverFor(bot: BotSummaryDto): string | undefined {
   return instancesStore.byId(instId)?.agents.find((a) => a.name === bot.agent)?.driver;
 }
 
-function onKeydown(e: KeyboardEvent): void {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    handleSend();
-  }
-  if (e.key === "Escape") closeMenu();
+const mentionMembers = computed<GroupMentionMember[]>(() => {
+  const leadId = groupsStore.currentGroup?.leadBotId;
+  return props.bots.map((bot) => ({
+    botId: bot.id,
+    name: bot.name,
+    ...(bot.role ? { role: bot.role } : {}),
+    enabled: bot.enabled,
+    lead: bot.id === leadId,
+  }));
+});
+
+const singleMemberId = computed(() => {
+  if (selection.value?.mode !== "members" || selectedIds.value.length !== 1) return null;
+  return selectedIds.value[0] ?? null;
+});
+
+function commandsFor(botId: string) {
+  const instanceId = props.instanceId ?? groupsStore.instanceId;
+  const conversationId = groupsStore.activeConversationId;
+  const topicId = groupsStore.activeTopicId;
+  if (!instanceId || !conversationId || !topicId) return [];
+  return commandStore.commandsFor({ instanceId, conversationId, topicId, botId });
 }
 
-/** Terminated mention tokens only. A token is committed when it is closed or
- *  followed by whitespace — never mid-typing, so typing `@Ann` towards `@Anna`
- *  (both are members) cannot select Ann first and then append Anna.
- *  Quoted tokens (`@"Code Reviewer"`) allow display names with spaces; unquoted
- *  tokens stop at whitespace so they cannot swallow the rest of the sentence.
- *  A bare token also ends at sentence-final or separator punctuation
- *  (`, : ; . ! ?` and the CJK equivalents): `@everyone,` and `@Tester:` are
- *  real mentions, not unknown names — without this the router keeps the
- *  previous manual selection and silently sends to the wrong target.
- *  Names may be CJK or any non-space character (Bot names are only bounded by
- *  a non-empty ≤80 rule), but a name that itself contains one of the
- *  terminators must use the quoted form.
- *  The terminator set is ASCII + CJK sentence punctuation only: apostrophes
- *  (`O'Brien`) and hyphens stay name characters, and `"` keeps its quoting
- *  role — an unbalanced quote never starts a bare token. */
-const BARE_MENTION_END = /[\s\n,;:!?.，。：；！？]/;
-const MENTION_TOKEN = /(^|[\s\n])@("([^"]*)"|([^\s@,;:!?.，。：；！？]*))/g;
+const slash = computed(() => slashQuery(promptText.value));
+const slashMatches = computed(() => {
+  const query = slash.value;
+  const botId = singleMemberId.value;
+  if (!query || !botId || cmdDismissed.value) return [];
+  return commandsFor(botId).filter((command) => command.name.toLowerCase().startsWith(query.query)).slice(0, 8);
+});
+const slashHint = computed(() => Boolean(slash.value) && !singleMemberId.value && !cmdDismissed.value);
+const caret = ref(0);
+const mentionQuery = computed(() => groupMentionQuery(promptText.value, caret.value));
+const mentionMatches = computed(() => {
+  const query = mentionQuery.value;
+  if (!query || mentionDismissed.value) return [];
+  return filterMentionMembers(mentionMembers.value, query.query).slice(0, 8);
+});
 
-interface MentionToken {
-  /** Selected display name (bare `@` tokens are skipped). */
-  name: string;
-  /** True for the literal `everyone` keyword (unquoted only). */
-  everyone: boolean;
+watch(singleMemberId, () => {
+  cmdDismissed.value = false;
+  cmdActiveIdx.value = 0;
+});
+
+function mentionErrorCode(reason: "unknown" | "ambiguous" | "disabled" | "removed"): string {
+  if (reason === "ambiguous") return "mentionAmbiguous";
+  if (reason === "disabled") return "mentionDisabled";
+  if (reason === "removed") return "mentionRemoved";
+  return "mentionUnresolved";
 }
 
-/** Committed tokens during typing. A token commits only when a real delimiter
- *  closes it — whitespace after a bare token, or the closing quote of a quoted
- *  token — never at end-of-text: while the user is still typing the caret sits
- *  at EOF, and an EOF rule would route the current prefix (`@Ann` on the way to
- *  `@Anna`). `endOfTextTerminates` opts into the EOF rule for explicit
- *  boundaries (send, blur) where no further character will arrive.
- *
- *  The closing quote proves termination on its own: the regex already matched
- *  the complete `"..."`, so punctuation after it (`:"` / `,"`) must not demote
- *  the token — that would silently route the message to the previous target. */
-function committedMentionTokens(text: string, endOfTextTerminates: boolean): MentionToken[] {
-  const tokens: MentionToken[] = [];
-  for (const match of text.matchAll(MENTION_TOKEN)) {
-    const quoted = match[3];
-    const bare = match[4] ?? "";
-    if (quoted !== undefined) {
-      // Quoted token: the closing quote closed it. Committed even mid-sentence.
-      if (quoted.length === 0) continue;
-      tokens.push({ name: quoted, everyone: false });
-      continue;
+function applyMention(text: string, endOfTextTerminates: boolean): boolean {
+  const applied = reconcileMentions(text, mentionBindings.value, mentionMembers.value, endOfTextTerminates);
+  if (applied.kind === "pending") {
+    if (mentionOwned.value && !text.includes("@")) {
+      mentionOwned.value = false;
+      mentionBindings.value = [];
+      groupsStore.setTarget({ mode: "members", botIds: [] });
     }
-    // Bare token: needs an explicit boundary — whitespace or sentence
-    // punctuation after it, or EOF at an explicit send/blur boundary where no
-    // further character will arrive.
-    const start = match.index ?? 0;
-    const end = start + match[0].length;
-    if (end >= text.length ? !endOfTextTerminates : !BARE_MENTION_END.test(text[end] ?? "")) {
-      continue;
-    }
-    if (bare.length === 0) continue;
-    tokens.push({ name: bare, everyone: bare === "everyone" });
+    return true;
   }
-  return tokens;
-}
-
-function deriveMentionTarget(
-  text: string,
-  bots: BotSummaryDto[],
-  endOfTextTerminates = false,
-): { mode: "members"; botIds: string[] } | { mode: "everyone" } | null {
-  const tokens = committedMentionTokens(text, endOfTextTerminates);
-  if (tokens.length === 0) return null;
-  if (tokens.some((token) => token.everyone)) {
-    return { mode: "everyone" };
+  mentionBindings.value = applied.bindings;
+  mentionOwned.value = true;
+  if (applied.kind === "unresolved") {
+    groupsStore.setTarget({ mode: "members", botIds: [] });
+    groupsStore.promptError = mentionErrorCode(applied.reason);
+    groupsStore.promptErrorDetail = null;
+    return false;
   }
-  // IDs are authority: a display name contributes a Bot only when exactly one
-  // enabled member carries it. Duplicate names stay ambiguous on purpose.
-  const botIds: string[] = [];
-  for (const token of tokens) {
-    const key = token.name.toLowerCase();
-    const matches = bots.filter((b) => b.enabled && b.name.toLowerCase() === key);
-    if (matches.length === 1 && matches[0] && !botIds.includes(matches[0].id)) {
-      botIds.push(matches[0].id);
-    }
+  groupsStore.setTarget(applied.target);
+  if (groupsStore.promptError?.startsWith("mention")) {
+    groupsStore.promptError = null;
+    groupsStore.promptErrorDetail = null;
   }
-  if (botIds.length === 0) return null;
-  return { mode: "members", botIds };
+  return true;
 }
 
 function onInput(): void {
+  cmdDismissed.value = false;
+  mentionDismissed.value = false;
+  cmdActiveIdx.value = 0;
+  mentionActiveIdx.value = 0;
+  caret.value = textareaEl.value?.selectionStart ?? promptText.value.length;
   const el = textareaEl.value;
   if (!el) return;
-  const derived = deriveMentionTarget(el.value, props.bots);
-  if (derived === null) {
-    // No committed mention left: keep a manual selection, but forget the
-    // derived state so the next mention re-derives from scratch.
-    lastDerivedTarget.value = null;
-    return;
-  }
-  const serialized = JSON.stringify(derived);
-  if (serialized === lastDerivedTarget.value) return;
-  lastDerivedTarget.value = serialized;
-  groupsStore.setTarget(derived);
+  applyMention(el.value, false);
+  onInputResize();
 }
 
-/** Explicit boundaries where an unfinished token becomes final: send and blur. */
-function commitMentionAtBoundary(): void {
+function commitMentionAtBoundary(): boolean {
   const el = textareaEl.value;
-  if (!el) return;
-  const derived = deriveMentionTarget(el.value, props.bots, true);
-  if (derived === null) return;
-  const serialized = JSON.stringify(derived);
-  if (serialized === lastDerivedTarget.value) return;
-  lastDerivedTarget.value = serialized;
-  groupsStore.setTarget(derived);
+  if (!el) return true;
+  return applyMention(el.value, true);
+}
+
+function pickMention(member: GroupMentionMember): void {
+  const query = mentionQuery.value;
+  if (!query) return;
+  const token = mentionDisplayToken(member.name);
+  const replaced = replaceRange(promptText.value, query.range, `${token} `);
+  mentionBindings.value = [
+    ...mentionBindings.value.filter((binding) => binding.displayToken !== token || binding.botId === member.botId),
+    { botId: member.botId, displayToken: token },
+  ];
+  promptText.value = replaced.text;
+  mentionDismissed.value = true;
+  applyMention(replaced.text, false);
+  void nextTick(() => {
+    textareaEl.value?.focus();
+    textareaEl.value?.setSelectionRange(replaced.cursor, replaced.cursor);
+  });
+}
+
+function pickSlash(name: string): void {
+  const query = slash.value;
+  const replaced = replaceRange(promptText.value, query?.range ?? { start: 0, end: promptText.value.length }, `/${name} `);
+  promptText.value = replaced.text;
+  cmdDismissed.value = true;
+  void nextTick(() => {
+    textareaEl.value?.focus();
+    textareaEl.value?.setSelectionRange(replaced.cursor, replaced.cursor);
+    onInputResize();
+  });
+}
+
+function slashBroadcastBlocked(text: string): boolean {
+  if (singleMemberId.value) return false;
+  if (slashQuery(text)) return true;
+  const token = text.trim().split(/\s+/, 1)[0] ?? "";
+  if (!token.startsWith("/") || token.length < 2 || text.includes("\n")) return false;
+  const name = token.slice(1).toLowerCase();
+  return props.bots.some((bot) => commandsFor(bot.id).some((command) => command.name.toLowerCase() === name));
+}
+
+function onKeydown(e: KeyboardEvent): void {
+  const collapsed = (textareaEl.value?.selectionStart ?? 0) === (textareaEl.value?.selectionEnd ?? 0);
+  const mentionOpen = mentionMatches.value.length > 0;
+  const slashOpen = !mentionOpen && slashMatches.value.length > 0;
+  const action = completionKey({
+    key: e.key,
+    shiftKey: e.shiftKey,
+    isComposing: e.isComposing,
+    composing: composing.value,
+    menu: mentionOpen ? "mention" : slashOpen || slashHint.value ? "slash" : "closed",
+    itemCount: mentionOpen ? mentionMatches.value.length : slashOpen ? slashMatches.value.length : 0,
+    activeIndex: mentionOpen ? mentionActiveIdx.value : cmdActiveIdx.value,
+    holdKeys: slashHint.value && !mentionOpen,
+    collapsedCaret: collapsed,
+    busy: false,
+    caretAtStart: false,
+    historyArmed: false,
+  });
+  if (action.type === "ignore" || action.type === "passthrough") {
+    if (e.key === "Escape") closeMenu();
+    return;
+  }
+  if (action.type === "move") {
+    if (mentionOpen) mentionActiveIdx.value = action.index;
+    else cmdActiveIdx.value = action.index;
+    e.preventDefault();
+    return;
+  }
+  if (action.type === "commit") {
+    if (mentionOpen) {
+      const row = mentionMatches.value[action.index];
+      if (row) pickMention(row);
+    } else {
+      const row = slashMatches.value[action.index];
+      if (row) pickSlash(row.name);
+    }
+    e.preventDefault();
+    return;
+  }
+  if (action.type === "dismiss" || action.type === "blocked") {
+    mentionDismissed.value = true;
+    cmdDismissed.value = true;
+    if (e.key === "Escape") closeMenu();
+    e.preventDefault();
+    return;
+  }
+  if (action.type === "send") {
+    e.preventDefault();
+    void handleSend();
+  }
 }
 
 /** Target-independent send guards. Checked first so the boundary mention can be
@@ -263,9 +349,14 @@ async function handleSend(): Promise<void> {
   }
   const text = promptText.value.trim();
   if (!text) return;
+  if (slashBroadcastBlocked(text)) {
+    groupsStore.promptError = "slashSelectMember";
+    groupsStore.promptErrorDetail = null;
+    return;
+  }
   // The token under the caret is now final, so the structured target must
   // reflect it before the store resolves the send target.
-  commitMentionAtBoundary();
+  if (!commitMentionAtBoundary()) return;
   // Re-check after the boundary commit: the mention is what makes an empty
   // target valid for this very send, and entering text with no resolvable
   // target (e.g. deselected all members and typed nothing mentionable) must
@@ -401,6 +492,55 @@ function onInputResize(): void {
     </div>
 
     <div class="relative flex items-end gap-2 rounded-xl border border-border bg-bg p-1.5 transition-colors focus-within:border-accent">
+      <div
+        v-if="slashHint"
+        data-test="group-slash-hint"
+        class="absolute bottom-full left-0 z-20 mb-1.5 w-full rounded-xl border border-border bg-surface px-3 py-2 text-xs text-fg-muted shadow-xl"
+      >
+        {{ $t("bot.errors.slashSelectMember") }}
+      </div>
+      <div
+        v-else-if="slashMatches.length > 0"
+        data-test="group-cmd-menu"
+        class="absolute bottom-full left-0 z-20 mb-1.5 max-h-56 w-full overflow-y-auto rounded-xl border border-border bg-surface shadow-xl"
+      >
+        <button
+          v-for="(command, index) in slashMatches"
+          :key="command.name"
+          type="button"
+          data-test="group-cmd-item"
+          class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-xs hover:bg-raised"
+          :class="index === cmdActiveIdx ? 'bg-accent/10' : ''"
+          @mousedown.prevent="pickSlash(command.name)"
+        >
+          <span class="font-medium text-fg">/{{ command.name }}</span>
+          <span v-if="command.description" class="truncate text-fg-muted">{{ command.description }}</span>
+        </button>
+      </div>
+      <div
+        v-if="mentionMatches.length > 0"
+        data-test="group-mention-menu"
+        class="absolute bottom-full left-0 z-20 mb-1.5 max-h-56 w-full overflow-y-auto rounded-xl border border-border bg-surface shadow-xl"
+      >
+        <button
+          v-for="(member, index) in mentionMatches"
+          :key="member.botId"
+          type="button"
+          data-test="group-mention-item"
+          :data-bot-id="member.botId"
+          class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-raised"
+          :class="index === mentionActiveIdx ? 'bg-accent/10' : ''"
+          @mousedown.prevent="pickMention(member)"
+        >
+          <span class="min-w-0 flex-1 truncate font-medium text-fg">@{{ member.name }}</span>
+          <span v-if="member.lead" class="shrink-0 text-[10px] text-accent">{{ $t("group.target.lead") }}</span>
+          <span v-if="member.role" class="shrink-0 truncate text-[10px] text-fg-muted">{{ member.role }}</span>
+          <span class="shrink-0 text-[10px]" :class="member.enabled ? 'text-fg-muted' : 'text-warning'">
+            {{ member.enabled ? $t("bot.status.enabled") : $t("bot.status.disabled") }}
+          </span>
+          <span class="shrink-0 font-mono text-[10px] text-fg-muted">{{ member.botId }}</span>
+        </button>
+      </div>
       <textarea
         ref="textareaEl"
         data-test="group-composer-textarea"
@@ -409,8 +549,9 @@ function onInputResize(): void {
         :placeholder="$t('group.prompt.placeholder')"
         class="max-h-[200px] min-h-[38px] w-full resize-none bg-transparent px-2.5 py-2 text-sm text-fg outline-none placeholder:text-fg-muted disabled:cursor-not-allowed disabled:opacity-50"
         @keydown="onKeydown"
-        @input="onInputResize"
-        @input.capture="onInput"
+        @input="onInput"
+        @compositionstart="composing = true"
+        @compositionend="composing = false"
         @blur="commitMentionAtBoundary"
       />
       <div class="flex shrink-0 items-center gap-1 pb-1 pr-1">

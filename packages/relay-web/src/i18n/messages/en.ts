@@ -621,6 +621,10 @@ export default {
   bot: {
     nav: {
       title: "Direct Bot",
+      talkWith: "Talk with another Bot",
+      collaborate: "Collaborate in a Group",
+      noOtherBot: "No other Bot on this instance.",
+      noGroup: "This Bot is not in a Group yet.",
     },
     list: {
       empty: "No bots on this instance.",
@@ -795,6 +799,11 @@ export default {
       targetRequired: "Select at least one member before sending.",
       targetEmpty: "Select at least one member before sending.",
       targetUnknownMember: "One or more selected members are no longer available.",
+      slashSelectMember: "Select one member before running a slash command.",
+      mentionUnresolved: "That mention does not match a member. The target was not changed to a guess.",
+      mentionAmbiguous: "More than one member has that name. Pick the member from the menu.",
+      mentionDisabled: "That member is disabled. Enable them or choose someone else.",
+      mentionRemoved: "That member is no longer in the group.",
       promptPendingConfirmation: "Previous message is still unconfirmed. Retry it or wait for it to settle before sending a new one.",
       cancelUnknown: "Cancellation outcome unknown. Waiting for instance state...",
       instanceOffline: "Instance is offline",
@@ -886,6 +895,16 @@ export default {
       title: "Collaboration",
       memberCompleted: "done",
       memberWaiting: "Waiting for turn",
+      runningMembers: "Running: {names}",
+      writeQueue: "Write tasks queue. One member writes at a time.",
+    },
+    handoff: {
+      relationship: "{from} → {to}",
+      task: "Task",
+      expected: "Expected",
+      result: "Result",
+      pending: "Waiting for {name} to finish.",
+      hint: "This handoff is public in the group. Reply here if you want a different result.",
     },
     worktree: {
       title: "Member worktrees", boundary: "Separate working directories, not an OS sandbox. Integration creates a candidate; it does not update main.",

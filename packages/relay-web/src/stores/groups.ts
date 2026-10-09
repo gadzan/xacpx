@@ -25,6 +25,7 @@ import {
   type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
+import { useConversationCommandsStore } from "./conversation-commands";
 import { useDirectBotsStore } from "./direct-bots";
 
 /** Result of one send attempt.
@@ -84,7 +85,12 @@ export type GroupErrorCode =
   | "instanceOffline"
   | "targetRequired"
   | "targetEmpty"
-  | "targetUnknownMember";
+  | "targetUnknownMember"
+  | "slashSelectMember"
+  | "mentionUnresolved"
+  | "mentionAmbiguous"
+  | "mentionDisabled"
+  | "mentionRemoved";
 
 class GroupRpcError extends Error {
   readonly code: string;
@@ -171,7 +177,8 @@ function isDefinitiveRejection(code: string | null): boolean {
     || code === "conversation_mismatch"
     // AcceptRequest's own pre-insert guard: assertAcceptable() rejects a full
     // Topic queue BEFORE the transaction writes any durable row.
-    || code === "topic_queue_full";
+    || code === "topic_queue_full"
+    || code === "slash_requires_single_member";
 }
 
 function mintRequestId(): string {
@@ -2234,6 +2241,9 @@ export const useGroupsStore = defineStore("groups", () => {
         } else if (code === "bot_disabled") {
           promptError.value = "botDisabled";
           promptErrorDetail.value = null;
+        } else if (code === "slash_requires_single_member") {
+          promptError.value = "slashSelectMember";
+          promptErrorDetail.value = null;
         } else if (code === "target_too_large") {
           // A deliberately user-visible refusal: the budget was exceeded, so it
           // must read as product copy rather than the backend's English message.
@@ -2564,6 +2574,7 @@ export const useGroupsStore = defineStore("groups", () => {
   }
 
   function applyEvent(event: WebServerEvent): void {
+    useConversationCommandsStore().ingest(event);
     if (event.kind === "instance-status") {
       if (event.instanceId === instanceId.value) {
         if (!event.online) {

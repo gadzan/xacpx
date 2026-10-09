@@ -250,6 +250,17 @@ export interface InstanceStateSyncPayload {
         sessionAlias: string;
         commands: AgentCommandDto[];
     }>;
+    /**
+     * Adapter slash advertisements for product-owned Bot runtimes.
+     * Keyed by conversation, topic, and bot. Absent on older connectors.
+     * These rows are not ordinary Session commands and must not be keyed by alias.
+     */
+    conversationCommands?: Array<{
+        conversationId: string;
+        topicId: string;
+        botId: string;
+        commands: AgentCommandDto[];
+    }>;
     /** Turns that finished and are still awaiting the hub's persistence ack — this
      *  includes turns that finished while the hub was unreachable AND live turns that
      *  finished moments ago (the connector forwards the live `turn-finished` and keeps

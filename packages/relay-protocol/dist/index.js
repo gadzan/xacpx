@@ -511,11 +511,20 @@ function validStateSnapshot(candidate) {
     return c.instanceId === instanceId && typeof c.sessionAlias === "string" && finiteNonNegative(c.used) && finiteNonNegative(c.size) && validUsageCost(c.cost) && validUsageBreakdown(c.breakdown);
   }))
     return false;
-  return Array.isArray(candidate.commands) && candidate.commands.every((entry) => {
+  if (!Array.isArray(candidate.commands) || !candidate.commands.every((entry) => {
     if (typeof entry !== "object" || entry === null)
       return false;
     const c = entry;
     return c.instanceId === instanceId && typeof c.sessionAlias === "string" && Array.isArray(c.commands) && c.commands.every(validAgentCommand);
+  }))
+    return false;
+  if (candidate.conversationCommands === undefined)
+    return true;
+  return Array.isArray(candidate.conversationCommands) && candidate.conversationCommands.every((entry) => {
+    if (typeof entry !== "object" || entry === null)
+      return false;
+    const c = entry;
+    return c.instanceId === instanceId && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && Array.isArray(c.commands) && c.commands.every(validAgentCommand);
   });
 }
 function validPeerMessageHistoryEntry(m) {
@@ -822,6 +831,13 @@ function validInstanceStateSync(p) {
     const commands = entry;
     return typeof commands.sessionAlias === "string" && Array.isArray(commands.commands) && commands.commands.every(validAgentCommand);
   }))
+    return false;
+  if (c.conversationCommands !== undefined && (!Array.isArray(c.conversationCommands) || !c.conversationCommands.every((entry) => {
+    if (typeof entry !== "object" || entry === null)
+      return false;
+    const row = entry;
+    return typeof row.conversationId === "string" && typeof row.topicId === "string" && typeof row.botId === "string" && Array.isArray(row.commands) && row.commands.every(validAgentCommand);
+  })))
     return false;
   return Array.isArray(c.finishedOffline) && c.finishedOffline.every((f) => {
     if (typeof f !== "object" || f === null)

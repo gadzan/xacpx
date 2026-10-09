@@ -141,6 +141,16 @@ export interface SessionCommandsSnapshotDto {
   commands: AgentCommandDto[];
 }
 
+/** Latest adapter slash commands for one Bot runtime on one Topic.
+ *  Restored on reconnect. The hidden session alias is not part of this row. */
+export interface ConversationCommandsSnapshotDto {
+  instanceId: string;
+  conversationId: string;
+  topicId: string;
+  botId: string;
+  commands: AgentCommandDto[];
+}
+
 /** Authoritative per-instance state sent on the same WebSocket immediately after
  *  a browser subscription is installed. Because the snapshot and later deltas
  *  share one ordered channel, the browser can safely replace stale pre-disconnect
@@ -149,6 +159,8 @@ export interface InstanceStateSnapshotDto {
   turns: LiveTurnSnapshotDto[];
   usage: SessionUsageSnapshotDto[];
   commands: SessionCommandsSnapshotDto[];
+  /** Absent on hubs that predate conversation slash restore. */
+  conversationCommands?: ConversationCommandsSnapshotDto[];
 }
 
 /** Dashboard instance row (HTTP `/api/instances` and web store seed). */
@@ -499,11 +511,22 @@ function validStateSnapshot(candidate: Record<string, unknown>): boolean {
       && validUsageCost(c.cost)
       && validUsageBreakdown(c.breakdown);
   })) return false;
-  return Array.isArray(candidate.commands) && candidate.commands.every((entry) => {
+  if (!Array.isArray(candidate.commands) || !candidate.commands.every((entry) => {
     if (typeof entry !== "object" || entry === null) return false;
     const c = entry as Record<string, unknown>;
     return c.instanceId === instanceId
       && typeof c.sessionAlias === "string"
+      && Array.isArray(c.commands)
+      && c.commands.every(validAgentCommand);
+  })) return false;
+  if (candidate.conversationCommands === undefined) return true;
+  return Array.isArray(candidate.conversationCommands) && candidate.conversationCommands.every((entry) => {
+    if (typeof entry !== "object" || entry === null) return false;
+    const c = entry as Record<string, unknown>;
+    return c.instanceId === instanceId
+      && typeof c.conversationId === "string"
+      && typeof c.topicId === "string"
+      && typeof c.botId === "string"
       && Array.isArray(c.commands)
       && c.commands.every(validAgentCommand);
   });
@@ -957,6 +980,15 @@ export function validInstanceStateSync(p: unknown): boolean {
     return typeof commands.sessionAlias === "string"
       && Array.isArray(commands.commands) && commands.commands.every(validAgentCommand);
   })) return false;
+  if (c.conversationCommands !== undefined && (!Array.isArray(c.conversationCommands) || !c.conversationCommands.every((entry) => {
+    if (typeof entry !== "object" || entry === null) return false;
+    const row = entry as Record<string, unknown>;
+    return typeof row.conversationId === "string"
+      && typeof row.topicId === "string"
+      && typeof row.botId === "string"
+      && Array.isArray(row.commands)
+      && row.commands.every(validAgentCommand);
+  }))) return false;
   return Array.isArray(c.finishedOffline) && c.finishedOffline.every((f) => {
     if (typeof f !== "object" || f === null) return false;
     const finished = f as Record<string, unknown>;

@@ -16,6 +16,7 @@ import {
 import { i18n } from "../i18n";
 import { useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
+import { useGroupsStore } from "../stores/groups";
 import { useChatStore } from "../stores/chat";
 import BotDialog from "../components/BotDialog.vue";
 import ConversationPromptInput from "../components/ConversationPromptInput.vue";
@@ -1866,6 +1867,29 @@ describe("Direct Bot Components", () => {
 
       await topicRows[1]?.find("button").trigger("click");
       expect(switchTopicSpy).toHaveBeenCalledWith("t2");
+    });
+
+    it("navigates to another Bot or a Group without treating @ as a handoff", async () => {
+      const directBots = useDirectBotsStore();
+      const groups = useGroupsStore();
+      directBots.instanceId = "i1";
+      directBots.selectedBotId = "b1";
+      directBots.activeConversationId = "c1";
+      directBots.activeTopicId = "t1";
+      directBots.botsByInstance["i1"] = [
+        { id: "b1", name: "ReviewerBot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        { id: "b2", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      groups.groupsByInstance["i1"] = [
+        { id: "g1", kind: "group", title: "Release", botIds: ["b1", "b2"], createdAt: "now", updatedAt: "now" },
+      ];
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      await wrapper.find('[data-test="direct-nav-button"]').trigger("click");
+      await wrapper.find('[data-test="direct-nav-bot"]').trigger("click");
+      expect(wrapper.emitted("navigateBot")?.[0]).toEqual(["i1", "b2"]);
+      await wrapper.find('[data-test="direct-nav-button"]').trigger("click");
+      await wrapper.find('[data-test="direct-nav-group"]').trigger("click");
+      expect(wrapper.emitted("navigateGroup")?.[0]).toEqual(["i1", "g1"]);
     });
     it("opens the New Topic dialog with focus, traps Tab, and restores focus on Escape", async () => {
       const instances = useInstancesStore();
