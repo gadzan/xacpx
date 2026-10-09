@@ -1,6 +1,6 @@
 {
   "name": "@ganglion/xacpx-channel-discord",
-  "version": "0.8.2",
+  "version": "0.8.3-beta.0",
   "description": "Discord channel plugin for xacpx.",
   "license": "MIT",
   "keywords": [
@@ -28,7 +28,7 @@
     "README.md"
   ],
   "peerDependencies": {
-    "xacpx": ">=0.24.6-beta.0"
+    "xacpx": ">=0.24.7-beta.0"
   },
   "peerDependenciesMeta": {
     "xacpx": {

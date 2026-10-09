@@ -278,11 +278,11 @@ function decodeCanonicalBase64(encoded) {
     const binary = globalThis.atob(encoded);
     if (globalThis.btoa(binary) !== encoded)
       return null;
-    const decoded = new Uint8Array(binary.length);
+    const decoded2 = new Uint8Array(binary.length);
     for (let i = 0;i < binary.length; i++) {
-      decoded[i] = binary.charCodeAt(i) & 255;
+      decoded2[i] = binary.charCodeAt(i) & 255;
     }
-    return decoded;
+    return decoded2;
   }
   const BufferCtor = globalThis.Buffer;
   if (!BufferCtor)

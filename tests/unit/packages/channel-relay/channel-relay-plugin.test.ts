@@ -4,22 +4,22 @@ import { readFileSync } from "node:fs";
 import plugin from "../../../../packages/channel-relay/src/index";
 import { validatePluginCompatibility } from "../../../../src/plugins/compatibility";
 
-test("relay connector requires the git-ops-capable xacpx core", () => {
+test("relay connector requires the M3-elicitation-capable xacpx core", () => {
   const pkg = JSON.parse(readFileSync("packages/channel-relay/package.json", "utf8"));
 
-  expect(plugin.minXacpxVersion).toBe("0.17.0");
-  expect(pkg.peerDependencies.xacpx).toBe(">=0.17.0");
+  expect(plugin.minXacpxVersion).toBe("0.24.7-beta.0");
+  expect(pkg.peerDependencies.xacpx).toBe(">=0.24.7-beta.0");
 
   expect(() => validatePluginCompatibility(plugin, {
     packageName: plugin.name,
-    currentXacpxVersion: "0.16.0",
+    currentXacpxVersion: "0.24.6-beta.0",
   })).toThrow();
   expect(() => validatePluginCompatibility(plugin, {
     packageName: plugin.name,
-    currentXacpxVersion: "0.17.0",
+    currentXacpxVersion: "0.24.7-beta.0",
   })).not.toThrow();
   expect(() => validatePluginCompatibility(plugin, {
     packageName: plugin.name,
-    currentXacpxVersion: "0.18.0",
+    currentXacpxVersion: "0.24.8-beta.0",
   })).not.toThrow();
 });
