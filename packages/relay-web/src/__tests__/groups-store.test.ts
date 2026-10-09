@@ -2477,8 +2477,11 @@ describe("useGroupsStore", () => {
     expect(store.messages).toHaveLength(1);
     expect(store.messages[0]?.handoff).toEqual(message.handoff);
     const wrapper = mount(GroupTranscript, { props: { bots: BOTS }, global: { plugins: [i18n] } });
-    expect(wrapper.text()).toContain("Public handoff: bot_a → bot_b");
-    expect(wrapper.text()).toContain("Review patch"); expect(wrapper.text()).toContain("Findings");
+    expect(wrapper.text()).toContain("Reviewer");
+    expect(wrapper.text()).toContain("Tester");
+    expect(wrapper.text()).toContain("Review patch");
+    expect(wrapper.text()).toContain("Findings");
+    expect(wrapper.text()).toContain("public");
     wrapper.unmount();
   });
 

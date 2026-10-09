@@ -618,6 +618,10 @@ export default {
   bot: {
     nav: {
       title: "Direct Bot",
+      talkWith: "与其他 Bot 单独对话",
+      collaborate: "去群组协作",
+      noOtherBot: "这个实例上没有其他 Bot。",
+      noGroup: "这个 Bot 还没有加入群组。",
     },
     list: {
       empty: "该实例暂无 Bot。",
@@ -744,6 +748,11 @@ export default {
       targetRequired: "发送前请至少选择一位成员。",
       targetEmpty: "发送前请至少选择一位成员。",
       targetUnknownMember: "所选的一个或多个成员已不可用。",
+      slashSelectMember: "先选择一个成员，再使用斜杠命令。",
+      mentionUnresolved: "这个称呼对不上成员。不会猜一个目标。",
+      mentionAmbiguous: "有多名成员同名。请从菜单里点选。",
+      mentionDisabled: "该成员已停用。请先启用，或改选其他人。",
+      mentionRemoved: "该成员已不在群组中。",
       promptPendingConfirmation: "上一条消息尚未确认。请重试该消息或等待其结束后再发送新消息。",
       cancelUnknown: "取消结果未知。正在等待实例状态...",
       instanceOffline: "实例已离线",
@@ -772,6 +781,16 @@ export default {
       title: "协作",
       memberCompleted: "已完成",
       memberWaiting: "等待执行",
+      runningMembers: "正在执行：{names}",
+      writeQueue: "写入任务会排队。同一时间只有一名成员可以写。",
+    },
+    handoff: {
+      relationship: "{from} → {to}",
+      task: "任务",
+      expected: "期望结果",
+      result: "结果",
+      pending: "等待 {name} 完成。",
+      hint: "这次交接在群组里公开。想要不同结果，就在这里回复。",
     },
     worktree: {
       title: "成员工作树", boundary: "工作目录相互独立，但不是操作系统沙箱。整合只创建候选分支，不修改 main。",

@@ -59,7 +59,22 @@ function driverForBot(botId: string): string | undefined {
 
 function senderName(botId: string | undefined): string {
   if (!botId) return "Bot";
-  return botById.value[botId]?.name ?? "Bot";
+  return botById.value[botId]?.name ?? botId;
+}
+
+const runningNames = computed(() => turns.value.map((turn) => senderName(turn.botId)).join(", "));
+
+function handoffResult(message: ConversationMessageDto): string | null {
+  const handoff = message.handoff;
+  if (!handoff) return null;
+  const later = groupsStore.messages.find((row) =>
+    row.role === "bot"
+    && row.senderBotId === handoff.to
+    && row.runId === message.runId
+    && row.seq > message.seq
+    && row.content.trim().length > 0,
+  );
+  return later?.content ?? null;
 }
 
 function turnStateLabel(state: MemberTurnSummaryDto["state"]): string {
@@ -316,6 +331,14 @@ async function handleLoadOlder(): Promise<void> {
           </div>
         </div>
 
+        <div v-else-if="m.handoff" data-test="group-handoff" class="mx-auto w-full max-w-xl rounded-xl border border-border bg-surface/70 px-3 py-2 text-left text-xs text-fg">
+          <p class="font-medium">{{ $t("group.handoff.relationship", { from: senderName(m.senderBotId), to: senderName(m.handoff.to) }) }}</p>
+          <p class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.task") }}: </span>{{ m.handoff.task }}</p>
+          <p v-if="m.handoff.expectedOutput" class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.expected") }}: </span>{{ m.handoff.expectedOutput }}</p>
+          <p v-if="handoffResult(m)" class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.result") }}: </span>{{ handoffResult(m) }}</p>
+          <p v-else class="mt-1 text-fg-muted">{{ $t("group.handoff.pending", { name: senderName(m.handoff.to) }) }}</p>
+          <p class="mt-1 text-fg-muted">{{ $t("group.handoff.hint") }}</p>
+        </div>
         <div v-else class="w-full py-1 text-center text-xs italic text-fg-muted">
           {{ m.content }}
         </div>
@@ -332,6 +355,7 @@ async function handleLoadOlder(): Promise<void> {
           <div class="flex items-center gap-2 text-xs font-semibold text-fg">
             <Users :size="13" class="text-accent" />
             <span>{{ $t("group.run.title") }}</span>
+            <span v-if="runningNames" data-test="group-running-members" class="font-normal text-fg-muted">{{ $t("group.run.runningMembers", { names: runningNames }) }}</span>
             <span
               class="rounded-full px-2 py-0.5 text-[10.5px] font-medium"
               :class="{
@@ -356,6 +380,13 @@ async function handleLoadOlder(): Promise<void> {
           </button>
         </div>
 
+        <p
+          v-if="topic?.executionTarget?.isolation === 'shared-single-writer'"
+          data-test="group-write-queue"
+          class="mt-2 text-[11px] text-fg-muted"
+        >
+          {{ $t("group.run.writeQueue") }}
+        </p>
         <div class="mt-2 space-y-1.5">
           <div
             v-for="turn in turns"

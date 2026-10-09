@@ -26,6 +26,7 @@ import {
   type WebServerEvent,
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
+import { useConversationCommandsStore } from "./conversation-commands";
 
 export type DirectBotRunState = ConversationRunStateDto;
 
@@ -1955,10 +1956,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     return currentDraftRequestId.value;
   }
 
-  async function sendPrompt(text: string): Promise<void> {
+  async function sendPrompt(text: string): Promise<"accepted" | "rejected" | "uncertain" | "orphaned"> {
     const trimmed = text.trim();
     if (!trimmed || !instanceId.value || !selectedBotId.value || !activeConversationId.value || !activeTopicId.value) {
-      return;
+      return "rejected";
     }
 
     // Fail-closed admission: while durable run discovery for this Topic has
@@ -1967,13 +1968,13 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     if (!topicReady.value) {
       promptError.value = "topicRecovering";
       promptErrorDetail.value = null;
-      return;
+      return "rejected";
     }
     const bot = currentBot.value;
     if (bot && !bot.enabled) {
       promptError.value = "botDisabled";
       promptErrorDetail.value = null;
-      return;
+      return "rejected";
     }
     // Fence the slow accept RPC against a recovered durable Run: if recovery
     // adopted an active Run while this prompt was being composed, refuse to
@@ -1981,7 +1982,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     if (isRunActive.value) {
       promptError.value = "runInProgress";
       promptErrorDetail.value = null;
-      return;
+      return "rejected";
     }
     const targetInstId = instanceId.value;
     const targetBotId = selectedBotId.value;
@@ -2013,7 +2014,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
       // Only project into UI if view context is still current
       if (!isCurrent()) {
-        return;
+        return "orphaned";
       }
 
       // Lifecycle projection converges only on evidence that can prove a
@@ -2097,7 +2098,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // only run on the adopted owner — never on the unowned accept row.
       const adoptedRun = activeRun.value;
       if (!adoptedRun) {
-        return;
+        return "accepted";
       }
       // Terminal accept: the accepted Run row is authoritative for the
       // accepted Run only — never for topic-wide ownership. When the accept
@@ -2166,6 +2167,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         ownershipUncertain.value = true;
         cancelError.value = "ownershipChecking";
       }
+      return "accepted";
     } catch (err: unknown) {
       // WS may already have proved durable accept for this requestId (the
       // run-changed adoption branch converges to success and retires the
@@ -2194,7 +2196,18 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         promptError.value = null;
         promptErrorDetail.value = null;
       }
-      // Retain currentDraftRequestId so a retry uses the exact same requestId
+      // Retain currentDraftRequestId so a retry uses the exact same requestId.
+      // A definitive refusal keeps that id only while the text is unchanged.
+      if (!isCurrent()) return "orphaned";
+      const code = err instanceof DirectBotRpcError ? err.code : null;
+      const definitive = code === "bot_disabled"
+        || code === "conversation_mismatch"
+        || code === "topic_not_found"
+        || code === "conversation_deleting"
+        || code === "topic_deleting"
+        || code === "topic_not_active"
+        || code === "conversation_not_found";
+      return definitive ? "rejected" : "uncertain";
     } finally {
       if (isCurrent()) {
         promptInFlight.value = false;
@@ -2857,6 +2870,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
 
   // Handle server WebSocket events
   function applyEvent(event: WebServerEvent): void {
+    useConversationCommandsStore().ingest(event);
     if (event.kind === "instance-status") {
       if (event.instanceId === instanceId.value) {
         if (!event.online) {

@@ -324,6 +324,25 @@ effort 随模型结果刷新。刷新失败时保留上一次已经拿到的合�
   常驻内存，不重复落此缓存；文件正文、完整 diff 与终端状态不缓存，避免把易陈旧、可参与写操作的数据
   伪装成当前权威状态。
 
+## Conversation slash 与 @
+
+普通 Session composer 的候选菜单、光标替换、方向键、Enter/Tab、Escape 和 IME 组合在
+`src/lib/composer-completion.ts`。Direct 与 Group 各自保留发送、取消、幂等和断线恢复。
+
+Conversation 的 slash 列表来自现有 `agent-commands` 事件，按 `conversationId × topicId × botId`
+存在 `stores/conversation-commands.ts`。重连时 `state-snapshot.conversationCommands`（以及
+`/api/active-turns` 的同名字段）按实例整表替换。换 Topic 或换 Bot 读到的是另一行，不会带上别的 Topic
+的命令。菜单只显示该 Bot 运行时广告的命令，不显示 xacpx 管理命令目录。Group 在未明确选中一名成员时
+只提示先选择成员，Enter/Tab 不发送。
+
+Group `@` 的权威是 `{ botId, displayToken }`（`src/lib/group-mention.ts`）。菜单展示角色、Lead 和
+启用状态。同名成员靠 bot id 区分。无法解析、重名、停用或已移除的手工 `@` 会提示，并清掉由 mention
+建立的目标，不沿用上一个目标。Direct 页的导航只打开另一个 Bot 的 Direct，或打开已包含当前 Bot 的 Group。
+
+`group_send` 的公开交接在 `GroupTranscript` 里显示关系、任务、期望、已有结果和一句可操作提示。
+Run 卡片列出实际执行的成员。`shared-single-writer` 的 Topic 注明写入任务会排队。
+确定性拒绝保留草稿。不确定结果仍复用冻结的 `requestId` 和 target。
+
 hub 侧配套：tool step 全字段 32K 字符写入截断（见 docs/relay-module.md 的 `TOOL_DETAIL_CAP`）。
 
 ## 流式 Markdown 渲染
