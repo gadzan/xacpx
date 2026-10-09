@@ -723,7 +723,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 ### 话题与消息流（`DirectBotPane.vue`）
 
 - **顶部栏**：展示 Bot 头像、名称、角色、工作区/Agent 徽标与操作入口；
-- **话题栏**：展示默认话题及已有额外话题，支持点击切换与「新建话题」模态框；切换话题时按 `conversationId + topicId` 隔离历史与实时 Run；
+- **话题栏**：当前话题显示在一个按钮里。桌面端打开下拉列表，窄屏打开底部列表面板。列表可以搜索，并提供重命名、收起、恢复。额外话题可以删除。默认话题只提供清空，并要求确认。删除和清空会先预览外部绑定与 worktree。有绑定且未确认时不能提交。有未结束的 worktree 时不能提交。切换话题时按 `conversationId + topicId` 隔离历史与实时 Run。已删除话题的迟到列表或 `conversation-topic-changed` 不会把它加回缓存。清空默认话题提升 generation 后，当前历史缓存会被丢掉并重新加载；
 - **消息列表（`ConversationMessageList.vue`）**：
   - 历史消息严格按 `seq` 排序并按 message `id` 去重；
   - 支持向上拉取更早消息，保持当前滚动位置不跳动；

@@ -1053,6 +1053,43 @@ async function dispatchControlRequest(
       if (!input) return errorPayload("invalid-payload", `${MSG.topicsCreate}: malformed payload`);
       return { topic: await control.createTopic(input.conversationId, input.title, { maxConcurrentMemberTurns: input.maxConcurrentMemberTurns }) };
     }
+    case MSG.topicsUpdate: {
+      const input = parseControlPayload(MSG.topicsUpdate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsUpdate}: malformed payload`);
+      return { topic: await control.updateTopic(input.conversationId, input.topicId, input.title) };
+    }
+    case MSG.topicsArchive: {
+      const input = parseControlPayload(MSG.topicsArchive, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsArchive}: malformed payload`);
+      return { topic: await control.archiveTopic(input.conversationId, input.topicId) };
+    }
+    case MSG.topicsRestore: {
+      const input = parseControlPayload(MSG.topicsRestore, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsRestore}: malformed payload`);
+      return { topic: await control.restoreTopic(input.conversationId, input.topicId) };
+    }
+    case MSG.topicsTeardown: {
+      const input = parseControlPayload(MSG.topicsTeardown, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsTeardown}: malformed payload`);
+      return await control.teardownTopic(input.conversationId, input.topicId, {
+        requestId: input.requestId,
+        ...(input.releaseBindings !== undefined ? { releaseBindings: input.releaseBindings } : {}),
+      });
+    }
+    case MSG.topicsClear: {
+      const input = parseControlPayload(MSG.topicsClear, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsClear}: malformed payload`);
+      return await control.clearTopic(input.conversationId, input.topicId, {
+        requestId: input.requestId,
+        confirm: true,
+        ...(input.releaseBindings !== undefined ? { releaseBindings: input.releaseBindings } : {}),
+      });
+    }
+    case MSG.topicsPreview: {
+      const input = parseControlPayload(MSG.topicsPreview, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsPreview}: malformed payload`);
+      return { impact: control.previewTopic(input.conversationId, input.topicId) };
+    }
     case MSG.groupsCreate: {
       const input = parseControlPayload(MSG.groupsCreate, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.groupsCreate}: malformed payload`);

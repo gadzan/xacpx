@@ -1030,7 +1030,12 @@ function isConversationTopic(value: unknown): value is ConversationTopic {
     isString(value.createdAt) &&
     isString(value.updatedAt) &&
     isExecutionTarget(value.executionTarget) &&
-    (value.maxConcurrentMemberTurns === undefined || isMemberConcurrencyLimit(value.maxConcurrentMemberTurns))
+    (value.maxConcurrentMemberTurns === undefined || isMemberConcurrencyLimit(value.maxConcurrentMemberTurns)) &&
+    (value.contextGeneration === undefined
+      || (typeof value.contextGeneration === "number"
+        && Number.isInteger(value.contextGeneration)
+        && value.contextGeneration >= 1)) &&
+    (value.managedAt === undefined || isString(value.managedAt))
   );
 }
 
@@ -1061,7 +1066,11 @@ function isBotRuntimeBinding(value: unknown): value is BotRuntimeBinding {
     !isString(value.logicalSessionId) ||
     !isString(value.sessionAlias) ||
     !isString(value.createdAt) ||
-    !isString(value.updatedAt)
+    !isString(value.updatedAt) ||
+    (value.contextGeneration !== undefined
+      && (typeof value.contextGeneration !== "number"
+        || !Number.isInteger(value.contextGeneration)
+        || value.contextGeneration < 1))
   ) {
     return false;
   }

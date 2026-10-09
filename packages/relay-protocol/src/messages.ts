@@ -39,6 +39,7 @@ import type {
   GroupDetailDto,
   GroupSummaryDto,
   GroupTopicCreateTargetDto,
+  TopicImpactDto,
   TopicSummaryDto,
 } from "./dtos.js";
 
@@ -147,6 +148,12 @@ export const MSG = {
   conversationsGet: "control.conversations.get",
   topicsList: "control.topics.list",
   topicsCreate: "control.topics.create",
+  topicsUpdate: "control.topics.update",
+  topicsArchive: "control.topics.archive",
+  topicsRestore: "control.topics.restore",
+  topicsTeardown: "control.topics.teardown",
+  topicsClear: "control.topics.clear",
+  topicsPreview: "control.topics.preview",
   groupsCreate: "control.groups.create",
   groupsUpdate: "control.groups.update",
   groupsDelete: "control.groups.delete",
@@ -548,6 +555,58 @@ export interface TopicsCreatePayload {
 }
 export interface TopicsCreateResult {
   topic: TopicSummaryDto;
+}
+export interface TopicsUpdatePayload {
+  conversationId: string;
+  topicId: string;
+  title: string;
+}
+export interface TopicsUpdateResult {
+  topic: TopicSummaryDto;
+}
+export interface TopicsArchivePayload {
+  conversationId: string;
+  topicId: string;
+}
+export interface TopicsArchiveResult {
+  topic: TopicSummaryDto;
+}
+export interface TopicsRestorePayload {
+  conversationId: string;
+  topicId: string;
+}
+export interface TopicsRestoreResult {
+  topic: TopicSummaryDto;
+}
+export interface TopicsTeardownPayload {
+  conversationId: string;
+  topicId: string;
+  requestId: string;
+  releaseBindings?: boolean;
+}
+export interface TopicsTeardownResult {
+  ok: true;
+  requestId: string;
+}
+export interface TopicsClearPayload {
+  conversationId: string;
+  topicId: string;
+  requestId: string;
+  confirm: true;
+  releaseBindings?: boolean;
+}
+export interface TopicsClearResult {
+  ok: true;
+  requestId: string;
+  contextGeneration: number;
+  topic: TopicSummaryDto;
+}
+export interface TopicsPreviewPayload {
+  conversationId: string;
+  topicId: string;
+}
+export interface TopicsPreviewResult {
+  impact: TopicImpactDto;
 }
 export interface GroupsCreatePayload {
   title: string;

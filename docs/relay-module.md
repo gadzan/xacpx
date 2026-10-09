@@ -443,6 +443,8 @@ fields; requesting read-only on an unsupported adapter fails before durable acce
 There is no Web policy selector in this slice; programmatic callers use the new RPC.
 See [Enforced execution effects](conversation-runtime.md#enforced-execution-effects-phase-10b).
 
+Topic management RPCs are `control.topics.update`, `control.topics.archive`, `control.topics.restore`, `control.topics.teardown`, `control.topics.clear`, and `control.topics.preview`. Update accepts only `title` (1–200 characters). Teardown and clear require `requestId` (1–128 characters). Clear also requires `confirm: true`. `releaseBindings` is optional. Without it, a topic that still has external bindings fails `topic_bindings_present`. `control.group.topics.archive` and `control.group.topics.teardown` remain. They call the same phase change. The group teardown RPC still releases bindings, matching older clients.
+
 Phase 10A Topic creation RPCs (`control.topics.create`, `control.group.topics.create`)
 accept optional top-level `maxConcurrentMemberTurns` (integer 1–64), returned on
 Topic summaries/events. The field is separate from `target`; omission preserves

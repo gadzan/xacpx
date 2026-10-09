@@ -88,6 +88,25 @@ export interface TopicSummaryDto {
   createdAt: string;
   updatedAt: string;
   executionTarget?: ConversationTopic["executionTarget"];
+  /** Absent means generation 1. */
+  contextGeneration?: number;
+  /** Present only for the virtual or materialized Direct default topic. */
+  defaultDirect?: true;
+}
+
+export interface TopicImpactDto {
+  topic: TopicSummaryDto;
+  bindings: Array<{ chatKey: string }>;
+  unsettledRunIds: string[];
+  indeterminateRunIds: string[];
+  worktreeRunIds: string[];
+  actions: {
+    rename: boolean;
+    archive: boolean;
+    restore: boolean;
+    teardown: boolean;
+    clear: boolean;
+  };
 }
 
 export interface GroupSummaryDto {
@@ -308,7 +327,11 @@ export function toBotDetail(bot: BotProfile, hasRuntime?: boolean): BotDetailDto
   };
 }
 
-export function toTopicSummary(topic: ConversationTopic): TopicSummaryDto {
+export function toTopicSummary(
+  topic: ConversationTopic,
+  options?: { defaultDirect?: boolean },
+): TopicSummaryDto {
+  const contextGeneration = topic.contextGeneration ?? 1;
   return {
     ...(topic.maxConcurrentMemberTurns !== undefined ? { maxConcurrentMemberTurns: topic.maxConcurrentMemberTurns } : {}),
     id: topic.id,
@@ -318,6 +341,8 @@ export function toTopicSummary(topic: ConversationTopic): TopicSummaryDto {
     createdAt: topic.createdAt,
     updatedAt: topic.updatedAt,
     ...(topic.executionTarget ? { executionTarget: { ...topic.executionTarget } } : {}),
+    ...(contextGeneration > 1 ? { contextGeneration } : {}),
+    ...(options?.defaultDirect ? { defaultDirect: true as const } : {}),
   };
 }
 

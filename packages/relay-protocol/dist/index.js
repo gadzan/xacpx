@@ -178,6 +178,12 @@ var MSG = {
   conversationsGet: "control.conversations.get",
   topicsList: "control.topics.list",
   topicsCreate: "control.topics.create",
+  topicsUpdate: "control.topics.update",
+  topicsArchive: "control.topics.archive",
+  topicsRestore: "control.topics.restore",
+  topicsTeardown: "control.topics.teardown",
+  topicsClear: "control.topics.clear",
+  topicsPreview: "control.topics.preview",
   groupsCreate: "control.groups.create",
   groupsUpdate: "control.groups.update",
   groupsDelete: "control.groups.delete",
@@ -571,7 +577,7 @@ function validTopicSummary(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string" && validExecutionTarget(c.executionTarget) && (c.maxConcurrentMemberTurns === undefined || typeof c.maxConcurrentMemberTurns === "number" && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64);
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string" && validExecutionTarget(c.executionTarget) && (c.maxConcurrentMemberTurns === undefined || typeof c.maxConcurrentMemberTurns === "number" && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64) && (c.contextGeneration === undefined || typeof c.contextGeneration === "number" && Number.isInteger(c.contextGeneration) && c.contextGeneration >= 1) && (c.defaultDirect === undefined || c.defaultDirect === true);
 }
 function validConversationMessage(value) {
   if (typeof value !== "object" || value === null)
@@ -1225,6 +1231,31 @@ var validateTopicsCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.title) && validMemberConcurrency(o.maxConcurrentMemberTurns) ? o : null;
 };
+var validateTopicRef = (o) => !!o && isStr(o.conversationId) && isStr(o.topicId);
+var validateTopicsUpdate = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.title, 200) ? o : null;
+};
+var validateTopicsArchive = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? o : null;
+};
+var validateTopicsRestore = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? o : null;
+};
+var validateTopicsTeardown = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.requestId, 128) && (o.releaseBindings === undefined || o.releaseBindings === true || o.releaseBindings === false) ? o : null;
+};
+var validateTopicsClear = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.requestId, 128) && o.confirm === true && (o.releaseBindings === undefined || o.releaseBindings === true || o.releaseBindings === false) ? o : null;
+};
+var validateTopicsPreview = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? o : null;
+};
 var validMemberConcurrency = (v) => v === undefined || typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 64;
 var isCreateIsolation = (v) => v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
 var validateGroupsCreate = (p) => {
@@ -1655,6 +1686,12 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationsGet]: validateConversationsGet,
   [MSG.topicsList]: validateTopicsList,
   [MSG.topicsCreate]: validateTopicsCreate,
+  [MSG.topicsUpdate]: validateTopicsUpdate,
+  [MSG.topicsArchive]: validateTopicsArchive,
+  [MSG.topicsRestore]: validateTopicsRestore,
+  [MSG.topicsTeardown]: validateTopicsTeardown,
+  [MSG.topicsClear]: validateTopicsClear,
+  [MSG.topicsPreview]: validateTopicsPreview,
   [MSG.groupsCreate]: validateGroupsCreate,
   [MSG.groupsUpdate]: validateGroupsUpdate,
   [MSG.groupsDelete]: validateGroupsDelete,
@@ -1755,88 +1792,88 @@ function parseDesktopEventPayload(type, payload) {
   return validate(payload);
 }
 export {
-  CONTROL_PAYLOAD_VALIDATORS,
-  DESKTOP_BUFFERED_HARD_CLOSE_BYTES,
-  DESKTOP_BUFFERED_SOFT_PAUSE_BYTES,
-  DESKTOP_ERROR_CODES,
-  DESKTOP_EVENT_PAYLOAD_VALIDATORS,
-  DESKTOP_HUB_REQUEST_TIMEOUT_MS,
-  DESKTOP_MAX_STREAMS_PER_ACCOUNT,
-  DESKTOP_MAX_STREAMS_PER_INSTANCE,
-  DESKTOP_RPC_TIMEOUT_MS,
-  DESKTOP_TCP_CHUNK_BYTES,
-  DESKTOP_TICKET_TTL_MS,
-  DESKTOP_WS_MAX_PAYLOAD_BYTES,
-  INTERACTION_WIRE_LIMITS,
-  MAX_BOT_ID_LENGTH,
-  MAX_CAPABILITIES,
-  MAX_CAPABILITY_LENGTH,
-  MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
-  MAX_DESKTOP_REQUEST_ID_LENGTH,
-  MAX_DESKTOP_STREAM_ID_LENGTH,
-  MAX_DESKTOP_TICKET_LENGTH,
-  MAX_DESKTOP_WS_PATH_LENGTH,
-  MAX_GROUP_TARGET_MEMBERS,
-  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
-  MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
-  MAX_TERMINAL_COLS,
-  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
-  MAX_TERMINAL_GENERATION_LENGTH,
-  MAX_TERMINAL_ID_LENGTH,
-  MAX_TERMINAL_INPUT_BYTES,
-  MAX_TERMINAL_REBASE_TOTAL_BYTES,
-  MAX_TERMINAL_REQUEST_ID_LENGTH,
-  MAX_TERMINAL_ROWS,
-  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
-  MAX_TERMINAL_VIEWER_ID_LENGTH,
-  MAX_TOOL_STEPS,
-  MAX_WEB_INSTANCE_ID_LENGTH,
-  MIN_TERMINAL_COLS,
-  MIN_TERMINAL_ROWS,
-  MSG,
-  REASONING_CAP,
-  RECOVERY_RETENTION_MS,
-  RELAY_CAPABILITIES,
-  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
-  RELAY_PROTOCOL_VERSION,
-  STATE_SYNC_PARTS_CAP,
-  STATE_SYNC_TEXT_CAP,
-  TERMINAL_ERROR_CODES,
-  TERMINAL_EVENT_PAYLOAD_VALIDATORS,
-  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
-  TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
-  TERMINAL_REBASE_CHUNK_BYTES,
-  TERMINAL_RPC_TIMEOUT_MS,
-  WEB_CLIENT_TYPE,
-  WEB_EVENT_TYPE,
-  decodeEnvelope,
-  encodeEnvelope,
-  errorPayload,
-  isBoundedStr,
-  isConversationWorktreeStatus,
-  isErrorPayload,
-  isIntInRange,
-  isNonNegInt,
-  isObj,
-  isStr,
-  maxBase64EncodedLength,
-  normalizeCapabilities,
-  optBool,
-  optNonNegInt,
-  optNum,
-  optStr,
-  optStrArr,
-  parseCanonicalBase64,
-  parseControlPayload,
-  parseDesktopEventPayload,
-  parseTerminalEventPayload,
-  parseWebClientMessage,
-  parseWebServerEvent,
-  validControlEvent,
-  validInstanceStateSync,
-  validateInteractionRequest,
-  validateInteractionResponse,
-  validateInteractionWithdraw,
+  webEventEnvelope,
   webClientEnvelope,
-  webEventEnvelope
+  validateInteractionWithdraw,
+  validateInteractionResponse,
+  validateInteractionRequest,
+  validInstanceStateSync,
+  validControlEvent,
+  parseWebServerEvent,
+  parseWebClientMessage,
+  parseTerminalEventPayload,
+  parseDesktopEventPayload,
+  parseControlPayload,
+  parseCanonicalBase64,
+  optStrArr,
+  optStr,
+  optNum,
+  optNonNegInt,
+  optBool,
+  normalizeCapabilities,
+  maxBase64EncodedLength,
+  isStr,
+  isObj,
+  isNonNegInt,
+  isIntInRange,
+  isErrorPayload,
+  isConversationWorktreeStatus,
+  isBoundedStr,
+  errorPayload,
+  encodeEnvelope,
+  decodeEnvelope,
+  WEB_EVENT_TYPE,
+  WEB_CLIENT_TYPE,
+  TERMINAL_RPC_TIMEOUT_MS,
+  TERMINAL_REBASE_CHUNK_BYTES,
+  TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
+  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
+  TERMINAL_EVENT_PAYLOAD_VALIDATORS,
+  TERMINAL_ERROR_CODES,
+  STATE_SYNC_TEXT_CAP,
+  STATE_SYNC_PARTS_CAP,
+  RELAY_PROTOCOL_VERSION,
+  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
+  RELAY_CAPABILITIES,
+  RECOVERY_RETENTION_MS,
+  REASONING_CAP,
+  MSG,
+  MIN_TERMINAL_ROWS,
+  MIN_TERMINAL_COLS,
+  MAX_WEB_INSTANCE_ID_LENGTH,
+  MAX_TOOL_STEPS,
+  MAX_TERMINAL_VIEWER_ID_LENGTH,
+  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
+  MAX_TERMINAL_ROWS,
+  MAX_TERMINAL_REQUEST_ID_LENGTH,
+  MAX_TERMINAL_REBASE_TOTAL_BYTES,
+  MAX_TERMINAL_INPUT_BYTES,
+  MAX_TERMINAL_ID_LENGTH,
+  MAX_TERMINAL_GENERATION_LENGTH,
+  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
+  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
+  MAX_GROUP_TARGET_MEMBERS,
+  MAX_DESKTOP_WS_PATH_LENGTH,
+  MAX_DESKTOP_TICKET_LENGTH,
+  MAX_DESKTOP_STREAM_ID_LENGTH,
+  MAX_DESKTOP_REQUEST_ID_LENGTH,
+  MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
+  MAX_CAPABILITY_LENGTH,
+  MAX_CAPABILITIES,
+  MAX_BOT_ID_LENGTH,
+  INTERACTION_WIRE_LIMITS,
+  DESKTOP_WS_MAX_PAYLOAD_BYTES,
+  DESKTOP_TICKET_TTL_MS,
+  DESKTOP_TCP_CHUNK_BYTES,
+  DESKTOP_RPC_TIMEOUT_MS,
+  DESKTOP_MAX_STREAMS_PER_INSTANCE,
+  DESKTOP_MAX_STREAMS_PER_ACCOUNT,
+  DESKTOP_HUB_REQUEST_TIMEOUT_MS,
+  DESKTOP_EVENT_PAYLOAD_VALIDATORS,
+  DESKTOP_ERROR_CODES,
+  DESKTOP_BUFFERED_SOFT_PAUSE_BYTES,
+  DESKTOP_BUFFERED_HARD_CLOSE_BYTES,
+  CONTROL_PAYLOAD_VALIDATORS
 };

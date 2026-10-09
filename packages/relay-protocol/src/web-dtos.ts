@@ -577,7 +577,10 @@ function validTopicSummary(value: unknown): boolean {
     && typeof c.updatedAt === "string"
     && validExecutionTarget(c.executionTarget)
     && (c.maxConcurrentMemberTurns === undefined || (typeof c.maxConcurrentMemberTurns === "number"
-      && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64));
+      && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64))
+    && (c.contextGeneration === undefined || (typeof c.contextGeneration === "number"
+      && Number.isInteger(c.contextGeneration) && c.contextGeneration >= 1))
+    && (c.defaultDirect === undefined || c.defaultDirect === true);
 }
 
 function validConversationMessage(value: unknown): boolean {

@@ -88,8 +88,14 @@ import {
   type TerminalTerminatePayload,
   type TerminalViewerEventInner,
   type TerminalViewerEventPayload,
+  type TopicsArchivePayload,
+  type TopicsClearPayload,
   type TopicsCreatePayload,
   type TopicsListPayload,
+  type TopicsPreviewPayload,
+  type TopicsRestorePayload,
+  type TopicsTeardownPayload,
+  type TopicsUpdatePayload,
   type UploadPayload,
   type WorkspacesCreatePayload,
   type WorkspacesRemovePayload,
@@ -458,6 +464,36 @@ const validateTopicsCreate: Validator<TopicsCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.title) && validMemberConcurrency(o.maxConcurrentMemberTurns)
     ? (o as unknown as TopicsCreatePayload) : null;
+};
+const validateTopicRef = (o: Record<string, unknown> | null): boolean =>
+  !!o && isStr(o.conversationId) && isStr(o.topicId);
+const validateTopicsUpdate: Validator<TopicsUpdatePayload> = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.title, 200) ? (o as unknown as TopicsUpdatePayload) : null;
+};
+const validateTopicsArchive: Validator<TopicsArchivePayload> = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? (o as unknown as TopicsArchivePayload) : null;
+};
+const validateTopicsRestore: Validator<TopicsRestorePayload> = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? (o as unknown as TopicsRestorePayload) : null;
+};
+const validateTopicsTeardown: Validator<TopicsTeardownPayload> = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.requestId, 128)
+    && (o.releaseBindings === undefined || o.releaseBindings === true || o.releaseBindings === false)
+    ? (o as unknown as TopicsTeardownPayload) : null;
+};
+const validateTopicsClear: Validator<TopicsClearPayload> = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.requestId, 128) && o.confirm === true
+    && (o.releaseBindings === undefined || o.releaseBindings === true || o.releaseBindings === false)
+    ? (o as unknown as TopicsClearPayload) : null;
+};
+const validateTopicsPreview: Validator<TopicsPreviewPayload> = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? (o as unknown as TopicsPreviewPayload) : null;
 };
 const validMemberConcurrency = (v: unknown): boolean => v === undefined ||
   (typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 64);
@@ -934,6 +970,8 @@ export type ControlRpcType =
   | typeof MSG.botsGet | typeof MSG.botsCreate | typeof MSG.botsUpdate | typeof MSG.botsDelete
   | typeof MSG.conversationsList | typeof MSG.conversationsGet
   | typeof MSG.topicsList | typeof MSG.topicsCreate
+  | typeof MSG.topicsUpdate | typeof MSG.topicsArchive | typeof MSG.topicsRestore
+  | typeof MSG.topicsTeardown | typeof MSG.topicsClear | typeof MSG.topicsPreview
   | typeof MSG.groupsCreate | typeof MSG.groupsUpdate | typeof MSG.groupsDelete | typeof MSG.groupsGet
   | typeof MSG.groupsList
   | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown
@@ -1010,6 +1048,12 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationsGet]: validateConversationsGet,
   [MSG.topicsList]: validateTopicsList,
   [MSG.topicsCreate]: validateTopicsCreate,
+  [MSG.topicsUpdate]: validateTopicsUpdate,
+  [MSG.topicsArchive]: validateTopicsArchive,
+  [MSG.topicsRestore]: validateTopicsRestore,
+  [MSG.topicsTeardown]: validateTopicsTeardown,
+  [MSG.topicsClear]: validateTopicsClear,
+  [MSG.topicsPreview]: validateTopicsPreview,
   [MSG.groupsCreate]: validateGroupsCreate,
   [MSG.groupsUpdate]: validateGroupsUpdate,
   [MSG.groupsDelete]: validateGroupsDelete,
