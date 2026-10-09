@@ -20,6 +20,7 @@ Group PR9：Conversation history/message event 透传公开 `handoff` envelope�
 - 会话级模型与推理强度分别通过 `control.session.model.get/set` 和
   `control.session.effort.get/set` 暴露。Hub 会为这些 RPC 覆写可信的 `chatKey`；effort 的配置 id
   与可选值由实例侧 adapter 广告，实例 transport 会拒绝未广告值，Hub/Web 不硬编码上游实现细节。
+- `control.conversations.router.get` 是 instance-scoped，不进入 `CHAT_SCOPED_TYPES`。载荷必须是空对象。连接器把 daemon 启动时的 Router 可用性原样返回。状态是 `ready`、`disabled-by-config`、`unsupported` 或 `failed`。旧连接器的 `unknown-type` 在 Web 上显示为不可选，不会在发送时才变成 `automatic_unsupported`。
 - `control.agents.capabilities.get` 是 instance-scoped，不进入 `CHAT_SCOPED_TYPES`。
   载荷只有已配置 agent、workspace、可选 Bot id 和 `probe`。带 `sessionAlias` 的载荷在连接器被拒绝。
   冷探测可能接近 session init 的耗时，因此连接器不对这个 RPC 套 60 秒提前超时，仍受 Hub 120 秒预算约束。

@@ -819,6 +819,44 @@ File tree operations configuration for relay-web file browser.
 
 ---
 
+## `conversations.router`
+
+Automatic collaboration for a Group Run. The section is optional. Omitted, or `enabled` other than `true`, leaves the feature off. Restart the daemon after changing it.
+
+| Field | Type | Required | Description |
+|------|------|------|------|
+| `enabled` | `boolean` | No | `true` runs the capability probe at startup. Any other value leaves automatic collaboration off |
+| `command` | `string` | When `enabled` is `true` | Executable. It must answer `--capabilities` and exit before any `--decide` process starts |
+| `authEnv` | `string` | No | Name of an environment variable. The variable must be non-empty before the probe runs. The value is not written to logs |
+
+`--capabilities` prints one JSON object. Every field below must be `true`.
+
+- `toolsDisabled`
+- `filesystemDisabled`
+- `terminalDisabled`
+- `permissionInteractionDisabled`
+- `messagingDisabled`
+- `orchestrationDisabled`
+- `structuredOutputOnly`
+
+A prompt that tells a model not to use tools is not this proof. The startup status is one of `disabled-by-config`, `unsupported`, `ready`, or `failed`. `unsupported` means the report did not prove the limit. `failed` means the command is missing, auth is empty, the probe failed, the probe timed out, or the report could not be read. `xacpx doctor` reports the same status. `ready` and the default off state pass. `unsupported` warns. `failed` fails the check.
+
+`control.conversations.router.get` returns that startup snapshot to Relay Web. Do not write a release note that says automatic collaboration is available. This repository does not ship a restricted router binary. A deployment is `ready` only after its own command proves the limit.
+
+### Example
+
+```json
+{
+  "conversations": {
+    "router": {
+      "enabled": false
+    }
+  }
+}
+```
+
+---
+
 ## Environment Variable Overrides
 
 The following environment variables can override configuration file paths:

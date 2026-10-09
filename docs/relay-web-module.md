@@ -343,6 +343,8 @@ Group `@` 的权威是 `{ botId, displayToken }`（`src/lib/group-mention.ts`）
 Run 卡片列出实际执行的成员。`shared-single-writer` 的 Topic 注明写入任务会排队。
 确定性拒绝保留草稿。不确定结果仍复用冻结的 `requestId` 和 target。
 
+Group 作曲器里的“自动协作”来自 `control.conversations.router.get`。只有 `ready` 可以选择。`disabled-by-config`、`unsupported` 和 `failed` 显示原因和配置路径 `conversations.router`，按钮不可选。读取尚未返回时也不可选。Run 卡片显示预算、指派、依赖、`waitingQuestion` 和 `blockedReason`。`waiting-human` 保持等待，界面不会把它改成 running。停止会结束这次 Run。停止之后选择一名成员再发送，那是一次新的请求。此版本没有“由我启动这一步”。
+
 hub 侧配套：tool step 全字段 32K 字符写入截断（见 docs/relay-module.md 的 `TOOL_DETAIL_CAP`）。
 
 ## 流式 Markdown 渲染
