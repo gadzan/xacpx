@@ -669,7 +669,10 @@ function defaultIds(): ConversationIdFactory {
   };
 }
 
+import { ConversationWorktreeStore } from "./conversation-worktree-store";
+
 export class SqliteConversationStore implements ConversationStore {
+  readonly worktrees: import("./conversation-worktree-store").ConversationWorktreeStore;
   private readonly ids: ConversationIdFactory;
   private readonly beforeAcceptCommit?: () => void;
   private readonly beforeDispatchMigrationCommit?: () => void;
@@ -686,6 +689,7 @@ export class SqliteConversationStore implements ConversationStore {
     this.beforeDispatchMigrationCommit = options?.beforeDispatchMigrationCommit;
     this.beforeLeaseRenewal = options?.beforeLeaseRenewal;
     this.sqlite.exec(SCHEMA);
+    this.worktrees = new ConversationWorktreeStore(this.sqlite);
     this.ensureDispatchAuthorityEpochColumn();
     this.ensureDispatchHumanIngressColumn();
     this.ensureMemberTurnAssignmentColumns();
@@ -3156,6 +3160,7 @@ export class SqliteConversationStore implements ConversationStore {
       ],
     );
     const ingressJson = serializeHumanIngress(input.humanIngress);
+    if (input.worktreeBase) this.worktrees.create(runId, input.conversationId, input.topicId, input.worktreeBase, input.now);
     const authorityEpoch = ingressJson ? (input.authorityEpoch ?? null) : null;
     const defaultOrigin: MemberTurnOrigin = ingressJson && authorityEpoch ? "human-explicit" : "followup";
     const seenBotIds = new Set<string>();

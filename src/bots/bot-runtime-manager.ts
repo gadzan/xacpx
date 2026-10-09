@@ -166,6 +166,7 @@ export class BotRuntimeManager {
     topicId: string;
     execution?: BotProfileExecution;
     executionPolicy?: EnforcedExecutionPolicy;
+    executionWorktree?: LogicalSession["execution_worktree"];
     assertStillDispatchable?: () => void;
   }): Promise<BotRuntimeBinding> {
     this.requireEnabledBot(input.botId);
@@ -250,6 +251,12 @@ export class BotRuntimeManager {
       }
       replaceRuntimeState(this.state, next);
     });
+  }
+
+  async releaseGroupMemberBinding(bindingId: string): Promise<void> {
+    const binding = this.state.bot_runtime_bindings[bindingId];
+    if (binding?.scope !== "group-member") return;
+    await this.bots.runLifecycle(binding.botId, () => this.releaseGroupMemberBindingInternal(binding, bindingId));
   }
 
   private async releaseGroupMemberBindingInternal(
@@ -362,11 +369,12 @@ export class BotRuntimeManager {
     topicId: string;
     execution?: BotProfileExecution;
     executionPolicy?: EnforcedExecutionPolicy;
+    executionWorktree?: LogicalSession["execution_worktree"];
     assertStillDispatchable?: () => void;
   }): Promise<BotRuntimeBinding> {
     input.assertStillDispatchable?.();
     const bot = this.requireEnabledBot(input.botId);
-    const scope = this.resolveGroupMemberScope(bot.id, input.conversationId, input.topicId);
+    const scope = this.resolveGroupMemberScope(bot.id, input.conversationId, input.topicId, input.executionWorktree);
     const effective = this.resolveGroupMemberExecution(bot, scope.topic, input.execution);
     this.assertExecutionPolicySupported(input.executionPolicy, effective.agent);
     this.assertGroupMemberStickyIdentity(bot, scope.topic, input.execution);
@@ -384,7 +392,8 @@ export class BotRuntimeManager {
       await this.assertGroupMemberReuseDispatchable(bot, scope);
       const session = this.sessions.getLogicalSessionRecord(existing.sessionAlias)
         ?? this.sessions.getLogicalSessionById(existing.logicalSessionId);
-      if (session && (session.execution_policy !== input.executionPolicy || (session.effort && !effective.effort))) {
+      if (session && (session.execution_policy !== input.executionPolicy || (session.effort && !effective.effort)
+        || JSON.stringify(session.execution_worktree) !== JSON.stringify(input.executionWorktree))) {
         // Turn-boundary recreate mirrors direct: clearing effort from a set
         // value to default must not silently keep the old effort runtime.
         await this.releaseGroupMemberBindingInternal(existing, existing.id);
@@ -393,7 +402,9 @@ export class BotRuntimeManager {
         return existing;
       }
     }
-    const session = await this.ensureGroupMemberOwnedSession(bot, scopedId, scope, effective, input.executionPolicy);
+    input.assertStillDispatchable?.();
+    const session = await this.ensureGroupMemberOwnedSession(bot, scopedId, scope, effective, input.executionPolicy, input.executionWorktree);
+    input.assertStillDispatchable?.();
     return await this.publishGroupMemberRuntime(bot, session, scopedId, scope);
   }
 
@@ -460,6 +471,7 @@ export class BotRuntimeManager {
     botId: string,
     conversationId: string,
     topicId: string,
+    executionWorktree?: LogicalSession["execution_worktree"],
   ): { conversationId: string; topicId: string; topic: ConversationTopic } {
     const conversation = this.state.conversations[conversationId];
     if (!conversation || conversation.kind !== "group") {
@@ -486,11 +498,9 @@ export class BotRuntimeManager {
     const target = topic.executionTarget;
     if (target) {
       this.bots.assertWorkspaceRegistered(target.workspace);
-      // worktree-per-member persists as a value but has no provisioning
-      // lifecycle yet (PR10): executing it in the shared workspace root
-      // would be a silent isolation downgrade. Fail closed at the
-      // materialization boundary, not at topic creation.
-      if (target.isolation === "worktree-per-member") {
+      // A worktree Topic requires the dispatcher's verified durable resource.
+      // Falling back to the workspace root would downgrade directory isolation.
+      if (target.isolation === "worktree-per-member" && !executionWorktree) {
         throw new BotError("worktree_unprovisioned", `topic "${topicId}" requires worktree-per-member provisioning`);
       }
       // A persisted non-empty cwd the launcher does not honor would silently
@@ -652,11 +662,16 @@ export class BotRuntimeManager {
     scope: { conversationId: string; topicId: string },
     execution?: BotProfileExecution,
     executionPolicy?: EnforcedExecutionPolicy,
+    executionWorktree?: LogicalSession["execution_worktree"],
   ): Promise<LogicalSession> {
     const alias = ownedGroupMemberSessionAlias(bindingId);
     const expected = execution ?? bot;
     const current = this.findOwnedGroupMemberSession(bindingId, bot.id, scope.conversationId, scope.topicId);
     if (current) {
+      if (JSON.stringify(current.execution_worktree) !== JSON.stringify(executionWorktree)) {
+        await this.releaseOwnedSession(current.alias);
+        return this.ensureGroupMemberOwnedSession(bot, bindingId, scope, execution, executionPolicy, executionWorktree);
+      }
       // Binding-less recovery must not resurrect an old-Agent session under a
       // changed identity: agent/workspace/model/effort all gate reuse, the
       // same axes the dispatcher checks post-materialize. A mismatch fails
@@ -685,6 +700,7 @@ export class BotRuntimeManager {
     const target = execution ?? bot;
     if (!occupant) {
       await this.sessions.createSession(alias, target.agent, target.workspace, {
+        ...(executionWorktree ? { executionWorktree } : {}),
         ...(executionPolicy ? { executionPolicy } : {}),
         owner: createGroupMemberOwner({
           bindingId,

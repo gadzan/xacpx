@@ -6,15 +6,11 @@ import type { MemberTurnEffect, MemberTurnEffectProvenance, WorkspaceIsolationPo
  * same Topic, given the Topic's effective isolation policy.
  *
   * Rules (plan §9.6 / §16):
-   *  - No isolation passes unproven work through. `shared` keeps its distinct
-   *  policy value for a future capability-enforced caller, but until an
-   *  enforceable read-only proof exists the scheduler treats every tree the
-   *  same: only a `read-only` turn with an enforced proof may run alongside
-   *  another in-flight turn. PR7 persists every explicit member as `unknown`
-   *  (no enforceable read-only proof exists), so every PR7 Group member
-   *  serializes regardless of isolation.
-   *  - `worktree-per-member`: no provisioning exists yet (PR10); treat like
-   *  every other tree until the worktree lifecycle lands.
+   *  - On shared directories, only `read-only` with an enforced runtime proof
+   *  permits reader overlap. Unknown/mutating effects take the writer slot.
+   *  - `worktree-per-member`: effect alone cannot prove directory isolation.
+   *  The dispatcher separately verifies distinct owned launch directories;
+   *  without that proof this helper stays conservative.
  *
  * Never infer from Bot name/description: the caller supplies the declared
  * effect AND its proof, and only `read-only` + `declared-enforced` together
@@ -31,11 +27,8 @@ export function isEffectConcurrencySafe(
   if (otherInFlight <= 0) {
     return true;
   }
-  // No isolation exempts unproven work: only a proven `read-only` runs
-  // alongside, on any tree. `shared` stays a distinct durable policy value
-  // (a future capability-enforced caller can open safe parallelism there
-  // without migrating Topics), but the scheduler never passes unproven
-  // turns through on it.
+  // Effect proof alone never exempts unproven work. Worktree directory proof
+  // is verified separately by the dispatcher at physical admission.
   return effect === "read-only" && provenance === "declared-enforced";
 }
 

@@ -1152,7 +1152,7 @@ creation. The existing dispatcher and atomic claim enforce physical capacity;
 logical batches, dependencies, filesystem policy, recovery and authority are
 unchanged. Omission retains the existing scheduling path. Hot mutation is deferred.
 
-**Phase 10B status: implemented, awaiting code review.** Policy-aware explicit
+**Phase 10B status: merged in PR #378 (`be14fce8`).** Policy-aware explicit
 prompts request a per-member filesystem ceiling. Server-owned adapter discovery
 mints `read-only/declared-enforced` only for the pinned restricted Claude runtime;
 read-write is `mutating`, and omitted policy remains unknown/unproven. No Router
@@ -1227,7 +1227,13 @@ Recommended initial software-work default.
 
 ## 16.4 `worktree-per-member`
 
-Defer unless the repository already has a reusable worktree lifecycle abstraction.
+Phase 10C is implemented from merged Phase 10B, awaiting independent review. It reuses
+WorkspaceGit's argv runner/path checks and the existing dispatcher/TurnQueue. Ownership
+is `(Run, Bot)` in the Conversation SQLite database; accepted base and resource identities
+are immutable. Actual CLI/Runtime cwd is resolved from a verified owned resource.
+Integration is explicit, with snapshots, a separate candidate, durable conflict/cursor
+evidence and conservative recovery. Cleanup follows physical release and retains unsafe
+or unintegrated resources. See [Phase 10C design](../specs/2026-10-08-conversation-worktree-isolation-design.md).
 
 When implemented, it must include:
 

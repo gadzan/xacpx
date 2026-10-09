@@ -9,6 +9,7 @@ import { useInstancesStore } from "../stores/instances";
 import GroupTranscript from "./GroupTranscript.vue";
 import GroupComposer from "./GroupComposer.vue";
 import GroupTopicDialog from "./GroupTopicDialog.vue";
+import ConversationWorktreePanel from "./ConversationWorktreePanel.vue";
 
 const groupsStore = useGroupsStore();
 const directBotsStore = useDirectBotsStore();
@@ -47,6 +48,12 @@ function handleCancel(): void {
 // An archived Topic stays browsable (its transcript is durable history), but it
 // cannot accept new Runs — sending there is a guaranteed `topic_not_active`.
 const isActiveTopic = computed(() => groupsStore.currentTopic?.status === "active");
+const worktreeRunId = computed(() => {
+  if (groupsStore.activeRun?.topicId === groupsStore.activeTopicId) return groupsStore.activeRun.id;
+  // After reconnect there may be no active owner: integration belongs to the
+  // latest durable result, even when that Run is already terminal.
+  return [...groupsStore.messages].reverse().find(m => m.topicId === groupsStore.activeTopicId && m.runId)?.runId;
+});
 </script>
 
 <template>
@@ -107,6 +114,8 @@ const isActiveTopic = computed(() => groupsStore.currentTopic?.status === "activ
     </div>
 
     <GroupTranscript :bots="memberBots" />
+    <ConversationWorktreePanel v-if="groupsStore.currentTopic?.executionTarget?.isolation === 'worktree-per-member' && groupsStore.instanceId && worktreeRunId"
+      :instance-id="groupsStore.instanceId" :run-id="worktreeRunId" />
 
     <GroupComposer
       :bots="memberBots"

@@ -4,6 +4,10 @@ wexin-agent-sdk
 node_modules/
 dist
 .worktrees/
+# Test-built Runtime Worker bundles. They must live inside the repository's
+# package scope so their external `acpx/runtime` import resolves, but they are
+# throwaway build output and never belong in version control.
+/.test-artifacts/
 openclaw
 .claude/
 .agents/

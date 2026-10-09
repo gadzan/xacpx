@@ -1,5 +1,6 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { realpathSync } from "node:fs";
 import { lstat, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve, sep, win32 } from "node:path";
@@ -8,6 +9,55 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const GIT_TIMEOUT_MS = 30_000;
 const GIT_MAX_BUFFER = 8 * 1024 * 1024;
+
+/** Shared argv-only Git boundary for workspace and owned Conversation resources. */
+export async function runWorkspaceGit(root: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
+  const { stdout } = await execFileAsync("git", ["-C", root, "-c", "gc.auto=0", ...args], {
+    timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER, killSignal: "SIGKILL", windowsHide: true,
+    ...(env ? { env: { ...process.env, ...env } } : {}),
+  });
+  return stdout;
+}
+
+/** Read-only identity checks required by synchronous session resolution. */
+export function runWorkspaceGitSync(root: string, args: string[], env?: NodeJS.ProcessEnv): string {
+  return execFileSync("git", ["-C", root, "-c", "gc.auto=0", ...args], {
+    encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER, killSignal: "SIGKILL", windowsHide: true,
+    ...(env ? { env: { ...process.env, ...env } } : {}),
+  });
+}
+
+/** Display-only prefix: drain both pipes and verify exit, even after truncation. */
+export function runWorkspaceGitPreview(root: string, args: string[], env?: NodeJS.ProcessEnv): Promise<{ stdout: string; truncated: boolean }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", ["-C", root, "-c", "gc.auto=0", ...args], {
+      stdio: ["ignore", "pipe", "pipe"], windowsHide: true,
+      ...(env ? { env: { ...process.env, ...env } } : {}),
+    });
+    let stdout = "", stderr = "", truncated = false, timedOut = false;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      const remaining = 32_768 - stdout.length;
+      stdout += chunk.slice(0, remaining);
+      if (chunk.length > remaining) truncated = true;
+    });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk.slice(0, Math.max(0, 8192 - stderr.length)); });
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, GIT_TIMEOUT_MS);
+    timer.unref();
+    child.once("error", error => { clearTimeout(timer); reject(error); });
+    child.once("close", (code, signal) => {
+      clearTimeout(timer);
+      if (timedOut) reject(new Error(`Git preview timed out after ${GIT_TIMEOUT_MS}ms`));
+      else if (code !== 0) reject(new Error(`Git preview exited ${code ?? signal}: ${stderr.trim()}`));
+      else {
+        // Do not expose half of a UTF-16 surrogate pair at the display boundary.
+        if (truncated && /[\uD800-\uDBFF]$/.test(stdout)) stdout = stdout.slice(0, -1);
+        resolve({ stdout, truncated });
+      }
+    });
+  });
+}
 
 export interface GitWorkspaceRef {
   name: string;
@@ -118,7 +168,33 @@ function normalizeWindowsWorktreePath(path: string): string {
   while (normalized.length > root.length && normalized.endsWith(win32.sep)) {
     normalized = normalized.slice(0, -1);
   }
+  // A managed root can live under an 8.3 short-name component (GitHub's
+  // C:\Users\RUNNER~1\...). fs.realpathSync keeps short names verbatim while Git
+  // canonicalizes them to their long form in the worktree .git pointer, so the
+  // two spellings of one directory would otherwise compare unequal. Resolving
+  // through the nearest existing ancestor expands every short component.
+  normalized = expandShortNameComponents(normalized);
   return normalized.toLowerCase();
+}
+
+/**
+ * Expands 8.3 short-name components of an existing or partially existing path.
+ * Each segment is resolved through the nearest existing ancestor, so a leaf that
+ * does not exist yet still inherits the long form of its existing parents.
+ */
+function expandShortNameComponents(path: string): string {
+  const root = win32.parse(path).root;
+  if (!/^[a-z]:\\/i.test(root)) return path; // UNC and device roots have no 8.3 names
+  const segments = path.slice(root.length).split(win32.sep).filter(Boolean);
+  if (!segments.some(segment => segment.includes("~"))) return path; // nothing short to expand
+  let current = root;
+  for (const segment of segments) {
+    current += segment;
+    try { current = realpathSync.native(current); } catch { /* leaf may not exist yet */ }
+    current += win32.sep;
+  }
+  const expanded = current.slice(0, -1);
+  return expanded.length > root.length ? expanded : path;
 }
 
 export interface WorkspaceGitOptions {
@@ -163,12 +239,7 @@ export class WorkspaceGit {
     // Assemble the full argv before the test override so injected runners see it too.
     const fullArgs = ["-C", root, "-c", "gc.auto=0", ...args];
     if (this.runGitOverride) return await this.runGitOverride(root, fullArgs);
-    const result = await execFileAsync("git", fullArgs, {
-      timeout: GIT_TIMEOUT_MS,
-      killSignal: "SIGKILL",
-      maxBuffer: GIT_MAX_BUFFER,
-    });
-    return result.stdout;
+    return runWorkspaceGit(root, args);
   }
 
   private validatePaths(paths: string[]): string[] {

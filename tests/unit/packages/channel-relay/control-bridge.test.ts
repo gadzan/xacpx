@@ -231,6 +231,23 @@ async function dispatch(
   return await new Promise((resolve) => bridge(envelope, resolve));
 }
 
+test("worktree RPC rejects old daemons instead of falling back to generic Git", async () => {
+  const { control } = makeFakeControl();
+  expect(await dispatch(createControlBridge(control as never), req(MSG.conversationWorktree, { action: "cleanup", runId: "r" })))
+    .toMatchObject({ error: { code: "unsupported-worktree-operation" } });
+});
+
+test("worktree RPC forwards only validated action and snapshot authorization", async () => {
+  const seen: unknown[] = [];
+  const { control } = makeFakeControl({ operateConversationWorktree: async (input: unknown) => { seen.push(input); return { runId: "r" }; } });
+  const bridge = createControlBridge(control as never);
+  const payload = { action: "integrate", runId: "r", requestId: "q", previewId: "p", snapshotUncommitted: true };
+  expect(await dispatch(bridge, req(MSG.conversationWorktree, payload))).toEqual({ worktree: { runId: "r" } });
+  expect(seen).toEqual([payload]);
+  expect(await dispatch(bridge, req(MSG.conversationWorktree, { ...payload, worktreePath: "/injected" }))).toMatchObject({ error: { code: "invalid-payload" } });
+  expect(seen).toHaveLength(1);
+});
+
 test("new policy RPC cannot fall back to an old core or old trusted callback", async () => {
   let oldCalls = 0;
   const { control } = makeFakeControl({ promptConversation: async () => { oldCalls++; } });

@@ -1061,6 +1061,15 @@ describe("Group Components", () => {
   });
 
   describe("GroupPane.vue", () => {
+    it("offers persisted worktree integration after reconnect without an active Run owner", async () => {
+      const groups = seedGroupSelection(); groups.activeRun = null;
+      groups.topicsByConversation["i1:conversation_g"]![0]!.executionTarget = { workspace: "repo", isolation: "worktree-per-member" };
+      groups.messages = [{ id: "m", conversationId: "conversation_g", topicId: "topic_1", runId: "settled-run", role: "bot", seq: 1, content: "done", createdAt: "now" }];
+      const wrapper = mount(GroupPane, { global: { plugins: [i18n], stubs: {
+        ConversationWorktreePanel: { props: ["instanceId", "runId"], template: '<div data-test="restored-worktree">{{ runId }}</div>' },
+      } } });
+      await flushPromises(); expect(wrapper.find('[data-test="restored-worktree"]').text()).toBe("settled-run"); wrapper.unmount();
+    });
     it("binds transcript, composer, and topic strip without touching Direct state", async () => {
       seedGroupSelection();
       const direct = useDirectBotsStore();

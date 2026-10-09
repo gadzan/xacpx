@@ -81,6 +81,15 @@ public 调用仍为 orchestration；独立的 core-private trusted ingress 才�
 authority。策略漂移、旧可写 session 的释放/重建、恢复和支持范围见
 [Conversation runtime](conversation-runtime.md#enforced-execution-effects-phase-10b)。
 
+Phase 10C：Group Topic 可选 `target.isolation: "worktree-per-member"`；
+`getRun(runId).worktree` 提供资源、base SHA、preview、candidate 和 conflict 状态。
+`operateConversationWorktree` 接受严格 action union：`preview`（完整有序 `botIds`）、
+`integrate`（`requestId`、`previewId`、`snapshotUncommitted: true`）、`continue`、
+`recover`、`abandon`、`cleanup`，每个 action 都要求 `runId`。全部遵守
+`files.writeEnabled`，只在已结算且物理会话安全释放后操作。不会直接合并到 main。
+旧 daemon 无此方法时必须明确 unsupported；无旧接口降级。详见
+[Worktree lifecycle](conversation-runtime.md#managed-worktrees-and-explicit-integration-phase-10c)。
+
 | 方法 | 说明 |
 |------|------|
 | `listSessions()` | 返回所有已解析逻辑会话的快照（`ControlSessionInfo[]`），含 `running` 字段（来自 `ActiveTurnRegistry`）与可选 `warm` 字段（running 时恒为 true，否则读 `SessionWarmthTracker` 最近观测；无 tracker 或未观测时省略）。`LogicalSession.owner.kind` 为 `bot-direct` / `group-member` / `group-controller` 的隐藏运行时不会出现在普通 Sessions 列表中（按 owner metadata，不是 `brt_` 前缀）。普通 alias 寻址的 Session 操作（prompt / remove / archive / rename / model / effort / cancel 等）对上述 owner 失败 `hidden_session`；Conversation 执行/释放只走 core-private `ConversationExecutionPort`。 |

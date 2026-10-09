@@ -773,6 +773,13 @@ export default {
       memberCompleted: "已完成",
       memberWaiting: "等待执行",
     },
+    worktree: {
+      title: "成员工作树", boundary: "工作目录相互独立，但不是操作系统沙箱。整合只创建候选分支，不修改 main。",
+      base: "基准提交", refresh: "刷新", preview: "预览成员修改", continue: "解决并暂存冲突后继续",
+      recover: "检查中断的整合", abandon: "放弃整合并保留全部工作", cleanup: "清理已整合工作树",
+      authorize: "授权为这些未提交和未跟踪修改创建 Git 快照", integrate: "创建整合候选",
+      candidate: "候选", conflict: "请在候选工作树中解决这些冲突", invalidResponse: "工作树响应无效",
+    },
     topic: {
       createTitle: "创建群组话题",
       createHint: "新话题保留成员与设置，但开启全新的对话上下文。",
@@ -780,6 +787,7 @@ export default {
       isolationLabel: "文件系统隔离",
       isolationSingleWriter: "共享单写者（推荐）",
       isolationShared: "共享",
+      isolationWorktree: "每名成员独立 Git 工作树",
       isolationHint: "仅在成员任务可被强制证明为只读时并行执行；其他任务会串行执行。",
     },
     prompt: {

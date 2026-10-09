@@ -195,6 +195,10 @@ rl.on("line", (line) => {
           ? params.sessionId
           : "mock-prompt";
       const text = promptText(params?.prompt);
+      // Phase 10C exercises actual child-process writes in distinct launch cwd.
+      if (text.startsWith("worktree-write:")) {
+        writeFileSync(join(process.cwd(), "same.txt"), text.slice("worktree-write:".length));
+      }
       // Delayed prompts track their pending JSON-RPC request so a later
       // session/cancel can terminate the turn the way a real agent does —
       // respond stopReason "cancelled" NOW instead of letting the timer fire.

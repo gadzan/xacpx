@@ -258,6 +258,7 @@ export type WebServerEvent = {
 };
 /** Wrap a server→web push event in a relay envelope. */
 export declare function webEventEnvelope(event: WebServerEvent): RelayEnvelope;
+export declare function isConversationWorktreeStatus(value: unknown): value is import("./dtos.js").ConversationWorktreeStatusDto;
 /** Deep-validate an inner ControlEventDto: discriminant + per-variant required fields.
  *  The switch is compile-time exhaustive over ControlEventDto["type"] (see the `never`
  *  check in `default`), mirroring CONTROL_EVENT_TYPE_MAP above. */

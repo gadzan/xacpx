@@ -72,6 +72,8 @@ export interface NativeSessionListCacheRecord {
 }
 
 export interface LogicalSession {
+  /** Core-owned resource identity; never an arbitrary client cwd override. */
+  execution_worktree?: import("../conversations/conversation-worktree-types").ConversationWorktreeRef;
   /** Core-owned immutable capability ceiling; absent on writable/legacy sessions. */
   execution_policy?: import("../adapters/conversation-effect-policy").EnforcedExecutionPolicy;
   alias: string;

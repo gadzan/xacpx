@@ -450,6 +450,19 @@ existing scheduling. It is creation-only, with no hot-update RPC. Strictness of
 other existing payload fields is unchanged. See the Topic execution concurrency
 contract in [Conversation runtime](conversation-runtime.md).
 
+Phase 10C adds authenticated instance RPC `control.conversation.worktree`, returning
+`{worktree}`. Its strict action union accepts `runId` plus: `preview` with complete
+ordered `botIds`; `integrate` with `requestId`, `previewId`, `snapshotUncommitted: true`;
+or `continue` / `recover` / `abandon` / `cleanup`. Unknown fields, arbitrary paths,
+ownership tokens and missing snapshot consent are rejected. Old daemons return
+`unsupported-worktree-operation`; there is no fallback. `control.runs.get` adds optional
+`run.worktree`; old response shapes remain valid. Group Topic creation accepts
+`target.isolation: "worktree-per-member"`. The Web panel displays preview/candidate/conflicts
+and requires explicit snapshot consent. These operations obey the daemon's
+`files.writeEnabled` gate. Integration never modifies main. The hub's request timeout
+can expire before a multi-step Git operation finishes: refetch the durable Run and use
+the same integration request identity/recover rather than initiating another decision.
+
 Authenticated instance Control RPC exposes `control.conversation.bindings.list`
 (`{}` → `{bindings}`), `.set` (`{chatKey, conversationId, topicId?}` → `{binding}`)
 and `.delete` (`{chatKey}` → `{ok:true}`). These are instance-owner management

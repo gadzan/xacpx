@@ -3730,13 +3730,12 @@ test("automatic cancel that races a member completion still terminals the run", 
   }
 });
 
-test("worktree-per-member topics are refused at creation and never leave a queued Run", async () => {
-  const first = await createLifecycle({ autoKick: true });
+test("compositions without a worktree manager reject new worktree work and terminally fence legacy dispatch", async () => {
+  const first = await createLifecycle({ autoKick: false });
   await first.service.activateAfterConsumerLock();
   seedTesterBot(first.state);
   const group = await first.bots.createGroup({ title: "Team", botIds: [BOT_ID, TESTER_ID] });
-  // Create refuses the policy: PR10 provisioning does not exist, so a Topic
-  // created with it could never execute.
+  // Manager-less fixtures cannot provision a worktree, so creation fails closed.
   await expect(first.service.createGroupTopic(group.id, "WT", {
     workspace: "backend",
     isolation: "worktree-per-member",
@@ -3751,6 +3750,10 @@ test("worktree-per-member topics are refused at creation and never leave a queue
   });
   const legacy = first.state.conversation_topics[topic.id];
   if (legacy?.executionTarget) legacy.executionTarget.isolation = "worktree-per-member";
+  await expect(first.service.acceptGroupPrompt({ conversationId: group.id, topicId: topic.id,
+    requestId: "new-unsupported", text: "go", target: { mode: "members", botIds: [BOT_ID] } })).rejects.toMatchObject({ code: "worktree_unprovisioned" });
+  expect(first.store.listRuns(group.id, topic.id)).toHaveLength(0);
+  if (legacy?.executionTarget) legacy.executionTarget.isolation = "shared-single-writer";
   const accepted = await first.service.acceptGroupPrompt({
     conversationId: group.id,
     topicId: topic.id,
@@ -3758,6 +3761,8 @@ test("worktree-per-member topics are refused at creation and never leave a queue
     text: "go",
     target: { mode: "members", botIds: [BOT_ID] },
   });
+  if (legacy?.executionTarget) legacy.executionTarget.isolation = "worktree-per-member";
+  await first.dispatcher.kick();
   await waitUntil(() => first.store.getRun(accepted.run.id)?.state === "failed");
   const settled = first.store.getRun(accepted.run.id)!;
   expect(settled.state).toBe("failed");

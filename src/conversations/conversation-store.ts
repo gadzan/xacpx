@@ -60,6 +60,8 @@ export interface AcceptMemberInput {
 }
 
 export interface AcceptRequestInput {
+  /** Core-owned Git preflight snapshot, committed atomically with a new Run. */
+  worktreeBase?: import("./conversation-worktree-types").ConversationWorktreeBase;
   /** Core channel ingress receipt, atomically committed with the accepted Run. */
   externalRequest?: { key: string; fingerprint: string };
   conversationId: string;

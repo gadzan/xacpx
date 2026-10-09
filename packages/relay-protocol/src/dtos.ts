@@ -314,18 +314,15 @@ export interface BotDetailDto extends BotSummaryDto {
 export interface ExecutionTargetDto {
   workspace: string;
   cwd?: string;
-  /** Responses must stay legacy-tolerant: a Topic persisted before the
-   *  worktree gate can still carry `worktree-per-member`. Creation refuses it. */
+  /** Worktree execution requires a durable owned resource; no shared fallback. */
   isolation: "shared" | "shared-single-writer" | "worktree-per-member";
 }
 
-/** Create-time Topic execution target. PR7 supports the two shared policies
- *  only: `worktree-per-member` has no provisioning lifecycle, so a Topic
- *  created with it could never execute (materialization fails closed). */
+/** Creation-time execution policy; older daemons reject worktree isolation. */
 export interface GroupTopicCreateTargetDto {
   workspace: string;
   cwd?: string;
-  isolation: "shared" | "shared-single-writer";
+  isolation: "shared" | "shared-single-writer" | "worktree-per-member";
 }
 
 export interface TopicSummaryDto {
@@ -397,6 +394,7 @@ export type ConversationRunStateDto =
   | "indeterminate";
 
 export interface ConversationRunDto {
+  worktree?: ConversationWorktreeStatusDto;
   /** Run-local quarantine; does not disable the global Bot profile. */
   quarantinedBotIds?: string[];
   id: string;
@@ -484,6 +482,17 @@ export interface MemberTurnSummaryDto {
 export interface ConversationRunDetailDto extends ConversationRunDto {
   profileSnapshot?: BotProfileSnapshotDto;
   memberTurns: MemberTurnSummaryDto[];
+}
+
+export interface ConversationWorktreeStatusDto {
+  orphanWorktreePaths?: string[];
+  runId: string; baseCommitSha: string; disposition: "pending" | "integrated" | "abandoned"; revision: number;
+  resources: Array<{ id: string; botId: string; kind: "member" | "integration"; state: string;
+    worktreePath: string; branchRef: string; snapshotSha?: string; lastError?: string }>;
+  preview?: { id: string; createdAt: string; members: Array<{ botId: string; worktreeId: string; head: string; tree: string; files: string[]; diff: string }> };
+  integration?: { id: string; generation: number; operationSource: "control"; requestId: string; previewId: string; state: "preparing" | "integrating" | "integrated" | "conflicted" | "failed" | "recovery-required" | "abandoned";
+    resourceId: string; orderedBotIds: string[]; patches: string[]; nextIndex: number; candidateCommitSha: string; expectedParent?: string;
+    conflictFiles: string[]; createdAt: string; updatedAt: string; lastError?: string };
 }
 
 export interface ConversationPromptResponseDto {

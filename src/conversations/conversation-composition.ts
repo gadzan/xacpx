@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { BotRuntimeManager } from "../bots/bot-runtime-manager";
@@ -23,12 +23,16 @@ import { ControlConversationTurnRunner } from "./conversation-turn-runner";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
 import { GroupHandoffService } from "./group-handoff";
 import { ConversationBindingService } from "./conversation-bindings";
+import { ConversationWorktreeManager } from "./conversation-worktree-manager";
+import { WorktreeIntegrationService } from "./worktree-integration-service";
 
 export function resolveConversationStorePath(configPath: string): string {
   return join(resolveRuntimeDirFromConfigPath(configPath), "conversations.sqlite");
 }
 
 export interface ConversationRuntime {
+  worktrees: ConversationWorktreeManager;
+  integrations: WorktreeIntegrationService;
   store: SqliteConversationStore;
   bots: BotService;
   botRuntime: BotRuntimeManager;
@@ -95,6 +99,8 @@ export async function createConversationRuntime(
     ...(input.stateMutex ? { stateMutex: input.stateMutex } : {}),
     ...(input.now ? { now: input.now } : {}),
   };
+  const worktrees = new ConversationWorktreeManager(store.worktrees, resolve(dirname(input.sqlitePath), "..", "worktrees", "conversations"), input.config);
+  input.sessions.setConversationWorktreeResolver?.(session => worktrees.resolveSessionCwd(session));
   const bots = new BotService(input.config, input.state, input.stateStore, shared);
   const productSinkRef: ConversationProductEventSink | undefined = input.onProductEvent;
   const botRuntime = new BotRuntimeManager(bots, input.sessions, input.state, input.stateStore, {
@@ -155,6 +161,7 @@ export async function createConversationRuntime(
     ...(input.leaseMs !== undefined ? { leaseMs: input.leaseMs } : {}),
     ...(input.leaseScheduler ? { leaseScheduler: input.leaseScheduler } : {}),
   });
+  dispatcher.setWorktreeManager(worktrees);
   // §14.3 late-result evidence: a provider settling after the cancel-settle
   // deadline sealed the Run must reach the store's indeterminate
   // reconciliation instead of being dropped. Wiring lives here (not in the
@@ -162,6 +169,7 @@ export async function createConversationRuntime(
   runner.setLateResultHandler((runInput, result) => {
     dispatcher.reconcileLateProviderResult(runInput, result);
   });
+  const integrations = new WorktreeIntegrationService(worktrees, store, input.state, botRuntime, input.releaseOwnedSession);
   const runs = new ConversationRunService(
     store,
     bots,
@@ -172,6 +180,10 @@ export async function createConversationRuntime(
     input.stateStore,
     {
       releaseOwnedSession: input.releaseOwnedSession,
+      worktrees,
+      beforeWorktreeCleanup: async (conversationId, topicId) => {
+        await integrations.cleanupScope(conversationId, topicId);
+      },
       autoKick: input.autoKick ?? true,
       ...(routerEngine ? { routerEngine } : {}),
       ...(input.onProductEvent ? { onProductEvent: input.onProductEvent } : {}),
@@ -219,6 +231,8 @@ export async function createConversationRuntime(
     });
   };
   return {
+    worktrees,
+    integrations,
     store,
     bots,
     botRuntime,
