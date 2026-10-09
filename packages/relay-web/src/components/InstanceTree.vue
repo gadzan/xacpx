@@ -58,7 +58,6 @@ const botDialogFor = ref<{
   instanceId: string;
   instanceName: string;
   bot?: BotDetailDto | BotSummaryDto;
-  /** Opened from the Group dialog's "needs two Bots" guidance. */
   resumeGroupCreate?: boolean;
 } | null>(null);
 const groupDialogFor = ref<{ instanceId: string; instanceName: string; group?: GroupSummaryDto } | null>(null);
