@@ -770,6 +770,11 @@ export default {
     header: {
       members: "{count} members",
     },
+    members: {
+      disabled: "Disabled members: {names}. They stay in the Group and take no new work until enabled again.",
+      leadDisabled: "The Lead, {lead}, is disabled. New messages go to {fallback} by default.",
+      noneEnabled: "Every member of this Group is disabled. Enable one to send new work.",
+    },
     target: {
       lead: "Lead",
       everyone: "Everyone",

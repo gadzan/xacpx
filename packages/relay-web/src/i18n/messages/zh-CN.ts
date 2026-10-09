@@ -767,6 +767,11 @@ export default {
     header: {
       members: "{count} 名成员",
     },
+    members: {
+      disabled: "已禁用的成员：{names}。他们仍在群组中，重新启用前不会接收新工作。",
+      leadDisabled: "负责人 {lead} 已禁用。新消息默认发给 {fallback}。",
+      noneEnabled: "此群组的成员均已禁用。启用任一成员后才能发送新工作。",
+    },
     target: {
       lead: "负责人",
       everyone: "全体成员",

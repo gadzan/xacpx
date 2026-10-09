@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import type { BotDetailDto, BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import type { BotDetailDto, BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 
 type Handler = (payload: Record<string, unknown>) => unknown;
 const routes = new Map<string, Handler>();
@@ -25,14 +25,27 @@ vi.mock("../api/client", () => ({
 import { i18n } from "../i18n";
 import { useToasts } from "../lib/use-toasts";
 import { useDirectBotsStore } from "../stores/direct-bots";
+import { useGroupsStore } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
 import BotDialog from "../components/BotDialog.vue";
+import GroupPane from "../components/GroupPane.vue";
 import InstanceTree from "../components/InstanceTree.vue";
 import ToastHost from "../components/ToastHost.vue";
 
 const REVIEWER: BotSummaryDto = { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 };
 const TESTER: BotSummaryDto = { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 };
+const CAROL: BotSummaryDto = { id: "bot_c", name: "Carol", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 };
 const SLEEPER: BotSummaryDto = { id: "bot_off", name: "Sleeper", agent: "codex", workspace: "repo", enabled: false, updatedAt: "now", profileRevision: 1 };
+
+const GROUP: GroupSummaryDto = {
+  id: "conversation_g",
+  kind: "group",
+  title: "Release Team",
+  botIds: ["bot_a", "bot_b", "bot_off"],
+  leadBotId: "bot_a",
+  createdAt: "now",
+  updatedAt: "now",
+};
 
 function detail(bot: BotSummaryDto, patch: Partial<BotDetailDto> = {}): BotDetailDto {
   return { ...bot, profileRevision: bot.profileRevision ?? 1, createdAt: "now", ...patch };
@@ -58,6 +71,20 @@ function seedBots(bots: BotSummaryDto[]): void {
   const direct = useDirectBotsStore();
   direct.botsByInstance["i1"] = bots;
   direct.botsLoaded["i1"] = true;
+}
+
+function seedGroup(group: GroupSummaryDto): void {
+  const groups = useGroupsStore();
+  groups.instanceId = "i1";
+  groups.selectedGroupId = group.id;
+  groups.activeConversationId = group.id;
+  groups.activeTopicId = "topic_1";
+  groups.topicReady = true;
+  groups.groupsByInstance["i1"] = [group];
+  groups.groupDetails[`i1:${group.id}`] = { ...group, topics: [] };
+  groups.topicsByConversation[`i1:${group.id}`] = [
+    { id: "topic_1", conversationId: group.id, title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" },
+  ];
 }
 
 let wrappers: VueWrapper[] = [];
@@ -265,6 +292,74 @@ describe("Disabled Bots", () => {
       expect(wrapper.find('[data-test="bot-dialog-disable-note"]').exists()).toBe(false);
       await enabledCheckbox(wrapper).setValue(true);
       expect(wrapper.find('[data-test="bot-dialog-reenable-note"]').exists()).toBe(true);
+    });
+  });
+
+  describe("GroupPane member status", () => {
+    it("names disabled members and keeps them in the Group", async () => {
+      seedBots([REVIEWER, TESTER, SLEEPER]);
+      seedGroup(GROUP);
+      useGroupsStore().targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = track(mount(GroupPane, { global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      expect(wrapper.find('[data-test="group-disabled-members"]').text()).toBe(
+        "Disabled members: Sleeper. They stay in the Group and take no new work until enabled again.",
+      );
+      expect(wrapper.find('[data-test="group-lead-disabled"]').exists()).toBe(false);
+      expect(wrapper.text()).toContain("3 members");
+      await wrapper.find('[data-test="group-target-button"]').trigger("click");
+      const sleeper = wrapper.find('[data-test="group-target-member-bot_off"]');
+      expect(sleeper.text()).toContain("Disabled");
+      expect(sleeper.attributes("disabled")).toBeDefined();
+    });
+
+    it("names the fallback member when the Lead is disabled", async () => {
+      seedBots([{ ...REVIEWER, enabled: false }, TESTER, CAROL, SLEEPER]);
+      seedGroup({ ...GROUP, botIds: ["bot_a", "bot_c", "bot_b", "bot_off"] });
+      const wrapper = track(mount(GroupPane, { global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      expect(wrapper.find('[data-test="group-disabled-members"]').text()).toBe(
+        "Disabled members: Reviewer and Sleeper. They stay in the Group and take no new work until enabled again.",
+      );
+      expect(wrapper.find('[data-test="group-lead-disabled"]').text()).toBe(
+        "The Lead, Reviewer, is disabled. New messages go to Tester by default.",
+      );
+    });
+
+    it("says no member can take work when every member is disabled", async () => {
+      seedBots([{ ...REVIEWER, enabled: false }, { ...TESTER, enabled: false }]);
+      seedGroup({ ...GROUP, botIds: ["bot_a", "bot_b"] });
+      const wrapper = track(mount(GroupPane, { global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      expect(wrapper.find('[data-test="group-member-status"]').text()).toBe(
+        "Every member of this Group is disabled. Enable one to send new work.",
+      );
+    });
+
+    it("shows no member status while the Bot catalog is unconfirmed", async () => {
+      seedBots([REVIEWER, TESTER, SLEEPER]);
+      useDirectBotsStore().botsLoaded["i1"] = false;
+      seedGroup(GROUP);
+      const wrapper = track(mount(GroupPane, { global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      expect(wrapper.find('[data-test="group-member-status"]').exists()).toBe(false);
+    });
+
+    it("shows the member status in Chinese", async () => {
+      i18n.global.locale.value = "zh-CN";
+      seedBots([{ ...REVIEWER, enabled: false }, TESTER, SLEEPER]);
+      seedGroup(GROUP);
+      const wrapper = track(mount(GroupPane, { global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      expect(wrapper.find('[data-test="group-disabled-members"]').text()).toBe(
+        "已禁用的成员：Reviewer和Sleeper。他们仍在群组中，重新启用前不会接收新工作。",
+      );
+      expect(wrapper.find('[data-test="group-lead-disabled"]').text()).toBe("负责人 Reviewer 已禁用。新消息默认发给 Tester。");
     });
   });
 });
