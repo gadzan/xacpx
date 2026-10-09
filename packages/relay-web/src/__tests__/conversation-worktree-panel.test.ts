@@ -103,3 +103,41 @@ it("keeps a failed operation visible and clears it when a later poll succeeds", 
   await button("refresh").trigger("click"); await flushPromises();
   expect(wrapper!.find("[role='alert']").exists()).toBe(false);
 });
+
+it("does not let an older in-flight poll resurrect a stale error when it fails", async () => {
+  // Freeze the 5s poll so the only in-flight requests are the two below; with a
+  // live interval the timer can consume the first mock and invert the order.
+  vi.useFakeTimers();
+  try {
+    await open(status(3));
+    let rejectOld!: (reason: unknown) => void;
+    // Two overlapping polls: the older is still pending when the newer one
+    // resolves. `epoch` is identical for both, so only a request sequence can
+    // tell them apart.
+    rpc.mockReturnValueOnce(new Promise((_resolve, reject) => { rejectOld = reject; }));
+    rpc.mockResolvedValueOnce({ run: { worktree: status(4) } });
+    await button("refresh").trigger("click");
+    await button("refresh").trigger("click");
+    await flushPromises();
+    // The newer poll won and set the current status; no error is showing.
+    expect(wrapper!.find("summary").text()).toContain("pending");
+    expect(wrapper!.find("[role='alert']").exists()).toBe(false);
+    // Now the older request fails. Its error must be discarded because a newer
+    // request already established the current state.
+    rejectOld(new Error("stale poll failure"));
+    await flushPromises();
+    expect(wrapper!.find("[role='alert']").exists()).toBe(false);
+    expect(wrapper!.text()).not.toContain("stale poll failure");
+    expect(wrapper!.find("summary").text()).toContain("pending");
+  } finally { vi.useRealTimers(); }
+});
+
+it("still surfaces a failure when no newer request has started", async () => {
+  await open(status(3));
+  // The single in-flight request fails: there is no newer request to defer to,
+  // so the error must appear.
+  rpc.mockRejectedValueOnce(new Error("only poll failed"));
+  await button("refresh").trigger("click"); await flushPromises();
+  expect(wrapper!.find("[role='alert']").exists()).toBe(true);
+  expect(wrapper!.text()).toContain("only poll failed");
+});

@@ -128,11 +128,16 @@ const PREFLIGHT_SOURCE = [
  * out, as distinct from the process running and reporting a load failure. The
  * caller wraps the former in the declared `preflight-spawn` stage so a missing
  * runtime is never reported as a module-resolution problem.
+ *
+ * `cause` carries the original thrown object, not a string copy: Node's spawn
+ * errors expose `code`/`errno` (ENOENT, EACCES, EPERM) that a stringified
+ * message drops, and those fields are what distinguishes "runtime not
+ * installed" from "runtime exists but is not executable".
  */
 export interface EsmPreflightOutcome {
   ok: boolean;
   detail: string;
-  spawnFailed?: { cause: string };
+  spawnFailed?: { cause: unknown };
 }
 
 /**
@@ -180,10 +185,10 @@ export async function runEsmPreflight(probePath: string, options: { runtime?: st
   child.stdout.on("data", chunk => { stdout += chunk; });
   child.stderr.on("data", chunk => { stderr += chunk; });
   child.once("error", error => {
-    // Spawn itself failed (e.g. execPath missing/not executable). Reported
-    // distinctly so the caller can wrap it as `preflight-spawn` with the
-    // original cause preserved, instead of blaming module resolution.
-    settle({ ok: false, detail: String(error instanceof Error ? error.message : error), spawnFailed: { cause: String(error instanceof Error ? error.stack ?? error.message : error) } });
+    // Spawn itself failed (e.g. execPath missing/not executable). The original
+    // object is forwarded intact so the caller's error keeps code/errno, and is
+    // reported distinctly so it is never blamed on module resolution.
+    settle({ ok: false, detail: error instanceof Error ? error.message : String(error), spawnFailed: { cause: error } });
   });
   child.once("close", code => settle({ ok: code === 0, detail: (code === 0 ? stdout : stderr).trim() || stdout.trim() }));
 
@@ -203,20 +208,27 @@ export function classifyPreflightFailure(detail: string): RuntimeWorkerBuildStag
  * The probe runs under `process.execPath` — the exact runtime that
  * RuntimeWorkerClient uses to spawn the worker — so it checks the resolution
  * the worker will actually perform.
+ *
+ * Exported so a regression test can assert the caller's error contract (stage
+ * and preserved cause) without rebuilding the worker bundle.
+ *
+ * `runtime` defaults to `process.execPath`; a test may override it to simulate
+ * an unspawnable runtime while keeping the real probe source.
  */
-async function assertExternalsResolveFrom(bundleDir: string): Promise<void> {
+export async function assertExternalsResolveFrom(bundleDir: string, runtime?: string): Promise<void> {
   const probe = join(bundleDir, "esm-preflight.mjs");
   await writeFile(probe, PREFLIGHT_SOURCE, "utf8");
 
-  const preflight = await runEsmPreflight(probe);
+  const preflight = await runEsmPreflight(probe, runtime ? { runtime } : {});
   if (preflight.spawnFailed) {
     // The probe process never ran (or never answered). This is an environment
-    // problem, not a module-resolution one, so it gets its own stage and keeps
-    // the original cause instead of being blamed on `acpx/runtime`.
+    // problem, not a module-resolution one, so it gets its own stage. The
+    // original throwable is forwarded as-is — wrapping it in a fresh Error
+    // would flatten code/errno/stack into a bare message.
     throw new RuntimeWorkerBuildError(
       "preflight-spawn",
       `${process.execPath} (${process.version}) could not run the preflight probe in ${bundleDir}: ${preflight.detail}`,
-      { cause: new Error(preflight.spawnFailed.cause) },
+      { cause: preflight.spawnFailed.cause },
     );
   }
   if (!preflight.ok) {

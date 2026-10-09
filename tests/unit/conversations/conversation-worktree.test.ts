@@ -14,7 +14,7 @@ import { worktreeStatus } from "../../../src/conversations/conversation-worktree
 import { AcpxCliTransport } from "../../../src/transport/acpx-cli/acpx-cli-transport";
 import { resolveAcpxCommand } from "../../../src/config/resolve-acpx-command";
 import { RuntimeEngine } from "../../../src/bridge/engine/runtime-engine";
-import { buildTestRuntimeWorker, classifyPreflightFailure, runEsmPreflight, TEST_ARTIFACT_ROOT } from "../../helpers/build-test-runtime-worker";
+import { buildTestRuntimeWorker, assertExternalsResolveFrom, classifyPreflightFailure, runEsmPreflight, TEST_ARTIFACT_ROOT, RuntimeWorkerBuildError } from "../../helpers/build-test-runtime-worker";
 import { GroupHandoffService } from "../../../src/conversations/group-handoff";
 import { parseState } from "../../../src/state/state-store";
 
@@ -657,9 +657,42 @@ test("the preflight reports a spawn failure as its own stage instead of a load f
     const bad = await runEsmPreflight(probe, { runtime: "C:\\definitely\\not\\a\\runtime.exe", deadlineMs: 15_000 });
     expect(bad.ok).toBe(false);
     expect(bad.spawnFailed).toBeDefined();
-    expect(bad.spawnFailed!.cause.length).toBeGreaterThan(0);
+    // The original throwable must survive with its structured fields: a string
+    // copy would keep only the message and drop the errno that distinguishes
+    // "runtime not installed" from "runtime exists but is not executable".
+    const cause = bad.spawnFailed!.cause;
+    expect(cause).toBeInstanceOf(Error);
+    expect((cause as NodeJS.ErrnoException).errno).toBeDefined();
+    expect((cause as NodeJS.ErrnoException).code).toBeDefined();
     // The detail must not be mistaken for a resolution failure.
     expect(bad.detail).not.toMatch(/Cannot find package|ERR_MODULE_NOT_FOUND|ERR_PACKAGE_PATH_NOT_EXPORTED/i);
   } finally { await rm(scratch, { recursive: true, force: true }); }
+}, 60_000);
+
+test("the preflight caller forwards the original spawn throwable into its error cause", async () => {
+  // Build a real worker so the genuine probe source exists beside the bundle.
+  const built = await buildTestRuntimeWorker();
+  try {
+    // Happy path with the real runtime: the probe loads and no error is raised.
+    await assertExternalsResolveFrom(built.artifactDir);
+
+    // Now run the same genuine probe source against an unspawnable runtime.
+    // This exercises the full path the production build takes, not just the
+    // probe runner, and isolates the spawn stage from module resolution.
+    const failure = await assertExternalsResolveFrom(built.artifactDir, "C:\\definitely\\not\\a\\runtime.exe").then(
+      () => undefined,
+      (e: unknown) => e as RuntimeWorkerBuildError,
+    );
+    expect(failure).toBeInstanceOf(RuntimeWorkerBuildError);
+    expect(failure!.stage).toBe("preflight-spawn");
+    // The cause must be the original Error, not a re-wrapped copy: a fresh
+    // Error(message) would flatten code/errno into a bare string, which is the
+    // exact information needed to tell "runtime not installed" from "runtime
+    // exists but is not executable".
+    expect(failure!.cause).toBeInstanceOf(Error);
+    const cause = failure!.cause as NodeJS.ErrnoException;
+    expect(cause.errno).toBeDefined();
+    expect(cause.code).toBeDefined();
+  } finally { await built.release(); }
 }, 60_000);
 

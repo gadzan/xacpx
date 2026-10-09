@@ -8,12 +8,21 @@ const { t } = useI18n();
 const status = ref<ConversationWorktreeStatusDto>();
 const error = ref(""); const busy = ref(false); const authorized = ref(false);
 let epoch = 0;
+// Monotonic sequence of started requests. `epoch` only advances when the
+// selected instance/Run changes, so every in-flight poll shares the same
+// value; a sequence number lets a late reply tell whether it is still the
+// latest request, or an older one that already lost its race.
+let requestSeq = 0;
+let latestSeq = 0;
 const candidate = computed(() => status.value?.resources.find(r => r.kind === "integration"));
 async function load(): Promise<void> {
   const expected = epoch, instance = props.instanceId, runId = props.runId;
+  const seq = ++requestSeq; latestSeq = seq;
   try {
     const result = await api.rpc<{ run: { worktree?: unknown } }>(instance, MSG.runsGet, { runId });
-    if (expected !== epoch || busy.value) return;
+    // A newer request has started (or the selection changed): this reply is
+    // stale and must not touch any rendered state, in either direction.
+    if (seq !== latestSeq || expected !== epoch || busy.value) return;
     if (isErrorPayload(result)) throw new Error(result.error.message);
     if (isConversationWorktreeStatus(result.run?.worktree) && result.run.worktree.runId === runId
       && (!status.value || result.run.worktree.revision >= status.value.revision)) {
@@ -21,11 +30,15 @@ async function load(): Promise<void> {
       status.value = result.run.worktree;
       // A valid, accepted response supersedes any earlier failure: the status is
       // current, so a stale error must not keep rendering beside fresh data.
-      // Epoch and revision guards above already prevent older responses from
-      // overwriting newer state, so clearing here cannot lose a real failure.
+      // The revision guard above already dropped older responses, so clearing
+      // here cannot lose a real failure.
       error.value = "";
     }
-  } catch (e) { if (expected === epoch) error.value = e instanceof Error ? e.message : String(e); }
+  } catch (e) {
+    // Only the latest request may set the error. An older poll that fails after
+    // a newer one succeeded would otherwise resurrect a stale message.
+    if (seq === latestSeq && expected === epoch) error.value = e instanceof Error ? e.message : String(e);
+  }
 }
 async function operate(action: ConversationWorktreePayload["action"]): Promise<void> {
   const current = status.value; if (!current) return;
