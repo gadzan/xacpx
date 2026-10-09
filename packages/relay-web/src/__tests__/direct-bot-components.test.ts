@@ -1752,10 +1752,11 @@ describe("Direct Bot Components", () => {
       expect(wrapper.text()).toContain("Code QA");
       expect(wrapper.text()).toContain("repo");
 
-      const topicPills = wrapper.findAll('[data-test="topic-pill"]');
-      expect(topicPills).toHaveLength(2);
+      await wrapper.find('[data-test="topic-menu"]').trigger("click");
+      const topicRows = wrapper.findAll('[data-test="topic-row"]');
+      expect(topicRows).toHaveLength(2);
 
-      await topicPills[1]?.trigger("click");
+      await topicRows[1]?.find("button").trigger("click");
       expect(switchTopicSpy).toHaveBeenCalledWith("t2");
     });
     it("opens the New Topic dialog with focus, traps Tab, and restores focus on Escape", async () => {

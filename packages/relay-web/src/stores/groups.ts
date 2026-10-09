@@ -17,6 +17,7 @@ import {
   type MemberTurnSummaryDto,
   type PlanEntryDto,
   type ToolStepDto,
+  type TopicImpactDto,
   type TopicSummaryDto,
   type TurnPartDto,
   type WebServerEvent,
@@ -442,6 +443,7 @@ export const useGroupsStore = defineStore("groups", () => {
 
   const topicsByConversation = ref<Record<string, TopicSummaryDto[]>>({});
   const topicsSeq: Record<string, number> = {};
+  const retiredTopicIds: Record<string, Set<string>> = {};
   /** Revision bumped only by Topic events (never by a topics.list fetch), so a
    *  reconciler can tell "my own fetch moved the counter" from "a concurrent
    *  event changed Topic state while I was waiting". */
@@ -796,14 +798,21 @@ export const useGroupsStore = defineStore("groups", () => {
    *  holding pre-deletion snapshots discarding them instead of merging the
    *  deleted Topic back in, regardless of which writer observed the deletion
    *  first (coarse refresh, or an ordinary newest-request list). */
+  function withoutRetiredTopics(key: string, topics: TopicSummaryDto[]): TopicSummaryDto[] {
+    const retired = retiredTopicIds[key];
+    if (!retired || retired.size === 0) return topics;
+    return topics.filter((topic) => !retired.has(topic.id));
+  }
+
   function commitTopicSnapshot(key: string, next: TopicSummaryDto[]): TopicSummaryDto[] {
+    const visible = withoutRetiredTopics(key, next);
     const previous = topicsByConversation.value[key] ?? [];
-    const droppedAny = previous.some((topic) => !next.some((item) => item.id === topic.id));
+    const droppedAny = previous.some((topic) => !visible.some((item) => item.id === topic.id));
     if (droppedAny) {
       topicDeletionEpoch[key] = (topicDeletionEpoch[key] ?? 0) + 1;
     }
-    topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
-    return next;
+    topicsByConversation.value = { ...topicsByConversation.value, [key]: visible };
+    return visible;
   }
 
   async function loadTopics(targetInstanceId: string, conversationId: string): Promise<TopicSummaryDto[]> {
@@ -822,9 +831,9 @@ export const useGroupsStore = defineStore("groups", () => {
       if ((topicDeletionEpoch[key] ?? 0) !== epochBefore) {
         return topicsByConversation.value[key] ?? [];
       }
-      const currentList = topicsByConversation.value[key] ?? [];
+      const currentList = withoutRetiredTopics(key, topicsByConversation.value[key] ?? []);
       const merged: Record<string, TopicSummaryDto> = {};
-      for (const t of res.topics) merged[t.id] = t;
+      for (const t of withoutRetiredTopics(key, res.topics)) merged[t.id] = t;
       for (const t of currentList) merged[t.id] = t;
       const next = Object.values(merged);
       topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
@@ -959,6 +968,110 @@ export const useGroupsStore = defineStore("groups", () => {
     }
     if (instanceId.value === targetInstanceId && activeConversationId.value === conversationId) {
       await switchTopic(res.topic.id);
+    }
+    return res.topic;
+  }
+
+  function upsertGroupTopic(targetInstanceId: string, topic: TopicSummaryDto): void {
+    const key = `${targetInstanceId}:${topic.conversationId}`;
+    if (retiredTopicIds[key]?.has(topic.id)) return;
+    topicsSeq[key] = (topicsSeq[key] ?? 0) + 1;
+    topicEventRevision[key] = (topicEventRevision[key] ?? 0) + 1;
+    const currentList = topicsByConversation.value[key] ?? [];
+    const idx = currentList.findIndex((item) => item.id === topic.id);
+    const next = idx >= 0
+      ? currentList.map((item, index) => (index === idx ? topic : item))
+      : [...currentList, topic];
+    topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
+  }
+
+  function retireGroupTopic(targetInstanceId: string, conversationId: string, topicId: string): void {
+    const key = `${targetInstanceId}:${conversationId}`;
+    const retired = retiredTopicIds[key] ?? new Set<string>();
+    retired.add(topicId);
+    retiredTopicIds[key] = retired;
+    topicsSeq[key] = (topicsSeq[key] ?? 0) + 1;
+    topicEventRevision[key] = (topicEventRevision[key] ?? 0) + 1;
+    topicDeletionEpoch[key] = (topicDeletionEpoch[key] ?? 0) + 1;
+    const next = (topicsByConversation.value[key] ?? []).filter((topic) => topic.id !== topicId);
+    topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
+    if (
+      instanceId.value === targetInstanceId
+      && activeConversationId.value === conversationId
+      && activeTopicId.value === topicId
+    ) {
+      const fallback = next.find((topic) => topic.status === "active");
+      if (fallback) void switchTopic(fallback.id);
+      else activeTopicId.value = null;
+    }
+  }
+
+  async function updateTopic(targetInstanceId: string, conversationId: string, topicId: string, title: string): Promise<TopicSummaryDto> {
+    const res = unwrapRpc(await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.topicsUpdate, {
+      conversationId, topicId, title,
+    }));
+    upsertGroupTopic(targetInstanceId, res.topic);
+    return res.topic;
+  }
+
+  async function archiveTopic(targetInstanceId: string, conversationId: string, topicId: string): Promise<TopicSummaryDto> {
+    const res = unwrapRpc(await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.topicsArchive, {
+      conversationId, topicId,
+    }));
+    upsertGroupTopic(targetInstanceId, res.topic);
+    return res.topic;
+  }
+
+  async function restoreTopic(targetInstanceId: string, conversationId: string, topicId: string): Promise<TopicSummaryDto> {
+    const res = unwrapRpc(await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.topicsRestore, {
+      conversationId, topicId,
+    }));
+    upsertGroupTopic(targetInstanceId, res.topic);
+    return res.topic;
+  }
+
+  async function previewTopic(targetInstanceId: string, conversationId: string, topicId: string): Promise<TopicImpactDto> {
+    const res = unwrapRpc(await api.rpc<{ impact: TopicImpactDto }>(targetInstanceId, MSG.topicsPreview, {
+      conversationId, topicId,
+    }));
+    return res.impact;
+  }
+
+  async function teardownTopic(
+    targetInstanceId: string,
+    conversationId: string,
+    topicId: string,
+    requestId: string,
+    releaseBindings = false,
+  ): Promise<void> {
+    unwrapRpc(await api.rpc(targetInstanceId, MSG.topicsTeardown, {
+      conversationId,
+      topicId,
+      requestId,
+      ...(releaseBindings ? { releaseBindings: true } : {}),
+    }));
+    retireGroupTopic(targetInstanceId, conversationId, topicId);
+  }
+
+  async function clearTopic(
+    targetInstanceId: string,
+    conversationId: string,
+    topicId: string,
+    requestId: string,
+    releaseBindings = false,
+  ): Promise<TopicSummaryDto> {
+    const res = unwrapRpc(await api.rpc<{ topic: TopicSummaryDto }>(targetInstanceId, MSG.topicsClear, {
+      conversationId,
+      topicId,
+      requestId,
+      confirm: true,
+      ...(releaseBindings ? { releaseBindings: true } : {}),
+    }));
+    upsertGroupTopic(targetInstanceId, res.topic);
+    if (instanceId.value === targetInstanceId && activeTopicId.value === topicId) {
+      messages.value = [];
+      activeRun.value = null;
+      void loadHistory(targetInstanceId, conversationId, topicId);
     }
     return res.topic;
   }
@@ -2495,8 +2608,10 @@ export const useGroupsStore = defineStore("groups", () => {
 
     if (e.type === "conversation-topic-changed") {
       const topic = e.topic;
+      const retiredKey = `${event.instanceId}:${topic.conversationId}`;
+      if (retiredTopicIds[retiredKey]?.has(topic.id)) return;
       if (topic.conversationId === activeConversationId.value) {
-        const key = `${event.instanceId}:${topic.conversationId}`;
+        const key = retiredKey;
         topicsSeq[key] = (topicsSeq[key] ?? 0) + 1;
         topicEventRevision[key] = (topicEventRevision[key] ?? 0) + 1;
         const currentList = topicsByConversation.value[key] ?? [];
@@ -2841,6 +2956,12 @@ export const useGroupsStore = defineStore("groups", () => {
     loadGroupDetail,
     loadTopics,
     createGroupTopic,
+    updateTopic,
+    archiveTopic,
+    restoreTopic,
+    previewTopic,
+    teardownTopic,
+    clearTopic,
     loadHistory,
     loadOlder,
     selectGroup,

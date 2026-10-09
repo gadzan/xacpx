@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Archive, MessageSquare, Plus, Users, X } from "lucide-vue-next";
+import { Users, X } from "lucide-vue-next";
 import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
@@ -10,6 +10,7 @@ import GroupTranscript from "./GroupTranscript.vue";
 import GroupComposer from "./GroupComposer.vue";
 import GroupTopicDialog from "./GroupTopicDialog.vue";
 import ConversationWorktreePanel from "./ConversationWorktreePanel.vue";
+import TopicManager from "./TopicManager.vue";
 
 const groupsStore = useGroupsStore();
 const directBotsStore = useDirectBotsStore();
@@ -17,6 +18,49 @@ const instancesStore = useInstancesStore();
 const { t } = useI18n();
 
 const newTopicDialogOpen = ref(false);
+
+function requireTopicContext(): { instanceId: string; conversationId: string } | null {
+  const instanceId = groupsStore.instanceId;
+  const conversationId = groupsStore.activeConversationId;
+  if (!instanceId || !conversationId) return null;
+  return { instanceId, conversationId };
+}
+
+async function previewTopic(topicId: string) {
+  const ctx = requireTopicContext();
+  if (!ctx) throw new Error("topic unavailable");
+  return groupsStore.previewTopic(ctx.instanceId, ctx.conversationId, topicId);
+}
+
+async function renameTopic(topicId: string, title: string) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await groupsStore.updateTopic(ctx.instanceId, ctx.conversationId, topicId, title);
+}
+
+async function archiveTopic(topicId: string) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await groupsStore.archiveTopic(ctx.instanceId, ctx.conversationId, topicId);
+}
+
+async function restoreTopic(topicId: string) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await groupsStore.restoreTopic(ctx.instanceId, ctx.conversationId, topicId);
+}
+
+async function teardownTopic(topicId: string, requestId: string, releaseBindings: boolean) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await groupsStore.teardownTopic(ctx.instanceId, ctx.conversationId, topicId, requestId, releaseBindings);
+}
+
+async function clearTopic(topicId: string, requestId: string, releaseBindings: boolean) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await groupsStore.clearTopic(ctx.instanceId, ctx.conversationId, topicId, requestId, releaseBindings);
+}
 
 const group = computed(() => groupsStore.currentGroup);
 const bots = computed<BotSummaryDto[]>(() => {
@@ -73,37 +117,20 @@ const worktreeRunId = computed(() => {
       </div>
     </header>
 
-    <div class="flex items-center justify-between border-b border-border bg-surface/50 px-4 py-1.5 text-xs">
-      <div class="thin-scroll flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5">
-        <span class="mr-1 flex shrink-0 items-center gap-1 text-[11px] font-medium text-fg-muted">
-          <MessageSquare :size="12" />
-          <span>{{ $t("bot.topic.label") }}:</span>
-        </span>
-        <button
-          v-for="topic in groupsStore.currentTopics"
-          :key="topic.id"
-          type="button"
-          data-test="group-topic-pill"
-          :data-topic-status="topic.status"
-          class="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors"
-          :class="groupsStore.activeTopicId === topic.id
-            ? 'bg-accent/15 font-semibold text-accent'
-            : 'text-fg-muted hover:bg-raised hover:text-fg'"
-          @click="groupsStore.switchTopic(topic.id)"
-        >
-          <span class="max-w-[140px] truncate">{{ topic.title || $t("bot.topic.default") }}</span>
-          <Archive v-if="topic.status !== 'active'" :size="10" class="shrink-0 opacity-70" />
-        </button>
-      </div>
-      <button
-        type="button"
-        data-test="group-new-topic-button"
-        class="ml-2 flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-accent transition-colors hover:bg-accent/10"
-        @click="newTopicDialogOpen = true"
-      >
-        <Plus :size="13" />
-        <span>{{ $t("bot.topic.new") }}</span>
-      </button>
+    <div class="flex items-center border-b border-border bg-surface/50 px-4 py-1.5 text-xs">
+      <TopicManager
+        variant="group"
+        :topics="groupsStore.currentTopics"
+        :active-topic-id="groupsStore.activeTopicId"
+        :preview-topic="previewTopic"
+        :rename-topic="renameTopic"
+        :archive-topic="archiveTopic"
+        :restore-topic="restoreTopic"
+        :teardown-topic="teardownTopic"
+        :clear-topic="clearTopic"
+        @select="groupsStore.switchTopic"
+        @create="newTopicDialogOpen = true"
+      />
     </div>
 
     <div v-if="groupsStore.generalErrorCode || groupsStore.generalError" class="flex items-center justify-between border-b border-danger/20 bg-danger/10 px-4 py-2 text-xs text-danger">

@@ -5,9 +5,7 @@ import {
   Bot,
   ChevronDown,
   Folder,
-  MessageSquare,
   Pencil,
-  Plus,
   Trash2,
   X,
 } from "lucide-vue-next";
@@ -20,6 +18,7 @@ import ConversationMessageList from "./ConversationMessageList.vue";
 import ConversationPromptInput from "./ConversationPromptInput.vue";
 import BotDialog from "./BotDialog.vue";
 import NewTopicDialog from "./NewTopicDialog.vue";
+import TopicManager from "./TopicManager.vue";
 
 const { t } = useI18n();
 const directBotsStore = useDirectBotsStore();
@@ -37,6 +36,49 @@ const botDriver = computed(() => {
 
 const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
+
+function requireTopicContext(): { instanceId: string; conversationId: string } | null {
+  const instanceId = directBotsStore.instanceId;
+  const conversationId = directBotsStore.activeConversationId;
+  if (!instanceId || !conversationId) return null;
+  return { instanceId, conversationId };
+}
+
+async function previewTopic(topicId: string) {
+  const ctx = requireTopicContext();
+  if (!ctx) throw new Error("topic unavailable");
+  return directBotsStore.previewTopic(ctx.instanceId, ctx.conversationId, topicId);
+}
+
+async function renameTopic(topicId: string, title: string) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await directBotsStore.updateTopic(ctx.instanceId, ctx.conversationId, topicId, title);
+}
+
+async function archiveTopic(topicId: string) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await directBotsStore.archiveTopic(ctx.instanceId, ctx.conversationId, topicId);
+}
+
+async function restoreTopic(topicId: string) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await directBotsStore.restoreTopic(ctx.instanceId, ctx.conversationId, topicId);
+}
+
+async function teardownTopic(topicId: string, requestId: string, releaseBindings: boolean) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await directBotsStore.teardownTopic(ctx.instanceId, ctx.conversationId, topicId, requestId, releaseBindings);
+}
+
+async function clearTopic(topicId: string, requestId: string, releaseBindings: boolean) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await directBotsStore.clearTopic(ctx.instanceId, ctx.conversationId, topicId, requestId, releaseBindings);
+}
 
 const botHasRuntime = computed(() =>
   (bot.value && "hasRuntime" in bot.value && bot.value.hasRuntime) === true,
@@ -139,40 +181,20 @@ async function handleDeleteBot(): Promise<void> {
       </div>
     </header>
 
-    <!-- Topic Strip -->
-    <div class="flex items-center justify-between border-b border-border bg-surface/50 px-4 py-1.5 text-xs">
-      <div class="flex items-center gap-1.5 overflow-x-auto thin-scroll min-w-0 flex-1 py-0.5">
-        <span class="text-fg-muted shrink-0 flex items-center gap-1 text-[11px] font-medium mr-1">
-          <MessageSquare :size="12" />
-          <span>{{ $t("bot.topic.label") }}:</span>
-        </span>
-
-        <!-- Topic Pills -->
-        <button
-          v-for="t in directBotsStore.currentTopics"
-          :key="t.id"
-          type="button"
-          data-test="topic-pill"
-          class="flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors shrink-0"
-          :class="directBotsStore.activeTopicId === t.id
-            ? 'bg-accent/15 text-accent font-semibold'
-            : 'text-fg-muted hover:bg-raised hover:text-fg'"
-          @click="directBotsStore.switchTopic(t.id)"
-        >
-          <span class="truncate max-w-[140px]">{{ t.title || $t("bot.topic.default") }}</span>
-        </button>
-      </div>
-
-      <!-- New Topic Button -->
-      <button
-        type="button"
-        data-test="new-topic-button"
-        class="ml-2 flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-accent hover:bg-accent/10 transition-colors shrink-0"
-        @click="newTopicDialogOpen = true"
-      >
-        <Plus :size="13" />
-        <span>{{ $t("bot.topic.new") }}</span>
-      </button>
+    <div class="flex items-center border-b border-border bg-surface/50 px-4 py-1.5 text-xs">
+      <TopicManager
+        variant="direct"
+        :topics="directBotsStore.currentTopics"
+        :active-topic-id="directBotsStore.activeTopicId"
+        :preview-topic="previewTopic"
+        :rename-topic="renameTopic"
+        :archive-topic="archiveTopic"
+        :restore-topic="restoreTopic"
+        :teardown-topic="teardownTopic"
+        :clear-topic="clearTopic"
+        @select="directBotsStore.switchTopic"
+        @create="newTopicDialogOpen = true"
+      />
     </div>
 
     <!-- Error Banner if any general error -->
@@ -209,7 +231,7 @@ async function handleDeleteBot(): Promise<void> {
 
     <!-- Prompt Composer -->
     <ConversationPromptInput
-      :disabled="!directBotsStore.activeTopicId || !directBotsStore.topicReady"
+      :disabled="!directBotsStore.activeTopicId || !directBotsStore.topicReady || directBotsStore.currentTopic?.status !== 'active'"
       @send="(text) => directBotsStore.sendPrompt(text)"
       @cancel="directBotsStore.cancelCurrentRun"
     />
