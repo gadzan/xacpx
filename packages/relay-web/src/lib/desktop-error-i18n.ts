@@ -18,6 +18,9 @@ export const DESKTOP_ERROR_I18N_KEYS: Record<DesktopErrorCode, string> = {
   "desktop-stream-timeout": "desktop.streamTimeout",
   "desktop-instance-offline": "desktop.offline",
   "desktop-protocol-error": "desktop.errorTitle",
+  "desktop-credentials-required": "desktop.credentialsRequired",
+  "desktop-credentials-rejected": "desktop.credentialsRejected",
+  "desktop-permission-denied": "desktop.permissionDenied",
 };
 
 /** Codes the browser transport itself can produce (no hub round-trip). */

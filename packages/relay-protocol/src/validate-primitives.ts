@@ -9,6 +9,10 @@ import { maxBase64EncodedLength } from "./limits.js";
 export const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null;
 
+/** Closed schema: every own key of `value` is listed in `allowed`. */
+export const hasOnlyKeys = (value: Record<string, unknown>, allowed: Record<string, true>): boolean =>
+  Object.keys(value).every((key) => Object.hasOwn(allowed, key));
+
 /** Required string. */
 export const isStr = (v: unknown): boolean => typeof v === "string";
 

@@ -1080,6 +1080,11 @@ export const RELAY_CAPABILITIES = {
   terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1",
   terminalMultiViewV1: "terminal.multi-view.v1",
   desktopRfbV1: "desktop.rfb.v1",
+  /** The connector accepts a `credential` on `instance.desktop.prepare` and runs Apple
+   *  Remote Desktop (RFB type 30) itself. The hub forwards a credential only to an
+   *  instance that declares this, because an older connector was never written to
+   *  keep one out of its logs. */
+  desktopArdAuthV1: "desktop.ard-auth.v1",
   /** This side can open an ACP form elicitation for a human and carry the
    *  decision back. Both halves (hub and web) must declare it: a hub without it
    *  never asks, so an old hub simply produces no interaction rather than a
@@ -1271,9 +1276,23 @@ export interface TerminalResourceExitPayload {
 }
 
 // --- Instance desktop (RFB/VNC) over an independent binary WebSocket ---
-/** RFB auth surfaced to the browser. v1 serves `vnc-auth` only; `ard` is a
- *  Phase B placeholder so connectors can report it as explicitly unsupported. */
-export type DesktopSecurityKind = "vnc-auth" | "ard";
+/**
+ * The one inner RFB security type noVNC may negotiate, per stream kind. On `vnc-auth`
+ * noVNC runs VncAuth (2) against the real server. On `ard` the connector has already
+ * signed in to macOS and plays an RFB None (1) greeting, so the connector's script and
+ * relay-web's guard read the same number.
+ */
+export const DESKTOP_INNER_RFB_SCHEME = { "vnc-auth": 2, ard: 1 } as const;
+
+export type DesktopSecurityKind = keyof typeof DESKTOP_INNER_RFB_SCHEME;
+
+export function isDesktopSecurityKind(value: unknown): value is DesktopSecurityKind {
+  return typeof value === "string" && Object.hasOwn(DESKTOP_INNER_RFB_SCHEME, value);
+}
+
+/** A macOS account for one Apple Remote Desktop sign-in. Never stored, logged, or
+ *  put in a URL, ticket, or RPC result. Build one only through `parseDesktopCredential`. */
+export type DesktopCredential = { kind: "ard"; username: string; password: string };
 
 /** Hub → connector `instance.desktop.prepare` request. Carries stream identity
  *  only — never a target host/port. The connector always dials its own frozen
@@ -1284,6 +1303,8 @@ export interface DesktopPreparePayload {
   ticket: string;
   /** Epoch ms when the ticket/stream reservation expires. */
   expiresAt: number;
+  /** Sent only after the browser answered `desktop-credentials-required`. */
+  credential?: DesktopCredential;
 }
 
 export interface DesktopPrepareResult {
@@ -1306,6 +1327,12 @@ export const DESKTOP_ERROR_CODES = [
   "desktop-stream-timeout",
   "desktop-instance-offline",
   "desktop-protocol-error",
+  /** An ARD server and no credential on this prepare. relay-web answers with the account form. */
+  "desktop-credentials-required",
+  /** macOS failed the ARD SecurityResult: wrong name or password, or the account is not allowed. */
+  "desktop-credentials-rejected",
+  /** ARD sign-in succeeded but macOS closed before ServerInit. */
+  "desktop-permission-denied",
 ] as const;
 
 export type DesktopErrorCode = (typeof DESKTOP_ERROR_CODES)[number];

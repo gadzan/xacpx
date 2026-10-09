@@ -985,6 +985,11 @@ export declare const RELAY_CAPABILITIES: {
     readonly terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1";
     readonly terminalMultiViewV1: "terminal.multi-view.v1";
     readonly desktopRfbV1: "desktop.rfb.v1";
+    /** The connector accepts a `credential` on `instance.desktop.prepare` and runs Apple
+     *  Remote Desktop (RFB type 30) itself. The hub forwards a credential only to an
+     *  instance that declares this, because an older connector was never written to
+     *  keep one out of its logs. */
+    readonly desktopArdAuthV1: "desktop.ard-auth.v1";
     /** This side can open an ACP form elicitation for a human and carry the
      *  decision back. Both halves (hub and web) must declare it: a hub without it
      *  never asks, so an old hub simply produces no interaction rather than a
@@ -1129,9 +1134,25 @@ export interface TerminalResourceExitPayload {
     reason: string;
     code?: number;
 }
-/** RFB auth surfaced to the browser. v1 serves `vnc-auth` only; `ard` is a
- *  Phase B placeholder so connectors can report it as explicitly unsupported. */
-export type DesktopSecurityKind = "vnc-auth" | "ard";
+/**
+ * The one inner RFB security type noVNC may negotiate, per stream kind. On `vnc-auth`
+ * noVNC runs VncAuth (2) against the real server. On `ard` the connector has already
+ * signed in to macOS and plays an RFB None (1) greeting, so the connector's script and
+ * relay-web's guard read the same number.
+ */
+export declare const DESKTOP_INNER_RFB_SCHEME: {
+    readonly "vnc-auth": 2;
+    readonly ard: 1;
+};
+export type DesktopSecurityKind = keyof typeof DESKTOP_INNER_RFB_SCHEME;
+export declare function isDesktopSecurityKind(value: unknown): value is DesktopSecurityKind;
+/** A macOS account for one Apple Remote Desktop sign-in. Never stored, logged, or
+ *  put in a URL, ticket, or RPC result. Build one only through `parseDesktopCredential`. */
+export type DesktopCredential = {
+    kind: "ard";
+    username: string;
+    password: string;
+};
 /** Hub → connector `instance.desktop.prepare` request. Carries stream identity
  *  only — never a target host/port. The connector always dials its own frozen
  *  desktop config (loopback + configured port). */
@@ -1141,6 +1162,8 @@ export interface DesktopPreparePayload {
     ticket: string;
     /** Epoch ms when the ticket/stream reservation expires. */
     expiresAt: number;
+    /** Sent only after the browser answered `desktop-credentials-required`. */
+    credential?: DesktopCredential;
 }
 export interface DesktopPrepareResult {
     streamId: string;
@@ -1151,7 +1174,7 @@ export interface DesktopCancelPayload {
     streamId: string;
 }
 /** Stable browser-facing desktop error codes (i18n by code, not message text). */
-export declare const DESKTOP_ERROR_CODES: readonly ["desktop-disabled", "desktop-busy", "desktop-rfb-unavailable", "desktop-not-rfb", "desktop-auth-unsupported", "desktop-stream-timeout", "desktop-instance-offline", "desktop-protocol-error"];
+export declare const DESKTOP_ERROR_CODES: readonly ["desktop-disabled", "desktop-busy", "desktop-rfb-unavailable", "desktop-not-rfb", "desktop-auth-unsupported", "desktop-stream-timeout", "desktop-instance-offline", "desktop-protocol-error", "desktop-credentials-required", "desktop-credentials-rejected", "desktop-permission-denied"];
 export type DesktopErrorCode = (typeof DESKTOP_ERROR_CODES)[number];
 export interface InstanceAgentEndpointsSyncPayload {
     endpoints: PublishedAgentEndpointDto[];
