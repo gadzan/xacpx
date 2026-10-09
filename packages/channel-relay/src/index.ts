@@ -35,6 +35,7 @@ export {
 
 const plugin: XacpxPlugin = {
   apiVersion: 1,
+  name: "@ganglion/xacpx-channel-relay",
   // Raised for the M3 elicitation chain: `channel.ts` statically imports
   // `isDirectConversationChatKey` / `parseDirectConversationChatKey` — RUNTIME
   // named exports from `xacpx/plugin-api` added after 0.24.6-beta.0. An ESM
