@@ -769,7 +769,7 @@ export default {
       selectMembers: "Select members",
       memberCount: "{count} selected",
       noEligible: "No enabled members in this group.",
-      hint: "@name adds a member · @everyone selects all",
+      hint: "{'@'}name adds a member · {'@'}everyone selects all",
     },
     run: {
       title: "Collaboration",
@@ -794,7 +794,7 @@ export default {
       isolationHint: "Parallel execution requires an enforceably read-only member turn. Other turns are serialized.",
     },
     prompt: {
-      placeholder: "Message the selected members... (@name, @everyone)",
+      placeholder: "Message the selected members... ({'@'}name, {'@'}everyone)",
     },
     chat: {
       emptyHint: "Select members above, then send a message to start a collaboration run.",

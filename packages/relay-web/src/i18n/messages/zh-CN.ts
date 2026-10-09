@@ -766,7 +766,7 @@ export default {
       selectMembers: "选择成员",
       memberCount: "已选 {count} 人",
       noEligible: "该群组暂无可用成员。",
-      hint: "@名称 添加成员 · @everyone 全选",
+      hint: "{'@'}名称 添加成员 · {'@'}everyone 全选",
     },
     run: {
       title: "协作",
@@ -791,7 +791,7 @@ export default {
       isolationHint: "仅在成员任务可被强制证明为只读时并行执行；其他任务会串行执行。",
     },
     prompt: {
-      placeholder: "给所选成员发消息...（@名称、@everyone）",
+      placeholder: "给所选成员发消息...（{'@'}名称、{'@'}everyone）",
     },
     chat: {
       emptyHint: "在上方选择成员，然后发送消息开始一次协作。",
