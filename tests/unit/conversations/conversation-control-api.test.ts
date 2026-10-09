@@ -195,7 +195,10 @@ test("Control Topic creation persists and projects optional concurrency without 
   const direct = await control.createTopic(createDirectConversationId(a.id), "Direct", { maxConcurrentMemberTurns: 1 });
   expect(direct.maxConcurrentMemberTurns).toBe(1);
   await expect(control.createGroupTopic(group.id, "bad", { workspace: "backend", isolation: "shared" }, { maxConcurrentMemberTurns: 0 })).rejects.toMatchObject({ code: "invalid_concurrency_limit" });
-  expect("updateTopic" in control).toBe(false);
+  const renamed = await control.updateTopic(group.id, topic.id, "Renamed");
+  expect(renamed.title).toBe("Renamed");
+  expect(renamed.maxConcurrentMemberTurns).toBe(2);
+  expect(state.conversation_topics[topic.id]?.maxConcurrentMemberTurns).toBe(2);
   await runtime.shutdown();
 });
 
@@ -1126,6 +1129,7 @@ test("Direct Conversation presentation matches whether or not runtime materializ
     status: "active" as const,
     createdAt,
     updatedAt: createdAt,
+    defaultDirect: true,
   });
   expect(defaultTopicA).toEqual(expectedDefault(conversationIdA, topicIdA, botA.createdAt));
   expect(defaultTopicB).toEqual(expectedDefault(conversationIdB, topicIdB, botB.createdAt));
@@ -1177,6 +1181,7 @@ test("PR3 persisted default Topic clocks overlay to Bot createdAt after upgrade"
     status: "active",
     createdAt: t0,
     updatedAt: t0,
+    defaultDirect: true,
   });
   expect(fromGet).toEqual(listed);
   expect(listed?.createdAt).not.toBe(t1);

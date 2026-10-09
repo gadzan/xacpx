@@ -93,6 +93,16 @@ export interface ConversationTopic {
   status: ConversationTopicStatus;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Context generation. Absent means 1. Clearing the default topic bumps it
+   * and keeps the same id. Bindings from an older generation are not reused.
+   */
+  contextGeneration?: number;
+  /**
+   * Last lifecycle mutation time for the default topic. Absent means the
+   * public clock is still the owning Bot's createdAt.
+   */
+  managedAt?: string;
   /** Creation-time physical admission cap; absent preserves legacy scheduling. */
   maxConcurrentMemberTurns?: number;
   /** Effective work target for this Topic. Absent on pre-Group rows: readers

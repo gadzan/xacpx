@@ -175,10 +175,19 @@ var MSG = {
   botsCreate: "control.bots.create",
   botsUpdate: "control.bots.update",
   botsDelete: "control.bots.delete",
+  botsRemovePreview: "control.bots.remove.preview",
+  botsRemove: "control.bots.remove",
+  lifecycleOperationsGet: "control.lifecycle.operations.get",
   conversationsList: "control.conversations.list",
   conversationsGet: "control.conversations.get",
   topicsList: "control.topics.list",
   topicsCreate: "control.topics.create",
+  topicsUpdate: "control.topics.update",
+  topicsArchive: "control.topics.archive",
+  topicsRestore: "control.topics.restore",
+  topicsTeardown: "control.topics.teardown",
+  topicsClear: "control.topics.clear",
+  topicsPreview: "control.topics.preview",
   groupsCreate: "control.groups.create",
   groupsUpdate: "control.groups.update",
   groupsDelete: "control.groups.delete",
@@ -581,7 +590,7 @@ function validTopicSummary(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string" && validExecutionTarget(c.executionTarget) && (c.maxConcurrentMemberTurns === undefined || typeof c.maxConcurrentMemberTurns === "number" && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64);
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string" && validExecutionTarget(c.executionTarget) && (c.maxConcurrentMemberTurns === undefined || typeof c.maxConcurrentMemberTurns === "number" && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64) && (c.contextGeneration === undefined || typeof c.contextGeneration === "number" && Number.isInteger(c.contextGeneration) && c.contextGeneration >= 1) && (c.defaultDirect === undefined || c.defaultDirect === true);
 }
 function validConversationMessage(value) {
   if (typeof value !== "object" || value === null)
@@ -1243,6 +1252,18 @@ var validateBotsDelete = (p) => {
   const o = fields(p);
   return o && isStr(o.id) ? o : null;
 };
+var validateBotsRemovePreview = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? o : null;
+};
+var validateBotsRemove = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) && isBoundedStr(o.requestId, 128) && isBoundedStr(o.previewRevision, 64) && (o.clearDirectHistory === undefined || o.clearDirectHistory === true || o.clearDirectHistory === false) && (o.releaseDirectBindings === undefined || o.releaseDirectBindings === true || o.releaseDirectBindings === false) ? o : null;
+};
+var validateLifecycleOperationsGet = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.id, 220) ? o : null;
+};
 var validateConversationsList = (p) => {
   const o = fields(p);
   return o && optStr(o.botId) ? o : null;
@@ -1258,6 +1279,31 @@ var validateTopicsList = (p) => {
 var validateTopicsCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.title) && validMemberConcurrency(o.maxConcurrentMemberTurns) ? o : null;
+};
+var validateTopicRef = (o) => !!o && isStr(o.conversationId) && isStr(o.topicId);
+var validateTopicsUpdate = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.title, 200) ? o : null;
+};
+var validateTopicsArchive = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? o : null;
+};
+var validateTopicsRestore = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? o : null;
+};
+var validateTopicsTeardown = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.requestId, 128) && (o.releaseBindings === undefined || o.releaseBindings === true || o.releaseBindings === false) ? o : null;
+};
+var validateTopicsClear = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.requestId, 128) && o.confirm === true && (o.releaseBindings === undefined || o.releaseBindings === true || o.releaseBindings === false) ? o : null;
+};
+var validateTopicsPreview = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? o : null;
 };
 var validMemberConcurrency = (v) => v === undefined || typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 64;
 var isCreateIsolation = (v) => v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
@@ -1686,10 +1732,19 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.botsCreate]: validateBotsCreate,
   [MSG.botsUpdate]: validateBotsUpdate,
   [MSG.botsDelete]: validateBotsDelete,
+  [MSG.botsRemovePreview]: validateBotsRemovePreview,
+  [MSG.botsRemove]: validateBotsRemove,
+  [MSG.lifecycleOperationsGet]: validateLifecycleOperationsGet,
   [MSG.conversationsList]: validateConversationsList,
   [MSG.conversationsGet]: validateConversationsGet,
   [MSG.topicsList]: validateTopicsList,
   [MSG.topicsCreate]: validateTopicsCreate,
+  [MSG.topicsUpdate]: validateTopicsUpdate,
+  [MSG.topicsArchive]: validateTopicsArchive,
+  [MSG.topicsRestore]: validateTopicsRestore,
+  [MSG.topicsTeardown]: validateTopicsTeardown,
+  [MSG.topicsClear]: validateTopicsClear,
+  [MSG.topicsPreview]: validateTopicsPreview,
   [MSG.groupsCreate]: validateGroupsCreate,
   [MSG.groupsUpdate]: validateGroupsUpdate,
   [MSG.groupsDelete]: validateGroupsDelete,
