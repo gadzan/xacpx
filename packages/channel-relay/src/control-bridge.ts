@@ -88,6 +88,7 @@ const CONNECTOR_TIMEOUT_EXEMPT_TYPES: ReadonlySet<string> = new Set([
   MSG.commandExecute,
   MSG.sessionModelSet,
   MSG.sessionEffortSet,
+  MSG.agentsCapabilitiesGet,
   MSG.conversationWorktree,
   // `interactionRequest` is NOT here: it is a connector→hub request made through
   // `RelayClient.sendRequest` with its own ceiling (the window's `expiresAt` +
@@ -819,6 +820,31 @@ async function dispatchControlRequest(
         );
       }
       return await control.fsWrite(i.workspace, i.path, i.content, i.expected);
+    }
+    case MSG.conversationRouterGet: {
+      const input = parseControlPayload(MSG.conversationRouterGet, payload ?? {});
+      if (!input) {
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.conversationRouterGet}: malformed payload`,
+        );
+      }
+      return control.getConversationRouterAvailability();
+    }
+    case MSG.agentsCapabilitiesGet: {
+      const input = parseControlPayload(MSG.agentsCapabilitiesGet, payload);
+      if (!input) {
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.agentsCapabilitiesGet}: malformed payload`,
+        );
+      }
+      return await control.getAgentCapabilities({
+        agent: input.agent,
+        workspace: input.workspace,
+        ...(input.botId !== undefined ? { botId: input.botId } : {}),
+        ...(input.probe !== undefined ? { probe: input.probe } : {}),
+      });
     }
     case MSG.sessionModelGet: {
       const input = parseControlPayload(MSG.sessionModelGet, payload);

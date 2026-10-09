@@ -129,6 +129,11 @@ export interface AgentConfig {
   argv?: string[];
   /** Default LLM model id for sessions of this agent (e.g. `gpt-5.2[high]`); a session-level model overrides it. */
   model?: string;
+  /**
+   * Unverified model id suggestions shown beside adapter results. They are not
+   * an advertisement and do not survive as ready models.
+   */
+  modelCandidates?: string[];
   /** Claude user-settings exposure. Defaults to filtered third-party provider/model settings. */
   settingsPolicy?: ClaudeSettingsPolicy;
 }
@@ -151,6 +156,19 @@ export type LaterDefaultMode = "temp" | "bind";
 
 export interface LaterConfig {
   defaultMode: LaterDefaultMode;
+}
+
+/** Production automatic-collaboration router. Absent or `enabled: false` stays off. */
+export interface ConversationRouterConfig {
+  enabled: boolean;
+  /** Executable that reports `--capabilities` before any `--decide` process. */
+  command?: string;
+  /** Environment variable that must be non-empty before the capability probe. */
+  authEnv?: string;
+}
+
+export interface ConversationsConfig {
+  router: ConversationRouterConfig;
 }
 
 export interface ChannelRuntimeConfig {
@@ -179,6 +197,7 @@ export interface AppConfig {
   workspaces: Record<string, WorkspaceConfig>;
   orchestration: OrchestrationConfig;
   later?: LaterConfig;
+  conversations?: ConversationsConfig;
   language?: Locale;
   terminal?: TerminalConfig;
   files?: FilesConfig;

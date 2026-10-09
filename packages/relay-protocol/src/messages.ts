@@ -109,6 +109,8 @@ export const MSG = {
   gitWorktreeCreate: "control.git.worktree.create",
   upload: "control.upload",
   sessionModelGet: "control.session.model.get",
+  agentsCapabilitiesGet: "control.agents.capabilities.get",
+  conversationRouterGet: "control.conversations.router.get",
   sessionModelSet: "control.session.model.set",
   sessionEffortGet: "control.session.effort.get",
   sessionEffortSet: "control.session.effort.set",
@@ -333,6 +335,17 @@ export interface InstanceStateSyncPayload {
     breakdown?: UsageBreakdownDto;
   }>;
   commands: Array<{ sessionAlias: string; commands: AgentCommandDto[] }>;
+  /**
+   * Adapter slash advertisements for product-owned Bot runtimes.
+   * Keyed by conversation, topic, and bot. Absent on older connectors.
+   * These rows are not ordinary Session commands and must not be keyed by alias.
+   */
+  conversationCommands?: Array<{
+    conversationId: string;
+    topicId: string;
+    botId: string;
+    commands: AgentCommandDto[];
+  }>;
   /** Turns that finished and are still awaiting the hub's persistence ack — this
    *  includes turns that finished while the hub was unreachable AND live turns that
    *  finished moments ago (the connector forwards the live `turn-finished` and keeps
@@ -1107,6 +1120,19 @@ export interface FsWriteResult {
 export interface SessionModelGetPayload {
   chatKey: string;
   sessionAlias: string;
+}
+
+/** Configured agent and workspace, plus an optional product bot id. No session alias. */
+export interface AgentsCapabilitiesGetPayload {
+  agent: string;
+  workspace: string;
+  botId?: string;
+  probe?: boolean;
+}
+
+/** Empty read. The instance returns its startup router availability. */
+export interface ConversationRouterGetPayload {
+  readonly __empty?: never;
 }
 
 export interface SessionModelSetPayload {

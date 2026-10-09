@@ -102,6 +102,8 @@ export function bridgeRequestTimeoutMs(
       // The subprocess may run the list twice (--filter-cwd capability
       // fallback), each run bounded by sessionInitTimeoutMs like acpx-cli.
       return 2 * sessionInitTimeoutMs + BRIDGE_REQUEST_TIMEOUT_GRACE_MS;
+    case "probeAgentCapabilities":
+      return Math.min(sessionInitTimeoutMs, 90_000) + BRIDGE_REQUEST_TIMEOUT_GRACE_MS;
     case "deleteSession":
     case "freeWarmProcess":
     case "setSessionEffort":

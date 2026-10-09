@@ -555,6 +555,9 @@ The registered agent mapping, keyed by agent name (used by `/agent add`, `/sessi
 | `command` | `string` | No | Explicitly specify the raw command for an agent. This has highest priority, including over xacpx-managed Codex/Claude adapter pins. **Mutually exclusive with `argv`**. On Windows, new multi-token `command` values cannot be launched losslessly — use `argv` instead (see below). Historical session `transport_agent_command` values are passed through as an acpx `--agent` selector; acpx 0.13 backfills built-in argv from the session record and fail-closes unsupported custom raw history |
 | `argv` | `string[]` | No | Exact executable + argument boundaries (`["C:\\Program Files\\agent.exe", "--acp", ...]`). First element must be a non-empty executable; every element is passed to acpx verbatim (spaces, backslashes, empty strings preserved). **Mutually exclusive with `command`**. This is the only lossless launch form on Windows. Mutating `argv` creates a NEW acpx session identity (content-addressed alias); old sessions keep their recorded identity |
 | `model` | `string` | No | Default LLM model id for this agent's sessions (e.g. `gpt-5.2[high]`), passed to acpx as `--model`. A session-level model (`/session new --model` or `/model`) overrides it. When omitted, the agent adapter's default is used |
+| `modelCandidates` | `string[]` | No | Optional model ids shown as suggestions in Relay Web. They are not adapter-verified. Changing `command`, `argv`, or the managed adapter pin invalidates the capability cache because the launch identity changed. Do not put secrets or the adapter command in this list |
+
+acpx 0.16.0 advertises models only after `sessions new` (ACP `session/new`, no user prompt). `control.agents.capabilities.get` reads an owned runtime, a cache for the same launch and workspace, or an ordinary session, and can run a transport probe that closes its reserved session. There is no separate model-inspect command. A probe that cannot authenticate or cannot enumerate models returns that state. It does not invent a Claude or Codex catalog.
 | `settingsPolicy` | `"provider-only"` \| `"isolated"` \| `"full-user"` | No | Claude user-settings policy. The implicit default is `"provider-only"`; other drivers ignore this field. See below |
 
 #### Windows raw command migration
@@ -810,6 +813,44 @@ File tree operations configuration for relay-web file browser.
 {
   "files": {
     "writeEnabled": true
+  }
+}
+```
+
+---
+
+## `conversations.router`
+
+Automatic collaboration for a Group Run. The section is optional. Omitted, or `enabled` other than `true`, leaves the feature off. Restart the daemon after changing it.
+
+| Field | Type | Required | Description |
+|------|------|------|------|
+| `enabled` | `boolean` | No | `true` runs the capability probe at startup. Any other value leaves automatic collaboration off |
+| `command` | `string` | When `enabled` is `true` | Executable. It must answer `--capabilities` and exit before any `--decide` process starts |
+| `authEnv` | `string` | No | Name of an environment variable. The variable must be non-empty before the probe runs. The value is not written to logs |
+
+`--capabilities` prints one JSON object. Every field below must be `true`.
+
+- `toolsDisabled`
+- `filesystemDisabled`
+- `terminalDisabled`
+- `permissionInteractionDisabled`
+- `messagingDisabled`
+- `orchestrationDisabled`
+- `structuredOutputOnly`
+
+A prompt that tells a model not to use tools is not this proof. The startup status is one of `disabled-by-config`, `unsupported`, `ready`, or `failed`. `unsupported` means the report did not prove the limit. `failed` means the command is missing, auth is empty, the probe failed, the probe timed out, or the report could not be read. `xacpx doctor` reports the same status. `ready` and the default off state pass. `unsupported` warns. `failed` fails the check.
+
+`control.conversations.router.get` returns that startup snapshot to Relay Web. Do not write a release note that says automatic collaboration is available. This repository does not ship a restricted router binary. A deployment is `ready` only after its own command proves the limit.
+
+### Example
+
+```json
+{
+  "conversations": {
+    "router": {
+      "enabled": false
+    }
   }
 }
 ```

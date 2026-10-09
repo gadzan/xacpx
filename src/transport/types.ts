@@ -265,6 +265,12 @@ export interface SessionTransport {
   setSessionEffort?(session: ResolvedSession, effort: string): Promise<void>;
   /** Read the current and adapter-advertised reasoning-effort values. Optional. */
   getSessionEffort?(session: ResolvedSession): Promise<SessionEffortState>;
+  /**
+   * Cold model advertisement. Implementations must not send a user prompt.
+   * Optional: a transport without a safe probe omits it and discovery reports
+   * `probe-unavailable`.
+   */
+  probeAgentCapabilities?(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult>;
   cancel(session: ResolvedSession): Promise<{ cancelled: boolean; message: string }>;
   hasSession(session: ResolvedSession): Promise<boolean>;
   listAgentSessions?(query: AgentSessionListQuery): Promise<AgentSessionListResult | undefined>;
@@ -318,3 +324,29 @@ export interface SessionEffortState {
   current?: string;
   available: string[];
 }
+
+/** Launch identity for a cold capability probe. No session alias is accepted. */
+export interface AgentCapabilityProbeRequest {
+  agent: string;
+  cwd: string;
+  driver?: string;
+  settingsPolicy?: ClaudeSettingsPolicy;
+  agentCommand?: string;
+  acpxAgent?: string;
+  rawCommand?: string;
+  agentArgv?: readonly string[];
+}
+
+export type AgentCapabilityProbeResult =
+  | {
+      ok: true;
+      models: Array<{ modelId: string; name: string }>;
+      currentModelId?: string;
+      efforts: string[];
+      currentEffort?: string;
+    }
+  | {
+      ok: false;
+      failure: "unauthenticated" | "timeout" | "transport" | "unsupported" | "cleanup";
+      message: string;
+    };

@@ -28,6 +28,7 @@ import { isProcessAlive } from "../daemon/daemon-files";
 import { runAgentSessionList } from "../transport/agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../transport/acpx-session-files";
+import { CAPABILITY_PROBE_BUDGET_MS, executeCapabilityProbe } from "../agents/capability-probe";
 import {
   CommandTimeoutError,
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
@@ -39,8 +40,7 @@ import type {
   EnsureSessionProgress,
   MissingOptionalDepErrorData,
 } from "../transport/acpx-bridge/acpx-bridge-protocol";
-import type { AgentSessionListResult, PromptMediaInput } from "../transport/types";
-import type { SessionEffortState } from "../transport/types";
+import type { AgentCapabilityProbeRequest, AgentCapabilityProbeResult, AgentSessionListResult, PromptMediaInput, SessionEffortState } from "../transport/types";
 import type { ToolEventMode } from "../transport/tool-event-mode.js";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import {
@@ -917,6 +917,30 @@ export class BridgeRuntime {
     }
   }
 
+  async probeAgentCapabilities(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult> {
+    const budgetMs = Math.min(this.sessionInitTimeoutMs(), CAPABILITY_PROBE_BUDGET_MS);
+    return executeCapabilityProbe({
+      run: async (stage, tail, timeoutMs) => {
+        const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs({
+          agent: input.agent,
+          cwd: input.cwd,
+          agentCommand: input.agentCommand,
+          acpxAgent: input.acpxAgent,
+          rawCommand: input.rawCommand,
+          ...(input.agentArgv ? { agentArgv: [...input.agentArgv] } : {}),
+        }, tail, {
+          format: "json",
+          authPolicy: "fail",
+        }));
+        return await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
+          stage,
+        }));
+      },
+      deleteRecord: (acpxRecordId) => deleteAcpxSessionFiles({ acpxRecordId }),
+    }, budgetMs);
+  }
+
   async getSessionEffort(input: {
     agent: string;
     agentCommand?: string;
@@ -1203,7 +1227,7 @@ export class BridgeRuntime {
       model?: string;
     },
     tail: string[],
-    options: { verbose?: boolean; format?: "quiet" | "json" } = {},
+    options: { verbose?: boolean; format?: "quiet" | "json"; authPolicy?: "skip" | "fail" } = {},
   ): string[] {
     return sharedBuildSessionArgs(
       {

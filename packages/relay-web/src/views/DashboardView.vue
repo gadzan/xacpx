@@ -642,7 +642,12 @@ onUnmounted(() => {
           <CenterTabStrip :session-key="currentKey" @close="(id) => currentKey && requestCloseTab(currentKey, id)" />
         </div>
         <div class="relative min-h-0 flex-1">
-          <DirectBotPane v-if="directBotsStore.isBotSelected" class="absolute inset-0 z-10" />
+          <DirectBotPane
+            v-if="directBotsStore.isBotSelected"
+            class="absolute inset-0 z-10"
+            @navigate-bot="onSelectBot"
+            @navigate-group="onSelectGroup"
+          />
           <GroupPane v-else-if="groupsStore.isGroupSelected" class="absolute inset-0 z-10" />
           <ChatPane class="absolute inset-0"
                     :inert="directBotsStore.isBotSelected || groupsStore.isGroupSelected || (!!currentKey && centerTabs.activeFor(currentKey) !== 'chat')"

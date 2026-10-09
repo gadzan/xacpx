@@ -60,9 +60,24 @@ function driverForBot(botId: string): string | undefined {
 function senderName(botId: string | undefined): string {
   if (!botId) return "Bot";
   const bot = botById.value[botId];
-  if (!bot) return "Bot";
+  if (!bot) return botId;
   if (bot.retired) return t("bot.removal.removedName", { name: bot.name });
   return bot.name;
+}
+
+const runningNames = computed(() => turns.value.map((turn) => senderName(turn.botId)).join(", "));
+
+function handoffResult(message: ConversationMessageDto): string | null {
+  const handoff = message.handoff;
+  if (!handoff) return null;
+  const later = groupsStore.messages.find((row) =>
+    row.role === "bot"
+    && row.senderBotId === handoff.to
+    && row.runId === message.runId
+    && row.seq > message.seq
+    && row.content.trim().length > 0,
+  );
+  return later?.content ?? null;
 }
 
 function turnStateLabel(state: MemberTurnSummaryDto["state"]): string {
@@ -319,6 +334,14 @@ async function handleLoadOlder(): Promise<void> {
           </div>
         </div>
 
+        <div v-else-if="m.handoff" data-test="group-handoff" class="mx-auto w-full max-w-xl rounded-xl border border-border bg-surface/70 px-3 py-2 text-left text-xs text-fg">
+          <p class="font-medium">{{ $t("group.handoff.relationship", { from: senderName(m.senderBotId), to: senderName(m.handoff.to) }) }}</p>
+          <p class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.task") }}: </span>{{ m.handoff.task }}</p>
+          <p v-if="m.handoff.expectedOutput" class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.expected") }}: </span>{{ m.handoff.expectedOutput }}</p>
+          <p v-if="handoffResult(m)" class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.result") }}: </span>{{ handoffResult(m) }}</p>
+          <p v-else class="mt-1 text-fg-muted">{{ $t("group.handoff.pending", { name: senderName(m.handoff.to) }) }}</p>
+          <p class="mt-1 text-fg-muted">{{ $t("group.handoff.hint") }}</p>
+        </div>
         <div v-else class="w-full py-1 text-center text-xs italic text-fg-muted">
           {{ m.content }}
         </div>
@@ -335,6 +358,7 @@ async function handleLoadOlder(): Promise<void> {
           <div class="flex items-center gap-2 text-xs font-semibold text-fg">
             <Users :size="13" class="text-accent" />
             <span>{{ $t("group.run.title") }}</span>
+            <span v-if="runningNames" data-test="group-running-members" class="font-normal text-fg-muted">{{ $t("group.run.runningMembers", { names: runningNames }) }}</span>
             <span
               class="rounded-full px-2 py-0.5 text-[10.5px] font-medium"
               :class="{
@@ -359,6 +383,28 @@ async function handleLoadOlder(): Promise<void> {
           </button>
         </div>
 
+        <p
+          v-if="run.maxMemberTurns !== undefined"
+          data-test="group-run-budget"
+          class="mt-2 text-[11px] text-fg-muted"
+        >
+          {{ $t("group.run.budget", { consumed: run.consumedMemberTurns ?? 0, max: run.maxMemberTurns }) }}
+        </p>
+        <div
+          v-if="run.state === 'waiting-human'"
+          data-test="group-waiting-human"
+          class="mt-2 rounded-lg border border-warning/30 bg-warning/10 px-2.5 py-2 text-[11px] leading-relaxed text-fg"
+        >
+          <p v-if="run.waitingQuestion" data-test="group-waiting-question">{{ run.waitingQuestion }}</p>
+          <p class="mt-1 text-fg-muted">{{ $t("group.run.waitingManual") }}</p>
+        </div>
+        <p
+          v-if="topic?.executionTarget?.isolation === 'shared-single-writer'"
+          data-test="group-write-queue"
+          class="mt-2 text-[11px] text-fg-muted"
+        >
+          {{ $t("group.run.writeQueue") }}
+        </p>
         <div class="mt-2 space-y-1.5">
           <div
             v-for="turn in turns"
@@ -397,6 +443,14 @@ async function handleLoadOlder(): Promise<void> {
               </span>
               <ChevronDown :size="12" class="shrink-0 text-fg-muted transition-transform" :class="isExpanded(turn.id) ? 'rotate-180' : ''" />
             </button>
+            <div v-if="turn.assignmentId || turn.task || turn.dependsOn?.length || turn.blockedReason" class="mt-1 space-y-0.5 pl-8 text-[11px] text-fg-muted">
+              <p v-if="turn.assignmentId" data-test="group-member-assignment">{{ $t("group.run.assignment") }} {{ turn.assignmentId }}</p>
+              <p v-if="turn.task" data-test="group-member-task">{{ turn.task }}</p>
+              <p v-if="turn.dependsOn?.length" data-test="group-member-depends">{{ $t("group.run.dependsOn") }} {{ turn.dependsOn.join(", ") }}</p>
+              <p v-if="turn.blockedReason" data-test="group-member-blocked" class="text-warning">
+                {{ turn.blockedReason === "human-authority-required" ? $t("group.run.blockedHumanRequired") : $t("group.run.blockedHumanUnknown") }}
+              </p>
+            </div>
 
             <div v-if="isExpanded(turn.id)" data-test="group-member-activity" class="mt-2">
               <div v-if="liveForMember(turn.id) && liveForMember(turn.id)!.parts.length > 0" class="rounded-lg border border-border bg-surface/50 p-2.5">

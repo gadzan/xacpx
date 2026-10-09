@@ -2,17 +2,18 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { X, Loader2, AlertCircle } from "lucide-vue-next";
-import type { BotDetailDto, BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import type { AgentCapabilityState, BotDetailDto, BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import { mergeEffortRefresh } from "../lib/capability-view";
+import ModelPicker from "./ModelPicker.vue";
 import BotRemovalDialog from "./BotRemovalDialog.vue";
 
 const props = defineProps<{
   instanceId: string;
   instanceName: string;
   bot?: BotDetailDto | BotSummaryDto;
-  advertisedEfforts?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -85,20 +86,44 @@ const storedEnabled = computed(() =>
 const submitting = ref(false);
 const removalOpen = ref(false);
 const errorMessage = ref<string | null>(null);
+const capability = ref<{ status: "loading" } | AgentCapabilityState>({ status: "loading" });
+const carriedEfforts = ref<Array<{ id: string; name: string }>>([]);
+let lastSettledCapability: AgentCapabilityState | undefined;
+let capabilitySeq = 0;
 
+function normalizedModel(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.toLowerCase() === "default") return undefined;
+  return trimmed;
+}
 
-// Effort options: when advertised by the adapter capability source, present only
-// the advertised options (preserving any pre-existing custom effort on the Bot).
-// If no advertised choices are available (e.g. before runtime exists), provide
-// an open text input with datalist suggestions rather than an inaccurate closed enum.
-const hasAdvertisedEfforts = computed(() => Array.isArray(props.advertisedEfforts) && props.advertisedEfforts.length > 0);
-const availableEffortOptions = computed(() => {
-  const list = [...(props.advertisedEfforts ?? [])];
-  if (effort.value && !list.includes(effort.value)) {
-    list.push(effort.value);
+async function loadCapabilities(probe = false): Promise<void> {
+  const seq = ++capabilitySeq;
+  if (!agent.value || !workspace.value) return;
+  capability.value = { status: "loading" };
+  const next = await instancesStore.getAgentCapabilities(props.instanceId, {
+    agent: agent.value,
+    workspace: workspace.value,
+    ...(props.bot ? { botId: props.bot.id } : {}),
+    ...(probe ? { probe: true } : {}),
+  });
+  if (seq !== capabilitySeq) return;
+  const merged = mergeEffortRefresh(lastSettledCapability, next);
+  if (merged.state.status !== "error") lastSettledCapability = merged.state;
+  capability.value = merged.state;
+  if (merged.efforts?.status === "known") {
+    carriedEfforts.value = merged.efforts.options.map((option) => ({ id: option.id, name: option.name }));
   }
-  return list;
-});
+}
+
+function onModelPick(value: string): void {
+  model.value = value;
+  modelDirty.value = true;
+}
+function onEffortPick(value: string): void {
+  effort.value = value;
+  effortDirty.value = true;
+}
 // Available agents from instance: only configured agent NAMES are valid Bot
 // identities. The driver catalog lists installable drivers, but submitting an
 // unconfigured driver fails backend validation (agent_not_registered), so it
@@ -191,19 +216,28 @@ const openTimeDetail = cachedDetail();
 if (openTimeDetail) applyDetail(openTimeDetail);
 
 onMounted(() => {
-  const generation = ++dialogGeneration;
-  if (!detailHydrated.value) void hydrateDetail(generation);
-  void instancesStore.loadFormOptions(props.instanceId)
-    .catch(() => {})
-    .then(() => {
-      if (generation !== dialogGeneration) return;
-      if (!agent.value && availableAgents.value.length > 0) {
-        agent.value = availableAgents.value[0]?.name ?? "";
-      }
-      if (!workspace.value && availableWorkspaces.value.length > 0) {
-        workspace.value = availableWorkspaces.value[0]?.name ?? "";
-      }
-    });
+  void (async () => {
+    const generation = ++dialogGeneration;
+    try {
+      await instancesStore.loadFormOptions(props.instanceId);
+    } catch {
+      // Ignore options load error; validation surfaces missing agent/workspace.
+    }
+    if (generation !== dialogGeneration) return;
+    if (!detailHydrated.value) await hydrateDetail(generation);
+    if (generation !== dialogGeneration) return;
+    syncFromStore();
+    if (!agent.value && availableAgents.value.length > 0) {
+      agent.value = availableAgents.value[0]?.name ?? "";
+    }
+    if (!workspace.value && availableWorkspaces.value.length > 0) {
+      workspace.value = availableWorkspaces.value[0]?.name ?? "";
+    }
+    await loadCapabilities(false);
+  })();
+});
+watch([agent, workspace, () => props.bot?.id], () => {
+  void loadCapabilities(false);
 });
 
 function retryHydrate(): void {
@@ -269,7 +303,7 @@ async function submit(): Promise<void> {
       if (instructionsDirty.value) patch.instructions = instructions.value.trim() || null;
       if (agentDirty.value) patch.agent = agent.value;
       if (workspaceDirty.value) patch.workspace = workspace.value;
-      if (modelDirty.value) patch.model = model.value.trim() || null;
+      if (modelDirty.value) patch.model = normalizedModel(model.value) ?? null;
       if (effortDirty.value) patch.effort = effort.value.trim() || null;
       if (enabledDirty.value) patch.enabled = enabled.value;
       const updated = await directBotsStore.updateBot(props.instanceId, props.bot.id, patch);
@@ -283,7 +317,7 @@ async function submit(): Promise<void> {
         avatar: avatar.value.trim() || undefined,
         role: role.value.trim() || undefined,
         instructions: instructions.value.trim() || undefined,
-        model: model.value.trim() || undefined,
+        model: normalizedModel(model.value),
         effort: effort.value.trim() || undefined,
         enabled: enabled.value,
       });
@@ -445,60 +479,18 @@ async function submit(): Promise<void> {
           </p>
         </div>
 
-        <!-- Advanced: Model & Effort -->
-        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <!-- Model -->
-          <div>
-            <label for="bot-model" class="block text-xs font-medium text-fg-muted mb-1.5">
-              {{ $t("bot.fields.model") }}
-            </label>
-            <input
-              id="bot-model"
-              v-model="model"
-              @input="modelDirty = true"
-              type="text"
-              :placeholder="$t('bot.fields.modelPlaceholder')"
-              class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
-            />
-          </div>
-
-          <!-- Effort -->
-          <div>
-            <label for="bot-effort" class="block text-xs font-medium text-fg-muted mb-1.5">
-              {{ $t("bot.fields.effort") }}
-            </label>
-            <select
-              v-if="hasAdvertisedEfforts"
-              id="bot-effort"
-              v-model="effort"
-              @change="effortDirty = true"
-              @input="effortDirty = true"
-              class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
-            >
-              <option value="">{{ $t("bot.fields.effortDefault") }}</option>
-              <option v-for="opt in availableEffortOptions" :key="opt" :value="opt">{{ opt }}</option>
-            </select>
-            <template v-else>
-              <input
-                id="bot-effort"
-                v-model="effort"
-                @change="effortDirty = true"
-                @input="effortDirty = true"
-                list="bot-effort-options"
-                type="text"
-                :placeholder="$t('bot.fields.effortDefault')"
-                class="w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none transition-colors focus:border-accent"
-              />
-              <datalist id="bot-effort-options">
-                <option value="low" />
-                <option value="medium" />
-                <option value="high" />
-                <option value="xhigh" />
-                <option value="max" />
-              </datalist>
-            </template>
-          </div>
-        </div>
+        <ModelPicker
+          audience="bot"
+          :state="capability"
+          :model="model"
+          :effort="effort"
+          :carried-efforts="carriedEfforts"
+          model-test-id="bot-model"
+          list-test-id="bot-model-list"
+          @update:model="onModelPick"
+          @update:effort="onEffortPick"
+          @fetch="loadCapabilities(true)"
+        />
         <!-- Avatar & Status -->
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 items-center">
           <div>

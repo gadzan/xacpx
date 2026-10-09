@@ -20,6 +20,11 @@ Group PR9：Conversation history/message event 透传公开 `handoff` envelope�
 - 会话级模型与推理强度分别通过 `control.session.model.get/set` 和
   `control.session.effort.get/set` 暴露。Hub 会为这些 RPC 覆写可信的 `chatKey`；effort 的配置 id
   与可选值由实例侧 adapter 广告，实例 transport 会拒绝未广告值，Hub/Web 不硬编码上游实现细节。
+- `control.conversations.router.get` 是 instance-scoped，不进入 `CHAT_SCOPED_TYPES`。载荷必须是空对象。连接器把 daemon 启动时的 Router 可用性原样返回。状态是 `ready`、`disabled-by-config`、`unsupported` 或 `failed`。旧连接器的 `unknown-type` 在 Web 上显示为不可选，不会在发送时才变成 `automatic_unsupported`。
+- `control.agents.capabilities.get` 是 instance-scoped，不进入 `CHAT_SCOPED_TYPES`。
+  载荷只有已配置 agent、workspace、可选 Bot id 和 `probe`。带 `sessionAlias` 的载荷在连接器被拒绝。
+  冷探测可能接近 session init 的耗时，因此连接器不对这个 RPC 套 60 秒提前超时，仍受 Hub 120 秒预算约束。
+  旧连接器的 `unknown-type` 在 Web 上显示为不可用，不会变成空模型列表。
 - 安全：登录令牌（login token）以 sha256 哈希落盘（高熵随机令牌，无需 scrypt；scrypt 密码哈希已随密码登录一并移除）；所有 token/凭证哈希存储；登录限流按客户端 IP + 全局失败上限（有界，见阶段五）；
   凭证比较定时安全（`hashEquals`，见 src/auth.ts）；RPC 代理只放行
   control.* 且服务端覆写 chatKey(`relay:<accountId>`)/senderId/isOwner。
@@ -333,6 +338,11 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 - 带 `conversation` 的 live Control event 仍携带 `sessionAlias`（旧客户端兼容）。那是
   **legacy transport plumbing**，不得再用于产品 liveness / ownership / routing；产品身份是
   `conversationId` / `topicId` / `botId` / `runId` / `memberTurnId`。
+- 带 `conversation.botId` 的 `agent-commands` 不进入 ordinary `commands` / `sessionCommands`。
+  connector 把它记在 `conversationCommands`（`conversationId × topicId × botId`），随
+  `instance.state.sync` 的可选字段恢复。Hub 用同一字段填 Web `state-snapshot.conversationCommands`
+  和 `GET /api/active-turns` 的 `conversationCommands`。字段缺失表示旧 connector，Hub 保留已有产品缓存。
+  实例离线时清空该实例的产品缓存。隐藏 alias 不出现在这条快照里。
 - `PendingFinishedTurn` 优先从 running `MirrorTurn` 拷贝 `conversation`；若 mirror 没看到
   `turn-started`（例如 connector 在 core turn 中途重启），则回退到 `turn-finished` 事件上的
   `event.conversation`。finishedOffline 快照同样带上这五个 id，hub validator / accumulator /

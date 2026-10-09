@@ -172,6 +172,14 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
 - **取消运行中回合**：可从聊天面板取消在途回合（`control.prompt.cancel`）。
 - **会话创建/删除 UI**：可从左栏实例树创建/删除逻辑会话（补齐 §4.5）。
 
+## 模型选择（`ModelPicker.vue`）
+
+Bot 对话框和新建 Session 对话框共用 `ModelPicker`。它读取 `control.agents.capabilities.get`，状态为 loading、ready、unsupported、needs-setup 或 error。默认选项和自定义 id 始终可以填写。配置里的 `modelCandidates` 标成建议，不显示成适配器结果。选中的 id 和实际生效的 id 分开显示。无效的显式 id 在运行时退回默认时显示为未生效。
+
+Bot 的 model / effort 在保存后作用于之后接受的 Run。已有 Session 作曲器仍用 `control.session.model.set` 做即时切换，不走这条能力 RPC。
+
+effort 随模型结果刷新。刷新失败时保留上一次已经拿到的合法 effort 列表。
+
 ## 会话创建对话框（`NewSessionDialog.vue`）
 
 - 点击实例树 `+ new session` 打开一个弹窗（取代原先简陋的内联三输入框）。打开时经
@@ -315,6 +323,27 @@ relay hub 的 Web 看板（阶段三 + 阶段四 + 阶段五）：登录后跨�
   仅权威 `not-a-git-repo` 清空。实时 turn、plan、usage、slash commands、queue 已由 WebSocket 按会话
   常驻内存，不重复落此缓存；文件正文、完整 diff 与终端状态不缓存，避免把易陈旧、可参与写操作的数据
   伪装成当前权威状态。
+
+## Conversation slash 与 @
+
+普通 Session composer 的候选菜单、光标替换、方向键、Enter/Tab、Escape 和 IME 组合在
+`src/lib/composer-completion.ts`。Direct 与 Group 各自保留发送、取消、幂等和断线恢复。
+
+Conversation 的 slash 列表来自现有 `agent-commands` 事件，按 `conversationId × topicId × botId`
+存在 `stores/conversation-commands.ts`。重连时 `state-snapshot.conversationCommands`（以及
+`/api/active-turns` 的同名字段）按实例整表替换。换 Topic 或换 Bot 读到的是另一行，不会带上别的 Topic
+的命令。菜单只显示该 Bot 运行时广告的命令，不显示 xacpx 管理命令目录。Group 在未明确选中一名成员时
+只提示先选择成员，Enter/Tab 不发送。
+
+Group `@` 的权威是 `{ botId, displayToken }`（`src/lib/group-mention.ts`）。菜单展示角色、Lead 和
+启用状态。同名成员靠 bot id 区分。无法解析、重名、停用或已移除的手工 `@` 会提示，并清掉由 mention
+建立的目标，不沿用上一个目标。Direct 页的导航只打开另一个 Bot 的 Direct，或打开已包含当前 Bot 的 Group。
+
+`group_send` 的公开交接在 `GroupTranscript` 里显示关系、任务、期望、已有结果和一句可操作提示。
+Run 卡片列出实际执行的成员。`shared-single-writer` 的 Topic 注明写入任务会排队。
+确定性拒绝保留草稿。不确定结果仍复用冻结的 `requestId` 和 target。
+
+Group 作曲器里的“自动协作”来自 `control.conversations.router.get`。只有 `ready` 可以选择。`disabled-by-config`、`unsupported` 和 `failed` 显示原因和配置路径 `conversations.router`，按钮不可选。读取尚未返回时也不可选。Run 卡片显示预算、指派、依赖、`waitingQuestion` 和 `blockedReason`。`waiting-human` 保持等待，界面不会把它改成 running。停止会结束这次 Run。停止之后选择一名成员再发送，那是一次新的请求。此版本没有“由我启动这一步”。
 
 hub 侧配套：tool step 全字段 32K 字符写入截断（见 docs/relay-module.md 的 `TOOL_DETAIL_CAP`）。
 
@@ -709,7 +738,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 ### 导航与 Bot 管理
 
 - **实例侧栏模式切换**：在左栏实例卡片中支持 `Sessions | Bots` 模式切换；切到 Bots 时展示 Bot 列表，包含名称、角色、agent、workspace 与启用状态；
-- **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd），agent/workspace 复用实例已有目录与工作区配置。旧的 `control.bots.delete` 仍只删除没有依赖的 Bot。
+- **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd）。model / effort 使用 `ModelPicker` 和 `control.agents.capabilities.get`，不再使用写死的 effort 列表。agent/workspace 复用实例已有目录与工作区配置。编辑时按 `profileRevision` 回填 instructions，只提交用户改过的字段。旧的 `control.bots.delete` 仍只删除没有依赖的 Bot。
 - **受控移除（`BotRemovalDialog.vue`）**：侧栏、Direct 页面和 Bot 对话框都能打开。先调用 `control.bots.remove.preview`，再由用户确认 `control.bots.remove`。文案说明群组历史保留，私聊历史是单独勾选。两人组成员关系会挡住确认，不会自动删群或踢掉另一名成员。清理失败或结果不确定时用同一个 `requestId` 重试。`lifecycle.operations.get` 可在刷新后查看这次清理。已移除 Bot 在列表和群组记录里显示为 removed bot，composer 不再发送。
 
 ### 禁用 Bot 的整理与恢复

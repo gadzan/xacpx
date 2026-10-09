@@ -1,19 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
-import type {
-  BotDetailDto,
-  BotSummaryDto,
-  ConversationMessageDto,
-  ConversationRunDto,
-  MemberTurnSummaryDto,
-  TopicSummaryDto,
-  ToolStepDto,
-  TurnPartDto,
+import {
+  needsSetupCapability,
+  readyCapability,
+  type BotDetailDto,
+  type BotSummaryDto,
+  type ConversationMessageDto,
+  type ConversationRunDto,
+  type MemberTurnSummaryDto,
+  type TopicSummaryDto,
+  type ToolStepDto,
+  type TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
 import { useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
+import { useGroupsStore } from "../stores/groups";
 import { useChatStore } from "../stores/chat";
 import BotDialog from "../components/BotDialog.vue";
 import ConversationPromptInput from "../components/ConversationPromptInput.vue";
@@ -45,6 +48,14 @@ describe("Direct Bot Components", () => {
   });
 
   describe("BotDialog.vue", () => {
+    beforeEach(() => {
+      vi.spyOn(useInstancesStore(), "getAgentCapabilities").mockResolvedValue(needsSetupCapability(
+        { code: "discovery-available", message: "no saved model list" },
+        "Fetch the model list.",
+        { fetchedAt: "2026-10-09T00:00:00.000Z" },
+      ));
+    });
+
     it("renders create bot dialog with required fields and NO cwd input", async () => {
       const instances = useInstancesStore();
       instances.instances = [
@@ -77,8 +88,8 @@ describe("Direct Bot Components", () => {
       expect(wrapper.find("#bot-workspace").exists()).toBe(true);
       expect(wrapper.find("#bot-role").exists()).toBe(true);
       expect(wrapper.find("#bot-instructions").exists()).toBe(true);
-      expect(wrapper.find("#bot-model").exists()).toBe(true);
-      expect(wrapper.find("#bot-effort").exists()).toBe(true);
+      expect(wrapper.find('[data-test="bot-model"]').exists()).toBe(true);
+      expect(wrapper.find('[data-test="model-picker-effort"]').exists()).toBe(true);
       expect(wrapper.find("#bot-avatar").exists()).toBe(true);
 
       // Red line check: NEVER add cwd
@@ -100,12 +111,23 @@ describe("Direct Bot Components", () => {
         } as never,
       ];
 
-      // Mount with advertised efforts: ["medium", "high", "xhigh"]
+      vi.spyOn(useInstancesStore(), "getAgentCapabilities").mockResolvedValue(readyCapability("runtime", [
+        { modelId: "gpt-real" },
+      ], {
+        fetchedAt: "2026-10-09T00:00:00.000Z",
+        efforts: {
+          status: "known",
+          options: [
+            { id: "medium", name: "medium", source: "adapter" },
+            { id: "high", name: "high", source: "adapter" },
+            { id: "xhigh", name: "xhigh", source: "adapter" },
+          ],
+        },
+      }));
       const wrapper = mount(BotDialog, {
         props: {
           instanceId: "i1",
           instanceName: "Local",
-          advertisedEfforts: ["medium", "high", "xhigh"],
         },
         global: {
           plugins: [i18n],
@@ -114,7 +136,7 @@ describe("Direct Bot Components", () => {
 
       await flushPromises();
 
-      const effortSelect = wrapper.find("select#bot-effort");
+      const effortSelect = wrapper.find('[data-test="model-picker-effort"]');
       expect(effortSelect.exists()).toBe(true);
       const options = effortSelect.findAll("option").map((o) => o.attributes("value"));
       // Must include Default, medium, high, and xhigh
@@ -150,13 +172,10 @@ describe("Direct Bot Components", () => {
 
       await flushPromises();
 
-      const effortInput = wrapper.find("input#bot-effort");
-      expect(effortInput.exists()).toBe(true);
-      expect(effortInput.attributes("list")).toBe("bot-effort-options");
-      const datalist = wrapper.find("datalist#bot-effort-options");
-      expect(datalist.exists()).toBe(true);
-      // Not a rigid select locking the user to 4 values
-      expect(wrapper.find("select#bot-effort").exists()).toBe(false);
+      const effortInput = wrapper.find('[data-test="model-picker-effort"]');
+      expect(effortInput.element.tagName).toBe("INPUT");
+      expect(wrapper.find("datalist#bot-effort-options").exists()).toBe(false);
+      expect(wrapper.text()).not.toContain("max");
     });
 
     it("lists only configured agent names, never raw catalog drivers", async () => {
@@ -1848,6 +1867,29 @@ describe("Direct Bot Components", () => {
 
       await topicRows[1]?.find("button").trigger("click");
       expect(switchTopicSpy).toHaveBeenCalledWith("t2");
+    });
+
+    it("navigates to another Bot or a Group without treating @ as a handoff", async () => {
+      const directBots = useDirectBotsStore();
+      const groups = useGroupsStore();
+      directBots.instanceId = "i1";
+      directBots.selectedBotId = "b1";
+      directBots.activeConversationId = "c1";
+      directBots.activeTopicId = "t1";
+      directBots.botsByInstance["i1"] = [
+        { id: "b1", name: "ReviewerBot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        { id: "b2", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+      ];
+      groups.groupsByInstance["i1"] = [
+        { id: "g1", kind: "group", title: "Release", botIds: ["b1", "b2"], createdAt: "now", updatedAt: "now" },
+      ];
+      const wrapper = mount(DirectBotPane, { global: { plugins: [i18n] } });
+      await wrapper.find('[data-test="direct-nav-button"]').trigger("click");
+      await wrapper.find('[data-test="direct-nav-bot"]').trigger("click");
+      expect(wrapper.emitted("navigateBot")?.[0]).toEqual(["i1", "b2"]);
+      await wrapper.find('[data-test="direct-nav-button"]').trigger("click");
+      await wrapper.find('[data-test="direct-nav-group"]').trigger("click");
+      expect(wrapper.emitted("navigateGroup")?.[0]).toEqual(["i1", "g1"]);
     });
     it("opens the New Topic dialog with focus, traps Tab, and restores focus on Escape", async () => {
       const instances = useInstancesStore();

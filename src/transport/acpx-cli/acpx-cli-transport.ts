@@ -12,6 +12,8 @@ import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import { getLocale } from "../../i18n";
 import type {
   AgentCommand,
+  AgentCapabilityProbeRequest,
+  AgentCapabilityProbeResult,
   AgentSessionListQuery,
   AgentSessionListResult,
   EnsureSessionProgress,
@@ -46,6 +48,7 @@ import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js"
 import { runAgentSessionList } from "../agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../acpx-session-files";
+import { CAPABILITY_PROBE_BUDGET_MS, executeCapabilityProbe } from "../../agents/capability-probe";
 import { parseSessionEffortRecord, requireAdvertisedSessionEffort, sessionEffortToReapply } from "../session-effort";
 import {
   CommandTimeoutError,
@@ -604,6 +607,32 @@ export class AcpxCliTransport implements SessionTransport {
     } catch {
       return { available: [] };
     }
+  }
+
+  async probeAgentCapabilities(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult> {
+    const budgetMs = Math.min(this.sessionInitTimeoutMs, CAPABILITY_PROBE_BUDGET_MS);
+    return executeCapabilityProbe({
+      run: (stage, tail, timeoutMs) => this.runCommandWithTimeout(
+        this.runCommand,
+        sharedBuildSessionArgs({
+          agent: input.agent,
+          agentCommand: input.agentCommand,
+          acpxAgent: input.acpxAgent,
+          rawCommand: input.rawCommand,
+          cwd: input.cwd,
+          permission: this.permissionInput(),
+        }, tail, { format: "json", authPolicy: "fail" }),
+        {
+          timeoutMs,
+          stage,
+          env: this.effectiveSpawnEnvironment({
+            driver: input.driver,
+            settingsPolicy: input.settingsPolicy,
+          }),
+        },
+      ),
+      deleteRecord: (acpxRecordId) => deleteAcpxSessionFiles({ acpxRecordId }),
+    }, budgetMs);
   }
 
   async getSessionEffort(session: ResolvedSession): Promise<SessionEffortState> {

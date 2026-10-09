@@ -1,4 +1,4 @@
-import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, InteractionWithdrawDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotSummaryDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationTargetDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, GroupDetailDto, GroupSummaryDto, GroupTopicCreateTargetDto, TopicImpactDto, TopicSummaryDto } from "./dtos.js";
+import type { AgentAddressDto, AgentCatalogEntryDto, AgentCommandDto, AgentDto, AgentMessageCompletionMode, AgentMessageCompletionStatus, ControlEventDto, FsDiffFileDto, FsEntryDto, FsSearchHitDto, InteractionRequestDto, InteractionResponseDto, InteractionWithdrawDto, OrchestrationTaskDto, PublishedAgentEndpointDto, ScheduledOriginDto, ScheduledTaskDto, SessionDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WorkspaceDto, BotDetailDto, BotRemovalPreviewDto, BotSummaryDto, LifecycleOperationDto, ConversationDetailDto, ConversationHistoryResponseDto, ConversationPromptResponseDto, ConversationTargetDto, ConversationRunDetailDto, ConversationRunDto, ConversationSummaryDto, ConversationTurnCorrelationDto, GroupDetailDto, GroupSummaryDto, GroupTopicCreateTargetDto, TopicImpactDto, TopicSummaryDto } from "./dtos.js";
 export declare const MSG: {
     readonly instanceRegister: "instance.register";
     readonly instanceAuth: "instance.auth";
@@ -60,6 +60,8 @@ export declare const MSG: {
     readonly gitWorktreeCreate: "control.git.worktree.create";
     readonly upload: "control.upload";
     readonly sessionModelGet: "control.session.model.get";
+    readonly agentsCapabilitiesGet: "control.agents.capabilities.get";
+    readonly conversationRouterGet: "control.conversations.router.get";
     readonly sessionModelSet: "control.session.model.set";
     readonly sessionEffortGet: "control.session.effort.get";
     readonly sessionEffortSet: "control.session.effort.set";
@@ -92,6 +94,9 @@ export declare const MSG: {
     readonly botsCreate: "control.bots.create";
     readonly botsUpdate: "control.bots.update";
     readonly botsDelete: "control.bots.delete";
+    readonly botsRemovePreview: "control.bots.remove.preview";
+    readonly botsRemove: "control.bots.remove";
+    readonly lifecycleOperationsGet: "control.lifecycle.operations.get";
     readonly conversationsList: "control.conversations.list";
     readonly conversationsGet: "control.conversations.get";
     readonly topicsList: "control.topics.list";
@@ -244,6 +249,17 @@ export interface InstanceStateSyncPayload {
     }>;
     commands: Array<{
         sessionAlias: string;
+        commands: AgentCommandDto[];
+    }>;
+    /**
+     * Adapter slash advertisements for product-owned Bot runtimes.
+     * Keyed by conversation, topic, and bot. Absent on older connectors.
+     * These rows are not ordinary Session commands and must not be keyed by alias.
+     */
+    conversationCommands?: Array<{
+        conversationId: string;
+        topicId: string;
+        botId: string;
         commands: AgentCommandDto[];
     }>;
     /** Turns that finished and are still awaiting the hub's persistence ack — this
@@ -441,6 +457,28 @@ export interface BotsUpdateResult {
 }
 export interface BotsDeletePayload {
     id: string;
+}
+export interface BotsRemovePreviewPayload {
+    id: string;
+}
+export interface BotsRemovePreviewResult {
+    impact: BotRemovalPreviewDto;
+}
+export interface BotsRemovePayload {
+    id: string;
+    requestId: string;
+    previewRevision: string;
+    clearDirectHistory?: boolean;
+    releaseDirectBindings?: boolean;
+}
+export interface BotsRemoveResult {
+    operation: LifecycleOperationDto;
+}
+export interface LifecycleOperationsGetPayload {
+    id: string;
+}
+export interface LifecycleOperationsGetResult {
+    operation: LifecycleOperationDto;
 }
 export interface ConversationsListPayload {
     botId?: string;
@@ -994,6 +1032,17 @@ export interface FsWriteResult {
 export interface SessionModelGetPayload {
     chatKey: string;
     sessionAlias: string;
+}
+/** Configured agent and workspace, plus an optional product bot id. No session alias. */
+export interface AgentsCapabilitiesGetPayload {
+    agent: string;
+    workspace: string;
+    botId?: string;
+    probe?: boolean;
+}
+/** Empty read. The instance returns its startup router availability. */
+export interface ConversationRouterGetPayload {
+    readonly __empty?: never;
 }
 export interface SessionModelSetPayload {
     chatKey: string;
