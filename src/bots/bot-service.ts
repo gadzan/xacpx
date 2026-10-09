@@ -958,7 +958,17 @@ export class BotService {
   }
 
   private blockingRemovalPhase(botId: string): "deleting" | "indeterminate" | "retired" | undefined {
-    const sqlite = this.conversationWork?.botRemovalPhase?.(botId);
+    let sqlite: "deleting" | "indeterminate" | "retired" | undefined;
+    try {
+      sqlite = this.conversationWork?.botRemovalPhase?.(botId);
+    } catch (error) {
+      // A closed store belongs to a previous process handle. The open store
+      // still rejects the claim. This read must not abort that later dispatch.
+      const code = error instanceof Error && "code" in error ? String(error.code) : "";
+      if (code !== "store_closed") {
+        throw error;
+      }
+    }
     if (sqlite) {
       return sqlite;
     }
