@@ -329,12 +329,12 @@ async function confirmDelete(): Promise<void> {
       <form class="thin-scroll flex-1 space-y-4 overflow-y-auto px-5 py-4" @submit.prevent="submit">
         <div v-if="isDeleting"
              data-test="group-dialog-deleting"
-             class="flex items-start justify-between gap-2.5 rounded-lg border border-warning/30 bg-warning/10 p-3 text-xs text-warning">
+             class="flex items-start justify-between gap-2.5 rounded-lg border border-warn/30 bg-warn/10 p-3 text-xs text-warn">
           <div class="flex-1 leading-relaxed">{{ $t("group.manage.deletingNotice") }}</div>
           <button type="button"
                   data-test="group-dialog-retry-delete"
                   :disabled="deletingNow"
-                  class="flex shrink-0 items-center gap-1 rounded bg-warning/20 px-2 py-0.5 font-medium transition-colors hover:bg-warning/30 disabled:opacity-50"
+                  class="flex shrink-0 items-center gap-1 rounded bg-warn/20 px-2 py-0.5 font-medium transition-colors hover:bg-warn/30 disabled:opacity-50"
                   @click="confirmDelete">
             <Loader2 v-if="deletingNow" :size="12" class="animate-spin" />
             <span>{{ $t("group.manage.retryDelete") }}</span>
@@ -508,7 +508,7 @@ async function confirmDelete(): Promise<void> {
                 {{ botLabel(id) }}{{ botsById.get(id)?.enabled === false ? ` (${$t("bot.status.disabled")})` : "" }}
               </option>
             </select>
-            <p v-if="leadReassigned" data-test="group-dialog-lead-reassigned" class="mt-1 text-[11px] text-warning">
+            <p v-if="leadReassigned" data-test="group-dialog-lead-reassigned" class="mt-1 text-[11px] text-warn">
               {{ leadReassigned.next
                 ? $t("group.manage.leadReassigned", { previous: botLabel(leadReassigned.previous), next: botLabel(leadReassigned.next) })
                 : $t("group.manage.leadCleared", { previous: botLabel(leadReassigned.previous) }) }}

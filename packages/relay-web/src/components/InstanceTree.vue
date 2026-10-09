@@ -788,7 +788,7 @@ const rowSwipes = computed(() => {
               </div>
               <span v-if="g.lifecycle === 'deleting'"
                     data-test="group-deleting-badge"
-                    class="shrink-0 rounded bg-warning/15 px-1.5 py-px text-[10px] font-medium text-warning">
+                    class="shrink-0 rounded bg-warn/15 px-1.5 py-px text-[10px] font-medium text-warn">
                 {{ $t("group.list.deleting") }}
               </span>
             </button>
