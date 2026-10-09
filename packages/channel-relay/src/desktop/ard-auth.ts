@@ -11,12 +11,10 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 
 import {
+  classifySecurityTypes,
   clientVersionForBanner,
   parseBanner,
   RFB_SECURITY_ARD,
-  RFB_SECURITY_INVALID,
-  RFB_SECURITY_TIGHT,
-  RFB_SECURITY_VNC_AUTH,
 } from "./rfb-probe.js";
 
 /**
@@ -131,7 +129,8 @@ export async function preauthArd(
       };
     }
     const types = [...await reader.take(count)];
-    if (!securityListIsArd(types)) return refuse("failed", "RFB security changed since the probe");
+    const verdict = classifySecurityTypes(types, banner.version);
+    if (!(verdict.ok && verdict.security === "ard")) return refuse("failed", "RFB security changed since the probe");
     tcp.write(Uint8Array.of(RFB_SECURITY_ARD));
 
     phase = "challenge";
@@ -173,14 +172,6 @@ export async function preauthArd(
     }
     throw err;
   }
-}
-
-/** Type 30 present, and neither VncAuth nor Tight won the same list the probe uses. */
-function securityListIsArd(types: readonly number[]): boolean {
-  if (types.includes(RFB_SECURITY_INVALID)) return false;
-  if (types.includes(RFB_SECURITY_VNC_AUTH)) return false;
-  if (types.includes(RFB_SECURITY_TIGHT)) return false;
-  return types.includes(RFB_SECURITY_ARD);
 }
 
 interface ArdChallenge {

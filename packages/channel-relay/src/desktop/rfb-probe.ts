@@ -5,6 +5,8 @@
 // but never sends credentials; noVNC completes VncAuth end-to-end over the tunnel.
 import net from "node:net";
 
+import type { DesktopSecurityKind } from "@ganglion/xacpx-relay-protocol";
+
 export const RFB_LOOPBACK_HOST = "127.0.0.1";
 export const RFB_SECURITY_INVALID = 0;
 export const RFB_SECURITY_NONE = 1;
@@ -23,7 +25,7 @@ export const RFB_SECURITY_ARD = 30;
 export const RFB_SECURITY_MSRDH = 34;
 
 export type RfbProbeVerdict =
-  | { ok: true; version: string; security: "vnc-auth" }
+  | { ok: true; version: string; security: DesktopSecurityKind }
   | { ok: false; code: RfbProbeErrorCode; detail: string };
 
 export type RfbProbeErrorCode =
@@ -149,7 +151,8 @@ function evaluateSecurityTypes(
   return classifySecurityTypes([securityType], banner.version);
 }
 
-function classifySecurityTypes(types: readonly number[], version: string): RfbProbeVerdict {
+/** Probe order: invalid, then type 2, then Tight-only, then Apple Remote Desktop, then the rest. */
+export function classifySecurityTypes(types: readonly number[], version: string): RfbProbeVerdict {
   if (types.includes(RFB_SECURITY_INVALID)) {
     return { ok: false, code: "desktop-rfb-unavailable", detail: "RFB server reported an invalid security type" };
   }
@@ -169,7 +172,7 @@ function classifySecurityTypes(types: readonly number[], version: string): RfbPr
     return { ok: false, code: "desktop-auth-unsupported", detail: "Tight-only endpoints are rejected in v1: sub-auth cannot prove VNC authentication before the tunnel opens" };
   }
   if (types.includes(RFB_SECURITY_ARD)) {
-    return { ok: false, code: "desktop-auth-unsupported", detail: "Apple Remote Desktop auth needs Phase B (connector pre-auth)" };
+    return { ok: true, version, security: "ard" };
   }
   if (types.includes(RFB_SECURITY_VENCRYPT) || types.includes(RFB_SECURITY_MSRDH) || types.includes(RFB_SECURITY_TLS)) {
     return { ok: false, code: "desktop-auth-unsupported", detail: "VeNCrypt/TLS auth is not supported in v1" };

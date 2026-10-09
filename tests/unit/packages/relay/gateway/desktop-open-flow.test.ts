@@ -193,7 +193,7 @@ test("desktop-open fails closed without capability, offline, busy, or bad prepar
     { setup: busyInstance, code: "desktop-busy", message: "another desktop viewer is active", reserveHappened: false },
     { setup: busyAccount, code: "desktop-busy", message: "too many active desktop viewers on this account", reserveHappened: false },
     { setup: desktopDeps({ prepareResult: { error: { code: "desktop-rfb-unavailable", message: "no VNC" } } }), code: "desktop-rfb-unavailable", message: "no VNC", reserveHappened: true },
-    { setup: desktopDeps({ prepareResult: { streamId: "s-1", security: "ard" } }), code: "desktop-auth-unsupported", message: "Apple Remote Desktop auth needs Phase B", reserveHappened: true },
+    { setup: desktopDeps({ prepareResult: { streamId: "s-1", security: "ard" } }), code: "desktop-protocol-error", message: "ARD stream without a credential", reserveHappened: true },
     { setup: desktopDeps({ prepareResult: { streamId: "wrong", security: "vnc-auth" } }), code: "desktop-protocol-error", message: "malformed prepare result", reserveHappened: true },
     { setup: desktopDeps({ prepareError: new Error("timeout") }), code: "desktop-stream-timeout", message: "desktop prepare timed out", reserveHappened: true },
   ];
@@ -214,6 +214,66 @@ test("desktop-open fails closed without capability, offline, busy, or bad prepar
       ? [{ instanceId: "i1", type: MSG.desktopCancel, payload: { streamId: "s-1" } }]
       : []);
   }
+});
+
+test("a credential for an instance without desktop.ard-auth.v1 fails before reserve", async () => {
+  const { deps, socket, sent, requests } = desktopDeps({ capabilities: ["desktop.rfb.v1"] });
+  let reserved = false;
+  const reserve = deps.desktop!.reserve;
+  deps.desktop!.reserve = (...args) => {
+    reserved = true;
+    return reserve(...args);
+  };
+  const msg = {
+    kind: "desktop-open",
+    requestId: "r1",
+    instanceId: "i1",
+    credential: { kind: "ard", username: "dana", password: "secret" },
+  };
+  expect(parseWebClientMessage(webClientEnvelope(msg as never))).not.toBeNull();
+  handleWebClientMessage(deps, "a1", socket as never, JSON.stringify(webClientEnvelope(msg as never)));
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(reserved).toBe(false);
+  expect(requests).toEqual([]);
+  expect(sent[0]?.event).toMatchObject({
+    kind: "desktop-request-failed",
+    code: "desktop-auth-unsupported",
+    message: "this instance cannot sign in to macOS Screen Sharing",
+  });
+});
+
+test("an ard prepare result with a credential opens the stream", async () => {
+  const { deps, socket, sent, requests } = desktopDeps({
+    capabilities: ["desktop.rfb.v1", "desktop.ard-auth.v1"],
+    prepareResult: { streamId: "s-1", security: "ard" },
+  });
+  const securities: string[] = [];
+  const markReady = deps.desktop!.markReady;
+  deps.desktop!.markReady = (streamId, security) => {
+    securities.push(security);
+    return markReady(streamId, security);
+  };
+  const msg = {
+    kind: "desktop-open",
+    requestId: "r1",
+    instanceId: "i1",
+    credential: { kind: "ard", username: "dana", password: "secret" },
+  };
+  expect(parseWebClientMessage(webClientEnvelope(msg as never))).not.toBeNull();
+  handleWebClientMessage(deps, "a1", socket as never, JSON.stringify(webClientEnvelope(msg as never)));
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(requests[0]?.payload).toEqual({
+    streamId: "s-1",
+    ticket: "t-connector",
+    expiresAt: 1_700_000_000_000,
+    credential: { kind: "ard", username: "dana", password: "secret" },
+  });
+  expect(securities).toEqual(["ard"]);
+  expect(sent[0]?.event).toMatchObject({
+    kind: "desktop-opened",
+    security: "ard",
+    streamId: "s-1",
+  });
 });
 
 test("terminal-take-control still routes alongside desktop-open/desktop-close", async () => {
