@@ -2537,3 +2537,133 @@ describe("useGroupsStore", () => {
     expect(store.activeRun?.waitingQuestion).toBe("Which branch?");
   });
 });
+
+describe("useGroupsStore Group management", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    mockRpc.mockReset();
+    localStorage.clear();
+  });
+
+  function memberTurn(botId: string, state: MemberTurnSummaryDto["state"], runId: string): MemberTurnSummaryDto {
+    return {
+      id: `mt_${runId}_${botId}`, runId, conversationId: "conversation_g", topicId: "topic_1", botId,
+      batch: 0, attempt: 1, origin: "human-explicit", state, createdAt: "now",
+    };
+  }
+
+  function groupRun(id: string, state: ConversationRunDto["state"]): ConversationRunDto {
+    return {
+      id, conversationId: "conversation_g", topicId: "topic_1", requestMessageId: `msg_${id}`,
+      requestId: `req_${id}`, mode: "explicit", state, profileRevision: 1, createdAt: "now",
+    };
+  }
+
+  it("refreshes a loaded Group list on another instance's conversations-changed with nothing selected", async () => {
+    const store = useGroupsStore();
+    store.groupsLoaded["inst_2"] = true;
+    store.groupsByInstance["inst_2"] = [];
+    mockRpc.mockImplementation(async (_instance: string, type: string) => {
+      if (type === "control.groups.list") return { groups: [{ ...GROUP, id: "conversation_remote" }] };
+      throw new Error(`unexpected ${type}`);
+    });
+
+    store.applyEvent({ kind: "control-event", instanceId: "inst_2", event: { type: "conversations-changed" } } as never);
+    await flushPromises();
+
+    expect(mockRpc).toHaveBeenCalledWith("inst_2", "control.groups.list", {});
+    expect(store.groupsByInstance["inst_2"]?.map((g) => g.id)).toEqual(["conversation_remote"]);
+  });
+
+  it("leaves a never-opened instance's Group list alone on conversations-changed", async () => {
+    const store = useGroupsStore();
+    store.applyEvent({ kind: "control-event", instanceId: "inst_2", event: { type: "conversations-changed" } } as never);
+    await flushPromises();
+    expect(mockRpc).not.toHaveBeenCalled();
+  });
+
+  it("locates member work the backend counts, including an indeterminate Run and an active Run outside the page", async () => {
+    const store = useGroupsStore();
+    const runs: Record<string, ConversationRunDetailDto> = {
+      run_done: { ...groupRun("run_done", "completed"), memberTurns: [memberTurn("bot_b", "completed", "run_done")] },
+      run_sealed: { ...groupRun("run_sealed", "indeterminate"), memberTurns: [memberTurn("bot_b", "running", "run_sealed")] },
+      run_other: { ...groupRun("run_other", "running"), memberTurns: [memberTurn("bot_a", "running", "run_other")] },
+      run_queued: { ...groupRun("run_queued", "queued"), memberTurns: [memberTurn("bot_b", "queued", "run_queued")] },
+    };
+    mockRpc.mockImplementation(async (_instance: string, type: string, payload?: unknown) => {
+      if (type === "control.groups.get") {
+        return { group: { ...GROUP, topics: [{ id: "topic_1", conversationId: "conversation_g", title: "Sprint", status: "active", createdAt: "now", updatedAt: "now" }] } };
+      }
+      if (type === "control.runs.list") {
+        expect(payload).toEqual({ conversationId: "conversation_g", topicId: "topic_1", limit: 200 });
+        return {
+          conversationId: "conversation_g", topicId: "topic_1",
+          runs: [runs.run_done, runs.run_sealed, runs.run_other],
+          activeRunId: "run_queued", activeRun: runs.run_queued,
+        };
+      }
+      if (type === "control.runs.get") return { run: runs[(payload as { runId: string }).runId] };
+      throw new Error(`unexpected ${type}`);
+    });
+
+    const work = await store.findMemberWork("inst_1", "conversation_g", ["bot_b"]);
+
+    expect(work.map((w) => [w.run.id, w.botIds])).toEqual([
+      ["run_sealed", ["bot_b"]],
+      ["run_queued", ["bot_b"]],
+    ]);
+    const fetched = mockRpc.mock.calls.filter((c) => c[1] === "control.runs.get").map((c) => (c[2] as { runId: string }).runId);
+    expect(fetched).not.toContain("run_done");
+  });
+
+  it("drops removed members from the selected Group's send target after an update", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.groupsByInstance["inst_1"] = [{ ...GROUP, botIds: ["bot_a", "bot_b", "bot_c"] }];
+    store.targetSelection = { mode: "members", botIds: ["bot_b", "bot_c"] };
+    const updated = { ...GROUP, botIds: ["bot_a", "bot_b"] };
+    mockRpc.mockImplementation(async (_instance: string, type: string) => {
+      if (type === "control.groups.update") return { group: updated };
+      if (type === "control.groups.list") return { groups: [updated] };
+      throw new Error(`unexpected ${type}`);
+    });
+
+    await store.updateGroup("inst_1", "conversation_g", { botIds: ["bot_a", "bot_b"] });
+
+    expect(store.targetSelection).toEqual({ mode: "members", botIds: ["bot_b"] });
+  });
+
+  it("rethrows a failed delete while the Group is still listed and keeps its deleting row", async () => {
+    const store = useGroupsStore();
+    store.groupsByInstance["inst_1"] = [GROUP];
+    mockRpc.mockImplementation(async (_instance: string, type: string) => {
+      if (type === "control.groups.delete") return { error: { code: "session_release_failed", message: "release failed" } };
+      if (type === "control.groups.list") return { groups: [{ ...GROUP, lifecycle: "deleting" }] };
+      throw new Error(`unexpected ${type}`);
+    });
+
+    await expect(store.deleteGroup("inst_1", "conversation_g")).rejects.toMatchObject({ code: "session_release_failed" });
+    expect(store.groupsByInstance["inst_1"]?.[0]?.lifecycle).toBe("deleting");
+  });
+
+  it("clears the selection when the selected Group is deleted", async () => {
+    const store = useGroupsStore();
+    store.instanceId = "inst_1";
+    store.selectedGroupId = "conversation_g";
+    store.activeConversationId = "conversation_g";
+    store.groupsByInstance["inst_1"] = [GROUP];
+    store.topicsByConversation["inst_1:conversation_g"] = [];
+    mockRpc.mockImplementation(async (_instance: string, type: string) => {
+      if (type === "control.groups.delete") return { ok: true };
+      if (type === "control.groups.list") return { groups: [] };
+      throw new Error(`unexpected ${type}`);
+    });
+
+    await store.deleteGroup("inst_1", "conversation_g");
+
+    expect(store.isGroupSelected).toBe(false);
+    expect(store.topicsByConversation["inst_1:conversation_g"]).toBeUndefined();
+    expect(localStorage.getItem("xrelay.selectedGroup")).toBeNull();
+  });
+});
