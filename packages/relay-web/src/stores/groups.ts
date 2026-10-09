@@ -12,6 +12,8 @@ import {
   type ConversationRunStateDto,
   type ConversationTargetDto,
   type GroupDetailDto,
+  type GroupsCreatePayload,
+  type GroupsUpdatePayload,
   type GroupSummaryDto,
   type LiveTurnSnapshotDto,
   type MemberTurnSummaryDto,
@@ -60,6 +62,13 @@ export type GroupTargetSelection =
    *  automatic mode (`automatic_unsupported`) keeps the selection honest by
    *  failing the prompt rather than silently downgrading it. */
   | { mode: "automatic" };
+
+/** An unfinished Run that holds one of the given members inside a Group. */
+export interface GroupMemberWork {
+  topic: TopicSummaryDto;
+  run: ConversationRunDto;
+  botIds: string[];
+}
 
 export type GroupErrorCode =
   | "connectorOutdated"
@@ -185,6 +194,16 @@ function isTerminalRunState(state: ConversationRunStateDto | undefined): boolean
 
 function isActiveRunState(state: ConversationRunStateDto | undefined): boolean {
   return state === "queued" || state === "running" || state === "waiting-human";
+}
+
+/** Mirrors the backend's group_member_has_work probe, which looks only at the
+ *  member turn state. An indeterminate Run can still hold such a turn. */
+function blocksMemberRemoval(state: MemberTurnSummaryDto["state"]): boolean {
+  return state === "queued" || state === "dispatched" || state === "running";
+}
+
+function isClosedRunState(state: ConversationRunStateDto): boolean {
+  return state === "completed" || state === "failed" || state === "cancelled";
 }
 
 /** Backend `indeterminate` seals scheduling but stays evidence-refinable:
@@ -789,6 +808,114 @@ export const useGroupsStore = defineStore("groups", () => {
     const detailKey = `${targetInstanceId}:${groupId}`;
     groupDetails.value = { ...groupDetails.value, [detailKey]: res.group };
     return res.group;
+  }
+
+  function mergeGroupSummary(targetInstanceId: string, group: GroupSummaryDto): void {
+    const list = groupsByInstance.value[targetInstanceId] ?? [];
+    const idx = list.findIndex((g) => g.id === group.id);
+    const next = idx >= 0 ? [...list.slice(0, idx), group, ...list.slice(idx + 1)] : [...list, group];
+    groupsByInstance.value = { ...groupsByInstance.value, [targetInstanceId]: next };
+    groupsLoaded.value = { ...groupsLoaded.value, [targetInstanceId]: true };
+    const detailKey = `${targetInstanceId}:${group.id}`;
+    const detail = groupDetails.value[detailKey];
+    if (detail) groupDetails.value = { ...groupDetails.value, [detailKey]: { ...detail, ...group } };
+  }
+
+  function forgetGroup(targetInstanceId: string, groupId: string): void {
+    const list = groupsByInstance.value[targetInstanceId] ?? [];
+    groupsByInstance.value = { ...groupsByInstance.value, [targetInstanceId]: list.filter((g) => g.id !== groupId) };
+    const key = `${targetInstanceId}:${groupId}`;
+    const { [key]: _detail, ...details } = groupDetails.value;
+    groupDetails.value = details;
+    const { [key]: _topics, ...topics } = topicsByConversation.value;
+    topicsByConversation.value = topics;
+    if (instanceId.value === targetInstanceId && selectedGroupId.value === groupId) clearSelection();
+  }
+
+  // The write already committed when the RPC resolves, so a failed follow-up
+  // list refresh must not report it as failed. A retry would mint a second Group.
+  async function createGroup(targetInstanceId: string, input: GroupsCreatePayload): Promise<GroupSummaryDto> {
+    const res = unwrapRpc(
+      await api.rpc<{ group: GroupSummaryDto }>(targetInstanceId, MSG.groupsCreate, input),
+    );
+    mergeGroupSummary(targetInstanceId, res.group);
+    void loadGroups(targetInstanceId).catch(() => {});
+    return res.group;
+  }
+
+  async function updateGroup(
+    targetInstanceId: string,
+    groupId: string,
+    patch: Omit<GroupsUpdatePayload, "id">,
+  ): Promise<GroupSummaryDto> {
+    const res = unwrapRpc(
+      await api.rpc<{ group: GroupSummaryDto }>(targetInstanceId, MSG.groupsUpdate, { id: groupId, ...patch }),
+    );
+    mergeGroupSummary(targetInstanceId, res.group);
+    const selection = targetSelection.value;
+    if (
+      instanceId.value === targetInstanceId
+      && selectedGroupId.value === groupId
+      && selection?.mode === "members"
+    ) {
+      const kept = selection.botIds.filter((id) => res.group.botIds.includes(id));
+      if (kept.length !== selection.botIds.length) {
+        targetSelection.value = kept.length > 0
+          ? { mode: "members", botIds: kept }
+          : eligibleTargetFor(res.group, directBotsStore.botsByInstance[targetInstanceId] ?? []);
+      }
+    }
+    void loadGroups(targetInstanceId).catch(() => {});
+    return res.group;
+  }
+
+  // Group delete runs the full teardown and can outlive the RPC deadline. A
+  // timeout or failure says nothing about whether the Group is gone, so the
+  // list is re-read before the outcome is reported.
+  async function deleteGroup(targetInstanceId: string, groupId: string): Promise<void> {
+    try {
+      unwrapRpc(await api.rpc<{ ok: boolean }>(targetInstanceId, MSG.groupsDelete, { id: groupId }));
+    } catch (err: unknown) {
+      const groups = await loadGroups(targetInstanceId).catch(() => null);
+      if (!groups || groups.some((g) => g.id === groupId)) throw err;
+    }
+    forgetGroup(targetInstanceId, groupId);
+    void loadGroups(targetInstanceId).catch(() => {});
+  }
+
+  async function findMemberWork(
+    targetInstanceId: string,
+    groupId: string,
+    botIds: string[],
+  ): Promise<GroupMemberWork[]> {
+    const detail = await loadGroupDetail(targetInstanceId, groupId);
+    const perTopic = await Promise.all(detail.topics.map(async (topic) => {
+      const listed = unwrapRpc(
+        await api.rpc<{ runs: ConversationRunDto[]; activeRun?: ConversationRunDto }>(targetInstanceId, MSG.runsList, {
+          conversationId: groupId,
+          topicId: topic.id,
+          limit: 200,
+        }),
+      );
+      const open = new Map<string, ConversationRunDto>();
+      for (const run of [...listed.runs, ...(listed.activeRun ? [listed.activeRun] : [])]) {
+        if (!isClosedRunState(run.state)) open.set(run.id, run);
+      }
+      return await Promise.all([...open.values()].map(async (run): Promise<GroupMemberWork | null> => {
+        const { run: full } = unwrapRpc(
+          await api.rpc<{ run: ConversationRunDetailDto }>(targetInstanceId, MSG.runsGet, { runId: run.id }),
+        );
+        const held = full.memberTurns
+          .filter((turn) => botIds.includes(turn.botId) && blocksMemberRemoval(turn.state))
+          .map((turn) => turn.botId);
+        return held.length > 0 ? { topic, run, botIds: [...new Set(held)] } : null;
+      }));
+    }));
+    return perTopic.flat().filter((work): work is GroupMemberWork => work !== null);
+  }
+
+  async function cancelRun(targetInstanceId: string, runId: string): Promise<void> {
+    unwrapRpc(await api.rpc<{ run: ConversationRunDetailDto }>(targetInstanceId, MSG.runsCancel, { runId }));
   }
 
   /** The single way a wholesale Topic snapshot reaches the cache. Any writer
@@ -2584,7 +2711,12 @@ export const useGroupsStore = defineStore("groups", () => {
     if (e.type === "bots-changed") {
       return;
     }
-    if (event.instanceId !== instanceId.value) return;
+    if (event.instanceId !== instanceId.value) {
+      if (e.type === "conversations-changed" && groupsLoaded.value[event.instanceId]) {
+        void loadGroups(event.instanceId).catch(() => {});
+      }
+      return;
+    }
 
     if (e.type === "conversations-changed") {
       const groupIdAtEvent = selectedGroupId.value;
@@ -2960,6 +3092,11 @@ export const useGroupsStore = defineStore("groups", () => {
     senderNameFor,
     loadGroups,
     loadGroupDetail,
+    createGroup,
+    updateGroup,
+    deleteGroup,
+    findMemberWork,
+    cancelRun,
     loadTopics,
     createGroupTopic,
     updateTopic,
