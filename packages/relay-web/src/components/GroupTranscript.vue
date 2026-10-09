@@ -59,7 +59,10 @@ function driverForBot(botId: string): string | undefined {
 
 function senderName(botId: string | undefined): string {
   if (!botId) return "Bot";
-  return botById.value[botId]?.name ?? "Bot";
+  const bot = botById.value[botId];
+  if (!bot) return "Bot";
+  if (bot.retired) return t("bot.removal.removedName", { name: bot.name });
+  return bot.name;
 }
 
 function turnStateLabel(state: MemberTurnSummaryDto["state"]): string {

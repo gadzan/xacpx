@@ -1494,6 +1494,7 @@ function isMaterializeAbandoned(error: unknown): boolean {
     || error.code === "run_not_runnable"
     || error.code === "conversation_deleting"
     || error.code === "topic_deleting"
+    || error.code === "topic_resetting"
   ) || (error instanceof BotError
     && (error.code === "group_member_not_member"
       || error.code === "conversation_not_group"

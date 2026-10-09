@@ -6714,3 +6714,106 @@ describe("useDirectBotsStore", () => {
     });
   });
 });
+
+describe("topic lifecycle cache", () => {
+  beforeEach(() => {
+    setActivePinia(createPinia());
+    mockRpc.mockReset();
+    mockApiGet.mockReset();
+    mockApiGet.mockRejectedValue(new Error("not configured"));
+  });
+
+  it("drops a deleted topic and ignores a late list that still contains it", async () => {
+    const store = useDirectBotsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "c1";
+    store.activeTopicId = "t2";
+    const kept: TopicSummaryDto = {
+      id: "t1", conversationId: "c1", title: "Default", status: "active", createdAt: "now", updatedAt: "now", defaultDirect: true,
+    };
+    const removed: TopicSummaryDto = {
+      id: "t2", conversationId: "c1", title: "Extra", status: "active", createdAt: "now", updatedAt: "now",
+    };
+    store.topicsByConversation["inst_1:c1"] = [kept, removed];
+    let releaseList!: (value: { topics: TopicSummaryDto[] }) => void;
+    mockRpc.mockImplementation((_instanceId: string, type: string) => {
+      if (type === "control.topics.teardown") return Promise.resolve({ ok: true, requestId: "del-1" });
+      if (type === "control.topics.list") {
+        return new Promise((resolve) => {
+          releaseList = resolve;
+        });
+      }
+      return Promise.resolve({});
+    });
+    const listing = store.loadTopics("inst_1", "c1");
+    await store.teardownTopic("inst_1", "c1", "t2", "del-1");
+    releaseList({ topics: [kept, removed] });
+    await listing;
+    expect(store.topicsByConversation["inst_1:c1"]?.map((topic) => topic.id)).toEqual(["t1"]);
+    store.applyEvent({
+      instanceId: "inst_1",
+      kind: "control-event",
+      event: { type: "conversation-topic-changed", topic: removed },
+    } as never);
+    expect(store.topicsByConversation["inst_1:c1"]?.map((topic) => topic.id)).toEqual(["t1"]);
+  });
+
+  it("reloads history when a clear bumps the active topic generation", async () => {
+    const store = useDirectBotsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "c1";
+    store.activeTopicId = "t1";
+    store.messages = [{
+      id: "m1", conversationId: "c1", topicId: "t1", seq: 1, role: "human", content: "old", createdAt: "now",
+    }];
+    store.topicsByConversation["inst_1:c1"] = [{
+      id: "t1", conversationId: "c1", title: "Default", status: "active", createdAt: "now", updatedAt: "now", defaultDirect: true,
+    }];
+    mockRpc.mockImplementation((_instanceId: string, type: string) => {
+      if (type === "control.topics.clear") {
+        return Promise.resolve({
+          ok: true,
+          requestId: "clear-1",
+          contextGeneration: 2,
+          topic: {
+            id: "t1", conversationId: "c1", title: "Default", status: "active", createdAt: "now", updatedAt: "later",
+            defaultDirect: true, contextGeneration: 2,
+          },
+        });
+      }
+      if (type === "control.conversation.history") {
+        return Promise.resolve({
+          conversationId: "c1", topicId: "t1", messages: [], oldestSeq: undefined, newestSeq: undefined,
+          hasMoreBefore: false, hasMoreAfter: false,
+        });
+      }
+      return Promise.resolve({});
+    });
+    await store.clearTopic("inst_1", "c1", "t1", "clear-1");
+    await flushPromises();
+    expect(store.topicsByConversation["inst_1:c1"]?.[0]?.contextGeneration).toBe(2);
+    expect(store.messages).toEqual([]);
+  });
+
+  it("does not restore a topic that a newer list already omitted", async () => {
+    const store = useDirectBotsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "c1";
+    store.activeTopicId = "t1";
+    const kept: TopicSummaryDto = {
+      id: "t1", conversationId: "c1", title: "Default", status: "active", createdAt: "now", updatedAt: "now",
+    };
+    const removed: TopicSummaryDto = {
+      id: "t2", conversationId: "c1", title: "Extra", status: "active", createdAt: "now", updatedAt: "now",
+    };
+    store.topicsByConversation["inst_1:c1"] = [kept, removed];
+    mockRpc.mockResolvedValueOnce({ topics: [kept] });
+    await store.loadTopics("inst_1", "c1");
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: { type: "conversation-topic-changed", topic: removed },
+    } as never);
+    expect(store.topicsByConversation["inst_1:c1"]?.map((topic) => topic.id)).toEqual(["t1"]);
+  });
+});

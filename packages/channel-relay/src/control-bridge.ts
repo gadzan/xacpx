@@ -1045,6 +1045,27 @@ async function dispatchControlRequest(
       if (!input) return errorPayload("invalid-payload", `${MSG.botsDelete}: malformed payload`);
       return await control.deleteBot(input.id);
     }
+    case MSG.botsRemovePreview: {
+      const input = parseControlPayload(MSG.botsRemovePreview, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.botsRemovePreview}: malformed payload`);
+      return { impact: await control.previewBotRemoval(input.id) };
+    }
+    case MSG.botsRemove: {
+      const input = parseControlPayload(MSG.botsRemove, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.botsRemove}: malformed payload`);
+      return await control.removeBot({
+        botId: input.id,
+        requestId: input.requestId,
+        previewRevision: input.previewRevision,
+        ...(input.clearDirectHistory !== undefined ? { clearDirectHistory: input.clearDirectHistory } : {}),
+        ...(input.releaseDirectBindings !== undefined ? { releaseDirectBindings: input.releaseDirectBindings } : {}),
+      });
+    }
+    case MSG.lifecycleOperationsGet: {
+      const input = parseControlPayload(MSG.lifecycleOperationsGet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.lifecycleOperationsGet}: malformed payload`);
+      return { operation: control.getLifecycleOperation(input.id) };
+    }
     case MSG.conversationsList: {
       const input = parseControlPayload(MSG.conversationsList, payload ?? {});
       if (!input) return errorPayload("invalid-payload", `${MSG.conversationsList}: malformed payload`);
@@ -1069,6 +1090,43 @@ async function dispatchControlRequest(
       if (!input) return errorPayload("invalid-payload", `${MSG.topicsCreate}: malformed payload`);
       return { topic: await control.createTopic(input.conversationId, input.title, { maxConcurrentMemberTurns: input.maxConcurrentMemberTurns }) };
     }
+    case MSG.topicsUpdate: {
+      const input = parseControlPayload(MSG.topicsUpdate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsUpdate}: malformed payload`);
+      return { topic: await control.updateTopic(input.conversationId, input.topicId, input.title) };
+    }
+    case MSG.topicsArchive: {
+      const input = parseControlPayload(MSG.topicsArchive, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsArchive}: malformed payload`);
+      return { topic: await control.archiveTopic(input.conversationId, input.topicId) };
+    }
+    case MSG.topicsRestore: {
+      const input = parseControlPayload(MSG.topicsRestore, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsRestore}: malformed payload`);
+      return { topic: await control.restoreTopic(input.conversationId, input.topicId) };
+    }
+    case MSG.topicsTeardown: {
+      const input = parseControlPayload(MSG.topicsTeardown, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsTeardown}: malformed payload`);
+      return await control.teardownTopic(input.conversationId, input.topicId, {
+        requestId: input.requestId,
+        ...(input.releaseBindings !== undefined ? { releaseBindings: input.releaseBindings } : {}),
+      });
+    }
+    case MSG.topicsClear: {
+      const input = parseControlPayload(MSG.topicsClear, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsClear}: malformed payload`);
+      return await control.clearTopic(input.conversationId, input.topicId, {
+        requestId: input.requestId,
+        confirm: true,
+        ...(input.releaseBindings !== undefined ? { releaseBindings: input.releaseBindings } : {}),
+      });
+    }
+    case MSG.topicsPreview: {
+      const input = parseControlPayload(MSG.topicsPreview, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsPreview}: malformed payload`);
+      return { impact: control.previewTopic(input.conversationId, input.topicId) };
+    }
     case MSG.groupsCreate: {
       const input = parseControlPayload(MSG.groupsCreate, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.groupsCreate}: malformed payload`);
@@ -1082,8 +1140,7 @@ async function dispatchControlRequest(
     case MSG.groupsDelete: {
       const input = parseControlPayload(MSG.groupsDelete, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.groupsDelete}: malformed payload`);
-      await control.deleteGroup(input.id);
-      return { ok: true };
+      return await control.deleteGroup(input.id);
     }
     case MSG.groupsGet: {
       const input = parseControlPayload(MSG.groupsGet, payload);
@@ -1108,8 +1165,7 @@ async function dispatchControlRequest(
     case MSG.groupTopicsTeardown: {
       const input = parseControlPayload(MSG.groupTopicsTeardown, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.groupTopicsTeardown}: malformed payload`);
-      await control.teardownGroupTopic(input.conversationId, input.topicId);
-      return { ok: true };
+      return await control.teardownGroupTopic(input.conversationId, input.topicId);
     }
     case MSG.conversationPrompt:
     case MSG.conversationPromptWithPolicy: {

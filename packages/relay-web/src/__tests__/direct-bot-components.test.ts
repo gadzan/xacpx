@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import {
@@ -23,9 +23,27 @@ import ConversationMessageList from "../components/ConversationMessageList.vue";
 import DirectBotPane from "../components/DirectBotPane.vue";
 import InstanceTree from "../components/InstanceTree.vue";
 
+function seedLocalInstance(): void {
+  useInstancesStore().instances = [
+    {
+      id: "i1",
+      name: "Local",
+      online: true,
+      lastSeenAt: null,
+      sessions: [],
+      agents: [{ name: "codex", driver: "codex" }],
+      workspaces: [{ name: "repo", cwd: "/repo" }],
+      agentCatalog: [],
+    } as never,
+  ];
+}
+
 describe("Direct Bot Components", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe("BotDialog.vue", () => {
@@ -689,6 +707,125 @@ describe("Direct Bot Components", () => {
       expect(updateSpy).toHaveBeenCalled();
       expect(loadSpy).not.toHaveBeenCalled();
     });
+    it("fills cached authoritative instructions when opened from a sidebar summary", async () => {
+      seedLocalInstance();
+      const directBots = useDirectBotsStore();
+      const { api } = await import("../api/client");
+      const apiSpy = vi.spyOn(api, "rpc").mockImplementation(async (_iid: string, type: string) => {
+        if (type === "control.bots.get") {
+          return {
+            bot: {
+              id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+              instructions: "Always review security", enabled: true, profileRevision: 2,
+              createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+            },
+          } as never;
+        }
+        return {} as never;
+      });
+      await directBots.loadBotDetail("i1", "bot_1");
+      const summary: BotSummaryDto = {
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+        enabled: true, profileRevision: 2, updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: summary },
+        global: { plugins: [i18n] },
+      });
+      const textarea = wrapper.find("#bot-instructions").element as HTMLTextAreaElement;
+      expect(textarea.value).toBe("Always review security");
+      expect(textarea.disabled).toBe(false);
+      await flushPromises();
+      expect(apiSpy.mock.calls.filter(([, type]) => type === "control.bots.get")).toHaveLength(1);
+    });
+
+    it("shows instructions as loading, not as an editable empty value, until the detail arrives", async () => {
+      seedLocalInstance();
+      const directBots = useDirectBotsStore();
+      const detailGate = Promise.withResolvers<BotDetailDto>();
+      vi.spyOn(directBots, "loadBotDetail").mockImplementation(() => detailGate.promise);
+      const summary: BotSummaryDto = {
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+        enabled: true, updatedAt: "2026-09-18T00:00:00.000Z",
+      };
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: summary },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      const textarea = () => wrapper.find("#bot-instructions").element as HTMLTextAreaElement;
+      expect(textarea().disabled).toBe(true);
+      expect(textarea().placeholder).toBe("Loading instructions...");
+      detailGate.resolve({
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+        instructions: "Server instructions", enabled: true, profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      await flushPromises();
+      expect(textarea().disabled).toBe(false);
+      expect(textarea().value).toBe("Server instructions");
+    });
+
+    it("refetches on a newer remote revision and clears instructions the server no longer has", async () => {
+      seedLocalInstance();
+      const directBots = useDirectBotsStore();
+      const rev1: BotDetailDto = {
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+        instructions: "Old instructions", enabled: true, profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "rev1",
+      };
+      const rev2: BotDetailDto = { ...rev1, instructions: undefined, profileRevision: 2, updatedAt: "rev2" };
+      const { api } = await import("../api/client");
+      let served: BotDetailDto = rev1;
+      vi.spyOn(api, "rpc").mockImplementation(async (_iid: string, type: string) => {
+        if (type === "control.bots.get") return { bot: served } as never;
+        if (type === "control.bots.list") {
+          const { instructions: _omit, createdAt: _c, ...row } = served;
+          return { bots: [row] } as never;
+        }
+        return {} as never;
+      });
+      await directBots.loadBots("i1");
+      await directBots.loadBotDetail("i1", "bot_1");
+      const wrapper = mount(BotDialog, {
+        props: { instanceId: "i1", instanceName: "Local", bot: directBots.botsByInstance["i1"]![0]! },
+        global: { plugins: [i18n] },
+      });
+      const textarea = () => wrapper.find("#bot-instructions").element as HTMLTextAreaElement;
+      expect(textarea().value).toBe("Old instructions");
+      served = rev2;
+      await directBots.loadBots("i1");
+      await flushPromises();
+      expect(textarea().value).toBe("");
+    });
+
+    it("persists a user clear of hydrated instructions as an explicit null", async () => {
+      seedLocalInstance();
+      const directBots = useDirectBotsStore();
+      vi.spyOn(directBots, "loadBotDetail").mockResolvedValue({
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+        instructions: "Server instructions", enabled: true, profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      const updateSpy = vi.spyOn(directBots, "updateBot").mockResolvedValue({
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+        enabled: true, profileRevision: 2,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "2026-09-18T00:00:00.000Z",
+      });
+      const wrapper = mount(BotDialog, {
+        props: {
+          instanceId: "i1", instanceName: "Local",
+          bot: { id: "bot_1", name: "Bot", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" },
+        },
+        global: { plugins: [i18n] },
+      });
+      await flushPromises();
+      await wrapper.find("#bot-instructions").setValue("");
+      await wrapper.find("form").trigger("submit.prevent");
+      await flushPromises();
+      expect(updateSpy).toHaveBeenCalledWith("i1", "bot_1", { instructions: null });
+    });
+
     it("surfaces a retry after detail hydration fails, then hydrates and preserves user edits", async () => {
       const instances = useInstancesStore();
       instances.instances = [
@@ -1051,104 +1188,72 @@ describe("Direct Bot Components", () => {
       }));
     });
 
-    it("keeps user-typed instructions when the slow detail fetch resolves", async () => {
-      const instances = useInstancesStore();
-      instances.instances = [
-        {
-          id: "i1",
-          name: "Local",
-          online: true,
-          lastSeenAt: null,
-          sessions: [],
-          agents: [{ name: "codex", driver: "codex" }],
-          workspaces: [{ name: "repo", cwd: "/repo" }],
-          agentCatalog: [],
-        } as never,
-      ];
+    it("keeps user-typed instructions when a newer remote revision arrives", async () => {
+      seedLocalInstance();
       const directBots = useDirectBotsStore();
-      let resolveDetail!: (value: unknown) => void;
-      const detailGate = new Promise<unknown>((resolve) => { resolveDetail = resolve; });
-      vi.spyOn(directBots, "loadBotDetail").mockImplementation(() => detailGate as never);
-      const existingBot = {
-        id: "bot_1",
-        name: "Existing Bot",
-        agent: "codex",
-        workspace: "repo",
-        enabled: true,
-        updatedAt: "2026-09-18T00:00:00.000Z",
-      } as never;
+      const rev1: BotDetailDto = {
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+        instructions: "Old instructions", enabled: true, profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "rev1",
+      };
+      const { api } = await import("../api/client");
+      let served: BotDetailDto = rev1;
+      vi.spyOn(api, "rpc").mockImplementation(async (_iid: string, type: string) => {
+        if (type === "control.bots.get") return { bot: served } as never;
+        if (type === "control.bots.list") {
+          const { instructions: _omit, createdAt: _c, ...row } = served;
+          return { bots: [row] } as never;
+        }
+        return {} as never;
+      });
+      await directBots.loadBots("i1");
+      await directBots.loadBotDetail("i1", "bot_1");
       const wrapper = mount(BotDialog, {
-        props: { instanceId: "i1", instanceName: "Local", bot: existingBot },
+        props: { instanceId: "i1", instanceName: "Local", bot: directBots.botsByInstance["i1"]![0]! },
         global: { plugins: [i18n] },
       });
-      await flushPromises();
       await wrapper.find("#bot-instructions").setValue("User typed instructions");
-      resolveDetail({
-        id: "bot_1",
-        name: "Existing Bot",
-        agent: "codex",
-        workspace: "repo",
-        instructions: "Server instructions",
-        enabled: true,
-        profileRevision: 2,
-        createdAt: "2026-09-18T00:00:00.000Z",
-        updatedAt: "2026-09-18T00:00:00.000Z",
-      });
+      served = { ...rev1, instructions: "Remote instructions", role: "Remote role", profileRevision: 2, updatedAt: "rev2" };
+      await directBots.loadBots("i1");
       await flushPromises();
       expect((wrapper.find("#bot-instructions").element as HTMLTextAreaElement).value).toBe("User typed instructions");
+      expect((wrapper.find("#bot-role").element as HTMLInputElement).value).toBe("Remote role");
     });
 
-    it("keeps a user-cleared instructions field when the slow detail fetch resolves", async () => {
-      const instances = useInstancesStore();
-      instances.instances = [
-        {
-          id: "i1",
-          name: "Local",
-          online: true,
-          lastSeenAt: null,
-          sessions: [],
-          agents: [{ name: "codex", driver: "codex" }],
-          workspaces: [{ name: "repo", cwd: "/repo" }],
-          agentCatalog: [],
-        } as never,
-      ];
+    it("keeps a user-cleared instructions field when a newer remote revision arrives", async () => {
+      seedLocalInstance();
       const directBots = useDirectBotsStore();
-      let resolveDetail!: (value: unknown) => void;
-      const detailGate = new Promise<unknown>((resolve) => { resolveDetail = resolve; });
-      vi.spyOn(directBots, "loadBotDetail").mockImplementation(() => detailGate as never);
-      const existingBot = {
-        id: "bot_1",
-        name: "Existing Bot",
-        agent: "codex",
-        workspace: "repo",
-        enabled: true,
-        updatedAt: "2026-09-18T00:00:00.000Z",
-      } as never;
+      const rev1: BotDetailDto = {
+        id: "bot_1", name: "Bot", agent: "codex", workspace: "repo",
+        instructions: "Old instructions", enabled: true, profileRevision: 1,
+        createdAt: "2026-09-18T00:00:00.000Z", updatedAt: "rev1",
+      };
+      const { api } = await import("../api/client");
+      let served: BotDetailDto = rev1;
+      vi.spyOn(api, "rpc").mockImplementation(async (_iid: string, type: string) => {
+        if (type === "control.bots.get") return { bot: served } as never;
+        if (type === "control.bots.list") {
+          const { instructions: _omit, createdAt: _c, ...row } = served;
+          return { bots: [row] } as never;
+        }
+        return {} as never;
+      });
+      await directBots.loadBots("i1");
+      await directBots.loadBotDetail("i1", "bot_1");
       const wrapper = mount(BotDialog, {
-        props: { instanceId: "i1", instanceName: "Local", bot: existingBot },
+        props: { instanceId: "i1", instanceName: "Local", bot: directBots.botsByInstance["i1"]![0]! },
         global: { plugins: [i18n] },
       });
-      await flushPromises();
-      // Type then clear back to "": value comparison alone would call this
-      // pristine and let the server value overwrite the explicit clear.
       await wrapper.find("#bot-instructions").setValue("draft");
       await wrapper.find("#bot-instructions").setValue("");
-      resolveDetail({
-        id: "bot_1",
-        name: "Existing Bot",
-        agent: "codex",
-        workspace: "repo",
-        instructions: "Server instructions",
-        enabled: true,
-        profileRevision: 2,
-        createdAt: "2026-09-18T00:00:00.000Z",
-        updatedAt: "2026-09-18T00:00:00.000Z",
-      });
+      served = { ...rev1, instructions: "Remote instructions", role: "Remote role", profileRevision: 2, updatedAt: "rev2" };
+      await directBots.loadBots("i1");
       await flushPromises();
       expect((wrapper.find("#bot-instructions").element as HTMLTextAreaElement).value).toBe("");
+      expect((wrapper.find("#bot-role").element as HTMLInputElement).value).toBe("Remote role");
     });
 
-    it("loads form options then instructions without a stale race overwriting fields", async () => {
+    it("loads the detail without waiting for slow form options", async () => {
       const instances = useInstancesStore();
       instances.instances = [
         {
@@ -1163,23 +1268,8 @@ describe("Direct Bot Components", () => {
         } as never,
       ];
       const directBots = useDirectBotsStore();
-      let resolveOptions!: () => void;
-      const optionsGate = new Promise<void>((resolve) => { resolveOptions = resolve; });
-      const optionsSpy = vi.spyOn(instances, "loadFormOptions").mockImplementation(async () => {
-        await optionsGate;
-        instances.instances = [
-          {
-            id: "i1",
-            name: "Local",
-            online: true,
-            lastSeenAt: null,
-            sessions: [],
-            agents: [{ name: "codex", driver: "codex" }],
-            workspaces: [{ name: "repo", cwd: "/repo" }],
-            agentCatalog: [],
-          } as never,
-        ];
-      });
+      const optionsGate = Promise.withResolvers<void>();
+      vi.spyOn(instances, "loadFormOptions").mockImplementation(() => optionsGate.promise);
       const detailSpy = vi.spyOn(directBots, "loadBotDetail").mockResolvedValue({
         id: "bot_1",
         name: "Existing Bot",
@@ -1204,11 +1294,11 @@ describe("Direct Bot Components", () => {
         global: { plugins: [i18n] },
       });
       await flushPromises();
+      expect(detailSpy).toHaveBeenCalledWith("i1", "bot_1");
+      expect((wrapper.find("#bot-instructions").element as HTMLTextAreaElement).value).toBe("Server instructions");
       wrapper.unmount();
-      resolveOptions();
+      optionsGate.resolve();
       await flushPromises();
-      expect(optionsSpy).toHaveBeenCalledWith("i1");
-      expect(detailSpy).not.toHaveBeenCalled();
     });
   });
 
@@ -1770,10 +1860,11 @@ describe("Direct Bot Components", () => {
       expect(wrapper.text()).toContain("Code QA");
       expect(wrapper.text()).toContain("repo");
 
-      const topicPills = wrapper.findAll('[data-test="topic-pill"]');
-      expect(topicPills).toHaveLength(2);
+      await wrapper.find('[data-test="topic-menu"]').trigger("click");
+      const topicRows = wrapper.findAll('[data-test="topic-row"]');
+      expect(topicRows).toHaveLength(2);
 
-      await topicPills[1]?.trigger("click");
+      await topicRows[1]?.find("button").trigger("click");
       expect(switchTopicSpy).toHaveBeenCalledWith("t2");
     });
     it("opens the New Topic dialog with focus, traps Tab, and restores focus on Escape", async () => {

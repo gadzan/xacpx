@@ -41,6 +41,8 @@ export interface BotSummaryDto {
    *  persisted Direct Conversation alone keeps delete fail-closed via
    *  bot_in_use but does not lock identity. */
   hasRuntime?: boolean;
+  /** Present once controlled removal has retired the executable profile. */
+  retired?: true;
 }
 
 export interface BotDetailDto extends BotSummaryDto {
@@ -59,6 +61,64 @@ export interface BotCreateRequestDto {
   model?: string;
   effort?: string;
   enabled?: boolean;
+}
+
+export interface BotRemovalPreviewDto {
+  botId: string;
+  name: string;
+  phase: "active" | "previewed" | "deleting" | "indeterminate" | "retired";
+  revision: string;
+  directTopics: Array<{ id: string; title: string; status: string }>;
+  runs: { active: string[]; queued: string[]; indeterminate: string[] };
+  groups: Array<{
+    conversationId: string;
+    title: string;
+    memberCount: number;
+    blocker: "remove-member-first" | "group-needs-another-member";
+  }>;
+  departedMemberRuntimes: Array<{
+    conversationId: string;
+    topicId: string;
+    bindingId?: string;
+    sessionAlias?: string;
+  }>;
+  worktrees: Array<{ runId: string; conversationId: string; topicId: string; state: string }>;
+  externalBindings: Array<{ key: string; conversationId: string; topicId: string }>;
+  history: {
+    directMessages: number;
+    directRuns: number;
+    groupMessages: number;
+    groupRuns: number;
+  };
+  controllerResidue: { bindingIds: string[]; sessionAliases: string[] };
+  memberUnsettledRunIds: string[];
+  operation?: {
+    id: string;
+    requestId: string;
+    phase: "running" | "failed" | "indeterminate" | "completed";
+    error?: { code: string; message: string };
+  };
+}
+
+export interface RemoveBotRequestDto {
+  botId: string;
+  requestId: string;
+  previewRevision: string;
+  clearDirectHistory?: boolean;
+  releaseDirectBindings?: boolean;
+}
+
+export interface LifecycleOperationDto {
+  id: string;
+  kind: "bot-remove" | "topic-teardown" | "topic-clear" | "group-teardown";
+  subjectId: string;
+  requestId: string;
+  phase: "running" | "failed" | "indeterminate" | "completed";
+  error?: { code: string; message: string };
+  previewRevision?: string;
+  clearDirectHistory?: boolean;
+  releaseDirectBindings?: boolean;
+  updatedAt: string;
 }
 
 export interface BotUpdateRequestDto {
@@ -88,6 +148,25 @@ export interface TopicSummaryDto {
   createdAt: string;
   updatedAt: string;
   executionTarget?: ConversationTopic["executionTarget"];
+  /** Absent means generation 1. */
+  contextGeneration?: number;
+  /** Present only for the virtual or materialized Direct default topic. */
+  defaultDirect?: true;
+}
+
+export interface TopicImpactDto {
+  topic: TopicSummaryDto;
+  bindings: Array<{ chatKey: string }>;
+  unsettledRunIds: string[];
+  indeterminateRunIds: string[];
+  worktreeRunIds: string[];
+  actions: {
+    rename: boolean;
+    archive: boolean;
+    restore: boolean;
+    teardown: boolean;
+    clear: boolean;
+  };
 }
 
 export interface GroupSummaryDto {
@@ -308,7 +387,11 @@ export function toBotDetail(bot: BotProfile, hasRuntime?: boolean): BotDetailDto
   };
 }
 
-export function toTopicSummary(topic: ConversationTopic): TopicSummaryDto {
+export function toTopicSummary(
+  topic: ConversationTopic,
+  options?: { defaultDirect?: boolean },
+): TopicSummaryDto {
+  const contextGeneration = topic.contextGeneration ?? 1;
   return {
     ...(topic.maxConcurrentMemberTurns !== undefined ? { maxConcurrentMemberTurns: topic.maxConcurrentMemberTurns } : {}),
     id: topic.id,
@@ -318,6 +401,8 @@ export function toTopicSummary(topic: ConversationTopic): TopicSummaryDto {
     createdAt: topic.createdAt,
     updatedAt: topic.updatedAt,
     ...(topic.executionTarget ? { executionTarget: { ...topic.executionTarget } } : {}),
+    ...(contextGeneration > 1 ? { contextGeneration } : {}),
+    ...(options?.defaultDirect ? { defaultDirect: true as const } : {}),
   };
 }
 

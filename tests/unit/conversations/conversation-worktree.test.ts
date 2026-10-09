@@ -326,12 +326,12 @@ test("abandon retains dirty results and next Run gets new resources at its own f
 
 test("teardown preserves dirty results and deleting barrier until explicit integration permits cleanup", async () => {
   const h = await settledFixture(["A\nsecond\nthird\n", "first\nsecond\nB\n"]);
-  await expect(h.service.teardownGroupTopic(h.g.id, h.topic.id)).rejects.toMatchObject({ code: "worktree_cleanup_unsafe" });
+  await expect(h.service.teardownTopic(h.g.id, h.topic.id, { releaseBindings: true, requestId: "dirty-teardown" })).rejects.toMatchObject({ code: "worktree_cleanup_unsafe" });
   expect(h.state.conversation_topics[h.topic.id]!.status).toBe("deleting");
   expect(h.store.getRun(h.accepted.run.id)).toBeDefined();
   let r = await h.integrations!.operate({ action: "preview", runId: h.accepted.run.id, botIds: h.ids.slice(0, 2) });
   r = await h.integrations!.operate({ action: "integrate", runId: r.runId, requestId: "teardown", previewId: r.preview!.id, snapshotUncommitted: true });
-  await h.service.teardownGroupTopic(h.g.id, h.topic.id);
+  await h.service.teardownTopic(h.g.id, h.topic.id, { releaseBindings: true, requestId: "dirty-teardown" });
   expect(h.state.conversation_topics[h.topic.id]).toBeUndefined(); expect(h.store.worktrees.get(r.runId)!.resources.every(r => r.state === "cleaned")).toBe(true);
   h.store.close();
 }, 90_000);
