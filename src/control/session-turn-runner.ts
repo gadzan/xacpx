@@ -456,7 +456,10 @@ export class SessionTurnRunner {
       });
       return {
         ok: true,
-        text: response.text,
+        // Conversation settlement persists this result as the public Bot reply.
+        // Streaming transports have already delivered their answer via reply(),
+        // leaving response.text empty; preserve the same full text as the events.
+        text: req.conversation ? finalText : response.text,
         ...(internalAlias && priorTransportSession
           ? { postTurnDetection: { internalAlias, priorTransportSession } }
           : {}),

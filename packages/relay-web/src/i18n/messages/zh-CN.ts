@@ -652,6 +652,7 @@ export default {
       workspace: "工作区",
       instructions: "系统指令",
       instructionsPlaceholder: "该 Bot 的系统设定指令...",
+      instructionsLoading: "正在加载系统指令...",
       instructionsHint: "更改将应用于后续轮次，不会清除已有会话历史。",
       model: "模型（可选）",
       modelPlaceholder: "默认或指定模型",
@@ -836,7 +837,7 @@ export default {
       selectMembers: "选择成员",
       memberCount: "已选 {count} 人",
       noEligible: "该群组暂无可用成员。",
-      hint: "@名称 添加成员 · @everyone 全选",
+      hint: "{'@'}名称 添加成员 · {'@'}everyone 全选",
     },
     run: {
       title: "协作",
@@ -862,7 +863,7 @@ export default {
       isolationHint: "仅在成员任务可被强制证明为只读时并行执行；其他任务会串行执行。",
     },
     prompt: {
-      placeholder: "给所选成员发消息...（@名称、@everyone）",
+      placeholder: "给所选成员发消息...（{'@'}名称、{'@'}everyone）",
     },
     chat: {
       emptyHint: "在上方选择成员，然后发送消息开始一次协作。",

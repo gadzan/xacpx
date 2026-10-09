@@ -1047,7 +1047,8 @@ async function promptWithSession(
       await context.lifecycle.ensureTransportSession(session, reply, perfSpan);
     }
   }
-  const effectiveReplyMode = resolveEffectiveReplyMode(context.config, chatKey, session.replyMode);
+  const effectiveReplyMode = session.effectiveReplyMode
+    ?? resolveEffectiveReplyMode(context.config, chatKey, session.replyMode);
   if (metadata?.groupExecutionToken) {
     const owned = context.sessions.getLogicalSessionRecord(session.alias);
     if (!matchesGroupExecutionMetadata(metadata, owned)) throw new Error("Group MCP capability requires a trusted owned Group execution");

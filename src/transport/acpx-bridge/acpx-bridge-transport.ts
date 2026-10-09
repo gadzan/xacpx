@@ -81,6 +81,7 @@ export class AcpxBridgeTransport implements SessionTransport {
           })
       : null;
     const transcriptEvents = createSerializedCallbackQueue();
+    let streamedText = "";
     let planError: unknown;
     let planChain = Promise.resolve();
     let usageError: unknown;
@@ -109,6 +110,7 @@ export class AcpxBridgeTransport implements SessionTransport {
       if (event.type === "prompt.segment") {
         const onSegment = options?.onSegment;
         const segmentText = event.text;
+        if (streamMode && sink) streamedText += segmentText;
         transcriptEvents.enqueue(async () => {
           const segmentResult = onSegment?.(segmentText);
           sink?.feedSegment(segmentText);
@@ -187,11 +189,8 @@ export class AcpxBridgeTransport implements SessionTransport {
         throw deferred;
       }
       const summary = buildOverflowSummary(overflowCount);
-      // Streaming mode already pushed every segment through reply() (mid quota).
-      // Returning result.text again would duplicate what the user just saw. Only
-      // surface a final-tier text when overflow happened — in that case the
-      // summary is new info AND result.text carries the agent's final answer
-      // that may have been partially or fully dropped from the stream.
+      // Quota overflow needs a final-tier summary and the full answer, which may
+      // have been dropped from the stream.
       const transcriptError = transcriptEvents.getError();
       if (transcriptError) {
         throw transcriptError;
@@ -204,6 +203,13 @@ export class AcpxBridgeTransport implements SessionTransport {
       }
       if (commandsError) {
         throw commandsError;
+      }
+      if (streamMode) {
+        // Bridge results contain settled whole-turn text, not an unstreamed
+        // tail. Return only a proven extension of the exact text already sent;
+        // CLI sanitization or inline tool text can make the two differ. An
+        // empty prefix also preserves final-only replies without special casing.
+        return { text: result.text.startsWith(streamedText) ? result.text.slice(streamedText.length) : "" };
       }
       return { text: summary ? `${summary}\n\n${result.text}` : "" };
     }

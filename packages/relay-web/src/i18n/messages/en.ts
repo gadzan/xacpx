@@ -655,6 +655,7 @@ export default {
       workspace: "Workspace",
       instructions: "Instructions",
       instructionsPlaceholder: "System prompt instructions for this bot...",
+      instructionsLoading: "Loading instructions...",
       instructionsHint: "Changes apply to future turns and do not erase existing conversation history.",
       model: "Model (optional)",
       modelPlaceholder: "Default or specific model",
@@ -839,7 +840,7 @@ export default {
       selectMembers: "Select members",
       memberCount: "{count} selected",
       noEligible: "No enabled members in this group.",
-      hint: "@name adds a member · @everyone selects all",
+      hint: "{'@'}name adds a member · {'@'}everyone selects all",
     },
     run: {
       title: "Collaboration",
@@ -865,7 +866,7 @@ export default {
       isolationHint: "Parallel execution requires an enforceably read-only member turn. Other turns are serialized.",
     },
     prompt: {
-      placeholder: "Message the selected members... (@name, @everyone)",
+      placeholder: "Message the selected members... ({'@'}name, {'@'}everyone)",
     },
     chat: {
       emptyHint: "Select members above, then send a message to start a collaboration run.",

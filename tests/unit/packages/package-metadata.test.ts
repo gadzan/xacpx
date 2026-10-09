@@ -108,3 +108,14 @@ test("relay-protocol workspace version and consumer deps match across manifests 
     expect(bunLock.workspaces[dir].dependencies[RELAY_PROTOCOL]).toBe(range);
   }
 });
+
+test("npm lockfile has no versionless installed package entries", () => {
+  const lock = readJson("package-lock.json");
+  const versionless = Object.entries(lock.packages as Record<string, { link?: boolean; version?: string }>)
+    .filter(([path, entry]) => path.includes("node_modules/") && !entry.link
+      && (typeof entry.version !== "string" || entry.version.length === 0))
+    .map(([path]) => path);
+  // npm's deduplication compares these versions even for optional, foreign-OS
+  // dependencies. An { optional: true } placeholder crashes before tests start.
+  expect(versionless).toEqual([]);
+});

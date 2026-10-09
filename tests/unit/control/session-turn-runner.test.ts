@@ -298,6 +298,25 @@ test("turn-finished.text accumulates ALL emitted chunks when response.text is mi
   expect(captured.filter((e) => e.type === "turn-output")).toHaveLength(2);
 });
 
+test("Conversation settlement preserves streamed chunks plus a trailing response", async () => {
+  const { runner, captured } = makeRunner(async (opts) => {
+    await opts.reply("你好");
+    await opts.reply("，我");
+    return { text: "是开发工程师。\n\n第二段。" };
+  });
+  const expected = "你好，我是开发工程师。\n\n第二段。";
+  const result = await runner.run({
+    ...REQ,
+    conversation: {
+      conversationId: "conversation_1", topicId: "topic_1", botId: "bot_1",
+      runId: "run_1", memberTurnId: "mturn_1",
+    },
+  }, new AbortController().signal);
+  expect(result).toMatchObject({ ok: true, text: expected });
+  expect(captured.find((event) => event.type === "turn-finished")).toMatchObject({ ok: true, text: expected });
+  expect(captured.filter((event) => event.type === "turn-output").map((event) => event.chunk).join("")).toBe(expected);
+});
+
 test("a TURN_IDLE_TIMEOUT_REASON abort surfaces as ok:false + timeout errorMessage, NOT cancelled", async () => {
   const controller = new AbortController();
   const { runner, captured } = makeRunner(async () => {
