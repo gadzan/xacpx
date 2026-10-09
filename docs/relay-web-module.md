@@ -732,6 +732,16 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 - WebSocket `state-snapshot` 中包含的 Conversation-correlated live turn 正确恢复；若在离线期间已完成，则自动刷新权威历史，消除残留 spinner；
 - 国际化：所有新增文本均提供 `en.ts` 与 `zh-CN.ts` 完整对齐。
 
+### Group 创建、编辑与删除（`GroupDialog.vue`）
+
+- **入口**：实例侧栏 Groups 模式底部常驻「新建群组」（空列表、加载失败时同样可见）；群组行悬停出现编辑按钮；`GroupPane` 顶栏的编辑按钮是移动端入口。新建成功后自动选中该群组，没有话题时 `GroupPane` 以「创建第一个话题」引导打开 `GroupTopicDialog`。
+- **表单**：名称（≤80）、说明、至少两个不同成员、可选 Lead。成员行展示角色、Agent 与启用状态，同名 Bot 附带稳定 ID。新建时 Lead 默认取第一个已启用成员，直到用户手动选择；移除当前 Lead 时改选下一个已启用成员（没有则清空）并提示。实例不足两个 Bot 时给出「新建 Bot」引导，Bot 表单关闭后回到群组表单。
+- **编辑**：只发送与打开时快照不同的字段，避免回滚其他客户端的并发修改；`groups.update` 成功后才合并列表，并从当前发送目标中剔除已移除成员。
+- **成员仍有任务**：`group_member_has_work` 时，按话题调用 `runs.list`（`limit: 200`，并合并 `activeRun`）和 `runs.get`，列出持有被移除成员 `queued` / `dispatched` / `running` MemberTurn 的 Run（含 `indeterminate` Run），提供逐个 Stop（`runs.cancel`）后重新查询。
+- **删除**：内联确认列出话题数、先停止排队/执行中的任务、含未提交或未整合修改的成员工作树不会被丢弃（删除停在 `deleting` 等待处理后重试）、成员 Bot 与私聊保留。`groups.delete` 失败或超时后先重新读取列表：群组已消失按成功处理；仍在列表中则报告未完成，`lifecycle: "deleting"` 的群组在侧栏和顶栏显示「删除中」，对话框提供「重试删除」。
+- **超时语义**：`timeout` / `instance-offline` / `instance-reconnected` 的创建与保存结果未知（`groups.create` 没有 requestId），界面提示先查看已刷新的列表，不显示为成功或失败。
+- **跨页面同步**：`conversations-changed` 会刷新任何已加载过的实例群组列表，即使当前没有选中群组。
+
 ## 阶段范围边界
 
 Group store 的 MemberTurn 合并保留已收到的 durable assignment 与执行关联字段。同状态的薄 event/detail/reconnect snapshot 缺省 optional 字段时保留已有值，明确提供的值（包括空数组）可以更新；拒绝的旧状态仅补缺失 metadata。合法状态前进仍以新状态的 failure/blocked evidence 为准，`indeterminate` 收到成功或失败证明时不会继承旧状态的失败原因。
