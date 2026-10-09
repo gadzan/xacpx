@@ -10,6 +10,8 @@ import type { BotProfileSnapshot } from "../bots/bot-types";
 import { ConversationError } from "./conversation-error";
 import { memberConcurrencyLimit } from "./conversation-scheduling-policy";
 import { isExternalIngressRejectionCode } from "./conversation-ingress-rejection";
+import type { LifecycleOperation, LifecycleOperationKind } from "./lifecycle-operation";
+import { parseLifecycleOperation } from "./lifecycle-operation";
 import type {
   AcceptMemberInput,
   AcceptPublicHandoffInput,
@@ -42,6 +44,10 @@ import type {
   SettleCancelBatchInput,
   SettleCancelBatchResult,
   SettledCancelMember,
+  TopicClearRetirement,
+  TopicOperationKind,
+  TopicOperationReceipt,
+  TopicTeardownRetirement,
 } from "./conversation-store";
 import { MAX_AUTOMATIC_MEMBER_TURNS, MAX_QUEUED_RUNS_PER_TOPIC, isRunCancelling, publicMessageMatchesRunScope, requestSnapshotMatches } from "./conversation-store";
 import {
@@ -239,6 +245,23 @@ CREATE TABLE IF NOT EXISTS topic_lifecycle (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS topic_context (
+  topic_id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL,
+  context_generation INTEGER NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS topic_request_receipts (
+  conversation_id TEXT NOT NULL,
+  topic_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  context_generation INTEGER NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (conversation_id, topic_id, request_id, kind)
+);
+
 CREATE TABLE IF NOT EXISTS messages (
   id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
@@ -323,6 +346,26 @@ CREATE INDEX IF NOT EXISTS idx_runs_topic_state ON runs (topic_id, state, create
 CREATE INDEX IF NOT EXISTS idx_dispatches_state ON pending_dispatches (state, created_at);
 CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state);
 CREATE INDEX IF NOT EXISTS idx_member_turns_run ON member_turns (run_id);
+
+CREATE TABLE IF NOT EXISTS bot_removal_barrier (
+  bot_id TEXT PRIMARY KEY,
+  phase TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_operations (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  error_code TEXT,
+  error_message TEXT,
+  preview_revision TEXT,
+  params_json TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE (kind, request_id)
+);
 `;
 
 /**
@@ -791,6 +834,10 @@ export class SqliteConversationStore implements ConversationStore {
           throw new ConversationError("external_request_conflict", "platform message already identifies a rejection");
         }
         this.assertAcceptable(input.conversationId, input.topicId);
+        this.assertBotsNotRemoving([
+          input.botId,
+          ...(input.members ?? []).map((member) => member.botId),
+        ]);
         const created = this.insertAccepted(input);
         if (input.externalRequest) {
           this.sqlite.run("INSERT INTO external_conversation_requests (source_key, fingerprint, run_id, conversation_id, topic_id, stop_ingress) VALUES (?, ?, ?, ?, ?, ?)",
@@ -1479,6 +1526,11 @@ export class SqliteConversationStore implements ConversationStore {
              WHERE t.topic_id = r.topic_id AND t.state = 'deleting'
            )
            AND NOT EXISTS (
+             SELECT 1 FROM bot_removal_barrier removal
+             WHERE removal.bot_id = m.bot_id
+               AND removal.phase IN ('deleting', 'indeterminate', 'retired')
+           )
+           AND NOT EXISTS (
              SELECT 1 FROM pending_dispatches claimed
              JOIN runs claimed_run ON claimed_run.id = claimed.run_id
              WHERE claimed_run.topic_id = r.topic_id
@@ -1577,6 +1629,201 @@ export class SqliteConversationStore implements ConversationStore {
       "SELECT 1 AS ok FROM topic_lifecycle WHERE conversation_id = ? LIMIT 1",
       [conversationId],
     ));
+  }
+
+  botRemovalPhase(botId: string): "deleting" | "indeterminate" | "retired" | undefined {
+    const row = this.sqlite.get<{ phase: string }>(
+      "SELECT phase FROM bot_removal_barrier WHERE bot_id = ?",
+      [botId],
+    );
+    if (!row) {
+      return undefined;
+    }
+    if (row.phase === "deleting" || row.phase === "indeterminate" || row.phase === "retired") {
+      return row.phase;
+    }
+    throw new ConversationError("bot_removal_corrupt", `bot "${botId}" has a corrupt removal barrier`);
+  }
+
+  rememberBotRemovalBarrier(botId: string, phase: "deleting" | "indeterminate" | "retired", now: string): void {
+    this.setBotRemovalBarrier(botId, phase, now);
+  }
+
+  setBotRemovalBarrier(botId: string, phase: "deleting" | "indeterminate" | "retired", now: string): void {
+    this.sqlite.run(
+      `INSERT INTO bot_removal_barrier (bot_id, phase, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(bot_id) DO UPDATE SET phase = excluded.phase, updated_at = excluded.updated_at`,
+      [botId, phase, now],
+    );
+  }
+
+  getLifecycleOperation(id: string): LifecycleOperation | undefined {
+    return this.readLifecycleOperation("SELECT * FROM lifecycle_operations WHERE id = ?", [id]);
+  }
+
+  findLifecycleOperation(kind: LifecycleOperationKind, requestId: string): LifecycleOperation | undefined {
+    return this.readLifecycleOperation(
+      "SELECT * FROM lifecycle_operations WHERE kind = ? AND request_id = ?",
+      [kind, requestId],
+    );
+  }
+
+  latestLifecycleOperation(kind: LifecycleOperationKind, subjectId: string): LifecycleOperation | undefined {
+    return this.readLifecycleOperation(
+      `SELECT * FROM lifecycle_operations WHERE kind = ? AND subject_id = ?
+       ORDER BY updated_at DESC LIMIT 1`,
+      [kind, subjectId],
+    );
+  }
+
+  saveLifecycleOperation(operation: LifecycleOperation): void {
+    const parsed = parseLifecycleOperation(operation);
+    if (!parsed || parsed.id !== operation.id) {
+      throw new ConversationError("lifecycle_operation_corrupt", "lifecycle operation is not storable");
+    }
+    this.sqlite.run(
+      `INSERT INTO lifecycle_operations (
+         id, kind, subject_id, request_id, phase, error_code, error_message, preview_revision, params_json, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         kind = excluded.kind,
+         subject_id = excluded.subject_id,
+         request_id = excluded.request_id,
+         phase = excluded.phase,
+         error_code = excluded.error_code,
+         error_message = excluded.error_message,
+         preview_revision = excluded.preview_revision,
+         params_json = excluded.params_json,
+         updated_at = excluded.updated_at`,
+      [
+        parsed.id,
+        parsed.kind,
+        parsed.subjectId,
+        parsed.requestId,
+        parsed.phase,
+        parsed.error?.code ?? null,
+        parsed.error?.message ?? null,
+        parsed.previewRevision ?? null,
+        parsed.params ? JSON.stringify(parsed.params) : null,
+        parsed.updatedAt,
+      ],
+    );
+  }
+
+  botHistoryCounts(botId: string, directConversationId: string): {
+    directMessages: number;
+    directRuns: number;
+    groupMessages: number;
+    groupRuns: number;
+  } {
+    const count = (sql: string, params: string[]): number => {
+      const row = this.sqlite.get<{ n: number }>(sql, params);
+      return Number(row?.n ?? 0);
+    };
+    return {
+      directMessages: count("SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?", [directConversationId]),
+      directRuns: count("SELECT COUNT(*) AS n FROM runs WHERE conversation_id = ?", [directConversationId]),
+      groupMessages: count(
+        "SELECT COUNT(*) AS n FROM messages WHERE sender_bot_id = ? AND conversation_id != ?",
+        [botId, directConversationId],
+      ),
+      groupRuns: count(
+        "SELECT COUNT(DISTINCT run_id) AS n FROM member_turns WHERE bot_id = ? AND conversation_id != ?",
+        [botId, directConversationId],
+      ),
+    };
+  }
+
+  listBotMemberTurns(botId: string): Array<{ runId: string; conversationId: string; topicId: string; state: string }> {
+    const rows = this.sqlite.all<{ run_id: string; conversation_id: string; topic_id: string; state: string }>(
+      "SELECT run_id, conversation_id, topic_id, state FROM member_turns WHERE bot_id = ?",
+      [botId],
+    );
+    return rows.map((row) => ({
+      runId: row.run_id,
+      conversationId: row.conversation_id,
+      topicId: row.topic_id,
+      state: row.state,
+    }));
+  }
+
+  listExternalRequests(conversationId: string): Array<{ sourceKey: string; conversationId: string; topicId: string }> {
+    const rows = this.sqlite.all<{ source_key: string; conversation_id: string; topic_id: string }>(
+      "SELECT source_key, conversation_id, topic_id FROM external_conversation_requests WHERE conversation_id = ?",
+      [conversationId],
+    );
+    return rows.map((row) => ({
+      sourceKey: row.source_key,
+      conversationId: row.conversation_id,
+      topicId: row.topic_id,
+    }));
+  }
+
+  hasOpenBotDispatch(botId: string): boolean {
+    return Boolean(this.sqlite.get(
+      `SELECT 1 AS ok FROM pending_dispatches d
+       JOIN member_turns m ON m.id = d.member_turn_id
+       WHERE m.bot_id = ? AND d.state != 'completed'
+       LIMIT 1`,
+      [botId],
+    ));
+  }
+
+  deleteDirectIngress(conversationId: string): void {
+    this.sqlite.transaction(() => {
+      this.sqlite.run("DELETE FROM external_conversation_requests WHERE conversation_id = ?", [conversationId]);
+      this.sqlite.run("DELETE FROM conversation_bindings WHERE conversation_id = ?", [conversationId]);
+    });
+  }
+
+  private readLifecycleOperation(sql: string, params: string[]): LifecycleOperation | undefined {
+    const row = this.sqlite.get<{
+      id: string;
+      kind: string;
+      subject_id: string;
+      request_id: string;
+      phase: string;
+      error_code: string | null;
+      error_message: string | null;
+      preview_revision: string | null;
+      params_json: string | null;
+      updated_at: string;
+    }>(sql, params);
+    if (!row) {
+      return undefined;
+    }
+    let paramsValue: unknown;
+    if (row.params_json) {
+      try {
+        paramsValue = JSON.parse(row.params_json);
+      } catch {
+        throw new ConversationError("lifecycle_operation_corrupt", `operation "${row.id}" has corrupt params`);
+      }
+    }
+    const parsed = parseLifecycleOperation({
+      id: row.id,
+      kind: row.kind,
+      subjectId: row.subject_id,
+      requestId: row.request_id,
+      phase: row.phase,
+      ...(row.error_code && row.error_message ? { error: { code: row.error_code, message: row.error_message } } : {}),
+      ...(row.preview_revision ? { previewRevision: row.preview_revision } : {}),
+      ...(paramsValue !== undefined ? { params: paramsValue } : {}),
+      updatedAt: row.updated_at,
+    });
+    if (!parsed) {
+      throw new ConversationError("lifecycle_operation_corrupt", `operation "${row.id}" is corrupt`);
+    }
+    return parsed;
+  }
+
+  private assertBotsNotRemoving(botIds: readonly string[]): void {
+    for (const botId of botIds) {
+      const phase = this.botRemovalPhase(botId);
+      if (phase) {
+        throw new ConversationError("bot_removing", `bot "${botId}" is ${phase}`, { botId, phase });
+      }
+    }
   }
 
   hasDurableGroupWork(conversationId: string): boolean {
@@ -1782,6 +2029,9 @@ export class SqliteConversationStore implements ConversationStore {
       }
       if (this.isTopicDeleting(input.topicId)) {
         throw new ConversationError("topic_deleting", `topic "${input.topicId}" is deleting`);
+      }
+      if (this.isTopicResetting(input.topicId)) {
+        throw new ConversationError("topic_resetting", `topic "${input.topicId}" is resetting its context`);
       }
       this.requireLiveUnstartedClaim(input);
       const run = this.requireRun(input.runId);
@@ -2666,8 +2916,94 @@ export class SqliteConversationStore implements ConversationStore {
     return row?.state === "deleting";
   }
 
-  deleteTopicRows(conversationId: string, topicId: string): void {
+  markTopicResetting(topicId: string, conversationId: string, now: string): void {
     this.sqlite.transaction(() => {
+      const row = this.sqlite.get<{ state: string }>(
+        "SELECT state FROM topic_lifecycle WHERE topic_id = ?",
+        [topicId],
+      );
+      if (row?.state === "deleting") {
+        throw new ConversationError("topic_deleting", `topic "${topicId}" is deleting`);
+      }
+      this.sqlite.run(
+        `INSERT INTO topic_lifecycle (topic_id, conversation_id, state, updated_at)
+         VALUES (?, ?, 'resetting', ?)
+         ON CONFLICT(topic_id) DO UPDATE SET state = 'resetting', updated_at = excluded.updated_at`,
+        [topicId, conversationId, now],
+      );
+    });
+  }
+
+  isTopicResetting(topicId: string): boolean {
+    const row = this.sqlite.get<{ state: string }>(
+      "SELECT state FROM topic_lifecycle WHERE topic_id = ?",
+      [topicId],
+    );
+    return row?.state === "resetting";
+  }
+
+  clearTopicResetting(topicId: string): void {
+    this.sqlite.run(
+      "DELETE FROM topic_lifecycle WHERE topic_id = ? AND state = 'resetting'",
+      [topicId],
+    );
+  }
+
+  topicContextGeneration(topicId: string): number {
+    const row = this.sqlite.get<{ context_generation: number }>(
+      "SELECT context_generation FROM topic_context WHERE topic_id = ?",
+      [topicId],
+    );
+    if (!row) {
+      return 1;
+    }
+    if (!Number.isInteger(row.context_generation) || row.context_generation < 1) {
+      throw new ConversationError("topic_context_corrupt", `topic "${topicId}" has a corrupt context generation`);
+    }
+    return row.context_generation;
+  }
+
+  hasRetiredPrompt(conversationId: string, topicId: string, requestId: string): boolean {
+    const row = this.sqlite.get<{ ok: number }>(
+      `SELECT 1 AS ok FROM topic_request_receipts
+       WHERE conversation_id = ? AND topic_id = ? AND request_id = ? AND kind = 'prompt'`,
+      [conversationId, topicId, requestId],
+    );
+    return row !== undefined;
+  }
+
+  getOperationReceipt(
+    conversationId: string,
+    topicId: string,
+    requestId: string,
+    kind: TopicOperationKind,
+  ): TopicOperationReceipt | undefined {
+    const row = this.sqlite.get<{ context_generation: number }>(
+      `SELECT context_generation FROM topic_request_receipts
+       WHERE conversation_id = ? AND topic_id = ? AND request_id = ? AND kind = ?`,
+      [conversationId, topicId, requestId, kind],
+    );
+    if (!row) {
+      return undefined;
+    }
+    if (!Number.isInteger(row.context_generation) || row.context_generation < 1) {
+      throw new ConversationError("topic_context_corrupt", "topic operation receipt has a corrupt generation");
+    }
+    return { contextGeneration: row.context_generation };
+  }
+
+  listWorktreeRunIds(conversationId: string, topicId: string): string[] {
+    return this.worktrees.list(conversationId, topicId)
+      .filter((run) => run.disposition !== "integrated" || run.resources.some((resource) => resource.state !== "cleaned"))
+      .map((run) => run.runId);
+  }
+
+  deleteTopicRows(conversationId: string, topicId: string, retirement?: TopicTeardownRetirement): void {
+    this.sqlite.transaction(() => {
+      this.recordPromptReceipts(conversationId, topicId, this.topicContextGeneration(topicId));
+      if (retirement) {
+        this.insertOperationReceipt(conversationId, topicId, retirement.requestId, "teardown", this.topicContextGeneration(topicId), retirement.now);
+      }
       this.sqlite.run("DELETE FROM conversation_bindings WHERE conversation_id = ? AND topic_id = ?", [conversationId, topicId]);
       const owned = this.sqlite.get(
         `SELECT 1 AS ok FROM topic_seq WHERE conversation_id = ? AND topic_id = ?
@@ -2715,6 +3051,112 @@ export class SqliteConversationStore implements ConversationStore {
         [conversationId, topicId],
       );
     });
+  }
+
+  retireTopicContext(input: TopicClearRetirement): TopicOperationReceipt & { reused: boolean } {
+    return this.sqlite.transaction(() => {
+      const existing = this.getOperationReceipt(input.conversationId, input.topicId, input.requestId, "clear");
+      if (existing) {
+        this.sqlite.run(
+          "DELETE FROM topic_lifecycle WHERE topic_id = ? AND state = 'resetting'",
+          [input.topicId],
+        );
+        return { ...existing, reused: true };
+      }
+      const retiredGeneration = this.topicContextGeneration(input.topicId);
+      const contextGeneration = retiredGeneration + 1;
+      this.recordPromptReceipts(input.conversationId, input.topicId, retiredGeneration);
+      this.insertOperationReceipt(
+        input.conversationId,
+        input.topicId,
+        input.requestId,
+        "clear",
+        contextGeneration,
+        input.now,
+      );
+      this.deleteTopicHistory(input.conversationId, input.topicId, input.releaseBindings);
+      this.sqlite.run(
+        `INSERT INTO topic_context (topic_id, conversation_id, context_generation, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(topic_id) DO UPDATE SET
+           context_generation = excluded.context_generation,
+           updated_at = excluded.updated_at`,
+        [input.topicId, input.conversationId, contextGeneration, input.now],
+      );
+      return { contextGeneration, reused: false };
+    });
+  }
+
+  private recordPromptReceipts(conversationId: string, topicId: string, contextGeneration: number): void {
+    const rows = this.sqlite.all<{ request_id: string }>(
+      "SELECT request_id FROM runs WHERE conversation_id = ? AND topic_id = ?",
+      [conversationId, topicId],
+    );
+    const now = new Date().toISOString();
+    for (const row of rows) {
+      this.sqlite.run(
+        `INSERT INTO topic_request_receipts
+           (conversation_id, topic_id, request_id, kind, context_generation, created_at)
+         VALUES (?, ?, ?, 'prompt', ?, ?)
+         ON CONFLICT(conversation_id, topic_id, request_id, kind) DO NOTHING`,
+        [conversationId, topicId, row.request_id, contextGeneration, now],
+      );
+    }
+  }
+
+  private insertOperationReceipt(
+    conversationId: string,
+    topicId: string,
+    requestId: string,
+    kind: TopicOperationKind,
+    contextGeneration: number,
+    now: string,
+  ): void {
+    this.sqlite.run(
+      `INSERT INTO topic_request_receipts
+         (conversation_id, topic_id, request_id, kind, context_generation, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(conversation_id, topic_id, request_id, kind) DO NOTHING`,
+      [conversationId, topicId, requestId, kind, contextGeneration, now],
+    );
+  }
+
+  private deleteTopicHistory(conversationId: string, topicId: string, releaseBindings: boolean): void {
+    if (releaseBindings) {
+      this.sqlite.run(
+        "DELETE FROM conversation_bindings WHERE conversation_id = ? AND topic_id = ?",
+        [conversationId, topicId],
+      );
+    }
+    this.sqlite.run(
+      `DELETE FROM pending_dispatches
+       WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)`,
+      [conversationId, topicId],
+    );
+    this.sqlite.run(
+      "DELETE FROM member_turns WHERE conversation_id = ? AND topic_id = ?",
+      [conversationId, topicId],
+    );
+    this.sqlite.run(
+      "DELETE FROM messages WHERE conversation_id = ? AND topic_id = ?",
+      [conversationId, topicId],
+    );
+    this.sqlite.run(
+      "DELETE FROM routing_decisions WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
+      [conversationId, topicId],
+    );
+    this.sqlite.run(
+      "DELETE FROM recovery_attempts WHERE run_id IN (SELECT id FROM runs WHERE conversation_id = ? AND topic_id = ?)",
+      [conversationId, topicId],
+    );
+    this.sqlite.run(
+      "DELETE FROM runs WHERE conversation_id = ? AND topic_id = ?",
+      [conversationId, topicId],
+    );
+    this.sqlite.run(
+      "DELETE FROM topic_seq WHERE conversation_id = ? AND topic_id = ?",
+      [conversationId, topicId],
+    );
   }
 
   deleteConversationRows(conversationId: string): void {

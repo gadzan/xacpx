@@ -709,7 +709,8 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 ### 导航与 Bot 管理
 
 - **实例侧栏模式切换**：在左栏实例卡片中支持 `Sessions | Bots` 模式切换；切到 Bots 时展示 Bot 列表，包含名称、角色、agent、workspace 与启用状态；
-- **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd），agent/workspace 复用实例已有目录与工作区配置；支持删除确认与 fail-closed 错误提示。
+- **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd），agent/workspace 复用实例已有目录与工作区配置。旧的 `control.bots.delete` 仍只删除没有依赖的 Bot。
+- **受控移除（`BotRemovalDialog.vue`）**：侧栏、Direct 页面和 Bot 对话框都能打开。先调用 `control.bots.remove.preview`，再由用户确认 `control.bots.remove`。文案说明群组历史保留，私聊历史是单独勾选。两人组成员关系会挡住确认，不会自动删群或踢掉另一名成员。清理失败或结果不确定时用同一个 `requestId` 重试。`lifecycle.operations.get` 可在刷新后查看这次清理。已移除 Bot 在列表和群组记录里显示为 removed bot，composer 不再发送。
 
 ### 禁用 Bot 的整理与恢复
 
@@ -723,7 +724,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 ### 话题与消息流（`DirectBotPane.vue`）
 
 - **顶部栏**：展示 Bot 头像、名称、角色、工作区/Agent 徽标与操作入口；
-- **话题栏**：展示默认话题及已有额外话题，支持点击切换与「新建话题」模态框；切换话题时按 `conversationId + topicId` 隔离历史与实时 Run；
+- **话题栏**：当前话题显示在一个按钮里。桌面端打开下拉列表，窄屏打开底部列表面板。列表可以搜索，并提供重命名、收起、恢复。额外话题可以删除。默认话题只提供清空，并要求确认。删除和清空会先预览外部绑定与 worktree。有绑定且未确认时不能提交。有未结束的 worktree 时不能提交。切换话题时按 `conversationId + topicId` 隔离历史与实时 Run。已删除话题的迟到列表或 `conversation-topic-changed` 不会把它加回缓存。清空默认话题提升 generation 后，当前历史缓存会被丢掉并重新加载；
 - **消息列表（`ConversationMessageList.vue`）**：
   - 历史消息严格按 `seq` 排序并按 message `id` 去重；
   - 支持向上拉取更早消息，保持当前滚动位置不跳动；
