@@ -7350,46 +7350,16 @@ test("PR7 scheduler: unexpected post-claim execution failure rejects activation 
 });
 
 
-test("PR7 scheduler: unrelated topics stay sequential while shared siblings overlap", async () => {
-  // P2: sibling overlap must not become global dispatcher parallelism. Two
-  // independent Direct Runs on different bots: while A's provider turn hangs,
-  // B must NOT start in the same drain. The existing shared-overlap test
-  // proves same-Run siblings still overlap.
-  const hangA = deferred<void>();
-  const first = await createLifecycle({ autoKick: false, ownerId: "dispatcher-a" });
-  const botB = "bot_second";
-  first.state.bots[botB] = {
-    id: botB, name: "Second", agent: "codex", workspace: "backend", enabled: true,
-    profileRevision: 1, createdAt: NOW, updatedAt: NOW,
-  };
-  await first.service.activateAfterConsumerLock();
-  const acceptedA = await first.service.acceptDirectPrompt({ botId: BOT_ID, requestId: "req-seq-a", content: "a" });
-  const acceptedB = await first.service.acceptDirectPrompt({ botId: botB, requestId: "req-seq-b", content: "b" });
-  const fr = fakeRunner(first.runner);
-  fr.run = (async (input: ConversationTurnRunInput) => {
-    fr.runs.push(input);
-    if (input.botId === BOT_ID) {
-      await hangA.promise;
-      return { status: "completed" as const, text: "a done" };
-    }
-    return { status: "completed" as const, text: "b done" };
-  }) as FakeRunner["run"];
-  void first.dispatcher.kick();
-  await waitUntil(() => fr.runs.length === 1, 4000);
-  expect(fr.runs[0]?.botId).toBe(BOT_ID);
-  // A still hangs: B must not start — no global parallelism.
-  await tick();
-  await tick();
-  await tick();
-  expect(fr.runs).toHaveLength(1);
-  expect(first.store.getRun(acceptedB.run.id)?.state).toBe("queued");
-  hangA.resolve();
-  await waitUntil(() => first.store.getRun(acceptedA.run.id)?.state === "completed", 4000);
-  await waitUntil(() => fr.runs.length === 2, 4000);
-  expect(fr.runs[1]?.botId).toBe(botB);
-  await waitUntil(() => first.store.getRun(acceptedB.run.id)?.state === "completed", 4000);
-  first.store.close();
-});
+// PR C replaces PR7's global cohort boundary: a Run whose Provider turn is open
+// no longer blocks a Run on a different Topic. The safety that must survive is
+// that a second Run on the SAME Topic still cannot start — the durable
+// claim-time invariant. Both directions are covered end-to-end in
+// conversation-cross-run.test.ts ("same Topic stays strictly serial" and
+// "independent Topics execute concurrently"), which uses the pre-routed
+// concurrency harness so the assertions measure Provider admission directly
+// rather than Router latency.
+
+
 
 test("PR7 scheduler: held handoff failure rejects activation without unhandled rejection", async () => {
   // P1 follow-up: a rechecked held sibling is launched without an await, so

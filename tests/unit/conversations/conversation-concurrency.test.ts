@@ -228,19 +228,38 @@ test("two SQLite connections atomically reserve capacity, leave full work pendin
   other.close(); h.store.close();
 });
 
-test("configured Topics preserve the existing global cohort boundary and each uses its own limit", async () => {
-  const h = await harness(); const a = await h.group(1); const b = await h.group(2);
+test("independent Topics execute concurrently, each bounded by its own limit", async () => {
+  // PR C replaces the old global cohort boundary. Previously Topic B could not
+  // start until Topic A's whole cohort settled, so a long Provider turn on A
+  // blocked an unrelated Topic. Now independent Runs overlap, while each Topic
+  // still respects its own durable capacity limit and the process-wide ceiling.
+  const h = await harness();
+  const a = await h.group(1); const b = await h.group(2);
   h.accept(a.group.id, a.topic.id, 2, true, "first");
-  const drain = h.dispatcher.kick(); await until(() => h.runner.calls.length === 1);
-  h.accept(b.group.id, b.topic.id, 3, true, "other"); void h.dispatcher.kick();
+  const drain = h.dispatcher.kick();
+  // A's first member takes its Provider turn and HOLDS it (limit=1): this is the
+  // long turn that used to block every other Topic.
+  await until(() => h.runner.calls.length === 1);
   expect(h.runner.calls[0]!.topicId).toBe(a.topic.id);
-  h.runner.finish(0); await until(() => h.runner.calls.length === 2);
-  expect(h.runner.calls[1]!.topicId).toBe(a.topic.id);
-  h.runner.finish(1); await until(() => h.runner.calls.length === 4);
-  expect(h.runner.calls.slice(2).every((c) => c.topicId === b.topic.id)).toBe(true);
-  expect(h.runner.active).toBe(2);
-  h.runner.finish(2); await until(() => h.runner.calls.length === 5);
-  h.runner.finish(3); h.runner.finish(4); await drain; expect(h.runner.peak).toBe(2); h.store.close();
+  expect(h.runner.active).toBe(1);
+  // B must be able to start — and fill its own limit of 2 — while A's turn is
+  // still open. This is the overlap the old cohort boundary prevented.
+  h.accept(b.group.id, b.topic.id, 2, true, "other");
+  void h.dispatcher.kick();
+  await until(() => h.runner.calls.length === 3);
+  expect(h.runner.calls.slice(1).every((c) => c.topicId === b.topic.id)).toBe(true);
+  // Real Provider-layer overlap: 3 turns are simultaneously in flight across
+  // two independent Topics, one of which has been open the whole time.
+  expect(h.runner.active).toBe(3);
+  expect(h.runner.peak).toBeGreaterThanOrEqual(3);
+  // A is still bounded by its own limit of 1: its second member cannot start
+  // until the first settles, regardless of B's capacity.
+  expect(h.runner.calls.filter((c) => c.topicId === a.topic.id)).toHaveLength(1);
+  // Releasing A's turn refills A's slot from its own queue.
+  h.runner.finish(0);
+  await until(() => h.runner.calls.filter((c) => c.topicId === a.topic.id).length === 2);
+  for (let i = 0; i < h.runner.calls.length; i++) h.runner.finish(i);
+  await drain; h.store.close();
 });
 
 test("public handoff remains pending behind capacity and starts once with orchestration authority", async () => {

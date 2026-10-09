@@ -60,7 +60,7 @@ export class ControlledRunner implements ConversationTurnRunner {
     return { outcome: "cancelled" as const };
   }
 }
-export async function harness(options: { path?: string; state?: AppState; hooks?: ConversationDispatcherHooks; router?: ConversationRouter; ownerId?: string; beforeAcceptPersist?: () => Promise<void>; transport?: Partial<AppConfig["transport"]>; acpxCommandMetadata?: AcpxCommandMetadata; workspaceCwd?: string; worktreeRoot?: string; worktreeHooks?: WorktreeManagerHooks } = {}) {
+export async function harness(options: { path?: string; state?: AppState; hooks?: ConversationDispatcherHooks; router?: ConversationRouter; ownerId?: string; beforeAcceptPersist?: () => Promise<void>; transport?: Partial<AppConfig["transport"]>; acpxCommandMetadata?: AcpxCommandMetadata; workspaceCwd?: string; worktreeRoot?: string; worktreeHooks?: WorktreeManagerHooks; maxConcurrentRunExecutions?: number } = {}) {
   const path = options.path ?? join(mkdtempSync(join(tmpdir(), "xacpx-concurrency-")), "conversations.sqlite");
   const store = await SqliteConversationStore.open(path);
   const state = options.state ?? createEmptyState();
@@ -80,7 +80,8 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
   const runner = new ControlledRunner();
   let clock = Date.parse(NOW);
   const now = () => new Date(clock++);
-  const dispatcher = new ConversationDispatcher(store, runtime, runner, sessions, { now, hooks: options.hooks, ownerId: options.ownerId });
+  const dispatcher = new ConversationDispatcher(store, runtime, runner, sessions, { now, hooks: options.hooks, ownerId: options.ownerId,
+    ...(options.maxConcurrentRunExecutions !== undefined ? { maxConcurrentRunExecutions: options.maxConcurrentRunExecutions } : {}) });
   const worktrees = options.worktreeRoot ? new ConversationWorktreeManager(store.worktrees, options.worktreeRoot, config, options.worktreeHooks) : undefined;
   if (worktrees) { dispatcher.setWorktreeManager(worktrees); sessions.setConversationWorktreeResolver(s => worktrees.resolveSessionCwd(s)); }
   const integrations = worktrees ? new WorktreeIntegrationService(worktrees, store, state, runtime, releaseOwnedSession) : undefined;
@@ -91,6 +92,11 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
     { now, stateMutex, autoKick: false, releaseOwnedSession, routerEngine, beforeAcceptPersist: options.beforeAcceptPersist,
       worktrees, beforeWorktreeCleanup: integrations ? (c, t) => integrations.cleanupScope(c, t) : undefined });
   dispatcher.setAutomaticRoutingHandler((id) => service.trackAutomaticRouting(id));
+  // Observable claim activity, so a test can wait for the scheduler to have
+  // scanned instead of guessing a duration. Counts every claimNextDispatch call.
+  const claimCounter = { attempts: 0 };
+  const originalClaim = store.claimNextDispatch.bind(store);
+  store.claimNextDispatch = (input) => { claimCounter.attempts += 1; return originalClaim(input); };
   const ids = Object.keys(state.bots);
   async function group(limit?: number) {
     const g = await bots.createGroup({ title: "Limits", botIds: ids });
@@ -105,5 +111,5 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
       primaryMember: first, members: ids.slice(1, count).map(member), content: "one frozen request", now: NOW,
       maxMemberTurns: 24, authorityEpoch: dispatcher.authorityEpoch, humanIngress: HUMAN });
   }
-  return { path, config, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, ids, now, worktrees, integrations, jump: (ms: number) => { clock += ms; } };
+  return { path, config, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, ids, now, worktrees, integrations, jump: (ms: number) => { clock += ms; }, claimAttempts: () => claimCounter.attempts };
 }

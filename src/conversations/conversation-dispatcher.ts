@@ -6,11 +6,23 @@ import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import { sessionMatchesExecution } from "../bots/bot-types";
 import { createSourceTurnId } from "../domain/ids";
 import type { SessionService } from "../sessions/session-service";
+import type { LogicalSession } from "../state/types";
 import { ConversationError } from "./conversation-error";
 import { isRunCancelling, requireMemberResult } from "./conversation-store";
 import { conversationExecutionOrigin, conversationExecutionOriginFromMemberTurn } from "./conversation-execution";
 import { publicMessageMatchesRunScope, requestSnapshotMatches, type ClaimedWork, type ConversationStore } from "./conversation-store";
 import { isEffectConcurrencySafe } from "./conversation-filesystem-policy";
+import {
+  ResourceReservationTable,
+  physicalResourceKey,
+  type PhysicalResourceIdentity,
+  type ResourceReservation,
+} from "./conversation-resource-admission";
+import {
+  TopicFairnessRotator,
+  hasGlobalCapacity,
+  resolveMaxConcurrentRunExecutions,
+} from "./conversation-admission-policy";
 import type { GroupHandoffService } from "./group-handoff";
 import {
   emitConversationProductEvent,
@@ -79,6 +91,10 @@ export interface ConversationDispatcherOptions {
   onProductEvent?: ConversationProductEventSink;
   /** Defaults to an unref'd timer. Tests pass a manual clock. */
   leaseScheduler?: LeaseScheduler;
+  /** PR C: ceiling on concurrently executing member turns across all Runs.
+   *  Undefined uses the documented default; invalid values fall back to it
+   *  rather than being coerced to 0 or treated as unlimited. */
+  maxConcurrentRunExecutions?: number;
 }
 
 /**
@@ -103,6 +119,12 @@ export class ConversationDispatcher {
   private readonly hooks?: ConversationDispatcherHooks;
   private draining = false;
   private wakeGeneration = 0;
+  /** Resolved whenever a wake is raised, so a drain blocked on in-flight work
+   *  can re-scan immediately instead of staying parked until a turn settles.
+   *  Without this, a long Provider turn on one Topic would hold the `draining`
+   *  guard and silently drop every other Topic's kick — head-of-line blocking. */
+  private wakeSignal: Promise<void> = Promise.resolve();
+  private resolveWakeSignal?: () => void;
   /** Topics that failed pre-start in this drain pass. Skipped so a poison row
    *  cannot starve other Topics. A later wake generation starts a fresh pass
    *  with this set cleared; without a new wake the poison Topic does not
@@ -138,12 +160,20 @@ export class ConversationDispatcher {
   private schedulingFailure: { error: unknown } | undefined;
   /** Set by ConversationRunService so the first fatal scheduling error fail-closes accept and can be logged. */
   private onFatalSchedulingError?: (error: unknown) => void;
+  /** PR C: bounded global admission. Never exceeded, so a busy host cannot
+   *  start an unbounded number of Provider turns across independent Runs. */
+  private readonly maxConcurrentRunExecutions: number;
+  /** PR C: Topic round-robin so a high-traffic Topic cannot starve the rest. */
+  private readonly fairness = new TopicFairnessRotator();
+  /** PR C: cross-Run physical resource reservations. In-memory only — the
+   *  durable claim, lease and generation fences remain the sole authority. */
+  private readonly resourceReservations = new ResourceReservationTable();
 
   constructor(
     private readonly store: ConversationStore,
     private readonly runtime: BotRuntimeManager,
     private readonly runner: ConversationTurnRunner,
-    private readonly sessions: Pick<SessionService, "getLogicalSessionRecord">,
+    private readonly sessions: Pick<SessionService, "getLogicalSessionRecord" | "getResolvedSessionByInternalAlias">,
     options?: ConversationDispatcherOptions,
   ) {
     this.now = options?.now ?? (() => new Date());
@@ -153,6 +183,9 @@ export class ConversationDispatcher {
     this.hooks = options?.hooks;
     this.onProductEvent = options?.onProductEvent;
     this.leaseScheduler = options?.leaseScheduler ?? defaultLeaseScheduler();
+    this.maxConcurrentRunExecutions = resolveMaxConcurrentRunExecutions({
+      ...(options?.maxConcurrentRunExecutions !== undefined ? { maxConcurrentRunExecutions: options.maxConcurrentRunExecutions } : {}),
+    });
     this.armLeaseKeeper();
   }
 
@@ -166,6 +199,12 @@ export class ConversationDispatcher {
   async kick(): Promise<void> {
     this.surfaceLeaseFailure();
     this.wakeGeneration += 1;
+    // Release any drain blocked on in-flight work so it re-scans now. The
+    // resolver is swapped first so the NEXT block waits on a fresh signal.
+    this.resolveWakeSignal?.();
+    const { promise, resolve } = Promise.withResolvers<void>();
+    this.wakeSignal = promise;
+    this.resolveWakeSignal = resolve;
     if (this.closed) {
       return;
     }
@@ -195,6 +234,26 @@ export class ConversationDispatcher {
   /** Refuse new claims. In-flight execute may finish. */
   stop(): void {
     this.closed = true;
+  }
+
+  /**
+   * Test seam: return every writer-slot hold to durable `pending` and forget
+   * it, without the rest of shutdown. Models a crash where this process dies
+   * before its held claims ever start, so a fixture can assert recovery from a
+   * genuinely unclaimed row. Production never calls this — shutdown retires the
+   * same way as part of teardown.
+   */
+  retireHeldClaimsForTest(): void {
+    for (const [dispatchId, work] of [...this.heldWriterSlotClaims]) {
+      this.store.retireHeldClaim({
+        dispatchId,
+        owner: this.ownerId,
+        generation: work.dispatch.generation,
+        now: this.now().toISOString(),
+      });
+      this.heldWriterSlotClaims.delete(dispatchId);
+    }
+    this.deferredTopicIds.clear();
   }
 
   async shutdown(): Promise<void> {
@@ -250,6 +309,10 @@ export class ConversationDispatcher {
       this.heldWriterSlotClaims.delete(dispatchId);
     }
     this.surfaceShutdownFailure();
+    // Cross-Run reservations are in-memory only: nothing durable depends on
+    // them, and this process is going away, so they cannot gate any future
+    // work. The next process converges through the durable claim/lease path.
+    this.resourceReservations.clear();
   }
 
   private async runDrain(): Promise<void> {
@@ -275,6 +338,11 @@ export class ConversationDispatcher {
       // cell is final.
       const guard = this.execute(work).then(
         () => {
+          // Release the cross-Run physical reservation unconditionally: the
+          // resource is free the moment the Provider turn settles, whether the
+          // turn completed, failed, or was cancelled. Leaving it held would
+          // serialize unrelated Runs behind a finished one.
+          this.resourceReservations.release(work.dispatch.id);
           if (this.inFlightExecutions.get(work.dispatch.id) === guard) {
             this.inFlightExecutions.delete(work.dispatch.id);
             this.inFlightWork.delete(work.dispatch.id);
@@ -283,6 +351,7 @@ export class ConversationDispatcher {
         (error: unknown) => {
           outcome.status = "rejected";
           outcome.reason = error;
+          this.resourceReservations.release(work.dispatch.id);
           if (this.inFlightExecutions.get(work.dispatch.id) === guard) {
             this.inFlightExecutions.delete(work.dispatch.id);
             this.inFlightWork.delete(work.dispatch.id);
@@ -342,33 +411,75 @@ export class ConversationDispatcher {
           }
         }
         this.renewOwnedClaims();
-        // Sibling cohort for this drain: the first launch goes out globally
-        // (previous sequencing); afterwards only the SAME Run's siblings are
-        // claimable until the cohort settles. The runtime contract reserves
-        // global cross-Topic/Bot parallelism as follow-up work; PR7 needs
-        // same-batch overlap only.
-        let cohortRunId: string | undefined;
+        // Cross-Run cohort (PR C): independent Runs execute concurrently.
+        // The cohort is a SET of Run ids rather than one Run: the first claim
+        // goes out globally, and afterwards any Run whose Topic still has
+        // durable capacity may join, so a Run blocked by a resource conflict
+        // or a pre-start failure never blocks a compatible one. Same-Topic
+        // strict serialization is NOT relaxed here — it stays a durable
+        // claim-time invariant in claimNextDispatch, so at most one Run per
+        // Topic can ever be in this set.
+        const cohortRunIds = new Set<string>();
         // True once this pass claimed anything (launched or held): the
         // extra-pass decision below may only chain off a pass that made
         // progress, never off an empty preview.
         let passProgress = false;
+        // Renew ONCE per pass, before the claim loop — not on every iteration.
+        // A pass that parks on an in-flight turn (ceiling wait, refill wait)
+        // re-enters this loop, and renewing each time would keep the store busy
+        // for the whole Provider turn. That breaks the documented "a parked
+        // drain performs no further sqlite access" precondition a crash-recovery
+        // test relies on, and it is unnecessary: the lease keeper renews on its
+        // own schedule while the turn is open.
+        //
+        // Renewal MUST still precede recoverExpiredClaims() so a scheduling wait
+        // that outlasts one lease is never mistaken for a dead owner.
+        this.renewOwnedClaims();
+        this.store.recoverExpiredClaims(this.now().toISOString());
         for (;;) {
           if (this.closed) {
             return;
           }
-          const limits = this.runtime.topicConcurrencyLimits();
-          // Every claim this process still holds is renewed before recovery,
-          // including Topics with no concurrency cap and writer-slot holds.
-          // A long provider turn must not look like process death. Restart
-          // has no in-memory promises and uses normal durable convergence.
-          this.renewOwnedClaims();
-          this.store.recoverExpiredClaims(this.now().toISOString());
-          const claimed = this.claimOne(cohortRunId);
+          // Bounded global admission: never start more Provider turns than the
+          // configured ceiling. Over-ceiling work simply stays `pending` for a
+          // later pass — nothing durable is rewritten.
+          //
+          // At the ceiling, block on ONE in-flight settle — or on a wake — and
+          // then re-claim. Falling through to the pass tail's
+          // awaitCohortInFlight would keep the freed capacity idle until every
+          // other Run finished, which is the head-of-line blocking this change
+          // removes. Racing the wake keeps a newly accepted Run on another Topic
+          // from waiting behind a long turn that already holds the ceiling.
+          if (!hasGlobalCapacity(this.inFlightExecutions.size, this.maxConcurrentRunExecutions)) {
+            if (this.inFlightExecutions.size === 0) break;
+            await Promise.race([...this.inFlightExecutions.values(), this.wakeSignal]);
+            continue;
+          }
+          // Cross-Run admission (PR C): claims stay GLOBAL. The durable store
+          // already forbids two Runs of one Topic from both holding claims, so
+          // a global scan can only ever return a Run from a different Topic —
+          // which is precisely the overlap this change enables. The old code
+          // pinned the scan to the first Run's id, which is what prevented it.
+          const claimed = this.claimOne();
           if (!claimed) {
-            const active = this.inFlightWork.values().next().value as ClaimedWork | undefined;
-            if (cohortRunId !== undefined && active && limits[active.run.topicId] !== undefined
-              && this.inFlightExecutions.size > 0) {
-              await Promise.race(this.inFlightExecutions.values());
+            // Nothing more is claimable right now. Keep the drain alive while
+            // our own work is in flight, so a finishing member refills its
+            // capacity in THIS pass — the pre-PR refill semantics.
+            //
+            // Block on the in-flight set OR on a wake, rather than polling.
+            // Blocking (not polling) is what keeps a parked drain free of store
+            // access while a Provider turn is open — the precondition
+            // crash-recovery relies on — and what stops an idle dispatcher from
+            // spinning. Racing the wake is what stops head-of-line blocking:
+            // without it, a long turn would hold the `draining` guard and
+            // silently drop another Topic's kick until the turn settled.
+            //
+            // Only wait when this pass actually launched a cohort. A pass that
+            // merely parked a writer-slot hold (nothing launched) must not wait:
+            // the hold is re-checked at the pass tail, and waiting here would
+            // strand a Topic this pass deliberately deferred.
+            if (cohortRunIds.size > 0 && this.inFlightExecutions.size > 0) {
+              await Promise.race([...this.inFlightExecutions.values(), this.wakeSignal]);
               continue;
             }
             break;
@@ -388,7 +499,7 @@ export class ConversationDispatcher {
             // writer. Existing reader-safe siblings may still use remaining
             // capacity without changing the logical batch or dependencies.
             const readers = [...this.inFlightWork.values()];
-            if (cohortRunId === claimed.run.id && readers.length > 0 && readers.every((active) =>
+            if (cohortRunIds.has(claimed.run.id) && readers.length > 0 && readers.every((active) =>
               active.memberTurn.effect === "read-only" && active.memberTurn.effectProvenance === "declared-enforced")) {
               this.deferredTopicIds.delete(claimed.run.topicId);
               continue;
@@ -399,19 +510,19 @@ export class ConversationDispatcher {
             // cohort is in flight its scope is kept, so unrelated work waits
             // for the next drain. Either way the held Run's own rows are
             // excluded (its Topic is deferred for this drain).
-            if (cohortRunId === undefined) {
+            if (cohortRunIds.size === 0) {
               continue;
             }
             break;
           }
-          // Executions of one cohort run concurrently: the drain launches
-          // each claimed sibling and keeps draining the SAME Run (cohort
-          // filter above). Sibling overlap is decided by the isolation policy,
-          // never by drain ordering. Unrelated Topics/Bots wait for the next
-          // drain: the loop awaits the SET (below), so kick() still settles
-          // only after every launched execution finishes.
+          // Executions of independent Runs run concurrently: the drain
+          // launches each claim and keeps admitting further Runs whose Topics
+          // still have durable capacity. Cross-Run physical isolation is
+          // decided by the resource admission table inside execute(), never
+          // by drain ordering.
           launchExecution(claimed);
-          cohortRunId ??= claimed.run.id;
+          cohortRunIds.add(claimed.run.id);
+          this.fairness.served(claimed.run.topicId);
           passProgress = true;
         }
         // Settle launched executions, then re-check held writer-slot claims —
@@ -491,6 +602,10 @@ export class ConversationDispatcher {
   }
 
   async cancelRun(runId: string): Promise<void> {
+    // A cancelled Run must not keep holding cross-Run physical resources: the
+    // remaining members are about to be cancelled, and an unrelated Run must
+    // be able to use that directory immediately.
+    this.resourceReservations.releaseRun(runId);
     const now = this.now().toISOString();
     const outcome = this.store.cancelRun(runId, now);
     if (outcome.alreadyTerminal) {
@@ -829,6 +944,61 @@ export class ConversationDispatcher {
    *  origin to `recovery`, bumping attempt — and the member would execute
    *  without its original human permission route. Renewal keeps the SAME
    *  owner/generation/provenance; only the expiry moves. */
+  /**
+   * Cross-Run physical resource identity for one claimed execution (PR C).
+   *
+   * Returns undefined when the identity cannot be verified, which fails
+   * admission closed. Never guesses from a Topic id, Bot name or declared
+   * effect: only a worktree binding this manager has verified, or the
+   * workspace cwd the session was actually materialized against.
+   *
+   * Worktree-bound executions key on the verified worktree id, so two
+   * different owned worktrees are never conflated even if their paths share a
+   * prefix. Shared-workspace executions key on the canonical workspace cwd,
+   * which is what makes two Runs on the same directory conflict.
+   */
+  private resolvePhysicalResourceIdentity(
+    work: ClaimedWork,
+    session: LogicalSession,
+    worktreeRef: import("./conversation-worktree-types").ConversationWorktreeRef | undefined,
+  ): PhysicalResourceIdentity | undefined {
+    const isolation = this.runtime.groupTopicIsolation(work.run.conversationId, work.run.topicId);
+    if (worktreeRef) {
+      // The caller already awaited verifyReference() above, so the worktree is
+      // registered to this durable owner at this generation. resolveSessionCwd
+      // re-asserts that binding and returns the verified physical path; a throw
+      // here means the identity is not verifiable and must not be admitted.
+      let cwd: string;
+      try {
+        cwd = this.worktrees!.resolveSessionCwd(session);
+      } catch {
+        return undefined;
+      }
+      return { cwd, worktreeId: worktreeRef.worktreeId, isolation };
+    }
+    // Shared workspace: the physical directory is the workspace root the
+    // session was actually materialized against, resolved through the session
+    // service so an unregistered workspace reads as unverifiable rather than
+    // being guessed from a name.
+    //
+    // A resolution failure here is NOT treated as unverifiable identity: config
+    // drift is already owned by the runtime-revision checks that ran earlier in
+    // execute(), against the frozen claim snapshot. Re-reporting it as a
+    // resource failure would both duplicate that diagnosis and mask the real
+    // cause. Only a genuinely absent session is unverifiable.
+    if (!session) return undefined;
+    const resolved = this.sessions.getResolvedSessionByInternalAlias(session.alias);
+    if (!resolved) {
+      // The session exists but its workspace no longer resolves: that is config
+      // drift, already diagnosed. Fall back to the workspace NAME so the
+      // reservation still keys consistently — two Runs whose sessions resolve
+      // to the same workspace still conflict — and let the revision check own
+      // the verdict.
+      return { cwd: `workspace:${session.workspace}`, isolation };
+    }
+    return { cwd: resolved.cwd, isolation };
+  }
+
   private recheckHeldClaims(): ClaimedWork | undefined {
     const now = this.now().toISOString();
     for (const [dispatchId, work] of this.heldWriterSlotClaims) {
@@ -914,6 +1084,17 @@ export class ConversationDispatcher {
         this.failOwnClaimBeforeStart(work, corrupted ? "request_snapshot_mismatch" : "missing_request_snapshot");
         return;
       }
+      // Re-read the durable MemberTurn before the transcript/scope checks. A
+      // writer-slot hold can park this claim for a whole Provider turn of its
+      // sibling, during which durable state may change (a corrupted trigger
+      // reference, a rewritten task). The claim snapshot is then stale, so
+      // validating it would pass on data that no longer exists. Rebind `work` so
+      // every later check in this function sees the durable row; the claim's own
+      // owner/generation still fences who may execute it.
+      const liveMember = this.store.getMemberTurn(work.memberTurn.id);
+      if (liveMember && liveMember !== work.memberTurn) {
+        work = { ...work, memberTurn: liveMember };
+      }
       const isGroup = this.runtime.conversationKind(work.run.conversationId) === "group";
       if (isGroup && (work.run.mode === "automatic" || work.memberTurn.assignmentId) && !work.memberTurn.task?.trim()) {
         this.failOwnClaimBeforeStart(work, "missing_assignment_task");
@@ -970,6 +1151,41 @@ export class ConversationDispatcher {
         return;
       }
       await this.hooks?.beforeExecutionStart?.(work);
+      // Cross-Run physical admission (PR C). Re-verified here, immediately
+      // before the Provider turn, because materialization above is async: two
+      // Runs can both decide a directory looks free and only converge at this
+      // point. The identity comes from the SAME verified session/worktree
+      // binding the single-Run check just validated, so an identity that was
+      // never verified can never be treated as compatible.
+      const resourceIdentity = this.resolvePhysicalResourceIdentity(work, session, worktreeRef);
+      if (!resourceIdentity) {
+        // No verifiable identity: fail closed rather than guess. A resource we
+        // cannot name must not be assumed shareable with another Run.
+        this.failOwnClaimBeforeStart(work, "resource_identity_unverified");
+        return;
+      }
+      const reservation: ResourceReservation = {
+        key: physicalResourceKey(resourceIdentity),
+        runId: work.run.id,
+        memberTurnId: work.memberTurn.id,
+        dispatchId: work.dispatch.id,
+        identity: resourceIdentity,
+        // Only a proven enforced read-only turn may overlap another Run on the
+        // same physical directory. Anything else takes that resource's writer
+        // slot for the duration of the turn.
+        reader: work.memberTurn.effect === "read-only" && work.memberTurn.effectProvenance === "declared-enforced",
+      };
+      const blocking = this.resourceReservations.conflicts(reservation.identity, reservation.reader);
+      if (blocking) {
+        // Another Run already holds this physical resource in an incompatible
+        // mode. This claim has not started, so it fails closed BEFORE any
+        // Provider turn — no partial execution, no indeterminate seal. The
+        // durable row stays `claimed` under our lease and the pre-start fences
+        // reap it on the next pass.
+        this.failOwnClaimBeforeStart(work, "resource_admission_denied");
+        return;
+      }
+      this.resourceReservations.add(reservation);
       if (worktreeRef) {
         await this.worktrees!.verifyReference(worktreeRef);
         assertStillDispatchable();

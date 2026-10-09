@@ -883,3 +883,123 @@ or introduce a bounded retention policy only after establishing an enforceable
 platform replay horizon (including manual retransmission). Such a policy must
 define expiry behavior and migration; deleting receipts while accepting the
 same old source again would weaken the current exactly-once contract.
+
+## Cross-Run concurrency (PR C)
+
+Independent Conversation Runs on different Topics execute concurrently. A long
+Provider turn on Topic A no longer blocks a compatible Run on Topic B, and a
+Direct Conversation has the same capability as a Group.
+
+### What still serializes, and why
+
+Same-Topic strictness is **durable, not advisory**. `claimNextDispatch` refuses a
+second Run of one Topic while the first holds any `claimed` dispatch or is
+`running`/`waiting-human`. That clause is claim-time SQL, so it holds with or
+without the admission layer and cannot be bypassed by scheduling order. Queued
+Runs on a Topic are still claimed in human request message `seq` order. The
+`waiting-human`, automatic-Router and cancel barriers are untouched.
+
+Within one Run nothing changes: `maxConcurrentMemberTurns`, parallel/sequential
+assignment, the dependency fence, effect proof and the writer-slot rules all
+still apply exactly as before.
+
+### Admission
+
+Claims remain a single global scan. Because the store already forbids two Runs
+of one Topic from both holding claims, a global scan can only ever return a Run
+from a *different* Topic — which is precisely the overlap this enables. There is
+no second queue and no new executor; `claimNextDispatch` stays the sole
+authority on what is admissible.
+
+A process-wide ceiling bounds total in-flight Provider turns
+(`ConversationDispatcher` option `maxConcurrentRunExecutions`, default 8, upper
+bound 64). Values that are not a positive integer within that range fall back to
+the default rather than being coerced to 0 or read as unlimited. At the ceiling
+the drain waits for **one** turn to settle and re-claims, so freed capacity is
+reused immediately instead of idling until the whole cohort finished. Per-Topic
+`maxConcurrentMemberTurns` still bounds each Topic independently.
+
+Fairness is Topic-granular and deterministic: a round-robin rotator moves the
+Topic that just received capacity behind the other ready Topics, so a
+high-traffic Topic cannot starve the rest. No randomness, no wall-clock
+weighting.
+
+### Physical resource isolation
+
+This is the safety-critical part. Cross-Run admission must not infer safety from
+a Topic id, Bot name or a declared effect string.
+
+Before any Provider turn, each execution is assigned a `PhysicalResourceIdentity`
+derived from **verified** state:
+
+- a worktree-bound execution keys on its verified owned worktree id (distinct
+  worktrees are physically distinct even when their paths share a prefix), with
+  the path re-asserted through the worktree manager;
+- a shared-workspace execution keys on the workspace cwd the session was
+  actually materialized against, resolved through the session service.
+
+If the identity cannot be verified, admission fails closed — an unnamed resource
+is never assumed shareable.
+
+The rule, mirroring the single-Run policy across Runs:
+
+- **Shared physical directory**: only `read-only` + `declared-enforced` may
+  overlap, and only when **both** participants are proven readers. Unknown or
+  mutating work takes that directory's single writer slot.
+- **Distinct verified worktrees/cwds**: concurrent, provided both sides are
+  proven distinct.
+- Unverified identity, in-progress materialization, or a failed physical binding
+  check: no Provider execution.
+
+Admission is re-evaluated immediately before the Provider turn, because
+materialization is asynchronous and two Runs can both conclude a directory looks
+free before either has started. A rejected claim has not started, so it fails
+closed before any side effect — no partial execution, no indeterminate seal.
+
+Reservations live in memory only (`ResourceReservationTable`). They are released
+when the turn settles, when the claim is lost, when the Run is cancelled, and at
+shutdown. Nothing durable depends on them: a crashed process leaves nothing
+behind, and the next process converges through the ordinary durable claim/lease
+path. This is a fence over the durable claim, never a second source of truth.
+
+### Persistence, recovery and shutdown
+
+All PR #380 invariants are preserved unchanged:
+
+- `claimNextDispatch` transaction atomicity, owner/generation/leaseExpiry/
+  authorityEpoch fencing, and one active Run per Topic.
+- Every in-flight and held claim is renewed on a period of at most one third of
+  the lease, so a Provider turn longer than one lease is never mistaken for a
+  crash. Renewal happens before `recoverExpiredClaims`, and a closed store stops
+  it.
+- Writer-slot waits keep the original humanIngress, origin, generation and
+  attempt verbatim; a release/reclaim never rewrites permission authority.
+- Started work with unknown side effects is never blindly replayed.
+- `recoverExpiredClaims` and teardown remain Conversation/Topic scoped, so
+  cancelling or deleting one Topic never disturbs another's work.
+- Shutdown refuses new starts, waits for started tasks, retires unstarted holds
+  back to `pending` with provenance intact, then closes SQLite.
+- Background non-benign scheduling or renewal failures still fail-close accept
+  with the original error preserved; benign fences do not make the consumer
+  unavailable. `autoKick: false` and `wakePendingWork()` semantics are unchanged.
+
+### No head-of-line blocking, no busy-loop
+
+The drain never blocks on the whole in-flight set when deciding what to admit: a
+compatible Run on another Topic starts as soon as it is claimable, and a Run
+blocked by a resource conflict or a pre-start failure never blocks a compatible
+one.
+
+When nothing is claimable and work of ours is in flight, the drain **blocks on
+one in-flight settle or on a wake**, then re-scans. It never polls: a parked
+drain performs no store access while a Provider turn is open, which is the
+documented precondition crash-recovery relies on and what keeps an idle
+dispatcher from spinning. Racing the wake is what prevents head-of-line
+blocking — without it a long turn would hold the `draining` guard and silently
+drop another Topic's kick until the turn settled. Claim renewal happens once per
+pass, before the claim loop, never inside a wait; the lease keeper renews on its
+own schedule while the turn is open.
+
+Wakes from accept, completion, routing, handoff and cancel are coalesced by the
+monotonic wake generation, so no wake is lost and a ready task does not need a
+new user message to start.
