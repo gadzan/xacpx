@@ -110,6 +110,7 @@ export const MSG = {
   upload: "control.upload",
   sessionModelGet: "control.session.model.get",
   agentsCapabilitiesGet: "control.agents.capabilities.get",
+  conversationRouterGet: "control.conversations.router.get",
   sessionModelSet: "control.session.model.set",
   sessionEffortGet: "control.session.effort.get",
   sessionEffortSet: "control.session.effort.set",
@@ -1127,6 +1128,11 @@ export interface AgentsCapabilitiesGetPayload {
   workspace: string;
   botId?: string;
   probe?: boolean;
+}
+
+/** Empty read. The instance returns its startup router availability. */
+export interface ConversationRouterGetPayload {
+  readonly __empty?: never;
 }
 
 export interface SessionModelSetPayload {

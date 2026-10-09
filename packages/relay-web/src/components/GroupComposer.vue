@@ -50,11 +50,31 @@ const mentionDismissed = ref(false);
 
 const selection = computed(() => groupsStore.targetSelection);
 const isEveryone = computed(() => selection.value?.mode === "everyone");
+const isAutomatic = computed(() => selection.value?.mode === "automatic");
+const availability = computed(() => {
+  const id = props.instanceId ?? groupsStore.instanceId;
+  if (!id) {
+    return {
+      status: "unsupported" as const,
+      configPath: "conversations.router" as const,
+      reason: { code: "not-advertised" as const, message: t("group.router.noInstance") },
+    };
+  }
+  return instancesStore.routerAvailabilityFor(id);
+});
+const automaticReady = computed(() => availability.value.status === "ready");
+const automaticNote = computed(() => {
+  const state = availability.value;
+  if (state.status === "loading") return t("group.router.checking");
+  if (state.status === "ready") return "";
+  return t("group.router.unavailable", { reason: state.reason.message, path: state.configPath });
+});
 const selectedIds = computed<string[]>(() =>
   selection.value?.mode === "members" ? selection.value.botIds : [],
 );
 const eligibleBots = computed(() => props.bots.filter((b) => b.enabled));
 const selectionLabel = computed(() => {
+  if (isAutomatic.value) return t("group.target.automatic");
   if (isEveryone.value) return t("group.target.everyone");
   if (selectedIds.value.length === 0) return t("group.target.selectMembers");
   if (selectedIds.value.length === 1) {
@@ -103,6 +123,23 @@ function pickEveryone(): void {
   groupsStore.mentionEveryone();
   closeMenu();
 }
+
+function pickAutomatic(): void {
+  if (!automaticReady.value) return;
+  mentionOwned.value = false;
+  groupsStore.setTarget({ mode: "automatic" });
+  closeMenu();
+}
+
+watch(() => props.instanceId ?? groupsStore.instanceId, (id) => {
+  if (id) void instancesStore.loadRouterAvailability(id);
+}, { immediate: true });
+
+watch(availability, (state) => {
+  if (state.status === "ready" || groupsStore.targetSelection?.mode !== "automatic") return;
+  const group = groupsStore.currentGroup;
+  groupsStore.setTarget(group ? groupsStore.eligibleTargetFor(group, props.bots) : { mode: "members", botIds: [] });
+}, { immediate: true });
 
 /** The Lead shortcut and the Group-open default share one resolver so a
  *  "Lead" pick can never re-select a Bot the member list itself disables. */
@@ -453,6 +490,20 @@ function onInputResize(): void {
             >
               <AtSign :size="13" class="shrink-0 text-fg-muted" />
               <span class="flex-1 truncate font-medium">{{ $t("group.target.lead") }}</span>
+            </button>
+            <button
+              type="button"
+              data-test="group-target-automatic"
+              class="flex w-full items-start gap-2 rounded-lg px-2.5 py-2 text-left text-xs hover:bg-raised disabled:cursor-not-allowed disabled:opacity-60"
+              :disabled="!automaticReady"
+              @click="pickAutomatic"
+            >
+              <Bot :size="13" class="mt-0.5 shrink-0 text-fg-muted" />
+              <span class="min-w-0 flex-1">
+                <span class="block truncate font-medium">{{ $t("group.target.automatic") }}</span>
+                <span v-if="automaticNote" data-test="group-router-note" class="mt-0.5 block text-[10.5px] leading-snug text-fg-muted">{{ automaticNote }}</span>
+              </span>
+              <Check v-if="isAutomatic" :size="13" class="mt-0.5 shrink-0 text-accent" />
             </button>
             <button
               type="button"

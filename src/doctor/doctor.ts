@@ -10,6 +10,7 @@ import { isProcessAlive, resolveDaemonPaths, resolveRuntimeDirFromConfigPath } f
 import { resolveRuntimePaths, type RuntimePaths } from "../main";
 import { StateStore, type StateLoadReport } from "../state/state-store";
 import { checkAcpx } from "./checks/acpx-check";
+import { checkConversationRouter } from "./checks/conversation-router-check";
 import { checkBridge } from "./checks/bridge-check";
 import { checkConfig } from "./checks/config-check";
 import { checkDaemon } from "./checks/daemon-check";
@@ -52,6 +53,7 @@ interface DoctorDeps {
   checkPlugins?: typeof checkPlugins;
   checkOrchestrationHealth?: () => Promise<DoctorCheckResult>;
   checkOrchestrationSocket?: typeof checkOrchestrationSocket;
+  checkConversationRouter?: typeof checkConversationRouter;
   checkSmoke?: (options: DoctorRunOptions) => Promise<DoctorCheckResult>;
   /**
    * Whether a daemon currently owns the runtime. Injected so the state-mutating
@@ -165,6 +167,14 @@ export async function runDoctor(options: DoctorRunOptions = {}, deps: DoctorDeps
         (deps.checkOrchestrationSocket ?? checkOrchestrationSocket)({
           home,
           configPath: runtimePaths.configPath,
+        }),
+    },
+    {
+      id: "conversation-router",
+      run: () =>
+        (deps.checkConversationRouter ?? checkConversationRouter)({
+          loadConfig: sharedLoadConfig,
+          resolveRuntimePaths: () => runtimePaths,
         }),
     },
     {

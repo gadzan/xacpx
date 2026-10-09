@@ -67,6 +67,7 @@ import {
   type ScheduledCreatePayload,
   type ScheduledListPayload,
   type AgentsCapabilitiesGetPayload,
+  type ConversationRouterGetPayload,
   type SessionModelGetPayload,
   type SessionModelSetPayload,
   type SessionEffortGetPayload,
@@ -342,6 +343,11 @@ const validateGitWorktreeCreate: Validator<GitWorktreeCreatePayload> = (p) => {
 };
 
 // --- model / terminal / upload ---
+const validateConversationRouterGet: Validator<ConversationRouterGetPayload> = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 0) return null;
+  return {};
+};
 const validateAgentsCapabilitiesGet: Validator<AgentsCapabilitiesGetPayload> = (p) => {
   const o = fields(p);
   if (!o || !isBoundedStr(o.agent, 128) || !isBoundedStr(o.workspace, 256)) return null;
@@ -990,6 +996,7 @@ export type ControlRpcType =
   | typeof MSG.fsRename | typeof MSG.fsDelete | typeof MSG.fsCopy | typeof MSG.fsDownload
   | typeof MSG.fsWrite | typeof MSG.sessionModelGet | typeof MSG.sessionModelSet
   | typeof MSG.agentsCapabilitiesGet
+  | typeof MSG.conversationRouterGet
   | typeof MSG.sessionEffortGet | typeof MSG.sessionEffortSet
   | typeof MSG.gitStatus | typeof MSG.gitStage | typeof MSG.gitUnstage
   | typeof MSG.gitUntrack | typeof MSG.gitDiscard | typeof MSG.gitCommit
@@ -1064,6 +1071,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.gitWorktreeCreate]: validateGitWorktreeCreate,
   [MSG.sessionModelGet]: validateSessionModelGet,
   [MSG.agentsCapabilitiesGet]: validateAgentsCapabilitiesGet,
+  [MSG.conversationRouterGet]: validateConversationRouterGet,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.sessionEffortGet]: validateSessionEffortGet,
   [MSG.sessionEffortSet]: validateSessionEffortSet,

@@ -17,6 +17,7 @@ import type {
   AppConfig,
   ChannelConfig,
   ChannelRuntimeConfig,
+  ConversationsConfig,
   LaterConfig,
   LoggingConfig,
   LoggingLevel,
@@ -261,6 +262,7 @@ export function parseConfig(
   if (isRecord(files) && "writeEnabled" in files && typeof files.writeEnabled !== "boolean") {
     throw new Error("files.writeEnabled must be boolean");
   }
+  const conversations = parseConversationsConfig(raw.conversations);
   if (
     isRecord(logging) &&
     "level" in logging &&
@@ -458,6 +460,7 @@ export function parseConfig(
     workspaces,
     orchestration: orchestrationConfig,
     later: laterConfig,
+    ...(conversations ? { conversations } : {}),
     ...(language ? { language } : {}),
     ...(raw.terminal && typeof raw.terminal === "object"
       ? {
@@ -613,6 +616,40 @@ function parseRuntimeChannels(rawChannels: unknown, channel: ChannelConfig): Cha
       ...(channel.options ? { options: channel.options } : {}),
     },
   ];
+}
+
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+
+function parseConversationsConfig(raw: unknown): ConversationsConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw) || Array.isArray(raw)) throw new Error("conversations must be an object");
+  if (raw.router === undefined) return undefined;
+  if (!isRecord(raw.router) || Array.isArray(raw.router)) throw new Error("conversations.router must be an object");
+  const router = raw.router;
+  if ("enabled" in router && typeof router.enabled !== "boolean") {
+    throw new Error("conversations.router.enabled must be boolean");
+  }
+  let command: string | undefined;
+  if ("command" in router && router.command !== undefined) {
+    if (typeof router.command !== "string" || !router.command.trim() || router.command.length > 4096 || router.command.includes("\n") || router.command.includes("\0")) {
+      throw new Error("conversations.router.command must be a command path");
+    }
+    command = router.command;
+  }
+  let authEnv: string | undefined;
+  if ("authEnv" in router && router.authEnv !== undefined) {
+    if (typeof router.authEnv !== "string" || !ENV_NAME.test(router.authEnv)) {
+      throw new Error("conversations.router.authEnv must be an environment variable name");
+    }
+    authEnv = router.authEnv;
+  }
+  return {
+    router: {
+      enabled: router.enabled === true,
+      ...(command ? { command } : {}),
+      ...(authEnv ? { authEnv } : {}),
+    },
+  };
 }
 
 function parseLaterConfig(raw: unknown): LaterConfig {

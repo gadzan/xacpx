@@ -546,6 +546,7 @@ test("doctor orchestrator runs baseline checks in stable order and records smoke
     "plugins",
     "orchestration",
     "orchestration-socket",
+    "conversation-router",
     "smoke",
   ]);
   expect(result.report.checks.at(-1)).toMatchObject({
@@ -697,11 +698,12 @@ test("doctor orchestrator returns exit code 1 when any check fails", async () =>
       checkPlugins: async () => ({ id: "plugins", label: "Plugins", severity: "skip", summary: "skip" }),
       checkOrchestrationHealth: async () => ({ id: "orchestration", label: "Orchestration", severity: "pass", summary: "ok" }),
       checkOrchestrationSocket: (async () => ({ id: "orchestration-socket", label: "Orchestration IPC", severity: "skip", summary: "skip" })) as never,
+      checkConversationRouter: (async () => ({ id: "conversation-router", label: "Conversation router", severity: "skip", summary: "skip" })) as never,
     },
   );
 
   expect(result.exitCode).toBe(1);
-  expect(result.output).toContain("Summary: PASS 4, WARN 1, FAIL 1, SKIP 6");
+  expect(result.output).toContain("Summary: PASS 4, WARN 1, FAIL 1, SKIP 7");
 });
 
 test("doctor orchestrator returns exit code 0 when report only contains pass warn and skip", async () => {
@@ -718,11 +720,12 @@ test("doctor orchestrator returns exit code 0 when report only contains pass war
       checkPlugins: async () => ({ id: "plugins", label: "Plugins", severity: "skip", summary: "skip" }),
       checkOrchestrationHealth: async () => ({ id: "orchestration", label: "Orchestration", severity: "pass", summary: "ok" }),
       checkOrchestrationSocket: (async () => ({ id: "orchestration-socket", label: "Orchestration IPC", severity: "skip", summary: "skip" })) as never,
+      checkConversationRouter: (async () => ({ id: "conversation-router", label: "Conversation router", severity: "skip", summary: "skip" })) as never,
     },
   );
 
   expect(result.exitCode).toBe(0);
-  expect(result.output).toContain("Summary: PASS 5, WARN 1, FAIL 0, SKIP 6");
+  expect(result.output).toContain("Summary: PASS 5, WARN 1, FAIL 0, SKIP 7");
 });
 
 test("runDoctor includes the orchestration-health check result", async () => {
@@ -805,7 +808,8 @@ test("runDoctor places the orchestration-socket check after orchestration and be
   const socketIndex = ids.indexOf("orchestration-socket");
   const smokeIndex = ids.indexOf("smoke");
   expect(socketIndex).toBe(orchestrationIndex + 1);
-  expect(smokeIndex).toBe(socketIndex + 1);
+  expect(ids[socketIndex + 1]).toBe("conversation-router");
+  expect(smokeIndex).toBe(socketIndex + 2);
   expect(result.report.checks.find((check) => check.id === "orchestration-socket")).toMatchObject({
     severity: "fail",
     summary: "ipc down",

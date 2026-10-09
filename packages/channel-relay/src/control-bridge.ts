@@ -821,6 +821,16 @@ async function dispatchControlRequest(
       }
       return await control.fsWrite(i.workspace, i.path, i.content, i.expected);
     }
+    case MSG.conversationRouterGet: {
+      const input = parseControlPayload(MSG.conversationRouterGet, payload ?? {});
+      if (!input) {
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.conversationRouterGet}: malformed payload`,
+        );
+      }
+      return control.getConversationRouterAvailability();
+    }
     case MSG.agentsCapabilitiesGet: {
       const input = parseControlPayload(MSG.agentsCapabilitiesGet, payload);
       if (!input) {

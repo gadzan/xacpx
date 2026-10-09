@@ -2012,6 +2012,11 @@ export class ControlService {
     return this.capabilityService;
   }
 
+  /** Startup router availability. The four statuses are not a boolean. */
+  getConversationRouterAvailability(): import("@ganglion/xacpx-relay-protocol").RouterAvailability {
+    return this.requireConversations().routerAvailability;
+  }
+
   /** Adapter model and effort advertisement for a configured agent and workspace. */
   getAgentCapabilities(input: {
     agent: string;

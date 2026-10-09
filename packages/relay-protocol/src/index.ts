@@ -6,3 +6,4 @@ export * from "./web-dtos.js";
 export * from "./validate-primitives.js";
 export * from "./payload-validators.js";
 export * from "./agent-capability.js";
+export * from "./router-availability.js";
