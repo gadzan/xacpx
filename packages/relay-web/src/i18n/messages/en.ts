@@ -652,6 +652,7 @@ export default {
       workspace: "Workspace",
       instructions: "Instructions",
       instructionsPlaceholder: "System prompt instructions for this bot...",
+      instructionsLoading: "Loading instructions...",
       instructionsHint: "Changes apply to future turns and do not erase existing conversation history.",
       model: "Model (optional)",
       modelPlaceholder: "Default or specific model",

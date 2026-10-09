@@ -649,6 +649,7 @@ export default {
       workspace: "工作区",
       instructions: "系统指令",
       instructionsPlaceholder: "该 Bot 的系统设定指令...",
+      instructionsLoading: "正在加载系统指令...",
       instructionsHint: "更改将应用于后续轮次，不会清除已有会话历史。",
       model: "模型（可选）",
       modelPlaceholder: "默认或指定模型",
