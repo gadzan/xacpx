@@ -10,6 +10,8 @@ import type { BotProfileSnapshot } from "../bots/bot-types";
 import { ConversationError } from "./conversation-error";
 import { memberConcurrencyLimit } from "./conversation-scheduling-policy";
 import { isExternalIngressRejectionCode } from "./conversation-ingress-rejection";
+import type { LifecycleOperation, LifecycleOperationKind } from "./lifecycle-operation";
+import { parseLifecycleOperation } from "./lifecycle-operation";
 import type {
   AcceptMemberInput,
   AcceptPublicHandoffInput,
@@ -344,6 +346,26 @@ CREATE INDEX IF NOT EXISTS idx_runs_topic_state ON runs (topic_id, state, create
 CREATE INDEX IF NOT EXISTS idx_dispatches_state ON pending_dispatches (state, created_at);
 CREATE INDEX IF NOT EXISTS idx_dispatches_run ON pending_dispatches (run_id, state);
 CREATE INDEX IF NOT EXISTS idx_member_turns_run ON member_turns (run_id);
+
+CREATE TABLE IF NOT EXISTS bot_removal_barrier (
+  bot_id TEXT PRIMARY KEY,
+  phase TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_operations (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  error_code TEXT,
+  error_message TEXT,
+  preview_revision TEXT,
+  params_json TEXT,
+  updated_at TEXT NOT NULL,
+  UNIQUE (kind, request_id)
+);
 `;
 
 /**
@@ -812,6 +834,10 @@ export class SqliteConversationStore implements ConversationStore {
           throw new ConversationError("external_request_conflict", "platform message already identifies a rejection");
         }
         this.assertAcceptable(input.conversationId, input.topicId);
+        this.assertBotsNotRemoving([
+          input.botId,
+          ...(input.members ?? []).map((member) => member.botId),
+        ]);
         const created = this.insertAccepted(input);
         if (input.externalRequest) {
           this.sqlite.run("INSERT INTO external_conversation_requests (source_key, fingerprint, run_id, conversation_id, topic_id, stop_ingress) VALUES (?, ?, ?, ?, ?, ?)",
@@ -1500,6 +1526,11 @@ export class SqliteConversationStore implements ConversationStore {
              WHERE t.topic_id = r.topic_id AND t.state = 'deleting'
            )
            AND NOT EXISTS (
+             SELECT 1 FROM bot_removal_barrier removal
+             WHERE removal.bot_id = m.bot_id
+               AND removal.phase IN ('deleting', 'indeterminate', 'retired')
+           )
+           AND NOT EXISTS (
              SELECT 1 FROM pending_dispatches claimed
              JOIN runs claimed_run ON claimed_run.id = claimed.run_id
              WHERE claimed_run.topic_id = r.topic_id
@@ -1598,6 +1629,201 @@ export class SqliteConversationStore implements ConversationStore {
       "SELECT 1 AS ok FROM topic_lifecycle WHERE conversation_id = ? LIMIT 1",
       [conversationId],
     ));
+  }
+
+  botRemovalPhase(botId: string): "deleting" | "indeterminate" | "retired" | undefined {
+    const row = this.sqlite.get<{ phase: string }>(
+      "SELECT phase FROM bot_removal_barrier WHERE bot_id = ?",
+      [botId],
+    );
+    if (!row) {
+      return undefined;
+    }
+    if (row.phase === "deleting" || row.phase === "indeterminate" || row.phase === "retired") {
+      return row.phase;
+    }
+    throw new ConversationError("bot_removal_corrupt", `bot "${botId}" has a corrupt removal barrier`);
+  }
+
+  rememberBotRemovalBarrier(botId: string, phase: "deleting" | "indeterminate" | "retired", now: string): void {
+    this.setBotRemovalBarrier(botId, phase, now);
+  }
+
+  setBotRemovalBarrier(botId: string, phase: "deleting" | "indeterminate" | "retired", now: string): void {
+    this.sqlite.run(
+      `INSERT INTO bot_removal_barrier (bot_id, phase, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(bot_id) DO UPDATE SET phase = excluded.phase, updated_at = excluded.updated_at`,
+      [botId, phase, now],
+    );
+  }
+
+  getLifecycleOperation(id: string): LifecycleOperation | undefined {
+    return this.readLifecycleOperation("SELECT * FROM lifecycle_operations WHERE id = ?", [id]);
+  }
+
+  findLifecycleOperation(kind: LifecycleOperationKind, requestId: string): LifecycleOperation | undefined {
+    return this.readLifecycleOperation(
+      "SELECT * FROM lifecycle_operations WHERE kind = ? AND request_id = ?",
+      [kind, requestId],
+    );
+  }
+
+  latestLifecycleOperation(kind: LifecycleOperationKind, subjectId: string): LifecycleOperation | undefined {
+    return this.readLifecycleOperation(
+      `SELECT * FROM lifecycle_operations WHERE kind = ? AND subject_id = ?
+       ORDER BY updated_at DESC LIMIT 1`,
+      [kind, subjectId],
+    );
+  }
+
+  saveLifecycleOperation(operation: LifecycleOperation): void {
+    const parsed = parseLifecycleOperation(operation);
+    if (!parsed || parsed.id !== operation.id) {
+      throw new ConversationError("lifecycle_operation_corrupt", "lifecycle operation is not storable");
+    }
+    this.sqlite.run(
+      `INSERT INTO lifecycle_operations (
+         id, kind, subject_id, request_id, phase, error_code, error_message, preview_revision, params_json, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         kind = excluded.kind,
+         subject_id = excluded.subject_id,
+         request_id = excluded.request_id,
+         phase = excluded.phase,
+         error_code = excluded.error_code,
+         error_message = excluded.error_message,
+         preview_revision = excluded.preview_revision,
+         params_json = excluded.params_json,
+         updated_at = excluded.updated_at`,
+      [
+        parsed.id,
+        parsed.kind,
+        parsed.subjectId,
+        parsed.requestId,
+        parsed.phase,
+        parsed.error?.code ?? null,
+        parsed.error?.message ?? null,
+        parsed.previewRevision ?? null,
+        parsed.params ? JSON.stringify(parsed.params) : null,
+        parsed.updatedAt,
+      ],
+    );
+  }
+
+  botHistoryCounts(botId: string, directConversationId: string): {
+    directMessages: number;
+    directRuns: number;
+    groupMessages: number;
+    groupRuns: number;
+  } {
+    const count = (sql: string, params: string[]): number => {
+      const row = this.sqlite.get<{ n: number }>(sql, params);
+      return Number(row?.n ?? 0);
+    };
+    return {
+      directMessages: count("SELECT COUNT(*) AS n FROM messages WHERE conversation_id = ?", [directConversationId]),
+      directRuns: count("SELECT COUNT(*) AS n FROM runs WHERE conversation_id = ?", [directConversationId]),
+      groupMessages: count(
+        "SELECT COUNT(*) AS n FROM messages WHERE sender_bot_id = ? AND conversation_id != ?",
+        [botId, directConversationId],
+      ),
+      groupRuns: count(
+        "SELECT COUNT(DISTINCT run_id) AS n FROM member_turns WHERE bot_id = ? AND conversation_id != ?",
+        [botId, directConversationId],
+      ),
+    };
+  }
+
+  listBotMemberTurns(botId: string): Array<{ runId: string; conversationId: string; topicId: string; state: string }> {
+    const rows = this.sqlite.all<{ run_id: string; conversation_id: string; topic_id: string; state: string }>(
+      "SELECT run_id, conversation_id, topic_id, state FROM member_turns WHERE bot_id = ?",
+      [botId],
+    );
+    return rows.map((row) => ({
+      runId: row.run_id,
+      conversationId: row.conversation_id,
+      topicId: row.topic_id,
+      state: row.state,
+    }));
+  }
+
+  listExternalRequests(conversationId: string): Array<{ sourceKey: string; conversationId: string; topicId: string }> {
+    const rows = this.sqlite.all<{ source_key: string; conversation_id: string; topic_id: string }>(
+      "SELECT source_key, conversation_id, topic_id FROM external_conversation_requests WHERE conversation_id = ?",
+      [conversationId],
+    );
+    return rows.map((row) => ({
+      sourceKey: row.source_key,
+      conversationId: row.conversation_id,
+      topicId: row.topic_id,
+    }));
+  }
+
+  hasOpenBotDispatch(botId: string): boolean {
+    return Boolean(this.sqlite.get(
+      `SELECT 1 AS ok FROM pending_dispatches d
+       JOIN member_turns m ON m.id = d.member_turn_id
+       WHERE m.bot_id = ? AND d.state != 'completed'
+       LIMIT 1`,
+      [botId],
+    ));
+  }
+
+  deleteDirectIngress(conversationId: string): void {
+    this.sqlite.transaction(() => {
+      this.sqlite.run("DELETE FROM external_conversation_requests WHERE conversation_id = ?", [conversationId]);
+      this.sqlite.run("DELETE FROM conversation_bindings WHERE conversation_id = ?", [conversationId]);
+    });
+  }
+
+  private readLifecycleOperation(sql: string, params: string[]): LifecycleOperation | undefined {
+    const row = this.sqlite.get<{
+      id: string;
+      kind: string;
+      subject_id: string;
+      request_id: string;
+      phase: string;
+      error_code: string | null;
+      error_message: string | null;
+      preview_revision: string | null;
+      params_json: string | null;
+      updated_at: string;
+    }>(sql, params);
+    if (!row) {
+      return undefined;
+    }
+    let paramsValue: unknown;
+    if (row.params_json) {
+      try {
+        paramsValue = JSON.parse(row.params_json);
+      } catch {
+        throw new ConversationError("lifecycle_operation_corrupt", `operation "${row.id}" has corrupt params`);
+      }
+    }
+    const parsed = parseLifecycleOperation({
+      id: row.id,
+      kind: row.kind,
+      subjectId: row.subject_id,
+      requestId: row.request_id,
+      phase: row.phase,
+      ...(row.error_code && row.error_message ? { error: { code: row.error_code, message: row.error_message } } : {}),
+      ...(row.preview_revision ? { previewRevision: row.preview_revision } : {}),
+      ...(paramsValue !== undefined ? { params: paramsValue } : {}),
+      updatedAt: row.updated_at,
+    });
+    if (!parsed) {
+      throw new ConversationError("lifecycle_operation_corrupt", `operation "${row.id}" is corrupt`);
+    }
+    return parsed;
+  }
+
+  private assertBotsNotRemoving(botIds: readonly string[]): void {
+    for (const botId of botIds) {
+      const phase = this.botRemovalPhase(botId);
+      if (phase) {
+        throw new ConversationError("bot_removing", `bot "${botId}" is ${phase}`, { botId, phase });
+      }
+    }
   }
 
   hasDurableGroupWork(conversationId: string): boolean {
