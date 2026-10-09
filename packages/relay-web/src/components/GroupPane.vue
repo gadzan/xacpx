@@ -78,7 +78,7 @@ const worktreeRunId = computed(() => {
             <span v-if="groupsStore.currentTopic">· {{ groupsStore.currentTopic.title }}</span>
             <span v-if="group?.lifecycle === 'deleting'"
                   data-test="group-pane-deleting-badge"
-                  class="rounded bg-warning/15 px-1.5 py-px text-[10px] font-medium text-warning">
+                  class="rounded bg-warn/15 px-1.5 py-px text-[10px] font-medium text-warn">
               {{ $t("group.list.deleting") }}
             </span>
           </div>
