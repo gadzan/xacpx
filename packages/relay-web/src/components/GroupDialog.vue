@@ -8,7 +8,7 @@ import { useGroupsStore, type GroupMemberWork } from "../stores/groups";
 import { useModalA11y } from "../lib/use-modal-a11y";
 import { pushToast } from "../lib/use-toasts";
 
-// Backend limits from BotService group validation.
+// The backend rejects a longer title or description.
 const TITLE_MAX = 80;
 const DESCRIPTION_MAX = 16384;
 
@@ -233,8 +233,6 @@ async function submit(): Promise<void> {
   try {
     let saved: GroupSummaryDto;
     if (opened) {
-      // Only fields that differ from what the dialog opened with go out, so a
-      // concurrent rename or description edit elsewhere is not rolled back.
       const patch: { title?: string; description?: string | null; botIds?: string[]; leadBotId?: string | null } = {};
       if (trimmedTitle !== opened.title) patch.title = trimmedTitle;
       if (trimmedDescription !== (opened.description ?? "")) patch.description = trimmedDescription || null;
