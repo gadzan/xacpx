@@ -61,7 +61,7 @@ test("a desktop-only channel still hands the tunnel runtime a logger", async () 
   // for capabilities.
   const deadline = Date.now() + 2000;
   let desktop = channel.getDesktopRuntimeForTests();
-  while (desktop === null && Date.now() < deadline) {
+  while ((desktop === null || capturedCaps === undefined) && Date.now() < deadline) {
     await Bun.sleep(5);
     desktop = channel.getDesktopRuntimeForTests();
   }
@@ -72,5 +72,8 @@ test("a desktop-only channel still hands the tunnel runtime a logger", async () 
   expect(runtimeLogger).toBeDefined();
   expect(typeof (runtimeLogger as { info?: unknown }).info).toBe("function");
   expect(typeof (runtimeLogger as { error?: unknown }).error).toBe("function");
-  void capturedCaps;
+  expect(capturedCaps).toEqual(expect.arrayContaining([
+    RELAY_CAPABILITIES.desktopRfbV1,
+    RELAY_CAPABILITIES.desktopArdAuthV1,
+  ]));
 });

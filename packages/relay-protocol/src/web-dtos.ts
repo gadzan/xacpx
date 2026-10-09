@@ -23,8 +23,9 @@ import {
   STATE_SYNC_TEXT_CAP,
   TERMINAL_REBASE_CHUNK_BYTES,
 } from "./limits.js";
-import type { DesktopSecurityKind, InstanceNoticePayload, TerminalRole } from "./messages.js";
-import { isBoundedStr, isIntInRange, isNonNegInt, isStr, optBool, optNonNegInt, optNum, optStr, optStrArr, parseCanonicalBase64 } from "./validate-primitives.js";
+import { isDesktopSecurityKind, type DesktopCredential, type DesktopSecurityKind, type InstanceNoticePayload, type TerminalRole } from "./messages.js";
+import { parseDesktopCredential } from "./desktop-credential.js";
+import { hasOnlyKeys, isBoundedStr, isIntInRange, isNonNegInt, isStr, optBool, optNonNegInt, optNum, optStr, optStrArr, parseCanonicalBase64 } from "./validate-primitives.js";
 
 
 /** Envelope `type` for every relay→web push. */
@@ -981,10 +982,6 @@ function expectedRebaseChunkCount(totalBytes: number): number {
   return totalBytes === 0 ? 0 : Math.ceil(totalBytes / TERMINAL_REBASE_CHUNK_BYTES);
 }
 
-function validDesktopSecurity(value: unknown): value is DesktopSecurityKind {
-  return value === "vnc-auth" || value === "ard";
-}
-
 function validTerminalRole(value: unknown): value is TerminalRole {
   return value === "controller" || value === "spectator";
 }
@@ -1061,7 +1058,7 @@ function validDesktopServerEvent(candidate: Record<string, unknown>): boolean {
         && isBoundedStr(candidate.wsPath, MAX_DESKTOP_WS_PATH_LENGTH)
         && (candidate.wsPath as string).startsWith("/desktop/observe?ticket=")
         && isNonNegInt(candidate.expiresAt)
-        && validDesktopSecurity(candidate.security);
+        && isDesktopSecurityKind(candidate.security);
     case "desktop-request-failed":
       return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH)
         && isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
@@ -1149,7 +1146,7 @@ export type WebClientMessage =
   | { kind: "terminal-resync"; requestId: string; instanceId: string; attachmentId: string; generation: string }
   | { kind: "terminal-terminate"; requestId: string; instanceId: string; terminalId: string; generation: string }
   | { kind: "terminal-detach"; instanceId: string; attachmentId: string }
-  | { kind: "desktop-open"; requestId: string; instanceId: string }
+  | { kind: "desktop-open"; requestId: string; instanceId: string; credential?: DesktopCredential }
   | {
       kind: "desktop-close";
       instanceId: string;
@@ -1165,6 +1162,8 @@ export type WebClientMessage =
 export function webClientEnvelope(msg: WebClientMessage): RelayEnvelope {
   return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_CLIENT_TYPE, payload: msg };
 }
+
+const DESKTOP_OPEN_KEYS = { kind: true, requestId: true, instanceId: true, credential: true } satisfies Record<keyof Extract<WebClientMessage, { kind: "desktop-open" }>, true>;
 
 function rejectsBrowserStampedIdentity(c: Record<string, unknown>): boolean {
   return c.viewerId !== undefined || c.cwd !== undefined;
@@ -1275,13 +1274,15 @@ export function parseWebClientMessage(envelope: RelayEnvelope): WebClientMessage
         && isBoundedStr(c.terminalId, MAX_TERMINAL_ID_LENGTH)
         ? (p as WebClientMessage)
         : null;
-    case "desktop-open":
-      return isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH)
-        && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
-        && c.streamId === undefined
-        && c.wsPath === undefined
-        ? (p as WebClientMessage)
-        : null;
+    case "desktop-open": {
+      if (!hasOnlyKeys(c, DESKTOP_OPEN_KEYS)
+        || !isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH)
+        || !isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)) return null;
+      const open = { kind: "desktop-open", requestId: c.requestId, instanceId: c.instanceId } as const;
+      if (c.credential === undefined) return open;
+      const credential = parseDesktopCredential(c.credential);
+      return credential ? { ...open, credential } : null;
+    }
     case "desktop-close":
       return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH)
         // Exactly one target: a live stream, or a pending prepare the viewer

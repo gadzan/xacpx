@@ -316,17 +316,17 @@ Each online instance can optionally expose its **local graphical desktop** to th
 
 ### What you get, and what you don't
 
-| | Phase A |
+| | Current |
 |---|---|
-| **Supported servers** | Any RFB 3.3 / 3.7 / 3.8 server that offers **outer VNC Auth (security type 2)** |
-| **Platforms** | Linux and Windows interactive user sessions |
+| **Supported servers** | RFB servers that offer **outer VNC Auth (security type 2)**, and macOS Screen Sharing (**Apple Remote Desktop, type 30**, terminated on the connector) |
+| **Platforms** | Linux, Windows, and macOS interactive user sessions |
 | **Viewers** | One desktop stream per instance at a time |
 | **Transport** | A **separate binary WebSocket** — framebuffer never enters the control plane, so desktop traffic can not block chat or terminal input |
 | **Ports** | None added publicly. The connector dials `127.0.0.1:<port>` on the instance; **5900 is never exposed to the internet** |
-| **Auth schemes rejected by design** | `None` (no auth), VeNCrypt/TLS-only, proprietary auth, and macOS ARD auth |
-| **Not in Phase A** | macOS ARD pre-auth (Phase B), multi-viewer, file transfer, clipboard sync, session recording |
+| **Auth schemes rejected by design** | `None` (no auth), Tight-only, VeNCrypt/TLS-only, and proprietary auth |
+| **Not in this release** | Multi-viewer, file transfer, clipboard sync, session recording |
 
-Enabling desktop advertises the `desktop.rfb.v1` capability. An instance without it simply shows no Desktop entry in the dashboard.
+Enabling desktop advertises `desktop.rfb.v1` and `desktop.ard-auth.v1`. An instance without `desktop.rfb.v1` simply shows no Desktop entry in the dashboard. macOS sign-in asks for an account name and password in the tab; nothing is stored, and a reconnect asks again.
 
 ### Enable it on the instance
 

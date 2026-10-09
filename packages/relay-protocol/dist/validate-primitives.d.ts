@@ -1,5 +1,7 @@
 /** True for a non-null object; narrows to an indexable record for field access. */
 export declare const isObj: (v: unknown) => v is Record<string, unknown>;
+/** Closed schema: every own key of `value` is listed in `allowed`. */
+export declare const hasOnlyKeys: (value: Record<string, unknown>, allowed: Record<string, true>) => boolean;
 /** Required string. */
 export declare const isStr: (v: unknown) => boolean;
 /** Optional string: absent or a string. */

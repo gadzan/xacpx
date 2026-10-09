@@ -21,8 +21,10 @@ import {
   type ConversationPolicyPromptPayload,
   type ConversationsGetPayload,
   type ConversationsListPayload,
+  isDesktopSecurityKind,
   type DesktopCancelPayload,
   type DesktopPreparePayload,
+  type DesktopPrepareResult,
   type GroupsCreatePayload,
   type GroupsDeletePayload,
   type GroupsGetPayload,
@@ -114,6 +116,7 @@ import {
   TERMINAL_REBASE_CHUNK_BYTES,
 } from "./limits.js";
 import {
+  hasOnlyKeys,
   isBoundedStr,
   isIntInRange,
   isNonNegInt,
@@ -124,6 +127,7 @@ import {
   optBool,
   parseCanonicalBase64,
 } from "./validate-primitives.js";
+import { parseDesktopCredential } from "./desktop-credential.js";
 
 export type Validator<T> = (payload: unknown) => T | null;
 
@@ -396,18 +400,32 @@ const validateTerminalTerminate: Validator<TerminalTerminatePayload> = (p) => {
     ? (o as unknown as TerminalTerminatePayload)
     : null;
 };
+const DESKTOP_PREPARE_KEYS = { streamId: true, ticket: true, expiresAt: true, credential: true } satisfies Record<keyof DesktopPreparePayload, true>;
+
 const validateDesktopPrepare: Validator<DesktopPreparePayload> = (p) => {
   const o = fields(p);
-  return o
-    && isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH)
-    && isBoundedStr(o.ticket, MAX_DESKTOP_TICKET_LENGTH)
-    && isNonNegInt(o.expiresAt)
-    && o.host === undefined
-    && o.port === undefined
-    && o.target === undefined
-    ? (o as unknown as DesktopPreparePayload)
-    : null;
+  if (!o || !hasOnlyKeys(o, DESKTOP_PREPARE_KEYS)) return null;
+  if (!isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH)
+    || !isBoundedStr(o.ticket, MAX_DESKTOP_TICKET_LENGTH)
+    || !isNonNegInt(o.expiresAt)) return null;
+  const prepare = { streamId: o.streamId, ticket: o.ticket, expiresAt: o.expiresAt };
+  if (o.credential === undefined) return prepare;
+  const credential = parseDesktopCredential(o.credential);
+  return credential ? { ...prepare, credential } : null;
 };
+
+const DESKTOP_PREPARE_RESULT_KEYS = { streamId: true, security: true } satisfies Record<keyof DesktopPrepareResult, true>;
+
+/** Hub-side parse of the connector's `instance.desktop.prepare` result. */
+export function parseDesktopPrepareResult(payload: unknown): DesktopPrepareResult | null {
+  const o = fields(payload);
+  return o
+    && hasOnlyKeys(o, DESKTOP_PREPARE_RESULT_KEYS)
+    && isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH)
+    && isDesktopSecurityKind(o.security)
+    ? { streamId: o.streamId, security: o.security }
+    : null;
+}
 const validateDesktopCancelEvent: Validator<DesktopCancelPayload> = (p) => {
   const o = fields(p);
   return o && isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH)

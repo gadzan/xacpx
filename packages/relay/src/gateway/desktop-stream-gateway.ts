@@ -220,11 +220,9 @@ export class DesktopStreamGateway {
     this.logger.info("relay.desktop.stream_active", "desktop stream active", { streamId, security });
   }
 
-  /** Connector reported its RFB probe outcome; only `vnc-auth` streams go live. */
   reportConnectorReady(streamId: string, security: DesktopSecurityKind): boolean {
     const record = this.streams.get(streamId);
     if (!record || record.state === "closed") return false;
-    if (security !== "vnc-auth") return false;
     const pair = this.paired.get(streamId) ?? {};
     pair.security = security;
     this.paired.set(streamId, pair);

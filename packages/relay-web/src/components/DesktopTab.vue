@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { Expand, Maximize, Minimize, Monitor, Shrink, X } from "lucide-vue-next";
+import { parseDesktopCredential } from "@ganglion/xacpx-relay-protocol";
 import { useDesktopStore } from "../stores/desktop";
 import { desktopErrorKey } from "../lib/desktop-error-i18n";
 
@@ -14,20 +15,39 @@ defineEmits<{ close: [] }>();
 const { t } = useI18n();
 const desktops = useDesktopStore();
 const host = ref<HTMLDivElement | null>(null);
+const username = ref("");
 const password = ref("");
-const showPassword = ref(false);
 const session = computed(() => desktops.viewFor(props.instanceId));
+const macosPrompt = computed(() => {
+  const s = session.value;
+  return s.status === "auth-required" && s.prompt.kind === "macos-account" ? s.prompt : null;
+});
+const vncPrompt = computed(() => {
+  const s = session.value;
+  return s.status === "auth-required" && s.prompt.kind === "vnc-password";
+});
+const accountReady = computed(() =>
+  parseDesktopCredential({ kind: "ard", username: username.value, password: password.value }) !== null);
+watch(() => {
+  const s = session.value;
+  if (s.status !== "auth-required" || s.prompt.kind !== "macos-account") return null;
+  return s.ardUsername ?? "";
+}, (name) => {
+  if (name !== null) username.value = name;
+});
 /** Fullscreen state of the desktop container (design §14 v1 UI). */
 const fullscreen = ref(false);
 
 const statusLabel = computed(() => {
-  const s = session.value.status;
-  if (s === "opening") return "desktop.statusOpening";
-  if (s === "auth-required") return "desktop.statusAuth";
-  if (s === "connecting") return "desktop.statusConnecting";
-  if (s === "open") return "desktop.statusOpen";
-  if (s === "closed") return "desktop.statusClosed";
-  if (s === "error") return desktopErrorKey(session.value.lastErrorCode) ?? "desktop.statusError";
+  const current = session.value;
+  if (current.status === "opening") return "desktop.statusOpening";
+  if (current.status === "auth-required") {
+    return current.prompt.kind === "macos-account" ? "desktop.statusMacos" : "desktop.statusAuth";
+  }
+  if (current.status === "connecting") return "desktop.statusConnecting";
+  if (current.status === "open") return "desktop.statusOpen";
+  if (current.status === "closed") return "desktop.statusClosed";
+  if (current.status === "error") return desktopErrorKey(current.lastErrorCode) ?? "desktop.statusError";
   return "desktop.statusIdle";
 });
 /** Final error banner copy: translated protocol code + the server's detail. */
@@ -53,7 +73,6 @@ const closedDetail = computed(() => {
 
 async function open(): Promise<void> {
   password.value = "";
-  showPassword.value = false;
   try {
     // The mounted [data-test=desktop-host] div is noVNC's render target:
     // without it the framebuffer lands in a detached div and the tab stays black.
@@ -67,7 +86,12 @@ function submitPassword(): void {
   if (!password.value) return;
   desktops.sendCredentials(props.instanceId, password.value);
   password.value = "";
-  showPassword.value = false;
+}
+
+function submitAccount(): void {
+  if (!accountReady.value) return;
+  desktops.signIn(props.instanceId, { username: username.value, password: password.value });
+  password.value = "";
 }
 
 function toggleFit(): void {
@@ -93,8 +117,8 @@ function onFullscreenChange(): void {
 }
 
 function reconnect(): void {
-  desktops.close(props.instanceId);
-  void open();
+  password.value = "";
+  desktops.reconnect(props.instanceId);
 }
 
 onMounted(() => {
@@ -165,7 +189,39 @@ onBeforeUnmount(() => {
 
     <div ref="host" data-test="desktop-host" class="relative min-h-0 flex-1 overflow-hidden bg-black"></div>
 
-    <div v-if="session.status === 'auth-required' || showPassword"
+    <form v-if="macosPrompt"
+          data-test="desktop-macos-signin"
+          class="absolute inset-0 z-20 grid place-items-center bg-bg/80"
+          @submit.prevent="submitAccount">
+      <div class="w-72 space-y-2 rounded-lg border border-border bg-surface p-4">
+        <p class="text-[13px] text-fg">{{ $t("desktop.macosSignInTitle", { name: props.instanceName || props.instanceId }) }}</p>
+        <p class="text-[11.5px] text-fg-muted">{{ $t("desktop.macosSignInHint") }}</p>
+        <input v-model="username"
+               data-test="desktop-macos-account"
+               autocomplete="off"
+               autocapitalize="off"
+               spellcheck="false"
+               :placeholder="$t('desktop.macosAccountName')"
+               class="w-full rounded border border-border bg-bg px-2 py-1 text-[13px] text-fg outline-none focus:border-accent" />
+        <input v-model="password"
+               data-test="desktop-macos-password"
+               type="password"
+               autocomplete="off"
+               :placeholder="$t('desktop.macosPassword')"
+               class="w-full rounded border border-border bg-bg px-2 py-1 text-[13px] text-fg outline-none focus:border-accent" />
+        <p v-if="macosPrompt.rejected" data-test="desktop-macos-rejected" class="text-[11.5px] text-danger">
+          {{ $t("desktop.macosRejected") }}
+        </p>
+        <button data-test="desktop-macos-submit"
+                type="submit"
+                :disabled="!accountReady"
+                class="rounded-md bg-accent px-3 py-1 text-[12px] font-medium text-white disabled:opacity-40">
+          {{ $t("desktop.connect") }}
+        </button>
+      </div>
+    </form>
+
+    <div v-if="vncPrompt"
          class="absolute inset-x-0 bottom-0 z-20 flex items-center gap-2 border-t border-border bg-surface/95 px-3 py-2 backdrop-blur-md"
          data-test="desktop-password-bar">
       <input v-model="password"

@@ -1,7 +1,9 @@
 // Thin noVNC lifecycle wrapper: the RFB client owns keyboard/mouse/framebuffer
 // against an already-open binary WebSocket. noVNC is lazy-loaded so the main
 // bundle never pays for VNC until the user opens a Desktop tab.
-export type DesktopSecurity = "vnc-auth" | "ard";
+import { DESKTOP_INNER_RFB_SCHEME, type DesktopSecurityKind } from "@ganglion/xacpx-relay-protocol";
+
+export type DesktopSecurity = DesktopSecurityKind;
 
 export interface DesktopSecurityFailure {
   /** noVNC's SecurityResult status, when it supplied one. */
@@ -115,8 +117,9 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
     // probe verdict binds the real connection: patch the instance's
     // _isSupportedSecurityType before the handshake runs (the RFB object is
     // already constructed; the option bag is not consulted during Security).
+    const inner = DESKTOP_INNER_RFB_SCHEME[input.security];
     const rfbInstance = new Ctor(target, input.url, {
-      credentials: input.security === "ard" ? undefined : {},
+      credentials: {},
       repeaterID: "",
       shared: true,
       wsProtocols: ["binary"],
@@ -126,45 +129,37 @@ export function connectDesktopRfb(input: DesktopRfbConnectInput): DesktopRfbConn
     // CURRENT desired value only: `input.fit` is the construction-time snapshot
     // and must not override a toggle that landed while we were importing.
     try { rfbInstance.scaleViewport = desiredFit; } catch { /* older build: leave as-is */ }
-    if (input.security === "vnc-auth") {
-      const narrow = rfbInstance as unknown as {
-        _isSupportedSecurityType?: (type: number) => boolean;
-        _negotiateAuthentication?: () => boolean;
-        _fail?: (details: string) => boolean;
-        _rfbAuthScheme?: number;
-      };
-      // Hard dependency on noVNC 1.7.0 internals: if a future upgrade renames
-      // or removes these hooks, continuing would silently drop the auth
-      // allowlist. Fail closed instead — surface securityfailure now rather
-      // than connecting with an unconstrained handshake later.
-      if (
-        typeof narrow._isSupportedSecurityType !== "function" ||
-        typeof narrow._negotiateAuthentication !== "function" ||
-        typeof narrow._fail !== "function"
-      ) {
-        try { rfbInstance.disconnect(); } catch { /* never connected */ }
-        hooks.onSecurityFailure?.({ reason: "desktop auth guard unavailable (noVNC internals changed)" });
-        return;
-      }
-      const base = narrow._isSupportedSecurityType.bind(rfbInstance);
-      narrow._isSupportedSecurityType = (type: number) =>
-        type === 2 && base(type);
-      // RFB 3.3 never calls _isSupportedSecurityType: the server dictates
-      // the u32 scheme and noVNC jumps straight to Authentication. A second
-      // connection that swaps type 2 for None/Tight after a passing probe
-      // (TOCTOU) would otherwise complete with no password. Fail closed on
-      // the ACTUAL scheme at Authentication entry, so 3.3 and 3.7+ share
-      // one final constraint instead of trusting the probe verdict.
-      const baseAuth = narrow._negotiateAuthentication.bind(rfbInstance);
-      narrow._negotiateAuthentication = () => {
-        if (narrow._rfbAuthScheme !== 2) {
-          return narrow._fail?.(
-            `Refusing desktop auth scheme ${String(narrow._rfbAuthScheme)} (only outer VncAuth is allowed)`,
-          ) ?? false;
-        }
-        return baseAuth();
-      };
+    const narrow = rfbInstance as unknown as {
+      _isSupportedSecurityType?: (type: number) => boolean;
+      _negotiateAuthentication?: () => boolean;
+      _fail?: (details: string) => boolean;
+      _rfbAuthScheme?: number;
+    };
+    // Hard dependency on noVNC 1.7.0 internals: if a future upgrade renames
+    // or removes these hooks, continuing would silently drop the auth
+    // allowlist. Fail closed instead — surface securityfailure now rather
+    // than connecting with an unconstrained handshake later.
+    if (
+      typeof narrow._isSupportedSecurityType !== "function" ||
+      typeof narrow._negotiateAuthentication !== "function" ||
+      typeof narrow._fail !== "function"
+    ) {
+      try { rfbInstance.disconnect(); } catch { /* never connected */ }
+      hooks.onSecurityFailure?.({ reason: "desktop auth guard unavailable (noVNC internals changed)" });
+      return;
     }
+    const base = narrow._isSupportedSecurityType.bind(rfbInstance);
+    narrow._isSupportedSecurityType = (type: number) => type === inner && base(type);
+    // RFB 3.3 never calls _isSupportedSecurityType: the server dictates the
+    // u32 scheme and noVNC jumps straight to Authentication. Fail closed on
+    // the scheme this stream was opened with, which is None for ARD.
+    const baseAuth = narrow._negotiateAuthentication.bind(rfbInstance);
+    narrow._negotiateAuthentication = () => {
+      if (narrow._rfbAuthScheme !== inner) {
+        return narrow._fail?.(`Refusing desktop auth scheme ${String(narrow._rfbAuthScheme)}`) ?? false;
+      }
+      return baseAuth();
+    };
     rfb = rfbInstance;
     on("connect", () => {
       connected = true;

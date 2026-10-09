@@ -1,6 +1,6 @@
 import { type RelayEnvelope } from "./envelope.js";
 import type { AgentCommandDto, ControlEventDto, ConversationTurnCorrelationDto, InteractionSnapshotDto, PeerMessageHistoryEntry, PublishedAgentEndpointDto, ScheduledOriginDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto } from "./dtos.js";
-import type { DesktopSecurityKind, InstanceNoticePayload, TerminalRole } from "./messages.js";
+import { type DesktopCredential, type DesktopSecurityKind, type InstanceNoticePayload, type TerminalRole } from "./messages.js";
 /** Envelope `type` for every relay→web push. */
 export declare const WEB_EVENT_TYPE = "web.event";
 export type MessageDirection = "in" | "out";
@@ -342,6 +342,7 @@ export type WebClientMessage = {
     kind: "desktop-open";
     requestId: string;
     instanceId: string;
+    credential?: DesktopCredential;
 } | {
     kind: "desktop-close";
     instanceId: string;

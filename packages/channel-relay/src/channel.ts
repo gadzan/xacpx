@@ -273,8 +273,9 @@ export class RelayChannel implements MessageChannelRuntime {
       // the connector cannot deliver.
       RELAY_CAPABILITIES.interactionElicitationFormV1,
     ];
-    if (this.bootstrapDesktop())
-      capabilities.push(RELAY_CAPABILITIES.desktopRfbV1);
+    if (this.bootstrapDesktop()) {
+      capabilities.push(RELAY_CAPABILITIES.desktopRfbV1, RELAY_CAPABILITIES.desktopArdAuthV1);
+    }
     const bridge = createControlBridge(control, {
       ...(input.trustedConversationPolicyPrompt
         ? { trustedConversationPolicyPrompt: input.trustedConversationPolicyPrompt }
@@ -1100,7 +1101,7 @@ export class RelayChannel implements MessageChannelRuntime {
     return this.desktop;
   }
 
-  /** Desktop is config-only: enabled → runtime + `desktop.rfb.v1` capability. */
+  /** Desktop is config-only: enabled → runtime + `desktop.rfb.v1` and `desktop.ard-auth.v1`. */
   private bootstrapDesktop(): boolean {
     if (!this.config.desktop.enabled) {
       this.desktop = null;
