@@ -110,6 +110,43 @@ function botHasRuntime(bot: BotSummaryDto): boolean {
   return ("hasRuntime" in bot && (bot as { hasRuntime?: unknown }).hasRuntime) === true;
 }
 
+const disabledBotsOpen = ref<Set<string>>(new Set());
+const enablingBots = ref<Set<string>>(new Set());
+function botsWithEnabled(instanceId: string, enabled: boolean): BotSummaryDto[] {
+  return (directBotsStore.botsByInstance[instanceId] ?? []).filter((b) => b.enabled === enabled);
+}
+// The selected Bot keeps its row while the Disabled list is collapsed, so
+// disabling the open Bot does not make it vanish from the sidebar.
+function visibleBots(instanceId: string): BotSummaryDto[] {
+  const disabled = botsWithEnabled(instanceId, false);
+  const shown = disabledBotsOpen.value.has(instanceId)
+    ? disabled
+    : disabled.filter((b) => directBotsStore.instanceId === instanceId && directBotsStore.selectedBotId === b.id);
+  return [...botsWithEnabled(instanceId, true), ...shown];
+}
+function toggleDisabledBots(instanceId: string): void {
+  const next = new Set(disabledBotsOpen.value);
+  if (next.has(instanceId)) next.delete(instanceId);
+  else next.add(instanceId);
+  disabledBotsOpen.value = next;
+}
+async function enableBot(instanceId: string, bot: BotSummaryDto): Promise<void> {
+  const key = `${instanceId}:${bot.id}`;
+  if (enablingBots.value.has(key)) return;
+  enablingBots.value = new Set(enablingBots.value).add(key);
+  try {
+    await directBotsStore.updateBot(instanceId, bot.id, { enabled: true });
+    pushToast("success", "bot.lifecycle.enabled", { name: bot.name });
+  } catch {
+    pushToast("error", "bot.lifecycle.enableFailed", { name: bot.name });
+    void directBotsStore.loadBots(instanceId).catch(() => {});
+  } finally {
+    const next = new Set(enablingBots.value);
+    next.delete(key);
+    enablingBots.value = next;
+  }
+}
+
 async function deleteBotWithConfirm(instanceId: string, bot: BotSummaryDto): Promise<void> {
   // Same fail-closed rule as the pane: a used Bot cannot be deleted
   // (backend bot_in_use); teardown/rebind is a later lifecycle surface.
@@ -605,7 +642,12 @@ const rowSwipes = computed(() => {
                class="py-1 pl-2.5 text-[11px] text-fg-muted">
             {{ $t("bot.list.empty") }}
           </div>
-          <div v-for="b in (directBotsStore.botsByInstance[inst.id] ?? [])"
+          <div v-else-if="!botsWithEnabled(inst.id, true).length && !disabledBotsOpen.has(inst.id)"
+               data-test="no-enabled-bots"
+               class="py-1 pl-2.5 text-[11px] text-fg-muted">
+            {{ $t("bot.list.allDisabled") }}
+          </div>
+          <div v-for="b in visibleBots(inst.id)"
                :key="b.id"
                data-test="bot-row"
                class="group relative flex items-center rounded-md transition-colors"
@@ -631,6 +673,16 @@ const rowSwipes = computed(() => {
               <span class="h-1.5 w-1.5 rounded-full shrink-0"
                     :class="b.enabled ? 'bg-run' : 'bg-fg-muted'"
                     :title="b.enabled ? $t('bot.status.enabled') : $t('bot.status.disabled')" />
+            </button>
+            <button
+              v-if="!b.enabled"
+              type="button"
+              data-test="enable-bot-tree-button"
+              :disabled="enablingBots.has(`${inst.id}:${b.id}`)"
+              class="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent transition-colors hover:bg-accent/10 disabled:opacity-50"
+              @click.stop="void enableBot(inst.id, b)"
+            >
+              {{ $t("bot.actions.enable") }}
             </button>
             <div class="flex items-center gap-0.5 pr-1 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
@@ -666,6 +718,18 @@ const rowSwipes = computed(() => {
             >
               <Plus :size="12" />
               <span>{{ $t("bot.actions.newBot") }}</span>
+            </button>
+            <button
+              v-if="botsWithEnabled(inst.id, false).length"
+              type="button"
+              data-test="bots-disabled-toggle"
+              :aria-expanded="disabledBotsOpen.has(inst.id)"
+              class="ml-auto mr-1 flex items-center gap-0.5 rounded px-1.5 py-1 text-[11px] font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+              @click="toggleDisabledBots(inst.id)"
+            >
+              <ChevronDown v-if="disabledBotsOpen.has(inst.id)" :size="11" />
+              <ChevronRight v-else :size="11" />
+              <span>{{ $t("bot.list.disabledToggle", { count: botsWithEnabled(inst.id, false).length }) }}</span>
             </button>
             <button
               data-test="manage-instance-from-bots"

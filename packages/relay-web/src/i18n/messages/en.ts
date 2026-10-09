@@ -624,6 +624,8 @@ export default {
     },
     list: {
       empty: "No bots on this instance.",
+      disabledToggle: "Disabled ({count})",
+      allDisabled: "Every Bot here is disabled. Open the disabled list to enable one.",
     },
     status: {
       enabled: "Enabled",
@@ -633,6 +635,7 @@ export default {
       newBot: "New Bot",
       edit: "Edit Bot",
       delete: "Delete Bot",
+      enable: "Enable",
     },
     delete: {
       confirmTitle: "Delete Bot",
@@ -672,6 +675,10 @@ export default {
     lifecycle: {
       identityLocked: "Agent and workspace are locked once this Bot has run. Other settings still apply to future turns.",
       deleteBlocked: "This Bot has conversation history and cannot be deleted. Create a new Bot for a fresh identity; history is retained by design.",
+      disableNote: "Disabling blocks new messages to this Bot. A Run that is already going keeps running until it ends or you press Stop in the chat. Queued work waits and may start when the Bot is enabled again. A task another Bot hands to it while it is disabled fails.",
+      reenableNote: "Enabling this Bot may start work that was queued while it was disabled.",
+      enabled: "{name} is enabled. Work queued while it was disabled may start now.",
+      enableFailed: "Could not confirm that {name} is enabled. The list shows the current state once it refreshes.",
     },
     topic: {
       label: "Topic",
@@ -764,6 +771,11 @@ export default {
     },
     header: {
       members: "{count} members",
+    },
+    members: {
+      disabled: "Disabled members: {names}. They stay in the Group and take no new work until enabled again.",
+      leadDisabled: "The Lead, {lead}, is disabled. New messages go to {fallback} by default.",
+      noneEnabled: "Every member of this Group is disabled. Enable one to send new work.",
     },
     manage: {
       newGroup: "New Group",

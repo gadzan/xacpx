@@ -15,7 +15,7 @@ import ConversationWorktreePanel from "./ConversationWorktreePanel.vue";
 const groupsStore = useGroupsStore();
 const directBotsStore = useDirectBotsStore();
 const instancesStore = useInstancesStore();
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const newTopicDialogOpen = ref(false);
 const groupDialogOpen = ref(false);
@@ -35,6 +35,27 @@ const bots = computed<BotSummaryDto[]>(() => {
 const memberBots = computed<BotSummaryDto[]>(() => {
   const ids = new Set(group.value?.botIds ?? []);
   return bots.value.filter((b) => ids.has(b.id));
+});
+
+type MemberStatus =
+  | { kind: "none-enabled" }
+  | { kind: "some-disabled"; names: string; lead?: string; fallback?: string };
+// An unconfirmed catalog would read as "every member disabled", so the
+// status waits for it. The fallback comes from the same resolver the
+// composer uses to pick the default target.
+const memberStatus = computed<MemberStatus | null>(() => {
+  const current = group.value;
+  if (!current || !groupsStore.botCatalogKnown) return null;
+  const disabled = memberBots.value.filter((b) => !b.enabled);
+  if (disabled.length === 0) return null;
+  const target = groupsStore.eligibleTargetFor(current, bots.value);
+  if (target.mode !== "members") return { kind: "none-enabled" };
+  return {
+    kind: "some-disabled",
+    names: new Intl.ListFormat(locale.value, { type: "conjunction" }).format(disabled.map((b) => b.name)),
+    lead: disabled.find((b) => b.id === current.leadBotId)?.name,
+    fallback: memberBots.value.find((b) => b.id === target.botIds[0])?.name,
+  };
 });
 
 /** Resolves the send against the store so the composer can decide whether to drop
@@ -135,6 +156,17 @@ const worktreeRunId = computed(() => {
       <button type="button" @click="groupsStore.generalError = null; groupsStore.generalErrorCode = null">
         <X :size="14" />
       </button>
+    </div>
+
+    <div v-if="memberStatus" data-test="group-member-status"
+         class="space-y-0.5 border-b border-warn/20 bg-warn/10 px-4 py-1.5 text-xs text-fg">
+      <p v-if="memberStatus.kind === 'none-enabled'">{{ $t("group.members.noneEnabled") }}</p>
+      <template v-else>
+        <p data-test="group-disabled-members">{{ $t("group.members.disabled", { names: memberStatus.names }) }}</p>
+        <p v-if="memberStatus.lead && memberStatus.fallback" data-test="group-lead-disabled">
+          {{ $t("group.members.leadDisabled", { lead: memberStatus.lead, fallback: memberStatus.fallback }) }}
+        </p>
+      </template>
     </div>
 
     <div v-if="needsFirstTopic"

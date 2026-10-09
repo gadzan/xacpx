@@ -711,6 +711,15 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 - **实例侧栏模式切换**：在左栏实例卡片中支持 `Sessions | Bots` 模式切换；切到 Bots 时展示 Bot 列表，包含名称、角色、agent、workspace 与启用状态；
 - **Bot CRUD（`BotDialog.vue`）**：支持创建与编辑 Bot（name、avatar、role、instructions、agent、workspace、model、effort、enabled；不含 cwd），agent/workspace 复用实例已有目录与工作区配置；支持删除确认与 fail-closed 错误提示。
 
+### 禁用 Bot 的整理与恢复
+
+复用 `enabled` 开关，不新增后端状态，权限与调度语义保持不变。
+
+- **侧栏过滤**：Bots 模式的日常列表只显示启用的 Bot。底栏的「已禁用（N）」按钮展开或收起禁用列表；当前选中的禁用 Bot 在收起时仍保留一行，避免禁用后从侧栏消失。全部禁用时显示 `no-enabled-bots` 提示，而不是空列表。实例标签上的数量仍是 Bot 总数。
+- **恢复入口**：禁用行常驻「启用」按钮，调用 `bots.update({ enabled: true })`。成功后提示「禁用期间排队的工作可能立即开始」；失败或超时提示无法确认，并重新拉取 Bot 列表，以列表为准。
+- **`BotDialog` 说明**：与已保存的 `enabled`（优先取已加载的详情）比较。由启用改为禁用时说明：新消息被拒绝；已在运行的 Run 会继续，直到结束或在对话中点 Stop；排队的工作等待，重新启用后可能开始；禁用期间其他 Bot 交接给它的任务会失败。由禁用改为启用时提示可能唤醒排队工作。
+- **Group 成员状态（`GroupPane.vue`）**：Group 成员配置不受侧栏过滤影响，成员数和目标菜单仍包含禁用成员。Bot 目录已确认时，面板列出禁用成员；Lead 被禁用时，用与 Composer 默认目标相同的 `eligibleTargetFor` 规则说明新消息默认发给谁（启用成员中按 ID 排序的第一个）；全部成员禁用时提示无法发送新工作。目录未确认时不显示，避免把「未加载」误报为「全部禁用」。
+
 ### 话题与消息流（`DirectBotPane.vue`）
 
 - **顶部栏**：展示 Bot 头像、名称、角色、工作区/Agent 徽标与操作入口；

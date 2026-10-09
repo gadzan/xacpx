@@ -621,6 +621,8 @@ export default {
     },
     list: {
       empty: "该实例暂无 Bot。",
+      disabledToggle: "已禁用（{count}）",
+      allDisabled: "此实例的 Bot 均已禁用。展开已禁用列表即可重新启用。",
     },
     status: {
       enabled: "已启用",
@@ -630,6 +632,7 @@ export default {
       newBot: "新建 Bot",
       edit: "编辑 Bot",
       delete: "删除 Bot",
+      enable: "启用",
     },
     delete: {
       confirmTitle: "删除 Bot",
@@ -669,6 +672,10 @@ export default {
     lifecycle: {
       identityLocked: "该 Bot 已运行过，Agent 与工作区已锁定。其他设置仍会对后续轮次生效。",
       deleteBlocked: "该 Bot 已有会话历史，无法删除。如需全新身份请创建新 Bot；历史按设计保留。",
+      disableNote: "禁用后，此 Bot 不再接收新消息。已在运行的 Run 会继续，直到结束或你在对话中点击停止。排队中的工作会等待，重新启用后可能开始。禁用期间其他 Bot 交给它的任务会失败。",
+      reenableNote: "启用后，禁用期间排队的工作可能立即开始。",
+      enabled: "已启用 {name}。禁用期间排队的工作可能立即开始。",
+      enableFailed: "未能确认 {name} 已启用。列表刷新后会显示当前状态。",
     },
     topic: {
       label: "话题",
@@ -761,6 +768,11 @@ export default {
     },
     header: {
       members: "{count} 名成员",
+    },
+    members: {
+      disabled: "已禁用的成员：{names}。他们仍在群组中，重新启用前不会接收新工作。",
+      leadDisabled: "负责人 {lead} 已禁用。新消息默认发给 {fallback}。",
+      noneEnabled: "此群组的成员均已禁用。启用任一成员后才能发送新工作。",
     },
     manage: {
       newGroup: "新建群组",
