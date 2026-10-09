@@ -842,6 +842,7 @@ export default {
       createTitle: "创建群组话题",
       createHint: "新话题保留成员与设置，但开启全新的对话上下文。",
       workspacePlaceholder: "选择工作区",
+      workspacesFailed: "无法加载此实例的工作区。",
       isolationLabel: "文件系统隔离",
       isolationSingleWriter: "共享单写者（推荐）",
       isolationShared: "共享",

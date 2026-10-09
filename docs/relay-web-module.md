@@ -734,7 +734,7 @@ relay hub 并持久化到 `attachments` 列，用于历史重显。非图片文�
 
 ### Group 创建、编辑与删除（`GroupDialog.vue`）
 
-- **入口**：实例侧栏 Groups 模式底部常驻「新建群组」（空列表、加载失败时同样可见）；群组行悬停出现编辑按钮；`GroupPane` 顶栏的编辑按钮是移动端入口。新建成功后自动选中该群组，没有话题时 `GroupPane` 以「创建第一个话题」引导打开 `GroupTopicDialog`。
+- **入口**：实例侧栏 Groups 模式底部常驻「新建群组」（空列表、加载失败时同样可见）；群组行悬停出现编辑按钮；`GroupPane` 顶栏的编辑按钮是移动端入口。新建成功后自动选中该群组，没有话题时 `GroupPane` 以「创建第一个话题」引导打开 `GroupTopicDialog`。该对话框打开时自行拉取实例工作区（`loadWorkspaces`），不依赖之前是否打开过 Bot 或会话表单；拉取失败时显示重试。
 - **表单**：名称（≤80）、说明、至少两个不同成员、可选 Lead。成员行展示角色、Agent 与启用状态，同名 Bot 附带稳定 ID。新建时 Lead 默认取第一个已启用成员，直到用户手动选择；移除当前 Lead 时改选下一个已启用成员（没有则清空）并提示。实例不足两个 Bot 时给出「新建 Bot」引导，Bot 表单关闭后回到群组表单。
 - **编辑**：只发送与打开时快照不同的字段，避免回滚其他客户端的并发修改；`groups.update` 成功后才合并列表，并从当前发送目标中剔除已移除成员。
 - **成员仍有任务**：`group_member_has_work` 时，按话题调用 `runs.list`（`limit: 200`，并合并 `activeRun`）和 `runs.get`，列出持有被移除成员 `queued` / `dispatched` / `running` MemberTurn 的 Run（含 `indeterminate` Run），提供逐个 Stop（`runs.cancel`）后重新查询。

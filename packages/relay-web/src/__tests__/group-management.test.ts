@@ -533,6 +533,50 @@ describe("Group management", () => {
       expect(wrapper.find("#group-topic-title").exists()).toBe(true);
     });
 
+    it("loads the instance workspaces for the first Topic on a fresh page", async () => {
+      seedSelectedGroup([]);
+      useInstancesStore().instances[0]!.workspaces = [];
+      routes.set("control.workspaces.list", () => ({ workspaces: [{ name: "repo", cwd: "/repo" }] }));
+      routes.set("control.group.topics.create", () => ({ topic: TOPIC }));
+      routes.set("control.runs.list", () => ({ conversationId: GROUP.id, topicId: TOPIC.id, runs: [] }));
+      const wrapper = track(mount(GroupPane, { global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      await wrapper.find('[data-test="group-first-topic-button"]').trigger("click");
+      await flushPromises();
+      const select = wrapper.find('[data-test="group-topic-workspace"]');
+      expect(select.findAll("option").map((o) => o.text())).toEqual(["Select a workspace", "repo"]);
+
+      await wrapper.find('#group-topic-title ~ form input[type="text"]').setValue("Sprint");
+      await select.setValue("repo");
+      await wrapper.find("#group-topic-title ~ form").trigger("submit");
+      await flushPromises();
+      expect(rpcCalls("control.group.topics.create").map((c) => c.payload)).toEqual([
+        { conversationId: GROUP.id, title: "Sprint", target: { workspace: "repo", isolation: "shared-single-writer" } },
+      ]);
+    });
+
+    it("offers a retry when the first Topic cannot load workspaces", async () => {
+      seedSelectedGroup([]);
+      useInstancesStore().instances[0]!.workspaces = [];
+      let attempts = 0;
+      routes.set("control.workspaces.list", () => {
+        attempts += 1;
+        if (attempts === 1) throw transportError("relay_timeout");
+        return { workspaces: [{ name: "repo", cwd: "/repo" }] };
+      });
+      const wrapper = track(mount(GroupPane, { global: { plugins: [i18n] } }));
+      await flushPromises();
+
+      await wrapper.find('[data-test="group-first-topic-button"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-test="group-topic-workspaces-failed"]').text()).toContain("Could not load the workspaces for this instance.");
+      await wrapper.find('[data-test="group-topic-workspaces-retry"]').trigger("click");
+      await flushPromises();
+      expect(wrapper.find('[data-test="group-topic-workspaces-failed"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-topic-workspace"]').findAll("option").map((o) => o.text())).toEqual(["Select a workspace", "repo"]);
+    });
+
     it("hides the first-Topic prompt once a Topic exists", async () => {
       seedSelectedGroup([TOPIC]);
       routes.set("control.runs.list", () => ({ conversationId: GROUP.id, topicId: TOPIC.id, runs: [] }));
