@@ -12,7 +12,7 @@ export function mergeEffortRefresh(
   if (next.status === "error") {
     return { state: next, efforts: previousEfforts?.status === "known" ? previousEfforts : undefined };
   }
-  if (next.status !== "error" && next.efforts.status === "unavailable" && previousEfforts?.status === "known") {
+  if (next.efforts.status === "unavailable" && previousEfforts?.status === "known") {
     return { state: next, efforts: previousEfforts };
   }
   return { state: next, efforts: "efforts" in next ? next.efforts : undefined };

@@ -6,12 +6,12 @@ import {
   readyCapability,
   type BotDetailDto,
   type BotSummaryDto,
-  ConversationMessageDto,
-  ConversationRunDto,
-  MemberTurnSummaryDto,
-  TopicSummaryDto,
-  ToolStepDto,
-  TurnPartDto,
+  type ConversationMessageDto,
+  type ConversationRunDto,
+  type MemberTurnSummaryDto,
+  type TopicSummaryDto,
+  type ToolStepDto,
+  type TurnPartDto,
 } from "@ganglion/xacpx-relay-protocol";
 import { i18n } from "../i18n";
 import { useInstancesStore } from "../stores/instances";
