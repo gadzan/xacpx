@@ -140,7 +140,7 @@ const worktreeRunId = computed(() => {
       </button>
     </div>
 
-    <GroupTranscript :bots="memberBots" />
+    <GroupTranscript :bots="bots" />
     <ConversationWorktreePanel v-if="groupsStore.currentTopic?.executionTarget?.isolation === 'worktree-per-member' && groupsStore.instanceId && worktreeRunId"
       :instance-id="groupsStore.instanceId" :run-id="worktreeRunId" />
 

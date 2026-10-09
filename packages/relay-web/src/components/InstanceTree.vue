@@ -18,6 +18,7 @@ import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
 import AgentIcon from "./AgentIcon.vue";
 import BotDialog from "./BotDialog.vue";
+import BotRemovalDialog from "./BotRemovalDialog.vue";
 import type { GroupArchivedMode, GroupArchivedState, InstanceView } from "../stores/instances";
 import type { BotDetailDto, BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 
@@ -86,31 +87,10 @@ function onBotSaved(bot: BotDetailDto): void {
   }
   botDialogFor.value = null;
 }
-function botHasRuntime(bot: BotSummaryDto): boolean {
-  return ("hasRuntime" in bot && (bot as { hasRuntime?: unknown }).hasRuntime) === true;
-}
+const removalFor = ref<{ instanceId: string; bot: BotSummaryDto } | null>(null);
 
-async function deleteBotWithConfirm(instanceId: string, bot: BotSummaryDto): Promise<void> {
-  // Same fail-closed rule as the pane: a used Bot cannot be deleted
-  // (backend bot_in_use); teardown/rebind is a later lifecycle surface.
-  // Surface it, don't fail it.
-  if (botHasRuntime(bot)) {
-    pushToast("error", "bot.lifecycle.deleteBlocked");
-    return;
-  }
-  const confirmed = await confirm({
-    title: t("bot.delete.confirmTitle"),
-    message: t("bot.delete.confirmMessage", { name: bot.name }),
-    confirmLabel: t("common.delete"),
-    tone: "danger",
-  });
-  if (!confirmed) return;
-  try {
-    await directBotsStore.deleteBot(instanceId, bot.id);
-  } catch (err: unknown) {
-    const code = err instanceof Error && "code" in err ? String(err.code ?? "") : "";
-    pushToast("error", code === "bot_in_use" ? "bot.lifecycle.deleteBlocked" : "bot.delete.failedTitle");
-  }
+function openBotRemoval(instanceId: string, bot: BotSummaryDto): void {
+  removalFor.value = { instanceId, bot };
 }
 
 // 1Hz clock so working-session elapsed badges tick.
@@ -602,6 +582,7 @@ const rowSwipes = computed(() => {
                            :class="!b.enabled ? 'opacity-50' : ''" />
               </span>
               <div class="flex flex-col min-w-0 flex-1">
+                <span v-if="b.retired" data-test="bot-removed" class="truncate text-[10px] text-fg-muted">{{ $t("bot.removal.removed") }}</span>
                 <span data-test="bot-name" class="min-w-0 truncate text-[12.5px] font-medium"
                       :class="!b.enabled ? 'text-fg-muted' : (directBotsStore.selectedBotId === b.id && directBotsStore.instanceId === inst.id ? 'font-semibold text-accent' : 'text-fg')">
                   {{ b.name }}
@@ -626,10 +607,11 @@ const rowSwipes = computed(() => {
               <button
                 type="button"
                 data-test="delete-bot-tree-button"
-                :title="$t('bot.actions.delete')"
-                :aria-label="$t('bot.actions.delete')"
-                class="grid h-5 w-5 place-items-center rounded text-fg-muted hover:bg-danger/10 hover:text-danger"
-                @click.stop="deleteBotWithConfirm(inst.id, b)"
+                :title="b.retired ? $t('bot.removal.removed') : $t('bot.removal.action')"
+                :aria-label="$t('bot.removal.action')"
+                :disabled="b.retired === true"
+                class="grid h-5 w-5 place-items-center rounded text-fg-muted hover:bg-danger/10 hover:text-danger disabled:opacity-40"
+                @click.stop="openBotRemoval(inst.id, b)"
               >
                 <Trash2 :size="11" />
               </button>
@@ -924,5 +906,14 @@ const rowSwipes = computed(() => {
                           @close="manageFor = null" />
     <BotDialog v-if="botDialogFor" :instance-id="botDialogFor.instanceId" :instance-name="botDialogFor.instanceName"
                :bot="botDialogFor.bot" @close="botDialogFor = null" @saved="onBotSaved" />
+    <BotRemovalDialog
+      v-if="removalFor"
+      :bot-name="removalFor.bot.name"
+      :preview="() => directBotsStore.previewBotRemoval(removalFor!.instanceId, removalFor!.bot.id)"
+      :remove="(input) => directBotsStore.removeBot(removalFor!.instanceId, { botId: removalFor!.bot.id, ...input })"
+      :get-operation="(id) => directBotsStore.getLifecycleOperation(removalFor!.instanceId, id)"
+      @close="removalFor = null"
+      @removed="removalFor = null"
+    />
   </nav>
 </template>
