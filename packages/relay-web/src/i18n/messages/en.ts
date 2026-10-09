@@ -778,7 +778,13 @@ export default {
       selectMembers: "Select members",
       memberCount: "{count} selected",
       noEligible: "No enabled members in this group.",
+      automatic: "Automatic collaboration",
       hint: "@name adds a member · @everyone selects all",
+    },
+    router: {
+      checking: "Checking whether this instance can run automatic collaboration.",
+      noInstance: "This instance has not advertised automatic collaboration.",
+      unavailable: "{reason} Config path {path}.",
     },
     run: {
       title: "Collaboration",
@@ -786,6 +792,12 @@ export default {
       memberWaiting: "Waiting for turn",
       runningMembers: "Running: {names}",
       writeQueue: "Write tasks queue. One member writes at a time.",
+      budget: "Budget {consumed} of {max}",
+      assignment: "Assignment",
+      dependsOn: "Depends on",
+      blockedHumanRequired: "This step needs a person. The model selection is not that person.",
+      blockedHumanUnknown: "This step stopped on a permission check. The model selection did not grant permission.",
+      waitingManual: "This run is waiting. Stop ends it. Waiting does not become running. After it stops, choose a member and send a new request. That request is a new run. This screen does not start the blocked step for you.",
     },
     handoff: {
       relationship: "{from} → {to}",

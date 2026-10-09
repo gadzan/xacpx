@@ -5,6 +5,8 @@ import {
   errorCapability,
   isErrorPayload,
   parseAgentCapabilityState,
+  parseRouterAvailability,
+  type RouterAvailability,
   unsupportedCapability,
   type AgentCapabilityState,
   type AgentCatalogEntryDto,
@@ -730,6 +732,44 @@ export const useInstancesStore = defineStore("instances", () => {
     return sessions;
   }
 
+  const routerAvailabilityById = ref<Record<string, RouterAvailability | { status: "loading" }>>({});
+
+  function routerAvailabilityFor(instanceId: string): RouterAvailability | { status: "loading" } {
+    return routerAvailabilityById.value[instanceId] ?? { status: "loading" };
+  }
+
+  async function loadRouterAvailability(instanceId: string): Promise<void> {
+    try {
+      const raw = unwrap(await api.rpc(instanceId, "control.conversations.router.get", {}));
+      routerAvailabilityById.value = {
+        ...routerAvailabilityById.value,
+        [instanceId]: parseRouterAvailability(raw),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      routerAvailabilityById.value = {
+        ...routerAvailabilityById.value,
+        [instanceId]: message.includes("newer connector")
+          ? {
+              status: "unsupported",
+              configPath: "conversations.router",
+              reason: { code: "not-advertised", message: "This instance does not advertise automatic collaboration." },
+            }
+          : message.includes("router availability")
+            ? {
+                status: "failed",
+                configPath: "conversations.router",
+                reason: { code: "malformed-capabilities", message: "The router availability read was not a recognized state." },
+              }
+            : {
+                status: "failed",
+                configPath: "conversations.router",
+                reason: { code: "read-failed", message: "The router availability read failed." },
+              },
+      };
+    }
+  }
+
   async function getAgentCapabilities(
     instanceId: string,
     input: { agent: string; workspace: string; botId?: string; probe?: boolean },
@@ -962,5 +1002,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return undefined;
   }
 
-  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
+  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
 });

@@ -36,6 +36,33 @@ test("loadInstances keeps capabilities from the dashboard DTO (missing → empty
   expect(store.instances[1]?.capabilities ?? []).toEqual([]);
 });
 
+test("loadRouterAvailability keeps disabled distinct from a boolean", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    result: {
+      status: "disabled-by-config",
+      configPath: "conversations.router",
+      reason: { code: "disabled", message: "Automatic collaboration is off." },
+    },
+  }), { status: 200 })));
+  const store = useInstancesStore();
+  await store.loadRouterAvailability("i1");
+  expect(store.routerAvailabilityFor("i1")).toEqual({
+    status: "disabled-by-config",
+    configPath: "conversations.router",
+    reason: { code: "disabled", message: "Automatic collaboration is off." },
+  });
+});
+
+test("loadRouterAvailability does not treat a boolean as ready", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ result: true }), { status: 200 })));
+  const store = useInstancesStore();
+  await store.loadRouterAvailability("i1");
+  expect(store.routerAvailabilityFor("i1")).toMatchObject({
+    status: "failed",
+    reason: { code: "malformed-capabilities" },
+  });
+});
+
 test("supportsRmuxTerminal requires online and both RMUX capabilities", () => {
   const both = [RELAY_CAPABILITIES.terminalRmuxRecoveryV1, RELAY_CAPABILITIES.terminalMultiViewV1];
   expect(supportsRmuxTerminal({ online: true, capabilities: both })).toBe(true);

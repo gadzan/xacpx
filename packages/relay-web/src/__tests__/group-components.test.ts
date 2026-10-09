@@ -65,6 +65,7 @@ describe("Group Components", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     seedInstance();
+    vi.spyOn(useInstancesStore(), "loadRouterAvailability").mockResolvedValue(undefined);
   });
 
   describe("GroupComposer.vue", () => {
@@ -738,6 +739,45 @@ describe("Group Components", () => {
       expect((textarea.element as HTMLTextAreaElement).value).toBe("keep me");
     });
 
+    it("does not select automatic collaboration unless the instance is ready", async () => {
+      const groups = seedGroupSelection();
+      const instances = useInstancesStore();
+      instances.routerAvailabilityById = {
+        i1: {
+          status: "disabled-by-config",
+          configPath: "conversations.router",
+          reason: { code: "disabled", message: "Automatic collaboration is off." },
+        },
+      };
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-target-button"]').trigger("click");
+      const automatic = wrapper.find('[data-test="group-target-automatic"]');
+      expect(automatic.attributes("disabled")).toBeDefined();
+      expect(wrapper.find('[data-test="group-router-note"]').text()).toContain("conversations.router");
+      expect(wrapper.find('[data-test="group-router-note"]').text()).toContain("Automatic collaboration is off.");
+      await automatic.trigger("click");
+      expect(groups.targetSelection).toEqual({ mode: "members", botIds: ["bot_a"] });
+    });
+
+    it("selects automatic collaboration when the instance router is ready", async () => {
+      const groups = seedGroupSelection();
+      const instances = useInstancesStore();
+      instances.routerAvailabilityById = { i1: { status: "ready", configPath: "conversations.router" } };
+      groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
+      const wrapper = mount(GroupComposer, {
+        props: { bots: BOTS, instanceId: "i1" },
+        global: { plugins: [i18n] },
+      });
+      await wrapper.find('[data-test="group-target-button"]').trigger("click");
+      await wrapper.find('[data-test="group-target-automatic"]').trigger("click");
+      expect(groups.targetSelection).toEqual({ mode: "automatic" });
+      expect(wrapper.find('[data-test="group-target-button"]').text()).toContain("Automatic collaboration");
+    });
+
     it("shows feedback for an unresolved mention and drops the previous target", async () => {
       const groups = seedGroupSelection();
       groups.targetSelection = { mode: "members", botIds: ["bot_a"] };
@@ -810,6 +850,40 @@ describe("Group Components", () => {
       expect(wrapper.find('[data-test="group-member-activity"]').exists()).toBe(false);
       await wrapper.find('[data-test="group-member-toggle"]').trigger("click");
       expect(wrapper.find('[data-test="group-member-activity"]').exists()).toBe(true);
+    });
+
+    it("shows a waiting run without turning it into running", async () => {
+      const groups = seedGroupSelection();
+      groups.activeRun = {
+        id: "run_wait", conversationId: "conversation_g", topicId: "topic_1",
+        requestMessageId: "msg_1", requestId: "req_1", mode: "automatic", state: "waiting-human",
+        routingState: "done", waitingQuestion: "Which branch ships?",
+        maxMemberTurns: 24, consumedMemberTurns: 1, profileRevision: 1, createdAt: "now",
+      };
+      groups.memberTurnsById = {
+        turn_a: {
+          id: "turn_a", runId: "run_wait", conversationId: "conversation_g", topicId: "topic_1",
+          botId: "bot_a", batch: 1, memberIndex: 0, attempt: 1, origin: "router",
+          state: "failed", createdAt: "now", assignmentId: "step-1", task: "Review the patch",
+          dependsOn: ["step-0"], blockedReason: "human-authority-unknown",
+        },
+      };
+      const wrapper = mount(GroupTranscript, {
+        props: { bots: BOTS.filter((b) => GROUP.botIds.includes(b.id)) },
+        global: { plugins: [i18n] },
+      });
+      expect(wrapper.find('[data-test="group-run-card"]').text()).toContain("waiting-human");
+      expect(wrapper.find('[data-test="group-waiting-question"]').text()).toBe("Which branch ships?");
+      expect(wrapper.find('[data-test="group-run-budget"]').text()).toContain("1");
+      expect(wrapper.find('[data-test="group-run-budget"]').text()).toContain("24");
+      expect(wrapper.find('[data-test="group-member-assignment"]').text()).toContain("step-1");
+      expect(wrapper.find('[data-test="group-member-task"]').text()).toContain("Review the patch");
+      expect(wrapper.find('[data-test="group-member-depends"]').text()).toContain("step-0");
+      expect(wrapper.find('[data-test="group-member-blocked"]').text()).toContain("permission");
+      expect(wrapper.find('[data-test="group-waiting-human"]').text()).toContain("new run");
+      expect(wrapper.find('[data-test="group-start-step"]').exists()).toBe(false);
+      expect(wrapper.find('[data-test="group-stop-run-button"]').exists()).toBe(true);
+      expect(groups.activeRun?.state).toBe("waiting-human");
     });
 
     it("stops the exact active run from the card", async () => {

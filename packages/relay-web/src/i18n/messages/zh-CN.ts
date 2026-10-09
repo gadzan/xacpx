@@ -775,7 +775,13 @@ export default {
       selectMembers: "选择成员",
       memberCount: "已选 {count} 人",
       noEligible: "该群组暂无可用成员。",
+      automatic: "自动协作",
       hint: "@名称 添加成员 · @everyone 全选",
+    },
+    router: {
+      checking: "正在检查此实例能否运行自动协作。",
+      noInstance: "此实例没有公布自动协作能力。",
+      unavailable: "{reason} 配置路径 {path}。",
     },
     run: {
       title: "协作",
@@ -783,6 +789,12 @@ export default {
       memberWaiting: "等待执行",
       runningMembers: "正在执行：{names}",
       writeQueue: "写入任务会排队。同一时间只有一名成员可以写。",
+      budget: "预算 {consumed} / {max}",
+      assignment: "指派",
+      dependsOn: "依赖",
+      blockedHumanRequired: "这一步需要人来做。模型的选择不能代替人。",
+      blockedHumanUnknown: "这一步停在权限检查上。模型的选择没有授予权限。",
+      waitingManual: "这次运行正在等待。停止会结束它。等待不会变成运行中。停止之后，选择一名成员并发送新请求。那是一次新的运行。此界面不会替你启动被拦住的步骤。",
     },
     handoff: {
       relationship: "{from} → {to}",
