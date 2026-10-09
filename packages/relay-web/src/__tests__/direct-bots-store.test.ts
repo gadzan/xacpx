@@ -6794,4 +6794,26 @@ describe("topic lifecycle cache", () => {
     expect(store.topicsByConversation["inst_1:c1"]?.[0]?.contextGeneration).toBe(2);
     expect(store.messages).toEqual([]);
   });
+
+  it("does not restore a topic that a newer list already omitted", async () => {
+    const store = useDirectBotsStore();
+    store.instanceId = "inst_1";
+    store.activeConversationId = "c1";
+    store.activeTopicId = "t1";
+    const kept: TopicSummaryDto = {
+      id: "t1", conversationId: "c1", title: "Default", status: "active", createdAt: "now", updatedAt: "now",
+    };
+    const removed: TopicSummaryDto = {
+      id: "t2", conversationId: "c1", title: "Extra", status: "active", createdAt: "now", updatedAt: "now",
+    };
+    store.topicsByConversation["inst_1:c1"] = [kept, removed];
+    mockRpc.mockResolvedValueOnce({ topics: [kept] });
+    await store.loadTopics("inst_1", "c1");
+    store.applyEvent({
+      kind: "control-event",
+      instanceId: "inst_1",
+      event: { type: "conversation-topic-changed", topic: removed },
+    } as never);
+    expect(store.topicsByConversation["inst_1:c1"]?.map((topic) => topic.id)).toEqual(["t1"]);
+  });
 });

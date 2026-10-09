@@ -810,6 +810,12 @@ export const useGroupsStore = defineStore("groups", () => {
     const droppedAny = previous.some((topic) => !visible.some((item) => item.id === topic.id));
     if (droppedAny) {
       topicDeletionEpoch[key] = (topicDeletionEpoch[key] ?? 0) + 1;
+      for (const topic of previous) {
+        if (visible.some((item) => item.id === topic.id)) continue;
+        const retired = retiredTopicIds[key] ?? new Set<string>();
+        retired.add(topic.id);
+        retiredTopicIds[key] = retired;
+      }
     }
     topicsByConversation.value = { ...topicsByConversation.value, [key]: visible };
     return visible;

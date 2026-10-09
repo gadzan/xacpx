@@ -1091,12 +1091,22 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       topicsByConversation.value = { ...topicsByConversation.value, [key]: next };
       return next;
     }
+    noteDroppedTopics(key, topicsByConversation.value[key] ?? [], incoming);
     topicsByConversation.value = {
       ...topicsByConversation.value,
       [key]: incoming,
     };
     reconcileMissingActiveTopic(targetInstanceId, conversationId, incoming);
     return incoming;
+  }
+
+  function noteDroppedTopics(key: string, previous: TopicSummaryDto[], next: TopicSummaryDto[]): void {
+    for (const topic of previous) {
+      if (next.some((item) => item.id === topic.id)) continue;
+      const retired = retiredTopicIds[key] ?? new Set<string>();
+      retired.add(topic.id);
+      retiredTopicIds[key] = retired;
+    }
   }
 
   function withoutRetiredTopics(key: string, topics: TopicSummaryDto[]): TopicSummaryDto[] {
