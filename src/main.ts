@@ -127,6 +127,7 @@ import { SessionWarmthTracker } from "./control/session-warmth-tracker";
 import { createTerminalService } from "./control/terminal-service";
 import { UploadStore } from "./control/upload-store.js";
 import { listAgentCatalog } from "./config/agent-catalog";
+import { resolveConfiguredAgentLaunch } from "./config/resolve-agent-command";
 import { createAcpxAgentRegistryLoader } from "./transport/agent-registry";
 import { startConfigWatcher } from "./config/config-watcher";
 import type {
@@ -1999,6 +2000,26 @@ export async function buildApp(
           name,
           driver: agentConfig.driver,
         })),
+      resolveCapabilityContext: (agent, workspace) => {
+        const agentConfig = config.agents[agent];
+        const workspaceConfig = config.workspaces[workspace];
+        if (!agentConfig || !workspaceConfig) {
+          return { error: "choose a configured agent and workspace" };
+        }
+        try {
+          const launch = resolveConfiguredAgentLaunch(agentConfig, config.transport);
+          return {
+            cwd: workspaceConfig.cwd,
+            driver: agentConfig.driver,
+            ...(agentConfig.settingsPolicy ? { settingsPolicy: agentConfig.settingsPolicy } : {}),
+            launch,
+            suggestions: agentConfig.modelCandidates ?? [],
+            ...(agentConfig.model ? { configuredModel: agentConfig.model } : {}),
+          };
+        } catch (error) {
+          return { error: error instanceof Error ? error.message : String(error) };
+        }
+      },
       catalog: () =>
         listAgentCatalog(config, { registry: loadAgentRegistry() }),
       create: async (name, driver) => {

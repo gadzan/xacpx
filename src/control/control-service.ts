@@ -1,5 +1,7 @@
 import type { Agent as ChatAgent } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
+import { AgentCapabilityService, type CapabilityAdvertisement } from "../agents/capability-discovery";
+import type { AgentCapabilityState } from "@ganglion/xacpx-relay-protocol";
 import type {
   AgentSession,
   ResolvedSession,
@@ -197,12 +199,14 @@ export interface ControlServiceDeps {
     | "setSessionEffort"
     | "setDisplayName"
     | "getLogicalSessionRecord"
-  >;
+  > & {
+    listCapabilityTargets?(agent: string, workspace: string): ReturnType<SessionService["listCapabilityTargets"]>;
+  };
   // The active transport, for reading/switching a session's model and effort.
   // These controls are optional on the interface — absence is handled gracefully.
   transport: Pick<
     SessionTransport,
-    "setModel" | "getSessionModel" | "setSessionEffort" | "getSessionEffort"
+    "setModel" | "getSessionModel" | "setSessionEffort" | "getSessionEffort" | "probeAgentCapabilities"
   >;
   // Full-lifecycle session creator (resolve → ensure acpx session → bind),
   // wired to CommandRouter.createSessionWithTransport in main.ts. Replaces the
@@ -254,6 +258,11 @@ export interface ControlServiceDeps {
   // written back into the live config so SessionService validation sees them.
   agents: {
     list(): ControlAgentInfo[];
+    /**
+     * Launch identity for capability discovery. Absent on test fakes that
+     * never call `getAgentCapabilities`.
+     */
+    resolveCapabilityContext?(agent: string, workspace: string): import("../agents/capability-discovery").CapabilityContext | { error: string };
     catalog(): AgentCatalogEntry[];
     create(name: string, driver: string): Promise<ControlAgentInfo>;
     remove(name: string): Promise<void>;
@@ -1944,6 +1953,40 @@ export class ControlService {
     }
   }
 
+  private capabilityService?: AgentCapabilityService;
+
+  private capabilities(): AgentCapabilityService {
+    if (this.capabilityService) return this.capabilityService;
+    const probe = this.deps.transport.probeAgentCapabilities?.bind(this.deps.transport);
+    this.capabilityService = new AgentCapabilityService({
+      now: () => new Date().toISOString(),
+      resolve: (agent, workspace) => this.deps.agents.resolveCapabilityContext?.(agent, workspace)
+        ?? { error: "agent capability context is not configured" },
+      getBot: (id) => {
+        try {
+          const bot = this.requireConversations().bots.getBot(id);
+          return { agent: bot.agent, workspace: bot.workspace, model: bot.model, effort: bot.effort };
+        } catch {
+          return undefined;
+        }
+      },
+      listTargets: (agent, workspace) => this.deps.sessions.listCapabilityTargets?.(agent, workspace) ?? [],
+      readAdvertisement: (session) => readCapabilityAdvertisement(this.deps.transport, session),
+      ...(probe ? { probe } : {}),
+    });
+    return this.capabilityService;
+  }
+
+  /** Adapter model and effort advertisement for a configured agent and workspace. */
+  getAgentCapabilities(input: {
+    agent: string;
+    workspace: string;
+    botId?: string;
+    probe?: boolean;
+  }): Promise<AgentCapabilityState> {
+    return this.capabilities().get(input);
+  }
+
   listBots() {
     const bots = this.requireConversations().bots;
     return bots.listBots().map((bot) => toBotSummary(bot, bots.hasRuntime(bot.id)));
@@ -2194,5 +2237,37 @@ export class ControlService {
       const result = runtime.runs.getRun(runId);
       return toRunDetail(result.run, result.memberTurns);
     });
+  }
+}
+
+async function readCapabilityAdvertisement(
+  transport: Pick<SessionTransport, "getSessionModel" | "getSessionEffort">,
+  session: ResolvedSession,
+): Promise<CapabilityAdvertisement | undefined> {
+  if (!transport.getSessionModel) return undefined;
+  try {
+    const model = await transport.getSessionModel(session);
+    let efforts: string[] = [];
+    let currentEffort: string | undefined;
+    let effortKnown = false;
+    if (transport.getSessionEffort) {
+      try {
+        const effort = await transport.getSessionEffort(session);
+        efforts = effort.available;
+        currentEffort = effort.current;
+        effortKnown = true;
+      } catch {
+        effortKnown = false;
+      }
+    }
+    return {
+      models: model.available.filter((id) => id.trim().length > 0).map((modelId) => ({ modelId: modelId.trim() })),
+      ...(model.current?.trim() ? { currentModelId: model.current.trim() } : {}),
+      efforts,
+      ...(currentEffort ? { currentEffort } : {}),
+      effortKnown,
+    };
+  } catch {
+    return undefined;
   }
 }

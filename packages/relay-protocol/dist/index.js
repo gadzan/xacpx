@@ -144,6 +144,7 @@ var MSG = {
   gitWorktreeCreate: "control.git.worktree.create",
   upload: "control.upload",
   sessionModelGet: "control.session.model.get",
+  agentsCapabilitiesGet: "control.agents.capabilities.get",
   sessionModelSet: "control.session.model.set",
   sessionEffortGet: "control.session.effort.get",
   sessionEffortSet: "control.session.effort.set",
@@ -1141,6 +1142,23 @@ var validateGitWorktreeCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.workspace) && isStr(o.workspaceName) && isStr(o.branch) && optBool(o.createBranch) && optStr(o.startPoint) && o.path === undefined ? o : null;
 };
+var validateAgentsCapabilitiesGet = (p) => {
+  const o = fields(p);
+  if (!o || !isBoundedStr(o.agent, 128) || !isBoundedStr(o.workspace, 256))
+    return null;
+  if (o.botId !== undefined && !isBoundedStr(o.botId, 128))
+    return null;
+  if (o.probe !== undefined && typeof o.probe !== "boolean")
+    return null;
+  if ("sessionAlias" in o || "alias" in o || "transportSession" in o)
+    return null;
+  return {
+    agent: o.agent,
+    workspace: o.workspace,
+    ...o.botId !== undefined ? { botId: o.botId } : {},
+    ...o.probe !== undefined ? { probe: o.probe } : {}
+  };
+};
 var validateSessionModelGet = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? o : null;
@@ -1636,6 +1654,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.gitCheckout]: validateGitCheckout,
   [MSG.gitWorktreeCreate]: validateGitWorktreeCreate,
   [MSG.sessionModelGet]: validateSessionModelGet,
+  [MSG.agentsCapabilitiesGet]: validateAgentsCapabilitiesGet,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.sessionEffortGet]: validateSessionEffortGet,
   [MSG.sessionEffortSet]: validateSessionEffortSet,
@@ -1754,89 +1773,348 @@ function parseDesktopEventPayload(type, payload) {
   const validate = DESKTOP_EVENT_PAYLOAD_VALIDATORS[type];
   return validate(payload);
 }
+// packages/relay-protocol/src/agent-capability.ts
+var REASON_CODES = new Set([
+  "adapter-cannot-enumerate",
+  "probe-unavailable",
+  "unauthenticated",
+  "discovery-available",
+  "timeout",
+  "transport",
+  "invalid-context",
+  "cleanup",
+  "stale-response"
+]);
+var FETCH_SOURCES = new Set(["runtime", "cache", "session", "probe"]);
+function classifySelection(input) {
+  const selected = normalizeOptional(input.selectedModelId);
+  const applied = normalizeOptional(input.appliedModelId);
+  const advertised = new Set(input.advertisedIds);
+  if (!selected || selected.toLowerCase() === "default") {
+    return applied ? { kind: "default", appliedModelId: applied } : { kind: "default" };
+  }
+  if (applied && applied === selected)
+    return { kind: "in-effect", modelId: selected };
+  if (applied && !advertised.has(selected)) {
+    return { kind: "fell-back", selectedModelId: selected, appliedModelId: applied };
+  }
+  return {
+    kind: "saved",
+    modelId: selected,
+    advertised: advertised.has(selected),
+    ...applied ? { appliedModelId: applied } : {}
+  };
+}
+function adapterModels(ids) {
+  const seen = new Set;
+  const models = [];
+  for (const entry of ids) {
+    const modelId = entry.modelId.trim();
+    if (!modelId || seen.has(modelId))
+      continue;
+    seen.add(modelId);
+    const name = entry.name?.trim();
+    models.push({ modelId, name: name && name.length > 0 ? name : modelId, source: "adapter" });
+  }
+  return models;
+}
+function suggestionModels(ids) {
+  const seen = new Set;
+  const models = [];
+  for (const raw of ids) {
+    const modelId = raw.trim();
+    if (!modelId || seen.has(modelId))
+      continue;
+    seen.add(modelId);
+    models.push({ modelId, name: modelId, source: "suggestion" });
+  }
+  return models;
+}
+function knownEfforts(ids, current) {
+  const seen = new Set;
+  const options = [];
+  for (const raw of ids) {
+    const id = raw.trim();
+    if (!id || seen.has(id))
+      continue;
+    seen.add(id);
+    options.push({ id, name: id, source: "adapter" });
+  }
+  const normalized = normalizeOptional(current);
+  return {
+    status: "known",
+    options,
+    ...normalized && seen.has(normalized) ? { current: normalized } : {}
+  };
+}
+function readyCapability(source, models, draft) {
+  const adapter = adapterModels(models);
+  const first = adapter[0];
+  if (!first)
+    throw new Error("ready capability requires at least one adapter model");
+  const advertisedIds = adapter.map((model) => model.modelId);
+  const appliedModelId = source === "runtime" ? normalizeOptional(draft.appliedModelId) : undefined;
+  const selectedModelId = normalizeOptional(draft.selectedModelId);
+  return {
+    status: "ready",
+    models: adapter,
+    suggestions: suggestionModels(draft.suggestions ?? []).filter((model) => !advertisedIds.includes(model.modelId)),
+    efforts: draft.efforts ?? { status: "unavailable" },
+    fetchedAt: draft.fetchedAt,
+    source,
+    ...appliedModelId ? { appliedModelId } : {},
+    ...selectedModelId ? { selectedModelId } : {},
+    ...normalizeOptional(draft.selectedEffort) ? { selectedEffort: draft.selectedEffort.trim() } : {},
+    effect: classifySelection({ selectedModelId, appliedModelId, advertisedIds })
+  };
+}
+function unsupportedCapability(reason, recovery, draft) {
+  return {
+    status: "unsupported",
+    ...closedFailure(reason, recovery, draft)
+  };
+}
+function needsSetupCapability(reason, recovery, draft) {
+  return {
+    status: "needs-setup",
+    ...closedFailure(reason, recovery, draft)
+  };
+}
+function errorCapability(reason, recovery, draft) {
+  assertReason(reason);
+  if (!recovery.trim())
+    throw new Error("capability error requires a recovery hint");
+  const selectedModelId = normalizeOptional(draft.selectedModelId);
+  const selectedEffort = normalizeOptional(draft.selectedEffort);
+  return {
+    status: "error",
+    reason,
+    recovery,
+    fetchedAt: draft.fetchedAt,
+    ...selectedModelId ? { selectedModelId } : {},
+    ...selectedEffort ? { selectedEffort } : {}
+  };
+}
+var STALE_FETCHED_AT = "1970-01-01T00:00:00.000Z";
+function parseAgentCapabilityState(value) {
+  if (!isRecord(value) || typeof value.status !== "string")
+    return stale("capability response is missing a status");
+  if (value.status === "ready")
+    return parseReady(value);
+  if (value.status === "unsupported" || value.status === "needs-setup")
+    return parseClosed(value.status, value);
+  if (value.status === "error")
+    return parseError(value);
+  return stale(`capability status "${value.status}" is not recognized`);
+}
+function parseReady(value) {
+  if (!isFetchSource(value.source) || typeof value.fetchedAt !== "string")
+    return stale("ready capability is missing source or fetchedAt");
+  if (!Array.isArray(value.models) || value.models.length === 0)
+    return stale("ready capability has no adapter models");
+  const models = [];
+  for (const entry of value.models) {
+    if (!isRecord(entry) || typeof entry.modelId !== "string" || entry.source !== "adapter") {
+      return stale("ready capability contains a non-adapter model");
+    }
+    models.push({ modelId: entry.modelId, ...typeof entry.name === "string" ? { name: entry.name } : {} });
+  }
+  try {
+    return readyCapability(value.source, models, {
+      fetchedAt: value.fetchedAt,
+      suggestions: stringIds(value.suggestions, "modelId"),
+      selectedModelId: optionalString(value.selectedModelId),
+      selectedEffort: optionalString(value.selectedEffort),
+      appliedModelId: value.source === "runtime" ? optionalString(value.appliedModelId) : undefined,
+      efforts: parseEfforts(value.efforts)
+    });
+  } catch {
+    return stale("ready capability could not be constructed");
+  }
+}
+function parseClosed(status, value) {
+  const reason = parseReason(value.reason);
+  if (!reason || typeof value.recovery !== "string" || !value.recovery.trim() || typeof value.fetchedAt !== "string") {
+    return stale(`${status} capability is missing a reason or recovery hint`);
+  }
+  const draft = {
+    fetchedAt: value.fetchedAt,
+    suggestions: stringIds(value.suggestions, "modelId"),
+    selectedModelId: optionalString(value.selectedModelId),
+    selectedEffort: optionalString(value.selectedEffort),
+    efforts: parseEfforts(value.efforts)
+  };
+  return status === "unsupported" ? unsupportedCapability(reason, value.recovery, draft) : needsSetupCapability(reason, value.recovery, draft);
+}
+function parseError(value) {
+  const reason = parseReason(value.reason);
+  if (!reason || typeof value.recovery !== "string" || !value.recovery.trim()) {
+    return stale("error capability is missing a reason or recovery hint");
+  }
+  return errorCapability(reason, value.recovery, {
+    fetchedAt: typeof value.fetchedAt === "string" ? value.fetchedAt : STALE_FETCHED_AT,
+    selectedModelId: optionalString(value.selectedModelId),
+    selectedEffort: optionalString(value.selectedEffort)
+  });
+}
+function stale(message) {
+  return errorCapability({ code: "stale-response", message }, "Reconnect a current connector, or fetch the model list again.", { fetchedAt: STALE_FETCHED_AT });
+}
+function closedFailure(reason, recovery, draft) {
+  assertReason(reason);
+  if (!recovery.trim())
+    throw new Error("capability failure requires a recovery hint");
+  const selectedModelId = normalizeOptional(draft.selectedModelId);
+  const selectedEffort = normalizeOptional(draft.selectedEffort);
+  const advertised = [];
+  return {
+    reason,
+    recovery,
+    fetchedAt: draft.fetchedAt,
+    suggestions: suggestionModels(draft.suggestions ?? []),
+    efforts: draft.efforts ?? { status: "unavailable" },
+    ...selectedModelId ? { selectedModelId } : {},
+    ...selectedEffort ? { selectedEffort } : {},
+    effect: classifySelection({ selectedModelId, advertisedIds: advertised })
+  };
+}
+function assertReason(reason) {
+  if (!REASON_CODES.has(reason.code) || !reason.message.trim()) {
+    throw new Error("capability reason requires a known code and a message");
+  }
+}
+function parseReason(value) {
+  if (!isRecord(value) || typeof value.code !== "string" || typeof value.message !== "string")
+    return;
+  if (!REASON_CODES.has(value.code) || !value.message.trim())
+    return;
+  return { code: value.code, message: value.message };
+}
+function parseEfforts(value) {
+  if (!isRecord(value))
+    return { status: "unavailable" };
+  if (value.status === "unavailable")
+    return { status: "unavailable" };
+  if (value.status !== "known" || !Array.isArray(value.options))
+    return { status: "unavailable" };
+  const ids = [];
+  for (const option of value.options) {
+    if (!isRecord(option) || typeof option.id !== "string" || option.source !== "adapter")
+      continue;
+    ids.push(option.id);
+  }
+  return knownEfforts(ids, optionalString(value.current));
+}
+function stringIds(value, key) {
+  if (!Array.isArray(value))
+    return [];
+  return value.flatMap((entry) => isRecord(entry) && typeof entry[key] === "string" ? [entry[key]] : []);
+}
+function optionalString(value) {
+  return typeof value === "string" ? value : undefined;
+}
+function normalizeOptional(value) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+function isFetchSource(value) {
+  return typeof value === "string" && FETCH_SOURCES.has(value);
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 export {
-  CONTROL_PAYLOAD_VALIDATORS,
-  DESKTOP_BUFFERED_HARD_CLOSE_BYTES,
-  DESKTOP_BUFFERED_SOFT_PAUSE_BYTES,
-  DESKTOP_ERROR_CODES,
-  DESKTOP_EVENT_PAYLOAD_VALIDATORS,
-  DESKTOP_HUB_REQUEST_TIMEOUT_MS,
-  DESKTOP_MAX_STREAMS_PER_ACCOUNT,
-  DESKTOP_MAX_STREAMS_PER_INSTANCE,
-  DESKTOP_RPC_TIMEOUT_MS,
-  DESKTOP_TCP_CHUNK_BYTES,
-  DESKTOP_TICKET_TTL_MS,
-  DESKTOP_WS_MAX_PAYLOAD_BYTES,
-  INTERACTION_WIRE_LIMITS,
-  MAX_BOT_ID_LENGTH,
-  MAX_CAPABILITIES,
-  MAX_CAPABILITY_LENGTH,
-  MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
-  MAX_DESKTOP_REQUEST_ID_LENGTH,
-  MAX_DESKTOP_STREAM_ID_LENGTH,
-  MAX_DESKTOP_TICKET_LENGTH,
-  MAX_DESKTOP_WS_PATH_LENGTH,
-  MAX_GROUP_TARGET_MEMBERS,
-  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
-  MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
-  MAX_TERMINAL_COLS,
-  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
-  MAX_TERMINAL_GENERATION_LENGTH,
-  MAX_TERMINAL_ID_LENGTH,
-  MAX_TERMINAL_INPUT_BYTES,
-  MAX_TERMINAL_REBASE_TOTAL_BYTES,
-  MAX_TERMINAL_REQUEST_ID_LENGTH,
-  MAX_TERMINAL_ROWS,
-  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
-  MAX_TERMINAL_VIEWER_ID_LENGTH,
-  MAX_TOOL_STEPS,
-  MAX_WEB_INSTANCE_ID_LENGTH,
-  MIN_TERMINAL_COLS,
-  MIN_TERMINAL_ROWS,
-  MSG,
-  REASONING_CAP,
-  RECOVERY_RETENTION_MS,
-  RELAY_CAPABILITIES,
-  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
-  RELAY_PROTOCOL_VERSION,
-  STATE_SYNC_PARTS_CAP,
-  STATE_SYNC_TEXT_CAP,
-  TERMINAL_ERROR_CODES,
-  TERMINAL_EVENT_PAYLOAD_VALIDATORS,
-  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
-  TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
-  TERMINAL_REBASE_CHUNK_BYTES,
-  TERMINAL_RPC_TIMEOUT_MS,
-  WEB_CLIENT_TYPE,
-  WEB_EVENT_TYPE,
-  decodeEnvelope,
-  encodeEnvelope,
-  errorPayload,
-  isBoundedStr,
-  isConversationWorktreeStatus,
-  isErrorPayload,
-  isIntInRange,
-  isNonNegInt,
-  isObj,
-  isStr,
-  maxBase64EncodedLength,
-  normalizeCapabilities,
-  optBool,
-  optNonNegInt,
-  optNum,
-  optStr,
-  optStrArr,
-  parseCanonicalBase64,
-  parseControlPayload,
-  parseDesktopEventPayload,
-  parseTerminalEventPayload,
-  parseWebClientMessage,
-  parseWebServerEvent,
-  validControlEvent,
-  validInstanceStateSync,
-  validateInteractionRequest,
-  validateInteractionResponse,
-  validateInteractionWithdraw,
+  webEventEnvelope,
   webClientEnvelope,
-  webEventEnvelope
+  validateInteractionWithdraw,
+  validateInteractionResponse,
+  validateInteractionRequest,
+  validInstanceStateSync,
+  validControlEvent,
+  unsupportedCapability,
+  suggestionModels,
+  readyCapability,
+  parseWebServerEvent,
+  parseWebClientMessage,
+  parseTerminalEventPayload,
+  parseDesktopEventPayload,
+  parseControlPayload,
+  parseCanonicalBase64,
+  parseAgentCapabilityState,
+  optStrArr,
+  optStr,
+  optNum,
+  optNonNegInt,
+  optBool,
+  normalizeCapabilities,
+  needsSetupCapability,
+  maxBase64EncodedLength,
+  knownEfforts,
+  isStr,
+  isObj,
+  isNonNegInt,
+  isIntInRange,
+  isErrorPayload,
+  isConversationWorktreeStatus,
+  isBoundedStr,
+  errorPayload,
+  errorCapability,
+  encodeEnvelope,
+  decodeEnvelope,
+  classifySelection,
+  adapterModels,
+  WEB_EVENT_TYPE,
+  WEB_CLIENT_TYPE,
+  TERMINAL_RPC_TIMEOUT_MS,
+  TERMINAL_REBASE_CHUNK_BYTES,
+  TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
+  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
+  TERMINAL_EVENT_PAYLOAD_VALIDATORS,
+  TERMINAL_ERROR_CODES,
+  STATE_SYNC_TEXT_CAP,
+  STATE_SYNC_PARTS_CAP,
+  RELAY_PROTOCOL_VERSION,
+  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
+  RELAY_CAPABILITIES,
+  RECOVERY_RETENTION_MS,
+  REASONING_CAP,
+  MSG,
+  MIN_TERMINAL_ROWS,
+  MIN_TERMINAL_COLS,
+  MAX_WEB_INSTANCE_ID_LENGTH,
+  MAX_TOOL_STEPS,
+  MAX_TERMINAL_VIEWER_ID_LENGTH,
+  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
+  MAX_TERMINAL_ROWS,
+  MAX_TERMINAL_REQUEST_ID_LENGTH,
+  MAX_TERMINAL_REBASE_TOTAL_BYTES,
+  MAX_TERMINAL_INPUT_BYTES,
+  MAX_TERMINAL_ID_LENGTH,
+  MAX_TERMINAL_GENERATION_LENGTH,
+  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
+  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
+  MAX_GROUP_TARGET_MEMBERS,
+  MAX_DESKTOP_WS_PATH_LENGTH,
+  MAX_DESKTOP_TICKET_LENGTH,
+  MAX_DESKTOP_STREAM_ID_LENGTH,
+  MAX_DESKTOP_REQUEST_ID_LENGTH,
+  MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
+  MAX_CAPABILITY_LENGTH,
+  MAX_CAPABILITIES,
+  MAX_BOT_ID_LENGTH,
+  INTERACTION_WIRE_LIMITS,
+  DESKTOP_WS_MAX_PAYLOAD_BYTES,
+  DESKTOP_TICKET_TTL_MS,
+  DESKTOP_TCP_CHUNK_BYTES,
+  DESKTOP_RPC_TIMEOUT_MS,
+  DESKTOP_MAX_STREAMS_PER_INSTANCE,
+  DESKTOP_MAX_STREAMS_PER_ACCOUNT,
+  DESKTOP_HUB_REQUEST_TIMEOUT_MS,
+  DESKTOP_EVENT_PAYLOAD_VALIDATORS,
+  DESKTOP_ERROR_CODES,
+  DESKTOP_BUFFERED_SOFT_PAUSE_BYTES,
+  DESKTOP_BUFFERED_HARD_CLOSE_BYTES,
+  CONTROL_PAYLOAD_VALIDATORS
 };

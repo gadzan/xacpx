@@ -67,6 +67,10 @@ export class CliEngine implements BridgeEngine {
     return this.runtime.getSessionModel(input);
   }
 
+  probeAgentCapabilities(input: import("../../../transport/types").AgentCapabilityProbeRequest) {
+    return this.runtime.probeAgentCapabilities(input);
+  }
+
   setSessionEffort(input: EngineSessionInput & { effort: string }): Promise<Record<string, never>> {
     return this.runtime.setSessionEffort(input);
   }

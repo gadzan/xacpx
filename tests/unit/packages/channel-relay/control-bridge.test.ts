@@ -231,6 +231,40 @@ async function dispatch(
   return await new Promise((resolve) => bridge(envelope, resolve));
 }
 
+test("agent capability get forwards only agent, workspace, bot id, and probe", async () => {
+  const seen: unknown[] = [];
+  const { control } = makeFakeControl({
+    getAgentCapabilities: async (input: unknown) => {
+      seen.push(input);
+      return {
+        status: "needs-setup",
+        reason: { code: "discovery-available", message: "no saved model list" },
+        recovery: "Fetch the model list.",
+        fetchedAt: "2026-10-09T00:00:00.000Z",
+        suggestions: [],
+        efforts: { status: "unavailable" },
+        effect: { kind: "default" },
+      };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.agentsCapabilitiesGet, {
+    agent: "codex",
+    workspace: "backend",
+    botId: "bot-1",
+    probe: true,
+    sessionAlias: "brt_hidden",
+  }))).toMatchObject({ error: { code: "invalid-payload" } });
+  expect(await dispatch(bridge, req(MSG.agentsCapabilitiesGet, {
+    agent: "codex",
+    workspace: "backend",
+    botId: "bot-1",
+    probe: true,
+  }))).toMatchObject({ status: "needs-setup" });
+  expect(seen).toEqual([{ agent: "codex", workspace: "backend", botId: "bot-1", probe: true }]);
+  expect(JSON.stringify(seen)).not.toContain("brt_hidden");
+});
+
 test("worktree RPC rejects old daemons instead of falling back to generic Git", async () => {
   const { control } = makeFakeControl();
   expect(await dispatch(createControlBridge(control as never), req(MSG.conversationWorktree, { action: "cleanup", runId: "r" })))

@@ -310,6 +310,11 @@ export function parseConfig(
     if ("command" in agent && (typeof agent.command !== "string" || agent.command.length === 0)) {
       throw new Error(`agent "${name}" command must be a non-empty string`);
     }
+    if ("modelCandidates" in agent) {
+      if (!Array.isArray(agent.modelCandidates) || agent.modelCandidates.some((value) => typeof value !== "string" || value.trim().length === 0)) {
+        throw new Error(`agent "${name}" modelCandidates must be an array of non-empty strings`);
+      }
+    }
     if ("argv" in agent) {
       if (!isValidAgentArgv(agent.argv)) {
         throw new Error(`agent "${name}" argv must be a non-empty array of strings with a non-empty executable`);
@@ -342,11 +347,15 @@ export function parseConfig(
     const command = typeof agent.command === "string" ? resolveAgentCommand(driver, agent.command) : undefined;
     const argv = isValidAgentArgv(agent.argv) ? [...agent.argv] : undefined;
     const model = typeof agent.model === "string" && agent.model.trim().length > 0 ? agent.model.trim() : undefined;
+    const modelCandidates = Array.isArray(agent.modelCandidates)
+      ? [...new Set(agent.modelCandidates.map((value) => value.trim()).filter((value) => value.length > 0))]
+      : undefined;
     agents[name] = {
       driver,
       ...(command ? { command } : {}),
       ...(argv ? { argv } : {}),
       ...(model ? { model } : {}),
+      ...(modelCandidates && modelCandidates.length > 0 ? { modelCandidates } : {}),
       ...(isClaudeSettingsPolicy(agent.settingsPolicy) ? { settingsPolicy: agent.settingsPolicy } : {}),
     };
   }

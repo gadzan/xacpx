@@ -129,6 +129,11 @@ export interface AgentConfig {
   argv?: string[];
   /** Default LLM model id for sessions of this agent (e.g. `gpt-5.2[high]`); a session-level model overrides it. */
   model?: string;
+  /**
+   * Unverified model id suggestions shown beside adapter results. They are not
+   * an advertisement and do not survive as ready models.
+   */
+  modelCandidates?: string[];
   /** Claude user-settings exposure. Defaults to filtered third-party provider/model settings. */
   settingsPolicy?: ClaudeSettingsPolicy;
 }

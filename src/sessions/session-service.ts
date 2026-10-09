@@ -273,6 +273,37 @@ export class SessionService {
   }
 
   /**
+   * Every logical session for one configured agent and workspace, including
+   * product-owned runtimes. Callers that build a public DTO must not copy
+   * `resolved.alias` onto it.
+   */
+  listCapabilityTargets(agent: string, workspace: string): Array<{
+    productOwned: boolean;
+    botId?: string;
+    scope?: "bot-direct" | "group-member" | "group-controller";
+    resolved: ResolvedSession;
+  }> {
+    const targets = [];
+    for (const session of Object.values(this.state.sessions)) {
+      if (session.agent !== agent || session.workspace !== workspace) continue;
+      let resolved: ResolvedSession;
+      try {
+        resolved = this.toResolvedSession(session);
+      } catch {
+        continue;
+      }
+      const productOwned = isHiddenProductSessionOwner(session.owner);
+      targets.push({
+        productOwned,
+        ...(session.owner?.botId ? { botId: session.owner.botId } : {}),
+        ...(session.owner?.kind ? { scope: session.owner.kind } : {}),
+        resolved,
+      });
+    }
+    return targets;
+  }
+
+  /**
    * Warm acpx queue-owner reap targets, including HISTORICAL identities.
    * Derived recorded commands (managed adapter pins, hermes shim, preinstalled
    * adapters) are recomputed from the CURRENT pin on restart, so a current-only

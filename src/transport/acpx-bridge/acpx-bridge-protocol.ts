@@ -18,6 +18,7 @@ export type BridgeMethod =
   | "setMode"
   | "setModel"
   | "getSessionModel"
+  | "probeAgentCapabilities"
   | "setSessionEffort"
   | "getSessionEffort"
   | "cancel"
