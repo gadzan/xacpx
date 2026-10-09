@@ -1124,7 +1124,7 @@ async function dispatchControlRequest(
     case MSG.groupTopicsArchive: {
       const input = parseControlPayload(MSG.groupTopicsArchive, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.groupTopicsArchive}: malformed payload`);
-      return { topic: await control.archiveTopic(input.conversationId, input.topicId) };
+      return { topic: await control.archiveGroupTopic(input.conversationId, input.topicId) };
     }
     case MSG.groupTopicsTeardown: {
       const input = parseControlPayload(MSG.groupTopicsTeardown, payload);
