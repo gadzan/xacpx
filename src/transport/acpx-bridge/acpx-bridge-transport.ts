@@ -189,11 +189,10 @@ export class AcpxBridgeTransport implements SessionTransport {
         throw deferred;
       }
       const summary = buildOverflowSummary(overflowCount);
-      // Streaming mode already pushed every segment through reply() (mid quota).
-      // Returning result.text again would duplicate what the user just saw. Only
-      // surface a final-tier text when overflow happened — in that case the
-      // summary is new info AND result.text carries the agent's final answer
-      // that may have been partially or fully dropped from the stream.
+      // After reply() delivers text, returning result.text would duplicate it.
+      // Quota overflow needs a final-tier summary and the full answer, which may
+      // have been dropped from the stream. Final-only stream results fall back
+      // to result.text below because no text was delivered in that case.
       const transcriptError = transcriptEvents.getError();
       if (transcriptError) {
         throw transcriptError;
