@@ -1,6 +1,8 @@
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
+import { ROUTER_CONFIG_PATH, type RouterAvailability } from "@ganglion/xacpx-relay-protocol";
+
 import { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import { BotService } from "../bots/bot-service";
 import type { AppConfig } from "../config/types";
@@ -18,6 +20,7 @@ import { ConversationDispatcher, type LeaseScheduler } from "./conversation-disp
 import { conversationExecutionOrigin } from "./conversation-execution";
 import { bindRouter } from "./conversation-router-gate";
 import { ConversationRouterEngine } from "./conversation-router-engine";
+import { disabledRouterAvailability, unprovenRouterAvailability } from "./production-router";
 import { ConversationRunService } from "./conversation-run-service";
 import { ControlConversationTurnRunner } from "./conversation-turn-runner";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
@@ -25,6 +28,19 @@ import { GroupHandoffService } from "./group-handoff";
 import { ConversationBindingService } from "./conversation-bindings";
 import { ConversationWorktreeManager } from "./conversation-worktree-manager";
 import { WorktreeIntegrationService } from "./worktree-integration-service";
+
+function settleRouter(router: unknown, declared: RouterAvailability | undefined): {
+  router?: ReturnType<typeof bindRouter>;
+  availability: RouterAvailability;
+} {
+  const bound = bindRouter(router);
+  if (declared?.status === "ready") {
+    return bound ? { router: bound, availability: declared } : { availability: unprovenRouterAvailability() };
+  }
+  if (declared) return { availability: declared };
+  if (bound) return { router: bound, availability: { status: "ready", configPath: ROUTER_CONFIG_PATH } };
+  return { availability: disabledRouterAvailability() };
+}
 
 export function resolveConversationStorePath(configPath: string): string {
   return join(resolveRuntimeDirFromConfigPath(configPath), "conversations.sqlite");
@@ -40,6 +56,8 @@ export interface ConversationRuntime {
   runs: ConversationRunService;
   handoffs: GroupHandoffService;
   bindings: ConversationBindingService;
+  /** Startup snapshot. The composer reads this instead of guessing. */
+  routerAvailability: RouterAvailability;
   authorityEpoch: string;
   kick(): Promise<void>;
   /**
@@ -75,6 +93,12 @@ export interface CreateConversationRuntimeInput {
    * (including a permissive default) leaves automatic mode unsupported.
    */
   router?: unknown;
+  /**
+   * Availability from the production resolver. When set, a router is attached
+   * only for `ready`. Callers that pass a router and omit this field keep the
+   * existing test seam.
+   */
+  routerAvailability?: RouterAvailability;
   /** Engine-enforced decision deadline; adapters cannot disable it. */
   routerDecisionTimeoutMs?: number;
   /**
@@ -138,7 +162,8 @@ export async function createConversationRuntime(
   // unsupported (`automatic_unsupported`), which preserves PR7 behavior for
   // every deployment that has not opted in. `bindRouter` refuses any object
   // that cannot prove its restriction up front — never a permissive default.
-  const router = bindRouter(input.router);
+  const settled = settleRouter(input.router, input.routerAvailability);
+  const router = settled.router;
   const routerEngine = router
     ? new ConversationRouterEngine(router, {
       store,
@@ -240,6 +265,7 @@ export async function createConversationRuntime(
     runs,
     handoffs,
     bindings: new ConversationBindingService(store, runs, bots, input.config),
+    routerAvailability: settled.availability,
     authorityEpoch: dispatcher.authorityEpoch,
     kick: () => dispatcher.kick(),
     activateAfterConsumerLock: () => runs.activateAfterConsumerLock(),

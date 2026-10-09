@@ -471,10 +471,8 @@ export interface MemberTurnSummaryDto {
   /** Machine-readable terminal failure reason (failed only). */
   failureReason?: string;
   /**
-   * PR8 structured blocked-step evidence (design §16). Set when an automatic
-   * MemberTurn needs human-origin authority to proceed; durable so the
-   * "[Start this step myself]" action survives reconnect. Never an origin
-   * upgrade — the action creates a NEW explicit human request.
+   * Structured blocked-step evidence. Durable across reconnect. This release
+   * does not turn it into a human request. Stop the run, then send a new one.
    */
   blockedReason?: "human-authority-required" | "human-authority-unknown";
 }

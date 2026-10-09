@@ -158,6 +158,19 @@ export interface LaterConfig {
   defaultMode: LaterDefaultMode;
 }
 
+/** Production automatic-collaboration router. Absent or `enabled: false` stays off. */
+export interface ConversationRouterConfig {
+  enabled: boolean;
+  /** Executable that reports `--capabilities` before any `--decide` process. */
+  command?: string;
+  /** Environment variable that must be non-empty before the capability probe. */
+  authEnv?: string;
+}
+
+export interface ConversationsConfig {
+  router: ConversationRouterConfig;
+}
+
 export interface ChannelRuntimeConfig {
   id: string;
   type: string;
@@ -184,6 +197,7 @@ export interface AppConfig {
   workspaces: Record<string, WorkspaceConfig>;
   orchestration: OrchestrationConfig;
   later?: LaterConfig;
+  conversations?: ConversationsConfig;
   language?: Locale;
   terminal?: TerminalConfig;
   files?: FilesConfig;

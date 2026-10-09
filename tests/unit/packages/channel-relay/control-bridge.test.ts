@@ -231,6 +231,22 @@ async function dispatch(
   return await new Promise((resolve) => bridge(envelope, resolve));
 }
 
+test("conversation router get returns the availability and rejects extra fields", async () => {
+  const availability = {
+    status: "disabled-by-config",
+    configPath: "conversations.router",
+    reason: { code: "disabled", message: "Automatic collaboration is off." },
+  };
+  const { control } = makeFakeControl({
+    getConversationRouterAvailability: () => availability,
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.conversationRouterGet, { command: "/tmp/router" }))).toMatchObject({
+    error: { code: "invalid-payload" },
+  });
+  expect(await dispatch(bridge, req(MSG.conversationRouterGet, {}))).toEqual(availability);
+});
+
 test("agent capability get forwards only agent, workspace, bot id, and probe", async () => {
   const seen: unknown[] = [];
   const { control } = makeFakeControl({

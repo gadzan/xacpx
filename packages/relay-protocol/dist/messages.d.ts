@@ -61,6 +61,7 @@ export declare const MSG: {
     readonly upload: "control.upload";
     readonly sessionModelGet: "control.session.model.get";
     readonly agentsCapabilitiesGet: "control.agents.capabilities.get";
+    readonly conversationRouterGet: "control.conversations.router.get";
     readonly sessionModelSet: "control.session.model.set";
     readonly sessionEffortGet: "control.session.effort.get";
     readonly sessionEffortSet: "control.session.effort.set";
@@ -955,6 +956,10 @@ export interface AgentsCapabilitiesGetPayload {
     workspace: string;
     botId?: string;
     probe?: boolean;
+}
+/** Empty read. The instance returns its startup router availability. */
+export interface ConversationRouterGetPayload {
+    readonly __empty?: never;
 }
 export interface SessionModelSetPayload {
     chatKey: string;

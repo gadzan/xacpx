@@ -145,6 +145,7 @@ var MSG = {
   upload: "control.upload",
   sessionModelGet: "control.session.model.get",
   agentsCapabilitiesGet: "control.agents.capabilities.get",
+  conversationRouterGet: "control.conversations.router.get",
   sessionModelSet: "control.session.model.set",
   sessionEffortGet: "control.session.effort.get",
   sessionEffortSet: "control.session.effort.set",
@@ -1158,6 +1159,12 @@ var validateGitWorktreeCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.workspace) && isStr(o.workspaceName) && isStr(o.branch) && optBool(o.createBranch) && optStr(o.startPoint) && o.path === undefined ? o : null;
 };
+var validateConversationRouterGet = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 0)
+    return null;
+  return {};
+};
 var validateAgentsCapabilitiesGet = (p) => {
   const o = fields(p);
   if (!o || !isBoundedStr(o.agent, 128) || !isBoundedStr(o.workspace, 256))
@@ -1671,6 +1678,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.gitWorktreeCreate]: validateGitWorktreeCreate,
   [MSG.sessionModelGet]: validateSessionModelGet,
   [MSG.agentsCapabilitiesGet]: validateAgentsCapabilitiesGet,
+  [MSG.conversationRouterGet]: validateConversationRouterGet,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.sessionEffortGet]: validateSessionEffortGet,
   [MSG.sessionEffortSet]: validateSessionEffortSet,
@@ -2039,6 +2047,66 @@ function isFetchSource(value) {
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+// packages/relay-protocol/src/router-availability.ts
+var ROUTER_CONFIG_PATH = "conversations.router";
+var UNAVAILABLE = new Set(["restriction-unproven", "not-advertised"]);
+var FAILED = new Set([
+  "command-missing",
+  "auth-missing",
+  "probe-failed",
+  "probe-timeout",
+  "malformed-capabilities",
+  "read-failed"
+]);
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function readReason(value) {
+  if (!isRecord2(value))
+    return;
+  if (typeof value.code !== "string" || typeof value.message !== "string")
+    return;
+  const message = value.message.trim();
+  if (!message || message.length > 500)
+    return;
+  if (Object.keys(value).some((key) => key !== "code" && key !== "message"))
+    return;
+  return { code: value.code, message };
+}
+function parseRouterAvailability(value) {
+  if (!isRecord2(value) || value.configPath !== ROUTER_CONFIG_PATH) {
+    throw new Error("router availability is missing conversations.router");
+  }
+  const extra = Object.keys(value).filter((key) => key !== "status" && key !== "configPath" && key !== "reason");
+  if (extra.length > 0)
+    throw new Error("router availability contains an unsupported field");
+  if (value.status === "ready") {
+    if ("reason" in value)
+      throw new Error("router availability ready has no reason");
+    return { status: "ready", configPath: ROUTER_CONFIG_PATH };
+  }
+  const reason = readReason(value.reason);
+  if (!reason)
+    throw new Error("router availability reason is missing");
+  if (value.status === "disabled-by-config" && reason.code === "disabled") {
+    return { status: "disabled-by-config", configPath: ROUTER_CONFIG_PATH, reason: { code: "disabled", message: reason.message } };
+  }
+  if (value.status === "unsupported" && UNAVAILABLE.has(reason.code)) {
+    return {
+      status: "unsupported",
+      configPath: ROUTER_CONFIG_PATH,
+      reason: { code: reason.code, message: reason.message }
+    };
+  }
+  if (value.status === "failed" && FAILED.has(reason.code)) {
+    return {
+      status: "failed",
+      configPath: ROUTER_CONFIG_PATH,
+      reason: { code: reason.code, message: reason.message }
+    };
+  }
+  throw new Error("router availability status is not recognized");
+}
 export {
   webEventEnvelope,
   webClientEnvelope,
@@ -2053,6 +2121,7 @@ export {
   parseWebServerEvent,
   parseWebClientMessage,
   parseTerminalEventPayload,
+  parseRouterAvailability,
   parseDesktopEventPayload,
   parseControlPayload,
   parseCanonicalBase64,
@@ -2089,6 +2158,7 @@ export {
   TERMINAL_ERROR_CODES,
   STATE_SYNC_TEXT_CAP,
   STATE_SYNC_PARTS_CAP,
+  ROUTER_CONFIG_PATH,
   RELAY_PROTOCOL_VERSION,
   RELAY_INTERACTION_RESPONSE_RESERVE_MS,
   RELAY_CAPABILITIES,

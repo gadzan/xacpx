@@ -122,6 +122,7 @@ import {
   resolveConversationStorePath,
   type ConversationRuntime,
 } from "./conversations/conversation-composition";
+import { resolveProductionRouter } from "./conversations/production-router";
 import { ConversationError } from "./conversations/conversation-error";
 import { SessionWarmthTracker } from "./control/session-warmth-tracker";
 import { createTerminalService } from "./control/terminal-service";
@@ -2164,6 +2165,14 @@ export async function buildApp(
     },
   });
   controlRef = control;
+  const routerResolution = await resolveProductionRouter({ config, env: process.env });
+  void logger.info("conversations.router", "conversation router availability", {
+    status: routerResolution.availability.status,
+    configPath: routerResolution.availability.configPath,
+    ...(routerResolution.availability.status === "ready"
+      ? {}
+      : { code: routerResolution.availability.reason.code }),
+  });
   const conversations = await createConversationRuntime({
     config,
     state,
@@ -2172,6 +2181,8 @@ export async function buildApp(
     control: conversationKernel(control),
     sqlitePath: resolveConversationStorePath(paths.configPath),
     releaseOwnedSession: createProductionOwnedSessionRelease({ sessions, transport }),
+    ...(routerResolution.router ? { router: routerResolution.router } : {}),
+    routerAvailability: routerResolution.availability,
     onProductEvent: (event) => conversationKernel(control).emitConversationProduct(event),
     onSchedulingFailure: (error) => {
       const code = error instanceof ConversationError ? error.code : undefined;
