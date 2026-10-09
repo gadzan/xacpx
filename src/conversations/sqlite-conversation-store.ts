@@ -1567,18 +1567,21 @@ export class SqliteConversationStore implements ConversationStore {
 
   peekClaimableTopicIds(input: ClaimNextDispatchInput, limit: number): string[] {
     // Read-only: same predicate as claimNextDispatch, projected to the Topic of
-    // each claimable row IN CLAIM ORDER, then de-duplicated preserving that
-    // order. No transaction — this must never mutate a row; a concurrent claim
-    // simply means the Topic is absent next time.
+    // each claimable row IN CLAIM ORDER. No transaction — this must never mutate
+    // a row; a concurrent claim simply means the Topic is absent next time.
     //
-    // The row scan is bounded by `limit` DISTINCT Topics, not by a fixed row
-    // count: `GROUP BY r.topic_id ... LIMIT ?` stops as soon as `limit` Topics
-    // are collected. A fixed row LIMIT would let ONE Topic with a long queue
-    // consume the whole budget and keep another ready Topic out of the
-    // candidate set entirely — the starvation the rotator exists to prevent.
-    // The aggregate keeps the claim ORDER of each Topic's first claimable row
-    // (MIN over the ordered key), so the projection is still claim order and the
-    // rotator never reorders a Topic's own requests.
+    // The scan is bounded by `limit` DISTINCT Topics, not by a fixed row count:
+    // `GROUP BY r.topic_id ... LIMIT ?` stops as soon as `limit` Topics are
+    // collected. A fixed row LIMIT would let ONE Topic with a long queue consume
+    // the whole budget and keep another ready Topic out of the candidate set
+    // entirely — the starvation the rotator exists to prevent.
+    //
+    // `MIN(...)` over each Topic's claimable rows keeps the claim ORDER of that
+    // Topic's first claimable row, so the projection is still claim order and the
+    // rotator never reorders a Topic's own requests. `msg` is a LEFT JOIN, so a
+    // Topic whose request row is missing yields a NULL minimum; NULL sorts first
+    // in SQLite, which is harmless because the claim predicate itself already
+    // fails such a row (a missing request snapshot is terminal corruption).
     const { where, params } = this.claimEligibility(input);
     const rows = this.sqlite.all<{ topic_id: string }>(
       `SELECT r.topic_id AS topic_id ${SqliteConversationStore.CLAIM_SOURCES}
