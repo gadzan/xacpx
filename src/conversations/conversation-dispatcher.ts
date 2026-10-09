@@ -109,6 +109,18 @@ export type AutomaticRoutingHandler = (runId: string) => void;
 const DEFAULT_LEASE_MS = 30_000;
 
 export class ConversationDispatcher {
+  /**
+   * How many ready Topics the fairness rotator considers per claim.
+   *
+   * Must stay well above `MAX_CONCURRENT_RUN_EXECUTIONS_LIMIT` (64). Capping the
+   * candidate set at the global ceiling — or any small constant — makes the
+   * rotator useless once there are more ready Topics than the cap: the Topics
+   * beyond it never enter the candidate set, so no ordering of the candidates
+   * can ever reach them, and they are starved permanently. The peek is a
+   * read-only `GROUP BY topic_id` over claimable Topics, so a wide bound costs
+   * one scan rather than one row per Topic.
+   */
+  private static readonly FAIRNESS_CANDIDATE_LIMIT = 512;
   private worktrees?: import("./conversation-worktree-manager").ConversationWorktreeManager;
   setWorktreeManager(manager: import("./conversation-worktree-manager").ConversationWorktreeManager): void { this.worktrees = manager; }
   private readonly now: () => Date;
@@ -387,6 +399,44 @@ export class ConversationDispatcher {
         throw failure.outcome.reason;
       }
     };
+    /**
+     * Wait for the given guards, but return early when a wake fires.
+     *
+     * The plain `awaitCohortInFlight` blocks until every guard settles, which is
+     * right for a pass's own launches but wrong for a held-sibling handoff: a
+     * handoff can hold a Provider turn open for its whole duration, and blocking
+     * on it parks the drain with no way to observe another Topic's kick — the
+     * head-of-line blocking the global claim loop exists to remove.
+     *
+     * Returning on a wake lets the loop re-enter and re-scan while the handoff
+     * is still running. The guards stay in `inFlightExecutions`, so nothing is
+     * lost: the next settle awaits them, and a rejecting guard still rejects
+     * that settle.
+     *
+     * A guard that has ALREADY settled with a rejection is reported immediately,
+     * so a handoff whose failure lands before the wake is not silently dropped.
+     */
+    const awaitCohortInFlightOrWake = async (launched: Array<{ guard: Promise<void>; outcome: { status: "pending" | "fulfilled" | "rejected"; reason?: unknown } }>): Promise<void> => {
+      if (launched.length === 0) {
+        return;
+      }
+      // A guard that already rejected must not wait for a wake that may never
+      // come: check the recorded outcome first.
+      const alreadyFailed = launched.find((entry) => entry.outcome.status === "rejected");
+      if (alreadyFailed) {
+        throw alreadyFailed.outcome.reason;
+      }
+      await Promise.race([
+        Promise.allSettled(launched.map((entry) => entry.guard)),
+        this.wakeSignal,
+      ]);
+      // The race may have been won by a settle rather than a wake. Re-check so
+      // a rejection that landed during the race is still surfaced.
+      const failed = launched.find((entry) => entry.outcome.status === "rejected");
+      if (failed) {
+        throw failed.outcome.reason;
+      }
+    };
     // A logical drain = one global first claim, then same-Run siblings
     // only (cohortRunId) for that PASS, until the cohort settles or a held
     // handoff continues the SAME run without a new global claim. A pass
@@ -580,18 +630,24 @@ export class ConversationDispatcher {
         // actually finished — the only state in which the hold can clear.
         const held = this.recheckHeldClaims();
         if (held) {
-          // The handoff is launched into this drain's `cohort`, so the settle
-          // BELOW awaits it in the same pass. That is what makes an unexpected
-          // failure rethrow out of the drain (rejecting activation) instead of
-          // escaping as an unhandled rejection — the regression the original
+          // The handoff is launched into this drain's `cohort`, so it is inside
+          // the drain's failure propagation: the settle below checks every
+          // guard this drain launched, and a rejecting guard rejects it. That is
+          // what makes an unexpected sibling failure reject activation instead
+          // of escaping as an unhandled rejection — the regression the original
           // inline await was protecting against.
           //
-          // Awaiting the handoff here does NOT reintroduce head-of-line
-          // blocking, because the settle is a COHORT wait, not a whole-set
-          // wait: `cohort` holds only what this pass launched, and the claim
-          // loop above has already parked on one in-flight settle OR a wake
-          // while admitting other Topics. A long sibling therefore cannot hold
-          // the `draining` guard, and an incoming kick is observed.
+          // The wait is WAKE-AWARE rather than a plain cohort settle. A handoff
+          // holds a Provider turn open for its whole duration, and blocking on
+          // it with no wake parks the drain so another Topic's kick is never
+          // observed — the exact head-of-line blocking the global claim loop
+          // removes. Racing the wake returns to the claim loop, which re-scans
+          // and admits other Topics while the sibling runs.
+          //
+          // Nothing is lost by returning early: the guards stay in
+          // `inFlightExecutions`, so the NEXT settle awaits them, and a
+          // rejecting guard still rejects that settle. The guards are not
+          // spliced out of `cohort`, so the failure check still sees them.
           //
           // Registering it in `cohortRunIds` keeps it inside the drain's scope:
           // the `!claimed` branch above waits (racing the wake) rather than
@@ -602,12 +658,15 @@ export class ConversationDispatcher {
           launchExecution(held);
           cohortRunIds.add(held.run.id);
           passProgress = true;
-          // Settle the handoff (and anything else this pass launched) before
-          // deciding whether to chain, so its failure propagates from HERE.
-          await awaitCohortInFlight();
+          // Wait for the handoff (and anything else this pass launched) OR for a
+          // wake, so a new request on another Topic is observed immediately.
+          await awaitCohortInFlightOrWake([...cohort]);
           if (this.closed) {
             return;
           }
+          // The wake (or the settle) may have admitted more work; re-enter the
+          // claim loop rather than falling through to the chain decision.
+          continue;
         }
         // A drain that deferred Topics on pre-start failures may still have
         // unrelated pending work: chain one extra pass (no wake consumed)
@@ -778,6 +837,15 @@ export class ConversationDispatcher {
    * requests out of order, and a Topic with no ready work is simply absent from
    * the peek.
    *
+   * The candidate cap is deliberately far above the global ceiling
+   * (`MAX_CONCURRENT_RUN_EXECUTIONS_LIMIT`). Capping it at the ceiling — or at
+   * any small constant — reintroduces the starvation the rotator exists to
+   * prevent: with more ready Topics than the cap, the Topics beyond it never
+   * enter the candidate set, so rotation can never reach them no matter how the
+   * rotator orders what it does see. The peek is a read-only `GROUP BY` over
+   * claimable Topics, so a wide cap costs one indexed scan, not one row per
+   * Topic.
+   *
    * Falls back to the plain claim when the peek is empty or the preferred Topic
    * turns out not to be claimable (a concurrent claim, a capacity change): the
    * durable claim remains the authority on admissibility.
@@ -791,7 +859,7 @@ export class ConversationDispatcher {
       topicConcurrencyLimits: this.runtime.topicConcurrencyLimits(),
       ...(this.deferredTopicIds.size > 0 ? { skipTopicIds: [...this.deferredTopicIds] } : {}),
     };
-    const candidates = this.store.peekClaimableTopicIds(base, 8);
+    const candidates = this.store.peekClaimableTopicIds(base, ConversationDispatcher.FAIRNESS_CANDIDATE_LIMIT);
     if (candidates.length === 0) {
       return undefined;
     }

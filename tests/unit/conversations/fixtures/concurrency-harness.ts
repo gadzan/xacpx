@@ -60,22 +60,41 @@ export class ControlledRunner implements ConversationTurnRunner {
     return { outcome: "cancelled" as const };
   }
 }
-export async function harness(options: { path?: string; state?: AppState; hooks?: ConversationDispatcherHooks; router?: ConversationRouter; ownerId?: string; beforeAcceptPersist?: () => Promise<void>; transport?: Partial<AppConfig["transport"]>; acpxCommandMetadata?: AcpxCommandMetadata; workspaceCwd?: string; worktreeRoot?: string; worktreeHooks?: WorktreeManagerHooks; maxConcurrentRunExecutions?: number } = {}) {
+export async function harness(options: { path?: string; state?: AppState; hooks?: ConversationDispatcherHooks; router?: ConversationRouter; ownerId?: string; beforeAcceptPersist?: () => Promise<void>; transport?: Partial<AppConfig["transport"]>; acpxCommandMetadata?: AcpxCommandMetadata; workspaceCwd?: string; altWorkspaceCwd?: string; worktreeRoot?: string; worktreeHooks?: WorktreeManagerHooks; maxConcurrentRunExecutions?: number } = {}) {
   const path = options.path ?? join(mkdtempSync(join(tmpdir(), "xacpx-concurrency-")), "conversations.sqlite");
   const store = await SqliteConversationStore.open(path);
   const state = options.state ?? createEmptyState();
   const stateStore = { async save(_s: AppState) {}, async saveNow(_s: AppState) {} };
   // The config key is an alias: synthetic reader fixtures now materialize the
   // actual supported restricted launch instead of treating Codex's mode as proof.
-  const config = { agents: { codex: { driver: "claude" } }, workspaces: { backend: { cwd: options.workspaceCwd ?? "/tmp/backend" } },
+  const config = {
+    agents: { codex: { driver: "claude" } },
+    // `alt` is a SECOND physical directory. Cross-Topic overlap tests need it:
+    // with one workspace every Topic keys on the same resource, so a legitimate
+    // concurrent Run is indistinguishable from a resource conflict and the
+    // overlap assertion would pass vacuously.
+    workspaces: {
+      backend: { cwd: options.workspaceCwd ?? "/tmp/backend" },
+      ...(options.altWorkspaceCwd !== undefined ? { alt: { cwd: options.altWorkspaceCwd } } : {}),
+    },
     // Pin the validated enforcement contract independently of release defaults.
-    transport: { type: "acpx-cli", adapterVersions: { claude: "0.78.0" }, ...options.transport } } as AppConfig;
+    transport: { type: "acpx-cli", adapterVersions: { claude: "0.78.0" }, ...options.transport },
+  } as AppConfig;
   const stateMutex = new AsyncMutex();
   const sessions = new SessionService(config, stateStore, state, { stateMutex, acpxCommandMetadata: options.acpxCommandMetadata });
   const releaseOwnedSession = createStrictOwnedSessionRelease({ sessions, transport: { async deleteSession() {}, async releaseLogicalSession() {} } });
   let id = Object.keys(state.bots).length;
   const bots = new BotService(config, state, stateStore, { stateMutex, createId: () => `bot_limit_${++id}` });
-  if (id === 0) for (let n = 0; n < 4; n++) await bots.createBot({ name: `Member${n}`, agent: "codex", workspace: "backend" });
+  if (id === 0) {
+    for (let n = 0; n < 4; n++) await bots.createBot({ name: `Member${n}`, agent: "codex", workspace: "backend" });
+    // A member on the SECOND physical directory, so a Topic bound to `alt` can
+    // bind a session and actually execute. Without it an `alt` Topic fails
+    // session binding (the bot's workspace must match the Topic's), which looks
+    // like a scheduler bug but is a fixture gap.
+    if (options.altWorkspaceCwd !== undefined) {
+      for (let n = 0; n < 4; n++) await bots.createBot({ name: `Alt${n}`, agent: "codex", workspace: "alt" });
+    }
+  }
   const runtime = new BotRuntimeManager(bots, sessions, state, stateStore, { stateMutex, releaseOwnedSession });
   const runner = new ControlledRunner();
   let clock = Date.parse(NOW);
@@ -98,17 +117,37 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
   const originalClaim = store.claimNextDispatch.bind(store);
   store.claimNextDispatch = (input) => { claimCounter.attempts += 1; return originalClaim(input); };
   const ids = Object.keys(state.bots);
-  async function group(limit?: number) {
-    const g = await bots.createGroup({ title: "Limits", botIds: ids });
-    const topic = await service.createGroupTopic(g.id, "Topic", { workspace: "backend", isolation: "shared-single-writer" }, { maxConcurrentMemberTurns: limit });
-    return { group: g, topic };
+  // `workspace` selects the physical directory this Topic's members materialize
+  // against. Passing the harness's second workspace (`alt`) is the only way to
+  // express "two Topics that may genuinely execute concurrently": with the
+  // default every Topic keys on ONE resource, so a legitimate cross-Topic
+  // overlap is indistinguishable from a resource conflict and the overlap
+  // assertions would pass vacuously. The membership is restricted to bots whose
+  // own workspace matches, because session binding requires the Bot's workspace
+  // to equal the Topic's.
+  async function group(limit?: number, workspace = "backend") {
+    const members = Object.values(state.bots)
+      .filter((bot) => bot.workspace === workspace)
+      .map((bot) => bot.id);
+    const g = await bots.createGroup({ title: "Limits", botIds: members });
+    const topic = await service.createGroupTopic(
+      g.id,
+      "Topic",
+      { workspace, isolation: "shared-single-writer" },
+      { maxConcurrentMemberTurns: limit },
+    );
+    return { group: g, topic, members };
   }
-  function accept(conversationId: string, topicId: string, count = 3, proof = true, requestId = "request", extra?: Partial<AcceptMemberInput>) {
+  // `memberIds` defaults to the harness bots but MUST be the group's own
+  // membership when the Topic is bound to a different workspace: a Bot's
+  // workspace has to match the Topic's for session binding to succeed.
+  function accept(conversationId: string, topicId: string, count = 3, proof = true, requestId = "request", extra?: Partial<AcceptMemberInput>, memberIds?: string[]) {
+    const pool = memberIds ?? ids;
     const member = (botId: string): AcceptMemberInput => ({ botId, profileSnapshot: snapshotBotProfile(bots.getBot(botId), NOW),
       ...(proof ? { effect: "read-only", effectProvenance: "declared-enforced" } : {}), ...extra });
-    const first = member(ids[0]!);
+    const first = member(pool[0]!);
     return store.acceptRequest({ conversationId, topicId, requestId, botId: first.botId, profileSnapshot: first.profileSnapshot,
-      primaryMember: first, members: ids.slice(1, count).map(member), content: "one frozen request", now: NOW,
+      primaryMember: first, members: pool.slice(1, count).map(member), content: "one frozen request", now: NOW,
       maxMemberTurns: 24, authorityEpoch: dispatcher.authorityEpoch, humanIngress: HUMAN });
   }
   return { path, config, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, ids, now, worktrees, integrations, jump: (ms: number) => { clock += ms; }, claimAttempts: () => claimCounter.attempts };

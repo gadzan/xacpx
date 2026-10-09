@@ -931,6 +931,13 @@ keep another ready Topic out of the rotator's candidates entirely. The aggregate
 keeps the claim order of each Topic's first claimable row, so a Topic's own
 requests still run in durable `seq` order.
 
+That bound is deliberately far above the global ceiling (512 vs 64). Capping the
+candidate set at the ceiling — or any small constant — makes the rotator useless
+once there are more ready Topics than the cap: the Topics beyond it never enter
+the candidate set, so no ordering of the candidates can reach them, and they are
+starved permanently. The peek is a read-only `GROUP BY` over claimable Topics, so
+a wide bound costs one indexed scan, not one row per Topic.
+
 ### Physical resource isolation
 
 This is the safety-critical part. Cross-Run admission must not infer safety from
@@ -973,6 +980,16 @@ Admission is re-evaluated immediately before the Provider turn, because
 materialization is asynchronous and two Runs can both conclude a directory looks
 free before either has started. A rejected claim has not started, so it fails
 closed before any side effect — no partial execution, no indeterminate seal.
+
+A held writer-slot handoff is waited on with a **wake-aware** cohort wait, not a
+plain settle. A handoff holds a Provider turn open for its whole duration, so
+blocking on it with no wake parks the drain and another Topic's kick is never
+observed — the head-of-line blocking the global claim loop exists to remove.
+Returning on a wake re-enters the claim loop, which re-scans and admits other
+Topics while the sibling runs. Nothing is lost by returning early: the guards
+stay in `inFlightExecutions`, so the next settle awaits them, and a rejecting
+guard still rejects that settle — an unexpected sibling failure therefore still
+rejects activation rather than escaping as an unhandled rejection.
 
 A **transient** conflict is parked, not failed. When the blocking incumbent is
 another Run's live Provider turn, the claim stays durably `claimed` under this

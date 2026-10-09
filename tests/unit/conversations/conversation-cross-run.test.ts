@@ -602,3 +602,89 @@ test("a saturated Topic queue does not keep another ready Topic out of the candi
   }
   h.store.close();
 });
+
+// --- Review round 3, P1-3: B must start while a handed-off sibling RUNS --------
+
+test("an independent Topic starts while a handed-off sibling is in the Provider", async () => {
+  // The exact trigger the reviewer specified: Topic A accepts two unproven
+  // members. A1 takes the single-writer slot and executes; A2 is held for it.
+  // When A1 settles, A2 is handed off INTO the Provider. Only THEN is Topic B
+  // accepted, on a DIFFERENT physical directory, so nothing but scheduling can
+  // keep it out.
+  //
+  // B must enter the Provider while A2 is still running. Waiting on the handoff
+  // without a wake parks the drain for A2's whole Provider turn, which is the
+  // head-of-line blocking this regression pins down.
+  const dirA = await mkdtemp(join(tmpdir(), "xacpx-r3-a-"));
+  const dirB = await mkdtemp(join(tmpdir(), "xacpx-r3-b-"));
+  const h = await harness({ workspaceCwd: dirA, altWorkspaceCwd: dirB });
+  const a = await h.group(2);
+  h.accept(a.group.id, a.topic.id, 2, false, "r3-a", undefined, a.members);
+  const drain = h.dispatcher.kick();
+  await until(() => h.runner.calls.length === 1);
+  const runA = h.store.listRuns(a.group.id, a.topic.id)[0]!;
+  const sibling = h.store.listMemberTurns(runA.id).find((m) => m.startedAt === undefined)!;
+  // Settle A1 so A2 is handed off into the Provider.
+  h.runner.finish(h.runner.calls.findIndex((c) => c.runId === runA.id));
+  await until(() => h.runner.calls.some((c) => c.memberTurnId === sibling.id));
+  // A2 is now a live Provider turn, and its Run is still open.
+  expect(h.store.getMemberTurn(sibling.id)?.startedAt).toBeDefined();
+  expect(h.store.getRun(runA.id)?.state).toBe("running");
+  // B arrives only now, on a distinct physical directory.
+  const b = await h.group(1, "alt");
+  h.accept(b.group.id, b.topic.id, 1, true, "r3-b", undefined, b.members);
+  void h.dispatcher.kick();
+  await until(() => h.runner.calls.some((c) => c.topicId === b.topic.id));
+  // B is in the Provider while A2 is still open — no waiting for the handoff.
+  expect(h.runner.active).toBeGreaterThanOrEqual(2);
+  expect(h.store.getRun(runA.id)?.state).toBe("running");
+  for (const call of [...h.runner.calls]) h.runner.finish(h.runner.calls.indexOf(call));
+  await until(() => h.store.getRun(runA.id)?.state === "completed");
+  await drain;
+  await rm(dirA, { recursive: true, force: true });
+  await rm(dirB, { recursive: true, force: true });
+  h.store.close();
+});
+
+// --- Review round 3, P2: a waiting Topic is served despite a busy majority ----
+
+test("a waiting Topic is served even when the other Topics keep refilling", async () => {
+  // Eight Topics hold a persistent multi-member backlog and one Topic has a
+  // single request. The rotator must still give the lone Topic a turn: the
+  // candidate set must be wide enough that a Topic is never permanently outside
+  // it, and rotation must not let the busy Topics monopolize every freed slot.
+  const h = await harness();
+  const busy: Array<{ group: { id: string }; topic: { id: string }; members: string[] }> = [];
+  for (let i = 0; i < 8; i++) busy.push(await h.group(1));
+  const waiting = await h.group(1);
+  for (let i = 0; i < 8; i++) {
+    h.accept(busy[i]!.group.id, busy[i]!.topic.id, 3, true, `busy-${i}`, undefined, busy[i]!.members);
+  }
+  h.accept(waiting.group.id, waiting.topic.id, 1, true, "waiting", undefined, waiting.members);
+  const drain = h.dispatcher.kick();
+  // Settle work continuously so capacity keeps freeing. The busy majority must
+  // not consume every slot forever.
+  //
+  // `settleAll` sweeps every gate repeatedly rather than once: admitting one Run
+  // starts the next, so a single pass always leaves gates unresolved and the
+  // drain would never return. Gates are addressed by index because each `run()`
+  // pushes exactly one, while `calls` keeps growing as executions start.
+  const settleAll = async (rounds = 40): Promise<void> => {
+    for (let round = 0; round < rounds; round++) {
+      const before = h.runner.calls.length;
+      for (let gate = 0; gate < h.runner.gates.length; gate++) h.runner.finish(gate);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      if (h.runner.calls.length === before && h.runner.active === 0) return;
+    }
+  };
+  for (let round = 0; round < 40 && !h.runner.calls.some((c) => c.topicId === waiting.topic.id); round++) {
+    await settleAll(1);
+  }
+  await until(() => h.runner.calls.some((c) => c.topicId === waiting.topic.id));
+  // At least one busy Topic also ran, so this is rotation rather than the lone
+  // Topic simply being the only thing left.
+  expect(h.runner.calls.some((c) => c.topicId === busy[0]!.topic.id)).toBe(true);
+  await settleAll();
+  await drain;
+  h.store.close();
+});
