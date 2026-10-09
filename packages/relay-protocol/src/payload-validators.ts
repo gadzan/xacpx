@@ -14,7 +14,10 @@ import {
   type BotsCreatePayload,
   type BotsDeletePayload,
   type BotsGetPayload,
+  type BotsRemovePayload,
+  type BotsRemovePreviewPayload,
   type BotsUpdatePayload,
+  type LifecycleOperationsGetPayload,
   type CommandExecutePayload,
   type ConversationHistoryPayload,
   type ConversationPromptPayload,
@@ -447,6 +450,21 @@ const validateBotsUpdate: Validator<BotsUpdatePayload> = (p) => {
 const validateBotsDelete: Validator<BotsDeletePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.id) ? (o as unknown as BotsDeletePayload) : null;
+};
+const validateBotsRemovePreview: Validator<BotsRemovePreviewPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? (o as unknown as BotsRemovePreviewPayload) : null;
+};
+const validateBotsRemove: Validator<BotsRemovePayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) && isBoundedStr(o.requestId, 128) && isBoundedStr(o.previewRevision, 64)
+    && (o.clearDirectHistory === undefined || o.clearDirectHistory === true || o.clearDirectHistory === false)
+    && (o.releaseDirectBindings === undefined || o.releaseDirectBindings === true || o.releaseDirectBindings === false)
+    ? (o as unknown as BotsRemovePayload) : null;
+};
+const validateLifecycleOperationsGet: Validator<LifecycleOperationsGetPayload> = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.id, 220) ? (o as unknown as LifecycleOperationsGetPayload) : null;
 };
 const validateConversationsList: Validator<ConversationsListPayload> = (p) => {
   const o = fields(p);
@@ -968,6 +986,7 @@ export type ControlRpcType =
   | typeof MSG.desktopPrepare
   | typeof MSG.upload
   | typeof MSG.botsGet | typeof MSG.botsCreate | typeof MSG.botsUpdate | typeof MSG.botsDelete
+  | typeof MSG.botsRemovePreview | typeof MSG.botsRemove | typeof MSG.lifecycleOperationsGet
   | typeof MSG.conversationsList | typeof MSG.conversationsGet
   | typeof MSG.topicsList | typeof MSG.topicsCreate
   | typeof MSG.topicsUpdate | typeof MSG.topicsArchive | typeof MSG.topicsRestore
@@ -1044,6 +1063,9 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.botsCreate]: validateBotsCreate,
   [MSG.botsUpdate]: validateBotsUpdate,
   [MSG.botsDelete]: validateBotsDelete,
+  [MSG.botsRemovePreview]: validateBotsRemovePreview,
+  [MSG.botsRemove]: validateBotsRemove,
+  [MSG.lifecycleOperationsGet]: validateLifecycleOperationsGet,
   [MSG.conversationsList]: validateConversationsList,
   [MSG.conversationsGet]: validateConversationsGet,
   [MSG.topicsList]: validateTopicsList,
