@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useI18n } from "vue-i18n";
-import { Archive, MessageSquare, Plus, Users, X } from "lucide-vue-next";
+import { Archive, MessageSquare, Pencil, Plus, Users, X } from "lucide-vue-next";
 import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useDirectBotsStore } from "../stores/direct-bots";
@@ -9,14 +9,22 @@ import { useInstancesStore } from "../stores/instances";
 import GroupTranscript from "./GroupTranscript.vue";
 import GroupComposer from "./GroupComposer.vue";
 import GroupTopicDialog from "./GroupTopicDialog.vue";
+import GroupDialog from "./GroupDialog.vue";
 import ConversationWorktreePanel from "./ConversationWorktreePanel.vue";
 
 const groupsStore = useGroupsStore();
 const directBotsStore = useDirectBotsStore();
 const instancesStore = useInstancesStore();
-const { t } = useI18n();
+const { t, locale } = useI18n();
 
 const newTopicDialogOpen = ref(false);
+const groupDialogOpen = ref(false);
+const needsFirstTopic = computed(() =>
+  !!groupsStore.activeConversationId
+  && groupsStore.topicReady
+  && !groupsStore.activeTopicId
+  && groupsStore.currentTopics.length === 0,
+);
 
 const group = computed(() => groupsStore.currentGroup);
 const bots = computed<BotSummaryDto[]>(() => {
@@ -27,6 +35,27 @@ const bots = computed<BotSummaryDto[]>(() => {
 const memberBots = computed<BotSummaryDto[]>(() => {
   const ids = new Set(group.value?.botIds ?? []);
   return bots.value.filter((b) => ids.has(b.id));
+});
+
+type MemberStatus =
+  | { kind: "none-enabled" }
+  | { kind: "some-disabled"; names: string; lead?: string; fallback?: string };
+// An unconfirmed catalog would read as "every member disabled", so the
+// status waits for it. The fallback comes from the same resolver the
+// composer uses to pick the default target.
+const memberStatus = computed<MemberStatus | null>(() => {
+  const current = group.value;
+  if (!current || !groupsStore.botCatalogKnown) return null;
+  const disabled = memberBots.value.filter((b) => !b.enabled);
+  if (disabled.length === 0) return null;
+  const target = groupsStore.eligibleTargetFor(current, bots.value);
+  if (target.mode !== "members") return { kind: "none-enabled" };
+  return {
+    kind: "some-disabled",
+    names: new Intl.ListFormat(locale.value, { type: "conjunction" }).format(disabled.map((b) => b.name)),
+    lead: disabled.find((b) => b.id === current.leadBotId)?.name,
+    fallback: memberBots.value.find((b) => b.id === target.botIds[0])?.name,
+  };
 });
 
 /** Resolves the send against the store so the composer can decide whether to drop
@@ -68,9 +97,25 @@ const worktreeRunId = computed(() => {
           <div class="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
             <span>{{ $t("group.header.members", { count: group?.botIds.length ?? 0 }) }}</span>
             <span v-if="groupsStore.currentTopic">· {{ groupsStore.currentTopic.title }}</span>
+            <span v-if="group?.lifecycle === 'deleting'"
+                  data-test="group-pane-deleting-badge"
+                  class="rounded bg-warn/15 px-1.5 py-px text-[10px] font-medium text-warn">
+              {{ $t("group.list.deleting") }}
+            </span>
           </div>
         </div>
       </div>
+      <button
+        v-if="group && groupsStore.instanceId"
+        type="button"
+        data-test="group-edit-button"
+        :title="$t('group.manage.editTitle')"
+        :aria-label="$t('group.manage.editTitle')"
+        class="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+        @click="groupDialogOpen = true"
+      >
+        <Pencil :size="15" />
+      </button>
     </header>
 
     <div class="flex items-center justify-between border-b border-border bg-surface/50 px-4 py-1.5 text-xs">
@@ -113,7 +158,34 @@ const worktreeRunId = computed(() => {
       </button>
     </div>
 
-    <GroupTranscript :bots="memberBots" />
+    <div v-if="memberStatus" data-test="group-member-status"
+         class="space-y-0.5 border-b border-warn/20 bg-warn/10 px-4 py-1.5 text-xs text-fg">
+      <p v-if="memberStatus.kind === 'none-enabled'">{{ $t("group.members.noneEnabled") }}</p>
+      <template v-else>
+        <p data-test="group-disabled-members">{{ $t("group.members.disabled", { names: memberStatus.names }) }}</p>
+        <p v-if="memberStatus.lead && memberStatus.fallback" data-test="group-lead-disabled">
+          {{ $t("group.members.leadDisabled", { lead: memberStatus.lead, fallback: memberStatus.fallback }) }}
+        </p>
+      </template>
+    </div>
+
+    <div v-if="needsFirstTopic"
+         data-test="group-first-topic"
+         class="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
+      <MessageSquare :size="22" class="text-fg-muted" />
+      <p class="text-sm font-semibold">{{ $t("group.firstTopic.title") }}</p>
+      <p class="max-w-sm text-xs text-fg-muted">{{ $t("group.firstTopic.hint") }}</p>
+      <button
+        type="button"
+        data-test="group-first-topic-button"
+        class="mt-1 flex items-center gap-1 rounded-lg bg-accent px-3 py-1.5 text-xs font-medium text-accent-fg hover:opacity-90"
+        @click="newTopicDialogOpen = true"
+      >
+        <Plus :size="13" />
+        <span>{{ $t("group.firstTopic.action") }}</span>
+      </button>
+    </div>
+    <GroupTranscript v-else :bots="memberBots" />
     <ConversationWorktreePanel v-if="groupsStore.currentTopic?.executionTarget?.isolation === 'worktree-per-member' && groupsStore.instanceId && worktreeRunId"
       :instance-id="groupsStore.instanceId" :run-id="worktreeRunId" />
 
@@ -138,6 +210,12 @@ const worktreeRunId = computed(() => {
     <GroupTopicDialog
       v-if="newTopicDialogOpen"
       @close="newTopicDialogOpen = false"
+    />
+    <GroupDialog
+      v-if="groupDialogOpen && group && groupsStore.instanceId"
+      :instance-id="groupsStore.instanceId"
+      :group="group"
+      @close="groupDialogOpen = false"
     />
   </div>
 </template>

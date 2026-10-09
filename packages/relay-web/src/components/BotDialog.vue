@@ -76,6 +76,11 @@ const modelDirty = ref(false);
 const effortDirty = ref(false);
 const enabled = ref(props.bot?.enabled ?? true);
 const enabledDirty = ref(false);
+const storedEnabled = computed(() =>
+  props.bot
+    ? directBotsStore.botDetails[`${props.instanceId}:${props.bot.id}`]?.enabled ?? props.bot.enabled
+    : undefined,
+);
 const submitting = ref(false);
 const errorMessage = ref<string | null>(null);
 
@@ -520,6 +525,16 @@ async function submit(): Promise<void> {
             </label>
           </div>
         </div>
+        <p v-if="storedEnabled === true && !enabled"
+           data-test="bot-dialog-disable-note"
+           class="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-fg">
+          {{ $t("bot.lifecycle.disableNote") }}
+        </p>
+        <p v-else-if="storedEnabled === false && enabled"
+           data-test="bot-dialog-reenable-note"
+           class="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs leading-relaxed text-fg">
+          {{ $t("bot.lifecycle.reenableNote") }}
+        </p>
       </form>
 
       <!-- Footer -->
