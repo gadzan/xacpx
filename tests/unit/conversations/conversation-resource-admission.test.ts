@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, stat, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   ResourceReservationTable,
   ResourceAdmissionError,
+  canonicalizePhysicalPath,
   physicalResourceKey,
   canExecuteAlongside,
   type PhysicalResourceIdentity,
@@ -135,4 +139,71 @@ test("Topic fairness degrades safely with one Topic or an unknown last-served", 
   rotator.served("gone");
   const topics = [{ topicId: "a" }, { topicId: "b" }];
   expect(rotator.order(topics).map((t) => t.topicId)).toEqual(["a", "b"]);
+});
+
+// --- Review round 2, P1-4: one physical directory must yield ONE key ----------
+
+test("a symlinked workspace folds to the same physical key as its target", async () => {
+  // Two configured workspaces reached through a symlink are ONE directory. If
+  // they key differently, two writers are admitted to the same physical tree —
+  // the exact failure cross-Run admission exists to prevent.
+  const root = await mkdtemp(join(tmpdir(), "xacpx-alias-"));
+  const target = join(root, "target");
+  await mkdir(target, { recursive: true });
+  const link = join(root, "link");
+  await symlink(target, link, "dir").catch(() => {});
+  // On a platform without symlink privileges the test cannot express the alias;
+  // skip rather than pass vacuously.
+  let linked = true;
+  try {
+    const viaLink = await stat(link);
+    const viaTarget = await stat(target);
+    linked = viaLink.ino === viaTarget.ino;
+  } catch {
+    linked = false;
+  }
+  if (linked) {
+    expect(canonicalizePhysicalPath(link)).toBe(canonicalizePhysicalPath(target));
+    expect(physicalResourceKey(shared(canonicalizePhysicalPath(link))))
+      .toBe(physicalResourceKey(shared(canonicalizePhysicalPath(target))));
+  }
+  await rm(root, { recursive: true, force: true });
+});
+
+test("distinct directories still produce distinct physical keys", async () => {
+  // The canonical rule must not over-fold: two genuinely different directories
+  // must never collapse into one key, or unrelated Runs would serialize forever.
+  const root = await mkdtemp(join(tmpdir(), "xacpx-distinct-"));
+  const a = join(root, "a");
+  const b = join(root, "b");
+  await mkdir(a, { recursive: true });
+  await mkdir(b, { recursive: true });
+  expect(canonicalizePhysicalPath(a)).not.toBe(canonicalizePhysicalPath(b));
+  expect(physicalResourceKey(shared(canonicalizePhysicalPath(a))))
+    .not.toBe(physicalResourceKey(shared(canonicalizePhysicalPath(b))));
+  await rm(root, { recursive: true, force: true });
+});
+
+test("Windows spellings of one directory fold together through the shared rule", () => {
+  // The identity must use the SAME normalization the worktree manager verifies
+  // worktrees with: extended-length `\\?\` prefixes, separator and case folding,
+  // and trailing separators are all the same filesystem location. A second,
+  // weaker rule here would let one directory read as two resources.
+  if (process.platform !== "win32") return;
+  const spellings = [
+    "C:\\Users\\dev\\repo",
+    "c:/users/dev/repo",
+    "C:\\Users\\dev\\repo\\",
+    "\\\\?\\C:\\Users\\dev\\repo",
+  ];
+  const keys = new Set(spellings.map((s) => canonicalizePhysicalPath(s)));
+  expect(keys.size).toBe(1);
+  expect(physicalResourceKey(shared(canonicalizePhysicalPath(spellings[0]!))))
+    .toBe(physicalResourceKey(shared(canonicalizePhysicalPath(spellings[3]!))));
+});
+
+test("an empty or blank cwd is never a usable physical key", () => {
+  // A reservation keyed on "" would collide every workspace into one resource.
+  expect(canonicalizePhysicalPath("")).toBe("");
+  expect(canonicalizePhysicalPath("   ")).toBe("");
 });

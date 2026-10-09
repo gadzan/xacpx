@@ -1,8 +1,8 @@
 import { realpathSync } from "node:fs";
-import { win32 } from "node:path";
 
 import { ConversationError } from "./conversation-error";
 import type { WorkspaceIsolationPolicy } from "./conversation-types";
+import { normalizeWindowsWorktreePath } from "../control/workspace-git";
 
 /**
  * Cross-Run physical resource admission (PR C).
@@ -91,13 +91,20 @@ export function physicalResourceKey(identity: PhysicalResourceIdentity): string 
  * admission exists to prevent.
  *
  * Resolves the real path when the directory exists, so a junction and its target
- * produce the same key. When it does not exist there is nothing to conflate yet,
- * and refusing to run would break legitimate setups (a workspace created later,
- * a test fixture, a remote path); fall back to the lexically normalized path so
- * admission still works, and fold for case/separator on Windows.
+ * produce the same key. On Windows the folded spelling is produced by the SAME
+ * helper the worktree manager verifies worktrees with (`\\?\` device prefix,
+ * separator and case folding, trailing separators, 8.3 short-name components
+ * resolved through their nearest existing ancestor). Two divergent Windows rules
+ * would let one directory compare unequal and admit two writers to it, so there
+ * is deliberately exactly one rule.
  *
- * The result is always non-empty for a non-empty input, so an identity is only
- * ever "unverifiable" when the workspace is genuinely absent from the session.
+ * When the directory cannot be resolved the path is normalized anyway rather
+ * than rejected: the workspace is a configured directory that may be created
+ * later (or a fixture path on another platform), and the reservation table is a
+ * fence over the durable claim, not a filesystem authority. What matters is that
+ * every spelling of the SAME directory folds to ONE key, which the shared
+ * normalizer guarantees, and that the identity is never derived from anything
+ * other than this function.
  */
 export function canonicalizePhysicalPath(cwd: string): string {
   const trimmed = cwd.trim();
@@ -108,9 +115,7 @@ export function canonicalizePhysicalPath(cwd: string): string {
   } catch {
     real = trimmed;
   }
-  // Windows paths are case-insensitive and tolerate either separator, so fold
-  // both; POSIX paths are already exact.
-  return process.platform === "win32" ? win32.normalize(real).toLowerCase() : real;
+  return process.platform === "win32" ? normalizeWindowsWorktreePath(real) : real;
 }
 
 /**

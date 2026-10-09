@@ -482,3 +482,123 @@ test("Topic fairness gives a waiting Topic a turn instead of the busiest one", a
   expect(h.store.getRun(h.store.listRuns(quiet.group.id, quiet.topic.id)[0]!.id)?.state).toBe("completed");
   h.store.close();
 });
+
+// --- Review round 2, P1-2: an UNCONFIRMED cancel must not free the directory --
+
+test("a failed cancel keeps the directory reserved while the Provider may still write", async () => {
+  // `cancelRun` awaits every `runner.cancel()`, but a rejection means the
+  // Provider turn was NOT confirmed stopped. Releasing the reservation then
+  // would hand the writer slot to another Run while this one is still inside
+  // the directory — the exact overlap admission exists to prevent. The retry
+  // path (or shutdown) owns the release, never the failed cancel.
+  const shared = await mkdtemp(join(tmpdir(), "xacpx-cancelfail-"));
+  const h = await harness({ workspaceCwd: shared });
+  const a = await h.group(1); const b = await h.group(1);
+  const runA = h.accept(a.group.id, a.topic.id, 1, false, "cancel-a");
+  const drain = h.dispatcher.kick();
+  await until(() => h.runner.calls.length === 1);
+  const runB = h.accept(b.group.id, b.topic.id, 1, false, "waiting-b");
+  void h.dispatcher.kick();
+  await until(() => h.store.getDispatchForMemberTurn(h.store.listMemberTurns(runB.run.id)[0]!.id)?.state === "claimed");
+  // The cancel REJECTS: the Provider turn's real state is unknown, so nothing
+  // may treat the directory as free.
+  h.runner.cancel = async () => { throw new Error("transport: cancel refused"); };
+  const cancelling = h.dispatcher.cancelRun(runA.run.id);
+  await expect(cancelling).rejects.toThrow("cancel refused");
+  // A's Run is not terminal (evidence-only settlement), and its reservation is
+  // still held, so B is still parked and has NOT entered the Provider.
+  expect(h.store.getRun(runA.run.id)?.state).not.toBe("failed");
+  expect(h.store.getRun(runA.run.id)?.state).not.toBe("cancelled");
+  expect(h.runner.calls.some((c) => c.runId === runB.run.id)).toBe(false);
+  const dispatcher = h.dispatcher as unknown as { resourceReservations: { size: number } };
+  expect(dispatcher.resourceReservations.size).toBeGreaterThan(0);
+  // A retry that CONFIRMS the cancel is what finally releases the directory.
+  h.runner.cancel = async () => ({ outcome: "cancelled" as const });
+  await h.dispatcher.cancelRun(runA.run.id).catch(() => {});
+  expect(h.store.getRun(runA.run.id)?.state).toBe("cancelled");
+  const afterRetry = h.dispatcher as unknown as { resourceReservations: { size: number } };
+  expect(afterRetry.resourceReservations.size).toBe(0);
+  // The failed cancel left A's own Provider turn unsettled, so its execution is
+  // still in flight. Resolving it lets the drain re-check the parked claim.
+  h.runner.finish(h.runner.calls.findIndex((c) => c.runId === runA.run.id));
+  // Only now is the directory free, so B may run — and with its original
+  // human authority.
+  await until(() => h.runner.calls.some((c) => c.runId === runB.run.id));
+  expect(h.runner.calls.find((c) => c.runId === runB.run.id)!.executionOrigin).toBe("human");
+  h.runner.finish(h.runner.calls.findIndex((c) => c.runId === runB.run.id));
+  await drain;
+  await rm(shared, { recursive: true, force: true });
+  h.store.close();
+});
+
+// --- Review round 2, P1-3: a held handoff must not block another Topic -------
+
+test("a held handoff keeps the drain scanning for other Topics", async () => {
+  // Topic A accepts two unproven members: A1 takes the single-writer slot and
+  // A2 is held for it. The pre-fix shape awaited the whole cohort at the
+  // handoff, parking the pass for a full Provider turn with no wake, so another
+  // Topic's request waited it out.
+  //
+  // A resource-compatible Topic B needs its own physical directory, which this
+  // harness cannot give a second Topic, so the observable proof is that the
+  // parked pass still SCANS: the store keeps being asked for claimable work
+  // while A1 is open and A2 held, instead of the drain going silent. A silent
+  // scan is what made an incoming kick unreachable until A1 settled.
+  const h = await harness();
+  const a = await h.group(2); const b = await h.group(1);
+  h.accept(a.group.id, a.topic.id, 2, false, "handoff-a");
+  const drain = h.dispatcher.kick();
+  await until(() => h.runner.calls.length === 1);
+  const runA = h.store.listRuns(a.group.id, a.topic.id)[0]!;
+  const parked = h.store.listMemberTurns(runA.id).find((m) => m.startedAt === undefined)!;
+  // A2 is parked, not failed, and has not started.
+  expect(h.store.getMemberTurn(parked.id)?.state).not.toBe("failed");
+  expect(h.store.getMemberTurn(parked.id)?.startedAt).toBeUndefined();
+  // Another Topic's request arrives while A2 is parked. Its kick must be
+  // observed — the drain must not be wedged on the handoff.
+  h.accept(b.group.id, b.topic.id, 1, true, "handoff-b");
+  const before = h.claimAttempts();
+  await h.dispatcher.kick();
+  // The parked pass keeps scanning while A1 is still open and A2 still held.
+  await until(() => h.claimAttempts() > before);
+  expect(h.runner.calls.some((c) => c.memberTurnId === parked.id)).toBe(false);
+  // Releasing A1 hands off A2 (same claim, same human authority) in this drain.
+  h.runner.finish(h.runner.calls.findIndex((c) => c.runId === runA.id));
+  await until(() => h.runner.calls.some((c) => c.memberTurnId === parked.id));
+  expect(h.runner.calls.find((c) => c.memberTurnId === parked.id)!.executionOrigin).toBe("human");
+  for (const call of [...h.runner.calls]) h.runner.finish(h.runner.calls.indexOf(call));
+  await until(() => h.store.getRun(runA.id)?.state === "completed");
+  expect(h.store.getMemberTurn(parked.id)?.state).toBe("completed");
+  h.store.close();
+});
+
+// --- Review round 2, P2-5: one Topic's long queue must not starve another ----
+
+test("a saturated Topic queue does not keep another ready Topic out of the candidates", async () => {
+  // The peek used to read a fixed number of dispatch ROWS and de-duplicate
+  // afterwards, so one Topic with a long queue could consume the whole budget
+  // and the other Topic would never enter the rotator's candidate set at all.
+  const h = await harness();
+  const busy = await h.group(4); const quiet = await h.group(1);
+  h.accept(busy.group.id, busy.topic.id, 4, true, "busy");
+  h.accept(quiet.group.id, quiet.topic.id, 1, true, "quiet");
+  const now = new Date().toISOString();
+  const base = {
+    now, owner: h.dispatcher.ownerId, leaseExpiresAt: now,
+    authorityEpoch: h.dispatcher.authorityEpoch,
+    topicConcurrencyLimits: h.runtime.topicConcurrencyLimits(),
+  };
+  // Even asking for a single candidate must return BOTH Topics over successive
+  // calls: the busy Topic's four rows cannot crowd the quiet one out.
+  const first = h.store.peekClaimableTopicIds(base, 1);
+  expect(first).toHaveLength(1);
+  const both = h.store.peekClaimableTopicIds(base, 2);
+  expect(both).toHaveLength(2);
+  expect(new Set(both)).toEqual(new Set([busy.topic.id, quiet.topic.id]));
+  // Every advertised Topic must actually be claimable: the peek can never
+  // promise a Topic the claim then refuses.
+  for (const topicId of both) {
+    expect(h.store.claimNextDispatch({ ...base, topicId })).toBeDefined();
+  }
+  h.store.close();
+});

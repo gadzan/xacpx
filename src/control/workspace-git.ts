@@ -153,7 +153,17 @@ export function worktreePathIsWithin(
   return normalizedChild.startsWith(parentPrefix);
 }
 
-function normalizeWindowsWorktreePath(path: string): string {
+/**
+ * Canonical Windows spelling of one filesystem location.
+ *
+ * Exported so cross-Run physical admission keys reservations with EXACTLY the
+ * rule the worktree manager verifies worktrees with. Two divergent Windows
+ * rules (one here, one in admission) would let the same directory compare
+ * unequal and admit two writers to it. Handles the extended-length `\\?\`
+ * prefix, separator and case folding, trailing separators, and 8.3 short-name
+ * components resolved through their nearest existing ancestor.
+ */
+export function normalizeWindowsWorktreePath(path: string): string {
   // Git for Windows may report C:/repo while fs.realpath returns C:\repo.
   // Extended-length paths are the same filesystem location with a device prefix.
   let normalized = win32.normalize(path);

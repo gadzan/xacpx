@@ -924,6 +924,13 @@ Topic that just received capacity behind the other ready Topics, so a
 high-traffic Topic cannot starve the rest. No randomness, no wall-clock
 weighting.
 
+The candidate set itself is bounded by **distinct Topics**, not by dispatch rows.
+`peekClaimableTopicIds` groups by `topic_id` and stops once `limit` Topics are
+collected, so one Topic with a long queue cannot consume the whole budget and
+keep another ready Topic out of the rotator's candidates entirely. The aggregate
+keeps the claim order of each Topic's first claimable row, so a Topic's own
+requests still run in durable `seq` order.
+
 ### Physical resource isolation
 
 This is the safety-critical part. Cross-Run admission must not infer safety from
@@ -936,7 +943,18 @@ derived from **verified** state:
   worktrees are physically distinct even when their paths share a prefix), with
   the path re-asserted through the worktree manager;
 - a shared-workspace execution keys on the workspace cwd the session was
-  actually materialized against, resolved through the session service.
+  actually materialized against, resolved through the session service and then
+  folded by `canonicalizePhysicalPath`.
+
+There is deliberately **one** canonical rule. `canonicalizePhysicalPath` resolves
+the real path and, on Windows, folds it with the very helper the worktree manager
+verifies worktrees with (`normalizeWindowsWorktreePath`): extended-length `\\?\`
+device prefixes, separator and case folding, trailing separators, and 8.3
+short-name components resolved through their nearest existing ancestor. A second,
+weaker rule here would let one physical directory read as two resources and admit
+two writers to it — the failure this layer exists to prevent. `\\?\C:\repo`,
+`c:/repo` and `C:\repo\` are one key; two genuinely different directories never
+collapse into one.
 
 If the identity cannot be verified, admission fails closed — an unnamed resource
 is never assumed shareable.
@@ -964,6 +982,15 @@ reservation table is the authority for that recheck, because re-deriving the
 identity would need the materialized session the parked claim never got. No
 Provider turn, no partial execution, no indeterminate seal — and no terminal
 failure for a directory that is merely busy.
+
+Cancel releases a Run's reservations only once its Provider turns are **confirmed
+stopped**. `cancelRun` issues `runner.cancel()` to every active member and awaits
+them, but a rejection means the turn's real state is unknown, so the settlement
+that follows is evidence-only and the Run is not terminal. In that case the
+reservations stay held and the error is rethrown: releasing would hand the writer
+slot to another Run while this one may still be writing the directory. The retry
+that confirms the cancel, `execute()`'s own settle path, or shutdown owns the
+release — and shutdown refuses new starts anyway.
 
 Reservations live in memory only (`ResourceReservationTable`). They are released
 when the turn settles, when the claim is lost, when the Run is cancelled, and at

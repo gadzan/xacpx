@@ -537,18 +537,8 @@ export class ConversationDispatcher {
           cohortRunIds.add(claimed.run.id);
           passProgress = true;
         }
-        // Settle launched executions, then re-check held writer-slot claims —
-        // ALWAYS, not only when something was in flight. A held sibling
-        // becomes runnable the moment its sibling's provider turn settles,
-        // and the drain executes the SAME held claim object (still ours,
-        // still human) in this drain — no re-claim, no provenance rewrite —
-        // so a two-member Run under shared-single-writer completes without
-        // an extra wake. The recheck must also run when the in-flight set is
-        // empty: a previous drain may have launched, settled, and parked a
-        // hold (or thrown mid-recheck), and nothing else will pick that hold
-        // back up — claimOne only returns `pending` rows, never our live
-        // `claimed` hold. An unexpected execution failure rethrows here,
-        // after every launched execution settled.
+        // Settle everything this pass launched first. An unexpected execution
+        // failure rethrows here, after every launched execution settled.
         await awaitCohortInFlight();
         // Shutdown owns unstarted holds from here: once `closed` is set, a
         // held sibling must never start — the retire loop in shutdown()
@@ -560,30 +550,64 @@ export class ConversationDispatcher {
         if (this.closed) {
           return;
         }
-        // The pass deferrals must not leak into the recheck (a held claim
-        // whose Topic is deferred would never re-run), but the chained
-        // extra pass needs them preserved: snapshot before the clear, and
-        // re-add them only when the chain continues.
+        // Snapshot the pass deferrals before they are cleared. A Topic this
+        // pass deferred on a pre-start failure may still have unrelated pending
+        // work, so a chained extra pass (no wake consumed) preserves them and
+        // claims only OTHER Topics. The chain is bounded by the Topic count and
+        // ends when a link claims nothing — a failed Topic is never retried
+        // without a wake.
+        //
+        // A STILL-HELD sibling's Topic is not a failure, so it is removed from
+        // the snapshot: the recheck below is about to run it, and preserving its
+        // Topic as a deferral would make the recheck skip it forever.
         const passDeferred = new Set(this.deferredTopicIds);
         for (const work of this.heldWriterSlotClaims.values()) {
-          // A still-held sibling's Topic is NOT a failure: it must become
-          // claimable again the moment this sibling settles, and the handoff
-          // below already runs it.
           passDeferred.delete(work.run.topicId);
         }
         this.deferredTopicIds.clear();
+        // Re-check held writer-slot claims — ALWAYS, not only when something
+        // was in flight. A held sibling becomes runnable the moment its
+        // sibling's provider turn settles, and the drain executes the SAME
+        // held claim object (still ours, still human) in this drain — no
+        // re-claim, no provenance rewrite — so a two-member Run under
+        // shared-single-writer completes without an extra wake. The recheck
+        // must also run when the in-flight set is empty: a previous drain may
+        // have launched, settled, and parked a hold (or thrown mid-recheck),
+        // and nothing else will pick that hold back up — claimOne only returns
+        // `pending` rows, never our live `claimed` hold.
+        //
+        // This runs AFTER the settle above so the sibling the hold waits on has
+        // actually finished — the only state in which the hold can clear.
         const held = this.recheckHeldClaims();
         if (held) {
-          // The held handoff joins the awaited cohort instead of escaping
-          // it: awaiting here keeps the sibling inside this drain's failure
-          // propagation (an unexpected B failure rejects kick() and fails
-          // activation) AND inside its cohort scope (the next drain starts
-          // with an empty in-flight set, so its global claim cannot overlap
-          // B). A bare launch + continue would resolve kick() while B still
-          // runs — losing B's failure and reopening global claims mid-flight.
+          // The handoff is launched into this drain's `cohort`, so the settle
+          // BELOW awaits it in the same pass. That is what makes an unexpected
+          // failure rethrow out of the drain (rejecting activation) instead of
+          // escaping as an unhandled rejection — the regression the original
+          // inline await was protecting against.
+          //
+          // Awaiting the handoff here does NOT reintroduce head-of-line
+          // blocking, because the settle is a COHORT wait, not a whole-set
+          // wait: `cohort` holds only what this pass launched, and the claim
+          // loop above has already parked on one in-flight settle OR a wake
+          // while admitting other Topics. A long sibling therefore cannot hold
+          // the `draining` guard, and an incoming kick is observed.
+          //
+          // Registering it in `cohortRunIds` keeps it inside the drain's scope:
+          // the `!claimed` branch above waits (racing the wake) rather than
+          // breaking whenever a cohort is in flight, so kick() cannot resolve
+          // while the sibling still runs. Same-Topic overlap stays impossible
+          // because the durable claim fence refuses a second Run of one Topic
+          // while this claim is held.
           launchExecution(held);
+          cohortRunIds.add(held.run.id);
+          passProgress = true;
+          // Settle the handoff (and anything else this pass launched) before
+          // deciding whether to chain, so its failure propagates from HERE.
           await awaitCohortInFlight();
-          continue;
+          if (this.closed) {
+            return;
+          }
         }
         // A drain that deferred Topics on pre-start failures may still have
         // unrelated pending work: chain one extra pass (no wake consumed)
@@ -712,7 +736,19 @@ export class ConversationDispatcher {
     // — the exact overlap cross-Run admission exists to prevent. `execute()`'s
     // own settle path also releases, so this is the belt to that braces: it
     // covers a cancel that ended the turn before execute() observed it.
-    this.releaseRunPhysicalResources(runId);
+    //
+    // An UNCONFIRMED cancel is the one case that must not release. `cancelFailed`
+    // means some `runner.cancel()` rejected, so the settlement below is
+    // evidence-only (`deferRunAggregate`) and the Run is NOT terminal: its
+    // Provider turn may still be writing this directory. Releasing here would
+    // hand the writer slot to another Run while this one is still inside.
+    // Instead the reservation stays held and the failure is retried — the retry
+    // either confirms the cancel (release happens in the confirmed path, or in
+    // execute()'s own settle) or fails again, and the reservation is only ever
+    // dropped by shutdown, which refuses new starts anyway.
+    if (!cancelFailed) {
+      this.releaseRunPhysicalResources(runId);
+    }
     if (cancelFailed) {
       throw firstError;
     }

@@ -1568,27 +1568,27 @@ export class SqliteConversationStore implements ConversationStore {
   peekClaimableTopicIds(input: ClaimNextDispatchInput, limit: number): string[] {
     // Read-only: same predicate as claimNextDispatch, projected to the Topic of
     // each claimable row IN CLAIM ORDER, then de-duplicated preserving that
-    // order. `SELECT DISTINCT ... ORDER BY <non-selected>` would let SQLite
-    // pick an arbitrary row per group, which is not the claim order the
-    // fairness rotator must respect. No transaction — this must never mutate a
-    // row; a concurrent claim simply means the Topic is absent next time.
-    const { where, order, params } = this.claimEligibility(input);
+    // order. No transaction — this must never mutate a row; a concurrent claim
+    // simply means the Topic is absent next time.
+    //
+    // The row scan is bounded by `limit` DISTINCT Topics, not by a fixed row
+    // count: `GROUP BY r.topic_id ... LIMIT ?` stops as soon as `limit` Topics
+    // are collected. A fixed row LIMIT would let ONE Topic with a long queue
+    // consume the whole budget and keep another ready Topic out of the
+    // candidate set entirely — the starvation the rotator exists to prevent.
+    // The aggregate keeps the claim ORDER of each Topic's first claimable row
+    // (MIN over the ordered key), so the projection is still claim order and the
+    // rotator never reorders a Topic's own requests.
+    const { where, params } = this.claimEligibility(input);
     const rows = this.sqlite.all<{ topic_id: string }>(
       `SELECT r.topic_id AS topic_id ${SqliteConversationStore.CLAIM_SOURCES}
        ${where}
-       ${order}
+       GROUP BY r.topic_id
+       ORDER BY MIN(msg.seq) ASC, MIN(r.created_at) ASC
        LIMIT ?`,
-      [...params, Math.max(limit * 8, limit)],
+      [...params, limit],
     );
-    const seen = new Set<string>();
-    const ordered: string[] = [];
-    for (const row of rows) {
-      if (seen.has(row.topic_id)) continue;
-      seen.add(row.topic_id);
-      ordered.push(row.topic_id);
-      if (ordered.length >= limit) break;
-    }
-    return ordered;
+    return rows.map((row) => row.topic_id);
   }
 
   hasDurableBotWork(botId: string): boolean {
