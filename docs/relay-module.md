@@ -20,6 +20,10 @@ Group PR9：Conversation history/message event 透传公开 `handoff` envelope�
 - 会话级模型与推理强度分别通过 `control.session.model.get/set` 和
   `control.session.effort.get/set` 暴露。Hub 会为这些 RPC 覆写可信的 `chatKey`；effort 的配置 id
   与可选值由实例侧 adapter 广告，实例 transport 会拒绝未广告值，Hub/Web 不硬编码上游实现细节。
+- `control.agents.capabilities.get` 是 instance-scoped，不进入 `CHAT_SCOPED_TYPES`。
+  载荷只有已配置 agent、workspace、可选 Bot id 和 `probe`。带 `sessionAlias` 的载荷在连接器被拒绝。
+  冷探测可能接近 session init 的耗时，因此连接器不对这个 RPC 套 60 秒提前超时，仍受 Hub 120 秒预算约束。
+  旧连接器的 `unknown-type` 在 Web 上显示为不可用，不会变成空模型列表。
 - 安全：登录令牌（login token）以 sha256 哈希落盘（高熵随机令牌，无需 scrypt；scrypt 密码哈希已随密码登录一并移除）；所有 token/凭证哈希存储；登录限流按客户端 IP + 全局失败上限（有界，见阶段五）；
   凭证比较定时安全（`hashEquals`，见 src/auth.ts）；RPC 代理只放行
   control.* 且服务端覆写 chatKey(`relay:<accountId>`)/senderId/isOwner。

@@ -109,6 +109,7 @@ export const MSG = {
   gitWorktreeCreate: "control.git.worktree.create",
   upload: "control.upload",
   sessionModelGet: "control.session.model.get",
+  agentsCapabilitiesGet: "control.agents.capabilities.get",
   sessionModelSet: "control.session.model.set",
   sessionEffortGet: "control.session.effort.get",
   sessionEffortSet: "control.session.effort.set",
@@ -1107,6 +1108,14 @@ export interface FsWriteResult {
 export interface SessionModelGetPayload {
   chatKey: string;
   sessionAlias: string;
+}
+
+/** Configured agent and workspace, plus an optional product bot id. No session alias. */
+export interface AgentsCapabilitiesGetPayload {
+  agent: string;
+  workspace: string;
+  botId?: string;
+  probe?: boolean;
 }
 
 export interface SessionModelSetPayload {

@@ -65,6 +65,10 @@ PR9 公开 handoff 走 execution-bound `group_send({to, task, expectedOutput?})`
 
 ## 方法概览
 
+`getAgentCapabilities({ agent, workspace, botId?, probe? })` 返回适配器模型与 effort 的状态，而不是字符串数组。状态是 `ready`、`unsupported`、`needs-setup` 或 `error`。`ready` 至少有一个适配器公布的 model id，id 原样传递。`unsupported`、`needs-setup` 和 `error` 都带原因和恢复提示。上下文只接受已配置的 agent、workspace，以及可选的 Bot id。返回体不含 hidden alias、启动命令或密钥。`probe: true` 才通过 transport 做冷探测。探测不发送用户任务，也不创建 Bot topic。没有探测入口时返回 `unsupported` / `probe-unavailable`。
+
+Bot 上保存的 model / effort 进入之后 `accept` 的 profile snapshot。已经接受的 Run 保留自己的 snapshot。运行时若退回适配器默认模型，状态里的 `effect.kind` 是 `fell-back`，选出的 id 不会显示成已经生效。
+
 Phase 10A：`createTopic(conversationId, title, options?)` 与
 `createGroupTopic(conversationId, title, target, options?)` 接受
 `options.maxConcurrentMemberTurns`（可选整数 1–64）。该字段单独投影到

@@ -63,7 +63,7 @@ function appendAgentAndTail(
 export function buildSessionArgs(
   input: SessionArgsInput,
   tail: string[],
-  options: { verbose?: boolean; format?: "quiet" | "json" } = {},
+  options: { verbose?: boolean; format?: "quiet" | "json"; authPolicy?: "skip" | "fail" } = {},
 ): string[] {
   const prefix: string[] = [
     "--format", options.format ?? "quiet",
@@ -71,6 +71,7 @@ export function buildSessionArgs(
     ...buildPermissionArgs(input.permission),
     ...buildModelArgs(input.model),
   ];
+  if (options.authPolicy) prefix.push("--auth-policy", options.authPolicy);
   if (options.verbose) prefix.push("--verbose");
   return appendAgentAndTail(prefix, input, tail);
 }

@@ -66,6 +66,7 @@ import {
   type ScheduledCancelPayload,
   type ScheduledCreatePayload,
   type ScheduledListPayload,
+  type AgentsCapabilitiesGetPayload,
   type SessionModelGetPayload,
   type SessionModelSetPayload,
   type SessionEffortGetPayload,
@@ -341,6 +342,19 @@ const validateGitWorktreeCreate: Validator<GitWorktreeCreatePayload> = (p) => {
 };
 
 // --- model / terminal / upload ---
+const validateAgentsCapabilitiesGet: Validator<AgentsCapabilitiesGetPayload> = (p) => {
+  const o = fields(p);
+  if (!o || !isBoundedStr(o.agent, 128) || !isBoundedStr(o.workspace, 256)) return null;
+  if (o.botId !== undefined && !isBoundedStr(o.botId, 128)) return null;
+  if (o.probe !== undefined && typeof o.probe !== "boolean") return null;
+  if ("sessionAlias" in o || "alias" in o || "transportSession" in o) return null;
+  return {
+    agent: o.agent,
+    workspace: o.workspace,
+    ...(o.botId !== undefined ? { botId: o.botId } : {}),
+    ...(o.probe !== undefined ? { probe: o.probe } : {}),
+  };
+};
 const validateSessionModelGet: Validator<SessionModelGetPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? (o as unknown as SessionModelGetPayload) : null;
@@ -975,6 +989,7 @@ export type ControlRpcType =
   | typeof MSG.fsRead | typeof MSG.fsDiff | typeof MSG.fsSearch | typeof MSG.fsCreate
   | typeof MSG.fsRename | typeof MSG.fsDelete | typeof MSG.fsCopy | typeof MSG.fsDownload
   | typeof MSG.fsWrite | typeof MSG.sessionModelGet | typeof MSG.sessionModelSet
+  | typeof MSG.agentsCapabilitiesGet
   | typeof MSG.sessionEffortGet | typeof MSG.sessionEffortSet
   | typeof MSG.gitStatus | typeof MSG.gitStage | typeof MSG.gitUnstage
   | typeof MSG.gitUntrack | typeof MSG.gitDiscard | typeof MSG.gitCommit
@@ -1048,6 +1063,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.gitCheckout]: validateGitCheckout,
   [MSG.gitWorktreeCreate]: validateGitWorktreeCreate,
   [MSG.sessionModelGet]: validateSessionModelGet,
+  [MSG.agentsCapabilitiesGet]: validateAgentsCapabilitiesGet,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.sessionEffortGet]: validateSessionEffortGet,
   [MSG.sessionEffortSet]: validateSessionEffortSet,

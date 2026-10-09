@@ -1992,6 +1992,14 @@ export class RuntimeEngine implements BridgeEngine {
     return {};
   }
 
+  async probeAgentCapabilities(): Promise<import("../../transport/types").AgentCapabilityProbeResult> {
+    return {
+      ok: false,
+      failure: "unsupported",
+      message: "the runtime engine has no cold capability probe",
+    };
+  }
+
   async getSessionModel(input: EngineSessionInput): Promise<{ current?: string; available: string[] }> {
     return await this.withWorker(input, async (client, agentProcessEnv) => {
       await this.ensureSessionHandle(input, client, agentProcessEnv);
