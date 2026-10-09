@@ -116,6 +116,8 @@ export interface SessionCommandsSnapshotDto {
     sessionAlias: string;
     commands: AgentCommandDto[];
 }
+/** Latest adapter slash commands for one Bot runtime on one Topic.
+ *  Restored on reconnect. The hidden session alias is not part of this row. */
 export interface ConversationCommandsSnapshotDto {
     instanceId: string;
     conversationId: string;
@@ -131,6 +133,7 @@ export interface InstanceStateSnapshotDto {
     turns: LiveTurnSnapshotDto[];
     usage: SessionUsageSnapshotDto[];
     commands: SessionCommandsSnapshotDto[];
+    /** Absent on hubs that predate conversation slash restore. */
     conversationCommands?: ConversationCommandsSnapshotDto[];
 }
 /** Dashboard instance row (HTTP `/api/instances` and web store seed). */

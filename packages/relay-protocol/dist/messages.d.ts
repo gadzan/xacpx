@@ -241,6 +241,11 @@ export interface InstanceStateSyncPayload {
         sessionAlias: string;
         commands: AgentCommandDto[];
     }>;
+    /**
+     * Adapter slash advertisements for product-owned Bot runtimes.
+     * Keyed by conversation, topic, and bot. Absent on older connectors.
+     * These rows are not ordinary Session commands and must not be keyed by alias.
+     */
     conversationCommands?: Array<{
         conversationId: string;
         topicId: string;
