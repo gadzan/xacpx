@@ -18,8 +18,9 @@ import NewSessionDialog from "./NewSessionDialog.vue";
 import ManageInstanceDialog from "./ManageInstanceDialog.vue";
 import AgentIcon from "./AgentIcon.vue";
 import BotDialog from "./BotDialog.vue";
+import GroupDialog from "./GroupDialog.vue";
 import type { GroupArchivedMode, GroupArchivedState, InstanceView } from "../stores/instances";
-import type { BotDetailDto, BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
+import type { BotDetailDto, BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 
 // Local directive: focus + select an element on mount (the rename input).
 const vFocus = {
@@ -53,7 +54,14 @@ const emit = defineEmits<{
 }>();
 const dialogFor = ref<{ id: string; name: string; presetAgent?: string; presetWorkspace?: string } | null>(null);
 const manageFor = ref<{ id: string; name: string } | null>(null);
-const botDialogFor = ref<{ instanceId: string; instanceName: string; bot?: BotDetailDto | BotSummaryDto } | null>(null);
+const botDialogFor = ref<{
+  instanceId: string;
+  instanceName: string;
+  bot?: BotDetailDto | BotSummaryDto;
+  /** Opened from the Group dialog's "needs two Bots" guidance. */
+  resumeGroupCreate?: boolean;
+} | null>(null);
+const groupDialogFor = ref<{ instanceId: string; instanceName: string; group?: GroupSummaryDto } | null>(null);
 
 const instanceNavMode = ref<Record<string, "sessions" | "bots" | "groups">>({});
 function modeFor(instanceId: string): "sessions" | "bots" | "groups" {
@@ -81,10 +89,23 @@ function retryGroupsLoad(instanceId: string): void {
   void groupsStore.loadGroups(instanceId).catch(() => {});
 }
 function onBotSaved(bot: BotDetailDto): void {
-  if (botDialogFor.value) {
-    emit("selectBot", botDialogFor.value.instanceId, bot.id);
-  }
+  const opened = botDialogFor.value;
+  if (opened && !opened.resumeGroupCreate) emit("selectBot", opened.instanceId, bot.id);
+}
+// BotDialog emits close after saved, so the Group form reopens here on both paths.
+function onBotDialogClose(): void {
+  const opened = botDialogFor.value;
   botDialogFor.value = null;
+  if (opened?.resumeGroupCreate) groupDialogFor.value = { instanceId: opened.instanceId, instanceName: opened.instanceName };
+}
+function onGroupSaved(group: GroupSummaryDto): void {
+  const opened = groupDialogFor.value;
+  if (opened && !opened.group) emit("selectGroup", opened.instanceId, group.id);
+}
+function onGroupCreateBot(): void {
+  const opened = groupDialogFor.value;
+  groupDialogFor.value = null;
+  if (opened) botDialogFor.value = { instanceId: opened.instanceId, instanceName: opened.instanceName, resumeGroupCreate: true };
 }
 function botHasRuntime(bot: BotSummaryDto): boolean {
   return ("hasRuntime" in bot && (bot as { hasRuntime?: unknown }).hasRuntime) === true;
@@ -766,6 +787,35 @@ const rowSwipes = computed(() => {
                 </span>
                 <span class="truncate text-[10.5px] text-fg-muted">{{ $t("group.header.members", { count: g.botIds.length }) }}</span>
               </div>
+              <span v-if="g.lifecycle === 'deleting'"
+                    data-test="group-deleting-badge"
+                    class="shrink-0 rounded bg-warning/15 px-1.5 py-px text-[10px] font-medium text-warning">
+                {{ $t("group.list.deleting") }}
+              </span>
+            </button>
+            <div class="flex items-center gap-0.5 pr-1 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+              <button
+                type="button"
+                data-test="edit-group-tree-button"
+                :title="$t('group.manage.editTitle')"
+                :aria-label="$t('group.manage.editTitle')"
+                class="grid h-5 w-5 place-items-center rounded text-fg-muted hover:bg-raised hover:text-fg"
+                @click.stop="groupDialogFor = { instanceId: inst.id, instanceName: inst.name, group: g }"
+              >
+                <Pencil :size="11" />
+              </button>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between pb-px pl-2 pt-1">
+            <button
+              type="button"
+              data-test="new-group-button"
+              class="flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-accent transition-colors hover:bg-accent/10"
+              @click="groupDialogFor = { instanceId: inst.id, instanceName: inst.name }"
+            >
+              <Plus :size="12" />
+              <span>{{ $t("group.manage.newGroup") }}</span>
             </button>
           </div>
         </div>
@@ -987,6 +1037,8 @@ const rowSwipes = computed(() => {
     <ManageInstanceDialog v-if="manageFor" :instance-id="manageFor.id" :instance-name="manageFor.name"
                           @close="manageFor = null" />
     <BotDialog v-if="botDialogFor" :instance-id="botDialogFor.instanceId" :instance-name="botDialogFor.instanceName"
-               :bot="botDialogFor.bot" @close="botDialogFor = null" @saved="onBotSaved" />
+               :bot="botDialogFor.bot" @close="onBotDialogClose" @saved="onBotSaved" />
+    <GroupDialog v-if="groupDialogFor" :instance-id="groupDialogFor.instanceId" :group="groupDialogFor.group"
+                 @close="groupDialogFor = null" @saved="onGroupSaved" @create-bot="onGroupCreateBot" />
   </nav>
 </template>
