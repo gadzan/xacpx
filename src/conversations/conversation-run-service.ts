@@ -19,7 +19,7 @@ import {
   transitionTopic,
   type TopicRole,
 } from "./topic-lifecycle";
-import { createDirectBindingId, createDirectTopicId, createScopedGroupMemberBindingId, createTopicId } from "../domain/ids";
+import { createDirectBindingId, createDirectConversationId, createDirectTopicId, createScopedGroupMemberBindingId, createTopicId } from "../domain/ids";
 import { AsyncMutex } from "../orchestration/async-mutex";
 import { MAX_BOT_ID_LENGTH, MAX_GROUP_TARGET_MEMBERS } from "@ganglion/xacpx-relay-protocol";
 import type { ReleaseOwnedSession } from "../sessions/owned-session-release";
@@ -48,6 +48,7 @@ function assertSessionKeyMatchesAlias(key: string, session: LogicalSession): voi
   }
 }
 import { ConversationError } from "./conversation-error";
+import { lifecycleOperationId, transitionLifecycleOperation, type LifecycleOperationKind } from "./lifecycle-operation";
 import { assertAcceptedPolicies, assertPolicySelection, parseMemberPolicies, type ConversationMemberPolicy } from "./conversation-effect-request";
 import { memberConcurrencyLimit, type TopicSchedulingOptions } from "./conversation-scheduling-policy";
 import type { ConversationDispatcher } from "./conversation-dispatcher";
@@ -334,6 +335,7 @@ export class ConversationRunService {
       if (!bot.enabled) {
         throw new BotError("bot_disabled", `bot "${input.botId}" is disabled`);
       }
+      this.bots.assertAcceptsWork(bot.id);
       const storedTopic = this.state.conversation_topics[topicId];
       const topic = storedTopic && storedTopic.conversationId === conversationId
         ? storedTopic
@@ -505,6 +507,7 @@ export class ConversationRunService {
           if (!bot.enabled) {
             throw new BotError("bot_disabled", `bot "${botId}" is disabled`);
           }
+          this.bots.assertAcceptsWork(botId);
           return snapshotGroupMemberProfile(bot, target, timestamp);
         });
         assertPolicySelection(selected, memberPolicies);
@@ -810,6 +813,7 @@ export class ConversationRunService {
     const limit = memberConcurrencyLimit(options?.maxConcurrentMemberTurns);
     const topic = await this.bots.runLifecycle(botId, async () => {
       const bot = this.bots.getBot(botId);
+      this.bots.assertAcceptsWork(botId);
       const timestamp = this.now().toISOString();
       const planned = this.planDirect(bot);
       this.assertConversationNotDeleting(planned.conversation.id);
@@ -990,8 +994,12 @@ export class ConversationRunService {
   ): Promise<void> {
     this.assertOpen();
     const requestId = options?.requestId;
+    const opRequest = requestId ?? `${conversationId}:${topicId}`;
+    const operationId = lifecycleOperationId("topic-teardown", opRequest);
+    const subjectId = `${conversationId}:${topicId}`;
     if (requestId && this.store.getOperationReceipt(conversationId, topicId, requestId, "teardown")) {
       await this.dropRetiredTopicMetadata(conversationId, topicId);
+      this.completeLifecycle(operationId, "topic-teardown", subjectId, opRequest);
       return;
     }
     const conversation = this.requireConversation(conversationId);
@@ -1002,11 +1010,18 @@ export class ConversationRunService {
       );
     }
     this.assertBindingsAck(conversationId, topicId, options?.releaseBindings === true);
-    if (conversation.kind === "group") {
-      await this.teardownGroupTopic(conversationId, topicId, requestId);
-      return;
+    this.startLifecycle(operationId, "topic-teardown", subjectId, opRequest);
+    try {
+      if (conversation.kind === "group") {
+        await this.teardownGroupTopic(conversationId, topicId, requestId);
+      } else {
+        await this.teardownDirectExtraTopic(conversationId, topicId, requestId);
+      }
+      this.completeLifecycle(operationId, "topic-teardown", subjectId, opRequest);
+    } catch (error) {
+      this.failLifecycle(operationId, error);
+      throw error;
     }
-    await this.teardownDirectExtraTopic(conversationId, topicId, requestId);
   }
 
   async clearDefaultTopic(
@@ -1023,10 +1038,31 @@ export class ConversationRunService {
       throw new ConversationError("topic_not_default", "only the default topic can be cleared");
     }
     const existing = this.store.getOperationReceipt(conversationId, topicId, options.requestId, "clear");
+    const operationId = lifecycleOperationId("topic-clear", options.requestId);
+    const subjectId = `${conversationId}:${topicId}`;
     if (existing) {
-      return this.convergeClearedTopic(conversationId, topicId, botId, existing.contextGeneration);
+      const topic = this.convergeClearedTopic(conversationId, topicId, botId, existing.contextGeneration);
+      this.completeLifecycle(operationId, "topic-clear", subjectId, options.requestId);
+      return topic;
     }
     this.assertBindingsAck(conversationId, topicId, options.releaseBindings === true);
+    this.startLifecycle(operationId, "topic-clear", subjectId, options.requestId);
+    try {
+      return await this.clearDefaultTopicBody(conversationId, topicId, botId, options, operationId, subjectId);
+    } catch (error) {
+      this.failLifecycle(operationId, error);
+      throw error;
+    }
+  }
+
+  private async clearDefaultTopicBody(
+    conversationId: string,
+    topicId: string,
+    botId: string,
+    options: { requestId: string; confirm: true; releaseBindings?: boolean },
+    operationId: string,
+    subjectId: string,
+  ): Promise<ConversationTopic> {
     const timestamp = this.now().toISOString();
     await this.bots.runLifecycle(botId, async () => {
       transitionTopic(
@@ -1078,7 +1114,200 @@ export class ConversationRunService {
       const presented = this.presentDefaultTopic(cleared, this.requireConversation(conversationId));
     emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
     emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic: presented });
+    this.completeLifecycle(operationId, "topic-clear", subjectId, options.requestId);
     return presented;
+  }
+
+  /** Cancel this bot's direct runs. Group runs are left intact. */
+  async cancelDirectExecution(botId: string): Promise<"clean" | "indeterminate"> {
+    this.assertOpen();
+    const conversationId = createDirectConversationId(botId);
+    const runs = this.store.listRuns(conversationId);
+    for (const run of runs) {
+      if (run.state === "queued" || run.state === "running" || run.state === "waiting-human") {
+        await this.cancelRun(run.id);
+      }
+    }
+    await this.dispatcher.flushOwnedClaimLeases();
+    this.store.recoverExpiredClaims(this.now().toISOString(), { conversationId });
+    const remaining = this.store.listRuns(conversationId);
+    const blocking = remaining.filter((run) =>
+      run.state === "queued" || run.state === "running" || run.state === "waiting-human");
+    if (blocking.length > 0) {
+      throw new ConversationError("conversation_not_settled", "direct conversation has unsettled runs", {
+        runIds: blocking.map((run) => run.id),
+      });
+    }
+    if (remaining.some((run) => run.state === "indeterminate")) {
+      return "indeterminate";
+    }
+    return "clean";
+  }
+
+  /** Release this bot's direct sessions and bindings. Transcript rows stay. */
+  async releaseDirectExecution(botId: string, releaseBindings: boolean): Promise<void> {
+    this.assertOpen();
+    this.bots.getBot(botId);
+    const conversationId = createDirectConversationId(botId);
+    this.assertNoDirectControllerResidue(botId, conversationId);
+    for (const alias of this.ownedAliases(botId, conversationId)) {
+      if (this.sessions.getLogicalSessionRecord(alias)) {
+        await this.releaseAlias(alias);
+      }
+    }
+    await this.stateMutex.run(async () => {
+      const next = structuredClone(this.state);
+      for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
+        if (binding.scope === "bot-direct" && binding.botId === botId && binding.conversationId === conversationId) {
+          delete next.bot_runtime_bindings[id];
+        }
+      }
+      await this.persist(next);
+    });
+    if (releaseBindings) {
+      this.store.deleteDirectIngress(conversationId);
+    }
+  }
+
+  /**
+   * Release sessions for a bot that has already left its groups. The group
+   * transcript and runs stay. A still-member bot is refused.
+   */
+  async releaseDepartedMemberExecution(botId: string): Promise<"clean" | "indeterminate"> {
+    this.assertOpen();
+    const groups = Object.values(this.state.conversations).filter((conversation) =>
+      conversation.kind === "group" && conversation.botIds.includes(botId));
+    if (groups.length > 0) {
+      throw new BotError("bot_in_group", `bot "${botId}" is still in a group`, {
+        conversationIds: groups.map((group) => group.id),
+      });
+    }
+    const directId = createDirectConversationId(botId);
+    const turns = this.store.listBotMemberTurns(botId).filter((turn) => turn.conversationId !== directId);
+    const live = turns.filter((turn) => turn.state === "queued" || turn.state === "dispatched" || turn.state === "running");
+    if (live.length > 0) {
+      throw new BotError("bot_member_unsettled", `bot "${botId}" still has group member work`, {
+        runIds: [...new Set(live.map((turn) => turn.runId))],
+      });
+    }
+    if (turns.some((turn) => turn.state === "indeterminate")) {
+      return "indeterminate";
+    }
+    const topics = new Map<string, { conversationId: string; topicId: string }>();
+    for (const binding of Object.values(this.state.bot_runtime_bindings)) {
+      if (binding.scope === "group-member" && binding.botId === botId) {
+        topics.set(`${binding.conversationId}\0${binding.topicId}`, {
+          conversationId: binding.conversationId,
+          topicId: binding.topicId,
+        });
+      }
+    }
+    for (const session of Object.values(this.state.sessions)) {
+      const owner = session.owner;
+      if (owner?.kind === "group-member" && owner.botId === botId && owner.conversationId && owner.topicId) {
+        topics.set(`${owner.conversationId}\0${owner.topicId}`, {
+          conversationId: owner.conversationId,
+          topicId: owner.topicId,
+        });
+      }
+    }
+    for (const topic of topics.values()) {
+      for (const alias of this.groupMemberAliases(topic.conversationId, topic.topicId)) {
+        if (!this.sessionBelongsToBot(alias, botId)) {
+          continue;
+        }
+        if (this.sessions.getLogicalSessionRecord(alias)) {
+          await this.releaseAlias(alias);
+        }
+      }
+    }
+    await this.stateMutex.run(async () => {
+      const next = structuredClone(this.state);
+      for (const [id, binding] of Object.entries(next.bot_runtime_bindings)) {
+        if (binding.scope === "group-member" && binding.botId === botId) {
+          delete next.bot_runtime_bindings[id];
+        }
+      }
+      await this.persist(next);
+    });
+    return "clean";
+  }
+
+  /** Delete one bot's direct transcript. Group messages that name the bot stay. */
+  async eraseDirectHistory(botId: string): Promise<void> {
+    this.assertOpen();
+    const conversationId = createDirectConversationId(botId);
+    this.store.deleteDirectIngress(conversationId);
+    this.store.deleteConversationRows(conversationId);
+    await this.stateMutex.run(async () => {
+      const next = structuredClone(this.state);
+      delete next.conversations[conversationId];
+      for (const [id, topic] of Object.entries(next.conversation_topics)) {
+        if (topic.conversationId === conversationId) {
+          delete next.conversation_topics[id];
+        }
+      }
+      await this.persist(next);
+    });
+  }
+
+  private sessionBelongsToBot(alias: string, botId: string): boolean {
+    const session = this.state.sessions[alias];
+    const owner = session?.owner;
+    if (!owner) {
+      return false;
+    }
+    if (owner.botId === botId) {
+      return true;
+    }
+    const binding = this.state.bot_runtime_bindings[owner.bindingId];
+    return binding !== undefined && "botId" in binding && binding.botId === botId;
+  }
+
+  private startLifecycle(
+    id: string,
+    kind: LifecycleOperationKind,
+    subjectId: string,
+    requestId: string,
+  ): void {
+    const current = this.store.getLifecycleOperation(id);
+    this.store.saveLifecycleOperation(transitionLifecycleOperation(current, {
+      type: "start",
+      id,
+      kind,
+      subjectId,
+      requestId,
+      at: this.now().toISOString(),
+    }));
+  }
+
+  private completeLifecycle(
+    id: string,
+    kind: LifecycleOperationKind,
+    subjectId: string,
+    requestId: string,
+  ): void {
+    this.startLifecycle(id, kind, subjectId, requestId);
+    const current = this.store.getLifecycleOperation(id);
+    this.store.saveLifecycleOperation(transitionLifecycleOperation(current, {
+      type: "complete",
+      at: this.now().toISOString(),
+    }));
+  }
+
+  private failLifecycle(id: string, error: unknown): void {
+    const current = this.store.getLifecycleOperation(id);
+    if (!current) {
+      return;
+    }
+    const code = error instanceof ConversationError || error instanceof BotError
+      ? error.code
+      : "internal";
+    const message = error instanceof Error ? error.message : String(error);
+    const at = this.now().toISOString();
+    this.store.saveLifecycleOperation(transitionLifecycleOperation(current, code === "conversation_indeterminate"
+      ? { type: "indeterminate", error: { code, message }, at }
+      : { type: "fail", error: { code, message }, at }));
   }
 
   previewTopic(conversationId: string, topicId: string): {
@@ -1553,6 +1782,18 @@ export class ConversationRunService {
    * `BotService.deleteGroup`.
    */
   async teardownGroupConversation(conversationId: string): Promise<void> {
+    const operationId = lifecycleOperationId("group-teardown", conversationId);
+    this.startLifecycle(operationId, "group-teardown", conversationId, conversationId);
+    try {
+      await this.teardownGroupConversationBody(conversationId);
+      this.completeLifecycle(operationId, "group-teardown", conversationId, conversationId);
+    } catch (error) {
+      this.failLifecycle(operationId, error);
+      throw error;
+    }
+  }
+
+  private async teardownGroupConversationBody(conversationId: string): Promise<void> {
     this.assertOpen();
     const conversation = this.requireConversation(conversationId);
     if (conversation.kind !== "group") {

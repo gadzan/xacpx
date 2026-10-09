@@ -196,7 +196,7 @@ test("topics do not release each other, and only an extra topic can be deleted",
       text: "again",
     })).rejects.toMatchObject({ code: "topic_not_found" });
     const again = await current.control.teardownTopic(conversationId, extra.id, { requestId: "del-extra" });
-    expect(again).toEqual({ ok: true, requestId: "del-extra" });
+    expect(again).toEqual({ ok: true, requestId: "del-extra", operationId: "topic-teardown:del-extra" });
   } finally {
     await current.close();
   }
@@ -350,7 +350,7 @@ test("external bindings block teardown until the caller confirms, and a release 
         requestId: "del-bound",
         releaseBindings: true,
       });
-      expect(done).toEqual({ ok: true, requestId: "del-bound" });
+      expect(done).toEqual({ ok: true, requestId: "del-bound", operationId: "topic-teardown:del-bound" });
       expect(restarted.state.conversation_topics[extra.id]).toBeUndefined();
       expect(restarted.state.sessions["brt_extra"]).toBeUndefined();
       expect(restarted.control.listConversationBindings()).toEqual([]);

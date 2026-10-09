@@ -434,6 +434,35 @@ export interface ConversationStore {
   retirePreviousOwnerClaims(owner: string): string[];
   claimNextDispatch(input: ClaimNextDispatchInput): ClaimedWork | undefined;
   hasDurableBotWork(botId: string): boolean;
+  /** Barrier phase for accept and dispatch. Absent means the bot may take new work. */
+  botRemovalPhase(botId: string): "deleting" | "indeterminate" | "retired" | undefined;
+  setBotRemovalBarrier(botId: string, phase: "deleting" | "indeterminate" | "retired", now: string): void;
+  getLifecycleOperation(id: string): import("./lifecycle-operation").LifecycleOperation | undefined;
+  findLifecycleOperation(
+    kind: import("./lifecycle-operation").LifecycleOperationKind,
+    requestId: string,
+  ): import("./lifecycle-operation").LifecycleOperation | undefined;
+  latestLifecycleOperation(
+    kind: import("./lifecycle-operation").LifecycleOperationKind,
+    subjectId: string,
+  ): import("./lifecycle-operation").LifecycleOperation | undefined;
+  saveLifecycleOperation(operation: import("./lifecycle-operation").LifecycleOperation): void;
+  botHistoryCounts(botId: string, directConversationId: string): {
+    directMessages: number;
+    directRuns: number;
+    groupMessages: number;
+    groupRuns: number;
+  };
+  listBotMemberTurns(botId: string): Array<{
+    runId: string;
+    conversationId: string;
+    topicId: string;
+    state: string;
+  }>;
+  listExternalRequests(conversationId: string): Array<{ sourceKey: string; conversationId: string; topicId: string }>;
+  hasOpenBotDispatch(botId: string): boolean;
+  /** Drop direct-conversation bindings and external receipts. Group rows stay. */
+  deleteDirectIngress(conversationId: string): void;
   /** True when any durable rows exist for a Group Conversation (runs,
    *  messages, dispatches, lifecycle, or seq allocation). Guards Group
    *  metadata delete against orphaning history the Group row is needed to

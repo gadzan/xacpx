@@ -4,7 +4,9 @@ import {
   MSG,
   isErrorPayload,
   type BotDetailDto,
+  type BotRemovalPreviewDto,
   type BotSummaryDto,
+  type LifecycleOperationDto,
   type ConversationDetailDto,
   type ConversationHistoryResponseDto,
   type ConversationMessageDto,
@@ -1048,6 +1050,63 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     if (instanceId.value === targetInstanceId && selectedBotId.value === botId) {
       clearSelection();
     }
+  }
+
+  async function previewBotRemoval(targetInstanceId: string, botId: string): Promise<BotRemovalPreviewDto> {
+    const res = unwrapRpc(await api.rpc<{ impact: BotRemovalPreviewDto }>(
+      targetInstanceId,
+      MSG.botsRemovePreview,
+      { id: botId },
+    ));
+    return res.impact;
+  }
+
+  async function removeBot(
+    targetInstanceId: string,
+    input: {
+      botId: string;
+      requestId: string;
+      previewRevision: string;
+      clearDirectHistory: boolean;
+      releaseDirectBindings: boolean;
+    },
+  ): Promise<LifecycleOperationDto> {
+    const res = unwrapRpc(await api.rpc<{ operation: LifecycleOperationDto }>(
+      targetInstanceId,
+      MSG.botsRemove,
+      {
+        id: input.botId,
+        requestId: input.requestId,
+        previewRevision: input.previewRevision,
+        clearDirectHistory: input.clearDirectHistory,
+        releaseDirectBindings: input.releaseDirectBindings,
+      },
+    ));
+    if (res.operation.phase === "completed") {
+      const list = botsByInstance.value[targetInstanceId] ?? [];
+      botsByInstance.value = {
+        ...botsByInstance.value,
+        [targetInstanceId]: list.map((bot) => bot.id === input.botId
+          ? { ...bot, enabled: false, retired: true }
+          : bot),
+      };
+    }
+    try {
+      await loadBots(targetInstanceId);
+    } catch {
+      // Removal already returned a durable operation. A catalog refresh
+      // failure must not look like the removal itself failed.
+    }
+    return res.operation;
+  }
+
+  async function getLifecycleOperation(targetInstanceId: string, id: string): Promise<LifecycleOperationDto> {
+    const res = unwrapRpc(await api.rpc<{ operation: LifecycleOperationDto }>(
+      targetInstanceId,
+      MSG.lifecycleOperationsGet,
+      { id },
+    ));
+    return res.operation;
   }
 
   // RPC: Conversations & Topics
@@ -3755,6 +3814,9 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     createBot,
     updateBot,
     deleteBot,
+    previewBotRemoval,
+    removeBot,
+    getLifecycleOperation,
     loadConversations,
     loadTopics,
     createTopic,

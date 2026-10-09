@@ -6,6 +6,7 @@ import type { BotDetailDto, BotSummaryDto } from "@ganglion/xacpx-relay-protocol
 import { useInstancesStore } from "../stores/instances";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useModalA11y } from "../lib/use-modal-a11y";
+import BotRemovalDialog from "./BotRemovalDialog.vue";
 
 const props = defineProps<{
   instanceId: string;
@@ -82,6 +83,7 @@ const storedEnabled = computed(() =>
     : undefined,
 );
 const submitting = ref(false);
+const removalOpen = ref(false);
 const errorMessage = ref<string | null>(null);
 
 
@@ -540,6 +542,15 @@ async function submit(): Promise<void> {
       <!-- Footer -->
       <div class="flex items-center justify-end gap-2.5 border-t border-border px-5 py-3 bg-surface/50">
         <button
+          v-if="isEditing && props.bot && props.bot.retired !== true"
+          type="button"
+          data-test="bot-dialog-remove"
+          class="mr-auto rounded-lg border border-danger/40 px-3 py-1.5 text-xs font-medium text-danger"
+          @click="removalOpen = true"
+        >
+          {{ $t("bot.removal.action") }}
+        </button>
+        <button
           type="button"
           class="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
           @click="emit('close')"
@@ -557,5 +568,14 @@ async function submit(): Promise<void> {
         </button>
       </div>
     </div>
+    <BotRemovalDialog
+      v-if="removalOpen && props.bot"
+      :bot-name="props.bot.name"
+      :preview="() => directBotsStore.previewBotRemoval(props.instanceId, props.bot!.id)"
+      :remove="(input) => directBotsStore.removeBot(props.instanceId, { botId: props.bot!.id, ...input })"
+      :get-operation="(id) => directBotsStore.getLifecycleOperation(props.instanceId, id)"
+      @close="removalOpen = false"
+      @removed="removalOpen = false; emit('close')"
+    />
   </div>
 </template>

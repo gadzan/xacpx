@@ -83,6 +83,7 @@ import {
 import type { AppLogger } from "../logging/app-logger";
 import type { ConversationRuntime } from "../conversations/conversation-composition";
 import { ConversationError } from "../conversations/conversation-error";
+import { lifecycleOperationId, type LifecycleOperation } from "../conversations/lifecycle-operation";
 import type { TopicSchedulingOptions } from "../conversations/conversation-scheduling-policy";
 import { parseHumanIngress } from "../conversations/conversation-execution";
 import type { ConversationProductEvent } from "../conversations/conversation-product-events";
@@ -100,7 +101,10 @@ import {
   toRunDetail,
   toTopicSummary,
   type BotCreateRequestDto,
+  type BotRemovalPreviewDto,
   type BotUpdateRequestDto,
+  type LifecycleOperationDto,
+  type RemoveBotRequestDto,
   type ConversationHistoryRequestDto,
   type ConversationPromptRequestDto,
   type ConversationPolicyPromptRequestDto,
@@ -467,6 +471,25 @@ export interface ControlExecuteCommandInput {
   accountId?: string;
   senderId: string;
   isOwner?: boolean;
+}
+
+function toLifecycleOperationDto(operation: LifecycleOperation): LifecycleOperationDto {
+  return {
+    id: operation.id,
+    kind: operation.kind,
+    subjectId: operation.subjectId,
+    requestId: operation.requestId,
+    phase: operation.phase,
+    updatedAt: operation.updatedAt,
+    ...(operation.error ? { error: operation.error } : {}),
+    ...(operation.previewRevision ? { previewRevision: operation.previewRevision } : {}),
+    ...(operation.params
+      ? {
+        clearDirectHistory: operation.params.clearDirectHistory,
+        releaseDirectBindings: operation.params.releaseDirectBindings,
+      }
+      : {}),
+  };
 }
 
 // Thin structured facade over core services for non-text consumers (the relay
@@ -1958,12 +1981,45 @@ export class ControlService {
 
   listBots() {
     const bots = this.requireConversations().bots;
-    return bots.listBots().map((bot) => toBotSummary(bot, bots.hasRuntime(bot.id)));
+    const live = bots.listBots().map((bot) => toBotSummary(bot, bots.hasRuntime(bot.id)));
+    const retired = bots.listTombstones().map((tomb) => ({
+      id: tomb.id,
+      name: tomb.name,
+      ...(tomb.avatar ? { avatar: tomb.avatar } : {}),
+      ...(tomb.role ? { role: tomb.role } : {}),
+      agent: tomb.agent,
+      workspace: tomb.workspace,
+      enabled: false,
+      updatedAt: tomb.retiredAt,
+      retired: true as const,
+    }));
+    return [...live, ...retired];
   }
 
   getBot(id: string) {
     const bots = this.requireConversations().bots;
-    return toBotDetail(bots.getBot(id), bots.hasRuntime(id));
+    try {
+      return toBotDetail(bots.getBot(id), bots.hasRuntime(id));
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? String(error.code) : "";
+      const tomb = code === "bot_not_found" ? bots.listTombstones().find((item) => item.id === id) : undefined;
+      if (!tomb) {
+        throw error;
+      }
+      return {
+        id: tomb.id,
+        name: tomb.name,
+        ...(tomb.avatar ? { avatar: tomb.avatar } : {}),
+        ...(tomb.role ? { role: tomb.role } : {}),
+        agent: tomb.agent,
+        workspace: tomb.workspace,
+        enabled: false,
+        updatedAt: tomb.retiredAt,
+        createdAt: tomb.retiredAt,
+        profileRevision: 1,
+        retired: true as const,
+      };
+    }
   }
 
   async createBot(input: BotCreateRequestDto) {
@@ -1993,6 +2049,29 @@ export class ControlService {
     });
   }
 
+  previewBotRemoval(id: string): Promise<BotRemovalPreviewDto> {
+    return this.requireConversations().removals.preview(id);
+  }
+
+  async removeBot(input: RemoveBotRequestDto): Promise<{ operation: LifecycleOperationDto }> {
+    return this.runConversationMutation(async (runtime) => {
+      const operation = await runtime.removals.remove({
+        botId: input.botId,
+        requestId: input.requestId,
+        previewRevision: input.previewRevision,
+        clearDirectHistory: input.clearDirectHistory === true,
+        releaseDirectBindings: input.releaseDirectBindings === true,
+      });
+      this.deps.events.emit({ type: "bots-changed" });
+      this.deps.events.emit({ type: "conversations-changed" });
+      return { operation: toLifecycleOperationDto(operation) };
+    });
+  }
+
+  getLifecycleOperation(id: string): LifecycleOperationDto {
+    return toLifecycleOperationDto(this.requireConversations().removals.getOperation(id));
+  }
+
   async createGroup(input: { title: string; description?: string; botIds: string[]; leadBotId?: string }) {
     return this.runConversationMutation(async (runtime) => {
       const group = await runtime.bots.createGroup(input);
@@ -2014,12 +2093,12 @@ export class ControlService {
     });
   }
 
-  async deleteGroup(id: string): Promise<{ ok: true }> {
+  async deleteGroup(id: string): Promise<{ ok: true; operationId: string }> {
     return this.runConversationMutation(async (runtime) => {
       await runtime.runs.teardownGroupConversation(id);
       this.deps.events.emit({ type: "bots-changed" });
       this.deps.events.emit({ type: "conversations-changed" });
-      return { ok: true };
+      return { ok: true, operationId: lifecycleOperationId("group-teardown", id) };
     });
   }
 
@@ -2088,7 +2167,11 @@ export class ControlService {
   ): Promise<{ ok: true; requestId: string }> {
     return this.runConversationMutation(async (runtime) => {
       await runtime.runs.teardownTopic(conversationId, topicId, input);
-      return { ok: true, requestId: input.requestId };
+      return {
+        ok: true as const,
+        requestId: input.requestId,
+        operationId: lifecycleOperationId("topic-teardown", input.requestId),
+      };
     });
   }
 
@@ -2102,6 +2185,7 @@ export class ControlService {
       return {
         ok: true as const,
         requestId: input.requestId,
+        operationId: lifecycleOperationId("topic-clear", input.requestId),
         contextGeneration: topic.contextGeneration ?? 1,
         topic: this.topicSummary(topic),
       };

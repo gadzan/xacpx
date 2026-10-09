@@ -1,6 +1,7 @@
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
+import { BotRemovalService } from "../bots/bot-removal-service";
 import { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import { BotService } from "../bots/bot-service";
 import type { AppConfig } from "../config/types";
@@ -38,6 +39,7 @@ export interface ConversationRuntime {
   botRuntime: BotRuntimeManager;
   dispatcher: ConversationDispatcher;
   runs: ConversationRunService;
+  removals: BotRemovalService;
   handoffs: GroupHandoffService;
   bindings: ConversationBindingService;
   authorityEpoch: string;
@@ -91,6 +93,8 @@ export interface CreateConversationRuntimeInput {
   beforeAcceptPersist?: () => Promise<void>;
   afterTeardownMarkedDeleting?: () => Promise<void>;
   beforeTeardownFinalize?: () => Promise<void>;
+  /** Test seam: runs after the removal barrier is durable and before cleanup. */
+  afterBotRemovalBarrier?: () => Promise<void>;
 }
 
 export async function createConversationRuntime(
@@ -199,6 +203,14 @@ export async function createConversationRuntime(
     },
   );
   runsRef = runs;
+  const removals = new BotRemovalService(
+    bots,
+    runs,
+    store,
+    input.state,
+    input.now ?? (() => new Date()),
+    input.afterBotRemovalBarrier,
+  );
   const handoffs = new GroupHandoffService({ store, bots, state: input.state, now: input.now,
     onProductEvent: input.onProductEvent, wake: () => runs.wakePendingWork() });
   dispatcher.setHandoffService(handoffs);
@@ -245,6 +257,7 @@ export async function createConversationRuntime(
     botRuntime,
     dispatcher,
     runs,
+    removals,
     handoffs,
     bindings: new ConversationBindingService(store, runs, bots, input.config),
     authorityEpoch: dispatcher.authorityEpoch,

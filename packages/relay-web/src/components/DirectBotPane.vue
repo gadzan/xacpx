@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { useI18n } from "vue-i18n";
 import {
   Bot,
   ChevronDown,
@@ -12,15 +11,14 @@ import {
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useInstancesStore } from "../stores/instances";
 import type { InteractionValueDto } from "@ganglion/xacpx-relay-protocol";
-import { confirm } from "../lib/use-confirm";
 import AgentIcon from "./AgentIcon.vue";
 import ConversationMessageList from "./ConversationMessageList.vue";
 import ConversationPromptInput from "./ConversationPromptInput.vue";
 import BotDialog from "./BotDialog.vue";
+import BotRemovalDialog from "./BotRemovalDialog.vue";
 import NewTopicDialog from "./NewTopicDialog.vue";
 import TopicManager from "./TopicManager.vue";
 
-const { t } = useI18n();
 const directBotsStore = useDirectBotsStore();
 const instancesStore = useInstancesStore();
 
@@ -80,39 +78,11 @@ async function clearTopic(topicId: string, requestId: string, releaseBindings: b
   await directBotsStore.clearTopic(ctx.instanceId, ctx.conversationId, topicId, requestId, releaseBindings);
 }
 
-const botHasRuntime = computed(() =>
-  (bot.value && "hasRuntime" in bot.value && bot.value.hasRuntime) === true,
-);
+const removalOpen = ref(false);
 
-async function handleDeleteBot(): Promise<void> {
-  if (!bot.value || !directBotsStore.instanceId) return;
-  // Fail-closed backends reject deleting a used Bot (bot_in_use).
-  // Teardown/rebind is a later lifecycle surface, so say so before confirming
-  // instead of failing after.
-  if (botHasRuntime.value) {
-    directBotsStore.generalError = t("bot.lifecycle.deleteBlocked");
-    return;
-  }
-  const confirmed = await confirm({
-    title: t("bot.delete.confirmTitle"),
-    message: t("bot.delete.confirmMessage", { name: bot.value.name }),
-    confirmLabel: t("common.delete"),
-    tone: "danger",
-  });
-  if (!confirmed) return;
-
-  try {
-    await directBotsStore.deleteBot(directBotsStore.instanceId, bot.value.id);
-  } catch (err: unknown) {
-    // A Bot with only a persisted Conversation row (topic created, never run)
-    // has hasRuntime=false yet still fails closed backend-side (bot_in_use).
-    // Map that code to the explanatory deleteBlocked copy instead of a raw
-    // backend message.
-    const code = err instanceof Error && "code" in err ? String(err.code ?? "") : "";
-    directBotsStore.generalError = code === "bot_in_use"
-      ? t("bot.lifecycle.deleteBlocked")
-      : err instanceof Error ? err.message : String(err);
-  }
+function openRemoval(): void {
+  if (!bot.value || bot.value.retired) return;
+  removalOpen.value = true;
 }
 </script>
 
@@ -170,16 +140,20 @@ async function handleDeleteBot(): Promise<void> {
         <button
           type="button"
           data-test="delete-bot-button"
-          :title="botHasRuntime ? $t('bot.lifecycle.deleteBlocked') : $t('bot.actions.delete')"
-          :aria-label="$t('bot.actions.delete')"
-          :disabled="botHasRuntime"
+          :title="bot?.retired ? $t('bot.removal.removed') : $t('bot.removal.action')"
+          :aria-label="$t('bot.removal.action')"
+          :disabled="bot?.retired === true"
           class="grid h-8 w-8 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
-          @click="handleDeleteBot"
+          @click="openRemoval"
         >
           <Trash2 :size="14" />
         </button>
       </div>
     </header>
+
+    <div v-if="bot?.retired" data-test="removed-bot-banner" class="border-b border-border bg-surface px-4 py-2 text-xs text-fg-muted">
+      {{ $t("bot.removal.removedBanner") }}
+    </div>
 
     <div class="flex items-center border-b border-border bg-surface/50 px-4 py-1.5 text-xs">
       <TopicManager
@@ -231,7 +205,7 @@ async function handleDeleteBot(): Promise<void> {
 
     <!-- Prompt Composer -->
     <ConversationPromptInput
-      :disabled="!directBotsStore.activeTopicId || !directBotsStore.topicReady || directBotsStore.currentTopic?.status !== 'active'"
+      :disabled="bot?.retired === true || !directBotsStore.activeTopicId || !directBotsStore.topicReady || directBotsStore.currentTopic?.status !== 'active'"
       @send="(text) => directBotsStore.sendPrompt(text)"
       @cancel="directBotsStore.cancelCurrentRun"
     />
@@ -254,6 +228,16 @@ async function handleDeleteBot(): Promise<void> {
       :instance-name="instance?.name ?? directBotsStore.instanceId"
       :bot="bot"
       @close="editDialogOpen = false"
+    />
+
+    <BotRemovalDialog
+      v-if="removalOpen && directBotsStore.instanceId && bot"
+      :bot-name="bot.name"
+      :preview="() => directBotsStore.previewBotRemoval(directBotsStore.instanceId!, bot!.id)"
+      :remove="(input) => directBotsStore.removeBot(directBotsStore.instanceId!, { botId: bot!.id, ...input })"
+      :get-operation="(id) => directBotsStore.getLifecycleOperation(directBotsStore.instanceId!, id)"
+      @close="removalOpen = false"
+      @removed="removalOpen = false"
     />
 
     <NewTopicDialog

@@ -230,7 +230,11 @@ A crash before step 5 leaves the SQLite `deleting` barrier in place: new accepts
 
 Injected release failure leaves `deleting` + ownership in place for retry.
 
-**Remaining Bot-delete boundary:** `BotService.deleteBot` stays fail-closed (`bot_in_use` / `bot_in_group`) and does **not** auto-teardown. It consults AppState runtime references **and** ConversationStore durable work (`hasDurableBotWork`) so an accepted Run/outbox cannot outlive a deleted Bot through a crash-before-materialize window. Call `ConversationRunService.teardownDirectConversation` first, then delete the Bot.
+**Remaining Bot-delete boundary:** `BotService.deleteBot` stays fail-closed (`bot_in_use` / `bot_in_group`) and does **not** auto-teardown. It consults AppState runtime references **and** ConversationStore durable work (`hasDurableBotWork`) so an accepted Run/outbox cannot outlive a deleted Bot through a crash-before-materialize window. `deleteBot` also fails `bot_removing` while a removal barrier exists. It does not retire a bot that still has history.
+
+**Controlled removal:** `previewBotRemoval` then `removeBot`. `removeBot` writes the SQLite barrier before it releases sessions or deletes rows. The phase is `previewed`, `deleting`, `indeterminate`, or `retired`. SQLite `bot_removal_barrier` is what accept, dispatch, enable, topic create, and member join read. AppState `bot_removals` stores the recoverable phase. If AppState is ahead of SQLite, the next accept writes the barrier before it admits work. A current group membership blocks removal. A two-member group is not reduced, and the group is not deleted. After a bot has left a group, removal releases only that member's session and binding. The group transcript and runs stay. `clearDirectHistory` deletes that bot's direct transcript only. Group history stays. An indeterminate run keeps the barrier. The lifecycle operation stays `indeterminate` and does not report completed. Retry uses the same `requestId`. A changed dependency returns `removal_stale` until the caller previews again. Retire stores a tombstone and drops the executable profile. `hasDurableBotWork` is unchanged, so a restored profile still cannot `deleteBot` through group history.
+
+Topic teardown, topic clear, and group teardown write the same `lifecycle_operations` row. `getLifecycleOperation` reads it. There is no second task runner.
 
 ## Enforced execution effects (Phase 10B)
 
@@ -607,7 +611,7 @@ Idempotent `requestId` retries reuse the durable accept result and do not re-emi
 
 Shutdown first marks the runtime stopping to reject new operation leases, then waits for entered operations, including `group_send` waiting on Bot lifecycle gates. It stops and drains the Run service/dispatcher before closing the handoff service. Live execution capabilities remain available through this drain, so an entered handoff can commit and an already started execution can bind its capability. Handoff capability revocation runs in `finally`, including a failed drain; shutdown failures remain visible rather than reporting success.
 
-Public topic lifecycle is `updateTopic`, `archiveTopic`, `restoreTopic`, `teardownTopic`, `clearTopic`, and `previewTopic`. `BotService.deleteBot` remains fail-closed while durable/runtime ownership exists.
+Public topic lifecycle is `updateTopic`, `archiveTopic`, `restoreTopic`, `teardownTopic`, `clearTopic`, and `previewTopic`. `teardownTopic` and `clearTopic` return `operationId`. `BotService.deleteBot` remains fail-closed while durable/runtime ownership exists. Controlled removal is `previewBotRemoval`, `removeBot`, and `getLifecycleOperation`.
 
 ## Out of scope
 

@@ -518,6 +518,7 @@ export class BotRuntimeManager {
     return { conversationId, topicId, topic };
   }
   private requireEnabledBot(botId: string): BotProfile {
+    this.bots.assertAcceptsWork(botId);
     const bot = this.bots.getBot(botId);
     if (!bot.enabled) {
       throw new BotError("bot_disabled", `bot "${botId}" is disabled`);
