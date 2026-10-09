@@ -116,6 +116,13 @@ export interface SessionCommandsSnapshotDto {
     sessionAlias: string;
     commands: AgentCommandDto[];
 }
+export interface ConversationCommandsSnapshotDto {
+    instanceId: string;
+    conversationId: string;
+    topicId: string;
+    botId: string;
+    commands: AgentCommandDto[];
+}
 /** Authoritative per-instance state sent on the same WebSocket immediately after
  *  a browser subscription is installed. Because the snapshot and later deltas
  *  share one ordered channel, the browser can safely replace stale pre-disconnect
@@ -124,6 +131,7 @@ export interface InstanceStateSnapshotDto {
     turns: LiveTurnSnapshotDto[];
     usage: SessionUsageSnapshotDto[];
     commands: SessionCommandsSnapshotDto[];
+    conversationCommands?: ConversationCommandsSnapshotDto[];
 }
 /** Dashboard instance row (HTTP `/api/instances` and web store seed). */
 export interface InstanceSummaryDto {

@@ -200,6 +200,16 @@ Sticky identity is `agent` / `workspace`. The dispatcher may reject an obvious m
 
 The same gate also proves the claimed work is still live before any Session/AppState mutation: exact dispatch + owner + generation + live lease, Run/MemberTurn still runnable, Conversation/Topic not deleting. That check is `assertLiveDispatchForMaterialize`, invoked through `getOrCreateDirectSession({ assertStillDispatchable })`. Every materialization caller enters `bots.runLifecycle` itself — callers do not join another in-flight authorization promise. A later claimant therefore runs its own fence, then observes or reuses any binding/session the previous caller already published. If teardown wins the gate first, the old worker exits without creating a session. If materialization wins first, teardown subsequently sees and releases that ownership. After teardown has marked Conversation/Topic deleting, a not-yet-started claimant must fail that fence and must not reach `markExecutionStarted`. `BotRuntimeManager.releaseDirectBinding` also runs the full release/re-read/conditional-binding-delete transaction under `bots.runLifecycle(botId)`.
 
+## Adapter slash commands
+
+The adapter advertises slash commands on the existing `agent-commands` control event. When the event carries Conversation correlation, the daemon records the list under `conversationId × topicId × botId` in `src/conversations/advertised-commands.ts`. The ordinary Session command map does not store that row, and the hidden alias is not a product key.
+
+`promptConversation` still accepts the original user text and still goes through Run ownership and permission. There is no second command channel and no ordinary Session prompt from the browser. At execution, `adapterFacingPrompt` sends that original text to the runner when the first token matches an advertisement for that Bot runtime. Profile wrapping, Group assignment context, and the Group member preface stay off that text. A command that was not advertised, including an xacpx admin command, keeps the existing wrap. The xacpx catalog is not an advertisement.
+
+Group accept allows that path only for one explicit member (`target.botId` or `mode: "members"` with one id). Everyone, automatic, and any other multi-member target reject a bare `/token`, and reject a command with arguments when any selected runtime has advertised that name, with `slash_requires_single_member`. The refusal happens before `acceptRequest`, so it is a definitive rejection and the draft stays in the composer. An uncertain accept still replays the frozen `requestId` and target.
+
+Direct `@` is not Agent Messaging and not a private handoff. The Direct page only navigates to another Bot's Direct conversation or to a Group that already contains the current Bot.
+
 ## Direct multi-Topic binding
 
 Runtime key: **`conversationId × topicId × botId`**.

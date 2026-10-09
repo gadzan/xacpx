@@ -337,6 +337,11 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 - 带 `conversation` 的 live Control event 仍携带 `sessionAlias`（旧客户端兼容）。那是
   **legacy transport plumbing**，不得再用于产品 liveness / ownership / routing；产品身份是
   `conversationId` / `topicId` / `botId` / `runId` / `memberTurnId`。
+- 带 `conversation.botId` 的 `agent-commands` 不进入 ordinary `commands` / `sessionCommands`。
+  connector 把它记在 `conversationCommands`（`conversationId × topicId × botId`），随
+  `instance.state.sync` 的可选字段恢复。Hub 用同一字段填 Web `state-snapshot.conversationCommands`
+  和 `GET /api/active-turns` 的 `conversationCommands`。字段缺失表示旧 connector，Hub 保留已有产品缓存。
+  实例离线时清空该实例的产品缓存。隐藏 alias 不出现在这条快照里。
 - `PendingFinishedTurn` 优先从 running `MirrorTurn` 拷贝 `conversation`；若 mirror 没看到
   `turn-started`（例如 connector 在 core turn 中途重启），则回退到 `turn-finished` 事件上的
   `event.conversation`。finishedOffline 快照同样带上这五个 id，hub validator / accumulator /

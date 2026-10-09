@@ -241,6 +241,12 @@ export interface InstanceStateSyncPayload {
         sessionAlias: string;
         commands: AgentCommandDto[];
     }>;
+    conversationCommands?: Array<{
+        conversationId: string;
+        topicId: string;
+        botId: string;
+        commands: AgentCommandDto[];
+    }>;
     /** Turns that finished and are still awaiting the hub's persistence ack — this
      *  includes turns that finished while the hub was unreachable AND live turns that
      *  finished moments ago (the connector forwards the live `turn-finished` and keeps

@@ -482,6 +482,20 @@ test("accepts a deep-valid state snapshot and rejects mismatched or malformed ro
   expect(roundtrip({ ...snapshot, usage: [{ ...snapshot.usage[0], cost: { amount: "bad" } }] })).toBeNull();
   expect(roundtrip({ ...snapshot, usage: [{ ...snapshot.usage[0], breakdown: { totalTokens: -1 } }] })).toBeNull();
   expect(roundtrip({ ...snapshot, commands: [{ ...snapshot.commands[0], commands: [{ name: "compact", hasInput: "yes" }] }] })).toBeNull();
+  const withConversation = {
+    ...snapshot,
+    conversationCommands: [{
+      instanceId: "i1",
+      conversationId: "c1",
+      topicId: "t1",
+      botId: "bot-1",
+      commands: [{ name: "compact" }],
+    }],
+  };
+  const parsed = roundtrip(withConversation);
+  expect(parsed).not.toBeNull();
+  expect(parsed && parsed.kind === "state-snapshot" ? parsed.conversationCommands : null).toEqual(withConversation.conversationCommands);
+  expect(roundtrip({ ...withConversation, conversationCommands: [{ instanceId: "i1", commands: [] }] })).toBeNull();
 });
 
 test("accepts a truncated state-snapshot turn and rejects a junk truncated flag", () => {

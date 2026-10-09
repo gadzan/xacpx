@@ -10,6 +10,7 @@ import { ToolEventBatcher } from "./tool-event-batcher";
 import type { AgentMessageCompletion } from "../orchestration/agent-messaging-types";
 import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
 import { buildPeerCompletionPrompt } from "../orchestration/agent-message-completion";
+import { rememberAdvertisedCommands } from "../conversations/advertised-commands";
 import { markTrustedConversationAgentRequest } from "../conversations/trusted-conversation-agent-request";
 import {
   toErrorMessage,
@@ -419,6 +420,14 @@ export class SessionTurnRunner {
         },
         onCommands: (commands) => {
           onActivity?.();
+          const correlation = req.conversation;
+          if (correlation?.botId) {
+            rememberAdvertisedCommands({
+              conversationId: correlation.conversationId,
+              topicId: correlation.topicId,
+              botId: correlation.botId,
+            }, commands);
+          }
           this.deps.events.emit({
             type: "agent-commands",
             chatKey: req.chatKey,
