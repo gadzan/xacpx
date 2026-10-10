@@ -303,7 +303,9 @@ async function confirmDelete(): Promise<void> {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+  <!-- Escape the mobile sidebar's transformed containing block. -->
+  <Teleport to="body">
+  <div class="fixed inset-0 z-50 flex h-dvh items-center justify-center bg-black/50 p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] backdrop-blur-sm"
        @click.self="emit('close')">
     <div ref="dialogEl"
          role="dialog"
@@ -311,8 +313,8 @@ async function confirmDelete(): Promise<void> {
          aria-labelledby="group-dialog-title"
          tabindex="-1"
          data-test="group-dialog"
-         class="flex max-h-[90vh] w-full max-w-lg flex-col rounded-xl border border-border bg-surface text-fg shadow-2xl">
-      <div class="flex items-center justify-between border-b border-border px-5 py-3.5">
+         class="flex max-h-full min-h-0 w-full min-w-0 max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-surface text-fg shadow-2xl">
+      <div class="flex shrink-0 items-center justify-between border-b border-border px-5 py-3.5">
         <h2 id="group-dialog-title" class="text-base font-semibold">
           {{ isEditing ? $t("group.manage.editTitle") : $t("group.manage.createTitle") }}
         </h2>
@@ -326,7 +328,7 @@ async function confirmDelete(): Promise<void> {
         </button>
       </div>
 
-      <form class="thin-scroll flex-1 space-y-4 overflow-y-auto px-5 py-4" @submit.prevent="submit">
+      <form class="thin-scroll min-h-0 min-w-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-5 py-4" @submit.prevent="submit">
         <div v-if="isDeleting"
              data-test="group-dialog-deleting"
              class="flex items-start justify-between gap-2.5 rounded-lg border border-warn/30 bg-warn/10 p-3 text-xs text-warn">
@@ -392,7 +394,7 @@ async function confirmDelete(): Promise<void> {
           </button>
         </div>
 
-        <fieldset :disabled="isDeleting || deletingNow" class="space-y-4">
+        <fieldset :disabled="isDeleting || deletingNow" class="min-w-0 space-y-4">
           <div>
             <label for="group-title" class="mb-1.5 block text-xs font-medium text-fg-muted">
               {{ $t("group.manage.name") }} <span class="text-danger">*</span>
@@ -549,7 +551,7 @@ async function confirmDelete(): Promise<void> {
         </div>
       </form>
 
-      <div class="flex items-center justify-between gap-2.5 border-t border-border bg-surface/50 px-5 py-3">
+      <div class="flex shrink-0 items-center justify-between gap-2.5 border-t border-border bg-surface/50 px-5 py-3">
         <button v-if="isEditing && !isDeleting"
                 type="button"
                 data-test="group-dialog-delete"
@@ -582,4 +584,5 @@ async function confirmDelete(): Promise<void> {
       </div>
     </div>
   </div>
+  </Teleport>
 </template>

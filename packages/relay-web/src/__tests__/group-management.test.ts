@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import { config, flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import type {
   BotSummaryDto,
@@ -35,6 +35,9 @@ import { useInstancesStore } from "../stores/instances";
 import GroupDialog from "../components/GroupDialog.vue";
 import GroupPane from "../components/GroupPane.vue";
 import InstanceTree from "../components/InstanceTree.vue";
+
+// Keep form/store assertions local; browser E2E covers the real Teleport layout.
+config.global.stubs.teleport = true;
 
 const REVIEWER: BotSummaryDto = { id: "bot_a", name: "Reviewer", role: "Code review", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" };
 const TESTER: BotSummaryDto = { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now" };

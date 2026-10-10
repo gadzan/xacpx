@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mount, flushPromises } from "@vue/test-utils";
+import { config, mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import {
   needsSetupCapability,
@@ -23,6 +23,9 @@ import ConversationPromptInput from "../components/ConversationPromptInput.vue";
 import ConversationMessageList from "../components/ConversationMessageList.vue";
 import DirectBotPane from "../components/DirectBotPane.vue";
 import InstanceTree from "../components/InstanceTree.vue";
+
+// Keep form/store assertions local; browser E2E covers the real Teleport layout.
+config.global.stubs.teleport = true;
 
 function seedLocalInstance(): void {
   useInstancesStore().instances = [
@@ -881,7 +884,8 @@ describe("Direct Bot Components", () => {
       expect((wrapper.find("#bot-name").element as HTMLInputElement).value).toBe("User Name");
       expect((wrapper.find("#bot-instructions").element as HTMLTextAreaElement).value).toBe("Server instructions");
       // Save is now enabled and submits the dirty-only patch.
-      expect((saveBtn!.element as HTMLButtonElement).disabled).toBe(false);
+      // The Teleport stub replaces DOM nodes when the async form updates.
+      expect(wrapper.findAll("button").find((b) => b.text().includes("Save"))!.attributes("disabled")).toBeUndefined();
       await wrapper.find("form").trigger("submit.prevent");
       await flushPromises();
       expect(updateSpy).toHaveBeenCalled();
@@ -941,7 +945,7 @@ describe("Direct Bot Components", () => {
       expect(wrapper.find('[data-test="bot-detail-retry"]').exists()).toBe(false);
       expect((wrapper.find("#bot-name").element as HTMLInputElement).value).toBe("User Name");
       expect((wrapper.find("#bot-instructions").element as HTMLTextAreaElement).value).toBe("Server instructions");
-      expect((saveBtn!.element as HTMLButtonElement).disabled).toBe(false);
+      expect(wrapper.findAll("button").find((b) => b.text().includes("Save"))!.attributes("disabled")).toBeUndefined();
       apiSpy.mockRestore();
     });
     it("blocks Save until summary-backed detail hydration completes", async () => {
@@ -1003,7 +1007,7 @@ describe("Direct Bot Components", () => {
       await flushPromises();
 
       // Hydrated: Save is enabled and shows the backend instructions.
-      expect((saveBtn!.element as HTMLButtonElement).disabled).toBe(false);
+      expect(wrapper.findAll("button").find((b) => b.text().includes("Save"))!.attributes("disabled")).toBeUndefined();
       expect((wrapper.find("#bot-instructions").element as HTMLTextAreaElement).value).toBe("Review races");
       await wrapper.find("form").trigger("submit.prevent");
       await flushPromises();

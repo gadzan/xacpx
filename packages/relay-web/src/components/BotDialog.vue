@@ -332,15 +332,18 @@ async function submit(): Promise<void> {
 </script>
 
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
+  <!-- Escape the mobile sidebar's transformed containing block. -->
+  <Teleport to="body">
+  <div class="fixed inset-0 z-50 flex h-dvh items-center justify-center bg-black/50 p-4 pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] backdrop-blur-sm"
        @click.self="emit('close')">
     <div ref="dialogEl"
          role="dialog"
          aria-modal="true"
          :aria-labelledby="'bot-dialog-title'"
-         class="flex max-h-[90vh] w-full max-w-lg flex-col rounded-xl border border-border bg-surface text-fg shadow-2xl">
+         tabindex="-1"
+         class="flex max-h-full min-h-0 w-full min-w-0 max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-surface text-fg shadow-2xl">
       <!-- Header -->
-      <div class="flex items-center justify-between border-b border-border px-5 py-3.5">
+      <div class="flex shrink-0 items-center justify-between border-b border-border px-5 py-3.5">
         <h2 id="bot-dialog-title" class="text-base font-semibold">
           {{ isEditing ? $t("bot.dialog.editTitle") : $t("bot.dialog.createTitle") }}
         </h2>
@@ -355,7 +358,7 @@ async function submit(): Promise<void> {
       </div>
 
       <!-- Form Content -->
-      <form class="flex-1 overflow-y-auto px-5 py-4 space-y-4 thin-scroll" @submit.prevent="submit">
+      <form class="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4 space-y-4 thin-scroll" @submit.prevent="submit">
         <!-- Error Banner -->
         <div v-if="errorMessage" class="flex items-start gap-2.5 rounded-lg border border-danger/30 bg-danger/10 p-3 text-xs text-danger">
           <AlertCircle :size="15" class="mt-0.5 shrink-0" />
@@ -531,7 +534,7 @@ async function submit(): Promise<void> {
       </form>
 
       <!-- Footer -->
-      <div class="flex items-center justify-end gap-2.5 border-t border-border px-5 py-3 bg-surface/50">
+      <div class="flex shrink-0 items-center justify-end gap-2.5 border-t border-border px-5 py-3 bg-surface/50">
         <button
           v-if="isEditing && props.bot && props.bot.retired !== true"
           type="button"
@@ -569,4 +572,5 @@ async function submit(): Promise<void> {
       @removed="removalOpen = false; emit('close')"
     />
   </div>
+  </Teleport>
 </template>

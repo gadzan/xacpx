@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { flushPromises, mount, type VueWrapper } from "@vue/test-utils";
+import { config, flushPromises, mount, type VueWrapper } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import type { BotDetailDto, BotSummaryDto, GroupSummaryDto } from "@ganglion/xacpx-relay-protocol";
 
@@ -31,6 +31,9 @@ import BotDialog from "../components/BotDialog.vue";
 import GroupPane from "../components/GroupPane.vue";
 import InstanceTree from "../components/InstanceTree.vue";
 import ToastHost from "../components/ToastHost.vue";
+
+// Keep form/store assertions local; browser E2E covers the real Teleport layout.
+config.global.stubs.teleport = true;
 
 const REVIEWER: BotSummaryDto = { id: "bot_a", name: "Reviewer", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 };
 const TESTER: BotSummaryDto = { id: "bot_b", name: "Tester", agent: "codex", workspace: "repo", enabled: true, updatedAt: "now", profileRevision: 1 };
@@ -95,7 +98,7 @@ function track<T extends VueWrapper>(wrapper: T): T {
 
 async function mountBotsTree(): Promise<VueWrapper> {
   const wrapper = track(mount(InstanceTree, { global: { plugins: [i18n] } }));
-  track(mount(ToastHost, { global: { plugins: [i18n] } }));
+  track(mount(ToastHost, { global: { plugins: [i18n], stubs: { teleport: false } } }));
   await flushPromises();
   await wrapper.find('[data-test="instance-nav-bots"]').trigger("click");
   await flushPromises();
