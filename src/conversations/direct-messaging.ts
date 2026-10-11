@@ -275,7 +275,7 @@ export class DirectMessagingService {
     const depth = (request?.inputMetadata?.peer?.depth ?? 0) + 1;
     if (
       depth > 8 ||
-      /^(ok|ack|received|收到|好的)[.!。！\s]*$/i.test(args.content.trim())
+      /^(ok|ack|received|\u6536\u5230|\u597d\u7684)[.!\u3002\uFF01\s]*$/i.test(args.content.trim())
     )
       throw new ConversationError(
         "message_budget_exceeded",

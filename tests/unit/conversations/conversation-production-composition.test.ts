@@ -1570,7 +1570,7 @@ test("real Direct transport sends to cold Bot in private peer scope, deduplicate
   physical.push({session,text});expect(session.mcpSourceHandle).toMatch(/^direct-execution:/);
   if(physical.length===1){sourceToken=session.mcpSourceHandle!;const binding={coordinatorSession:sourceToken,sourceHandle:sourceToken};
    const reachable=current.runtime.directMessaging.listReachable(binding);expect(reachable).toHaveLength(1);expect(reachable[0]?.handle).toBe(target);
-   await expect(current.runtime.directMessaging.send(binding,{to:target,content:"ack"})).rejects.toMatchObject({code:"message_budget_exceeded"});
+   for (const ack of ["ack", "收到。", "好的！"]) await expect(current.runtime.directMessaging.send(binding,{to:target,content:ack})).rejects.toMatchObject({code:"message_budget_exceeded"});
    await expect(current.runtime.directMessaging.send(binding,{to:target,content:"work",mode:"interrupt"})).rejects.toMatchObject({code:"messaging_mode_unavailable"});
    const one=await current.runtime.directMessaging.send(binding,{to:target,content:"PRIVATE WORK"}),two=await current.runtime.directMessaging.send(binding,{to:target,content:"PRIVATE WORK"});
    expect(one.status).toBe("queued");expect(two.messageId).toBe(one.messageId);expect(two.deduplicated).toBe(true);
