@@ -677,10 +677,38 @@ describe("TurnParts collapsed-header failure count", () => {
       props: { parts: turnWithFailure(), collapseTrace: true, traceKey: "t:fail-1", traceElapsedMs: 5000 },
     });
     const header = w.find('[data-test="trace-toggle"]');
-    expect(header.find('[data-test="trace-failed"]').text()).toContain("1");
+    const failedBadge = header.find('[data-test="trace-failed"]');
+    expect(failedBadge.text()).toContain("1");
+    expect(failedBadge.classes()).toContain("bg-danger/10");
+    expect(failedBadge.classes()).toContain("rounded-full");
     expect(header.text()).toContain("ran 1");
   });
 
+  it("does not duplicate file counts when read steps are present", async () => {
+    const parts: TurnPartDto[] = [
+      { type: "tool", step: { toolCallId: "r-1", toolName: "Read", kind: "read", status: "success", title: "a.ts" } },
+      { type: "tool", step: { toolCallId: "r-2", toolName: "Read", kind: "read", status: "success", title: "b.ts" } },
+      { type: "text", text: "done" },
+    ];
+    const w = await mountWithLocale("zh-CN", {
+      parts,
+      collapseTrace: true,
+      traceKey: "t:no-dup",
+    });
+    const header = w.find('[data-test="trace-toggle"]');
+    expect(header.text()).toContain("查阅 2 个文件");
+    expect(header.text()).not.toContain("查阅 2 个文件 · 2 个文件");
+    expect(header.text()).not.toContain("· 2 个文件");
+  });
+
+  it("keeps trace-toggle unclipped with rounded corners and no negative horizontal margin", () => {
+    const w = mount(TurnParts, {
+      props: { parts: finishedTurn(), collapseTrace: true, traceKey: "t:radius-1" },
+    });
+    const header = w.find('[data-test="trace-toggle"]');
+    expect(header.classes()).toContain("rounded-md");
+    expect(header.classes()).not.toContain("-mx-1.5");
+  });
   it("omits the failure segment when every step succeeded", () => {
     const w = mount(TurnParts, {
       props: { parts: finishedTurn(), collapseTrace: true, traceKey: "t:ok-1", traceElapsedMs: 5000 },
