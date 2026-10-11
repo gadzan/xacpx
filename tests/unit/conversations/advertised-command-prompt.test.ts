@@ -150,16 +150,16 @@ test("a direct advertised command is not wrapped before it reaches the runner", 
     const direct = await h.runs.acceptDirectPrompt({
       botId: "bot_a",
       requestId: "req-direct-plain",
-      content: "/compact",
+      content: "/plugin:技能 参数",
     });
     markCommandRevision({conversationId:direct.run.conversationId,topicId:direct.run.topicId,botId:"bot_a"},"1:1");
     rememberAdvertisedCommands({
       conversationId: direct.run.conversationId,
       topicId: direct.run.topicId,
       botId: "bot_a",
-    }, [{ name: "compact" }]);
+    }, [{ name: "plugin:技能", kind: "skill" }]);
     await h.dispatcher.kick();
-    expect(h.calls.at(-1)?.text).toBe("/compact");
+    expect(h.calls.at(-1)?.text).toBe("/plugin:技能 参数");
   } finally {
     clearAdvertisedCommands();
     h.store.close();

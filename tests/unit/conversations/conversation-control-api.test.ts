@@ -1356,7 +1356,7 @@ test("PR7 control: Group prompt accepts structured target and projects plural me
 test("Direct completions share cold materialization, advertise adapter data, and create no Run",async()=>{
  let prepares=0,release!:()=>void;
  const gate=new Promise<void>(r=>{release=r;});
- const w=await wire({autoKick:false,prepareCommands:async session=>{prepares++;expect(session.mcpSourceHandle).toBe("direct-execution:discovery");await gate;return [{name:"review",description:"adapter review"},{name:"skill",kind:"skill"}];}});
+ const w=await wire({autoKick:false,prepareCommands:async session=>{prepares++;expect(session.mcpSourceHandle).toBe("direct-execution:discovery");await gate;return [{name:"review",description:"adapter review"},{name:"plugin:技能",kind:"skill"}];}});
  try{
   const a=await w.control.createBot({name:"A",agent:"codex",workspace:"backend"});
   const b=await w.control.createBot({name:"Same",agent:"claude",workspace:"frontend"});
@@ -1365,7 +1365,7 @@ test("Direct completions share cold materialization, advertise adapter data, and
   const one=w.control.getConversationCompletions(scope),two=w.control.getConversationCompletions(scope);
   await waitUntil(()=>prepares===1);release();
   const [x,y]=await Promise.all([one,two]);
-  expect(x).toEqual(y);expect(x.version).toBe(1);expect(x.commands.status).toBe("ready");expect(x.commands.items[1]?.kind).toBe("skill");
+  expect(x).toEqual(y);expect(x.version).toBe(1);expect(x.commands.status).toBe("ready");expect(x.commands.items[1]?.kind).toBe("skill");expect(x.commands.items[1]?.name).toBe("plugin:技能");
   expect(x.mentions.items).toHaveLength(1);expect(x.mentions.items[0]?.displayName).toBe(b.name);
   expect(JSON.stringify(x)).not.toContain("brt_");expect(w.control.listTopicRuns(scope.conversationId,scope.topicId).runs).toHaveLength(0);
   expect(w.control.conversationHistory(scope).messages).toHaveLength(0);expect(Object.keys(w.state.sessions)).toHaveLength(1);

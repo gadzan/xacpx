@@ -2212,7 +2212,7 @@ export class ControlService {
                 (c) =>
                   c &&
                   typeof c.name === "string" &&
-                  /^[\w.-]{1,128}$/.test(c.name),
+                  /^[^\s/\u0000-\u001f\u007f]{1,128}$/.test(c.name),
               )
               .slice(0, 256)
               .map((c) => ({
