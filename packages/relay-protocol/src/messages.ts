@@ -169,6 +169,7 @@ export const MSG = {
   groupTopicsCreate: "control.group.topics.create",
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
+  conversationCompletionsGet: "control.conversation.completions.get",
   conversationPrompt: "control.conversation.prompt",
   conversationPromptWithPolicy: "control.conversation.prompt-with-policy",
   conversationWorktree: "control.conversation.worktree",
@@ -694,6 +695,7 @@ export interface GroupTopicsTeardownPayload {
   topicId: string;
 }
 export interface ConversationPromptPayload {
+  agentMentions?: import("./agent-mentions.js").AgentMention[];
   conversationId: string;
   topicId: string;
   requestId: string;

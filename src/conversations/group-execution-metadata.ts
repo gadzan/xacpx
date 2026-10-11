@@ -12,6 +12,18 @@ interface GroupExecutionRoute extends ConversationTurnCorrelation {
 // caller-supplied groupExecutionToken cannot bypass the ordinary owner guard.
 const routes = new WeakMap<ChatRequestMetadata, Readonly<GroupExecutionRoute>>();
 
+const directRoutes = new WeakMap<ChatRequestMetadata, Readonly<GroupExecutionRoute>>();
+export function bindDirectExecutionMetadata(metadata: ChatRequestMetadata, route: GroupExecutionRoute): () => void {
+  directRoutes.set(metadata, Object.freeze({...route})); return () => {directRoutes.delete(metadata);};
+}
+export function matchesDirectExecutionMetadata(metadata: ChatRequestMetadata | undefined, session: LogicalSession | null | undefined): boolean {
+  const route = metadata ? directRoutes.get(metadata) : undefined;
+  return !!route && !!session && session.owner?.kind === 'bot-direct'
+    && session.alias === route.sessionAlias && session.logical_session_id === route.logicalSessionId
+    && session.owner.botId === route.botId && session.owner.conversationId === route.conversationId
+    && session.owner.topicId === route.topicId && metadata?.directExecutionToken === route.executionToken;
+}
+
 export class GroupExecutionOutcomeUnknownError extends Error {
   constructor(cause: unknown) { super("Group transport terminal outcome is unknown", { cause }); }
 }

@@ -404,7 +404,8 @@ function validAgentCommand(value: unknown): boolean {
   const c = value as Record<string, unknown>;
   return typeof c.name === "string" && c.name.length > 0 && c.name.length <= 128
     && (c.description === undefined || (typeof c.description === "string" && c.description.length <= 4096))
-    && (c.hasInput === undefined || typeof c.hasInput === "boolean");
+    && (c.hasInput === undefined || typeof c.hasInput === "boolean")
+    && (c.kind === undefined || c.kind === "command" || c.kind === "skill");
 }
 
 /** Shared shape check for `scheduled` origins (turn-started events, state-sync turns

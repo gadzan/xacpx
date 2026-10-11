@@ -129,6 +129,8 @@ export class EngineRouter implements BridgeEngine {
     return this.engineFor(input).setModel(input);
   }
 
+  prepareSessionCommands(input: EngineSessionInput) { return this.engineFor(input).prepareSessionCommands?.(input) ?? Promise.resolve(undefined); }
+
   getSessionModel(input: EngineSessionInput) {
     return this.engineFor(input).getSessionModel(input);
   }

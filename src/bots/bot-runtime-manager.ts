@@ -130,6 +130,20 @@ export class BotRuntimeManager {
       : "shared-single-writer";
   }
 
+  isRestrictedDirectSession(input: {botId:string;conversationId:string;topicId:string}): boolean {
+    const binding = this.findScopedBinding(input.conversationId,input.topicId,input.botId);
+    return !!binding && !!this.sessions.getLogicalSessionRecord(binding.sessionAlias)?.execution_policy;
+  }
+
+  async prepareDirectSession<T>(input: {botId:string;conversationId:string;topicId:string}, prepare:(binding:BotRuntimeBinding)=>Promise<T>): Promise<T> {
+    return this.bots.runLifecycle(input.botId, async () => {
+      const existing = this.findScopedBinding(input.conversationId,input.topicId,input.botId);
+      if (existing && this.sessions.getLogicalSessionRecord(existing.sessionAlias)?.execution_policy) return prepare(existing);
+      const binding = await this.materializeDirectSession(input);
+      return prepare(binding);
+    });
+  }
+
   async getOrCreateDirectSession(input: {
     botId: string;
     conversationId?: string;

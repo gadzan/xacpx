@@ -796,3 +796,11 @@ Group store 的 MemberTurn 合并保留已收到的 durable assignment 与执行
 - **阶段七**消息附件：`PromptInput` 附件入口 + `MessageAttachments` 渲染 + 客户端 512px 降采样持久 preview（见上节）。
 - **PR5** Direct Bot 会话：Relay Web direct Bot vertical slice，包含 `stores/direct-bots.ts`、`BotDialog.vue`、`DirectBotPane.vue`、`ConversationMessageList.vue`、`ConversationPromptInput.vue`、实例树模式切换与完整回归套件。
 - 历史保留策略为服务端配置（`--history-retention-days`），v1 在 Web 端只读、不可编辑（见 docs/relay-module.md）。
+
+## Direct Bot composer completions (Issue #399)
+
+ConversationPromptInput uses the shared pure composer-completion helpers and its own Direct capability source. The first /token opens adapter command completion only while the caret is inside that token; choosing replaces the token with /name plus a space, preserving following text and never sending. Skills appear only when the adapter explicitly advertises kind=skill; no global skill directory is scanned. @ queries show the authorized Direct registry candidates, with agent/workspace context for duplicate display names. Only selecting a candidate creates agentMentions; typed @names remain ordinary text.
+
+Menus show at most eight rows, paginate bounded server results, support Up/Down, Enter/Tab, Escape, click/touch, and listbox accessibility. Shift+Enter stays a newline, and IME composition owns its keys. Loading, empty/no-match, unavailable, and error states have en/zh-CN strings and retry; disabled, recovery, in-flight, and active-Run/Stop gates remain intact.
+
+The direct-composer store isolates drafts by instance/Conversation/Topic/Bot. A contiguous edit shifts later UTF-16 ranges and removes references touched by the edit. Send freezes original text/references/target and requestId; rejection or uncertainty preserves the draft and repeat payload. Only an accepted result clears the identical captured draft, including when the view has switched. Scope/profile/event changes fence late capability responses; snapshots and agent-commands events refresh the command projection, including ready-empty advertisements. GroupComposer and the ordinary Session composer keep their existing data sources.

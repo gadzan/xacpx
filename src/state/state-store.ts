@@ -1048,6 +1048,9 @@ function isConversationTopic(value: unknown): value is ConversationTopic {
     isString(value.createdAt) &&
     isString(value.updatedAt) &&
     isExecutionTarget(value.executionTarget) &&
+    (!(typeof value.id === "string" && value.id.startsWith("topic_peer_")) || value.peerScope !== undefined) &&
+    (value.peerScope === undefined || (isRecord(value.peerScope)
+      && [value.peerScope.sourceConversationId, value.peerScope.sourceTopicId, value.peerScope.sourceBotId].every(isString))) &&
     (value.maxConcurrentMemberTurns === undefined || isMemberConcurrencyLimit(value.maxConcurrentMemberTurns)) &&
     (value.contextGeneration === undefined
       || (typeof value.contextGeneration === "number"

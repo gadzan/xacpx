@@ -1,6 +1,9 @@
+import {createHash} from "node:crypto";
 import type { Agent as ChatAgent } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
 import { AgentCapabilityService, type CapabilityAdvertisement } from "../agents/capability-discovery";
+import { advertisedCommandsFor, hasAdvertisedCommands, rememberAdvertisedCommands, markCommandRevision, markCommandAdapterRevision } from "../conversations/advertised-commands";
+import type { ConversationCompletions } from "@ganglion/xacpx-relay-protocol";
 import type { AgentCapabilityState } from "@ganglion/xacpx-relay-protocol";
 import type {
   AgentSession,
@@ -210,7 +213,7 @@ export interface ControlServiceDeps {
   // These controls are optional on the interface — absence is handled gracefully.
   transport: Pick<
     SessionTransport,
-    "setModel" | "getSessionModel" | "setSessionEffort" | "getSessionEffort" | "probeAgentCapabilities"
+    "prepareSessionCommands" | "setModel" | "getSessionModel" | "setSessionEffort" | "getSessionEffort" | "probeAgentCapabilities"
   >;
   // Full-lifecycle session creator (resolve → ensure acpx session → bind),
   // wired to CommandRouter.createSessionWithTransport in main.ts. Replaces the
@@ -504,6 +507,8 @@ function toLifecycleOperationDto(operation: LifecycleOperation): LifecycleOperat
 // Thin structured facade over core services for non-text consumers (the relay
 // connector first). Holds no state of its own beyond in-flight turn tracking.
 export class ControlService {
+  private readonly completionResults = new Map<string, ConversationCompletions["commands"]>();
+  private readonly completionPreparations = new Map<string, Promise<ConversationCompletions["commands"]>>();
   private readonly runner: SessionTurnRunner;
   private readonly turnQueue: TurnQueue;
   private readonly workspaceGit: WorkspaceGit;
@@ -1451,6 +1456,8 @@ export class ControlService {
       executionOrigin?: PermissionInteractionOrigin;
       conversation?: ConversationTurnCorrelation;
       groupExecutionToken?: string;
+      directExecutionToken?: string;
+      directMentionContext?: import("../conversations/direct-input-metadata").ResolvedDirectMention[];
       permissionChatKey?: string;
       senderName?: string;
     },
@@ -1505,6 +1512,9 @@ export class ControlService {
           : {}),
         ...(input.abortSignal !== undefined ? { abortSignal: input.abortSignal } : {}),
         ...(input.conversation !== undefined ? { conversation: input.conversation } : {}),
+        ...(trustedConversationExecution && input.directExecutionToken ? {
+          directExecutionToken: input.directExecutionToken, directMentionContext: input.directMentionContext, boundSessionAlias: internalAlias, preserveCoordinatorRoute: true,
+        } : {}),
         ...(trustedConversationExecution && input.groupExecutionToken ? {
           groupExecutionToken: input.groupExecutionToken, boundSessionAlias: internalAlias, preserveCoordinatorRoute: true,
         } : {}),
@@ -1954,7 +1964,14 @@ export class ControlService {
     return runtime.withOperation(() => fn(runtime));
   }
 
+  /** Private peer scopes never project into public Direct history or Relay snapshots. */
+  isPrivateConversationTopic(topicId: string): boolean {
+    return this.conversationRuntime?.runs.isPeerTopic(topicId) ?? false;
+  }
+
   #publishConversationProduct(event: ConversationProductEvent): void {
+    const topicId = "topic" in event ? event.topic.id : "message" in event ? event.message.topicId : "run" in event ? event.run.topicId : undefined;
+    if (topicId && this.isPrivateConversationTopic(topicId)) return;
     switch (event.type) {
       case "bots-changed":
         this.deps.events.emit({ type: "bots-changed" });
@@ -2010,6 +2027,245 @@ export class ControlService {
       ...(probe ? { probe } : {}),
     });
     return this.capabilityService;
+  }
+
+  /** Discovery shares the Bot materialization gate and never submits a prompt/Run. */
+  async getConversationCompletions(
+    input: import("@ganglion/xacpx-relay-protocol").ConversationCompletionsRequest,
+  ): Promise<ConversationCompletions> {
+    const runtime = this.requireConversations();
+    const conversation = runtime.runs
+      .listConversations()
+      .find((c) => c.id === input.conversationId);
+    const topic = runtime.runs
+      .listTopics(input.conversationId)
+      .find((t) => t.id === input.topicId);
+    if (
+      !conversation ||
+      conversation.kind !== "bot" ||
+      conversation.lifecycle === "deleting" ||
+      !topic ||
+      topic.status !== "active"
+    )
+      throw new ConversationError(
+        "topic_not_found",
+        "active public Direct Topic required",
+      );
+    const bot = runtime.bots.getBot(conversation.botIds[0]!);
+    runtime.bots.assertAcceptsWork(bot.id);
+    const identity = {
+      conversationId: input.conversationId,
+      topicId: input.topicId,
+      botId: bot.id,
+    };
+    markCommandRevision(
+      identity,
+      String(bot.profileRevision) + ":" + (topic.contextGeneration ?? 1),
+    );
+    const adapterContext = this.deps.agents.resolveCapabilityContext?.(
+      bot.agent,
+      bot.workspace,
+    );
+    const adapterContextRevision = JSON.stringify(adapterContext);
+    const preparationRevision = createHash("sha256")
+      .update(
+        JSON.stringify([
+          bot.profileRevision,
+          topic.contextGeneration ?? 1,
+          bot.agent,
+          bot.workspace,
+          bot.model,
+          bot.effort,
+          adapterContext,
+        ]),
+      )
+      .digest("hex");
+    markCommandAdapterRevision(identity, preparationRevision);
+    const restricted = runtime.botRuntime.isRestrictedDirectSession(identity);
+    const query = (input.query ?? "").toLowerCase();
+    const cursor = input.cursor ?? 0;
+    const endpoints = bot.enabled
+      ? runtime.directMessaging.registry
+          .list(bot.id)
+          .filter((e) =>
+            [e.displayName, e.agent, e.workspace].some((v) =>
+              v?.toLowerCase().includes(query),
+            ),
+          )
+      : [];
+    const mentions: ConversationCompletions["mentions"] =
+      bot.enabled && !restricted
+        ? {
+            status: "ready",
+            items: endpoints
+              .slice(cursor, cursor + 64)
+              .map((e) => ({
+                handle: e.handle,
+                displayName: e.displayName ?? e.agent,
+                botId: e.address.endpointId.slice("product-bot-".length),
+                agent: e.agent,
+                workspace: e.workspace ?? "",
+              })),
+            ...(cursor + 64 < endpoints.length
+              ? { nextCursor: cursor + 64 }
+              : {}),
+          }
+        : {
+            status: "unavailable",
+            items: [],
+            reason: restricted ? "restricted-runtime" : "bot-disabled",
+          };
+    const result = (
+      commands: ConversationCompletions["commands"],
+    ): ConversationCompletions => ({
+      version: 1,
+      scope: identity,
+      revision: createHash("sha256")
+        .update(JSON.stringify([preparationRevision, commands, endpoints]))
+        .digest("hex"),
+      commands,
+      mentions,
+    });
+    if (!bot.enabled || restricted)
+      return result({
+        status: "unavailable",
+        items: [],
+        reason: restricted ? "restricted-runtime" : "bot-disabled",
+      });
+    const listed = runtime.runs.listTopicRuns(
+      input.conversationId,
+      input.topicId,
+    );
+    if (listed.activeRun)
+      return result(
+        hasAdvertisedCommands(identity)
+          ? { status: "ready", items: advertisedCommandsFor(identity) }
+          : { status: "loading", items: [] },
+      );
+    if (!this.deps.transport.prepareSessionCommands)
+      return result({
+        status: "unavailable",
+        items: [],
+        reason: "adapter-discovery-unsupported",
+      });
+    const key = JSON.stringify([identity, preparationRevision]);
+    const cached = this.completionResults.get(key);
+    if (cached)
+      return result(
+        hasAdvertisedCommands(identity)
+          ? { ...cached, items: advertisedCommandsFor(identity) }
+          : cached,
+      );
+    let pending = this.completionPreparations.get(key);
+    if (!pending) {
+      pending = runtime
+        .withOperation(() =>
+          runtime.botRuntime.prepareDirectSession(identity, async (binding) => {
+            const session =
+              this.deps.sessions.getResolvedSessionByInternalAlias(
+                binding.sessionAlias,
+              );
+            if (
+              !session ||
+              this.deps.sessions.getLogicalSessionRecord?.(binding.sessionAlias)
+                ?.execution_policy
+            )
+              return {
+                status: "unavailable" as const,
+                items: [],
+                reason: "restricted-runtime",
+              };
+            // An invalid private sender identity advertises only Direct tools; it cannot send.
+            const token = "direct-execution:discovery";
+            const commands = await this.deps.transport.prepareSessionCommands!({
+              ...session,
+              mcpCoordinatorSession: token,
+              mcpSourceHandle: token,
+            });
+            runtime.assertOpen();
+            const current = runtime.bots.getBot(bot.id);
+            const currentTopic = runtime.runs
+              .listTopics(input.conversationId)
+              .find((t) => t.id === input.topicId);
+            if (
+              !currentTopic ||
+              currentTopic.status !== "active" ||
+              (currentTopic.contextGeneration ?? 1) !==
+                (topic.contextGeneration ?? 1) ||
+              current.profileRevision !== bot.profileRevision ||
+              !current.enabled ||
+              JSON.stringify(this.deps.agents.resolveCapabilityContext?.(current.agent, current.workspace)) !== adapterContextRevision
+            )
+              return {
+                status: "unavailable" as const,
+                items: [],
+                reason: "scope-changed",
+              };
+            if (commands === undefined)
+              return {
+                status: "unavailable" as const,
+                items: [],
+                reason: "adapter-not-advertised",
+              };
+            const safe = commands
+              .filter(
+                (c) =>
+                  c &&
+                  typeof c.name === "string" &&
+                  /^[\w.-]{1,128}$/.test(c.name),
+              )
+              .slice(0, 256)
+              .map((c) => ({
+                name: c.name,
+                ...(typeof c.description === "string"
+                  ? { description: c.description.slice(0, 2048) }
+                  : {}),
+                ...(c.kind === "skill" || c.kind === "command"
+                  ? { kind: c.kind }
+                  : {}),
+              }));
+            rememberAdvertisedCommands(identity, safe);
+            const ready = { status: "ready" as const, items: safe };
+            if (this.completionResults.size >= 256)
+              this.completionResults.delete(
+                this.completionResults.keys().next().value!,
+              );
+            this.completionResults.set(key, ready);
+            return ready;
+          }),
+        )
+        .catch(() => ({
+          status: "error" as const,
+          items: [],
+          reason: "discovery-failed",
+        }));
+      this.completionPreparations.set(key, pending);
+      void pending.finally(() => {
+        if (this.completionPreparations.get(key) === pending)
+          this.completionPreparations.delete(key);
+      });
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return result(
+        await Promise.race([
+          pending,
+          new Promise<ConversationCompletions["commands"]>((resolve) => {
+            timer = setTimeout(
+              () =>
+                resolve({
+                  status: "loading",
+                  items: [],
+                  reason: "discovery-timeout",
+                }),
+              10_000,
+            );
+          }),
+        ]),
+      );
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** Startup router availability. The four statuses are not a boolean. */
@@ -2327,6 +2583,7 @@ export class ControlService {
         topicId: input.topicId,
         requestId: input.requestId,
         text: input.text,
+        ...(input.agentMentions !== undefined ? { agentMentions: input.agentMentions } : {}),
         ...(input.target ? { target: input.target } : {}),
         ...(parsedIngress ? { humanIngress: parsedIngress } : {}),
       });
@@ -2382,18 +2639,23 @@ export class ControlService {
   getRun(runId: string) {
     const runtime = this.requireConversations();
     const result = runtime.runs.getRun(runId);
+    if (runtime.runs.isPeerTopic(result.run.topicId)) throw new ConversationError("run_not_found", "private peer Run");
     const worktree = runtime.store.worktrees.get(runId);
     return { ...toRunDetail(result.run, result.memberTurns), ...(worktree ? { worktree: worktreeStatus(worktree) } : {}) };
   }
 
   async operateConversationWorktree(input: import("../conversations/conversation-worktree-types").WorktreeOperation) {
-    return this.mutateWorkspaceGit(() => this.runConversationMutation(async runtime => worktreeStatus(await runtime.integrations.operate(input))));
+    return this.mutateWorkspaceGit(() => this.runConversationMutation(async runtime => {
+      if (runtime.runs.isPeerTopic(runtime.runs.getRun(input.runId).run.topicId)) throw new ConversationError("run_not_found", "private peer Run");
+      return worktreeStatus(await runtime.integrations.operate(input));
+    }));
   }
 
   listTopicRuns(conversationId: string, topicId: string, limit?: number) {
     // Clamp at the service boundary (not only the relay bridge): the public
     // facade is callable by any plugin/channel, and slice(-0) would return the
     // full set instead of an empty page.
+    if (this.requireConversations().runs.isPeerTopic(topicId)) throw new ConversationError("topic_not_found", "private peer Topic");
     const clampedLimit = limit === undefined ? undefined : Math.min(200, Math.max(1, Math.floor(limit)));
     const listed = this.requireConversations().runs.listTopicRuns(conversationId, topicId, {
       ...(clampedLimit !== undefined ? { limit: clampedLimit } : {}),
@@ -2407,6 +2669,7 @@ export class ControlService {
 
   async cancelRun(runId: string) {
     return this.runConversationMutation(async (runtime) => {
+      if (runtime.runs.isPeerTopic(runtime.runs.getRun(runId).run.topicId)) throw new ConversationError("run_not_found", "private peer Run");
       await runtime.runs.cancelRun(runId);
       const result = runtime.runs.getRun(runId);
       return toRunDetail(result.run, result.memberTurns);

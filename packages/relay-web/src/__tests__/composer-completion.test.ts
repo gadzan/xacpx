@@ -74,3 +74,17 @@ describe("composer completion", () => {
     expect(completionKey({ ...base, key: "Enter", shiftKey: true })).toEqual({ type: "passthrough" });
   });
 });
+
+
+describe("Direct identity ranges",()=>{
+ it("moves references after Unicode insertions and removes references edited inside",async()=>{
+  const {editMentions}=await import("../lib/composer-completion");
+  const refs=[{range:[2,4] as [number,number],handle:"h"}];
+  expect(editMentions("a @B done","😀 a @B done",refs)).toEqual([{range:[5,7],handle:"h"}]);
+  expect(editMentions("a @B done","a @C done",refs)).toEqual([]);
+  expect(editMentions("a @B done","a @B! done",refs)).toEqual(refs);
+  expect(editMentions("a @B done","a  done",refs)).toEqual([]);
+ });
+ it("completes the first token at an interior caret while preserving parameters",()=>{expect(slashQuery("/review args",3)).toEqual({query:"re",range:{start:0,end:7}});expect(slashQuery("/review args",10)).toBeNull();});
+ it("keeps Shift+Enter as a newline while a menu is open",()=>{expect(completionKey({...base,menu:"slash",itemCount:1,key:"Enter",shiftKey:true})).toEqual({type:"passthrough"});});
+});

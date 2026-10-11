@@ -224,6 +224,8 @@ export interface UsageCostDto {
 }
 /** An agent-advertised slash command (mirror of src AgentCommand). */
 export interface AgentCommandDto {
+  /** Present only when explicitly advertised by the adapter. */
+  kind?: "command" | "skill";
   name: string;
   description?: string;
   hasInput?: boolean;

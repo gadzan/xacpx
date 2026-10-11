@@ -59,6 +59,7 @@ const BRIDGE_METHODS = new Set<BridgeMethod>([
   "setMode",
   "setModel",
   "getSessionModel",
+  "prepareSessionCommands",
   "probeAgentCapabilities",
   "setSessionEffort",
   "getSessionEffort",
@@ -82,6 +83,7 @@ const SESSION_SCOPED_METHODS = new Set<BridgeMethod>([
   "setMode",
   "setModel",
   "getSessionModel",
+  "prepareSessionCommands",
   "setSessionEffort",
   "getSessionEffort",
   "cancel",
@@ -490,6 +492,15 @@ agent: requireString(params, "agent"),
           ...agentLaunchSelection(params),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),          modelId: requireString(params, "modelId"),
+        }, params));
+      case "prepareSessionCommands":
+        return await this.engines.prepareSessionCommands?.(withMcp({
+agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
+          agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
+          cwd: requireString(params, "cwd"),
+          name: requireString(params, "name"),
         }, params));
       case "getSessionModel":
         return await this.engines.getSessionModel(withMcp({

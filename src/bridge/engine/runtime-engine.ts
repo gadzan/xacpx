@@ -893,7 +893,7 @@ export class RuntimeEngine implements BridgeEngine {
                   sink({ type: "prompt.usage", used: event.used, size: event.size, ...(event.cost ? { cost: event.cost as never } : {}), ...(event.breakdown ? { breakdown: event.breakdown as never } : {}) });
                 }
                 if (event.availableCommands !== undefined) {
-                  sink({ type: "prompt.commands", commands: event.availableCommands.map((c) => ({ name: c.name, description: c.description })) as never });
+                  sink({ type: "prompt.commands", commands: event.availableCommands.map((c) => ({ name: c.name, description: c.description, ...((c as import('../../transport/types').AgentCommand).kind === 'skill' || (c as import('../../transport/types').AgentCommand).kind === 'command' ? { kind: (c as import('../../transport/types').AgentCommand).kind } : {}) })) as never });
                 }
               }
             },
@@ -1998,6 +1998,14 @@ export class RuntimeEngine implements BridgeEngine {
       failure: "unsupported",
       message: "the runtime engine has no cold capability probe",
     };
+  }
+
+  async prepareSessionCommands(input: EngineSessionInput): Promise<import('../../transport/types').AgentCommand[] | undefined> {
+    return this.withWorker(input, async (client, env) => {
+      await this.ensureSessionHandle(input, client, env);
+      const status = await client.request<{availableCommands?: import('../../transport/types').AgentCommand[]}>('status');
+      return status?.availableCommands?.map(c => ({name:c.name, ...(c.description ? {description:c.description} : {}), ...(c.hasInput !== undefined ? {hasInput:c.hasInput} : {}), ...(c.kind === 'skill' || c.kind === 'command' ? {kind:c.kind} : {})}));
+    });
   }
 
   async getSessionModel(input: EngineSessionInput): Promise<{ current?: string; available: string[] }> {

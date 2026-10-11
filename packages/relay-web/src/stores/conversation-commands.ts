@@ -19,6 +19,10 @@ export function conversationCommandKey(key: ConversationCommandKey): string {
  */
 export const useConversationCommandsStore = defineStore("conversation-commands", () => {
   const byKey = ref<Record<string, AgentCommandDto[]>>({});
+  const epochs=ref<Record<string,number>>({});
+  function epochFor(instanceId:string):number{return epochs.value[instanceId] ?? 0;}
+
+  function hasAdvertisement(key: ConversationCommandKey): boolean { return Object.hasOwn(byKey.value, conversationCommandKey(key)); }
 
   function commandsFor(key: ConversationCommandKey): AgentCommandDto[] {
     return byKey.value[conversationCommandKey(key)] ?? [];
@@ -50,6 +54,7 @@ export const useConversationCommandsStore = defineStore("conversation-commands",
   }
 
   function ingest(event: WebServerEvent): void {
+    if(event.kind==="state-snapshot" || event.kind==="instance-status" || event.kind==="control-event" && ["bots-changed","conversations-changed","conversation-topic-changed","agent-commands"].includes(event.event.type)) epochs.value[event.instanceId]=(epochs.value[event.instanceId] ?? 0)+1;
     if (event.kind === "instance-status" && !event.online) {
       clearInstance(event.instanceId);
       return;
@@ -60,6 +65,7 @@ export const useConversationCommandsStore = defineStore("conversation-commands",
     }
     if (event.kind !== "control-event") return;
     const body = event.event;
+    if (["bots-changed", "conversations-changed", "conversation-topic-changed"].includes(body.type)) {clearInstance(event.instanceId);return;}
     if (body.type !== "agent-commands" || !body.conversation?.botId) return;
     remember({
       instanceId: event.instanceId,
@@ -69,5 +75,5 @@ export const useConversationCommandsStore = defineStore("conversation-commands",
     }, body.commands);
   }
 
-  return { commandsFor, remember, clearInstance, replaceInstance, ingest };
+  return { epochFor, hasAdvertisement, commandsFor, remember, clearInstance, replaceInstance, ingest };
 });

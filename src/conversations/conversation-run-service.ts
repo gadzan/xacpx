@@ -1,3 +1,7 @@
+import { assertDirectReplay, type ResolvedDirectMention, type DirectInputMetadata } from "./direct-input-metadata";
+import { createHash } from "node:crypto";
+import { validAgentMentions } from "@ganglion/xacpx-relay-protocol";
+import type { AgentMention } from "@ganglion/xacpx-relay-protocol";
 import { snapshotBotProfile, snapshotGroupMemberProfile, type BotProfile } from "../bots/bot-types";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
@@ -114,6 +118,8 @@ export interface ConversationHistoryPage {
 type SessionWriter = Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
 
 export class ConversationRunService {
+  private mentionResolver?: (botId: string, mentions: AgentMention[]) => ResolvedDirectMention[];
+  setMentionResolver(resolve: (botId: string, mentions: AgentMention[]) => ResolvedDirectMention[]): void { this.mentionResolver = resolve; }
   private readonly worktrees?: import("./conversation-worktree-manager").ConversationWorktreeManager;
   private readonly beforeWorktreeCleanup?: (conversationId: string, topicId?: string) => Promise<void>;
   private readonly now: () => Date;
@@ -304,6 +310,9 @@ export class ConversationRunService {
   }
 
   async acceptDirectPrompt(input: {
+    agentMentions?: AgentMention[];
+    peerInput?: DirectInputMetadata;
+    beforeCommit?: () => void;
     memberPolicies?: ConversationMemberPolicy[];
     channelAbortSignal?: AbortSignal;
     externalRequest?: AcceptRequestInput["externalRequest"];
@@ -315,6 +324,8 @@ export class ConversationRunService {
     humanIngress?: HumanIngressContext;
   }): Promise<AcceptRequestResult> {
     this.assertAccepting();
+    if (input.agentMentions !== undefined && !validAgentMentions(input.content, input.agentMentions)) throw new ConversationError("invalid-agent-mentions", "invalid reference ranges");
+    if (input.peerInput && input.humanIngress) throw new ConversationError("invalid-peer-origin", "peer messages cannot carry human ingress");
     const memberPolicies = input.memberPolicies === undefined ? undefined : parseMemberPolicies(input.memberPolicies);
     const accepted = await this.bots.runLifecycle(input.botId, async () => {
       const bot = this.bots.getBot(input.botId);
@@ -325,9 +336,12 @@ export class ConversationRunService {
         throw new BotError("conversation_mismatch", "direct Bot conversation does not match this Bot");
       }
       const topicId = input.topicId ?? planned.topic.id;
+      const privateTopic = this.state.conversation_topics[topicId]?.peerScope;
+      if (!!privateTopic !== !!input.peerInput?.peer) throw new ConversationError("topic_not_found", "private peer Topic is not a public prompt target");
       const existing = this.store.getAcceptedRequest(conversationId, topicId, input.requestId);
       if (existing) {
         if (input.externalRequest) throw new ConversationError("external_request_conflict", "external request id exists without its platform receipt");
+        assertDirectReplay(existing.message, input.content, input.agentMentions);
         return assertAcceptedPolicies(existing, memberPolicies);
       }
       if (this.store.hasRetiredPrompt(conversationId, topicId, input.requestId)) {
@@ -346,6 +360,7 @@ export class ConversationRunService {
       if (!topic) {
         throw new BotError("topic_not_found", `topic "${topicId}" does not belong to this Bot conversation`);
       }
+      if (!!topic.peerScope !== !!input.peerInput?.peer) throw new ConversationError("topic_not_found", "private peer Topic is not a public prompt target");
       if (topic.status !== "active") {
         throw new ConversationError("topic_not_active", `topic "${topicId}" is not active`);
       }
@@ -362,11 +377,16 @@ export class ConversationRunService {
       const snapshot = snapshotBotProfile(bot, timestamp);
       assertPolicySelection([bot.id], memberPolicies);
       const effect = this.runtime.resolveMemberEffect(snapshot.execution.agent, memberPolicies?.[0]?.filesystem);
+      if(effect.effect === "read-only" && input.agentMentions?.length)throw new ConversationError("mentions_unavailable","restricted Direct execution cannot use Agent Messaging");
       await this.beforeAcceptPersist?.();
       if (input.channelAbortSignal?.aborted) throw new ConversationError("external_request_aborted", "channel request stopped before acceptance");
       const humanIngress = parseHumanIngress(input.humanIngress);
       this.assertAccepting();
+      input.beforeCommit?.();
+      const mentions = input.agentMentions?.length ? this.mentionResolver?.(bot.id, input.agentMentions) : undefined;
+      if (input.agentMentions?.length && !mentions) throw new ConversationError("mentions_unavailable", "Direct mention resolution is unavailable");
       const created = this.store.acceptRequest({
+        ...(input.peerInput ? { inputMetadata: input.peerInput } : mentions ? { inputMetadata: { version: 1, mentions } } : {}),
         ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
         conversationId,
         topicId,
@@ -374,7 +394,7 @@ export class ConversationRunService {
         botId: bot.id,
         content: input.content,
         profileSnapshot: snapshot,
-        primaryMember: effect,
+        primaryMember: {...effect,...(input.peerInput?.peer ? {origin:"handoff" as const} : {})},
         now: timestamp,
         ...(humanIngress
           ? { authorityEpoch: this.dispatcher.authorityEpoch, humanIngress }
@@ -385,6 +405,7 @@ export class ConversationRunService {
     // The store may reuse an acceptance committed during the final await,
     // including its SQLite unique-key fallback. Validate before acknowledgement.
     assertAcceptedPolicies(accepted, memberPolicies);
+    assertDirectReplay(accepted.message, input.content, input.agentMentions);
     if (!accepted.reused) {
       this.emitAcceptProjection(accepted);
     }
@@ -624,6 +645,7 @@ export class ConversationRunService {
 
 
   async acceptConversationPrompt(input: {
+    agentMentions?: AgentMention[];
     memberPolicies?: ConversationMemberPolicy[];
     channelAbortSignal?: AbortSignal;
     externalRequest?: AcceptRequestInput["externalRequest"];
@@ -639,6 +661,7 @@ export class ConversationRunService {
     this.assertOpen();
     const conversation = this.requireConversation(input.conversationId);
     if (conversation.kind === "group") {
+      if (input.agentMentions?.length) throw new ConversationError("invalid-agent-mentions", "Direct references cannot grant Group messaging capabilities");
       return this.acceptGroupPrompt({
         ...(input.memberPolicies ? { memberPolicies: input.memberPolicies } : {}),
         ...(input.channelAbortSignal ? { channelAbortSignal: input.channelAbortSignal } : {}),
@@ -676,6 +699,7 @@ export class ConversationRunService {
       ...(input.channelAbortSignal ? { channelAbortSignal: input.channelAbortSignal } : {}),
       ...(input.externalRequest ? { externalRequest: input.externalRequest } : {}),
       botId,
+      ...(input.agentMentions !== undefined ? { agentMentions: input.agentMentions } : {}),
       requestId: input.requestId,
       content: input.text,
       conversationId: input.conversationId,
@@ -736,7 +760,7 @@ export class ConversationRunService {
     this.assertOpen();
     const conversation = this.requireConversation(conversationId);
     const topics = Object.values(this.state.conversation_topics)
-      .filter((topic) => topic.conversationId === conversationId)
+      .filter((topic) => topic.conversationId === conversationId && !topic.peerScope)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
       .map((topic) => this.withDurableGeneration(this.presentDefaultTopic(topic, conversation)));
     if (topics.length > 0) {
@@ -852,6 +876,31 @@ export class ConversationRunService {
     emitConversationProductEvent(this.onProductEvent, { type: "conversations-changed" });
     emitConversationProductEvent(this.onProductEvent, { type: "conversation-topic-changed", topic });
     return topic;
+  }
+
+  /** Private peer Topic mapping is deterministic and persisted before admission. */
+  isPeerTopic(topicId:string): boolean {return topicId.startsWith("topic_peer_") || !!this.state.conversation_topics[topicId]?.peerScope;}
+
+  async ensurePeerTopic(targetBotId: string, source: NonNullable<ConversationTopic['peerScope']>): Promise<ConversationTopic> {
+    const bot = this.bots.getBot(targetBotId);
+    const plan = this.planDirect(bot);
+    const id = 'topic_peer_' + createHash('sha256').update(JSON.stringify([source.sourceConversationId, source.sourceTopicId, targetBotId])).digest('hex').slice(0,32);
+    return this.stateMutex.run(async () => {
+      const old = this.state.conversation_topics[id];
+      if (old) {
+        if (old.conversationId !== plan.conversation.id || JSON.stringify(old.peerScope) !== JSON.stringify(source)) throw new ConversationError('runtime_ownership_conflict', 'peer scope mapping conflict');
+        return old;
+      }
+      this.assertAccepting();
+      const now = this.now().toISOString();
+      const topic: ConversationTopic = { id, conversationId: plan.conversation.id, title: 'Agent peer messages', status: 'active', peerScope: {...source}, createdAt: now, updatedAt: now };
+      const next = structuredClone(this.state);
+      next.conversations[plan.conversation.id] ??= plan.conversation;
+      next.conversation_topics[plan.topic.id] ??= plan.topic;
+      next.conversation_topics[id] = topic;
+      await this.persist(next);
+      return topic;
+    });
   }
 
   async createTopic(conversationId: string, title: string, options?: TopicSchedulingOptions): Promise<ConversationTopic> {

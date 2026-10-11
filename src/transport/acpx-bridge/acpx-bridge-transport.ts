@@ -259,6 +259,10 @@ export class AcpxBridgeTransport implements SessionTransport {
     });
   }
 
+  async prepareSessionCommands(session: ResolvedSession): Promise<import("../types").AgentCommand[] | undefined> {
+    return this.client.request("prepareSessionCommands", this.toParams(session));
+  }
+
   async getSessionModel(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
     return await this.client.request("getSessionModel", this.toParams(session));
   }

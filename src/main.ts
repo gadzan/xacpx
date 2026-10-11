@@ -1865,7 +1865,14 @@ export async function buildApp(
         return { runId: receipt.run.id, assignmentId: receipt.memberTurn.assignmentId!,
           memberTurnId: receipt.memberTurn.id, messageId: receipt.message.id };
       }),
-      agentMessaging,
+      agentMessaging: {
+        listReachable: async binding => binding.sourceHandle?.startsWith('direct-execution:')
+          ? conversations.withOperation(async () => conversations.directMessaging.listReachable(binding))
+          : agentMessaging.listReachable(binding),
+        send: async (binding, message) => binding.sourceHandle?.startsWith('direct-execution:')
+          ? conversations.withOperation(async () => conversations.directMessaging.send(binding, message))
+          : agentMessaging.send(binding, message),
+      },
       onSocketHardenError: (error) => {
         void logger.error(
           "orchestration.socket.chmod_failed",
@@ -2179,6 +2186,7 @@ export async function buildApp(
     stateStore: debouncedStateStore,
     sessions,
     control: conversationKernel(control),
+    messagingNodeId: messagingNodeIdentity.nodeId,
     sqlitePath: resolveConversationStorePath(paths.configPath),
     releaseOwnedSession: createProductionOwnedSessionRelease({ sessions, transport }),
     ...(routerResolution.router ? { router: routerResolution.router } : {}),

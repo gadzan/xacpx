@@ -69,6 +69,7 @@ export interface AcceptRequestInput {
   requestId: string;
   botId: string;
   content: string;
+  inputMetadata?: import("./direct-input-metadata").DirectInputMetadata;
   profileSnapshot: BotProfileSnapshot;
   mode?: ConversationRun["mode"];
   maxMemberTurns?: number;
@@ -113,7 +114,7 @@ export function requestSnapshotMatches(
   return message !== undefined
     && message.conversationId === run.conversationId
     && message.topicId === run.topicId
-    && message.role === "human"
+    && ((message.role === "human" && !message.inputMetadata?.peer) || (message.role === "bot" && message.inputMetadata?.peer !== undefined && message.senderBotId === message.inputMetadata.peer.sourceBotId))
     && message.runId === run.id;
 }
 

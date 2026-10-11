@@ -962,3 +962,19 @@ test("tool_call_update falls back to rawOutput with input-like fields (path, com
 
   expect(events.at(-1)?.summary).toBe("git status");
 });
+
+test("command advertisements preserve only explicitly supported skill kinds", () => {
+  const seen: unknown[] = [];
+  const state = createStreamingPromptState(false, { onCommands: (commands) => { seen.push(commands); } });
+  parseStreamingChunks(state, JSON.stringify({ method: "session/update", params: { update: {
+    sessionUpdate: "available_commands_update", availableCommands: [
+      { name: "review", kind: "skill" }, { name: "compact", kind: "command" },
+      { name: "plain" }, { name: "unknown", kind: "invented" },
+    ],
+  } } }));
+  expect(seen).toEqual([[
+    { name: "review", kind: "skill", hasInput: false },
+    { name: "compact", kind: "command", hasInput: false },
+    { name: "plain", hasInput: false }, { name: "unknown", hasInput: false },
+  ]]);
+});

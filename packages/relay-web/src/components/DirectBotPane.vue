@@ -282,7 +282,7 @@ function openRemoval(): void {
     <!-- Prompt Composer -->
     <ConversationPromptInput
       :disabled="bot?.retired === true || !directBotsStore.activeTopicId || !directBotsStore.topicReady || directBotsStore.currentTopic?.status !== 'active'"
-      :deliver="(text) => directBotsStore.sendPrompt(text)"
+      :deliver="(text, mentions) => directBotsStore.sendPrompt(text, mentions)"
       @cancel="directBotsStore.cancelCurrentRun"
     />
     <!-- History failure: Retry reloads the topic (history + durable run

@@ -9,6 +9,7 @@ import { BotService } from "../../../src/bots/bot-service";
 import type { AppConfig } from "../../../src/config/types";
 import {
   adapterFacingPrompt,
+  markCommandRevision,
   clearAdvertisedCommands,
   isAdvertisedRuntimeCommand,
   rememberAdvertisedCommands,
@@ -151,6 +152,7 @@ test("a direct advertised command is not wrapped before it reaches the runner", 
       requestId: "req-direct-plain",
       content: "/compact",
     });
+    markCommandRevision({conversationId:direct.run.conversationId,topicId:direct.run.topicId,botId:"bot_a"},"1:1");
     rememberAdvertisedCommands({
       conversationId: direct.run.conversationId,
       topicId: direct.run.topicId,

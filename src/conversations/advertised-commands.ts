@@ -18,7 +18,10 @@ export function rememberAdvertisedCommands(identity: AdvertisedCommandIdentity, 
 
 export function clearAdvertisedCommands(): void {
   commandsByRuntime.clear();
+  for (const key of epochs.keys()) epochs.set(key, (epochs.get(key) ?? 0) + 1);
 }
+
+export function hasAdvertisedCommands(identity: AdvertisedCommandIdentity): boolean { return commandsByRuntime.has(runtimeKey(identity)); }
 
 export function advertisedCommandsFor(identity: AdvertisedCommandIdentity): AgentCommand[] {
   return commandsByRuntime.get(runtimeKey(identity)) ?? [];
@@ -44,7 +47,7 @@ export function isAdvertisedRuntimeCommand(identity: AdvertisedCommandIdentity, 
  * original user text. Everything else keeps the caller's wrapped prompt.
  */
 export function adapterFacingPrompt(identity: AdvertisedCommandIdentity, userText: string, wrapped: string): string {
-  return isAdvertisedRuntimeCommand(identity, userText) ? userText.trim() : wrapped;
+  return isAdvertisedRuntimeCommand(identity, userText) ? userText : wrapped;
 }
 
 /**
@@ -65,4 +68,24 @@ export function refusesMultiMemberSlash(
   const bare = trimmed.slice(token.length).trim().length === 0;
   if (bare) return true;
   return identities.some((identity) => isAdvertisedRuntimeCommand(identity, trimmed));
+}
+
+const revisions = new Map<string,string>();
+const epochs = new Map<string,number>();
+export function commandEpoch(identity:AdvertisedCommandIdentity):number{return epochs.get(runtimeKey(identity)) ?? 0;}
+export function markCommandRevision(identity:AdvertisedCommandIdentity,revision:string):void {
+ const key=runtimeKey(identity);
+ if(revisions.get(key)!==revision){revisions.set(key,revision);commandsByRuntime.delete(key);epochs.set(key,(epochs.get(key) ?? 0)+1);}
+}
+
+const adapterRevisions = new Map<string, string>();
+/** The first observation preserves current advertisements; changes retire their callbacks. */
+export function markCommandAdapterRevision(identity: AdvertisedCommandIdentity, revision: string): void {
+  const key = runtimeKey(identity);
+  const previous = adapterRevisions.get(key);
+  if (previous !== undefined && previous !== revision) {
+    commandsByRuntime.delete(key);
+    epochs.set(key, (epochs.get(key) ?? 0) + 1);
+  }
+  adapterRevisions.set(key, revision);
 }

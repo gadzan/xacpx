@@ -1328,7 +1328,7 @@ describe("Direct Bot Components", () => {
       expect((sendBtn.element as HTMLButtonElement).disabled).toBe(false);
 
       await textarea.trigger("keydown", { key: "Enter", shiftKey: false });
-      expect(wrapper.emitted("send")?.[0]).toEqual(["Hello world"]);
+      expect(wrapper.emitted("send")?.[0]).toEqual(["Hello world", []]);
     });
 
     it("displays stop run button, disables textarea, and blocks Enter when a run is active", async () => {

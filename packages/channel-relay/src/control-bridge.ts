@@ -821,6 +821,12 @@ async function dispatchControlRequest(
       }
       return await control.fsWrite(i.workspace, i.path, i.content, i.expected);
     }
+    case MSG.conversationCompletionsGet: {
+      const input = parseControlPayload(MSG.conversationCompletionsGet, payload);
+      if (!input) return errorPayload("invalid-payload", "expected Conversation/Topic scope");
+      if (typeof control.getConversationCompletions !== "function") return errorPayload("unsupported", "Direct completions require a newer daemon");
+      return await control.getConversationCompletions(input);
+    }
     case MSG.conversationRouterGet: {
       const input = parseControlPayload(MSG.conversationRouterGet, payload ?? {});
       if (!input) {
@@ -1182,12 +1188,16 @@ async function dispatchControlRequest(
       const policyOperation = envelope.type === MSG.conversationPromptWithPolicy;
       const input = policyOperation ? parseControlPayload(MSG.conversationPromptWithPolicy, payload) : parseControlPayload(MSG.conversationPrompt, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.conversationPrompt}: malformed payload`);
+      if (input.agentMentions?.length && typeof control.getConversationCompletions !== "function") {
+        return errorPayload("unsupported-agent-mentions", "daemon does not support durable Direct references");
+      }
       const publicInput = {
         ...(policyOperation && "memberPolicies" in input ? { memberPolicies: input.memberPolicies } : {}),
         conversationId: input.conversationId,
         topicId: input.topicId,
         requestId: input.requestId,
         text: input.text,
+        ...(input.agentMentions !== undefined ? { agentMentions: input.agentMentions } : {}),
         ...(input.target ? { target: input.target } : {}),
       };
       const ingress = readHubHumanIngress(payload);
@@ -1363,6 +1373,7 @@ export function subscribeControlEvents(
   sendEvent: (type: string, payload: unknown) => void,
 ): () => void {
   return control.events.subscribe((event) => {
+    if ("conversation" in event && event.conversation && control.isPrivateConversationTopic?.(event.conversation.topicId)) return;
     if (event.type === "queue-overflow-tip") {
       sendEvent(MSG.instanceNotice, {
         kind: "queue-overflow",

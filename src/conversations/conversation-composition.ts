@@ -1,3 +1,4 @@
+import { DirectMessagingService } from "./direct-messaging";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -48,6 +49,7 @@ export function resolveConversationStorePath(configPath: string): string {
 }
 
 export interface ConversationRuntime {
+  directMessaging: DirectMessagingService;
   worktrees: ConversationWorktreeManager;
   integrations: WorktreeIntegrationService;
   store: SqliteConversationStore;
@@ -75,6 +77,7 @@ export interface ConversationRuntime {
 }
 
 export interface CreateConversationRuntimeInput {
+  messagingNodeId?: string;
   config: Pick<AppConfig, "agents" | "workspaces"> & Partial<Pick<AppConfig, "channel" | "channels">>;
   state: AppState;
   stateStore: Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
@@ -228,6 +231,9 @@ export async function createConversationRuntime(
     },
   );
   runsRef = runs;
+  const directMessaging = new DirectMessagingService({ state: input.state, bots, store, runs, ...(input.now ? {now:input.now} : {}), nodeId: input.messagingNodeId ?? "test-node" });
+  runs.setMentionResolver((botId, mentions) => directMessaging.registry.mentions(botId, mentions));
+  dispatcher.setDirectMessaging(directMessaging);
   const removals = new BotRemovalService(
     bots,
     runs,
@@ -275,6 +281,7 @@ export async function createConversationRuntime(
     });
   };
   return {
+    directMessaging,
     worktrees,
     integrations,
     store,
@@ -306,6 +313,7 @@ export async function createConversationRuntime(
             // Entered operations and already-started executions retain their
             // capabilities until their drain; failed shutdown still revokes.
             handoffs.close();
+            directMessaging.close();
             lifecycle = "closed";
           }
         })();

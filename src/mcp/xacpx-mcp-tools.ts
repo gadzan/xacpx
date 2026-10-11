@@ -726,6 +726,10 @@ export function buildXacpxMcpToolRegistry(input: {
       (tool) => !externalCoordinatorIncompatibleTools.has(tool.name),
     );
   }
+  if (sourceHandle?.startsWith("direct-execution:")) return tools.filter(tool => tool.name === "agent_list" || tool.name === "agent_send").map(tool => tool.name !== "agent_send" ? tool : ({...tool,
+    description:"Send a concise actionable one-way message to an authorized Bot handle from agent_list. The receipt proves durable queue admission only. V1 supports auto/queue, with no interruption, reply or completion callbacks. Do not send acknowledgements or status polling.",
+    inputSchema:z.object({to:z.string().min(1),message:z.string().min(1).max(16000),mode:z.enum(["auto","queue"]).optional(),completion:z.literal("none").optional()}).strict(),
+  }));
   return tools;
 }
 

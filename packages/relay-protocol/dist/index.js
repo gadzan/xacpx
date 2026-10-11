@@ -197,6 +197,7 @@ var MSG = {
   groupTopicsCreate: "control.group.topics.create",
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
+  conversationCompletionsGet: "control.conversation.completions.get",
   conversationPrompt: "control.conversation.prompt",
   conversationPromptWithPolicy: "control.conversation.prompt-with-policy",
   conversationWorktree: "control.conversation.worktree",
@@ -273,6 +274,22 @@ var DESKTOP_ERROR_CODES = [
   "desktop-instance-offline",
   "desktop-protocol-error"
 ];
+// packages/relay-protocol/src/agent-mentions.ts
+var MAX_AGENT_MENTIONS = 16;
+function validAgentMentions(text, value) {
+  if (!Array.isArray(value) || value.length > MAX_AGENT_MENTIONS)
+    return false;
+  let end = -1;
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).some((key) => key !== "range" && key !== "handle"))
+      return false;
+    const { range, handle } = raw;
+    if (!Array.isArray(range) || range.length !== 2 || !range.every(Number.isSafeInteger) || range[0] < 0 || range[0] >= range[1] || range[1] > text.length || range[0] < end || typeof handle !== "string" || !handle || handle.length > 2048 || handle.includes("\x00"))
+      return false;
+    end = range[1];
+  }
+  return true;
+}
 // packages/relay-protocol/src/validate-primitives.ts
 var isObj = (v) => typeof v === "object" && v !== null;
 var isStr = (v) => typeof v === "string";
@@ -289,11 +306,11 @@ function decodeCanonicalBase64(encoded) {
     const binary = globalThis.atob(encoded);
     if (globalThis.btoa(binary) !== encoded)
       return null;
-    const decoded2 = new Uint8Array(binary.length);
+    const decoded = new Uint8Array(binary.length);
     for (let i = 0;i < binary.length; i++) {
-      decoded2[i] = binary.charCodeAt(i) & 255;
+      decoded[i] = binary.charCodeAt(i) & 255;
     }
-    return decoded2;
+    return decoded;
   }
   const BufferCtor = globalThis.Buffer;
   if (!BufferCtor)
@@ -412,7 +429,7 @@ function validAgentCommand(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.name === "string" && c.name.length > 0 && c.name.length <= 128 && (c.description === undefined || typeof c.description === "string" && c.description.length <= 4096) && (c.hasInput === undefined || typeof c.hasInput === "boolean");
+  return typeof c.name === "string" && c.name.length > 0 && c.name.length <= 128 && (c.description === undefined || typeof c.description === "string" && c.description.length <= 4096) && (c.hasInput === undefined || typeof c.hasInput === "boolean") && (c.kind === undefined || c.kind === "command" || c.kind === "skill");
 }
 function validScheduledOrigin(s) {
   return s === undefined || typeof s === "object" && s !== null && isStr(s.taskId) && isStr(s.executeAt);
@@ -1288,6 +1305,10 @@ var validateTopicsCreate = (p) => {
   return o && isStr(o.conversationId) && isStr(o.title) && validMemberConcurrency(o.maxConcurrentMemberTurns) ? o : null;
 };
 var validateTopicRef = (o) => !!o && isStr(o.conversationId) && isStr(o.topicId);
+var validateConversationCompletionsGet = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.conversationId, 128) && isBoundedStr(o.topicId, 128) && (o.query === undefined || typeof o.query === "string" && o.query.length <= 128) && (o.cursor === undefined || typeof o.cursor === "number" && Number.isSafeInteger(o.cursor) && o.cursor >= 0) && Object.keys(o).every((k) => ["conversationId", "topicId", "query", "cursor"].includes(k)) ? o : null;
+};
 var validateTopicsUpdate = (p) => {
   const o = fields(p);
   return o && validateTopicRef(o) && isBoundedStr(o.title, 200) ? o : null;
@@ -1389,6 +1410,8 @@ var validateConversationPrompt = (p) => {
   if (!o || !isStr(o.conversationId) || !isStr(o.topicId) || !isStr(o.requestId) || !isStr(o.text)) {
     return null;
   }
+  if (o.agentMentions !== undefined && !validAgentMentions(o.text, o.agentMentions))
+    return null;
   if (o.target !== undefined && !isConversationTarget(o.target)) {
     return null;
   }
@@ -1724,6 +1747,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.gitWorktreeCreate]: validateGitWorktreeCreate,
   [MSG.sessionModelGet]: validateSessionModelGet,
   [MSG.agentsCapabilitiesGet]: validateAgentsCapabilitiesGet,
+  [MSG.conversationCompletionsGet]: validateConversationCompletionsGet,
   [MSG.conversationRouterGet]: validateConversationRouterGet,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.sessionEffortGet]: validateSessionEffortGet,
@@ -2176,6 +2200,7 @@ export {
   DESKTOP_TICKET_TTL_MS,
   DESKTOP_WS_MAX_PAYLOAD_BYTES,
   INTERACTION_WIRE_LIMITS,
+  MAX_AGENT_MENTIONS,
   MAX_BOT_ID_LENGTH,
   MAX_CAPABILITIES,
   MAX_CAPABILITY_LENGTH,
@@ -2251,6 +2276,7 @@ export {
   readyCapability,
   suggestionModels,
   unsupportedCapability,
+  validAgentMentions,
   validControlEvent,
   validInstanceStateSync,
   validateInteractionRequest,
