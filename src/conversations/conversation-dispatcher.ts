@@ -350,6 +350,30 @@ export class ConversationDispatcher {
       guard: Promise<void>;
       outcome: { status: "pending" | "fulfilled" | "rejected"; reason?: unknown };
     }> = [];
+    /**
+     * Every outcome cell this drain has launched, in LAUNCH order.
+     *
+     * `cohort` is a consumption queue: a wait splices entries out so the next
+     * pass's plain settle does not re-block on a sibling that is still running.
+     * That makes `cohort` the wrong place to ask "did anything this drain
+     * launched fail?" — a handoff whose guard is spliced out and then rejects is
+     * invisible to every later `cohort` check, and its failure would be
+     * swallowed by a successful `kick()`.
+     *
+     * This registry keeps the cells for the drain's whole lifetime, in launch
+     * order, so the failure is deterministic and attributable (launch order, not
+     * settlement order). `raiseIfFailed` consults it at every exit-relevant
+     * point: after a wake-aware wait, after a cohort settle, and before the
+     * drain returns.
+     */
+    const launchedOutcomes: Array<{ status: "pending" | "fulfilled" | "rejected"; reason?: unknown }> = [];
+    /** Throw the first rejection this drain launched, in launch order. */
+    const raiseIfFailed = (): void => {
+      const failure = launchedOutcomes.find((outcome) => outcome.status === "rejected");
+      if (failure) {
+        throw failure.reason;
+      }
+    };
     const launchExecution = (work: ClaimedWork): void => {
       const outcome: { status: "pending" | "fulfilled" | "rejected"; reason?: unknown } = { status: "pending" };
       const releasePhysicalResource = (): void => {
@@ -387,10 +411,16 @@ export class ConversationDispatcher {
       this.inFlightExecutions.set(work.dispatch.id, guard);
       this.inFlightWork.set(work.dispatch.id, work);
       cohort.push({ guard, outcome });
+      // Registered for the drain's whole lifetime, independent of `cohort`.
+      launchedOutcomes.push(outcome);
     };
     const awaitCohortInFlight = async (): Promise<void> => {
       const launched = cohort.splice(0);
       if (launched.length === 0) {
+        // Nothing to consume this pass, but a guard launched earlier (and
+        // already spliced out) may have rejected since. Without this the drain
+        // would exit on a clean-looking pass and swallow that failure.
+        raiseIfFailed();
         return;
       }
       await Promise.allSettled(launched.map((entry) => entry.guard));
@@ -398,6 +428,8 @@ export class ConversationDispatcher {
       if (failure) {
         throw failure.outcome.reason;
       }
+      // A guard outside this slice (already spliced out) may also have failed.
+      raiseIfFailed();
     };
     /**
      * Wait for the given guards, but return early when a wake fires.
@@ -409,14 +441,19 @@ export class ConversationDispatcher {
      * head-of-line blocking the global claim loop exists to remove.
      *
      * `launched` MUST already be spliced out of `cohort` by the caller. The
-     * guards stay in `inFlightExecutions` while they run, so a later settle that
+     * guards stay in `inFlightExecutions` while they run, so a later wait that
      * re-collects them still awaits them; what must NOT happen is the entries
      * staying in `cohort`, because the next pass's plain `awaitCohortInFlight()`
      * would then block on them with no wake — reintroducing exactly the
      * head-of-line blocking this helper removes, one pass later.
      *
-     * A guard that has ALREADY settled with a rejection is reported immediately,
-     * so a handoff whose failure lands before the wake is not silently dropped.
+     * Failure detection uses `launchedOutcomes`, NOT the `launched` slice. The
+     * slice is this pass's queue and is spliced away; the registry is the
+     * drain's whole launch history, so a guard that rejects AFTER it was spliced
+     * out is still seen. Checking only the slice would let a handoff's
+     * infrastructure failure (a SQLite persist error, a post-execution write-back
+     * error — anything `execute()` does not digest itself) escape as a
+     * successful `kick()`.
      */
     const awaitCohortInFlightOrWake = async (launched: Array<{ guard: Promise<void>; outcome: { status: "pending" | "fulfilled" | "rejected"; reason?: unknown } }>): Promise<void> => {
       if (launched.length === 0) {
@@ -424,20 +461,14 @@ export class ConversationDispatcher {
       }
       // A guard that already rejected must not wait for a wake that may never
       // come: check the recorded outcome first.
-      const alreadyFailed = launched.find((entry) => entry.outcome.status === "rejected");
-      if (alreadyFailed) {
-        throw alreadyFailed.outcome.reason;
-      }
+      raiseIfFailed();
       await Promise.race([
         Promise.allSettled(launched.map((entry) => entry.guard)),
         this.wakeSignal,
       ]);
       // The race may have been won by a settle rather than a wake. Re-check so
       // a rejection that landed during the race is still surfaced.
-      const failed = launched.find((entry) => entry.outcome.status === "rejected");
-      if (failed) {
-        throw failed.outcome.reason;
-      }
+      raiseIfFailed();
     };
     // A logical drain = one global first claim, then same-Run siblings
     // only (cohortRunId) for that PASS, until the cohort settles or a held
@@ -726,8 +757,23 @@ export class ConversationDispatcher {
         // a long turn that already holds the slot.
         if (this.inFlightExecutions.size > 0) {
           await Promise.race([...this.inFlightExecutions.values(), this.wakeSignal]);
+          // The race can be won by a settle OR by a wake. Either way a guard
+          // launched earlier and already spliced out of `cohort` may have
+          // rejected in the meantime — including one that removed itself from
+          // `inFlightExecutions` in the same handler, so the set alone cannot
+          // reveal it. This is the last chance before another pass, and before
+          // the drain's own exit check.
+          raiseIfFailed();
         }
       }
+      // Final gate. The loop can end because `seen === wakeGeneration` while
+      // `inFlightExecutions` emptied in the same tick as a rejection — the guard
+      // deletes itself from the set in its rejection handler, so neither the
+      // loop condition nor the park above observes it. Without this the drain
+      // returns normally and `kick()` resolves on a Run whose execution failed
+      // unexpectedly, which is exactly what the activation-rejection contract
+      // forbids.
+      raiseIfFailed();
     } finally {
       this.draining = false;
     }

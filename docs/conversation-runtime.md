@@ -946,12 +946,20 @@ a Topic id, Bot name or a declared effect string.
 Before any Provider turn, each execution is assigned a `PhysicalResourceIdentity`
 derived from **verified** state:
 
-- a worktree-bound execution keys on its verified owned worktree id (distinct
-  worktrees are physically distinct even when their paths share a prefix), with
-  the path re-asserted through the worktree manager;
+- a worktree-bound execution keys on its verified owned worktree's cwd, with the
+  path re-asserted through the worktree manager;
 - a shared-workspace execution keys on the workspace cwd the session was
   actually materialized against, resolved through the session service and then
   folded by `canonicalizePhysicalPath`.
+
+Both fold into the **same** key space: `physicalResourceKey` is the canonical cwd
+alone, so a worktree-bound and a workspace-bound execution at one physical
+directory collide and serialize. Physical identity is the directory, not the
+handle used to reach it — a worktree root placed inside a workspace, or a
+workspace whose cwd is a worktree directory, is one directory with two handles.
+The worktree id is deliberately not part of the key: two owned worktrees have two
+distinct verified cwds, which the manager's verification already guarantees, so
+distinctness does not need it and including it would re-open the alias hole.
 
 There is deliberately **one** canonical rule. `canonicalizePhysicalPath` resolves
 the real path and, on Windows, folds it with the very helper the worktree manager
@@ -988,8 +996,20 @@ observed — the head-of-line blocking the global claim loop exists to remove.
 Returning on a wake re-enters the claim loop, which re-scans and admits other
 Topics while the sibling runs.
 
+The drain tracks every guard it launches for its **whole lifetime**, not just in
+the consumable `cohort` queue. `cohort` is spliced as it is waited on, so it
+cannot answer "did anything this drain launched fail?" once a handoff's entry has
+been consumed. A separate `launchedOutcomes` registry keeps each guard's outcome
+cell in launch order, and it is re-checked after the wake race, after every cohort
+settle, and once more before the drain returns. Without that, a post-start
+infrastructure failure — a persist or write-back error that `execute()`'s own
+catch does not digest — landing after the wake-aware wait returned would escape as
+a successful `kick()`, breaking the contract that an unexpected execution failure
+rejects activation. Rejection is still reported in launch order, never in
+settlement order, so the failure is attributable.
+
 The handoff's guards are **spliced** out of the drain's cohort array before that
-wait, never copied. They stay in `inFlightExecutions`, so the next settle that
+wait, never copied. They stay in `inFlightExecutions`, so the next wait that
 re-collects them still awaits them and a rejecting guard still rejects it — an
 unexpected sibling failure therefore still rejects activation rather than
 escaping as an unhandled rejection. What must not happen is the entries staying in

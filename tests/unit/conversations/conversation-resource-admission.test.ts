@@ -23,10 +23,14 @@ const other = (cwd = "/repo/other"): PhysicalResourceIdentity => ({ cwd, isolati
 const worktree = (id: string): PhysicalResourceIdentity => ({ cwd: `/wt/${id}`, worktreeId: id, isolation: "worktree-per-member" });
 
 test("physical resource keys distinguish worktree id from cwd", () => {
-  // Two owned worktrees may share a path prefix; only the id proves they are
-  // physically distinct.
+  // Two owned worktrees may share a path prefix; the id keeps them distinct.
   expect(physicalResourceKey(worktree("a"))).not.toBe(physicalResourceKey(worktree("b")));
-  expect(physicalResourceKey(worktree("a"))).toBe(physicalResourceKey({ cwd: "/different", worktreeId: "a", isolation: "worktree-per-member" }));
+  // The cwd is part of the key, so the SAME id at a different path is a
+  // different resource. The id alone must never decide identity: that is what
+  // let a worktree-bound and a workspace-bound execution at one directory key
+  // apart and run two writers on it.
+  expect(physicalResourceKey(worktree("a"))).not.toBe(physicalResourceKey({ cwd: "/different", worktreeId: "a", isolation: "worktree-per-member" }));
+  expect(physicalResourceKey(worktree("a"))).toBe(physicalResourceKey({ cwd: "/wt/a", worktreeId: "a", isolation: "worktree-per-member" }));
   expect(physicalResourceKey(shared("/x"))).not.toBe(physicalResourceKey(shared("/y")));
 });
 
@@ -206,4 +210,49 @@ test("an empty or blank cwd is never a usable physical key", () => {
   // A reservation keyed on "" would collide every workspace into one resource.
   expect(canonicalizePhysicalPath("")).toBe("");
   expect(canonicalizePhysicalPath("   ")).toBe("");
+});
+
+// --- Review round 5: a worktree and a workspace at one path must collide -------
+
+test("a worktree-bound and a workspace-bound identity at one path collide", async () => {
+  // A managed worktree and a shared workspace can be configured to point at the
+  // SAME physical directory. Keying them apart (worktree:<id> vs cwd:<path>)
+  // would let two mutating Provider turns write that directory concurrently —
+  // the exact failure cross-Run admission exists to prevent. The key is the
+  // canonical cwd in both cases, with the worktree id refining it.
+  const root = await mkdtemp(join(tmpdir(), "xacpx-r5-alias-"));
+  const shared = join(root, "shared");
+  await mkdir(shared, { recursive: true });
+  const worktreeIdentity: PhysicalResourceIdentity = {
+    cwd: shared,
+    worktreeId: "wt-a",
+    isolation: "worktree-per-member",
+  };
+  const workspaceIdentity: PhysicalResourceIdentity = {
+    cwd: shared,
+    isolation: "shared-single-writer",
+  };
+  expect(physicalResourceKey(worktreeIdentity)).toBe(physicalResourceKey(workspaceIdentity));
+  // And the admission table therefore serializes them.
+  const table = new ResourceReservationTable();
+  table.add({
+    key: physicalResourceKey(worktreeIdentity),
+    runId: "run-a",
+    memberTurnId: "m1",
+    dispatchId: "d1",
+    identity: worktreeIdentity,
+    reader: false,
+  });
+  expect(canExecuteAlongside({ identity: workspaceIdentity, reader: false }, { identity: worktreeIdentity, reader: false })).toBe(false);
+  expect(table.conflicts(workspaceIdentity, false)).toBeDefined();
+  await rm(root, { recursive: true, force: true });
+});
+
+test("distinct worktrees still do not collide through the shared cwd key", async () => {
+  // The worktree id is retained so two worktrees that merely share a path prefix
+  // stay physically distinct — otherwise unrelated Runs would serialize forever.
+  const a = worktree("wt-a");
+  const b = worktree("wt-b");
+  expect(physicalResourceKey(a)).not.toBe(physicalResourceKey(b));
+  expect(canExecuteAlongside({ identity: a, reader: false }, { identity: b, reader: false })).toBe(true);
 });

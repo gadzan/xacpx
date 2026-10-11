@@ -68,17 +68,27 @@ export class ResourceAdmissionError extends ConversationError {
 }
 
 /**
- * Canonical key for a physical resource. Two executions conflict only when
- * their keys match, so this must be the most specific verified identity: a
- * bound worktree id when present (distinct worktrees are physically distinct
- * even when their paths share a prefix), otherwise the canonical cwd.
+ * Stable key for one physical resource.
+ *
+ * The key is the canonical `cwd` alone. Physical identity is the directory, not
+ * the handle used to reach it: a managed worktree and a shared workspace can be
+ * configured to point at the SAME path (a worktree root placed inside a
+ * workspace, or a workspace whose cwd is a worktree directory), and keying them
+ * apart would let two mutating Provider turns write that directory concurrently
+ * — the exact failure this layer exists to prevent.
+ *
+ * The worktree id is deliberately NOT part of the key. It is not needed for
+ * distinctness: two owned worktrees have two distinct verified cwds, which is
+ * what `worktreePathsEqual` and the manager's verification already guarantee, so
+ * distinct worktrees already produce distinct keys. Including the id would only
+ * re-introduce the cross-type alias hole.
  *
  * Callers must have already normalized the path (realpath, Windows 8.3
  * expansion, case folding) — this function deliberately does no I/O so it can
  * never disagree with the identity the worktree manager verified.
  */
 export function physicalResourceKey(identity: PhysicalResourceIdentity): string {
-  return identity.worktreeId ? `worktree:${identity.worktreeId}` : `cwd:${identity.cwd}`;
+  return `cwd:${identity.cwd}`;
 }
 
 /**

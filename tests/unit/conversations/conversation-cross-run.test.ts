@@ -682,8 +682,11 @@ test("a waiting Topic is served even when the other Topics keep refilling", asyn
   }
   await until(() => h.runner.calls.some((c) => c.topicId === waiting.topic.id));
   // At least one busy Topic also ran, so this is rotation rather than the lone
-  // Topic simply being the only thing left.
-  expect(h.runner.calls.some((c) => c.topicId === busy[0]!.topic.id)).toBe(true);
+  // Topic simply being the only thing left. The rotator does not promise WHICH
+  // busy Topic runs first — it moves the last-served Topic behind the others —
+  // so asserting a specific index is stricter than the contract and fails
+  // whenever rotation legitimately starts elsewhere. Any busy Topic suffices.
+  expect(h.runner.calls.some((c) => busy.some((b) => b.topic.id === c.topicId))).toBe(true);
   await settleAll();
   await drain;
   h.store.close();
@@ -741,6 +744,81 @@ test("a same-Topic wake does not re-arm cohort blocking for a later Topic", asyn
   await until(() => h.store.getRun(runA.id)?.state === "completed");
   await drain;
   expect(h.store.getRun(h.store.listRuns(c.group.id, c.topic.id)[0]!.id)?.state).toBe("completed");
+  await rm(dirA, { recursive: true, force: true });
+  await rm(dirB, { recursive: true, force: true });
+  h.store.close();
+});
+
+// --- Review round 5: a handoff failure after a wake must still reject ----------
+
+test("a handoff failure that lands after a wake still rejects the drain", async () => {
+  // The round-5 lifecycle risk. A handoff's guard is spliced out of `cohort` so
+  // the next pass does not re-block on it, which means `cohort` can no longer
+  // answer "did anything this drain launched fail?". The sequence to cover:
+  //  1. A2 is handed off into the Provider, its outcome still `pending`.
+  //  2. The wake-aware wait returns (on a wake or on the sibling's settle), so
+  //     A2's entry leaves `cohort`.
+  //  3. The next pass has nothing claimable and parks on `inFlightExecutions`.
+  //  4. A2 THEN fails unexpectedly — the class execute() does not digest
+  //     itself: a post-start persist or write-back error, not a normal Provider
+  //     failure (a runner rejection IS digested and seals the Run
+  //     `indeterminate`, so it cannot express this).
+  //  5. The drain must still reject, not resolve `kick()` as a success.
+  const dirA = await mkdtemp(join(tmpdir(), "xacpx-r5-a-"));
+  const dirB = await mkdtemp(join(tmpdir(), "xacpx-r5-b-"));
+  const boom = new Error("injected post-wake handoff failure");
+  const h = await harness({ workspaceCwd: dirA, altWorkspaceCwd: dirB });
+  // The handed-off sibling's execution is replaced by a guard that starts the
+  // real work and then rejects on a LATER tick — after the wake-aware wait has
+  // already returned and the guard's entry has left `cohort`. That timing is the
+  // whole point: an earlier failure is caught by the pre-race check, and a
+  // digested one never reaches the guard at all.
+  const dispatcher = h.dispatcher as unknown as { execute: (work: unknown) => Promise<void> };
+  const originalExecute = dispatcher.execute.bind(dispatcher);
+  dispatcher.execute = (work: { memberTurn: { botId: string } }) => {
+    if (work.memberTurn.botId !== h.ids[1]) {
+      return originalExecute(work);
+    }
+    // Do NOT await here: the guard owns the returned promise. This override only
+    // decides, later, whether that guard settles or rejects.
+    const settled = originalExecute(work);
+    void settled.then(
+      () => undefined,
+      () => undefined,
+    );
+    return (async (): Promise<void> => {
+      // Yield until the drain has parked on `inFlightExecutions` — i.e. the
+      // wake-aware wait returned and this guard's entry is no longer in
+      // `cohort`. Only then is the failure invisible to every `cohort` check.
+      const deadline = Date.now() + 3000;
+      const parked = (h.dispatcher as unknown as { draining: boolean });
+      while (parked.draining && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      throw boom;
+    })();
+  };
+  const a = await h.group(2);
+  h.accept(a.group.id, a.topic.id, 2, false, "r5-a1", undefined, a.members);
+  const drain = h.dispatcher.kick().then(
+    () => "resolved",
+    (error: unknown) => `rejected: ${(error as Error)?.message}`,
+  );
+  await until(() => h.runner.calls.length === 1);
+  const runA = h.store.listRuns(a.group.id, a.topic.id)[0]!;
+  const sibling = h.store.listMemberTurns(runA.id).find((m) => m.startedAt === undefined)!;
+  // Settle A1 so A2 is handed off into the Provider.
+  h.runner.finish(h.runner.calls.findIndex((c) => c.runId === runA.id));
+  await until(() => h.runner.calls.some((c) => c.memberTurnId === sibling.id));
+  expect(h.store.getRun(runA.id)?.state).toBe("running");
+  // Step 4/5: the guard rejects on its later tick; the drain must reject.
+  const outcome = await Promise.race([
+    drain,
+    new Promise<string>((resolve) => setTimeout(() => resolve("TIMEOUT"), 8000)),
+  ]);
+  expect(outcome).toBe(`rejected: ${boom.message}`);
+  expect(h.store.getRun(runA.id)?.state).not.toBe("completed");
   await rm(dirA, { recursive: true, force: true });
   await rm(dirB, { recursive: true, force: true });
   h.store.close();
