@@ -1227,10 +1227,10 @@ export class ConversationDispatcher {
    * cannot be verified, which fails admission closed. Never guesses from a
    * Topic id, Bot name or declared effect.
    *
-   * Worktree-bound executions key on the verified worktree id, so two
-   * different owned worktrees are never conflated even if their paths share a
-   * prefix. Shared-workspace executions key on the canonical workspace cwd,
-   * which is what makes two Runs on the same directory conflict.
+   * Both branches key on the canonical cwd alone: a managed worktree and a
+   * shared workspace can name the SAME physical directory, and the identity
+   * must collide there whichever handle produced it. The worktree id is carried
+   * on the identity but is not part of the key.
    */
   private resolvePhysicalResourceIdentity(
     work: ClaimedWork,
@@ -1250,7 +1250,14 @@ export class ConversationDispatcher {
       } catch {
         return undefined;
       }
-      return { cwd, worktreeId: worktreeRef.worktreeId, isolation };
+      // The verified path is still a raw spelling: on Windows the same
+      // directory can surface as C:\Users\... through one handle and
+      // c:\users\... through another. Fold it through the one canonical rule
+      // before keying, exactly as the workspace branch does — otherwise the
+      // two spellings key apart and two writers reach one directory.
+      const canonical = canonicalizePhysicalPath(cwd);
+      if (!canonical) return undefined;
+      return { cwd: canonical, worktreeId: worktreeRef.worktreeId, isolation };
     }
     // Shared workspace: the physical directory is the workspace root the
     // session was actually materialized against, resolved through the session

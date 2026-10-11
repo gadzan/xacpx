@@ -952,14 +952,7 @@ derived from **verified** state:
   actually materialized against, resolved through the session service and then
   folded by `canonicalizePhysicalPath`.
 
-Both fold into the **same** key space: `physicalResourceKey` is the canonical cwd
-alone, so a worktree-bound and a workspace-bound execution at one physical
-directory collide and serialize. Physical identity is the directory, not the
-handle used to reach it — a worktree root placed inside a workspace, or a
-workspace whose cwd is a worktree directory, is one directory with two handles.
-The worktree id is deliberately not part of the key: two owned worktrees have two
-distinct verified cwds, which the manager's verification already guarantees, so
-distinctness does not need it and including it would re-open the alias hole.
+Both fold into the **same** key space through the **same** rule: `physicalResourceKey` is the canonical cwd alone, and BOTH derivation branches fold through `canonicalizePhysicalPath` — the worktree branch no less than the workspace branch. `resolveSessionCwd` returns the verified path verbatim, which on Windows is still a raw spelling: the same directory can surface as `C:\Users\...` through one handle and `c:\users\...` through another, and returning it unfolded would let the two spellings key apart and admit two writers to one directory. An unfoldable path fails closed, never guessed. Physical identity is the directory, not the handle used to reach it — a worktree root placed inside a workspace, or a workspace whose cwd is a worktree directory, is one directory with two handles. The worktree id is deliberately not part of the key: two owned worktrees have two distinct verified cwds, which the manager's verification already guarantees, so distinctness does not need it and including it would re-open the alias hole.
 
 There is deliberately **one** canonical rule. `canonicalizePhysicalPath` resolves
 the real path and, on Windows, folds it with the very helper the worktree manager

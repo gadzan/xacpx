@@ -256,3 +256,52 @@ test("distinct worktrees still do not collide through the shared cwd key", async
   expect(physicalResourceKey(a)).not.toBe(physicalResourceKey(b));
   expect(canExecuteAlongside({ identity: a, reader: false }, { identity: b, reader: false })).toBe(true);
 });
+
+// --- Review round 6: the worktree identity branch must canonicalize too --------
+
+test("the worktree branch of identity resolution folds through the one canonical rule", async () => {
+  // Round-5 keyed both branches on the cwd, but only the workspace branch folded
+  // it through canonicalizePhysicalPath; the worktree branch returned the raw
+  // verified path. On Windows the same directory can surface as C:\Users\... via
+  // one handle and c:\users\... via another, so the two spellings keyed apart
+  // and two mutating Provider turns could reach one directory. The resolution
+  // must fold the worktree path through the same rule — exactly one rule, never
+  // one per branch — and an unfoldable path must fail closed.
+  //
+  // resolveSessionCwd returns r.worktreePath verbatim (no folding there), and
+  // resolvePhysicalResourceIdentity is private, so this reaches it through the
+  // same cast the cross-run suite already uses for dispatcher internals. The
+  // stubbed manager returns an unfolded Windows spelling on every platform to
+  // pin the wiring, not the platform's own case behaviour; the Windows-only
+  // helper test above pins the spelling fold itself.
+  const { ConversationDispatcher } = await import("../../../src/conversations/conversation-dispatcher");
+  const unfolded = "C:\\Users\\Alice\\repo\\wt";
+  const folded = canonicalizePhysicalPath(unfolded);
+  expect(folded.length).toBeGreaterThan(0);
+  const fakeWorktrees = { resolveSessionCwd: () => unfolded };
+  const fakeRuntime = { groupTopicIsolation: () => "worktree-per-member" as const };
+  const dispatcher = new ConversationDispatcher(
+    {} as never, fakeRuntime as never, {} as never, {} as never, {},
+  );
+  (dispatcher as unknown as { worktrees: unknown }).worktrees = fakeWorktrees;
+  const resolve = (
+    dispatcher as unknown as {
+      resolvePhysicalResourceIdentity: (
+        work: { run: { conversationId: string; topicId: string } },
+        session: { alias: string },
+        ref: { worktreeId: string },
+      ) => PhysicalResourceIdentity | undefined;
+    }
+  ).resolvePhysicalResourceIdentity.bind(dispatcher);
+  const work = { run: { conversationId: "c", topicId: "t" } };
+  const session = { alias: "s" };
+  const identity = resolve(work, session, { worktreeId: "wt-a" })!;
+  // The identity carries the folded cwd, with the worktree id retained...
+  expect(identity.cwd).toBe(folded);
+  expect(identity.worktreeId).toBe("wt-a");
+  // ...so it collides with a workspace-bound identity at the same directory.
+  expect(physicalResourceKey(identity)).toBe(physicalResourceKey({ cwd: folded, isolation: "shared-single-writer" }));
+  // And a worktree path that cannot be canonicalized fails closed.
+  (dispatcher as unknown as { worktrees: unknown }).worktrees = { resolveSessionCwd: () => { throw new Error("drift"); } };
+  expect(resolve(work, session, { worktreeId: "wt-a" })).toBeUndefined();
+});
