@@ -688,3 +688,60 @@ test("a waiting Topic is served even when the other Topics keep refilling", asyn
   await drain;
   h.store.close();
 });
+
+// --- Review round 4: a same-Topic wake must not re-arm cohort blocking ---------
+
+test("a same-Topic wake does not re-arm cohort blocking for a later Topic", async () => {
+  // The round-4 interleaving, in the reviewer's order:
+  //  1. A1 settles, A2 is handed off into the Provider and keeps running.
+  //  2. A SECOND Run of the SAME Topic is accepted. Its wake is observed but the
+  //     durable one-active-Run-per-Topic fence makes it unclaimable right now.
+  //  3. That wake ends the pass with an empty `cohortRunIds`, so the `!claimed`
+  //     branch skips the wake-aware wait and the pass tail falls through to the
+  //     plain cohort settle.
+  //  4. Topic C is only NOW accepted, on an independent physical directory.
+  //
+  // C must still start while A2 is running. The defect was that the handoff's
+  // guards were COPIED into the wake-aware wait instead of SPLICED, so they
+  // stayed in `cohort`; the next pass's plain settle then blocked on the still
+  // running sibling with no wake, and C's arrival could not interrupt it.
+  const dirA = await mkdtemp(join(tmpdir(), "xacpx-r4-a-"));
+  const dirB = await mkdtemp(join(tmpdir(), "xacpx-r4-b-"));
+  const h = await harness({ workspaceCwd: dirA, altWorkspaceCwd: dirB });
+  const a = await h.group(2);
+  h.accept(a.group.id, a.topic.id, 2, false, "r4-a1", undefined, a.members);
+  const drain = h.dispatcher.kick();
+  await until(() => h.runner.calls.length === 1);
+  const runA = h.store.listRuns(a.group.id, a.topic.id)[0]!;
+  const sibling = h.store.listMemberTurns(runA.id).find((m) => m.startedAt === undefined)!;
+  // Step 1: settle A1 so A2 is handed into the Provider and keeps running.
+  h.runner.finish(h.runner.calls.findIndex((c) => c.runId === runA.id));
+  await until(() => h.runner.calls.some((c) => c.memberTurnId === sibling.id));
+  expect(h.store.getRun(runA.id)?.state).toBe("running");
+  // Step 2: a same-Topic Run whose wake claims nothing.
+  h.accept(a.group.id, a.topic.id, 1, false, "r4-a-next", undefined, a.members);
+  await h.dispatcher.kick();
+  // Give the woken pass time to run its claim loop and reach the settle.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  // Step 4: Topic C arrives only now, on an independent physical directory.
+  const c = await h.group(1, "alt");
+  h.accept(c.group.id, c.topic.id, 1, true, "r4-c", undefined, c.members);
+  void h.dispatcher.kick();
+  await until(() => h.runner.calls.some((x) => x.topicId === c.topic.id));
+  // C is in the Provider while A2 is still open — the wake did not re-arm
+  // cohort blocking.
+  expect(h.store.getRun(runA.id)?.state).toBe("running");
+  expect(h.runner.active).toBeGreaterThanOrEqual(2);
+  // Settle everything: admitting C starts more work, so sweep until idle.
+  for (let round = 0; round < 20; round++) {
+    for (let gate = 0; gate < h.runner.gates.length; gate++) h.runner.finish(gate);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    if (h.runner.active === 0) break;
+  }
+  await until(() => h.store.getRun(runA.id)?.state === "completed");
+  await drain;
+  expect(h.store.getRun(h.store.listRuns(c.group.id, c.topic.id)[0]!.id)?.state).toBe("completed");
+  await rm(dirA, { recursive: true, force: true });
+  await rm(dirB, { recursive: true, force: true });
+  h.store.close();
+});

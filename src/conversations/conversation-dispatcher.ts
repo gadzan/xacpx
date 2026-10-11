@@ -408,10 +408,12 @@ export class ConversationDispatcher {
      * on it parks the drain with no way to observe another Topic's kick — the
      * head-of-line blocking the global claim loop exists to remove.
      *
-     * Returning on a wake lets the loop re-enter and re-scan while the handoff
-     * is still running. The guards stay in `inFlightExecutions`, so nothing is
-     * lost: the next settle awaits them, and a rejecting guard still rejects
-     * that settle.
+     * `launched` MUST already be spliced out of `cohort` by the caller. The
+     * guards stay in `inFlightExecutions` while they run, so a later settle that
+     * re-collects them still awaits them; what must NOT happen is the entries
+     * staying in `cohort`, because the next pass's plain `awaitCohortInFlight()`
+     * would then block on them with no wake — reintroducing exactly the
+     * head-of-line blocking this helper removes, one pass later.
      *
      * A guard that has ALREADY settled with a rejection is reported immediately,
      * so a handoff whose failure lands before the wake is not silently dropped.
@@ -447,7 +449,20 @@ export class ConversationDispatcher {
     let seen = 0;
     let chainedExtraPass = false;
     try {
-      while (seen !== this.wakeGeneration || chainedExtraPass) {
+      // The drain stays alive while it still owns a Provider turn. The wake
+      // generation alone is NOT sufficient: a handoff's wake-aware wait consumes
+      // a wake and returns, which makes `seen === wakeGeneration` true while the
+      // handed-off sibling is still running. Exiting there resolves `kick()`
+      // early, so a handoff chain (each turn waking the next) loses its final
+      // turn to a later kick and `await kick()` observes fewer turns than the
+      // chain produces. The tail re-kick cannot cover it either, because the
+      // next turn's wake arrives only after this drain has already returned.
+      //
+      // Parking here is not head-of-line blocking: the claim loop's `!claimed`
+      // branch races the wake against the in-flight set, so a newly accepted Run
+      // on another Topic is admitted in the same drain, and a closed dispatcher
+      // still exits promptly.
+      while (seen !== this.wakeGeneration || chainedExtraPass || this.inFlightExecutions.size > 0) {
         if (this.closed) {
           return;
         }
@@ -644,28 +659,45 @@ export class ConversationDispatcher {
           // removes. Racing the wake returns to the claim loop, which re-scans
           // and admits other Topics while the sibling runs.
           //
-          // Nothing is lost by returning early: the guards stay in
-          // `inFlightExecutions`, so the NEXT settle awaits them, and a
-          // rejecting guard still rejects that settle. The guards are not
-          // spliced out of `cohort`, so the failure check still sees them.
+          // Returning early must NOT end the drain. The loop condition is
+          // `seen !== this.wakeGeneration`, and a wake that was just consumed
+          // makes those equal — so falling out of the loop here would resolve
+          // `kick()` while this drain still owns a running Provider turn. That
+          // is a handoff-chain stall: the next turn's wake is issued by the
+          // handoff service, and if the drain has already exited the claim is
+          // left for a later kick, so `await kick()` observes one turn fewer
+          // than the chain produces. Keep the drain alive until its own work
+          // settles instead, by re-entering the claim loop rather than falling
+          // through, and letting the `!claimed` branch park on the in-flight set
+          // (which races the wake, so this is still not head-of-line blocking).
           //
-          // Registering it in `cohortRunIds` keeps it inside the drain's scope:
-          // the `!claimed` branch above waits (racing the wake) rather than
-          // breaking whenever a cohort is in flight, so kick() cannot resolve
-          // while the sibling still runs. Same-Topic overlap stays impossible
-          // because the durable claim fence refuses a second Run of one Topic
-          // while this claim is held.
+          // Nothing is lost by waiting: the guards stay in `inFlightExecutions`,
+          // and the `!claimed` branch's race awaits them, so a rejecting guard
+          // still rejects the drain.
+          //
+          // Registering it in `cohortRunIds` is what makes that park happen: the
+          // `!claimed` branch waits only when a cohort is in flight, so without
+          // it the loop would break and the drain would exit with the sibling
+          // still running. Same-Topic overlap stays impossible because the
+          // durable claim fence refuses a second Run of one Topic while this
+          // claim is held.
           launchExecution(held);
           cohortRunIds.add(held.run.id);
           passProgress = true;
-          // Wait for the handoff (and anything else this pass launched) OR for a
-          // wake, so a new request on another Topic is observed immediately.
-          await awaitCohortInFlightOrWake([...cohort]);
+          // SPLICE, do not copy. These entries must leave `cohort` here: the next
+          // pass's plain `awaitCohortInFlight()` drains whatever is left, and a
+          // stale handoff entry there would make it block on a sibling that is
+          // still running — with no wake. That is the round-4 interleaving: a
+          // same-Topic wake that claims nothing leaves the next pass with an
+          // empty `cohortRunIds`, so its `!claimed` branch skips the wake-aware
+          // wait and falls through to the plain settle, and a Topic that arrives
+          // afterwards cannot interrupt it. Nothing is lost by splicing: the
+          // guards stay in `inFlightExecutions`, and the `!claimed` branch's
+          // race re-collects them from that set.
+          await awaitCohortInFlightOrWake(cohort.splice(0));
           if (this.closed) {
             return;
           }
-          // The wake (or the settle) may have admitted more work; re-enter the
-          // claim loop rather than falling through to the chain decision.
           continue;
         }
         // A drain that deferred Topics on pre-start failures may still have
@@ -682,6 +714,19 @@ export class ConversationDispatcher {
           continue;
         }
         this.deferredTopicIds.clear();
+        // This pass claimed nothing and launched nothing, yet the drain still
+        // owns Provider turns (a handed-off sibling, or a claim this pass
+        // deferred). Wait for one of them to settle — or for a wake — before
+        // starting another pass, so the drain neither spins on the store nor
+        // resolves `kick()` early.
+        //
+        // The wait is on ONE settle, not the whole in-flight set: a settling
+        // turn re-wakes the drain through its own persistResult, and racing the
+        // wake keeps a newly accepted Run on another Topic from waiting behind
+        // a long turn that already holds the slot.
+        if (this.inFlightExecutions.size > 0) {
+          await Promise.race([...this.inFlightExecutions.values(), this.wakeSignal]);
+        }
       }
     } finally {
       this.draining = false;

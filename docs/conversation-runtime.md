@@ -986,10 +986,27 @@ plain settle. A handoff holds a Provider turn open for its whole duration, so
 blocking on it with no wake parks the drain and another Topic's kick is never
 observed — the head-of-line blocking the global claim loop exists to remove.
 Returning on a wake re-enters the claim loop, which re-scans and admits other
-Topics while the sibling runs. Nothing is lost by returning early: the guards
-stay in `inFlightExecutions`, so the next settle awaits them, and a rejecting
-guard still rejects that settle — an unexpected sibling failure therefore still
-rejects activation rather than escaping as an unhandled rejection.
+Topics while the sibling runs.
+
+The handoff's guards are **spliced** out of the drain's cohort array before that
+wait, never copied. They stay in `inFlightExecutions`, so the next settle that
+re-collects them still awaits them and a rejecting guard still rejects it — an
+unexpected sibling failure therefore still rejects activation rather than
+escaping as an unhandled rejection. What must not happen is the entries staying in
+`cohort`: a pass that ends with an empty `cohortRunIds` (for instance after a
+same-Topic wake that claims nothing) falls through to the plain settle, which
+would block on the still-running sibling with no wake. That is a one-pass-delayed
+return of the same head-of-line blocking.
+
+The drain also stays alive while it still owns a Provider turn. The wake
+generation alone is not a sufficient exit condition: a handoff's wake-aware wait
+consumes a wake and returns, which makes `seen === wakeGeneration` true while the
+handed-off sibling is still running. Exiting there resolves `kick()` early, so a
+handoff chain — each turn waking the next — loses its final turn to a later kick
+and `await kick()` observes fewer turns than the chain produces. A pass that
+claims and launches nothing but still owns in-flight work therefore parks on one
+settle or a wake before starting another pass, which keeps the drain from
+spinning on the store without making it resolve early.
 
 A **transient** conflict is parked, not failed. When the blocking incumbent is
 another Run's live Provider turn, the claim stays durably `claimed` under this
