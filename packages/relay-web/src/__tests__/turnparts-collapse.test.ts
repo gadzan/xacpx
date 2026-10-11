@@ -701,13 +701,51 @@ describe("TurnParts collapsed-header failure count", () => {
     expect(header.text()).not.toContain("· 2 个文件");
   });
 
-  it("keeps trace-toggle unclipped with rounded corners and no negative horizontal margin", () => {
+  it("preserves distinct file count in English when tool calls and paths differ", async () => {
+    const parts: TurnPartDto[] = Array.from({ length: 6 }, (_, i) => ({
+      type: "tool",
+      step: { toolCallId: `r-${i}`, toolName: "Read", kind: "read", status: "success", title: "single.ts" },
+    }));
+    parts.push({ type: "text", text: "done" });
+    const w = await mountWithLocale("en", {
+      parts,
+      collapseTrace: true,
+      traceKey: "t:read-diff",
+    });
+    const header = w.find('[data-test="trace-toggle"]');
+    expect(header.text()).toContain("read 6 · 1 file");
+  });
+
+  it("preserves distinct file count for edit summaries in English and Chinese", async () => {
+    const parts: TurnPartDto[] = [
+      { type: "tool", step: { toolCallId: "e-1", toolName: "Edit", kind: "edit", status: "success", title: "a.ts" } },
+      { type: "tool", step: { toolCallId: "e-2", toolName: "Edit", kind: "edit", status: "success", title: "a.ts" } },
+      { type: "tool", step: { toolCallId: "e-3", toolName: "Edit", kind: "edit", status: "success", title: "b.ts" } },
+      { type: "text", text: "done" },
+    ];
+    const wEn = await mountWithLocale("en", {
+      parts,
+      collapseTrace: true,
+      traceKey: "t:edit-en",
+    });
+    expect(wEn.find('[data-test="trace-toggle"]').text()).toContain("edited 3 · 2 files");
+
+    const wZh = await mountWithLocale("zh-CN", {
+      parts,
+      collapseTrace: true,
+      traceKey: "t:edit-zh",
+    });
+    expect(wZh.find('[data-test="trace-toggle"]').text()).toContain("编辑 3 处 · 2 个文件");
+  });
+
+  it("keeps trace-toggle unclipped and lets global button:focus-visible apply", () => {
     const w = mount(TurnParts, {
       props: { parts: finishedTurn(), collapseTrace: true, traceKey: "t:radius-1" },
     });
     const header = w.find('[data-test="trace-toggle"]');
     expect(header.classes()).toContain("rounded-md");
     expect(header.classes()).not.toContain("-mx-1.5");
+    expect(header.classes()).not.toContain("focus-visible:ring-1");
   });
   it("omits the failure segment when every step succeeded", () => {
     const w = mount(TurnParts, {
