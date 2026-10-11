@@ -230,3 +230,31 @@ it("clears an identical reference draft on durable WS acceptance even when HTTP 
   ).toEqual([]);
   expect(s.promptError).toBeNull();
 });
+
+it("refuses a restored reference draft through an old Hub without sending or losing identity", async () => {
+  const s = useDirectBotsStore();
+  const refs = [{ range: [0, 3] as [number, number], handle: "agent:n:b2" }];
+  const scopeKey = JSON.stringify(["i1", "c1", "t1", "b1"]);
+  useDirectComposerStore().set(scopeKey, "@同名 ", refs);
+  const prompt = vi.fn();
+  let supported = false;
+  let unknownType = false;
+  vi.mocked(api.rpc).mockImplementation(async (_instance, type) => {
+    if (type === "control.conversation.completions.get") return (supported ? { ...ready(), mentions: { status: 'unavailable', items: [] } } : unknownType ? { error: { code: 'unknown-type', message: 'old Hub' } } : { version: 0 }) as never;
+    if (type === "control.conversation.prompt") { prompt(); return { error: { code: "test-rejected", message: "retry" } } as never; }
+    return {} as never;
+  });
+  expect(await s.sendPrompt("@同名 ", refs)).toBe("rejected");
+  expect(prompt).not.toHaveBeenCalled();
+  expect(s.promptError).toBe("connectorOutdated");
+  expect(useDirectComposerStore().get(scopeKey)).toEqual({ text: "@同名 ", mentions: refs });
+  const requestId = s.currentDraftRequestId;
+  unknownType = true;
+  expect(await s.sendPrompt("@同名 ", refs)).toBe("rejected");
+  expect(prompt).not.toHaveBeenCalled();
+  expect(s.promptError).toBe("connectorOutdated");
+  supported = true;
+  await s.sendPrompt("@同名 ", refs);
+  expect(prompt).toHaveBeenCalledTimes(1);
+  expect(s.currentDraftRequestId).toBe(requestId);
+});

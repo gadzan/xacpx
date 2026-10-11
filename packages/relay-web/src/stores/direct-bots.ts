@@ -4,6 +4,7 @@ import {
   MSG,
   isErrorPayload,
   type AgentMention,
+  type ConversationCompletions,
   type BotDetailDto,
   type BotRemovalPreviewDto,
   type BotSummaryDto,
@@ -2266,6 +2267,22 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     promptErrorDetail.value = null;
 
     try {
+      if (frozenMentions.length) {
+        // Re-negotiate through the current Hub/connector, including restored drafts.
+        // A V1 unavailable response still supports durable replay; readiness is not authority.
+        const capabilityResponse = await api.rpc<ConversationCompletions>(targetInstId, MSG.conversationCompletionsGet, {
+          conversationId: targetConvId,
+          topicId: targetTopicId,
+        });
+        if (isErrorPayload(capabilityResponse) && ["unknown-type", "unsupported"].includes(capabilityResponse.error.code)) {
+          throw new DirectBotRpcError("unsupported-agent-mentions", "Direct references require V1 completions");
+        }
+        const capabilities = unwrapRpc(capabilityResponse);
+        if (!capabilities || capabilities.version !== 1 || capabilities.scope?.conversationId !== targetConvId
+          || capabilities.scope?.topicId !== targetTopicId || capabilities.scope?.botId !== targetBotId) {
+          throw new DirectBotRpcError("unsupported-agent-mentions", "Direct references require V1 completions");
+        }
+      }
       const res = unwrapRpc(
         await api.rpc<ConversationPromptResponseDto>(targetInstId, MSG.conversationPrompt, {
           conversationId: targetConvId,

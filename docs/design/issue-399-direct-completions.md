@@ -38,7 +38,7 @@ RuntimeEngine ensures/loads the owned ACP session and reads acpx status.availabl
 
 Identical prepares share an in-flight promise and the existing Bot lifecycle/materialization gate. The 10-second query budget returns loading; it does not release ownership while the original transport initialization is still pending. Retry joins that work, and shutdown drains entered operations. Real execution rotates the immutable MCP identity through the existing worker ownership path. Profile/adapter context/Topic generation key cached results; command epochs suppress retired callbacks. Cancellation, failed/terminal dispatch, or lease replacement prevents the Direct sender from remaining valid.
 
-New selection requires a version=1 completion response. A newer connector rejects references against an older daemon with no completion API. Older clients may send ordinary text; missing metadata is equivalent to no references. revision invalidates projections and is never an authorization credential.
+New selection requires a version=1 completion response. Sending a restored reference draft negotiates V1 again through the current Hub/connector before any prompt, rejecting old RPC types/versions without dropping identity. A V1 unavailable directory still supports replay of an already accepted snapshot. A newer connector rejects references against an older daemon with no completion API. Older clients may send ordinary text; missing metadata is equivalent to no references. revision invalidates projections and is never an authorization credential.
 
 ## V1 delivery limits
 
@@ -46,7 +46,7 @@ Receipts mean durable queued admission, not completed work or a reply. Supported
 
 ## Validation and remaining environment checks
 
-Focused backend verification: 280 passing tests across 11 files covering protocol, SQLite, Control API, production composition, MCP/Relay boundaries, advertised prompt handling and CLI/streaming adapter status. Root TypeScript and Vue TypeScript checks passed with Node 22.20.0. All workspace packages built successfully. The affected Web suites passed 251 tests; desktop and mobile Playwright checks both passed using installed Chrome. The final full Web suite result is recorded in the PR.
+Focused backend verification: 280 passing tests across 11 files covering protocol, SQLite, Control API, production composition, MCP/Relay boundaries, advertised prompt handling and CLI/streaming adapter status. Root TypeScript and Vue TypeScript checks passed with Node 22.20.0. All workspace packages built successfully. The affected Web suites passed 251 tests, then 162 tests passed after the restored-draft compatibility guard; 186 lifecycle and 137 reply/transport regressions also passed; desktop and mobile Playwright checks both passed using installed Chrome. The final full Web suite result is recorded in the PR.
 
 The full unit suite was attempted but Windows-native command wrappers/process identity tests fail in this environment; a broader attempt also exhausted memory. Package build was retried successfully with supported Node and bounded verification concurrency. Initial full Web attempts exposed an acceptance-recovery state regression; it was fixed and all affected suites passed, with a final full run used to verify the complete Web result. Chromium download ran out of space, so E2E used installed Chrome instead.
 
