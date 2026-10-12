@@ -2133,6 +2133,16 @@ export async function buildApp(
           // The runtime is constructed after ControlService; a patch that lands
           // before it exists is persisted and reflected at startup instead.
           conversationRuntimeRef?.applyRouterResolution(resolution);
+          void logger.info("conversations.router", "automatic collaboration router patch", {
+            ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+            ...(patch.command !== undefined ? { command: patch.command } : {}),
+            ...(patch.authEnv !== undefined ? { authEnv: patch.authEnv } : {}),
+            status: resolution.availability.status,
+            configPath: resolution.availability.configPath,
+            ...(resolution.availability.status === "ready"
+              ? {}
+              : { code: resolution.availability.reason.code }),
+          });
           controlEvents.emit({ type: "conversation-router-changed" });
           return resolution.availability;
         });
