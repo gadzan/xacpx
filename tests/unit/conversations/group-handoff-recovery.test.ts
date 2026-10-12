@@ -172,9 +172,15 @@ test("sender is derived from live execution and one invocation commits exactly o
     expect(h.store.listMemberTurns(input.runId)).toHaveLength(2);
     expect(first.run.id).toBe(input.runId);
     expect(h.store.listRuns(h.group.id)).toHaveLength(1);
-    expect(h.store.getDispatchForMemberTurn(first.memberTurn.id)).toMatchObject({ state: "pending" });
-    expect(h.store.getDispatchForMemberTurn(first.memberTurn.id)?.authorityEpoch).toBeUndefined();
-    expect(h.store.getDispatchForMemberTurn(first.memberTurn.id)?.humanIngress).toBeUndefined();
+    // The handoff target is claimed-and-held behind the still-executing sender:
+    // the writer slot is reserved, provenance is stripped, and the target has
+    // NOT started. `claimed` here is the reservation state, not physical
+    // execution — the target's provider turn begins only after A settles.
+    const held = h.store.getDispatchForMemberTurn(first.memberTurn.id)!;
+    expect(held.state).toBe("claimed");
+    expect(h.store.getMemberTurn(first.memberTurn.id)!.startedAt).toBeUndefined();
+    expect(held.authorityEpoch).toBeUndefined();
+    expect(held.humanIngress).toBeUndefined();
   });
   try {
     expect(h.store.getRun(accepted.run.id)?.state).toBe("completed");
@@ -518,9 +524,13 @@ test(`committed handoff survives lost response/reopen ${crashWindow} and dropped
   const { h, accepted } = await scenario(async (input, h) => {
     const receipt = await h.send(input);
     // Crash representation: current sender has durable completion; target is
-    // still not started. Stop current drain before it can claim the target.
+    // still not started. Retire the drain's in-memory reservation and stop it
+    // before it can claim the target, so the durable row is genuinely
+    // unclaimed at crash time — the state this fixture exists to model.
+    h.dispatcher.retireHeldClaimsForTest();
     h.dispatcher.stop();
     expect(receipt.memberTurn.startedAt).toBeUndefined();
+    expect(h.store.getDispatchForMemberTurn(receipt.memberTurn.id)?.state).toBe("pending");
   });
   const target = h.store.listMemberTurns(accepted.run.id)[1]!;
   const sender = h.store.listMemberTurns(accepted.run.id)[0]!;
