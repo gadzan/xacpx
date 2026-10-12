@@ -3,6 +3,8 @@ import { computed, markRaw, ref } from "vue";
 import {
   MSG,
   isErrorPayload,
+  type AgentMention,
+  type ConversationCompletions,
   type BotDetailDto,
   type BotRemovalPreviewDto,
   type BotSummaryDto,
@@ -30,6 +32,7 @@ import {
 } from "@ganglion/xacpx-relay-protocol";
 import { api } from "../api/client";
 import { useConversationCommandsStore } from "./conversation-commands";
+import { useDirectComposerStore } from "./direct-composer";
 
 export type DirectBotRunState = ConversationRunStateDto;
 
@@ -1742,6 +1745,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
           topicId: tId,
         }),
       );
+      for (const run of [...(listed.runs ?? []),...(listed.activeRun ? [listed.activeRun] : [])]) recordAcceptedPrompt(iId,run);
       if (!isCurrentRecovery()) {
         return false;
       }
@@ -2192,17 +2196,32 @@ export const useDirectBotsStore = defineStore("directBots", () => {
     generalErrorCode.value = null;
     persistBotSelection(null, null);
   }
-  function preparePromptRequestId(text: string): string {
-    if (!currentDraftRequestId.value || text !== lastPromptText.value) {
-      currentDraftRequestId.value = mintRequestId();
-      lastPromptText.value = text;
+  const promptSnapshots = new Map<string,{requestId:string;text:string;mentions:AgentMention[]}>();
+  const acceptedPromptRequests = new Set<string>();
+  function recordAcceptedPrompt(instance: string, run: ConversationRunDto): void {
+    for (const [key,snapshot] of promptSnapshots) {
+      const [i,c,t] = JSON.parse(key) as string[];
+      if (i!==instance || c!==run.conversationId || t!==run.topicId || snapshot.requestId!==run.requestId) continue;
+      useDirectComposerStore().clear(key,snapshot.text,snapshot.mentions);
+      promptSnapshots.delete(key);
+      acceptedPromptRequests.add(run.requestId);
+      if (acceptedPromptRequests.size>256) acceptedPromptRequests.delete(acceptedPromptRequests.values().next().value!);
     }
-    return currentDraftRequestId.value;
+  }
+  function preparePromptRequestId(text: string, mentions:AgentMention[] = []): string {
+    const key=JSON.stringify([instanceId.value,activeConversationId.value,activeTopicId.value,selectedBotId.value]);
+    const previous=promptSnapshots.get(key);
+    const frozen=structuredClone(mentions);
+    const snapshot=previous && previous.text===text && JSON.stringify(previous.mentions)===JSON.stringify(frozen)
+      ? previous : {requestId:mintRequestId(),text,mentions:frozen};
+    promptSnapshots.set(key,snapshot);
+    currentDraftRequestId.value=snapshot.requestId;lastPromptText.value=text;
+    return snapshot.requestId;
   }
 
-  async function sendPrompt(text: string): Promise<"accepted" | "rejected" | "uncertain" | "orphaned"> {
-    const trimmed = text.trim();
-    if (!trimmed || !instanceId.value || !selectedBotId.value || !activeConversationId.value || !activeTopicId.value) {
+  async function sendPrompt(text: string, agentMentions:AgentMention[] = []): Promise<"accepted" | "rejected" | "uncertain" | "orphaned"> {
+    const trimmed = text;
+    if (!trimmed.trim() || !instanceId.value || !selectedBotId.value || !activeConversationId.value || !activeTopicId.value) {
       return "rejected";
     }
 
@@ -2240,25 +2259,46 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       activeConversationId.value === targetConvId &&
       activeTopicId.value === targetTopicId;
     latestPlanRunId.value = null;
-    const reqId = preparePromptRequestId(trimmed);
+    const reqId = preparePromptRequestId(trimmed,agentMentions);
+    const frozenMentions=structuredClone(agentMentions);
+    const snapshotKey=JSON.stringify([targetInstId,targetConvId,targetTopicId,targetBotId]);
     promptInFlight.value = true;
     promptError.value = null;
     promptErrorDetail.value = null;
 
     try {
+      if (frozenMentions.length) {
+        // Re-negotiate through the current Hub/connector, including restored drafts.
+        // A V1 unavailable response still supports durable replay; readiness is not authority.
+        const capabilityResponse = await api.rpc<ConversationCompletions>(targetInstId, MSG.conversationCompletionsGet, {
+          conversationId: targetConvId,
+          topicId: targetTopicId,
+        });
+        if (isErrorPayload(capabilityResponse) && ["unknown-type", "unsupported"].includes(capabilityResponse.error.code)) {
+          throw new DirectBotRpcError("unsupported-agent-mentions", "Direct references require V1 completions");
+        }
+        const capabilities = unwrapRpc(capabilityResponse);
+        if (!capabilities || capabilities.version !== 1 || capabilities.scope?.conversationId !== targetConvId
+          || capabilities.scope?.topicId !== targetTopicId || capabilities.scope?.botId !== targetBotId) {
+          throw new DirectBotRpcError("unsupported-agent-mentions", "Direct references require V1 completions");
+        }
+      }
       const res = unwrapRpc(
         await api.rpc<ConversationPromptResponseDto>(targetInstId, MSG.conversationPrompt, {
           conversationId: targetConvId,
           topicId: targetTopicId,
           requestId: reqId,
           text: trimmed,
+          ...(frozenMentions.length ? {agentMentions:frozenMentions} : {}),
           target: { botId: targetBotId },
         }),
       );
 
       // Only project into UI if view context is still current
+      recordAcceptedPrompt(targetInstId,res.run);
+      promptSnapshots.delete(snapshotKey);
       if (!isCurrent()) {
-        return "orphaned";
+        return "accepted";
       }
 
       // Lifecycle projection converges only on evidence that can prove a
@@ -2413,6 +2453,10 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       }
       return "accepted";
     } catch (err: unknown) {
+      if (acceptedPromptRequests.has(reqId)) {
+        if (isCurrent() && promptError.value === "runInProgress") {promptError.value=null;promptErrorDetail.value=null;}
+        return "accepted";
+      }
       // WS may already have proved durable accept for this requestId (the
       // run-changed adoption branch converges to success and retires the
       // retry identity). A late HTTP failure must not rewrite that success.
@@ -2424,7 +2468,15 @@ export const useDirectBotsStore = defineStore("directBots", () => {
         if (code === "bot_disabled") {
           promptError.value = "botDisabled";
           promptErrorDetail.value = null;
-        } else if (code === "unknown-type") {
+        } else if (code === "target_unavailable") {
+          promptError.value = "referenceTargetUnavailable";promptErrorDetail.value=null;
+        } else if (code === "mentions_unavailable") {
+          promptError.value = "referencesUnavailable";promptErrorDetail.value=null;
+        } else if (code === "invalid-agent-mentions") {
+          promptError.value = "invalidReferences";promptErrorDetail.value=null;
+        } else if (code === "request_payload_conflict") {
+          promptError.value = "referenceConflict";promptErrorDetail.value=null;
+        } else if (code === "unknown-type" || code === "unsupported-agent-mentions") {
           promptError.value = "connectorOutdated";
           promptErrorDetail.value = null;
         } else if (code === "conversation_target_mismatch" || code === "conversation_mismatch") {
@@ -2444,7 +2496,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
       // A definitive refusal keeps that id only while the text is unchanged.
       if (!isCurrent()) return "orphaned";
       const code = err instanceof DirectBotRpcError ? err.code : null;
-      const definitive = code === "bot_disabled"
+      const definitive = ["target_unavailable","mentions_unavailable","invalid-agent-mentions","request_payload_conflict","unsupported-agent-mentions"].includes(code ?? "") || code === "bot_disabled"
         || code === "conversation_mismatch"
         || code === "topic_not_found"
         || code === "conversation_deleting"
@@ -3115,6 +3167,7 @@ export const useDirectBotsStore = defineStore("directBots", () => {
   // Handle server WebSocket events
   function applyEvent(event: WebServerEvent): void {
     useConversationCommandsStore().ingest(event);
+    if (event.kind==="control-event" && "run" in event.event) recordAcceptedPrompt(event.instanceId,event.event.run);
     if (event.kind === "instance-status") {
       if (event.instanceId === instanceId.value) {
         if (!event.online) {

@@ -115,6 +115,7 @@ export declare const MSG: {
     readonly groupTopicsCreate: "control.group.topics.create";
     readonly groupTopicsArchive: "control.group.topics.archive";
     readonly groupTopicsTeardown: "control.group.topics.teardown";
+    readonly conversationCompletionsGet: "control.conversation.completions.get";
     readonly conversationPrompt: "control.conversation.prompt";
     readonly conversationPromptWithPolicy: "control.conversation.prompt-with-policy";
     readonly conversationWorktree: "control.conversation.worktree";
@@ -604,6 +605,7 @@ export interface GroupTopicsTeardownPayload {
     topicId: string;
 }
 export interface ConversationPromptPayload {
+    agentMentions?: import("./agent-mentions.js").AgentMention[];
     conversationId: string;
     topicId: string;
     requestId: string;

@@ -881,6 +881,15 @@ export class BridgeRuntime {
     return {};
   }
 
+  async prepareSessionCommands(input: import('./engine/bridge-engine').EngineSessionInput): Promise<import('../transport/types').AgentCommand[] | undefined> {
+    await this.ensureSession(input);
+    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, ['status','-s',input.name], {format:'json'}));
+    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {timeoutMs:this.managementCommandTimeoutMs(),stage:'get-session-model'}));
+    if(result.code !== 0) throw new Error('command advertisement read failed');
+    const raw = JSON.parse(result.stdout) as {availableCommands?: import('../transport/types').AgentCommand[]};
+    return raw.availableCommands;
+  }
+
   async getSessionModel(input: {
     agent: string;
     agentCommand?: string;

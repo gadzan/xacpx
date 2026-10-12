@@ -7,6 +7,7 @@
 // The registry keys are the control-RPC MessageTypes; `satisfies Record<ControlRpcType, …>`
 // makes tsc fail if a control RPC is added to the union without a validator (or vice versa),
 // and `parseControlPayload` forces every connector dispatch arm to register its message type.
+import { validAgentMentions } from "./agent-mentions.js";
 import {
   MSG,
   type AgentsCreatePayload,
@@ -505,6 +506,14 @@ const validateTopicsCreate: Validator<TopicsCreatePayload> = (p) => {
 };
 const validateTopicRef = (o: Record<string, unknown> | null): boolean =>
   !!o && isStr(o.conversationId) && isStr(o.topicId);
+const validateConversationCompletionsGet:Validator<import("./agent-mentions").ConversationCompletionsRequest> = p => {
+  const o=fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.conversationId,128) && isBoundedStr(o.topicId,128)
+    && (o.query===undefined || typeof o.query==="string" && o.query.length<=128)
+    && (o.cursor===undefined || typeof o.cursor==="number" && Number.isSafeInteger(o.cursor) && o.cursor>=0)
+    && Object.keys(o).every(k=>["conversationId","topicId","query","cursor"].includes(k))
+    ? o as unknown as import("./agent-mentions").ConversationCompletionsRequest : null;
+};
 const validateTopicsUpdate: Validator<TopicsUpdatePayload> = (p) => {
   const o = fields(p);
   return o && validateTopicRef(o) && isBoundedStr(o.title, 200) ? (o as unknown as TopicsUpdatePayload) : null;
@@ -618,6 +627,7 @@ const validateConversationPrompt: Validator<ConversationPromptPayload> = (p) => 
   if (!o || !isStr(o.conversationId) || !isStr(o.topicId) || !isStr(o.requestId) || !isStr(o.text)) {
     return null;
   }
+  if (o.agentMentions !== undefined && !validAgentMentions(o.text as string, o.agentMentions)) return null;
   if (o.target !== undefined && !isConversationTarget(o.target)) {
     return null;
   }
@@ -996,6 +1006,7 @@ export type ControlRpcType =
   | typeof MSG.fsRename | typeof MSG.fsDelete | typeof MSG.fsCopy | typeof MSG.fsDownload
   | typeof MSG.fsWrite | typeof MSG.sessionModelGet | typeof MSG.sessionModelSet
   | typeof MSG.agentsCapabilitiesGet
+  | typeof MSG.conversationCompletionsGet
   | typeof MSG.conversationRouterGet
   | typeof MSG.sessionEffortGet | typeof MSG.sessionEffortSet
   | typeof MSG.gitStatus | typeof MSG.gitStage | typeof MSG.gitUnstage
@@ -1071,6 +1082,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.gitWorktreeCreate]: validateGitWorktreeCreate,
   [MSG.sessionModelGet]: validateSessionModelGet,
   [MSG.agentsCapabilitiesGet]: validateAgentsCapabilitiesGet,
+  [MSG.conversationCompletionsGet]: validateConversationCompletionsGet,
   [MSG.conversationRouterGet]: validateConversationRouterGet,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.sessionEffortGet]: validateSessionEffortGet,

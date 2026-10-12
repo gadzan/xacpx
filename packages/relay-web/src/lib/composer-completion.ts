@@ -47,10 +47,11 @@ export interface CompletionKeyInput {
   historyArmed: boolean;
 }
 
-/** Whole-buffer slash token. A space or newline ends the token and closes the menu. */
-export function slashQuery(text: string): SlashQuery | null {
-  if (!text.startsWith("/") || text.includes("\n") || text.slice(1).includes(" ")) return null;
-  return { query: text.slice(1).toLowerCase(), range: { start: 0, end: text.length } };
+/** First slash token, only while the caret is inside it. Parameters remain intact. */
+export function slashQuery(text: string, cursor = text.length): SlashQuery | null {
+  const token = /^\/[^\s]*/.exec(text)?.[0];
+  if (!token || cursor < 1 || cursor > token.length) return null;
+  return { query: text.slice(1, cursor).toLowerCase(), range: { start: 0, end: token.length } };
 }
 
 /**
@@ -82,6 +83,7 @@ export function clampIndex(index: number, count: number): number {
 
 export function completionKey(input: CompletionKeyInput): CompletionAction {
   if (input.isComposing || input.composing) return { type: "ignore" };
+  if (input.key === "Enter" && input.shiftKey) return { type: "passthrough" };
   const menuOpen = input.menu !== "closed";
   if (menuOpen && !input.collapsedCaret) {
     if (input.key === "Escape") return { type: "dismiss" };
@@ -101,4 +103,20 @@ export function completionKey(input: CompletionKeyInput): CompletionAction {
   if (input.key === "ArrowUp" && input.caretAtStart) return { type: "history", dir: -1 };
   if (input.key === "ArrowDown" && input.historyArmed && input.caretAtStart) return { type: "history", dir: 1 };
   return { type: "passthrough" };
+}
+
+export interface ComposerMention {range:[number,number];handle:string}
+/** One contiguous edit: intersected references lose identity; later ones move. */
+export function editMentions(previous:string,next:string,mentions:readonly ComposerMention[]):ComposerMention[] {
+  let start=0;while(start<previous.length && start<next.length && previous[start]===next[start])start++;
+  if(start===previous.length && start===next.length)return mentions.map(m=>({...m,range:[...m.range]}));
+  let oldEnd=previous.length,newEnd=next.length;
+  while(oldEnd>start && newEnd>start && previous[oldEnd-1]===next[newEnd-1]){oldEnd--;newEnd--;}
+  const delta=newEnd-oldEnd;
+  return mentions.flatMap(m=>{
+    const [a,b]=m.range;
+    if(b<=start)return [{...m,range:[a,b] as [number,number]}];
+    if(a>=oldEnd)return [{...m,range:[a+delta,b+delta] as [number,number]}];
+    return [];
+  });
 }

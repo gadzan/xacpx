@@ -15,8 +15,8 @@ export function composeBotTurnPrompt(
     "This Bot profile does not change the underlying model, tools, or permission policy.",
   ].filter((line): line is string => Boolean(line));
 
-  const body = userText.trim();
-  if (!body) {
+  const body = userText;
+  if (!body.trim()) {
     return lines.join("\n\n");
   }
   return `${lines.join("\n\n")}\n\n${body}`;

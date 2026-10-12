@@ -1378,3 +1378,15 @@ test("agent_send returns tailored success text for none, notify, and result comp
     `Peer message msg-123 accepted with status=queued. xacpx will return the peer's final result to this session when it completes. Do not poll or send acknowledgement messages.${marker}`,
   );
 });
+
+test("Direct launch exposes only truthful one-way messaging tools and preserves Group ceiling", async () => {
+  const transport = createMemoryTransport(async () => ({taskId:"unused",status:"running"}));
+  const direct = buildXacpxMcpToolRegistry({transport,coordinatorSession:"direct-execution:live",sourceHandle:"direct-execution:live",internalSessionTools:true});
+  expect(direct.map(t=>t.name)).toEqual(["agent_list","agent_send"]);
+  const send=direct.find(t=>t.name==="agent_send")!;
+  expect(send.inputSchema.safeParse({to:"agent:node:bot",message:"work",mode:"queue",completion:"none"}).success).toBe(true);
+  for(const extra of [{mode:"interrupt"},{mode:"steer"},{completion:"result"},{completion:"notify"},{replyTo:"msg"},{selector:{agent:"codex"}},{sourceHandle:"spoofed"}]) {
+    expect(send.inputSchema.safeParse({to:"agent:node:bot",message:"work",...extra}).success).toBe(false);
+  }
+  expect(buildXacpxMcpToolRegistry({transport,coordinatorSession:"group-execution:live",sourceHandle:"group-execution:live",internalSessionTools:true}).map(t=>t.name)).toEqual(["group_send"]);
+});

@@ -306,6 +306,7 @@ export type ConversationTarget =
   | { mode: "automatic" };
 
 export interface ConversationPromptRequestDto {
+  agentMentions?: import("@ganglion/xacpx-relay-protocol").AgentMention[];
   conversationId: string;
   topicId: string;
   requestId: string;

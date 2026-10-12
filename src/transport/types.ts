@@ -43,6 +43,7 @@ export interface PromptUsage {
 
 /** An agent-advertised slash command (ACP `available_commands_update`). */
 export interface AgentCommand {
+  kind?: "command" | "skill";
   name: string;
   description?: string;
   /** Whether the command accepts an argument (ACP advertised a non-null `input`). */
@@ -240,6 +241,8 @@ export interface PromptOptions {
 }
 
 export interface SessionTransport {
+  /** Initialize/load the existing owner and read its command advertisement, without a prompt. */
+  prepareSessionCommands?(session: ResolvedSession): Promise<AgentCommand[] | undefined>;
   ensureSession(
     session: ResolvedSession,
     onProgress?: (progress: EnsureSessionProgress) => void,

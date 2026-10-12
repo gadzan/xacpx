@@ -1209,7 +1209,7 @@ describe("useDirectBotsStore", () => {
       // WS already proved durable accept, so submission state converges to
       // success: no transport error, no retry identity.
       deferred.reject(new Error("Network disconnect"));
-      await sendCall;
+      expect(await sendCall).toBe("accepted");
       expect(store.activeRun?.id).toBe("run_B");
       expect(store.activeRun?.state).toBe("queued");
       expect(store.isRunActive).toBe(true);

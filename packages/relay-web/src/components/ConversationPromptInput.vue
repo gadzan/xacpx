@@ -1,79 +1,332 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from "vue";
-import { AlertCircle, ArrowUp, CircleStop, Loader2, RotateCcw } from "lucide-vue-next";
-import { completionKey, replaceRange, slashQuery } from "../lib/composer-completion";
+import { computed, nextTick, ref, watch, onBeforeUnmount } from "vue";
+import {
+  AlertCircle,
+  ArrowUp,
+  CircleStop,
+  Loader2,
+  RotateCcw,
+} from "lucide-vue-next";
+import {
+  MSG,
+  isErrorPayload,
+  type AgentMention,
+  type ConversationCompletions,
+} from "@ganglion/xacpx-relay-protocol";
+import {
+  completionKey,
+  replaceRange,
+  slashQuery,
+  mentionQueryAt,
+  editMentions,
+} from "../lib/composer-completion";
+import { api } from "../api/client";
 import { useConversationCommandsStore } from "../stores/conversation-commands";
 import { useDirectBotsStore } from "../stores/direct-bots";
-
+import { useDirectComposerStore } from "../stores/direct-composer";
 const props = defineProps<{
   disabled?: boolean;
-  /** When set, the parent send returns the durable outcome. Rejection keeps the draft. */
-  deliver?: (text: string) => Promise<"accepted" | "rejected" | "uncertain" | "orphaned">;
+  deliver?: (
+    text: string,
+    mentions: AgentMention[],
+  ) => Promise<"accepted" | "rejected" | "uncertain" | "orphaned">;
 }>();
-
 const emit = defineEmits<{
-  send: [text: string];
+  send: [text: string, mentions?: AgentMention[]];
   cancel: [];
 }>();
-
-const directBotsStore = useDirectBotsStore();
-const commandStore = useConversationCommandsStore();
-
-const textareaEl = ref<HTMLTextAreaElement | null>(null);
-const promptText = ref("");
-const composing = ref(false);
-const cmdActiveIdx = ref(0);
-const cmdDismissed = ref(false);
-
-const isRunActive = computed(() => directBotsStore.isRunActive);
-const isTopicRecovering = computed(() => !directBotsStore.topicReady);
-const isPromptInFlight = computed(() => directBotsStore.promptInFlight);
-const isCancelling = computed(() => !!directBotsStore.cancellingRunId);
-const bot = computed(() => directBotsStore.currentBot);
-const isBotDisabled = computed(() => bot.value ? !bot.value.enabled : false);
-
+const directBotsStore = useDirectBotsStore(),
+  commandStore = useConversationCommandsStore(),
+  drafts = useDirectComposerStore();
+const textareaEl = ref<HTMLTextAreaElement | null>(null),
+  composing = ref(false),
+  caret = ref(0),
+  collapsed = ref(true),
+  cmdActiveIdx = ref(0),
+  cmdDismissed = ref(false),
+  page = ref(0);
+const scope = computed(() =>
+  JSON.stringify([
+    directBotsStore.instanceId,
+    directBotsStore.activeConversationId,
+    directBotsStore.activeTopicId,
+    directBotsStore.selectedBotId,
+  ]),
+);
+const promptText = computed({
+  get: () => drafts.get(scope.value).text,
+  set: (text) => {
+    const old = drafts.get(scope.value);
+    drafts.set(scope.value, text, editMentions(old.text, text, old.mentions));
+  },
+});
+const isRunActive = computed(() => directBotsStore.isRunActive),
+  isTopicRecovering = computed(() => !directBotsStore.topicReady),
+  isPromptInFlight = computed(() => directBotsStore.promptInFlight),
+  isCancelling = computed(() => !!directBotsStore.cancellingRunId),
+  bot = computed(() => directBotsStore.currentBot),
+  isBotDisabled = computed(() => (bot.value ? !bot.value.enabled : false));
+const blocked = computed(
+  () =>
+    !!props.disabled ||
+    isBotDisabled.value ||
+    isPromptInFlight.value ||
+    isRunActive.value ||
+    isTopicRecovering.value,
+);
+const snapshot = ref<ConversationCompletions | null>(null),
+  fetchStatus = ref<"loading" | "unavailable" | "error">("loading");
 const slashCommands = computed(() => {
-  const instanceId = directBotsStore.instanceId;
-  const conversationId = directBotsStore.activeConversationId;
-  const topicId = directBotsStore.activeTopicId;
-  const botId = directBotsStore.selectedBotId;
+  const {
+    instanceId,
+    activeConversationId: conversationId,
+    activeTopicId: topicId,
+    selectedBotId: botId,
+  } = directBotsStore;
   if (!instanceId || !conversationId || !topicId || !botId) return [];
-  return commandStore.commandsFor({ instanceId, conversationId, topicId, botId });
+  const live = commandStore.commandsFor({
+    instanceId,
+    conversationId,
+    topicId,
+    botId,
+  });
+  return snapshot.value ? snapshot.value.commands.items : live;
 });
-
-const slash = computed(() => slashQuery(promptText.value));
-const slashMatches = computed(() => {
-  const query = slash.value;
-  if (!query || cmdDismissed.value) return [];
-  return slashCommands.value.filter((command) => command.name.toLowerCase().startsWith(query.query)).slice(0, 8);
+const slash = computed(() => slashQuery(promptText.value, caret.value));
+const mention = computed(() => mentionQueryAt(promptText.value, caret.value));
+const menuKind = computed(() =>
+  slash.value ? "slash" : mention.value ? "mention" : "closed",
+);
+const menuOpen = computed(
+  () =>
+    menuKind.value !== "closed" &&
+    !cmdDismissed.value &&
+    !composing.value &&
+    !blocked.value &&
+    collapsed.value,
+);
+const referenceLimit = computed(
+  () =>
+    menuKind.value === "mention" &&
+    drafts.get(scope.value).mentions.length >= 16,
+);
+const candidates = computed(() =>
+  referenceLimit.value
+    ? []
+    : menuKind.value === "slash"
+      ? slashCommands.value
+          .filter((c) =>
+            c.name.toLowerCase().startsWith(slash.value?.query ?? ""),
+          )
+          .map((c) => ({
+            key: c.name,
+            label: "/" + c.name,
+            detail: c.description ?? "",
+            command: c.name,
+            kind: c.kind,
+            handle: undefined as string | undefined,
+          }))
+      : (snapshot.value?.mentions.items ?? []).map((m) => ({
+          key: m.handle,
+          label: "@" + m.displayName,
+          detail: [m.agent, m.workspace, m.botId?.slice(-8)].filter(Boolean).join(" · "),
+          command: undefined as string | undefined,
+          kind: undefined,
+          handle: m.handle,
+        })),
+);
+const rows = computed(() =>
+  candidates.value.slice(page.value * 8, page.value * 8 + 8),
+);
+const more = computed(
+  () =>
+    (page.value + 1) * 8 < candidates.value.length ||
+    (snapshot.value?.mentions.nextCursor !== undefined &&
+      menuKind.value === "mention"),
+);
+const status = computed(() => {
+  const {
+    instanceId,
+    activeConversationId: conversationId,
+    activeTopicId: topicId,
+    selectedBotId: botId,
+  } = directBotsStore;
+  const advertised =
+    instanceId &&
+    conversationId &&
+    topicId &&
+    botId &&
+    commandStore.hasAdvertisement({
+      instanceId,
+      conversationId,
+      topicId,
+      botId,
+    });
+  if (referenceLimit.value) return "limit";
+  return !snapshot.value && menuKind.value === "slash" && advertised
+    ? "ready"
+    : (snapshot.value?.[menuKind.value === "slash" ? "commands" : "mentions"]
+        .status ?? fetchStatus.value);
 });
-const slashOpen = computed(() => slashMatches.value.length > 0);
-
-function pickCommand(name: string): void {
-  const query = slash.value;
-  const replaced = replaceRange(promptText.value, query?.range ?? { start: 0, end: promptText.value.length }, `/${name} `);
+let generation = 0,
+  retryTimer: ReturnType<typeof setTimeout> | undefined;
+async function refresh(cursor = 0): Promise<void> {
+  const ticket = ++generation,
+    key = scope.value;
+  const {
+    instanceId,
+    activeConversationId: conversationId,
+    activeTopicId: topicId,
+  } = directBotsStore;
+  if (
+    !instanceId ||
+    !conversationId ||
+    !topicId ||
+    menuKind.value === "closed" ||
+    blocked.value
+  )
+    return;
+  fetchStatus.value = "loading";
+  try {
+    const result = await api.rpc<ConversationCompletions>(
+      instanceId,
+      MSG.conversationCompletionsGet,
+      {
+        conversationId,
+        topicId,
+        ...(mention.value ? { query: mention.value.query, cursor } : {}),
+      },
+    );
+    if (ticket !== generation || key !== scope.value) return;
+    if (
+      isErrorPayload(result) ||
+      result.version !== 1 ||
+      result.scope.conversationId !== conversationId ||
+      result.scope.topicId !== topicId ||
+      result.scope.botId !== directBotsStore.selectedBotId ||
+      !Array.isArray(result.commands?.items) ||
+      !Array.isArray(result.mentions?.items)
+    ) {
+      snapshot.value = null;
+      fetchStatus.value = "unavailable";
+      return;
+    }
+    snapshot.value =
+      cursor && snapshot.value
+        ? {
+            ...result,
+            mentions: {
+              ...result.mentions,
+              items: [
+                ...snapshot.value.mentions.items,
+                ...result.mentions.items,
+              ],
+            },
+          }
+        : result;
+    if (result.commands.status === "loading") {
+      clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => {
+        if (ticket === generation && key === scope.value) void refresh();
+      }, 1500);
+    }
+  } catch {
+    if (ticket === generation && key === scope.value) {
+      snapshot.value = null;
+      fetchStatus.value = "error";
+    }
+  }
+}
+watch(
+  () => [
+    scope.value,
+    bot.value?.profileRevision,
+    commandStore.epochFor(directBotsStore.instanceId ?? ""),
+    menuKind.value,
+    mention.value?.query,
+  ],
+  () => {
+    generation++;
+    clearTimeout(retryTimer);
+    snapshot.value = null;
+    page.value = 0;
+    cmdActiveIdx.value = 0;
+    if (menuKind.value !== "closed") void refresh();
+  },
+);
+watch(scope, () => {
+  cmdDismissed.value = false;
+  caret.value = promptText.value.length;
+  void nextTick(onInput);
+});
+onBeforeUnmount(() => {
+  generation++;
+  clearTimeout(retryTimer);
+});
+function updateCaret(): void {
+  caret.value = textareaEl.value?.selectionStart ?? promptText.value.length;
+  collapsed.value =
+    (textareaEl.value?.selectionStart ?? 0) ===
+    (textareaEl.value?.selectionEnd ?? 0);
+}
+function nextPage(): void {
+  if ((page.value + 1) * 8 < candidates.value.length) {
+    page.value++;
+    cmdActiveIdx.value = 0;
+  } else if (snapshot.value?.mentions.nextCursor !== undefined)
+    void refresh(snapshot.value.mentions.nextCursor).then(() => {
+      page.value++;
+      cmdActiveIdx.value = 0;
+    });
+}
+function pickRow(index: number): void {
+  const row = rows.value[index],
+    query = menuKind.value === "slash" ? slash.value : mention.value;
+  if (!row || !query || blocked.value || !collapsed.value || composing.value)
+    return;
+  if (row.handle && drafts.get(scope.value).mentions.length >= 16) return;
+  const label = row.command ? "/" + row.command : row.label;
+  const replaced = replaceRange(promptText.value, query.range, label + " ");
   promptText.value = replaced.text;
+  if (row.handle) {
+    const old = drafts.get(scope.value);
+    if (old.mentions.length < 16)
+      drafts.set(
+        scope.value,
+        old.text,
+        [
+          ...old.mentions,
+          {
+            range: [query.range.start, query.range.start + label.length] as [
+              number,
+              number,
+            ],
+            handle: row.handle,
+          },
+        ].sort((a, b) => a.range[0] - b.range[0]),
+      );
+  }
   cmdDismissed.value = true;
+  caret.value = replaced.cursor;
   void nextTick(() => {
     textareaEl.value?.focus();
     textareaEl.value?.setSelectionRange(replaced.cursor, replaced.cursor);
-    onInput();
+    resize();
   });
 }
-
 function onKeydown(e: KeyboardEvent): void {
-  const collapsed = (textareaEl.value?.selectionStart ?? 0) === (textareaEl.value?.selectionEnd ?? 0);
+  updateCaret();
   const action = completionKey({
     key: e.key,
     shiftKey: e.shiftKey,
     isComposing: e.isComposing,
     composing: composing.value,
-    menu: slashOpen.value ? "slash" : "closed",
-    itemCount: slashMatches.value.length,
+    menu: menuOpen.value ? menuKind.value : "closed",
+    itemCount: rows.value.length,
     activeIndex: cmdActiveIdx.value,
-    holdKeys: false,
-    collapsedCaret: collapsed,
-    busy: false,
+    holdKeys: menuOpen.value,
+    collapsedCaret: collapsed.value,
+    busy: blocked.value,
     caretAtStart: false,
     historyArmed: false,
   });
@@ -84,13 +337,16 @@ function onKeydown(e: KeyboardEvent): void {
     return;
   }
   if (action.type === "commit") {
-    const row = slashMatches.value[action.index];
-    if (row) pickCommand(row.name);
+    pickRow(action.index);
     e.preventDefault();
     return;
   }
-  if (action.type === "dismiss" || action.type === "blocked") {
+  if (action.type === "dismiss") {
     cmdDismissed.value = true;
+    e.preventDefault();
+    return;
+  }
+  if (action.type === "blocked") {
     e.preventDefault();
     return;
   }
@@ -99,66 +355,79 @@ function onKeydown(e: KeyboardEvent): void {
     void handleSend();
   }
 }
-
 async function handleSend(): Promise<void> {
-  if (props.disabled || isBotDisabled.value || isPromptInFlight.value || isRunActive.value || isTopicRecovering.value) return;
-  const text = promptText.value.trim();
-  if (!text) return;
+  if (blocked.value || !promptText.value.trim() || composing.value) return;
+  const key = scope.value,
+    text = promptText.value,
+    mentions = structuredClone(
+      drafts.get(key).mentions.map((m) => ({
+        range: [...m.range] as [number, number],
+        handle: m.handle,
+      })),
+    );
   if (props.deliver) {
-    const outcome = await props.deliver(text);
-    if (outcome === "accepted" || outcome === "uncertain") clearDraft();
-    return;
+    const outcome = await props.deliver(text, mentions);
+    if (outcome === "accepted") drafts.clear(key, text, mentions);
+  } else emit("send", text, mentions);
+  if (key === scope.value) {
+    cmdDismissed.value = false;
+    resize();
   }
-  emit("send", text);
-  clearDraft();
 }
-
-function clearDraft(): void {
-  promptText.value = "";
-  cmdDismissed.value = false;
-  if (textareaEl.value) textareaEl.value.style.height = "auto";
-}
-
 function handleCancel(): void {
-  if (isCancelling.value) return;
-  emit("cancel");
+  if (!isCancelling.value) emit("cancel");
 }
-
 function handleRetry(): void {
-  if (directBotsStore.lastPromptText) {
-    emit("send", directBotsStore.lastPromptText);
+  void handleSend();
+}
+function resize(): void {
+  if (textareaEl.value) {
+    textareaEl.value.style.height = "auto";
+    textareaEl.value.style.height =
+      Math.min(textareaEl.value.scrollHeight, 200) + "px";
   }
 }
-
 function onInput(): void {
   cmdDismissed.value = false;
   cmdActiveIdx.value = 0;
-  if (!textareaEl.value) return;
-  textareaEl.value.style.height = "auto";
-  const nextHeight = Math.min(textareaEl.value.scrollHeight, 200);
-  textareaEl.value.style.height = `${nextHeight}px`;
+  page.value = 0;
+  updateCaret();
+  resize();
 }
 </script>
-
 <template>
   <div class="border-t border-border bg-surface px-3 py-2.5 sm:px-4">
     <!-- Disabled bot warning -->
-    <div v-if="isBotDisabled" class="mb-2 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning">
+    <div
+      v-if="isBotDisabled"
+      class="mb-2 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning"
+    >
       <AlertCircle :size="14" class="shrink-0" />
       <span>{{ $t("bot.prompt.botDisabledWarning") }}</span>
     </div>
 
     <!-- Cancellation uncertainty (separate from prompt errors; no retry target) -->
-    <div v-else-if="directBotsStore.cancelError" class="mb-2 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning">
+    <div
+      v-else-if="directBotsStore.cancelError"
+      class="mb-2 flex items-center gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-1.5 text-xs text-warning"
+    >
       <AlertCircle :size="14" class="shrink-0" />
-      <span class="truncate">{{ $t(`bot.errors.${directBotsStore.cancelError}`) }}</span>
+      <span class="truncate">{{
+        $t(`bot.errors.${directBotsStore.cancelError}`)
+      }}</span>
     </div>
 
     <!-- Error Banner & Retry -->
-    <div v-else-if="directBotsStore.promptError" class="mb-2 flex items-center justify-between gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs text-danger">
+    <div
+      v-else-if="directBotsStore.promptError"
+      class="mb-2 flex items-center justify-between gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs text-danger"
+    >
       <div class="flex items-center gap-2 min-w-0">
         <AlertCircle :size="14" class="shrink-0" />
-        <span class="truncate">{{ directBotsStore.promptErrorDetail ?? $t(`bot.errors.${directBotsStore.promptError}`) }}</span>
+        <span class="truncate">{{
+          directBotsStore.promptErrorDetail ??
+          $t(`bot.errors.${directBotsStore.promptError}`)
+        }}</span>
       </div>
       <button
         type="button"
@@ -171,35 +440,105 @@ function onInput(): void {
     </div>
 
     <!-- Main Input Box -->
-    <div class="relative flex items-end gap-2 rounded-xl border border-border bg-bg p-1.5 focus-within:border-accent transition-colors">
+    <div
+      class="relative flex items-end gap-2 rounded-xl border border-border bg-bg p-1.5 focus-within:border-accent transition-colors"
+    >
       <div
-        v-if="slashOpen"
+        v-if="menuOpen"
+        id="direct-completion-menu"
+        role="listbox"
+        :aria-label="$t('bot.prompt.completions')"
         data-test="direct-cmd-menu"
-        class="absolute bottom-full left-0 z-20 mb-1.5 w-full overflow-hidden rounded-xl border border-border bg-surface shadow-xl"
+        class="absolute bottom-full left-0 z-20 mb-1.5 w-full max-h-72 overflow-y-auto rounded-xl border border-border bg-surface shadow-xl"
       >
         <button
-          v-for="(command, index) in slashMatches"
-          :key="command.name"
+          v-for="(row, index) in rows"
+          :id="'direct-completion-' + index"
+          :key="row.key"
           type="button"
+          role="option"
+          :aria-selected="index === cmdActiveIdx"
           data-test="direct-cmd-item"
           class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-xs hover:bg-raised"
           :class="index === cmdActiveIdx ? 'bg-accent/10' : ''"
-          @mousedown.prevent="pickCommand(command.name)"
+          @pointerdown.prevent
+          @click="pickRow(index)"
         >
-          <span class="font-medium text-fg">/{{ command.name }}</span>
-          <span v-if="command.description" class="truncate text-fg-muted">{{ command.description }}</span>
+          <span v-if="row.kind === 'skill'" class="text-accent">{{
+            $t("bot.prompt.skillCompletion")
+          }}</span>
+          <span class="font-medium text-fg">{{ row.label }}</span
+          ><span class="truncate text-fg-muted">{{ row.detail }}</span>
+        </button>
+        <div
+          v-if="!rows.length"
+          role="status"
+          class="px-3 py-2 text-xs text-fg-muted"
+        >
+          {{ $t("bot.prompt.completion" + status) }}
+        </div>
+        <button
+          v-if="more"
+          type="button"
+          class="px-3 py-2 text-xs text-accent"
+          @pointerdown.prevent
+          @click="nextPage"
+        >
+          {{ $t("bot.prompt.moreCompletions") }}
+        </button>
+        <button
+          v-if="
+            status === 'error' ||
+            status === 'loading' ||
+            status === 'unavailable'
+          "
+          type="button"
+          class="px-3 py-2 text-xs text-accent"
+          @pointerdown.prevent
+          @click="refresh()"
+        >
+          {{ $t("bot.prompt.retry") }}
         </button>
       </div>
       <textarea
         ref="textareaEl"
         v-model="promptText"
-        :disabled="disabled || isBotDisabled || isPromptInFlight || isRunActive || isTopicRecovering"
-        :placeholder="isBotDisabled ? $t('bot.prompt.botDisabledPlaceholder') : isTopicRecovering ? $t('bot.prompt.recoveringPlaceholder') : isRunActive ? $t('bot.prompt.runActivePlaceholder') : $t('bot.prompt.placeholder')"
+        role="combobox"
+        aria-autocomplete="list"
+        aria-controls="direct-completion-menu"
+        :aria-expanded="menuOpen"
+        :aria-activedescendant="
+          menuOpen && rows.length
+            ? 'direct-completion-' + cmdActiveIdx
+            : undefined
+        "
+        :disabled="
+          disabled ||
+          isBotDisabled ||
+          isPromptInFlight ||
+          isRunActive ||
+          isTopicRecovering
+        "
+        :placeholder="
+          isBotDisabled
+            ? $t('bot.prompt.botDisabledPlaceholder')
+            : isTopicRecovering
+              ? $t('bot.prompt.recoveringPlaceholder')
+              : isRunActive
+                ? $t('bot.prompt.runActivePlaceholder')
+                : $t('bot.prompt.placeholder')
+        "
         class="min-h-[38px] max-h-[200px] w-full resize-none bg-transparent px-2.5 py-2 text-sm text-fg outline-none placeholder:text-fg-muted disabled:cursor-not-allowed disabled:opacity-50"
         @keydown="onKeydown"
         @input="onInput"
+        @click="updateCaret"
+        @select="updateCaret"
+        @keyup="updateCaret"
         @compositionstart="composing = true"
-        @compositionend="composing = false"
+        @compositionend="
+          composing = false;
+          onInput();
+        "
       />
 
       <div class="flex shrink-0 items-center gap-1 pb-1 pr-1">
@@ -225,7 +564,13 @@ function onInput(): void {
           data-test="send-prompt-button"
           :title="$t('bot.prompt.send')"
           :aria-label="$t('bot.prompt.send')"
-          :disabled="disabled || isBotDisabled || isPromptInFlight || !promptText.trim()"
+          :disabled="
+            disabled ||
+            isBotDisabled ||
+            isPromptInFlight ||
+            isTopicRecovering ||
+            !promptText.trim()
+          "
           class="grid h-8 w-8 place-items-center rounded-lg bg-accent text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
           @click="handleSend"
         >

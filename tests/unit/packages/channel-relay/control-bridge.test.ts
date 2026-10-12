@@ -2049,3 +2049,26 @@ test("PR7 groups.list dispatches and structured prompt target passes through", a
     target: { mode: "members", botIds: [] },
   }))).toMatchObject({ error: { code: "invalid-payload" } });
 });
+
+test("Direct completion query and references are validated and never silently downgraded", async () => {
+  const calls:unknown[]=[];
+  const {control}=makeFakeControl({getConversationCompletions:async(input:unknown)=>{calls.push(input);return {version:1};},promptConversation:async(input:unknown)=>{calls.push(input);return {ok:true};}});
+  const bridge=createControlBridge(control as never);
+  const scope={conversationId:"c",topicId:"t"};
+  expect(await dispatch(bridge,req(MSG.conversationCompletionsGet,{...scope,query:"same",cursor:64}))).toEqual({version:1});
+  expect(calls[0]).toEqual({...scope,query:"same",cursor:64});
+  expect(await dispatch(bridge,req(MSG.conversationCompletionsGet,{...scope,sessionAlias:"hidden"}))).toMatchObject({error:{code:"invalid-payload"}});
+  const input={...scope,requestId:"r",text:" 😀 @B ",agentMentions:[{range:[4,6],handle:"agent:n:b"}]};
+  expect(await dispatch(bridge,req(MSG.conversationPrompt,input))).toEqual({ok:true});expect(calls[1]).toEqual(input);
+  const old=createControlBridge(makeFakeControl({promptConversation:async()=>{throw new Error("must not reach old daemon");}}).control as never);
+  expect(await dispatch(old,req(MSG.conversationPrompt,input))).toMatchObject({error:{code:"unsupported-agent-mentions"}});
+  expect(await dispatch(old,req(MSG.conversationCompletionsGet,scope))).toMatchObject({error:{code:"unsupported"}});
+});
+
+test("private peer correlated streams never reach Relay reconnect mirrors",()=>{
+  const {control,emit}=makeFakeControl({isPrivateConversationTopic:(id:string)=>id==="peer"});
+  const forwarded:unknown[]=[];subscribeControlEvents(control as never,(type,payload)=>forwarded.push({type,payload}));
+  const event={type:"agent-commands",chatKey:"bot:c:peer",sessionAlias:"hidden",commands:[{name:"private"}],conversation:{conversationId:"c",topicId:"peer",botId:"b",runId:"r",memberTurnId:"m"}};
+  emit(event);expect(forwarded).toHaveLength(0);
+  emit({...event,conversation:{...event.conversation,topicId:"human"}});expect(forwarded).toHaveLength(1);
+});

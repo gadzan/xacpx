@@ -29,6 +29,7 @@ export interface BridgeEngine {
   injectMessage(input: EngineInjectInput): Promise<SessionMessageReceiptLike>;
   setMode(input: EngineSessionInput & { modeId: string }): Promise<Record<string, never>>;
   setModel(input: EngineSessionInput & { modelId: string }): Promise<Record<string, never>>;
+  prepareSessionCommands?(input: EngineSessionInput): Promise<AgentCommand[] | undefined>;
   getSessionModel(input: EngineSessionInput): Promise<{ current?: string; available: string[] }>;
   /** Agent-level cold probe. Not bound to a logical session. */
   probeAgentCapabilities(input: import("../../transport/types").AgentCapabilityProbeRequest): Promise<import("../../transport/types").AgentCapabilityProbeResult>;

@@ -509,3 +509,11 @@ Skipped in this harness (documented in `steps.json`):
 - public handoff (needs a live member-turn mock runner)
 - full Web UI walkthrough (Playwright `mock-hub` has no honest bot/group RPC yet)
 - restricted Router binary path (no live router in CI)
+
+## Direct completions and reference compatibility (Issue #399)
+
+control.conversation.completions.get is instance-scoped and uses the existing authenticated instance ownership check. It is not in CHAT_SCOPED_TYPES, takes no client chatKey or hidden alias, and is forwarded by channel-relay to public Control. The protocol exposes versioned public scope/status/revision plus bounded command and authorized endpoint rows; a query may include a 128-character search and numeric page cursor.
+
+control.conversation.prompt and the policy-aware variant carry optional agentMentions, preserving original text and UTF-16 ranges through the connector and public sanitizer. Structured references are rejected if the daemon does not implement completion capability discovery; an old response/unknown-type disables selecting references in the new client. Missing metadata on legacy prompts means no references. The ordinary authenticated humanIngress path is unchanged and Direct peer delivery never fabricates it.
+
+Private peer product events are suppressed by core Control. channel-relay also omits correlated private peer streams before state-mirror ingestion, so reconnect state does not copy one Bot's peer history into another human Direct Topic. The public IDs returned by completion discovery never include hidden session aliases or MCP launch tokens.

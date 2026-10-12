@@ -582,6 +582,15 @@ export class AcpxCliTransport implements SessionTransport {
   // Read the session's current model and the agent-advertised available ids from
   // `<agent> status --format json`. Returns an empty list when status output is
   // not parseable, so callers can still show the current model.
+  async prepareSessionCommands(session: ResolvedSession): Promise<AgentCommand[] | undefined> {
+    await this.ensureSession(session);
+    const args = this.buildAgentQueryArgs(this.sessionInput(session), 'json', ['status','-s',session.transportSession]);
+    const result = await this.runCommandWithTimeout(this.runCommand,args,{timeoutMs:this.managementCommandTimeoutMs,stage:'get-session-model',env:this.effectiveSpawnEnvironment(session)});
+    if(result.code !== 0) throw new Error('command advertisement read failed');
+    const raw = JSON.parse(result.stdout) as {availableCommands?: AgentCommand[]};
+    return raw.availableCommands;
+  }
+
   async getSessionModel(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
     this.assertCliAffinity(session);
     const args = this.buildAgentQueryArgs(

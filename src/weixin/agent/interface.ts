@@ -82,6 +82,8 @@ export interface ChatRequestMetadata {
   conversationTarget?: import("../../control/conversation-control-dtos.js").ConversationTarget;
   /** Core-private execution capability, passed only by the Conversation runner. */
   groupExecutionToken?: string;
+  directExecutionToken?: string;
+  directMentionContext?: import("../../conversations/direct-input-metadata").ResolvedDirectMention[];
   channel?: string;
   chatType?: "direct" | "group";
   senderId?: string;

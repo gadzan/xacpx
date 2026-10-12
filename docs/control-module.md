@@ -364,3 +364,13 @@ channel bindings. The authenticated Relay RPC equivalents are
 These management calls grant no human execution authority.
 See [Conversation runtime](conversation-runtime.md#external-channel-bindings-pr10)
 for admission, exact chat/thread keys, target addressing and replay semantics.
+
+## Direct completion capability query (Issue #399)
+
+getConversationCompletions is the public Control method behind control.conversation.completions.get. Input is only {conversationId, topicId, query?, cursor?}; the wire validator rejects aliases, cwd, execution tokens, and unrelated fields. Query is at most 128 characters, cursor is a non-negative safe integer, and mentions return at most 64 rows per page. The authenticated Hub instance-ownership gate remains authoritative.
+
+The version=1 response carries public scope {conversationId, topicId, botId}, an invalidation revision, and separate commands/mentions {status, items, reason?}; status is ready/loading/unavailable/error, and ready with no items is a successful empty advertisement. Candidates use the same DirectBotEndpointRegistry authorization as agent_list/agent_send, excluding self, disabled, retired, or nonreceiving Bots. The revision is not a credential. Human public Direct scopes only are queryable; private peer Topics and Group scopes are rejected.
+
+Command discovery uses transport.prepareSessionCommands, shares BotRuntimeManager's lifecycle/materialization gate with real execution, coalesces identical pending queries, and creates no message or Run. A query returns loading after 10 seconds while the original preparation retains its gate until settlement; retry attaches to that preparation rather than creating a second owner. Profile, adapter context, and Topic generation invalidate cached results; stale command callbacks are fenced by command epochs. An active Run only exposes its existing correlated advertisement. A restricted logical runtime returns unavailable without replacing it with an unrestricted runtime.
+
+ConversationPromptRequestDto and the public sanitizer whitelist optional agentMentions only; stable resolved identities and execution tokens remain core-private. Old prompts with no metadata remain valid. A connector refuses nonempty references when its daemon lacks the completion API, preventing silent metadata loss. New Web clients create references only after receiving a valid version=1 capability response.

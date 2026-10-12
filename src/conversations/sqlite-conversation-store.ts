@@ -1,3 +1,4 @@
+import { parseDirectInputMetadata } from "./direct-input-metadata";
 import { randomUUID } from "node:crypto";
 import {
   createConversationMessageId,
@@ -109,6 +110,7 @@ export interface ExternalRejectionReceipt {
 }
 
 interface MessageRow {
+  input_metadata_json?: string | null;
   handoff_json?: string | null;
   id: string;
   conversation_id: string;
@@ -505,6 +507,7 @@ function mapMessage(row: MessageRow): ConversationMessage {
     role: row.role as ConversationMessage["role"],
     ...(optionalString(row.sender_bot_id) ? { senderBotId: row.sender_bot_id as string } : {}),
     content: row.content,
+    ...(row.input_metadata_json !== null && row.input_metadata_json !== undefined ? { inputMetadata: parseDirectInputMetadata(row.content, JSON.parse(row.input_metadata_json)) } : {}),
     ...(row.handoff_json ? { handoff: JSON.parse(row.handoff_json) as ConversationMessage["handoff"] } : {}),
     ...(optionalString(row.run_id) ? { runId: row.run_id as string } : {}),
     createdAt: row.created_at,
@@ -744,6 +747,9 @@ export class SqliteConversationStore implements ConversationStore {
     this.ensureDispatchMultiMemberShape();
     this.ensurePublicHandoffSchema();
     this.ensureExternalStopIngress();
+    if (!this.sqlite.all<{ name: string }>("PRAGMA table_info(messages)").some(c => c.name === "input_metadata_json")) {
+      this.sqlite.exec("ALTER TABLE messages ADD COLUMN input_metadata_json TEXT");
+    }
     this.ensureBindingRevision();
   }
 
@@ -3567,12 +3573,16 @@ export class SqliteConversationStore implements ConversationStore {
       );
     }
     const runSnapshot = input.profileSnapshot;
+    const metadata = input.inputMetadata ? parseDirectInputMetadata(input.content, input.inputMetadata) : undefined;
     this.sqlite.run(
       `INSERT INTO messages (
          id, conversation_id, topic_id, seq, role, sender_bot_id, content, run_id, source_turn_json, created_at
        ) VALUES (?, ?, ?, ?, 'human', NULL, ?, ?, NULL, ?)`,
       [messageId, input.conversationId, input.topicId, seq, input.content, runId, input.now],
     );
+    if (metadata) this.sqlite.run(
+      "UPDATE messages SET input_metadata_json = ?, role = ?, sender_bot_id = ? WHERE id = ?",
+      [JSON.stringify(metadata), metadata.peer ? "bot" : "human", metadata.peer?.sourceBotId ?? null, messageId]);
     this.sqlite.run(
       `INSERT INTO runs (
          id, conversation_id, topic_id, request_message_id, request_id, mode, state, completion_reason,

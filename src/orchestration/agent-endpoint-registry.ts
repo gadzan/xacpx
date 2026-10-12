@@ -1,3 +1,4 @@
+import { isHiddenProductSessionOwner } from "../state/types";
 import type { AppState, LogicalSession } from "../state/types";
 import { getChannelIdFromChatKey, toDisplaySessionAlias } from "../channels/channel-scope";
 import {
@@ -527,7 +528,7 @@ export class AgentEndpointRegistry {
 
     if (all || !isExternal) {
       for (const logical of Object.values(state.sessions)) {
-        if (logical.archived === true) {
+        if (logical.archived === true || isHiddenProductSessionOwner(logical.owner)) {
           continue;
         }
         candidates.push({
@@ -675,7 +676,7 @@ function findLogicalSession(
   return Object.values(state.sessions)
     .filter(
       (session) =>
-        session.archived !== true &&
+        session.archived !== true && !isHiddenProductSessionOwner(session.owner) &&
         sameCoordinatorSession(session.transport_session, coordinatorSession),
     )
     .sort((left, right) => left.alias.localeCompare(right.alias))[0];
