@@ -992,14 +992,24 @@ Topics while the sibling runs.
 The drain tracks every guard it launches for its **whole lifetime**, not just in
 the consumable `cohort` queue. `cohort` is spliced as it is waited on, so it
 cannot answer "did anything this drain launched fail?" once a handoff's entry has
-been consumed. A separate `launchedOutcomes` registry keeps each guard's outcome
-cell in launch order, and it is re-checked after the wake race, after every cohort
+been consumed. A separate `DrainOutcomeRegistry` keeps each guard's outcome cell
+in launch order, and it is re-checked after the wake race, after every cohort
 settle, and once more before the drain returns. Without that, a post-start
 infrastructure failure — a persist or write-back error that `execute()`'s own
 catch does not digest — landing after the wake-aware wait returned would escape as
 a successful `kick()`, breaking the contract that an unexpected execution failure
 rejects activation. Rejection is still reported in launch order, never in
 settlement order, so the failure is attributable.
+
+The registry stays bounded: a settled success is removed the moment it settles,
+because nothing consults a fulfilled cell again (waiting uses the guard promises
+in `inFlightExecutions`, failure detection looks only for `rejected`). A single
+long Provider turn can keep a drain alive while other Topics complete arbitrarily
+many short tasks; without pruning, memory would grow with cumulative launches
+rather than the concurrency ceiling and every failure scan would pay for all of
+that history. Pending cells stay — a pending cell may still reject, which is the
+late-failure case the registry exists for — and a rejection ends the drain at the
+next check, so neither class accumulates.
 
 The handoff's guards are **spliced** out of the drain's cohort array before that
 wait, never copied. They stay in `inFlightExecutions`, so the next wait that

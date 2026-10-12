@@ -112,10 +112,16 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
       worktrees, beforeWorktreeCleanup: integrations ? (c, t) => integrations.cleanupScope(c, t) : undefined });
   dispatcher.setAutomaticRoutingHandler((id) => service.trackAutomaticRouting(id));
   // Observable claim activity, so a test can wait for the scheduler to have
-  // scanned instead of guessing a duration. Counts every claimNextDispatch call.
-  const claimCounter = { attempts: 0 };
+  // scanned instead of guessing a duration. Counts every claimNextDispatch call
+  // plus every fairness peek: a woken drain that rejoins a still-running drain
+  // bumps the wake generation without a fresh claim scan, but the running
+  // drain's next pass peeks (the fairness path peeks BEFORE claiming), so the
+  // peek counter proves a pass ran its scan after the wake arrived.
+  const claimCounter = { attempts: 0, peeks: 0 };
   const originalClaim = store.claimNextDispatch.bind(store);
   store.claimNextDispatch = (input) => { claimCounter.attempts += 1; return originalClaim(input); };
+  const originalPeek = store.peekClaimableTopicIds.bind(store);
+  store.peekClaimableTopicIds = (...args) => { claimCounter.peeks += 1; return originalPeek(...args); };
   const ids = Object.keys(state.bots);
   // `workspace` selects the physical directory this Topic's members materialize
   // against. Passing the harness's second workspace (`alt`) is the only way to
@@ -150,5 +156,5 @@ export async function harness(options: { path?: string; state?: AppState; hooks?
       primaryMember: first, members: pool.slice(1, count).map(member), content: "one frozen request", now: NOW,
       maxMemberTurns: 24, authorityEpoch: dispatcher.authorityEpoch, humanIngress: HUMAN });
   }
-  return { path, config, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, ids, now, worktrees, integrations, jump: (ms: number) => { clock += ms; }, claimAttempts: () => claimCounter.attempts };
+  return { path, config, store, state, stateStore, bots, runtime, sessions, runner, dispatcher, service, group, accept, ids, now, worktrees, integrations, jump: (ms: number) => { clock += ms; }, claimAttempts: () => claimCounter.attempts, claimScans: () => claimCounter.attempts + claimCounter.peeks };
 }

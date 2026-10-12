@@ -108,6 +108,81 @@ export type AutomaticRoutingHandler = (runId: string) => void;
 
 const DEFAULT_LEASE_MS = 30_000;
 
+export type DrainOutcomeStatus = "pending" | "fulfilled" | "rejected";
+
+export interface DrainOutcomeCell {
+  status: DrainOutcomeStatus;
+  reason?: unknown;
+}
+
+/**
+ * Every outcome cell one drain has launched, in LAUNCH order.
+ *
+ * `cohort` (the drain's consumption queue) is the wrong place to ask "did
+ * anything this drain launched fail?" — a wait splices entries out so the next
+ * pass's plain settle does not re-block on a still-running sibling, which makes
+ * a spliced-out guard that later rejects invisible to every later `cohort`
+ * check. This registry keeps the cells for the drain's whole lifetime, in
+ * launch order, so a late rejection is deterministic and attributable (launch
+ * order, not settlement order).
+ *
+ * A settled-success cell is REMOVED: `firstFailure` only ever looks for
+ * `rejected`, and the guard promises themselves stay in `inFlightExecutions`
+ * for waiting purposes, so nothing consults a fulfilled cell again. Without
+ * this the registry grows with every launch for the drain's whole lifetime —
+ * a single long Provider turn keeps the drain alive while other Topics
+ * complete arbitrarily many short tasks — and every failure scan pays for all
+ * of that history. Pending and rejected cells stay: a pending cell may still
+ * reject (that is the late-failure case this registry exists for), and a
+ * rejection ends the drain at the next check, so rejected cells never
+ * accumulate either. Removal preserves launch order among the survivors, so
+ * the rethrown failure stays deterministic and attributable.
+ */
+export class DrainOutcomeRegistry {
+  private readonly cells: DrainOutcomeCell[] = [];
+
+  /** Live cells still tracked (pending may yet reject; rejected ends the drain). */
+  get size(): number {
+    return this.cells.length;
+  }
+
+  /** Register one launch; the caller settles the returned cell exactly once. */
+  track(): DrainOutcomeCell {
+    const cell: DrainOutcomeCell = { status: "pending" };
+    this.cells.push(cell);
+    return cell;
+  }
+
+  /** A settled success is never consulted again: drop it, keeping survivor order. */
+  fulfill(cell: DrainOutcomeCell): void {
+    cell.status = "fulfilled";
+    const index = this.cells.indexOf(cell);
+    if (index >= 0) {
+      this.cells.splice(index, 1);
+    }
+  }
+
+  /** A rejection stays until the drain's next check throws it. */
+  reject(cell: DrainOutcomeCell, reason: unknown): void {
+    cell.status = "rejected";
+    cell.reason = reason;
+  }
+
+  /** The first rejection in launch order, or undefined when none has rejected. */
+  firstFailure(): unknown {
+    const failure = this.cells.find((cell) => cell.status === "rejected");
+    // `rejected` is a STATUS, not a payload test: a member execution may
+    // legally reject with `undefined`, which must still propagate — hence the
+    // explicit undefined return rather than returning the reason directly.
+    return failure ? failure.reason : undefined;
+  }
+
+  /** True when a rejection is recorded (even one whose reason is `undefined`). */
+  hasFailure(): boolean {
+    return this.cells.some((cell) => cell.status === "rejected");
+  }
+}
+
 export class ConversationDispatcher {
   /**
    * How many ready Topics the fairness rotator considers per claim.
@@ -346,36 +421,24 @@ export class ConversationDispatcher {
     // rejection happened to settle first.
     // `rejected` is a STATUS, not a payload test: a member execution may
     // legally reject with `undefined`, which must still propagate.
-    const cohort: Array<{
-      guard: Promise<void>;
-      outcome: { status: "pending" | "fulfilled" | "rejected"; reason?: unknown };
-    }> = [];
-    /**
-     * Every outcome cell this drain has launched, in LAUNCH order.
-     *
-     * `cohort` is a consumption queue: a wait splices entries out so the next
-     * pass's plain settle does not re-block on a sibling that is still running.
-     * That makes `cohort` the wrong place to ask "did anything this drain
-     * launched fail?" — a handoff whose guard is spliced out and then rejects is
-     * invisible to every later `cohort` check, and its failure would be
-     * swallowed by a successful `kick()`.
-     *
-     * This registry keeps the cells for the drain's whole lifetime, in launch
-     * order, so the failure is deterministic and attributable (launch order, not
-     * settlement order). `raiseIfFailed` consults it at every exit-relevant
-     * point: after a wake-aware wait, after a cohort settle, and before the
-     * drain returns.
-     */
-    const launchedOutcomes: Array<{ status: "pending" | "fulfilled" | "rejected"; reason?: unknown }> = [];
+    const cohort: Array<{ guard: Promise<void>; outcome: DrainOutcomeCell }> = [];
+    // The drain-lifetime launch history lives in DrainOutcomeRegistry (kept
+    // beside the class so its bounded-growth contract is unit-testable):
+    // `cohort` is spliced as it is waited on and can no longer answer "did
+    // anything this drain launched fail?", while the registry keeps pending
+    // cells (a pending cell may still reject — the late-failure case) and drops
+    // settled successes. `raiseIfFailed` consults it at every exit-relevant
+    // point: after a wake-aware wait, after a cohort settle, and before the
+    // drain returns.
+    const launchedOutcomes = new DrainOutcomeRegistry();
     /** Throw the first rejection this drain launched, in launch order. */
     const raiseIfFailed = (): void => {
-      const failure = launchedOutcomes.find((outcome) => outcome.status === "rejected");
-      if (failure) {
-        throw failure.reason;
+      if (launchedOutcomes.hasFailure()) {
+        throw launchedOutcomes.firstFailure();
       }
     };
     const launchExecution = (work: ClaimedWork): void => {
-      const outcome: { status: "pending" | "fulfilled" | "rejected"; reason?: unknown } = { status: "pending" };
+      const outcome = launchedOutcomes.track();
       const releasePhysicalResource = (): void => {
         // The resource is free the moment the Provider turn settles, whether the
         // turn completed, failed, or was cancelled. Leaving it held would
@@ -392,6 +455,7 @@ export class ConversationDispatcher {
       // cell is final.
       const guard = this.execute(work).then(
         () => {
+          launchedOutcomes.fulfill(outcome);
           releasePhysicalResource();
           if (this.inFlightExecutions.get(work.dispatch.id) === guard) {
             this.inFlightExecutions.delete(work.dispatch.id);
@@ -399,8 +463,7 @@ export class ConversationDispatcher {
           }
         },
         (error: unknown) => {
-          outcome.status = "rejected";
-          outcome.reason = error;
+          launchedOutcomes.reject(outcome, error);
           releasePhysicalResource();
           if (this.inFlightExecutions.get(work.dispatch.id) === guard) {
             this.inFlightExecutions.delete(work.dispatch.id);
@@ -411,8 +474,6 @@ export class ConversationDispatcher {
       this.inFlightExecutions.set(work.dispatch.id, guard);
       this.inFlightWork.set(work.dispatch.id, work);
       cohort.push({ guard, outcome });
-      // Registered for the drain's whole lifetime, independent of `cohort`.
-      launchedOutcomes.push(outcome);
     };
     const awaitCohortInFlight = async (): Promise<void> => {
       const launched = cohort.splice(0);
@@ -455,7 +516,7 @@ export class ConversationDispatcher {
      * error — anything `execute()` does not digest itself) escape as a
      * successful `kick()`.
      */
-    const awaitCohortInFlightOrWake = async (launched: Array<{ guard: Promise<void>; outcome: { status: "pending" | "fulfilled" | "rejected"; reason?: unknown } }>): Promise<void> => {
+    const awaitCohortInFlightOrWake = async (launched: Array<{ guard: Promise<void>; outcome: DrainOutcomeCell }>): Promise<void> => {
       if (launched.length === 0) {
         return;
       }

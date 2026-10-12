@@ -721,11 +721,18 @@ test("a same-Topic wake does not re-arm cohort blocking for a later Topic", asyn
   h.runner.finish(h.runner.calls.findIndex((c) => c.runId === runA.id));
   await until(() => h.runner.calls.some((c) => c.memberTurnId === sibling.id));
   expect(h.store.getRun(runA.id)?.state).toBe("running");
-  // Step 2: a same-Topic Run whose wake claims nothing.
+  // Step 2: a same-Topic Run whose wake claims nothing. Wait for an OBSERVABLE
+  // scheduler condition, not a fixed delay: the woken pass must have run its
+  // claim scan (claimScans grows) before Topic C arrives, so the test proves
+  // the pass — not just the wall clock — reached the tail where the defect
+  // lived. Note this must count peeks, not just claims: the second kick joins
+  // the still-running drain (bump + return, no fresh drain), so the next scan
+  // happens in the running drain's next pass, whose fairness path PEEKS before
+  // it claims — or skips the claim entirely when nothing is claimable.
+  const scansBefore = h.claimScans();
   h.accept(a.group.id, a.topic.id, 1, false, "r4-a-next", undefined, a.members);
   await h.dispatcher.kick();
-  // Give the woken pass time to run its claim loop and reach the settle.
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await until(() => h.claimScans() > scansBefore);
   // Step 4: Topic C arrives only now, on an independent physical directory.
   const c = await h.group(1, "alt");
   h.accept(c.group.id, c.topic.id, 1, true, "r4-c", undefined, c.members);
