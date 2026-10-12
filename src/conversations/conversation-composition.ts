@@ -1,5 +1,9 @@
+import { DirectMessagingService } from "./direct-messaging";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+
+import { BotRemovalService } from "../bots/bot-removal-service";
+import { ROUTER_CONFIG_PATH, type RouterAvailability } from "@ganglion/xacpx-relay-protocol";
 
 import { BotRuntimeManager } from "../bots/bot-runtime-manager";
 import { BotService } from "../bots/bot-service";
@@ -18,6 +22,7 @@ import { ConversationDispatcher, type LeaseScheduler } from "./conversation-disp
 import { conversationExecutionOrigin } from "./conversation-execution";
 import { bindRouter } from "./conversation-router-gate";
 import { ConversationRouterEngine } from "./conversation-router-engine";
+import { disabledRouterAvailability, unprovenRouterAvailability, type ProductionRouterResolution } from "./production-router";
 import { ConversationRunService } from "./conversation-run-service";
 import { ControlConversationTurnRunner } from "./conversation-turn-runner";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
@@ -26,11 +31,25 @@ import { ConversationBindingService } from "./conversation-bindings";
 import { ConversationWorktreeManager } from "./conversation-worktree-manager";
 import { WorktreeIntegrationService } from "./worktree-integration-service";
 
+function settleRouter(router: unknown, declared: RouterAvailability | undefined): {
+  router?: ReturnType<typeof bindRouter>;
+  availability: RouterAvailability;
+} {
+  const bound = bindRouter(router);
+  if (declared?.status === "ready") {
+    return bound ? { router: bound, availability: declared } : { availability: unprovenRouterAvailability() };
+  }
+  if (declared) return { availability: declared };
+  if (bound) return { router: bound, availability: { status: "ready", configPath: ROUTER_CONFIG_PATH } };
+  return { availability: disabledRouterAvailability() };
+}
+
 export function resolveConversationStorePath(configPath: string): string {
   return join(resolveRuntimeDirFromConfigPath(configPath), "conversations.sqlite");
 }
 
 export interface ConversationRuntime {
+  directMessaging: DirectMessagingService;
   worktrees: ConversationWorktreeManager;
   integrations: WorktreeIntegrationService;
   store: SqliteConversationStore;
@@ -38,8 +57,19 @@ export interface ConversationRuntime {
   botRuntime: BotRuntimeManager;
   dispatcher: ConversationDispatcher;
   runs: ConversationRunService;
+  removals: BotRemovalService;
   handoffs: GroupHandoffService;
   bindings: ConversationBindingService;
+  /** Router availability. Starts as the resolver's snapshot and is replaced by
+   *  `applyRouterResolution`; the composer reads this instead of guessing. */
+  routerAvailability: RouterAvailability;
+  /**
+   * Hot-apply a re-resolved production router (the automatic-collaboration
+   * switch). Rebuilds the engine from the same capability gate as startup, so
+   * a router that cannot prove its restriction leaves automatic mode
+   * unsupported. In-flight routing steps finish on the engine they captured.
+   */
+  applyRouterResolution(resolution: ProductionRouterResolution): void;
   authorityEpoch: string;
   kick(): Promise<void>;
   /**
@@ -55,6 +85,7 @@ export interface ConversationRuntime {
 }
 
 export interface CreateConversationRuntimeInput {
+  messagingNodeId?: string;
   config: Pick<AppConfig, "agents" | "workspaces"> & Partial<Pick<AppConfig, "channel" | "channels">>;
   state: AppState;
   stateStore: Pick<StateStore, "save"> & { saveNow?: (state: AppState) => Promise<void> };
@@ -75,6 +106,12 @@ export interface CreateConversationRuntimeInput {
    * (including a permissive default) leaves automatic mode unsupported.
    */
   router?: unknown;
+  /**
+   * Availability from the production resolver. When set, a router is attached
+   * only for `ready`. Callers that pass a router and omit this field keep the
+   * existing test seam.
+   */
+  routerAvailability?: RouterAvailability;
   /** Engine-enforced decision deadline; adapters cannot disable it. */
   routerDecisionTimeoutMs?: number;
   /**
@@ -87,6 +124,12 @@ export interface CreateConversationRuntimeInput {
   leaseScheduler?: LeaseScheduler;
   /** Test seam: throw once from inside a live lease renewal transaction. */
   beforeLeaseRenewal?: () => void;
+  /** Test seam forwarded to ConversationRunService. Production leaves it unset. */
+  beforeAcceptPersist?: () => Promise<void>;
+  afterTeardownMarkedDeleting?: () => Promise<void>;
+  beforeTeardownFinalize?: () => Promise<void>;
+  /** Test seam: runs after the removal barrier is durable and before cleanup. */
+  afterBotRemovalBarrier?: () => Promise<void>;
 }
 
 export async function createConversationRuntime(
@@ -138,21 +181,25 @@ export async function createConversationRuntime(
   // unsupported (`automatic_unsupported`), which preserves PR7 behavior for
   // every deployment that has not opted in. `bindRouter` refuses any object
   // that cannot prove its restriction up front — never a permissive default.
-  const router = bindRouter(input.router);
-  const routerEngine = router
-    ? new ConversationRouterEngine(router, {
-      store,
-      readGroup: (conversationId) => input.state.conversations[conversationId],
-      readTopic: (conversationId, topicId) => {
-        const topic = input.state.conversation_topics[topicId];
-        return topic?.conversationId === conversationId ? topic : undefined;
-      },
-      readBot: (botId) => bots.getBot(botId),
-      runLifecycleAll: (botIds, critical) => bots.runLifecycleAll(botIds, critical),
-      now: input.now ?? (() => new Date()),
-      decisionTimeoutMs: input.routerDecisionTimeoutMs,
-    })
-    : undefined;
+  // The runtime switch reuses these exact options, so a hot-applied router is
+  // bound by the same reads, gates, and deadline as the startup path.
+  const routerEngineOptions = {
+    store,
+    readGroup: (conversationId: string) => input.state.conversations[conversationId],
+    readTopic: (conversationId: string, topicId: string) => {
+      const topic = input.state.conversation_topics[topicId];
+      return topic?.conversationId === conversationId ? topic : undefined;
+    },
+    readBot: (botId: string) => bots.getBot(botId),
+    runLifecycleAll: <T>(botIds: readonly string[], critical: () => Promise<T>) => bots.runLifecycleAll(botIds, critical),
+    now: input.now ?? (() => new Date()),
+    decisionTimeoutMs: input.routerDecisionTimeoutMs,
+  };
+  const settled = settleRouter(input.router, input.routerAvailability);
+  const routerEngine = settled.router ? new ConversationRouterEngine(settled.router, routerEngineOptions) : undefined;
+  // Replaced wholesale by applyRouterResolution below; the getter keeps the
+  // published surface read-only for consumers.
+  let routerAvailability: RouterAvailability = settled.availability;
   const dispatcher = new ConversationDispatcher(store, botRuntime, runner, input.sessions, {
     authorityEpoch: input.authorityEpoch ?? randomUUID(),
     ...(input.ownerId ? { ownerId: input.ownerId } : {}),
@@ -188,10 +235,24 @@ export async function createConversationRuntime(
       ...(routerEngine ? { routerEngine } : {}),
       ...(input.onProductEvent ? { onProductEvent: input.onProductEvent } : {}),
       ...(input.onSchedulingFailure ? { onSchedulingFailure: input.onSchedulingFailure } : {}),
+      ...(input.beforeAcceptPersist ? { beforeAcceptPersist: input.beforeAcceptPersist } : {}),
+      ...(input.afterTeardownMarkedDeleting ? { afterTeardownMarkedDeleting: input.afterTeardownMarkedDeleting } : {}),
+      ...(input.beforeTeardownFinalize ? { beforeTeardownFinalize: input.beforeTeardownFinalize } : {}),
       ...shared,
     },
   );
   runsRef = runs;
+  const directMessaging = new DirectMessagingService({ state: input.state, bots, store, runs, ...(input.now ? {now:input.now} : {}), nodeId: input.messagingNodeId ?? "test-node" });
+  runs.setMentionResolver((botId, mentions) => directMessaging.registry.mentions(botId, mentions));
+  dispatcher.setDirectMessaging(directMessaging);
+  const removals = new BotRemovalService(
+    bots,
+    runs,
+    store,
+    input.state,
+    input.now ?? (() => new Date()),
+    input.afterBotRemovalBarrier,
+  );
   const handoffs = new GroupHandoffService({ store, bots, state: input.state, now: input.now,
     onProductEvent: input.onProductEvent, wake: () => runs.wakePendingWork() });
   dispatcher.setHandoffService(handoffs);
@@ -231,6 +292,7 @@ export async function createConversationRuntime(
     });
   };
   return {
+    directMessaging,
     worktrees,
     integrations,
     store,
@@ -238,8 +300,22 @@ export async function createConversationRuntime(
     botRuntime,
     dispatcher,
     runs,
+    removals,
     handoffs,
     bindings: new ConversationBindingService(store, runs, bots, input.config),
+    get routerAvailability() {
+      return routerAvailability;
+    },
+    applyRouterResolution: (resolution) => {
+      // A closed runtime keeps its frozen snapshot: swapping the engine without
+      // the availability (or the reverse) would make the two disagree.
+      if (lifecycle !== "open") return;
+      const next = settleRouter(resolution.router, resolution.availability);
+      // Swap before publishing availability so a reader that sees `ready`
+      // also sees the engine that makes it true.
+      runs.setRouterEngine(next.router ? new ConversationRouterEngine(next.router, routerEngineOptions) : undefined);
+      routerAvailability = next.availability;
+    },
     authorityEpoch: dispatcher.authorityEpoch,
     kick: () => dispatcher.kick(),
     activateAfterConsumerLock: () => runs.activateAfterConsumerLock(),
@@ -260,6 +336,7 @@ export async function createConversationRuntime(
             // Entered operations and already-started executions retain their
             // capabilities until their drain; failed shutdown still revokes.
             handoffs.close();
+            directMessaging.close();
             lifecycle = "closed";
           }
         })();

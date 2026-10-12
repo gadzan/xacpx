@@ -1,6 +1,138 @@
 # Changelog
 ## [Unreleased]
 
+### Added
+
+- **Automatic collaboration switch in Relay Web settings:** the Settings page now lists a per-instance "Group automatic collaboration" toggle backed by the new instance-scoped `control.conversations.router.set` RPC. The daemon patches only `conversations.router.enabled` in `config.json` through `ConfigStore`, re-resolves availability through the same production path (capability probe included), and hot-applies the router to the live conversation runtime — no daemon restart. The RPC returns the same four-status availability as `.get`, never a boolean, so enabling without a proven restriction surfaces its reason (`command-missing`, `unsupported`, `failed`) instead of a fake success; a write failure propagates. `ConversationRuntime.applyRouterResolution` swaps the single router engine through the unchanged `bindRouter` gate; an in-flight decision settles on the engine it captured, and a surviving automatic Run fails closed with `automatic_unsupported` when the engine is removed. A new `conversation-router-changed` control event keeps other clients' composers and toggles converged. Old connectors surface as `unknown-type` (unavailable), never a silent success.
+- **Reusable full-stack verification harness (`scripts/verify-stack.mjs`):** boots an isolated daemon + relay hub + bundled dashboard under a temp state dir, prints the dashboard URL and an access token, and tears everything down again. `up` redirects `HOME`, `XACPX_PLUGIN_HOME`, `WEACPX_CONFIG` and `WEACPX_STATE` into the state dir and builds the plugin home from the workspace builds of `channel-relay` / `relay-protocol`, so a feature can be driven through the real Web UI without touching the operator's `~/.xacpx`. `down` stops the daemon, kills only the PIDs the manifest recorded (re-identified by command line first), sweeps any process still referencing the state dir, verifies the port is free, diffs the real home against a startup snapshot, and removes the state dir entry by entry so one locked file cannot strand the rest. `doctor` is the stateless leftover check; `status` reports what is running. Opt-in developer tooling, not part of `npm test`.
+
+## [0.24.8-beta.0] - 2026-10-10
+
+### Added
+
+- Bot-controlled removal (PR #392): Bot removal modeled as a durable phase machine behind a removal barrier — `bot removal RPCs`, Bot dialog confirmation, closed-store reads skipped at the barrier.
+- Agent capability discovery (PR #393) and automatic collaboration gating (PR #395): agent models reported as capability state, model picker sourced from it; automatic routing gated on a capability probe and selected in Relay Web only when the router is ready (`xacpx doctor` covers the router check).
+- Adapter slash commands by topic (PR #394): per-topic advertised slash commands restored through the dispatcher with conversation snapshots emitted by relay-protocol; Relay Web completes slash and member mentions in conversation with member-slash refresh coverage.
+- Shared topic lifecycle (PR #391): topics managed from a searchable list with workspaces loaded on dialog open, dropped topics kept out of late events, Group create/edit/delete via `GroupDialog` with create-update-delete store actions.
+- Disabled-bot filtering (PR #389) and group create/manage (PR #388): disabled Bots hidden behind a Disabled list with re-enable, disabled Group members and disabled Lead explained; Bot dialog instruction backfill (PR #387).
+
+### Fixed
+
+- Bot reply streaming preserved verbatim with final-only fallback; missing suffix recovered from complete Bridge replies; final-only replies and Group execution covered.
+- Relay Web `BotDialog` no longer auto-retries hydrate after parallel start.
+
+## [relay-protocol 0.6.2-beta.0] - 2026-10-10
+
+### Added
+
+- Conversation slash-command snapshots, topic-lifecycle RPC DTOs, bot-removal RPC types, agent-model capability state fields.
+
+## [relay 0.14.10-beta.0] - 2026-10-10
+
+### Added
+
+- Relay Web: Group create/edit/delete dialog with store actions, searchable topic management with workspace loading, model picker from capability state, slash + member-mention completion, automatic-collaboration selector gated on router readiness, bot-removal confirmation dialog, disabled-Bot list with re-enable.
+
+### Fixed
+
+- `BotDialog` hydrate no longer auto-retries after a parallel start; dropped topics kept out of late events.
+
+## [channel-relay 0.7.6-beta.0] - 2026-10-10
+
+### Added
+
+- Capability-probe and slash-command bridge coverage; `minXacpxVersion` raised to `0.24.8-beta.0`.
+
+## [channel-feishu 0.8.5-beta.0] - 2026-10-10
+
+### Changed
+
+- Compatibility floor raised to `0.24.8-beta.0` with no behavior change (peer + `minXacpxVersion` only, released so the published floor tracks core).
+
+## [channel-discord 0.8.5-beta.0] - 2026-10-10
+
+### Changed
+
+- Compatibility floor raised to `0.24.8-beta.0` with no behavior change (peer + `minXacpxVersion` only, released so the published floor tracks core).
+
+## [Unreleased]
+
+### Added
+
+- Managed member worktrees with explicit integration (Phase 10C, PR #382): per-member Git worktrees owned by the Conversation runtime with filesystem capability policies (PR #378), per-topic member execution concurrency limits (PR #377), and an explicit integrate phase. Worktree lifecycle (create/spawn/preflight/integrate/remove) is surfaced in Relay Web with first-load and cross-operation error visibility.
+- External channel chats bound to durable Runs (PR #376): admitted Feishu / Discord / Yuanbao / WeChat chats bind to durable Conversation Runs with checkpointed ingress, durable routing, Stop-target persistence, and preemption. Router questions return to the bound channel; rejected ingress and archived-topic rejections persist.
+- Group conversations: stateless automatic `ConversationRouter` with per-assignment execution and waiting questions (PR #371, PR8), public Group handoff with bounded recovery (PR #374, PR9), and Group foundations — durable Group/Topic/Run types, CRUD, member bindings, topic lifecycle/teardown, Control + wire protocol + bridge (PR #359, PR6; PR #365, PR7).
+- ACP Elicitation end-to-end (M1–M5): core normalized field model + terminal decision (PR #355), Discord + Feishu form renderers (PR #360, #372), unified interaction transport for permission + elicitation, hub-stamped responder identity with bounded window, Direct Bot turn routing, and Relay Web turn-banner forms with snapshot reconciliation (PR #369).
+- Relay Web Direct Bot conversations and instance desktop over RFB/VNC: Bot CRUD without hidden runtime aliases, `seq`-cursor history, `requestId`-idempotent prompts, exact Run cancel; desktop binary stream registry, ticket-bound opens, noVNC client, and setup/diagnosis docs.
+
+### Fixed
+
+- Direct Bot and Group turns now reach the agent: prompt entry goes through the Conversation path instead of stalling before dispatch (#373).
+- Relay fail-fast on missing credentials before any network I/O (PR #375); connector subscription installs before the first snapshot so reconnect/refresh cannot miss state.
+- Elicitation truthfulness: reconnect is request-authoritative, answer kinds are fenced, expiry is not reported as cancellation; uncorrelated forms are scoped per broker route with agent identity; empty answers validated, over-blocking formats relaxed.
+- Conversation durability: execution cancellation persists across batch settlement with settled-before-admission and budget preservation; shutdown drains before handoff revocation; late proof lands mid-cancel-fan-out without losing sibling evidence.
+- Windows: 8.3 short-name canonicalization in owned worktree paths; tree-kill no longer condemns shim-launched children (#362); accumulated unresolved identities block verified EOF discharge (#366).
+- Managed adapter pins refreshed: Codex `2.1.1`, Claude `0.86.0` (PR #379).
+
+## [relay-protocol 0.6.1-beta.0] - 2026-10-09
+
+### Added
+
+- Conversation worktree + integration DTOs, member concurrency-limit fields, external channel binding payloads, Group target / `groups.list` / accept-dispatch contracts, and interaction-snapshot reconciliation DTOs.
+
+### Fixed
+
+- Wire field limits aligned with core normalization limits; `field.pattern` carried on the wire with `format` left open.
+
+## [relay 0.14.9-beta.0] - 2026-10-09
+
+### Added
+
+- Worktree panel operations (spawn/preflight/integrate/remove) with persistent error surfacing; Group UX with Run card; interaction forms reconciled from the authoritative subscribe snapshot.
+
+### Fixed
+
+- Stale poll replies no longer overwrite worktree state; transport failures no longer wedge the interaction form; pane fence no longer swallows authoritative facts; instance subscription installs before any snapshot is sent.
+
+## [channel-relay 0.7.5-beta.0] - 2026-10-09
+
+### Added
+
+- Worktree and concurrency-limit bridge calls; external conversation binding passthrough; `minXacpxVersion` raised to `0.24.7-beta.0` (statically imports `isDirectConversationChatKey` / `parseDirectConversationChatKey` runtime exports).
+
+### Fixed
+
+- Fail fast on missing credentials before any network I/O; abort the in-flight desktop dial, not just block the publish; fatal teardown uses a defined `ChannelStopReason`.
+
+## [channel-feishu 0.8.4-beta.0] - 2026-10-09
+
+### Added
+
+- ACP elicitation form renderers (M2/M4) with Feishu card renderability gate.
+
+### Fixed
+
+- Durable channel ingress hardening: binding-revision fences, Stop-target persistence, preemption, quoted-media fencing, deep-quote rendering without recursive admission; URL-verification docs corrected.
+
+## [channel-discord 0.8.3-beta.0] - 2026-10-09
+
+### Added
+
+- ACP elicitation form renderers (M2/M4) with Discord renderability gate.
+
+### Fixed
+
+- Durable channel ingress hardening: Stop-target persistence, preemption, quoted-media fencing, bound ingress routed before Session lifecycle.
+
+## [channel-yuanbao 0.6.2-beta.0] - 2026-10-09
+
+### Fixed
+
+- Durable channel ingress hardening: binding-revision fences, bound ingress routed before Session lifecycle; conversation executor wired for bound turns.
+
+## [Unreleased]
+
+
 ### Changed
 
 - Managed adapter pins refreshed (ACP initialize probe passes on both): Codex `1.12.0` → `2.1.1`, Claude `0.78.0` → `0.86.0`. Recorded managed-adapter commands refresh to the new defaults automatically; crash-recovery reaping covers the previous-pin identities.

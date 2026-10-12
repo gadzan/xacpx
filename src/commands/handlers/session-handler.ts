@@ -1,3 +1,4 @@
+import { matchesDirectExecutionMetadata } from "../../conversations/group-execution-metadata";
 import type {
   CommandRouterContext,
   RouterResponse,
@@ -1047,7 +1048,13 @@ async function promptWithSession(
       await context.lifecycle.ensureTransportSession(session, reply, perfSpan);
     }
   }
-  const effectiveReplyMode = resolveEffectiveReplyMode(context.config, chatKey, session.replyMode);
+  const effectiveReplyMode = session.effectiveReplyMode
+    ?? resolveEffectiveReplyMode(context.config, chatKey, session.replyMode);
+  if (metadata?.directExecutionToken) {
+    if (!matchesDirectExecutionMetadata(metadata, context.sessions.getLogicalSessionRecord(session.alias))) throw new Error("Direct MCP requires trusted execution");
+    session.mcpCoordinatorSession = metadata.directExecutionToken;
+    session.mcpSourceHandle = metadata.directExecutionToken;
+  }
   if (metadata?.groupExecutionToken) {
     const owned = context.sessions.getLogicalSessionRecord(session.alias);
     if (!matchesGroupExecutionMetadata(metadata, owned)) throw new Error("Group MCP capability requires a trusted owned Group execution");
@@ -1353,7 +1360,8 @@ export async function handlePromptWithSession(
   try {
     return await promptWithSession(context, session, chatKey, text, reply, replyContextToken, accountId, media, abortSignal, onToolEvent, onThought, perfSpan, metadata, onPlan, onUsage, onCommands);
   } catch (error) {
-    if (metadata?.groupExecutionToken && matchesGroupExecutionMetadata(metadata, context.sessions.getLogicalSessionRecord?.(session.alias))) {
+    if ((metadata?.groupExecutionToken && matchesGroupExecutionMetadata(metadata, context.sessions.getLogicalSessionRecord?.(session.alias)))
+      || (metadata?.directExecutionToken && matchesDirectExecutionMetadata(metadata, context.sessions.getLogicalSessionRecord?.(session.alias)))) {
       const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
       // Runtime reports failure, cancellation and permission refusal as
       // terminal evidence. Other throws cannot prove absence of side effects.

@@ -12,6 +12,8 @@ import type { PlanEntry, ToolUseEvent } from "../../channels/types.js";
 import { getLocale } from "../../i18n";
 import type {
   AgentCommand,
+  AgentCapabilityProbeRequest,
+  AgentCapabilityProbeResult,
   AgentSessionListQuery,
   AgentSessionListResult,
   EnsureSessionProgress,
@@ -46,6 +48,7 @@ import { resolveToolEventMode, type ToolEventMode } from "../tool-event-mode.js"
 import { runAgentSessionList } from "../agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../acpx-session-files";
+import { CAPABILITY_PROBE_BUDGET_MS, executeCapabilityProbe } from "../../agents/capability-probe";
 import { parseSessionEffortRecord, requireAdvertisedSessionEffort, sessionEffortToReapply } from "../session-effort";
 import {
   CommandTimeoutError,
@@ -579,6 +582,15 @@ export class AcpxCliTransport implements SessionTransport {
   // Read the session's current model and the agent-advertised available ids from
   // `<agent> status --format json`. Returns an empty list when status output is
   // not parseable, so callers can still show the current model.
+  async prepareSessionCommands(session: ResolvedSession): Promise<AgentCommand[] | undefined> {
+    await this.ensureSession(session);
+    const args = this.buildAgentQueryArgs(this.sessionInput(session), 'json', ['status','-s',session.transportSession]);
+    const result = await this.runCommandWithTimeout(this.runCommand,args,{timeoutMs:this.managementCommandTimeoutMs,stage:'get-session-model',env:this.effectiveSpawnEnvironment(session)});
+    if(result.code !== 0) throw new Error('command advertisement read failed');
+    const raw = JSON.parse(result.stdout) as {availableCommands?: AgentCommand[]};
+    return raw.availableCommands;
+  }
+
   async getSessionModel(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
     this.assertCliAffinity(session);
     const args = this.buildAgentQueryArgs(
@@ -604,6 +616,32 @@ export class AcpxCliTransport implements SessionTransport {
     } catch {
       return { available: [] };
     }
+  }
+
+  async probeAgentCapabilities(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult> {
+    const budgetMs = Math.min(this.sessionInitTimeoutMs, CAPABILITY_PROBE_BUDGET_MS);
+    return executeCapabilityProbe({
+      run: (stage, tail, timeoutMs) => this.runCommandWithTimeout(
+        this.runCommand,
+        sharedBuildSessionArgs({
+          agent: input.agent,
+          agentCommand: input.agentCommand,
+          acpxAgent: input.acpxAgent,
+          rawCommand: input.rawCommand,
+          cwd: input.cwd,
+          permission: this.permissionInput(),
+        }, tail, { format: "json", authPolicy: "fail" }),
+        {
+          timeoutMs,
+          stage,
+          env: this.effectiveSpawnEnvironment({
+            driver: input.driver,
+            settingsPolicy: input.settingsPolicy,
+          }),
+        },
+      ),
+      deleteRecord: (acpxRecordId) => deleteAcpxSessionFiles({ acpxRecordId }),
+    }, budgetMs);
   }
 
   async getSessionEffort(session: ResolvedSession): Promise<SessionEffortState> {

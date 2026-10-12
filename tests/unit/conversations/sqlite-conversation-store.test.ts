@@ -681,3 +681,15 @@ test("hasDurableGroupWork tracks group rows and clears on topic teardown", async
   expect(store.hasDurableGroupWork(conv)).toBe(false);
   store.close();
 });
+
+
+test("Direct input metadata is additive, durable and malformed rows fail closed",async()=>{
+ const {createSqlDriver}=await import("../../../src/conversations/sql-driver");
+ const db=tempDb(),store=await SqliteConversationStore.open(db);
+ const metadata={version:1 as const,mentions:[{range:[0,2] as [number,number],handle:"agent:n:b",botId:"stable-b",displayName:"B",agent:"codex",workspace:"backend"}]};
+ const accepted=store.acceptRequest({conversationId:CONV,topicId:TOPIC,requestId:"refs",botId:BOT_ID,content:"@B",inputMetadata:metadata,profileSnapshot:snapshot(),now:NOW});
+ const legacy=store.acceptRequest({conversationId:CONV,topicId:TOPIC,requestId:"legacy",botId:BOT_ID,content:"text",profileSnapshot:snapshot(),now:NOW});store.close();
+ const reopened=await SqliteConversationStore.open(db);expect(reopened.getMessage(accepted.message.id)?.inputMetadata).toEqual(metadata);expect(reopened.getMessage(legacy.message.id)?.inputMetadata).toBeUndefined();reopened.close();
+ const sql=await createSqlDriver(db);sql.run("UPDATE messages SET input_metadata_json = ? WHERE id = ?",[JSON.stringify({version:99}),accepted.message.id]);sql.close();
+ const damaged=await SqliteConversationStore.open(db);try{expect(()=>damaged.getMessage(accepted.message.id)).toThrow();}finally{damaged.close();}
+});

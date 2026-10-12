@@ -16,6 +16,12 @@ export interface BridgeEngine {
   listAgentSessions(input: EngineListInput): Promise<AgentSessionListResult | undefined>;
   ensureSession(input: EngineSessionInput, onProgress?: (progress: EnsureEngineSessionProgress) => void): Promise<Record<string, never>>;
   resumeAgentSession(input: EngineSessionInput & { agentSessionId: string }): Promise<Record<string, never>>;
+  /**
+   * Returns the settled whole-turn agent text, not an unstreamed tail.
+   * Streamed segments may also include text rendering or boundary normalization,
+   * while CLI result extraction sanitizes the final text. Consumers must verify
+   * an exact stream prefix before appending a missing suffix.
+   */
   prompt(
     input: EnginePromptInput,
     onEvent?: (event: EnginePromptStreamEvent) => void,
@@ -23,7 +29,10 @@ export interface BridgeEngine {
   injectMessage(input: EngineInjectInput): Promise<SessionMessageReceiptLike>;
   setMode(input: EngineSessionInput & { modeId: string }): Promise<Record<string, never>>;
   setModel(input: EngineSessionInput & { modelId: string }): Promise<Record<string, never>>;
+  prepareSessionCommands?(input: EngineSessionInput): Promise<AgentCommand[] | undefined>;
   getSessionModel(input: EngineSessionInput): Promise<{ current?: string; available: string[] }>;
+  /** Agent-level cold probe. Not bound to a logical session. */
+  probeAgentCapabilities(input: import("../../transport/types").AgentCapabilityProbeRequest): Promise<import("../../transport/types").AgentCapabilityProbeResult>;
   setSessionEffort(input: EngineSessionInput & { effort: string }): Promise<Record<string, never>>;
   getSessionEffort(input: EngineSessionInput): Promise<SessionEffortState>;
   cancel(input: EngineSessionInput): Promise<{ cancelled: boolean; message: string }>;

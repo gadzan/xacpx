@@ -1,5 +1,10 @@
+import {createHash} from "node:crypto";
 import type { Agent as ChatAgent } from "../weixin/agent/interface";
 import type { SessionService } from "../sessions/session-service";
+import { AgentCapabilityService, type CapabilityAdvertisement } from "../agents/capability-discovery";
+import { advertisedCommandsFor, hasAdvertisedCommands, rememberAdvertisedCommands, markCommandRevision, markCommandAdapterRevision } from "../conversations/advertised-commands";
+import type { ConversationCompletions } from "@ganglion/xacpx-relay-protocol";
+import type { AgentCapabilityState, RouterAvailability } from "@ganglion/xacpx-relay-protocol";
 import type {
   AgentSession,
   ResolvedSession,
@@ -83,6 +88,7 @@ import {
 import type { AppLogger } from "../logging/app-logger";
 import type { ConversationRuntime } from "../conversations/conversation-composition";
 import { ConversationError } from "../conversations/conversation-error";
+import { lifecycleOperationId, type LifecycleOperation } from "../conversations/lifecycle-operation";
 import type { TopicSchedulingOptions } from "../conversations/conversation-scheduling-policy";
 import { parseHumanIngress } from "../conversations/conversation-execution";
 import type { ConversationProductEvent } from "../conversations/conversation-product-events";
@@ -100,7 +106,10 @@ import {
   toRunDetail,
   toTopicSummary,
   type BotCreateRequestDto,
+  type BotRemovalPreviewDto,
   type BotUpdateRequestDto,
+  type LifecycleOperationDto,
+  type RemoveBotRequestDto,
   type ConversationHistoryRequestDto,
   type ConversationPromptRequestDto,
   type ConversationPolicyPromptRequestDto,
@@ -197,12 +206,14 @@ export interface ControlServiceDeps {
     | "setSessionEffort"
     | "setDisplayName"
     | "getLogicalSessionRecord"
-  >;
+  > & {
+    listCapabilityTargets?(agent: string, workspace: string): ReturnType<SessionService["listCapabilityTargets"]>;
+  };
   // The active transport, for reading/switching a session's model and effort.
   // These controls are optional on the interface — absence is handled gracefully.
   transport: Pick<
     SessionTransport,
-    "setModel" | "getSessionModel" | "setSessionEffort" | "getSessionEffort"
+    "prepareSessionCommands" | "setModel" | "getSessionModel" | "setSessionEffort" | "getSessionEffort" | "probeAgentCapabilities"
   >;
   // Full-lifecycle session creator (resolve → ensure acpx session → bind),
   // wired to CommandRouter.createSessionWithTransport in main.ts. Replaces the
@@ -254,6 +265,11 @@ export interface ControlServiceDeps {
   // written back into the live config so SessionService validation sees them.
   agents: {
     list(): ControlAgentInfo[];
+    /**
+     * Launch identity for capability discovery. Absent on test fakes that
+     * never call `getAgentCapabilities`.
+     */
+    resolveCapabilityContext?(agent: string, workspace: string): import("../agents/capability-discovery").CapabilityContext | { error: string };
     catalog(): AgentCatalogEntry[];
     create(name: string, driver: string): Promise<ControlAgentInfo>;
     remove(name: string): Promise<void>;
@@ -266,6 +282,14 @@ export interface ControlServiceDeps {
       description?: string,
     ): Promise<ControlWorkspaceInfo>;
     remove(name: string): Promise<void>;
+  };
+  // Automatic-collaboration switch. Persists `conversations.router.enabled`,
+  // re-resolves the production router (capability probe included), hot-applies
+  // it to the live conversation runtime, and emits the change event. Wired in
+  // main.ts where ConfigStore, the live config, and the runtime are in scope.
+  // Optional: embeddings that never flip the switch leave it unset.
+  conversationRouter?: {
+    setEnabled(enabled: boolean): Promise<RouterAvailability>;
   };
   uploadStore: UploadStore;
   // Interactive terminal PTY manager (web terminal). Optional gate read from live config.
@@ -469,9 +493,30 @@ export interface ControlExecuteCommandInput {
   isOwner?: boolean;
 }
 
+function toLifecycleOperationDto(operation: LifecycleOperation): LifecycleOperationDto {
+  return {
+    id: operation.id,
+    kind: operation.kind,
+    subjectId: operation.subjectId,
+    requestId: operation.requestId,
+    phase: operation.phase,
+    updatedAt: operation.updatedAt,
+    ...(operation.error ? { error: operation.error } : {}),
+    ...(operation.previewRevision ? { previewRevision: operation.previewRevision } : {}),
+    ...(operation.params
+      ? {
+        clearDirectHistory: operation.params.clearDirectHistory,
+        releaseDirectBindings: operation.params.releaseDirectBindings,
+      }
+      : {}),
+  };
+}
+
 // Thin structured facade over core services for non-text consumers (the relay
 // connector first). Holds no state of its own beyond in-flight turn tracking.
 export class ControlService {
+  private readonly completionResults = new Map<string, ConversationCompletions["commands"]>();
+  private readonly completionPreparations = new Map<string, Promise<ConversationCompletions["commands"]>>();
   private readonly runner: SessionTurnRunner;
   private readonly turnQueue: TurnQueue;
   private readonly workspaceGit: WorkspaceGit;
@@ -1419,6 +1464,8 @@ export class ControlService {
       executionOrigin?: PermissionInteractionOrigin;
       conversation?: ConversationTurnCorrelation;
       groupExecutionToken?: string;
+      directExecutionToken?: string;
+      directMentionContext?: import("../conversations/direct-input-metadata").ResolvedDirectMention[];
       permissionChatKey?: string;
       senderName?: string;
     },
@@ -1473,6 +1520,9 @@ export class ControlService {
           : {}),
         ...(input.abortSignal !== undefined ? { abortSignal: input.abortSignal } : {}),
         ...(input.conversation !== undefined ? { conversation: input.conversation } : {}),
+        ...(trustedConversationExecution && input.directExecutionToken ? {
+          directExecutionToken: input.directExecutionToken, directMentionContext: input.directMentionContext, boundSessionAlias: internalAlias, preserveCoordinatorRoute: true,
+        } : {}),
         ...(trustedConversationExecution && input.groupExecutionToken ? {
           groupExecutionToken: input.groupExecutionToken, boundSessionAlias: internalAlias, preserveCoordinatorRoute: true,
         } : {}),
@@ -1894,6 +1944,18 @@ export class ControlService {
     this.deps.terminal.close(terminalId);
   }
 
+  private topicSummary(topic: Parameters<typeof toTopicSummary>[0]) {
+    let defaultDirect = false;
+    try {
+      defaultDirect = this.conversationRuntime?.runs.defaultTopicId(topic.conversationId) === topic.id;
+    } catch (error) {
+      if (!(error instanceof ConversationError) || error.code !== "conversation_not_found") {
+        throw error;
+      }
+    }
+    return toTopicSummary(topic, { defaultDirect });
+  }
+
   private requireConversations(): ConversationRuntime {
     if (!this.conversationRuntime) {
       throw new ConversationError(
@@ -1910,7 +1972,14 @@ export class ControlService {
     return runtime.withOperation(() => fn(runtime));
   }
 
+  /** Private peer scopes never project into public Direct history or Relay snapshots. */
+  isPrivateConversationTopic(topicId: string): boolean {
+    return this.conversationRuntime?.runs.isPeerTopic(topicId) ?? false;
+  }
+
   #publishConversationProduct(event: ConversationProductEvent): void {
+    const topicId = "topic" in event ? event.topic.id : "message" in event ? event.message.topicId : "run" in event ? event.run.topicId : undefined;
+    if (topicId && this.isPrivateConversationTopic(topicId)) return;
     switch (event.type) {
       case "bots-changed":
         this.deps.events.emit({ type: "bots-changed" });
@@ -1919,7 +1988,7 @@ export class ControlService {
         this.deps.events.emit({ type: "conversations-changed" });
         return;
       case "conversation-topic-changed":
-        this.deps.events.emit({ type: "conversation-topic-changed", topic: toTopicSummary(event.topic) });
+        this.deps.events.emit({ type: "conversation-topic-changed", topic: this.topicSummary(event.topic) });
         return;
       case "conversation-message":
         this.deps.events.emit({ type: "conversation-message", message: toConversationMessage(event.message) });
@@ -1944,14 +2013,342 @@ export class ControlService {
     }
   }
 
+  private capabilityService?: AgentCapabilityService;
+
+  private capabilities(): AgentCapabilityService {
+    if (this.capabilityService) return this.capabilityService;
+    const probe = this.deps.transport.probeAgentCapabilities?.bind(this.deps.transport);
+    this.capabilityService = new AgentCapabilityService({
+      now: () => new Date().toISOString(),
+      resolve: (agent, workspace) => this.deps.agents.resolveCapabilityContext?.(agent, workspace)
+        ?? { error: "agent capability context is not configured" },
+      getBot: (id) => {
+        try {
+          const bot = this.requireConversations().bots.getBot(id);
+          return { agent: bot.agent, workspace: bot.workspace, model: bot.model, effort: bot.effort };
+        } catch {
+          return undefined;
+        }
+      },
+      listTargets: (agent, workspace) => this.deps.sessions.listCapabilityTargets?.(agent, workspace) ?? [],
+      readAdvertisement: (session) => readCapabilityAdvertisement(this.deps.transport, session),
+      ...(probe ? { probe } : {}),
+    });
+    return this.capabilityService;
+  }
+
+  /** Discovery shares the Bot materialization gate and never submits a prompt/Run. */
+  async getConversationCompletions(
+    input: import("@ganglion/xacpx-relay-protocol").ConversationCompletionsRequest,
+  ): Promise<ConversationCompletions> {
+    const runtime = this.requireConversations();
+    const conversation = runtime.runs
+      .listConversations()
+      .find((c) => c.id === input.conversationId);
+    const topic = runtime.runs
+      .listTopics(input.conversationId)
+      .find((t) => t.id === input.topicId);
+    if (
+      !conversation ||
+      conversation.kind !== "bot" ||
+      conversation.lifecycle === "deleting" ||
+      !topic ||
+      topic.status !== "active"
+    )
+      throw new ConversationError(
+        "topic_not_found",
+        "active public Direct Topic required",
+      );
+    const bot = runtime.bots.getBot(conversation.botIds[0]!);
+    runtime.bots.assertAcceptsWork(bot.id);
+    const identity = {
+      conversationId: input.conversationId,
+      topicId: input.topicId,
+      botId: bot.id,
+    };
+    markCommandRevision(
+      identity,
+      String(bot.profileRevision) + ":" + (topic.contextGeneration ?? 1),
+    );
+    const adapterContext = this.deps.agents.resolveCapabilityContext?.(
+      bot.agent,
+      bot.workspace,
+    );
+    const adapterContextRevision = JSON.stringify(adapterContext);
+    const preparationRevision = createHash("sha256")
+      .update(
+        JSON.stringify([
+          bot.profileRevision,
+          topic.contextGeneration ?? 1,
+          bot.agent,
+          bot.workspace,
+          bot.model,
+          bot.effort,
+          adapterContext,
+        ]),
+      )
+      .digest("hex");
+    markCommandAdapterRevision(identity, preparationRevision);
+    const restricted = runtime.botRuntime.isRestrictedDirectSession(identity);
+    const query = (input.query ?? "").toLowerCase();
+    const cursor = input.cursor ?? 0;
+    const endpoints = bot.enabled
+      ? runtime.directMessaging.registry
+          .list(bot.id)
+          .filter((e) =>
+            [e.displayName, e.agent, e.workspace].some((v) =>
+              v?.toLowerCase().includes(query),
+            ),
+          )
+      : [];
+    const mentions: ConversationCompletions["mentions"] =
+      bot.enabled && !restricted
+        ? {
+            status: "ready",
+            items: endpoints
+              .slice(cursor, cursor + 64)
+              .map((e) => ({
+                handle: e.handle,
+                displayName: e.displayName ?? e.agent,
+                botId: e.address.endpointId.slice("product-bot-".length),
+                agent: e.agent,
+                workspace: e.workspace ?? "",
+              })),
+            ...(cursor + 64 < endpoints.length
+              ? { nextCursor: cursor + 64 }
+              : {}),
+          }
+        : {
+            status: "unavailable",
+            items: [],
+            reason: restricted ? "restricted-runtime" : "bot-disabled",
+          };
+    const result = (
+      commands: ConversationCompletions["commands"],
+    ): ConversationCompletions => ({
+      version: 1,
+      scope: identity,
+      revision: createHash("sha256")
+        .update(JSON.stringify([preparationRevision, commands, endpoints]))
+        .digest("hex"),
+      commands,
+      mentions,
+    });
+    if (!bot.enabled || restricted)
+      return result({
+        status: "unavailable",
+        items: [],
+        reason: restricted ? "restricted-runtime" : "bot-disabled",
+      });
+    const listed = runtime.runs.listTopicRuns(
+      input.conversationId,
+      input.topicId,
+    );
+    if (listed.activeRun)
+      return result(
+        hasAdvertisedCommands(identity)
+          ? { status: "ready", items: advertisedCommandsFor(identity) }
+          : { status: "loading", items: [] },
+      );
+    if (!this.deps.transport.prepareSessionCommands)
+      return result({
+        status: "unavailable",
+        items: [],
+        reason: "adapter-discovery-unsupported",
+      });
+    const key = JSON.stringify([identity, preparationRevision]);
+    const cached = this.completionResults.get(key);
+    if (cached)
+      return result(
+        hasAdvertisedCommands(identity)
+          ? { ...cached, items: advertisedCommandsFor(identity) }
+          : cached,
+      );
+    let pending = this.completionPreparations.get(key);
+    if (!pending) {
+      pending = runtime
+        .withOperation(() =>
+          runtime.botRuntime.prepareDirectSession(identity, async (binding) => {
+            const session =
+              this.deps.sessions.getResolvedSessionByInternalAlias(
+                binding.sessionAlias,
+              );
+            if (
+              !session ||
+              this.deps.sessions.getLogicalSessionRecord?.(binding.sessionAlias)
+                ?.execution_policy
+            )
+              return {
+                status: "unavailable" as const,
+                items: [],
+                reason: "restricted-runtime",
+              };
+            // An invalid private sender identity advertises only Direct tools; it cannot send.
+            const token = "direct-execution:discovery";
+            const commands = await this.deps.transport.prepareSessionCommands!({
+              ...session,
+              mcpCoordinatorSession: token,
+              mcpSourceHandle: token,
+            });
+            runtime.assertOpen();
+            const current = runtime.bots.getBot(bot.id);
+            const currentTopic = runtime.runs
+              .listTopics(input.conversationId)
+              .find((t) => t.id === input.topicId);
+            if (
+              !currentTopic ||
+              currentTopic.status !== "active" ||
+              (currentTopic.contextGeneration ?? 1) !==
+                (topic.contextGeneration ?? 1) ||
+              current.profileRevision !== bot.profileRevision ||
+              !current.enabled ||
+              JSON.stringify(this.deps.agents.resolveCapabilityContext?.(current.agent, current.workspace)) !== adapterContextRevision
+            )
+              return {
+                status: "unavailable" as const,
+                items: [],
+                reason: "scope-changed",
+              };
+            if (commands === undefined)
+              return {
+                status: "unavailable" as const,
+                items: [],
+                reason: "adapter-not-advertised",
+              };
+            const safe = commands
+              .filter(
+                (c) =>
+                  c &&
+                  typeof c.name === "string" &&
+                  /^[^\s/\u0000-\u001f\u007f]{1,128}$/.test(c.name),
+              )
+              .slice(0, 256)
+              .map((c) => ({
+                name: c.name,
+                ...(typeof c.description === "string"
+                  ? { description: c.description.slice(0, 2048) }
+                  : {}),
+                ...(c.kind === "skill" || c.kind === "command"
+                  ? { kind: c.kind }
+                  : {}),
+              }));
+            rememberAdvertisedCommands(identity, safe);
+            const ready = { status: "ready" as const, items: safe };
+            if (this.completionResults.size >= 256)
+              this.completionResults.delete(
+                this.completionResults.keys().next().value!,
+              );
+            this.completionResults.set(key, ready);
+            return ready;
+          }),
+        )
+        .catch(() => ({
+          status: "error" as const,
+          items: [],
+          reason: "discovery-failed",
+        }));
+      this.completionPreparations.set(key, pending);
+      void pending.finally(() => {
+        if (this.completionPreparations.get(key) === pending)
+          this.completionPreparations.delete(key);
+      });
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return result(
+        await Promise.race([
+          pending,
+          new Promise<ConversationCompletions["commands"]>((resolve) => {
+            timer = setTimeout(
+              () =>
+                resolve({
+                  status: "loading",
+                  items: [],
+                  reason: "discovery-timeout",
+                }),
+              10_000,
+            );
+          }),
+        ]),
+      );
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /** Startup router availability. The four statuses are not a boolean. */
+  getConversationRouterAvailability(): RouterAvailability {
+    return this.requireConversations().routerAvailability;
+  }
+
+  /**
+   * Flip the automatic-collaboration switch. Persistence, re-resolution, the
+   * runtime hot-apply, and the change event all live in the wired dep; the
+   * returned state is the same four-status shape `.get` returns — never a
+   * boolean — so the caller can render the reason when a flip does not reach
+   * `ready` (e.g. enabling before `conversations.router.command` is set).
+   */
+  async setConversationRouterEnabled(enabled: boolean): Promise<RouterAvailability> {
+    if (!this.deps.conversationRouter) {
+      throw new ConversationError(
+        "router_control_unavailable",
+        "the automatic collaboration switch is not available in this embedding",
+      );
+    }
+    return await this.deps.conversationRouter.setEnabled(enabled);
+  }
+
+  /** Adapter model and effort advertisement for a configured agent and workspace. */
+  getAgentCapabilities(input: {
+    agent: string;
+    workspace: string;
+    botId?: string;
+    probe?: boolean;
+  }): Promise<AgentCapabilityState> {
+    return this.capabilities().get(input);
+  }
+
   listBots() {
     const bots = this.requireConversations().bots;
-    return bots.listBots().map((bot) => toBotSummary(bot, bots.hasRuntime(bot.id)));
+    const live = bots.listBots().map((bot) => toBotSummary(bot, bots.hasRuntime(bot.id)));
+    const retired = bots.listTombstones().map((tomb) => ({
+      id: tomb.id,
+      name: tomb.name,
+      ...(tomb.avatar ? { avatar: tomb.avatar } : {}),
+      ...(tomb.role ? { role: tomb.role } : {}),
+      agent: tomb.agent,
+      workspace: tomb.workspace,
+      enabled: false,
+      updatedAt: tomb.retiredAt,
+      retired: true as const,
+    }));
+    return [...live, ...retired];
   }
 
   getBot(id: string) {
     const bots = this.requireConversations().bots;
-    return toBotDetail(bots.getBot(id), bots.hasRuntime(id));
+    try {
+      return toBotDetail(bots.getBot(id), bots.hasRuntime(id));
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? String(error.code) : "";
+      const tomb = code === "bot_not_found" ? bots.listTombstones().find((item) => item.id === id) : undefined;
+      if (!tomb) {
+        throw error;
+      }
+      return {
+        id: tomb.id,
+        name: tomb.name,
+        ...(tomb.avatar ? { avatar: tomb.avatar } : {}),
+        ...(tomb.role ? { role: tomb.role } : {}),
+        agent: tomb.agent,
+        workspace: tomb.workspace,
+        enabled: false,
+        updatedAt: tomb.retiredAt,
+        createdAt: tomb.retiredAt,
+        profileRevision: 1,
+        retired: true as const,
+      };
+    }
   }
 
   async createBot(input: BotCreateRequestDto) {
@@ -1981,6 +2378,29 @@ export class ControlService {
     });
   }
 
+  previewBotRemoval(id: string): Promise<BotRemovalPreviewDto> {
+    return this.requireConversations().removals.preview(id);
+  }
+
+  async removeBot(input: RemoveBotRequestDto): Promise<{ operation: LifecycleOperationDto }> {
+    return this.runConversationMutation(async (runtime) => {
+      const operation = await runtime.removals.remove({
+        botId: input.botId,
+        requestId: input.requestId,
+        previewRevision: input.previewRevision,
+        clearDirectHistory: input.clearDirectHistory === true,
+        releaseDirectBindings: input.releaseDirectBindings === true,
+      });
+      this.deps.events.emit({ type: "bots-changed" });
+      this.deps.events.emit({ type: "conversations-changed" });
+      return { operation: toLifecycleOperationDto(operation) };
+    });
+  }
+
+  getLifecycleOperation(id: string): LifecycleOperationDto {
+    return toLifecycleOperationDto(this.requireConversations().removals.getOperation(id));
+  }
+
   async createGroup(input: { title: string; description?: string; botIds: string[]; leadBotId?: string }) {
     return this.runConversationMutation(async (runtime) => {
       const group = await runtime.bots.createGroup(input);
@@ -2002,19 +2422,19 @@ export class ControlService {
     });
   }
 
-  async deleteGroup(id: string): Promise<{ ok: true }> {
+  async deleteGroup(id: string): Promise<{ ok: true; operationId: string }> {
     return this.runConversationMutation(async (runtime) => {
       await runtime.runs.teardownGroupConversation(id);
       this.deps.events.emit({ type: "bots-changed" });
       this.deps.events.emit({ type: "conversations-changed" });
-      return { ok: true };
+      return { ok: true, operationId: lifecycleOperationId("group-teardown", id) };
     });
   }
 
   getGroup(id: string): GroupDetailDto {
     const runtime = this.requireConversations();
     const group = runtime.bots.getGroup(id);
-    const topics = runtime.runs.listTopics(id).map(toTopicSummary);
+    const topics = runtime.runs.listTopics(id).map((topic) => this.topicSummary(topic));
     return { ...toGroupSummary(group), topics };
   }
 
@@ -2030,22 +2450,100 @@ export class ControlService {
   ) {
     return this.runConversationMutation(async (runtime) => {
       const topic = await runtime.runs.createGroupTopic(conversationId, title, target, options);
-      return toTopicSummary(topic);
+      return this.topicSummary(topic);
     });
   }
 
   async archiveGroupTopic(conversationId: string, topicId: string) {
     return this.runConversationMutation(async (runtime) => {
       const topic = await runtime.runs.archiveGroupTopic(conversationId, topicId);
-      return toTopicSummary(topic);
+      return this.topicSummary(topic);
     });
   }
 
   async teardownGroupTopic(conversationId: string, topicId: string): Promise<{ ok: true }> {
     return this.runConversationMutation(async (runtime) => {
-      await runtime.runs.teardownGroupTopic(conversationId, topicId);
+      await runtime.runs.teardownTopic(conversationId, topicId, { releaseBindings: true });
       return { ok: true };
     });
+  }
+
+  async updateTopic(conversationId: string, topicId: string, title: string) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.updateTopic(conversationId, topicId, title);
+      return this.topicSummary(topic);
+    });
+  }
+
+  async archiveTopic(conversationId: string, topicId: string) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.archiveTopic(conversationId, topicId);
+      return this.topicSummary(topic);
+    });
+  }
+
+  async restoreTopic(conversationId: string, topicId: string) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.restoreTopic(conversationId, topicId);
+      return this.topicSummary(topic);
+    });
+  }
+
+  async teardownTopic(
+    conversationId: string,
+    topicId: string,
+    input: { requestId: string; releaseBindings?: boolean },
+  ): Promise<{ ok: true; requestId: string }> {
+    return this.runConversationMutation(async (runtime) => {
+      await runtime.runs.teardownTopic(conversationId, topicId, input);
+      return {
+        ok: true as const,
+        requestId: input.requestId,
+        operationId: lifecycleOperationId("topic-teardown", input.requestId),
+      };
+    });
+  }
+
+  async clearTopic(
+    conversationId: string,
+    topicId: string,
+    input: { requestId: string; confirm: true; releaseBindings?: boolean },
+  ) {
+    return this.runConversationMutation(async (runtime) => {
+      const topic = await runtime.runs.clearDefaultTopic(conversationId, topicId, input);
+      return {
+        ok: true as const,
+        requestId: input.requestId,
+        operationId: lifecycleOperationId("topic-clear", input.requestId),
+        contextGeneration: topic.contextGeneration ?? 1,
+        topic: this.topicSummary(topic),
+      };
+    });
+  }
+
+  previewTopic(conversationId: string, topicId: string) {
+    const runtime = this.requireConversations();
+    const topic = runtime.runs.listTopics(conversationId).find((item) => item.id === topicId);
+    if (!topic) {
+      throw new ConversationError("topic_not_found", `topic "${topicId}" does not belong to this conversation`);
+    }
+    const impact = runtime.runs.previewTopic(conversationId, topicId);
+    const summary = this.topicSummary(topic);
+    const deleting = topic.status === "deleting";
+    return {
+      topic: summary,
+      bindings: impact.bindingChatKeys.map((chatKey) => ({ chatKey })),
+      unsettledRunIds: impact.unsettledRunIds,
+      indeterminateRunIds: impact.indeterminateRunIds,
+      worktreeRunIds: impact.worktreeRunIds,
+      actions: {
+        rename: !deleting,
+        archive: topic.status === "active" && impact.unsettledRunIds.length === 0,
+        restore: topic.status === "archived" && impact.indeterminateRunIds.length === 0,
+        teardown: summary.defaultDirect !== true && !deleting,
+        clear: summary.defaultDirect === true && !deleting,
+      },
+    };
   }
 
   listConversations(filter?: { botId?: string }) {
@@ -2058,7 +2556,7 @@ export class ControlService {
   getConversation(conversationId: string) {
     const runtime = this.requireConversations();
     const conversation = runtime.runs.getConversation(conversationId);
-    const topics = runtime.runs.listTopics(conversationId).map(toTopicSummary);
+    const topics = runtime.runs.listTopics(conversationId).map((topic) => this.topicSummary(topic));
     return {
       ...toConversationSummary(conversation, runtime.runs.defaultTopicId(conversation.id)),
       ...(conversation.description ? { description: conversation.description } : {}),
@@ -2067,13 +2565,13 @@ export class ControlService {
   }
 
   listTopics(conversationId: string) {
-    return this.requireConversations().runs.listTopics(conversationId).map(toTopicSummary);
+    return this.requireConversations().runs.listTopics(conversationId).map((topic) => this.topicSummary(topic));
   }
 
   async createTopic(conversationId: string, title: string, options?: TopicSchedulingOptions) {
     return this.runConversationMutation(async (runtime) => {
       const topic = await runtime.runs.createTopic(conversationId, title, options);
-      return toTopicSummary(topic);
+      return this.topicSummary(topic);
     });
   }
 
@@ -2110,6 +2608,7 @@ export class ControlService {
         topicId: input.topicId,
         requestId: input.requestId,
         text: input.text,
+        ...(input.agentMentions !== undefined ? { agentMentions: input.agentMentions } : {}),
         ...(input.target ? { target: input.target } : {}),
         ...(parsedIngress ? { humanIngress: parsedIngress } : {}),
       });
@@ -2165,18 +2664,23 @@ export class ControlService {
   getRun(runId: string) {
     const runtime = this.requireConversations();
     const result = runtime.runs.getRun(runId);
+    if (runtime.runs.isPeerTopic(result.run.topicId)) throw new ConversationError("run_not_found", "private peer Run");
     const worktree = runtime.store.worktrees.get(runId);
     return { ...toRunDetail(result.run, result.memberTurns), ...(worktree ? { worktree: worktreeStatus(worktree) } : {}) };
   }
 
   async operateConversationWorktree(input: import("../conversations/conversation-worktree-types").WorktreeOperation) {
-    return this.mutateWorkspaceGit(() => this.runConversationMutation(async runtime => worktreeStatus(await runtime.integrations.operate(input))));
+    return this.mutateWorkspaceGit(() => this.runConversationMutation(async runtime => {
+      if (runtime.runs.isPeerTopic(runtime.runs.getRun(input.runId).run.topicId)) throw new ConversationError("run_not_found", "private peer Run");
+      return worktreeStatus(await runtime.integrations.operate(input));
+    }));
   }
 
   listTopicRuns(conversationId: string, topicId: string, limit?: number) {
     // Clamp at the service boundary (not only the relay bridge): the public
     // facade is callable by any plugin/channel, and slice(-0) would return the
     // full set instead of an empty page.
+    if (this.requireConversations().runs.isPeerTopic(topicId)) throw new ConversationError("topic_not_found", "private peer Topic");
     const clampedLimit = limit === undefined ? undefined : Math.min(200, Math.max(1, Math.floor(limit)));
     const listed = this.requireConversations().runs.listTopicRuns(conversationId, topicId, {
       ...(clampedLimit !== undefined ? { limit: clampedLimit } : {}),
@@ -2190,9 +2694,42 @@ export class ControlService {
 
   async cancelRun(runId: string) {
     return this.runConversationMutation(async (runtime) => {
+      if (runtime.runs.isPeerTopic(runtime.runs.getRun(runId).run.topicId)) throw new ConversationError("run_not_found", "private peer Run");
       await runtime.runs.cancelRun(runId);
       const result = runtime.runs.getRun(runId);
       return toRunDetail(result.run, result.memberTurns);
     });
+  }
+}
+
+async function readCapabilityAdvertisement(
+  transport: Pick<SessionTransport, "getSessionModel" | "getSessionEffort">,
+  session: ResolvedSession,
+): Promise<CapabilityAdvertisement | undefined> {
+  if (!transport.getSessionModel) return undefined;
+  try {
+    const model = await transport.getSessionModel(session);
+    let efforts: string[] = [];
+    let currentEffort: string | undefined;
+    let effortKnown = false;
+    if (transport.getSessionEffort) {
+      try {
+        const effort = await transport.getSessionEffort(session);
+        efforts = effort.available;
+        currentEffort = effort.current;
+        effortKnown = true;
+      } catch {
+        effortKnown = false;
+      }
+    }
+    return {
+      models: model.available.filter((id) => id.trim().length > 0).map((modelId) => ({ modelId: modelId.trim() })),
+      ...(model.current?.trim() ? { currentModelId: model.current.trim() } : {}),
+      efforts,
+      ...(currentEffort ? { currentEffort } : {}),
+      effortKnown,
+    };
+  } catch {
+    return undefined;
   }
 }

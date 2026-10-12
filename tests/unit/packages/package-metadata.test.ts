@@ -16,10 +16,10 @@ test("root package publishes as xacpx and exposes plugin-api", () => {
   });
 });
 
-test("root package version is 0.24.6-beta.0", () => {
+test("root package version is 0.24.8-beta.0", () => {
   const pkg = readJson("package.json");
 
-  expect(pkg.version).toBe("0.24.6-beta.0");
+  expect(pkg.version).toBe("0.24.8-beta.0");
 });
 
 test("first-party channel plugins peer depend on xacpx", () => {
@@ -32,7 +32,7 @@ test("first-party channel plugins peer depend on xacpx", () => {
     expect(pkg.peerDependenciesMeta.weacpx).toBeUndefined();
     expect(pkg.publishConfig.access).toBe("public");
   }
-  expect(feishu.peerDependencies.xacpx).toBe(">=0.24.6-beta.0");
+  expect(feishu.peerDependencies.xacpx).toBe(">=0.24.8-beta.0");
   expect(yuanbao.peerDependencies.xacpx).toBe(">=0.17.0");
 });
 
@@ -107,4 +107,15 @@ test("relay-protocol workspace version and consumer deps match across manifests 
   for (const dir of RELAY_PROTOCOL_CONSUMERS) {
     expect(bunLock.workspaces[dir].dependencies[RELAY_PROTOCOL]).toBe(range);
   }
+});
+
+test("npm lockfile has no versionless installed package entries", () => {
+  const lock = readJson("package-lock.json");
+  const versionless = Object.entries(lock.packages as Record<string, { link?: boolean; version?: string }>)
+    .filter(([path, entry]) => path.includes("node_modules/") && !entry.link
+      && (typeof entry.version !== "string" || entry.version.length === 0))
+    .map(([path]) => path);
+  // npm's deduplication compares these versions even for optional, foreign-OS
+  // dependencies. An { optional: true } placeholder crashes before tests start.
+  expect(versionless).toEqual([]);
 });

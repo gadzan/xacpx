@@ -77,6 +77,8 @@ async function wire(options?: {
   chat?: (request: ChatRequest) => Promise<{ text: string }>;
   now?: () => Date;
   stateMutex?: AsyncMutex;
+  capabilityContext?: () => unknown;
+  prepareCommands?: (session:import("../../../src/transport/types").ResolvedSession)=>Promise<import("../../../src/transport/types").AgentCommand[]|undefined>;
 }) {
   const dir = mkdtempSync(join(tmpdir(), "xacpx-ctrl-"));
   const sqlitePath = options?.sqlitePath ?? join(dir, "conversations.sqlite");
@@ -105,6 +107,7 @@ async function wire(options?: {
   events.subscribe((event) => seen.push(event));
   const origins: Array<string | undefined> = [];
   const control = new ControlService({
+    agents: { resolveCapabilityContext: options?.capabilityContext ?? (() => undefined) },
     agent: {
       chat: async (request: ChatRequest) => {
         origins.push(request.metadata?.origin);
@@ -124,6 +127,7 @@ async function wire(options?: {
     },
     uploadStore: { save: async () => ({ id: "u", path: "/tmp/u", filename: "f", mimeType: "text/plain", size: 1 }) },
     transport: {
+      ...(options?.prepareCommands ? {prepareSessionCommands:options.prepareCommands} : {}),
       setModel: async () => {
         ordinaryTransportMutations.push("setModel");
       },
@@ -195,7 +199,10 @@ test("Control Topic creation persists and projects optional concurrency without 
   const direct = await control.createTopic(createDirectConversationId(a.id), "Direct", { maxConcurrentMemberTurns: 1 });
   expect(direct.maxConcurrentMemberTurns).toBe(1);
   await expect(control.createGroupTopic(group.id, "bad", { workspace: "backend", isolation: "shared" }, { maxConcurrentMemberTurns: 0 })).rejects.toMatchObject({ code: "invalid_concurrency_limit" });
-  expect("updateTopic" in control).toBe(false);
+  const renamed = await control.updateTopic(group.id, topic.id, "Renamed");
+  expect(renamed.title).toBe("Renamed");
+  expect(renamed.maxConcurrentMemberTurns).toBe(2);
+  expect(state.conversation_topics[topic.id]?.maxConcurrentMemberTurns).toBe(2);
   await runtime.shutdown();
 });
 
@@ -1126,6 +1133,7 @@ test("Direct Conversation presentation matches whether or not runtime materializ
     status: "active" as const,
     createdAt,
     updatedAt: createdAt,
+    defaultDirect: true,
   });
   expect(defaultTopicA).toEqual(expectedDefault(conversationIdA, topicIdA, botA.createdAt));
   expect(defaultTopicB).toEqual(expectedDefault(conversationIdB, topicIdB, botB.createdAt));
@@ -1177,6 +1185,7 @@ test("PR3 persisted default Topic clocks overlay to Bot createdAt after upgrade"
     status: "active",
     createdAt: t0,
     updatedAt: t0,
+    defaultDirect: true,
   });
   expect(fromGet).toEqual(listed);
   expect(listed?.createdAt).not.toBe(t1);
@@ -1341,4 +1350,98 @@ test("PR7 control: Group prompt accepts structured target and projects plural me
   });
   expect(direct.memberTurn.botId).toBe(botA.id);
   expect(direct.memberTurns).toBeUndefined();
+});
+
+
+test("Direct completions share cold materialization, advertise adapter data, and create no Run",async()=>{
+ let prepares=0,release!:()=>void;
+ const gate=new Promise<void>(r=>{release=r;});
+ const w=await wire({autoKick:false,prepareCommands:async session=>{prepares++;expect(session.mcpSourceHandle).toBe("direct-execution:discovery");await gate;return [{name:"review",description:"adapter review"},{name:"plugin:技能",kind:"skill"}];}});
+ try{
+  const a=await w.control.createBot({name:"A",agent:"codex",workspace:"backend"});
+  const b=await w.control.createBot({name:"Same",agent:"claude",workspace:"frontend"});
+  await w.control.createBot({name:"Disabled",agent:"codex",workspace:"backend",enabled:false});
+  const scope={conversationId:createDirectConversationId(a.id),topicId:createDirectTopicId(a.id)};
+  const one=w.control.getConversationCompletions(scope),two=w.control.getConversationCompletions(scope);
+  await waitUntil(()=>prepares===1);release();
+  const [x,y]=await Promise.all([one,two]);
+  expect(x).toEqual(y);expect(x.version).toBe(1);expect(x.commands.status).toBe("ready");expect(x.commands.items[1]?.kind).toBe("skill");expect(x.commands.items[1]?.name).toBe("plugin:技能");
+  expect(x.mentions.items).toHaveLength(1);expect(x.mentions.items[0]?.displayName).toBe(b.name);
+  expect(JSON.stringify(x)).not.toContain("brt_");expect(w.control.listTopicRuns(scope.conversationId,scope.topicId).runs).toHaveLength(0);
+  expect(w.control.conversationHistory(scope).messages).toHaveLength(0);expect(Object.keys(w.state.sessions)).toHaveLength(1);
+  await w.control.getConversationCompletions(scope);expect(prepares).toBe(1);
+  await w.control.updateBot(a.id,{instructions:"changed"});await w.control.getConversationCompletions(scope);expect(prepares).toBe(2);
+  await expect(w.control.getConversationCompletions({...scope,topicId:"foreign"})).rejects.toMatchObject({code:"topic_not_found"});
+ }finally{release();await w.runtime.shutdown();}
+});
+
+test("Direct references preserve text and stable identities, freeze replay, and survive SQLite reopen",async()=>{
+ const w=await wire({autoKick:false});
+ const {SqliteConversationStore}=await import("../../../src/conversations/sqlite-conversation-store");
+ try{
+  const a=await w.control.createBot({name:"A",agent:"codex",workspace:"backend"});
+  const b=await w.control.createBot({name:"B",agent:"codex",workspace:"backend"});
+  const scope={conversationId:createDirectConversationId(a.id),topicId:createDirectTopicId(a.id)};
+  const handle=w.runtime.directMessaging.registry.handle(b.id),text="  😀 @B work  ";
+  const agentMentions=[{range:[5,7] as [number,number],handle}];
+  const input={...scope,requestId:"refs-durable",text,agentMentions};
+  const accepted=await w.control.promptConversation(input);
+  expect(accepted.message.content).toBe(text);expect(accepted.message).not.toHaveProperty("inputMetadata");
+  const stored=w.runtime.store.getMessage(accepted.message.id)!;expect(stored.inputMetadata?.mentions?.[0]?.botId).toBe(b.id);
+  await w.control.updateBot(b.id,{name:"Renamed"});expect((await w.control.promptConversation(input)).run.id).toBe(accepted.run.id);
+  await expect(w.control.promptConversation({...input,text:text+"!"})).rejects.toMatchObject({code:"request_payload_conflict"});
+  await expect(w.control.promptConversation({...input,agentMentions:[]})).rejects.toMatchObject({code:"request_payload_conflict"});
+  for(const refs of [[{range:[-1,7],handle}],[{range:[5,99],handle}],[{range:[5,7],handle},{range:[6,8],handle}]])await expect(w.control.promptConversation({...input,requestId:"invalid",agentMentions:refs as never})).rejects.toMatchObject({code:"invalid-agent-mentions"});
+  await w.runtime.shutdown();
+  const reopened=await SqliteConversationStore.open(w.sqlitePath);try{expect(reopened.getMessage(accepted.message.id)?.inputMetadata).toEqual(stored.inputMetadata);}finally{reopened.close();}
+ }finally{await w.runtime.shutdown();}
+});
+
+test("deleted or changed referenced targets fail closed before provider execution; raw mentions remain text",async()=>{
+ let chats=0;
+ const w=await wire({autoKick:false,chat:async()=>{chats++;return {text:"result"};}});
+ try{
+  const a=await w.control.createBot({name:"A",agent:"codex",workspace:"backend"}),b=await w.control.createBot({name:"B",agent:"codex",workspace:"backend"});
+  const scope={conversationId:createDirectConversationId(a.id),topicId:createDirectTopicId(a.id)};
+  const accepted=await w.control.promptConversation({...scope,requestId:"deleted-ref",text:"@B",agentMentions:[{range:[0,2],handle:w.runtime.directMessaging.registry.handle(b.id)}]});
+  await w.control.updateBot(b.id,{enabled:false});await w.runtime.dispatcher.kick();expect(chats).toBe(0);expect(w.runtime.store.getRun(accepted.run.id)?.state).toBe("failed");
+  const raw=await w.control.promptConversation({...scope,requestId:"raw-ref",text:"@B"});expect(w.runtime.store.getMessage(raw.message.id)?.inputMetadata).toBeUndefined();
+  await w.runtime.dispatcher.kick();expect(chats).toBe(1);
+  const group=await w.control.createGroup({title:"G",botIds:[a.id,b.id]}),topic=await w.control.createGroupTopic(group.id,"T",{workspace:"backend",isolation:"shared"});
+  await expect(w.control.promptConversation({conversationId:group.id,topicId:topic.id,requestId:"group-ref",text:"@B",target:{botId:a.id},agentMentions:[{range:[0,2],handle:"fake"}]})).rejects.toMatchObject({code:"invalid-agent-mentions"});
+ }finally{await w.runtime.shutdown();}
+});
+
+test("unsupported cold discovery is explicit and does not mint a runtime",async()=>{
+ const w=await wire({autoKick:false});try{
+  const a=await w.control.createBot({name:"A",agent:"codex",workspace:"backend"});
+  const result=await w.control.getConversationCompletions({conversationId:createDirectConversationId(a.id),topicId:createDirectTopicId(a.id)});
+  expect(result.commands.status).toBe("unavailable");expect(Object.keys(w.state.sessions)).toHaveLength(0);
+ }finally{await w.runtime.shutdown();}
+});
+
+test("adapter revision changes retire cached and late cold advertisements", async () => {
+  let revision = 1, prepares = 0, release!: () => void;
+  let pause = false;
+  const w = await wire({ autoKick: false, capabilityContext: () => ({ revision }), prepareCommands: async () => {
+    prepares++;
+    const captured = revision;
+    if (pause) await new Promise<void>(resolve => { release = resolve; });
+    return [{ name: "revision" + captured }];
+  } });
+  try {
+    const bot = await w.control.createBot({ name: "A", agent: "codex", workspace: "backend" });
+    const scope = { conversationId: createDirectConversationId(bot.id), topicId: createDirectTopicId(bot.id) };
+    expect((await w.control.getConversationCompletions(scope)).commands.items[0]?.name).toBe("revision1");
+    revision = 2;
+    expect((await w.control.getConversationCompletions(scope)).commands.items[0]?.name).toBe("revision2");
+    expect(prepares).toBe(2);
+    revision = 3; pause = true;
+    const pending = w.control.getConversationCompletions(scope);
+    await waitUntil(() => prepares === 3);
+    revision = 4; release();
+    expect((await pending).commands).toMatchObject({ status: "unavailable", reason: "scope-changed", items: [] });
+    pause = false;
+    expect((await w.control.getConversationCompletions(scope)).commands.items[0]?.name).toBe("revision4");
+  } finally { release?.(); await w.runtime.shutdown(); }
 });

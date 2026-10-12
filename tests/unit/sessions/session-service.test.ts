@@ -1127,6 +1127,25 @@ test("relay ignores a reply_mode override and always streams; the raw override i
   expect(weixin!.effectiveReplyMode).toBeUndefined();
 });
 
+test("Conversation ownership forces stream mode regardless of hidden alias or saved reply override", () => {
+  const state = createEmptyState();
+  for (const kind of ["bot-direct", "group-member", "group-controller"] as const) {
+    for (const mode of [undefined, "verbose", "final", "stream"] as const) {
+      const alias = `owned-${kind}-${mode}`;
+      seedSession(state, alias, mode);
+      state.sessions[alias]!.owner = { kind, bindingId: "bind_test" };
+    }
+  }
+  seedSession(state, "brt_ordinary", "verbose");
+  const service = new SessionService(createConfig(), new MemoryStateStore(), state);
+
+  for (const [alias, session] of Object.entries(state.sessions)) {
+    const resolved = service.getResolvedSessionByInternalAlias(alias)!;
+    expect(resolved.replyMode).toBe(session.reply_mode);
+    expect(resolved.effectiveReplyMode).toBe(session.owner ? "stream" : undefined);
+  }
+});
+
 test("mutations under the shared mutex commit immediately and coalesce into one debounced write", async () => {
   // Regression for the debounce-defeating pattern: SessionService.mutate() holds the
   // shared state mutex while it awaits persist(). When the debounced store's save()

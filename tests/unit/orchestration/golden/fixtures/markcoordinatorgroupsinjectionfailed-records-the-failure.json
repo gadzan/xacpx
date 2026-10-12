@@ -72,7 +72,8 @@
     "bots": {},
     "conversations": {},
     "conversation_topics": {},
-    "bot_runtime_bindings": {}
+    "bot_runtime_bindings": {},
+    "bot_removals": {}
   },
   "calls": [
     {

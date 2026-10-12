@@ -43,7 +43,8 @@ label shown in the report:
 | 9     | `plugins`               | Plugins           | Configured plugins are installed, loadable, and enabled. Optional per-channel `diagnose` hooks (e.g. relay RMUX terminal registry/lease health) are rendered as structured findings — core does not interpret backend-specific codes. |
 | 10    | `orchestration`         | Orchestration     | Orchestration state in `state.json` is healthy (inspected read-only; never quarantined as a side effect). Heartbeat freshness is checked against `orchestration.progressHeartbeatSeconds`. |
 | 11    | `orchestration-socket`  | Orchestration IPC | `skip`s when the daemon is stopped; only when the daemon is live (running or indeterminate) does it probe whether the orchestration IPC endpoint actually accepts connections (`fail` only on a definitive no-listener, `pass`/`skip` on reachable or ambiguous). |
-| 12    | `smoke`                 | Smoke             | End-to-end probe of a real session. **Opt-in:** skipped unless `--smoke` is passed. |
+| 12    | `conversation-router`   | Conversation router | Reads `conversations.router` and, when enabled, runs the capability probe. `disabled-by-config` and `ready` pass. `unsupported` warns. `failed` fails. A missing config file skips the check. |
+| 13    | `smoke`                 | Smoke             | End-to-end probe of a real session. **Opt-in:** skipped unless `--smoke` is passed. |
 
 ## Severities
 

@@ -2,6 +2,28 @@
 
 Direct and Group Conversation execution is durable. Relay Web Group UX, the stateless automatic ConversationRouter (PR8), public structured handoff with bounded recovery (PR9), and external channel bindings (PR10) are part of this contract. Private handoff remains out of scope.
 
+## Reply text
+
+Product-owned Direct and Group sessions always use verbatim `stream` reply mode,
+resolved from LogicalSession owner metadata rather than the hidden alias prefix.
+Text-channel reply mode settings do not apply to their internal execution. The
+prompt handler, transport sink and Control event accumulator share that effective
+mode, so token chunks concatenate without inserted paragraph breaks or Weixin
+message quotas. Conversation settlement returns the accumulated full reply for
+durable public messages, even when the streaming adapter returns an empty final
+`response.text`. External bound channels deliver this settled result through their
+own outbound presentation path.
+
+The Bridge prompt result is settled whole-turn agent text, not a trailing delta:
+Runtime accumulates non-thought text deltas, and CLI extracts agent message chunks
+from the complete stdout before sanitizing the result. Streamed segments can
+include separate text rendering or transcript boundaries, so the two forms are
+not guaranteed to match. In stream mode, the transport appends only the missing
+suffix when the final result starts with the exact concatenated segments. An
+equal result is not replayed, and a shorter or nonmatching result leaves the
+streamed reply intact. With no text segments the entire final response is
+delivered and persisted once; an entirely empty reply remains empty.
+
 ## Store ownership
 
 Two durability systems exist. They are **not** one ACID transaction.
@@ -178,6 +200,16 @@ Sticky identity is `agent` / `workspace`. The dispatcher may reject an obvious m
 
 The same gate also proves the claimed work is still live before any Session/AppState mutation: exact dispatch + owner + generation + live lease, Run/MemberTurn still runnable, Conversation/Topic not deleting. That check is `assertLiveDispatchForMaterialize`, invoked through `getOrCreateDirectSession({ assertStillDispatchable })`. Every materialization caller enters `bots.runLifecycle` itself — callers do not join another in-flight authorization promise. A later claimant therefore runs its own fence, then observes or reuses any binding/session the previous caller already published. If teardown wins the gate first, the old worker exits without creating a session. If materialization wins first, teardown subsequently sees and releases that ownership. After teardown has marked Conversation/Topic deleting, a not-yet-started claimant must fail that fence and must not reach `markExecutionStarted`. `BotRuntimeManager.releaseDirectBinding` also runs the full release/re-read/conditional-binding-delete transaction under `bots.runLifecycle(botId)`.
 
+## Adapter slash commands
+
+The adapter advertises slash commands on the existing `agent-commands` control event. When the event carries Conversation correlation, the daemon records the list under `conversationId × topicId × botId` in `src/conversations/advertised-commands.ts`. The ordinary Session command map does not store that row, and the hidden alias is not a product key.
+
+`promptConversation` still accepts the original user text and still goes through Run ownership and permission. There is no second command channel and no ordinary Session prompt from the browser. At execution, `adapterFacingPrompt` sends that original text to the runner when the first token matches an advertisement for that Bot runtime. Profile wrapping, Group assignment context, and the Group member preface stay off that text. A command that was not advertised, including an xacpx admin command, keeps the existing wrap. The xacpx catalog is not an advertisement.
+
+Group accept allows that path only for one explicit member (`target.botId` or `mode: "members"` with one id). Everyone, automatic, and any other multi-member target reject a bare `/token`, and reject a command with arguments when any selected runtime has advertised that name, with `slash_requires_single_member`. The refusal happens before `acceptRequest`, so it is a definitive rejection and the draft stays in the composer. An uncertain accept still replays the frozen `requestId` and target.
+
+Direct `@` is not Agent Messaging and not a private handoff. The Direct page only navigates to another Bot's Direct conversation or to a Group that already contains the current Bot.
+
 ## Direct multi-Topic binding
 
 Runtime key: **`conversationId × topicId × botId`**.
@@ -208,7 +240,11 @@ A crash before step 5 leaves the SQLite `deleting` barrier in place: new accepts
 
 Injected release failure leaves `deleting` + ownership in place for retry.
 
-**Remaining Bot-delete boundary:** `BotService.deleteBot` stays fail-closed (`bot_in_use` / `bot_in_group`) and does **not** auto-teardown. It consults AppState runtime references **and** ConversationStore durable work (`hasDurableBotWork`) so an accepted Run/outbox cannot outlive a deleted Bot through a crash-before-materialize window. Call `ConversationRunService.teardownDirectConversation` first, then delete the Bot.
+**Remaining Bot-delete boundary:** `BotService.deleteBot` stays fail-closed (`bot_in_use` / `bot_in_group`) and does **not** auto-teardown. It consults AppState runtime references **and** ConversationStore durable work (`hasDurableBotWork`) so an accepted Run/outbox cannot outlive a deleted Bot through a crash-before-materialize window. `deleteBot` also fails `bot_removing` while a removal barrier exists. It does not retire a bot that still has history.
+
+**Controlled removal:** `previewBotRemoval` then `removeBot`. `removeBot` writes the SQLite barrier before it releases sessions or deletes rows. The phase is `previewed`, `deleting`, `indeterminate`, or `retired`. SQLite `bot_removal_barrier` is what accept, dispatch, enable, topic create, and member join read. AppState `bot_removals` stores the recoverable phase. If AppState is ahead of SQLite, the next accept writes the barrier before it admits work. A current group membership blocks removal. A two-member group is not reduced, and the group is not deleted. After a bot has left a group, removal releases only that member's session and binding. The group transcript and runs stay. `clearDirectHistory` deletes that bot's direct transcript only. Group history stays. An indeterminate run keeps the barrier. The lifecycle operation stays `indeterminate` and does not report completed. Retry uses the same `requestId`. A changed dependency returns `removal_stale` until the caller previews again. Retire stores a tombstone and drops the executable profile. `hasDurableBotWork` is unchanged, so a restored profile still cannot `deleteBot` through group history.
+
+Topic teardown, topic clear, and group teardown write the same `lifecycle_operations` row. `getLifecycleOperation` reads it. There is no second task runner.
 
 ## Enforced execution effects (Phase 10B)
 
@@ -485,6 +521,10 @@ The engine enforces a 30,000 ms decision deadline, configurable through `decisio
 
 **Capability boundary (fail closed, pre-execution).** `bindRouter` accepts only a Router implementation that declares, before any model call, that it has no tools, no filesystem/terminal, no permission interaction, no Agent Messaging/Orchestration side effects, and bounded structured output only (`isRouterCapabilityRestricted` — every one of the seven flags must be `true`). A missing or permissive declaration means `bindRouter` returns `undefined`, so no engine is built and `{mode: "automatic"}` accepts fail closed with `automatic_unsupported`. Observing "no tool events" after the fact is never a proof. No Router configured for an already-accepted automatic Run fails that Run durably rather than parking it forever.
 
+**Production availability.** `resolveProductionRouter` reads `conversations.router` when the daemon starts. `src/main.ts` passes that result into `createConversationRuntime`. Routing still uses `ConversationRouterEngine` for budget, deadline, cancel, and restart. There is no second engine. The status is `disabled-by-config`, `unsupported`, `ready`, or `failed`. The default is `disabled-by-config`, and an automatic accept then fails with `automatic_unsupported`. `enabled: true` runs `<command> --capabilities` and requires every restriction flag to be `true` before any `--decide` process exists. Only that `ready` result is injected. `control.conversations.router.get` returns the same availability. Relay Web can select automatic collaboration only from `ready`. The other statuses show the reason and the config path `conversations.router`. `waiting-human` stays waiting. The UI does not change it to running. Stop ends that Run. A later explicit member request is a new Run. This release does not add a control that turns a blocked model step into a human authorization. Do not describe automatic collaboration as available in a release note.
+
+**Runtime switch.** `control.conversations.router.set` persists `conversations.router.enabled` through `ConfigStore`, re-runs `resolveProductionRouter` against the updated config, and hands the resolution to `ConversationRuntime.applyRouterResolution`, which re-settles through the same `bindRouter` gate and swaps the engine on `ConversationRunService`. There is still one engine; a hot swap is a replacement, never a second routing path. An in-flight decision keeps the engine it captured and settles on its own deadline; the next step sees the new one. Removing the engine at runtime is the documented disabled state: a surviving automatic Run fails closed with `automatic_unsupported` instead of parking nonterminal. A flip that cannot prove the restriction resolves to `unsupported`/`failed` and installs no engine.
+
 **RoutingInput is public-only.** `ConversationRouterEngine.buildRoutingInput` derives every field from durable rows or live product metadata: the Run's own human request (referentially fenced by conversation+topic+run+role), a bounded newest-first window of THIS Topic's public messages (`ROUTER_PUBLIC_TRANSCRIPT_MESSAGES = 200`), current live Group membership with Bot profiles, the durable Run row, this Run's durable MemberTurns with their public results, `maxMemberTurns - consumedMemberTurns` as the remaining budget, and the Topic's `ExecutionTarget`. No Direct history, no private content, no other Topic, no hidden session, no Bot `instructions`, and no Router-side conversational history: each `decide` call rebuilds the snapshot from rows, so a warm model process cannot carry state across decisions.
 
 Router output bounds include 128-character assignment/Bot/reference IDs, 64 dependencies, and 64 supplied trigger IDs per assignment; duplicate references are rejected before any store lookup. Input uses a 131,072-character serialized JSON ceiling. Deterministic text budgets retain request prefixes (16,000 characters), transcript prefixes by descending message `seq` (2,000 per row / 32,000 total), and completed result prefixes (4,000 per result / 32,000 total). Transcript budget allocation prioritizes the newest messages independently of array order and preserves that array order; the production engine supplies the nearest 200 rows newest-first. Historical task/expected-output descriptions and presentation metadata are also capped, with explicit truncation flags; durable rows and actual member execution input remain intact. Identity fields are never truncated. Excess fixed structure fails as `router_input_too_large` before the model call. Large Groups expose at most 128 routing candidates: enabled members first in Group order, then disabled members in Group order, with `omittedMemberCount` disclosed. This bounds the model snapshot without imposing a Group membership/admission cap.
@@ -567,9 +607,15 @@ Native-session list/attach is a second ordinary Session door onto the same model
 
 Direct Conversation **identity** (Conversation id, owning Bot id, default Topic id) is durable and stable across rename and materialization. Direct Conversation **presentation** (`title`, `createdAt`, `updatedAt`) is always the current owning Bot projection, whether or not an AppState Conversation row has been materialized. First prompt / `createTopic` is not a presentation freeze point. Rename does not rewrite durable Conversation identity.
 
-Default Topic identity is independent of Bot rename. `createdAt` is the owning Bot's creation time. `updatedAt` is the last real Topic mutation; until a Topic rename/archive API exists, synthetic and first-persisted `updatedAt` equal `createdAt` (not `Bot.updatedAt`). Hidden materialization must not change the public default Topic DTO.
+Default Topic identity is independent of Bot rename. `createdAt` is the owning Bot's creation time. `updatedAt` is the last real Topic mutation. Until a rename, archive, restore, or clear, synthetic and first-persisted `updatedAt` equal `createdAt` (not `Bot.updatedAt`). A lifecycle mutation stores `managedAt`, and the presenter uses that as `updatedAt`. Hidden materialization must not change the public default Topic DTO.
 
-Before a Direct Conversation is persisted, public list/get synthesize the bounded Conversation/default Topic from durable Bot timestamps (`createdAt` / `updatedAt` for Conversation; default Topic uses Bot `createdAt` for both clocks), never read-time `now`. After persist, list/get still overlay Conversation presentation from the Bot, and default Topic `createdAt` **and** `updatedAt` from the Bot (so a PR3 row that stored materialize-now timestamps presents identically to a PR4-created Topic). The semantic default Topic id is `createDirectTopicId(botId)`.
+Topic phase is `active`, `archived`, or `deleting`. Archive moves `active` to `archived` and is idempotent when the topic is already archived. It refuses a topic with a queued, running, or waiting-human Run. Restore moves only `archived` to `active`. It refuses `deleting` and a topic with indeterminate Runs. Rename changes the title only. The topic id and history stay. `deleting` is a barrier, not a status restore can undo.
+
+The default Direct topic is the virtual id `createDirectTopicId(botId)`. It can be materialized, renamed, archived, and restored. It cannot be physically deleted. Clear keeps that id, cancels unsettled Runs for that topic only, releases only the `conversationId × topicId × botId` binding, deletes that topic's history, and bumps `contextGeneration` (absent means 1). A binding whose generation does not match is released instead of adopted, including a legacy default binding after the generation has moved past 1. New accepts and materialization that still see the resetting barrier fail `topic_resetting`. Prompt `requestId`s from the retired generation are stored in `topic_request_receipts` and return `request_retired` instead of running again. The clear operation's own `requestId` is a separate receipt. Repeating it returns the same generation and does not delete a later context.
+
+Extra Direct topics and Group topics are the ones that can be torn down. Direct teardown releases only that topic's owned sessions and rows. Group archive and Group teardown keep their existing methods and use this same phase change and row cleanup. External bindings block the new teardown and clear calls until `releaseBindings` is true. Dirty or unmerged worktrees still fail `worktree_cleanup_unsafe` and leave the barrier in place for retry. A physical release failure does the same.
+
+Before a Direct Conversation is persisted, public list/get synthesize the bounded Conversation/default Topic from durable Bot timestamps (`createdAt` / `updatedAt` for Conversation; an untouched default Topic uses Bot `createdAt` for both clocks), never read-time `now`. After persist, list/get still overlay Conversation presentation from the Bot, and default Topic `createdAt` from the Bot. Default Topic `updatedAt` stays on the Bot clock until `managedAt` is set. The semantic default Topic id is `createDirectTopicId(botId)`.
 
 Successful `createBot` / `updateBot` / `deleteBot` emit both `bots-changed` and `conversations-changed`, because `conversations.list` includes a Direct Conversation for every Bot (synthetic until materialized).
 
@@ -579,7 +625,7 @@ Idempotent `requestId` retries reuse the durable accept result and do not re-emi
 
 Shutdown first marks the runtime stopping to reject new operation leases, then waits for entered operations, including `group_send` waiting on Bot lifecycle gates. It stops and drains the Run service/dispatcher before closing the handoff service. Live execution capabilities remain available through this drain, so an entered handoff can commit and an already started execution can bind its capability. Handoff capability revocation runs in `finally`, including a failed drain; shutdown failures remain visible rather than reporting success.
 
-`topic archive/delete` is not a public Control method until domain lifecycle owns it. `BotService.deleteBot` remains fail-closed while durable/runtime ownership exists.
+Public topic lifecycle is `updateTopic`, `archiveTopic`, `restoreTopic`, `teardownTopic`, `clearTopic`, and `previewTopic`. `teardownTopic` and `clearTopic` return `operationId`. `BotService.deleteBot` remains fail-closed while durable/runtime ownership exists. Controlled removal is `previewBotRemoval`, `removeBot`, and `getLifecycleOperation`.
 
 ## Out of scope
 
@@ -1103,3 +1149,12 @@ own schedule while the turn is open.
 Wakes from accept, completion, routing, handoff and cancel are coalesced by the
 monotonic wake generation, so no wake is lost and a ready task does not need a
 new user message to start.
+## Direct references and private peer delivery (Issue #399)
+
+Direct prompt admission accepts optional structured agentMentions with UTF-16 half-open ranges (at most 16, sorted, non-overlapping). Text remains byte-for-byte unchanged; trimming is only for the blank check. Admission resolves each registry handle to a stable Bot/agent/workspace identity, then commits a versioned input_metadata_json on the request message in the existing SQLite accept transaction. Opening older databases adds a nullable column; NULL is a legacy request with no references. Malformed or inconsistent metadata fails closed. A requestId replay must match original text and raw reference ranges/handles; it never re-resolves a same-name replacement. Dispatch reloads metadata and revalidates identities before execution.
+
+Unrestricted Direct executions receive a core-owned, ephemeral Direct messaging binding tied to the live member turn, source turn, dispatch owner/generation/lease, logical session, and Topic context generation. Public prompt metadata cannot mint it. The existing one-shot ChatRequest provenance and a private WeakMap bind it to the immutable MCP launch; cancellation, terminal state, replacement, expiry, and shutdown revoke its use. References identify targets and grant no human authority.
+
+Same-instance Bot delivery uses DirectMessagingService and the existing Conversation admission/dispatcher/runner. For each source Conversation/Topic and target Bot, ensurePeerTopic persists a separate private peerScope and hidden runtime binding. The target's human Direct Topic is untouched. Its request is role=bot, senderBotId is the source Bot, and the member origin is handoff with no human ingress. Public Topic/history/Run/worktree doors and public message/Run events omit this scope; correlated private streams are not forwarded into Relay reconnect snapshots. It is point-to-point isolation, not encryption or secrecy from the instance administrator.
+
+Message IDs are derived from the source turn, exact target, and explicit content for durable replay. A queued receipt proves admission only. V1 supports queue/auto, same-instance online delivery, and cold target startup; no completion, replyTo, steering, interrupt, broadcast, cross-instance mailbox, or Task is advertised. Content is limited to 16000 bytes, chain depth to 8, and unique messages to 16 per execution; trivial ACK loops are rejected. See [implementation evidence](design/issue-399-direct-completions.md).

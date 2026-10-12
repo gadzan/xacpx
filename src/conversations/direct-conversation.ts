@@ -86,6 +86,6 @@ export function presentDefaultDirectTopic(
   return {
     ...topic,
     createdAt: bot.createdAt,
-    updatedAt: bot.createdAt,
+    updatedAt: topic.managedAt ?? bot.createdAt,
   };
 }

@@ -284,3 +284,14 @@ test("effort get/set apply the session's resolved provider environment", async (
     });
   }
 });
+
+
+test("cold command discovery only ensures/reads advertisement and never prompts",async()=>{
+ const calls:string[][]=[];
+ const runner=mock(async(_command:string,args:string[])=>{calls.push(args);return {code:0,stdout:args.includes("status") ? JSON.stringify({availableCommands:[{name:"review",description:"adapter",kind:"skill"}]}) : "",stderr:""};});
+ const transport=new AcpxCliTransport({command:"acpx"},runner,runner);
+ expect(await transport.prepareSessionCommands(noModelSession)).toEqual([{name:"review",description:"adapter",kind:"skill"}]);
+ expect(calls.some(c=>c.includes("prompt"))).toBe(false);expect(calls.some(c=>c.includes("ensure"))).toBe(true);
+ const unavailable=new AcpxCliTransport({command:"acpx"},mock(async()=>({code:0,stdout:"{}",stderr:""})),runner);
+ expect(await unavailable.prepareSessionCommands(noModelSession)).toBeUndefined();
+});

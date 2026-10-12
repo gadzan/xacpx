@@ -1,0 +1,6 @@
+ts	phase	decision	why	evidence	result
+2026-10-09T11:56:43Z	start	PR5 capability discovery on cursor/agent-capability-discovery-0ba7 from origin/main 14e55c68	implementation owner owns the diff because this agent cannot spawn nested helpers	worktree /workspace/.worktrees/pr5	open
+2026-10-09T11:56:43Z	probe	acpx 0.16.0 has no models inspect command; models arrive on sessions new via ACP session/new and status JSON availableModels	a probe must go through transport, create no bot topic, and close the reserved session	/workspace/node_modules/acpx/dist/cli.js handleSessionsNew	measured
+2026-10-09T12:35:26Z	design	capability state is a union and the probe is sessions new plus close	acpx 0.16.0 has no inspect command and an empty array hides failure	node_modules/acpx 0.16.0 status and sessions new	landed
+2026-10-09T12:35:26Z	verify	tsc, focused unit tests, web picker tests, then full checks	prove the chain before calling the slice done	commits 5befc2a3 e02f14d7 493dbcb9	tsc pass, web 1983 pass, npm test stopped on known flock
+2026-10-09T12:35:26Z	pr	wrote the draft body to an artifact	ManagePullRequest is not in this tool list and the brief forbids gh	/opt/cursor/artifacts/pr5-body.md	PR not opened

@@ -7,6 +7,7 @@
 // The registry keys are the control-RPC MessageTypes; `satisfies Record<ControlRpcType, …>`
 // makes tsc fail if a control RPC is added to the union without a validator (or vice versa),
 // and `parseControlPayload` forces every connector dispatch arm to register its message type.
+import { validAgentMentions } from "./agent-mentions.js";
 import {
   MSG,
   type AgentsCreatePayload,
@@ -14,7 +15,10 @@ import {
   type BotsCreatePayload,
   type BotsDeletePayload,
   type BotsGetPayload,
+  type BotsRemovePayload,
+  type BotsRemovePreviewPayload,
   type BotsUpdatePayload,
+  type LifecycleOperationsGetPayload,
   type CommandExecutePayload,
   type ConversationHistoryPayload,
   type ConversationPromptPayload,
@@ -63,6 +67,9 @@ import {
   type ScheduledCancelPayload,
   type ScheduledCreatePayload,
   type ScheduledListPayload,
+  type AgentsCapabilitiesGetPayload,
+  type ConversationRouterGetPayload,
+  type ConversationRouterSetPayload,
   type SessionModelGetPayload,
   type SessionModelSetPayload,
   type SessionEffortGetPayload,
@@ -88,8 +95,14 @@ import {
   type TerminalTerminatePayload,
   type TerminalViewerEventInner,
   type TerminalViewerEventPayload,
+  type TopicsArchivePayload,
+  type TopicsClearPayload,
   type TopicsCreatePayload,
   type TopicsListPayload,
+  type TopicsPreviewPayload,
+  type TopicsRestorePayload,
+  type TopicsTeardownPayload,
+  type TopicsUpdatePayload,
   type UploadPayload,
   type WorkspacesCreatePayload,
   type WorkspacesRemovePayload,
@@ -332,6 +345,29 @@ const validateGitWorktreeCreate: Validator<GitWorktreeCreatePayload> = (p) => {
 };
 
 // --- model / terminal / upload ---
+const validateConversationRouterGet: Validator<ConversationRouterGetPayload> = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 0) return null;
+  return {};
+};
+const validateConversationRouterSet: Validator<ConversationRouterSetPayload> = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 1 || typeof o.enabled !== "boolean") return null;
+  return { enabled: o.enabled };
+};
+const validateAgentsCapabilitiesGet: Validator<AgentsCapabilitiesGetPayload> = (p) => {
+  const o = fields(p);
+  if (!o || !isBoundedStr(o.agent, 128) || !isBoundedStr(o.workspace, 256)) return null;
+  if (o.botId !== undefined && !isBoundedStr(o.botId, 128)) return null;
+  if (o.probe !== undefined && typeof o.probe !== "boolean") return null;
+  if ("sessionAlias" in o || "alias" in o || "transportSession" in o) return null;
+  return {
+    agent: o.agent,
+    workspace: o.workspace,
+    ...(o.botId !== undefined ? { botId: o.botId } : {}),
+    ...(o.probe !== undefined ? { probe: o.probe } : {}),
+  };
+};
 const validateSessionModelGet: Validator<SessionModelGetPayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? (o as unknown as SessionModelGetPayload) : null;
@@ -442,6 +478,21 @@ const validateBotsDelete: Validator<BotsDeletePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.id) ? (o as unknown as BotsDeletePayload) : null;
 };
+const validateBotsRemovePreview: Validator<BotsRemovePreviewPayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? (o as unknown as BotsRemovePreviewPayload) : null;
+};
+const validateBotsRemove: Validator<BotsRemovePayload> = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) && isBoundedStr(o.requestId, 128) && isBoundedStr(o.previewRevision, 64)
+    && (o.clearDirectHistory === undefined || o.clearDirectHistory === true || o.clearDirectHistory === false)
+    && (o.releaseDirectBindings === undefined || o.releaseDirectBindings === true || o.releaseDirectBindings === false)
+    ? (o as unknown as BotsRemovePayload) : null;
+};
+const validateLifecycleOperationsGet: Validator<LifecycleOperationsGetPayload> = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.id, 220) ? (o as unknown as LifecycleOperationsGetPayload) : null;
+};
 const validateConversationsList: Validator<ConversationsListPayload> = (p) => {
   const o = fields(p);
   return o && optStr(o.botId) ? (o as unknown as ConversationsListPayload) : null;
@@ -458,6 +509,44 @@ const validateTopicsCreate: Validator<TopicsCreatePayload> = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.title) && validMemberConcurrency(o.maxConcurrentMemberTurns)
     ? (o as unknown as TopicsCreatePayload) : null;
+};
+const validateTopicRef = (o: Record<string, unknown> | null): boolean =>
+  !!o && isStr(o.conversationId) && isStr(o.topicId);
+const validateConversationCompletionsGet:Validator<import("./agent-mentions").ConversationCompletionsRequest> = p => {
+  const o=fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.conversationId,128) && isBoundedStr(o.topicId,128)
+    && (o.query===undefined || typeof o.query==="string" && o.query.length<=128)
+    && (o.cursor===undefined || typeof o.cursor==="number" && Number.isSafeInteger(o.cursor) && o.cursor>=0)
+    && Object.keys(o).every(k=>["conversationId","topicId","query","cursor"].includes(k))
+    ? o as unknown as import("./agent-mentions").ConversationCompletionsRequest : null;
+};
+const validateTopicsUpdate: Validator<TopicsUpdatePayload> = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.title, 200) ? (o as unknown as TopicsUpdatePayload) : null;
+};
+const validateTopicsArchive: Validator<TopicsArchivePayload> = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? (o as unknown as TopicsArchivePayload) : null;
+};
+const validateTopicsRestore: Validator<TopicsRestorePayload> = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? (o as unknown as TopicsRestorePayload) : null;
+};
+const validateTopicsTeardown: Validator<TopicsTeardownPayload> = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.requestId, 128)
+    && (o.releaseBindings === undefined || o.releaseBindings === true || o.releaseBindings === false)
+    ? (o as unknown as TopicsTeardownPayload) : null;
+};
+const validateTopicsClear: Validator<TopicsClearPayload> = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.requestId, 128) && o.confirm === true
+    && (o.releaseBindings === undefined || o.releaseBindings === true || o.releaseBindings === false)
+    ? (o as unknown as TopicsClearPayload) : null;
+};
+const validateTopicsPreview: Validator<TopicsPreviewPayload> = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? (o as unknown as TopicsPreviewPayload) : null;
 };
 const validMemberConcurrency = (v: unknown): boolean => v === undefined ||
   (typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 64);
@@ -544,6 +633,7 @@ const validateConversationPrompt: Validator<ConversationPromptPayload> = (p) => 
   if (!o || !isStr(o.conversationId) || !isStr(o.topicId) || !isStr(o.requestId) || !isStr(o.text)) {
     return null;
   }
+  if (o.agentMentions !== undefined && !validAgentMentions(o.text as string, o.agentMentions)) return null;
   if (o.target !== undefined && !isConversationTarget(o.target)) {
     return null;
   }
@@ -921,6 +1011,10 @@ export type ControlRpcType =
   | typeof MSG.fsRead | typeof MSG.fsDiff | typeof MSG.fsSearch | typeof MSG.fsCreate
   | typeof MSG.fsRename | typeof MSG.fsDelete | typeof MSG.fsCopy | typeof MSG.fsDownload
   | typeof MSG.fsWrite | typeof MSG.sessionModelGet | typeof MSG.sessionModelSet
+  | typeof MSG.agentsCapabilitiesGet
+  | typeof MSG.conversationCompletionsGet
+  | typeof MSG.conversationRouterGet
+  | typeof MSG.conversationRouterSet
   | typeof MSG.sessionEffortGet | typeof MSG.sessionEffortSet
   | typeof MSG.gitStatus | typeof MSG.gitStage | typeof MSG.gitUnstage
   | typeof MSG.gitUntrack | typeof MSG.gitDiscard | typeof MSG.gitCommit
@@ -932,8 +1026,11 @@ export type ControlRpcType =
   | typeof MSG.desktopPrepare
   | typeof MSG.upload
   | typeof MSG.botsGet | typeof MSG.botsCreate | typeof MSG.botsUpdate | typeof MSG.botsDelete
+  | typeof MSG.botsRemovePreview | typeof MSG.botsRemove | typeof MSG.lifecycleOperationsGet
   | typeof MSG.conversationsList | typeof MSG.conversationsGet
   | typeof MSG.topicsList | typeof MSG.topicsCreate
+  | typeof MSG.topicsUpdate | typeof MSG.topicsArchive | typeof MSG.topicsRestore
+  | typeof MSG.topicsTeardown | typeof MSG.topicsClear | typeof MSG.topicsPreview
   | typeof MSG.groupsCreate | typeof MSG.groupsUpdate | typeof MSG.groupsDelete | typeof MSG.groupsGet
   | typeof MSG.groupsList
   | typeof MSG.groupTopicsCreate | typeof MSG.groupTopicsArchive | typeof MSG.groupTopicsTeardown
@@ -991,6 +1088,10 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.gitCheckout]: validateGitCheckout,
   [MSG.gitWorktreeCreate]: validateGitWorktreeCreate,
   [MSG.sessionModelGet]: validateSessionModelGet,
+  [MSG.agentsCapabilitiesGet]: validateAgentsCapabilitiesGet,
+  [MSG.conversationCompletionsGet]: validateConversationCompletionsGet,
+  [MSG.conversationRouterGet]: validateConversationRouterGet,
+  [MSG.conversationRouterSet]: validateConversationRouterSet,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.sessionEffortGet]: validateSessionEffortGet,
   [MSG.sessionEffortSet]: validateSessionEffortSet,
@@ -1006,10 +1107,19 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.botsCreate]: validateBotsCreate,
   [MSG.botsUpdate]: validateBotsUpdate,
   [MSG.botsDelete]: validateBotsDelete,
+  [MSG.botsRemovePreview]: validateBotsRemovePreview,
+  [MSG.botsRemove]: validateBotsRemove,
+  [MSG.lifecycleOperationsGet]: validateLifecycleOperationsGet,
   [MSG.conversationsList]: validateConversationsList,
   [MSG.conversationsGet]: validateConversationsGet,
   [MSG.topicsList]: validateTopicsList,
   [MSG.topicsCreate]: validateTopicsCreate,
+  [MSG.topicsUpdate]: validateTopicsUpdate,
+  [MSG.topicsArchive]: validateTopicsArchive,
+  [MSG.topicsRestore]: validateTopicsRestore,
+  [MSG.topicsTeardown]: validateTopicsTeardown,
+  [MSG.topicsClear]: validateTopicsClear,
+  [MSG.topicsPreview]: validateTopicsPreview,
   [MSG.groupsCreate]: validateGroupsCreate,
   [MSG.groupsUpdate]: validateGroupsUpdate,
   [MSG.groupsDelete]: validateGroupsDelete,

@@ -10,7 +10,7 @@ import {
   MAX_DESKTOP_TICKET_LENGTH,
   MAX_TOOL_STEPS, MSG, REASONING_CAP, STATE_SYNC_PARTS_CAP, STATE_SYNC_TEXT_CAP,
   type AgentCommandDto, type ControlEventDto, type ConversationTurnCorrelationDto, type InstanceEventPayload, type InstanceNoticePayload, type InstanceRecoveryAckPayload, type InstanceStateSyncPayload, type LiveTurnSnapshotDto, type RelayEnvelope,
-  type InstanceStateSnapshotDto, type ScheduledOriginDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
+  type ConversationCommandsSnapshotDto, type InstanceStateSnapshotDto, type ScheduledOriginDto, type SessionCommandsSnapshotDto, type SessionUsageSnapshotDto, type ToolStepDto, type TurnPartDto, type UsageBreakdownDto, type UsageCostDto,
   validControlEvent, validInstanceStateSync,
 } from "@ganglion/xacpx-relay-protocol";
 
@@ -368,6 +368,18 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
   // typically advertise once at session start, so without this the hints vanish on reload.
   // Cleared when the instance goes offline. Absent for sessions that advertised none.
   const sessionCommands = new Map<string, AgentCommandDto[]>();
+  const conversationCommands = new Map<string, { conversationId: string; topicId: string; botId: string; commands: AgentCommandDto[] }>();
+  const conversationCommandKey = (instanceId: string, conversationId: string, topicId: string, botId: string): string =>
+    `${instanceId}\0${conversationId}\0${topicId}\0${botId}`;
+  const listConversationCommands = (instanceId: string): ConversationCommandsSnapshotDto[] => {
+    const prefix = `${instanceId}\0`;
+    const out: ConversationCommandsSnapshotDto[] = [];
+    for (const [k, row] of conversationCommands) {
+      if (!k.startsWith(prefix)) continue;
+      out.push({ instanceId, conversationId: row.conversationId, topicId: row.topicId, botId: row.botId, commands: row.commands });
+    }
+    return out;
+  };
   const listSessionCommands = (instanceId: string): SessionCommandsSnapshotDto[] => {
     const prefix = `${instanceId}\0`;
     const out: SessionCommandsSnapshotDto[] = [];
@@ -404,6 +416,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     turns: listActiveTurns(instanceId),
     usage: listSessionUsage(instanceId),
     commands: listSessionCommands(instanceId),
+    conversationCommands: listConversationCommands(instanceId),
   });
   // Coalescing appenders — consecutive same-type chunks merge into one part.
   const pushTextPart = (a: TurnAccumulator, chunk: string) => {
@@ -465,6 +478,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
         for (const k of turnBuffers.keys()) if (k.startsWith(prefix)) turnBuffers.delete(k);
         for (const k of sessionUsage.keys()) if (k.startsWith(prefix)) sessionUsage.delete(k);
         for (const k of sessionCommands.keys()) if (k.startsWith(prefix)) sessionCommands.delete(k);
+        for (const k of conversationCommands.keys()) if (k.startsWith(prefix)) conversationCommands.delete(k);
       }
       webGateway.broadcast(accountId, { kind: "instance-status", instanceId, online });
       webGateway.broadcast(accountId, {
@@ -822,7 +836,19 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               sessionUsage.set(key(instanceId, event.sessionAlias), { used: event.used, size: event.size, ...(event.cost ? { cost: event.cost } : {}), ...(event.breakdown ? { breakdown: event.breakdown } : {}) });
             }
           } else if (event.type === "agent-commands") {
-            if (!event.conversation) {
+            if (event.conversation?.botId) {
+              conversationCommands.set(conversationCommandKey(
+                instanceId,
+                event.conversation.conversationId,
+                event.conversation.topicId,
+                event.conversation.botId,
+              ), {
+                conversationId: event.conversation.conversationId,
+                topicId: event.conversation.topicId,
+                botId: event.conversation.botId,
+                commands: event.commands,
+              });
+            } else if (!event.conversation) {
               sessionCommands.set(key(instanceId, event.sessionAlias), event.commands);
             }
           } else if (event.type === "session-history") {
@@ -1108,6 +1134,17 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
               if (productSessionAliases.has(entry.sessionAlias)) continue;
               sessionCommands.set(key(instanceId, entry.sessionAlias), entry.commands);
             }
+            if (sync.conversationCommands) {
+              for (const k of conversationCommands.keys()) if (k.startsWith(prefix)) conversationCommands.delete(k);
+              for (const row of sync.conversationCommands) {
+                conversationCommands.set(conversationCommandKey(instanceId, row.conversationId, row.topicId, row.botId), {
+                  conversationId: row.conversationId,
+                  topicId: row.topicId,
+                  botId: row.botId,
+                  commands: row.commands,
+                });
+              }
+            }
             // Drop leftover anchors the connector no longer reports (expired /
             // FIFO-evicted pendingFinished). A later turn must not inherit them.
             const keepAnchors = new Set<string>();
@@ -1145,6 +1182,7 @@ export async function createRelayRuntime(dbPath: string, options: CreateRuntimeO
     activeTurns: listActiveTurns,
     sessionUsage: listSessionUsage,
     sessionCommands: listSessionCommands,
+    conversationCommands: listConversationCommands,
     trustProxy: options.trustProxy,
     now: options.now,
     checkUpdate: createRelayUpdateChecker({ current: readRelayVersion() }),

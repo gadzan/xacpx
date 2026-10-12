@@ -129,8 +129,16 @@ export class EngineRouter implements BridgeEngine {
     return this.engineFor(input).setModel(input);
   }
 
+  prepareSessionCommands(input: EngineSessionInput) { return this.engineFor(input).prepareSessionCommands?.(input) ?? Promise.resolve(undefined); }
+
   getSessionModel(input: EngineSessionInput) {
     return this.engineFor(input).getSessionModel(input);
+  }
+
+  probeAgentCapabilities(input: import("../../transport/types").AgentCapabilityProbeRequest) {
+    // Same as listAgentSessions: a cold advertisement is not a logical session,
+    // so it must not bind the runtime engine to the reserved probe name.
+    return this.cli.probeAgentCapabilities(input);
   }
 
   setSessionEffort(input: EngineSessionInput & { effort: string }) {

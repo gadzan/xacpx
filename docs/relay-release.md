@@ -42,6 +42,11 @@
 5. **`@ganglion/xacpx-relay`（含内嵌 relay-web）**
 6. **`@ganglion/xacpx-channel-relay`**（最后发）
 
+RMUX platform 包发布后，用 `npm install --package-lock-only --ignore-scripts`
+更新 npm 锁文件中的可选包记录。记录必须保留版本、下载地址和完整性信息；
+不要写入只有 `optional: true` 的占位条目，npm 会在去重阶段以
+`Invalid Version` 退出，导致 CI 尚未运行测试就失败。
+
 当前 tag 触发的 npm 发布顺序仍是：
 
 1. **core `@ganglion/xacpx` 0.17.0-beta.6** —— channel-relay 声明

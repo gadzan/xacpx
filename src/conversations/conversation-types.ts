@@ -93,8 +93,20 @@ export interface ConversationTopic {
   status: ConversationTopicStatus;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Context generation. Absent means 1. Clearing the default topic bumps it
+   * and keeps the same id. Bindings from an older generation are not reused.
+   */
+  contextGeneration?: number;
+  /**
+   * Last lifecycle mutation time for the default topic. Absent means the
+   * public clock is still the owning Bot's createdAt.
+   */
+  managedAt?: string;
   /** Creation-time physical admission cap; absent preserves legacy scheduling. */
   maxConcurrentMemberTurns?: number;
+  /** Core-private peer scope. Never accessible through public Topic APIs. */
+  peerScope?: { sourceConversationId: string; sourceTopicId: string; sourceBotId: string };
   /** Effective work target for this Topic. Absent on pre-Group rows: readers
    *  must treat absence as unknown, never as a default policy. Writers always
    *  persist it on Group Topics; direct Topics resolve execution from the
@@ -103,6 +115,7 @@ export interface ConversationTopic {
 }
 
 export interface ConversationMessage {
+  inputMetadata?: import("./direct-input-metadata").DirectInputMetadata;
   id: string;
   conversationId: string;
   topicId: string;

@@ -25,6 +25,22 @@ const workspaces = computed(() => {
   return instancesStore.byId(instId)?.workspaces ?? [];
 });
 
+const workspacesLoad = ref<"loading" | "ready" | "failed">("loading");
+
+async function loadWorkspaces(): Promise<void> {
+  const instId = groupsStore.instanceId;
+  if (!instId) return;
+  workspacesLoad.value = "loading";
+  try {
+    await instancesStore.loadWorkspaces(instId);
+    workspacesLoad.value = "ready";
+  } catch {
+    workspacesLoad.value = "failed";
+  }
+}
+
+void loadWorkspaces();
+
 async function handleCreate(): Promise<void> {
   const name = title.value.trim();
   if (!name || !workspace.value || !groupsStore.instanceId || !groupsStore.activeConversationId) return;
@@ -64,12 +80,21 @@ async function handleCreate(): Promise<void> {
         <label class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("bot.fields.workspace") }}</label>
         <select
           v-model="workspace"
+          data-test="group-topic-workspace"
           required
           class="mb-3 w-full rounded-lg border border-border bg-bg px-3 py-1.5 text-sm outline-none focus:border-accent"
         >
-          <option value="" disabled>{{ $t("group.topic.workspacePlaceholder") }}</option>
+          <option value="" disabled>
+            {{ workspacesLoad === "loading" && !workspaces.length ? $t("common.loading") : $t("group.topic.workspacePlaceholder") }}
+          </option>
           <option v-for="w in workspaces" :key="w.name" :value="w.name">{{ w.name }}</option>
         </select>
+        <p v-if="workspacesLoad === 'failed'" data-test="group-topic-workspaces-failed" class="-mt-2 mb-3 flex items-center gap-2 text-xs text-danger">
+          <span>{{ $t("group.topic.workspacesFailed") }}</span>
+          <button type="button" data-test="group-topic-workspaces-retry" class="font-medium underline" @click="loadWorkspaces">
+            {{ $t("common.retry") }}
+          </button>
+        </p>
         <label class="mb-1 block text-xs font-medium text-fg-muted">{{ $t("group.topic.isolationLabel") }}</label>
         <select
           v-model="isolation"

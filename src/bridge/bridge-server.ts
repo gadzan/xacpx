@@ -59,6 +59,8 @@ const BRIDGE_METHODS = new Set<BridgeMethod>([
   "setMode",
   "setModel",
   "getSessionModel",
+  "prepareSessionCommands",
+  "probeAgentCapabilities",
   "setSessionEffort",
   "getSessionEffort",
   "cancel",
@@ -81,6 +83,7 @@ const SESSION_SCOPED_METHODS = new Set<BridgeMethod>([
   "setMode",
   "setModel",
   "getSessionModel",
+  "prepareSessionCommands",
   "setSessionEffort",
   "getSessionEffort",
   "cancel",
@@ -490,6 +493,15 @@ agent: requireString(params, "agent"),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),          modelId: requireString(params, "modelId"),
         }, params));
+      case "prepareSessionCommands":
+        return await this.engines.prepareSessionCommands?.(withMcp({
+agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
+          agentCommand: asOptionalString(params.agentCommand),
+          ...agentLaunchSelection(params),
+          cwd: requireString(params, "cwd"),
+          name: requireString(params, "name"),
+        }, params));
       case "getSessionModel":
         return await this.engines.getSessionModel(withMcp({
 agent: requireString(params, "agent"),
@@ -499,6 +511,16 @@ agent: requireString(params, "agent"),
           cwd: requireString(params, "cwd"),
           name: requireString(params, "name"),
         }, params));
+      case "probeAgentCapabilities":
+        return await this.engines.probeAgentCapabilities({
+          agent: requireString(params, "agent"),
+          ...agentExecutionSettings(params),
+          agentCommand: asOptionalString(params.agentCommand),
+          acpxAgent: asOptionalString(params.acpxAgent),
+          rawCommand: asOptionalString(params.rawCommand),
+          agentArgv: asOptionalStringArray(params.agentArgv),
+          cwd: requireString(params, "cwd"),
+        });
       case "setSessionEffort":
         return await this.engines.setSessionEffort(withMcp({
           agent: requireString(params, "agent"),

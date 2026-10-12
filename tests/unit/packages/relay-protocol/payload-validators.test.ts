@@ -37,6 +37,18 @@ test("Topic concurrency limits validate on both creation RPCs without changing e
   }
 });
 
+test("the automatic-collaboration switch payload is a single boolean", () => {
+  expect(MSG.conversationRouterSet).toBe("control.conversations.router.set");
+  expect(parseControlPayload(MSG.conversationRouterGet, {})).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationRouterGet, { enabled: true })).toBeNull();
+  for (const enabled of [true, false]) {
+    expect(parseControlPayload(MSG.conversationRouterSet, { enabled })).toEqual({ enabled });
+  }
+  for (const bad of [{}, { enabled: "true" }, { enabled: 1 }, { enabled: null }, { enabled: true, command: "x" }, null, "on"]) {
+    expect(parseControlPayload(MSG.conversationRouterSet, bad)).toBeNull();
+  }
+});
+
 test("parseControlPayload accepts a well-formed fsWrite payload", () => {
   const ok = parseControlPayload(MSG.fsWrite, {
     workspace: "home", path: "a.txt", content: "hi",
@@ -316,4 +328,26 @@ test("parseControlPayload validates group RPC shapes and rejects junk isolation"
     conversationId: "conversation_g", topicId: "topic_1",
   })).not.toBeNull();
   expect(parseControlPayload(MSG.groupTopicsTeardown, { conversationId: "conversation_g" })).toBeNull();
+});
+
+test("bot removal payloads keep the request id and preview revision", () => {
+  expect(parseControlPayload(MSG.botsRemovePreview, { id: "bot_a" })?.id).toBe("bot_a");
+  expect(parseControlPayload(MSG.botsRemovePreview, {})).toBeNull();
+  const removal = parseControlPayload(MSG.botsRemove, {
+    id: "bot_a",
+    requestId: "req-1",
+    previewRevision: "abc123",
+    clearDirectHistory: true,
+    releaseDirectBindings: false,
+  });
+  expect(removal).toEqual({
+    id: "bot_a",
+    requestId: "req-1",
+    previewRevision: "abc123",
+    clearDirectHistory: true,
+    releaseDirectBindings: false,
+  });
+  expect(parseControlPayload(MSG.botsRemove, { id: "bot_a", requestId: "req-1" })).toBeNull();
+  expect(parseControlPayload(MSG.lifecycleOperationsGet, { id: "bot-remove:req-1" })?.id).toBe("bot-remove:req-1");
+  expect(parseControlPayload(MSG.lifecycleOperationsGet, { id: "" })).toBeNull();
 });

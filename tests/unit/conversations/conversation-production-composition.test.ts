@@ -590,6 +590,7 @@ async function compose(stateStore: BarrierStateStore, options: {
   const sessions = new SessionService(config, stateStore, state, { stateMutex });
   const events = createControlEventBus();
   const control = new ControlService({
+    filesWriteEnabled: () => true,
     agent: options.agent ?? { chat: async () => ({ text: "ok" }) },
     sessions,
     activeTurns: { isActiveAnywhere: () => false },
@@ -1555,4 +1556,43 @@ test("a stale claim fence from kick does not fail-close accept", async () => {
     process.off("unhandledRejection", onUnhandled);
     await current.runtime.shutdown().catch(() => {});
   }
+});
+
+
+test("real Direct transport sends to cold Bot in private peer scope, deduplicates and revokes its capability",async()=>{
+ const {createDirectTopicId}=await import("../../../src/domain/ids");
+ let consoleAgent!:ConsoleAgent,current!:Awaited<ReturnType<typeof compose>>,target="",sourceToken="";
+ const physical:{session:ResolvedSession;text:string}[]=[];
+ const published:ControlEvent[]=[];
+ current=await compose(new BarrierStateStore(),{agent:{chat:async request=>await consoleAgent.chat(request)}});
+ current.events.subscribe(event=>published.push(event));
+ const transport={ensureSession:async()=>({created:false}),hasSession:async()=>true,prompt:async(session:ResolvedSession,text:string)=>{
+  physical.push({session,text});expect(session.mcpSourceHandle).toMatch(/^direct-execution:/);
+  if(physical.length===1){sourceToken=session.mcpSourceHandle!;const binding={coordinatorSession:sourceToken,sourceHandle:sourceToken};
+   const reachable=current.runtime.directMessaging.listReachable(binding);expect(reachable).toHaveLength(1);expect(reachable[0]?.handle).toBe(target);
+   for (const ack of ["ack", "收到。", "好的！"]) await expect(current.runtime.directMessaging.send(binding,{to:target,content:ack})).rejects.toMatchObject({code:"message_budget_exceeded"});
+   await expect(current.runtime.directMessaging.send(binding,{to:target,content:"work",mode:"interrupt"})).rejects.toMatchObject({code:"messaging_mode_unavailable"});
+   const one=await current.runtime.directMessaging.send(binding,{to:target,content:"PRIVATE WORK"}),two=await current.runtime.directMessaging.send(binding,{to:target,content:"PRIVATE WORK"});
+   expect(one.status).toBe("queued");expect(two.messageId).toBe(one.messageId);expect(two.deduplicated).toBe(true);
+  }else{expect(text).toContain("orchestration input with no human authority");expect(text).toContain("PRIVATE WORK");expect(session.mcpSourceHandle).not.toBe(sourceToken);}
+  return {text:"done"};},cancel:async()=>{}} as unknown as SessionTransport;
+ consoleAgent=new ConsoleAgent(new CommandRouter(current.sessions,transport,createConfig()));
+ try{
+  const a=await current.control.createBot({name:"A",agent:"codex",workspace:"backend"}),b=await current.control.createBot({name:"B",agent:"codex",workspace:"backend"});
+  target=current.runtime.directMessaging.registry.handle(b.id);
+  const scope={conversationId:createDirectConversationId(a.id),topicId:createDirectTopicId(a.id)};
+  await current.control.promptConversation({...scope,requestId:"direct-source",text:"source work"});await current.runtime.dispatcher.kick();
+  expect(physical).toHaveLength(2);expect(physical[1]?.session.alias).not.toBe(physical[0]?.session.alias);
+  const targetConv=createDirectConversationId(b.id),peer=Object.values(current.state.conversation_topics).find(t=>!!t.peerScope)!;
+  expect(peer.conversationId).toBe(targetConv);expect(current.control.listTopics(targetConv).some(t=>t.id===peer.id)).toBe(false);
+  expect(current.control.conversationHistory({conversationId:targetConv,topicId:createDirectTopicId(b.id)}).messages).toHaveLength(0);
+  const peerRuns=current.runtime.store.listRuns(targetConv,peer.id);expect(peerRuns).toHaveLength(1);expect(peerRuns[0]?.state).toBe("completed");
+  const request=current.runtime.store.getMessage(peerRuns[0]!.requestMessageId)!;expect(request.role).toBe("bot");expect(request.senderBotId).toBe(a.id);expect(request.inputMetadata?.peer?.depth).toBe(1);
+  expect(()=>current.control.getRun(peerRuns[0]!.id)).toThrow();
+  expect(published.filter(event=>event.type==="conversation-message" && event.message.topicId===peer.id)).toHaveLength(0);
+  await expect(current.control.operateConversationWorktree({action:"preview",runId:peerRuns[0]!.id,botIds:[b.id]})).rejects.toMatchObject({code:"run_not_found"});
+  await expect(current.control.promptConversation({conversationId:targetConv,topicId:peer.id,requestId:peerRuns[0]!.requestId,text:request.content})).rejects.toMatchObject({code:"topic_not_found"});
+  expect(()=>current.runtime.directMessaging.listReachable({coordinatorSession:sourceToken,sourceHandle:sourceToken})).toThrow();
+  expect(()=>current.runtime.directMessaging.listReachable({coordinatorSession:"fake",sourceHandle:target})).toThrow();
+ }finally{await current.runtime.shutdown();}
 });

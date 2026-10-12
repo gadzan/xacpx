@@ -334,7 +334,7 @@ test("ignores non-instanceEvent envelopes and malformed payloads", () => {
   mirror.handleEnvelope(MSG.instanceNotice, { kind: "task-progress", text: "x" });
   mirror.handleEnvelope(MSG.instanceEvent, null);
   mirror.handleEnvelope(MSG.instanceEvent, {});
-  expect(mirror.buildStateSync(LIVE).snapshot).toEqual({ turns: [], usage: [], commands: [], finishedOffline: [] });
+  expect(mirror.buildStateSync(LIVE).snapshot).toEqual({ turns: [], usage: [], commands: [], conversationCommands: [], finishedOffline: [] });
 });
 
 const CONVERSATION = {
@@ -507,8 +507,21 @@ test("Conversation-correlated usage and commands never enter the ordinary sessio
     conversation: CONVERSATION,
   });
   const hiddenLive = new Set([HIDDEN]);
-  const { snapshot } = mirror.buildStateSync(hiddenLive);
+  const { snapshot, aliases } = mirror.buildStateSync(hiddenLive);
   expect(snapshot.turns).toHaveLength(1);
   expect(snapshot.usage).toEqual([]);
   expect(snapshot.commands).toEqual([]);
+  expect(snapshot.conversationCommands).toEqual([{
+    conversationId: CONVERSATION.conversationId,
+    topicId: CONVERSATION.topicId,
+    botId: CONVERSATION.botId,
+    commands: [{ name: "compact" }],
+  }]);
+  mirror.pruneStateMirror(new Set(["backend"]), aliases);
+  expect(mirror.buildStateSync(new Set(["backend"])).snapshot.conversationCommands).toEqual([{
+    conversationId: CONVERSATION.conversationId,
+    topicId: CONVERSATION.topicId,
+    botId: CONVERSATION.botId,
+    commands: [{ name: "compact" }],
+  }]);
 });

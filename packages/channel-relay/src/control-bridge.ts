@@ -88,6 +88,7 @@ const CONNECTOR_TIMEOUT_EXEMPT_TYPES: ReadonlySet<string> = new Set([
   MSG.commandExecute,
   MSG.sessionModelSet,
   MSG.sessionEffortSet,
+  MSG.agentsCapabilitiesGet,
   MSG.conversationWorktree,
   // `interactionRequest` is NOT here: it is a connector→hub request made through
   // `RelayClient.sendRequest` with its own ceiling (the window's `expiresAt` +
@@ -820,6 +821,47 @@ async function dispatchControlRequest(
       }
       return await control.fsWrite(i.workspace, i.path, i.content, i.expected);
     }
+    case MSG.conversationCompletionsGet: {
+      const input = parseControlPayload(MSG.conversationCompletionsGet, payload);
+      if (!input) return errorPayload("invalid-payload", "expected Conversation/Topic scope");
+      if (typeof control.getConversationCompletions !== "function") return errorPayload("unsupported", "Direct completions require a newer daemon");
+      return await control.getConversationCompletions(input);
+    }
+    case MSG.conversationRouterGet: {
+      const input = parseControlPayload(MSG.conversationRouterGet, payload ?? {});
+      if (!input) {
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.conversationRouterGet}: malformed payload`,
+        );
+      }
+      return control.getConversationRouterAvailability();
+    }
+    case MSG.conversationRouterSet: {
+      const input = parseControlPayload(MSG.conversationRouterSet, payload);
+      if (!input) {
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.conversationRouterSet}: malformed payload`,
+        );
+      }
+      return await control.setConversationRouterEnabled(input.enabled);
+    }
+    case MSG.agentsCapabilitiesGet: {
+      const input = parseControlPayload(MSG.agentsCapabilitiesGet, payload);
+      if (!input) {
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.agentsCapabilitiesGet}: malformed payload`,
+        );
+      }
+      return await control.getAgentCapabilities({
+        agent: input.agent,
+        workspace: input.workspace,
+        ...(input.botId !== undefined ? { botId: input.botId } : {}),
+        ...(input.probe !== undefined ? { probe: input.probe } : {}),
+      });
+    }
     case MSG.sessionModelGet: {
       const input = parseControlPayload(MSG.sessionModelGet, payload);
       if (!input)
@@ -1029,6 +1071,27 @@ async function dispatchControlRequest(
       if (!input) return errorPayload("invalid-payload", `${MSG.botsDelete}: malformed payload`);
       return await control.deleteBot(input.id);
     }
+    case MSG.botsRemovePreview: {
+      const input = parseControlPayload(MSG.botsRemovePreview, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.botsRemovePreview}: malformed payload`);
+      return { impact: await control.previewBotRemoval(input.id) };
+    }
+    case MSG.botsRemove: {
+      const input = parseControlPayload(MSG.botsRemove, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.botsRemove}: malformed payload`);
+      return await control.removeBot({
+        botId: input.id,
+        requestId: input.requestId,
+        previewRevision: input.previewRevision,
+        ...(input.clearDirectHistory !== undefined ? { clearDirectHistory: input.clearDirectHistory } : {}),
+        ...(input.releaseDirectBindings !== undefined ? { releaseDirectBindings: input.releaseDirectBindings } : {}),
+      });
+    }
+    case MSG.lifecycleOperationsGet: {
+      const input = parseControlPayload(MSG.lifecycleOperationsGet, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.lifecycleOperationsGet}: malformed payload`);
+      return { operation: control.getLifecycleOperation(input.id) };
+    }
     case MSG.conversationsList: {
       const input = parseControlPayload(MSG.conversationsList, payload ?? {});
       if (!input) return errorPayload("invalid-payload", `${MSG.conversationsList}: malformed payload`);
@@ -1053,6 +1116,43 @@ async function dispatchControlRequest(
       if (!input) return errorPayload("invalid-payload", `${MSG.topicsCreate}: malformed payload`);
       return { topic: await control.createTopic(input.conversationId, input.title, { maxConcurrentMemberTurns: input.maxConcurrentMemberTurns }) };
     }
+    case MSG.topicsUpdate: {
+      const input = parseControlPayload(MSG.topicsUpdate, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsUpdate}: malformed payload`);
+      return { topic: await control.updateTopic(input.conversationId, input.topicId, input.title) };
+    }
+    case MSG.topicsArchive: {
+      const input = parseControlPayload(MSG.topicsArchive, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsArchive}: malformed payload`);
+      return { topic: await control.archiveTopic(input.conversationId, input.topicId) };
+    }
+    case MSG.topicsRestore: {
+      const input = parseControlPayload(MSG.topicsRestore, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsRestore}: malformed payload`);
+      return { topic: await control.restoreTopic(input.conversationId, input.topicId) };
+    }
+    case MSG.topicsTeardown: {
+      const input = parseControlPayload(MSG.topicsTeardown, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsTeardown}: malformed payload`);
+      return await control.teardownTopic(input.conversationId, input.topicId, {
+        requestId: input.requestId,
+        ...(input.releaseBindings !== undefined ? { releaseBindings: input.releaseBindings } : {}),
+      });
+    }
+    case MSG.topicsClear: {
+      const input = parseControlPayload(MSG.topicsClear, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsClear}: malformed payload`);
+      return await control.clearTopic(input.conversationId, input.topicId, {
+        requestId: input.requestId,
+        confirm: true,
+        ...(input.releaseBindings !== undefined ? { releaseBindings: input.releaseBindings } : {}),
+      });
+    }
+    case MSG.topicsPreview: {
+      const input = parseControlPayload(MSG.topicsPreview, payload);
+      if (!input) return errorPayload("invalid-payload", `${MSG.topicsPreview}: malformed payload`);
+      return { impact: control.previewTopic(input.conversationId, input.topicId) };
+    }
     case MSG.groupsCreate: {
       const input = parseControlPayload(MSG.groupsCreate, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.groupsCreate}: malformed payload`);
@@ -1066,8 +1166,7 @@ async function dispatchControlRequest(
     case MSG.groupsDelete: {
       const input = parseControlPayload(MSG.groupsDelete, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.groupsDelete}: malformed payload`);
-      await control.deleteGroup(input.id);
-      return { ok: true };
+      return await control.deleteGroup(input.id);
     }
     case MSG.groupsGet: {
       const input = parseControlPayload(MSG.groupsGet, payload);
@@ -1092,20 +1191,23 @@ async function dispatchControlRequest(
     case MSG.groupTopicsTeardown: {
       const input = parseControlPayload(MSG.groupTopicsTeardown, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.groupTopicsTeardown}: malformed payload`);
-      await control.teardownGroupTopic(input.conversationId, input.topicId);
-      return { ok: true };
+      return await control.teardownGroupTopic(input.conversationId, input.topicId);
     }
     case MSG.conversationPrompt:
     case MSG.conversationPromptWithPolicy: {
       const policyOperation = envelope.type === MSG.conversationPromptWithPolicy;
       const input = policyOperation ? parseControlPayload(MSG.conversationPromptWithPolicy, payload) : parseControlPayload(MSG.conversationPrompt, payload);
       if (!input) return errorPayload("invalid-payload", `${MSG.conversationPrompt}: malformed payload`);
+      if (input.agentMentions?.length && typeof control.getConversationCompletions !== "function") {
+        return errorPayload("unsupported-agent-mentions", "daemon does not support durable Direct references");
+      }
       const publicInput = {
         ...(policyOperation && "memberPolicies" in input ? { memberPolicies: input.memberPolicies } : {}),
         conversationId: input.conversationId,
         topicId: input.topicId,
         requestId: input.requestId,
         text: input.text,
+        ...(input.agentMentions !== undefined ? { agentMentions: input.agentMentions } : {}),
         ...(input.target ? { target: input.target } : {}),
       };
       const ingress = readHubHumanIngress(payload);
@@ -1281,6 +1383,7 @@ export function subscribeControlEvents(
   sendEvent: (type: string, payload: unknown) => void,
 ): () => void {
   return control.events.subscribe((event) => {
+    if ("conversation" in event && event.conversation && control.isPrivateConversationTopic?.(event.conversation.topicId)) return;
     if (event.type === "queue-overflow-tip") {
       sendEvent(MSG.instanceNotice, {
         kind: "queue-overflow",

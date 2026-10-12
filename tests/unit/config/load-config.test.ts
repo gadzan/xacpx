@@ -33,6 +33,20 @@ test("loads a valid config file", async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+test("keeps modelCandidates as trimmed suggestions and rejects an empty entry", () => {
+  const config = parseConfig({
+    transport: {},
+    agents: { codex: { driver: "codex", modelCandidates: [" gpt-5.5[high] ", "gpt-5.5[high]"] } },
+    workspaces: {},
+  });
+  expect(config.agents.codex.modelCandidates).toEqual(["gpt-5.5[high]"]);
+  expect(() => parseConfig({
+    transport: {},
+    agents: { codex: { driver: "codex", modelCandidates: [""] } },
+    workspaces: {},
+  })).toThrow("modelCandidates must be an array of non-empty strings");
+});
+
 test("loads an explicit Claude settings policy and leaves the default implicit", () => {
   const explicit = parseConfig({
     transport: {},

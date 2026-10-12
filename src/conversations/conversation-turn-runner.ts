@@ -15,7 +15,10 @@ export interface ConversationTurnRunInput {
   logicalSessionId: string;
   /** Private launch capability; never projected onto product events. */
   groupExecutionToken?: string;
+  directExecutionToken?: string;
+  directMentionContext?: import("./direct-input-metadata").ResolvedDirectMention[];
   text: string;
+  agentMentions?: import("@ganglion/xacpx-relay-protocol").AgentMention[];
   /**
    * Server-derived execution provenance from the durable MemberTurn after claim.
    * The dispatcher copies this; callers must not invent human authority.
@@ -147,6 +150,9 @@ export class ControlConversationTurnRunner implements ConversationTurnRunner {
     const chatKey = directConversationChatKey(input.conversationId, input.topicId);
     const permission = input.executionOrigin === "human" ? input.permissionRoute : undefined;
     const provider = this.control.promptImmediate({
+      ...(input.directExecutionToken ? { directExecutionToken: input.directExecutionToken } : {}),
+      ...(input.directMentionContext ? { directMentionContext: input.directMentionContext } : {}),
+      ...(input.agentMentions ? { agentMentions: input.agentMentions } : {}),
       ...(input.groupExecutionToken ? { groupExecutionToken: input.groupExecutionToken } : {}),
       chatKey,
       sessionAlias: input.sessionAlias,

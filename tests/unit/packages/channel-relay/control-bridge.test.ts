@@ -231,6 +231,76 @@ async function dispatch(
   return await new Promise((resolve) => bridge(envelope, resolve));
 }
 
+test("conversation router get returns the availability and rejects extra fields", async () => {
+  const availability = {
+    status: "disabled-by-config",
+    configPath: "conversations.router",
+    reason: { code: "disabled", message: "Automatic collaboration is off." },
+  };
+  const { control } = makeFakeControl({
+    getConversationRouterAvailability: () => availability,
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.conversationRouterGet, { command: "/tmp/router" }))).toMatchObject({
+    error: { code: "invalid-payload" },
+  });
+  expect(await dispatch(bridge, req(MSG.conversationRouterGet, {}))).toEqual(availability);
+});
+
+test("conversation router set forwards only the boolean and returns the resolved availability", async () => {
+  const seen: unknown[] = [];
+  const ready = { status: "ready", configPath: "conversations.router" };
+  const { control } = makeFakeControl({
+    setConversationRouterEnabled: async (enabled: unknown) => {
+      seen.push(enabled);
+      return ready;
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  for (const payload of [{}, { enabled: "true" }, { enabled: true, command: "/tmp/router" }, null]) {
+    expect(await dispatch(bridge, req(MSG.conversationRouterSet, payload))).toMatchObject({
+      error: { code: "invalid-payload" },
+    });
+  }
+  expect(await dispatch(bridge, req(MSG.conversationRouterSet, { enabled: true }))).toEqual(ready);
+  expect(await dispatch(bridge, req(MSG.conversationRouterSet, { enabled: false }))).toEqual(ready);
+  expect(seen).toEqual([true, false]);
+});
+
+test("agent capability get forwards only agent, workspace, bot id, and probe", async () => {
+  const seen: unknown[] = [];
+  const { control } = makeFakeControl({
+    getAgentCapabilities: async (input: unknown) => {
+      seen.push(input);
+      return {
+        status: "needs-setup",
+        reason: { code: "discovery-available", message: "no saved model list" },
+        recovery: "Fetch the model list.",
+        fetchedAt: "2026-10-09T00:00:00.000Z",
+        suggestions: [],
+        efforts: { status: "unavailable" },
+        effect: { kind: "default" },
+      };
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  expect(await dispatch(bridge, req(MSG.agentsCapabilitiesGet, {
+    agent: "codex",
+    workspace: "backend",
+    botId: "bot-1",
+    probe: true,
+    sessionAlias: "brt_hidden",
+  }))).toMatchObject({ error: { code: "invalid-payload" } });
+  expect(await dispatch(bridge, req(MSG.agentsCapabilitiesGet, {
+    agent: "codex",
+    workspace: "backend",
+    botId: "bot-1",
+    probe: true,
+  }))).toMatchObject({ status: "needs-setup" });
+  expect(seen).toEqual([{ agent: "codex", workspace: "backend", botId: "bot-1", probe: true }]);
+  expect(JSON.stringify(seen)).not.toContain("brt_hidden");
+});
+
 test("worktree RPC rejects old daemons instead of falling back to generic Git", async () => {
   const { control } = makeFakeControl();
   expect(await dispatch(createControlBridge(control as never), req(MSG.conversationWorktree, { action: "cleanup", runId: "r" })))
@@ -1187,10 +1257,15 @@ test("subscribeControlEvents forwards events and unsubscribes", () => {
     sent.push({ type, payload }),
   );
   emit({ type: "sessions-changed" });
+  emit({ type: "conversation-router-changed" });
   expect(sent).toEqual([
     {
       type: MSG.instanceEvent,
       payload: { event: { type: "sessions-changed" } },
+    },
+    {
+      type: MSG.instanceEvent,
+      payload: { event: { type: "conversation-router-changed" } },
     },
   ]);
 });
@@ -1998,4 +2073,27 @@ test("PR7 groups.list dispatches and structured prompt target passes through", a
     text: "bad",
     target: { mode: "members", botIds: [] },
   }))).toMatchObject({ error: { code: "invalid-payload" } });
+});
+
+test("Direct completion query and references are validated and never silently downgraded", async () => {
+  const calls:unknown[]=[];
+  const {control}=makeFakeControl({getConversationCompletions:async(input:unknown)=>{calls.push(input);return {version:1};},promptConversation:async(input:unknown)=>{calls.push(input);return {ok:true};}});
+  const bridge=createControlBridge(control as never);
+  const scope={conversationId:"c",topicId:"t"};
+  expect(await dispatch(bridge,req(MSG.conversationCompletionsGet,{...scope,query:"same",cursor:64}))).toEqual({version:1});
+  expect(calls[0]).toEqual({...scope,query:"same",cursor:64});
+  expect(await dispatch(bridge,req(MSG.conversationCompletionsGet,{...scope,sessionAlias:"hidden"}))).toMatchObject({error:{code:"invalid-payload"}});
+  const input={...scope,requestId:"r",text:" 😀 @B ",agentMentions:[{range:[4,6],handle:"agent:n:b"}]};
+  expect(await dispatch(bridge,req(MSG.conversationPrompt,input))).toEqual({ok:true});expect(calls[1]).toEqual(input);
+  const old=createControlBridge(makeFakeControl({promptConversation:async()=>{throw new Error("must not reach old daemon");}}).control as never);
+  expect(await dispatch(old,req(MSG.conversationPrompt,input))).toMatchObject({error:{code:"unsupported-agent-mentions"}});
+  expect(await dispatch(old,req(MSG.conversationCompletionsGet,scope))).toMatchObject({error:{code:"unsupported"}});
+});
+
+test("private peer correlated streams never reach Relay reconnect mirrors",()=>{
+  const {control,emit}=makeFakeControl({isPrivateConversationTopic:(id:string)=>id==="peer"});
+  const forwarded:unknown[]=[];subscribeControlEvents(control as never,(type,payload)=>forwarded.push({type,payload}));
+  const event={type:"agent-commands",chatKey:"bot:c:peer",sessionAlias:"hidden",commands:[{name:"private"}],conversation:{conversationId:"c",topicId:"peer",botId:"b",runId:"r",memberTurnId:"m"}};
+  emit(event);expect(forwarded).toHaveLength(0);
+  emit({...event,conversation:{...event.conversation,topicId:"human"}});expect(forwarded).toHaveLength(1);
 });

@@ -158,7 +158,7 @@ export function createMcpStdioIdentityResolver(input: {
     const sourceHandle = input.sourceHandle?.trim() || null;
     // An execution capability is not an Orchestration coordinator. Its only
     // tool is group_send; admission verifies it against the live runtime.
-    if (sourceHandle?.startsWith("group-execution:") && parsedCoordinatorSession === sourceHandle) {
+    if ((sourceHandle?.startsWith("group-execution:") || sourceHandle?.startsWith("direct-execution:")) && parsedCoordinatorSession === sourceHandle) {
       return { coordinatorSession: sourceHandle, sourceHandle };
     }
 

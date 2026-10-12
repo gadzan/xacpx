@@ -5,9 +5,9 @@
  *
  * Platform packages live in platform-packages/ (outside the root workspaces
  * glob) so `npm ci` on Linux/Windows does not try to install darwin-only
- * packages as workspace members. The root lockfile records them as optional
- * stubs so PR CI does not fetch unpublished registry versions; consumers of
- * the published channel-relay package still receive the version pins below.
+ * packages as workspace members. The root npm lockfile must retain complete
+ * published package metadata, including versions, for these optional pins.
+ * Versionless optional stubs crash npm's deduplication during `npm ci`.
  *
  * Pack updates platform package.json versions, but publish must also rewrite
  * channel-relay's optionalDependencies before npm publish — otherwise a bump

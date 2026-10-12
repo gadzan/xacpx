@@ -273,6 +273,37 @@ export class SessionService {
   }
 
   /**
+   * Every logical session for one configured agent and workspace, including
+   * product-owned runtimes. Callers that build a public DTO must not copy
+   * `resolved.alias` onto it.
+   */
+  listCapabilityTargets(agent: string, workspace: string): Array<{
+    productOwned: boolean;
+    botId?: string;
+    scope?: "bot-direct" | "group-member" | "group-controller";
+    resolved: ResolvedSession;
+  }> {
+    const targets = [];
+    for (const session of Object.values(this.state.sessions)) {
+      if (session.agent !== agent || session.workspace !== workspace) continue;
+      let resolved: ResolvedSession;
+      try {
+        resolved = this.toResolvedSession(session);
+      } catch {
+        continue;
+      }
+      const productOwned = isHiddenProductSessionOwner(session.owner);
+      targets.push({
+        productOwned,
+        ...(session.owner?.botId ? { botId: session.owner.botId } : {}),
+        ...(session.owner?.kind ? { scope: session.owner.kind } : {}),
+        resolved,
+      });
+    }
+    return targets;
+  }
+
+  /**
    * Warm acpx queue-owner reap targets, including HISTORICAL identities.
    * Derived recorded commands (managed adapter pins, hermes shim, preinstalled
    * adapters) are recomputed from the CURRENT pin on restart, so a current-only
@@ -1241,8 +1272,9 @@ export class SessionService {
       );
     }
 
-    // The relay/control channel ALWAYS uses raw "stream" reply mode and intentionally
-    // ignores every replyMode setting (per-session override AND channel/global config).
+    // Relay/control and product-owned Conversation sessions ALWAYS use raw "stream"
+    // reply mode and ignore every replyMode setting (per-session override AND
+    // channel/global config).
     // replyMode — stream/verbose/final — only exists for TEXT channels (WeChat, Feishu)
     // that batch agent output into a limited number of discrete chat messages. The relay
     // web dashboard renders a single live markdown bubble and consumes the verbatim token
@@ -1250,7 +1282,10 @@ export class SessionService {
     // (tables/headings). There is therefore no reason to ever run relay in another mode,
     // so it's hardcoded here rather than routed through resolve-reply-mode.
     //
-    // Detection is by the alias's channel prefix (`session.alias` is the internal,
+    // Conversation sessions are identified by owner metadata: their unscoped brt_
+    // aliases have no relay prefix. They produce the same verbatim transcript for
+    // the dashboard and durable public results, including external channel bindings.
+    // Relay detection is by the alias's channel prefix (`session.alias` is the internal,
     // channel-prefixed key of `state.sessions`). The one false positive is a LEGACY
     // (unprefixed) WeChat session a user literally named "relay:…": it would be read as
     // relay and stream instead of batch. This is an accepted edge of the pre-existing
@@ -1258,10 +1293,12 @@ export class SessionService {
     // fix is a per-session channel field / prefixing weixin aliases — a schema migration
     // not worth it for this. Worst case: that one oddly-named session streams.
     //
-    // Non-relay channels return `undefined` so their existing `replyMode ?? "verbose"`
+    // Ordinary non-relay sessions return `undefined` so their `replyMode ?? "verbose"`
     // resolution (including per-session overrides via `session.reply_mode`) is unchanged.
     const channelId = getChannelIdFromChatKey(session.alias);
-    const effectiveReplyMode = channelId === "relay" ? "stream" : undefined;
+    const effectiveReplyMode = channelId === "relay" || isHiddenProductSessionOwner(session.owner)
+      ? "stream"
+      : undefined;
     const launch = this.resolveLaunchSpec(session, agentConfig, this.platform, options);
 
     return {

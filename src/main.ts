@@ -122,11 +122,13 @@ import {
   resolveConversationStorePath,
   type ConversationRuntime,
 } from "./conversations/conversation-composition";
+import { resolveProductionRouter } from "./conversations/production-router";
 import { ConversationError } from "./conversations/conversation-error";
 import { SessionWarmthTracker } from "./control/session-warmth-tracker";
 import { createTerminalService } from "./control/terminal-service";
 import { UploadStore } from "./control/upload-store.js";
 import { listAgentCatalog } from "./config/agent-catalog";
+import { resolveConfiguredAgentLaunch } from "./config/resolve-agent-command";
 import { createAcpxAgentRegistryLoader } from "./transport/agent-registry";
 import { startConfigWatcher } from "./config/config-watcher";
 import type {
@@ -1863,7 +1865,14 @@ export async function buildApp(
         return { runId: receipt.run.id, assignmentId: receipt.memberTurn.assignmentId!,
           memberTurnId: receipt.memberTurn.id, messageId: receipt.message.id };
       }),
-      agentMessaging,
+      agentMessaging: {
+        listReachable: async binding => binding.sourceHandle?.startsWith('direct-execution:')
+          ? conversations.withOperation(async () => conversations.directMessaging.listReachable(binding))
+          : agentMessaging.listReachable(binding),
+        send: async (binding, message) => binding.sourceHandle?.startsWith('direct-execution:')
+          ? conversations.withOperation(async () => conversations.directMessaging.send(binding, message))
+          : agentMessaging.send(binding, message),
+      },
       onSocketHardenError: (error) => {
         void logger.error(
           "orchestration.socket.chmod_failed",
@@ -1960,6 +1969,10 @@ export async function buildApp(
     }
   };
 
+  // The Conversation runtime is constructed AFTER ControlService (it needs the
+  // bound kernel), but the router switch applies to the live runtime. This ref
+  // is the seam: set once the runtime exists, read by the switch.
+  let conversationRuntimeRef: ConversationRuntime | undefined;
   const control = new ControlService({
     logger,
     agent,
@@ -1999,6 +2012,26 @@ export async function buildApp(
           name,
           driver: agentConfig.driver,
         })),
+      resolveCapabilityContext: (agent, workspace) => {
+        const agentConfig = config.agents[agent];
+        const workspaceConfig = config.workspaces[workspace];
+        if (!agentConfig || !workspaceConfig) {
+          return { error: "choose a configured agent and workspace" };
+        }
+        try {
+          const launch = resolveConfiguredAgentLaunch(agentConfig, config.transport);
+          return {
+            cwd: workspaceConfig.cwd,
+            driver: agentConfig.driver,
+            ...(agentConfig.settingsPolicy ? { settingsPolicy: agentConfig.settingsPolicy } : {}),
+            launch,
+            suggestions: agentConfig.modelCandidates ?? [],
+            ...(agentConfig.model ? { configuredModel: agentConfig.model } : {}),
+          };
+        } catch (error) {
+          return { error: error instanceof Error ? error.message : String(error) };
+        }
+      },
       catalog: () =>
         listAgentCatalog(config, { registry: loadAgentRegistry() }),
       create: async (name, driver) => {
@@ -2067,6 +2100,40 @@ export async function buildApp(
           const updated = await configStore.removeWorkspace(name);
           publishLiveConfig(updated);
           controlEvents.emit({ type: "workspaces-changed" });
+        });
+      },
+    },
+    conversationRouter: {
+      setEnabled: async (enabled) => {
+        return await configMutationMutex.run(async () => {
+          // Raw patch: only the switch subtree is touched, so a hand-edited
+          // config.json keeps every unrelated field (same rule as every other
+          // ConfigStore mutation).
+          const updated = await configStore.setRawValue(
+            ["conversations", "router", "enabled"],
+            enabled,
+          );
+          publishLiveConfig(updated);
+          // Re-resolve from the persisted config exactly like startup — the
+          // capability probe runs when turning on, so a flip without a proven
+          // restriction resolves to a non-ready status with its reason.
+          const resolution = await resolveProductionRouter({
+            config: updated,
+            env: process.env,
+          });
+          // The runtime is constructed after ControlService; a flip that lands
+          // before it exists is persisted and reflected at startup instead.
+          conversationRuntimeRef?.applyRouterResolution(resolution);
+          void logger.info("conversations.router", "automatic collaboration switch", {
+            enabled,
+            status: resolution.availability.status,
+            configPath: resolution.availability.configPath,
+            ...(resolution.availability.status === "ready"
+              ? {}
+              : { code: resolution.availability.reason.code }),
+          });
+          controlEvents.emit({ type: "conversation-router-changed" });
+          return resolution.availability;
         });
       },
     },
@@ -2143,14 +2210,25 @@ export async function buildApp(
     },
   });
   controlRef = control;
+  const routerResolution = await resolveProductionRouter({ config, env: process.env });
+  void logger.info("conversations.router", "conversation router availability", {
+    status: routerResolution.availability.status,
+    configPath: routerResolution.availability.configPath,
+    ...(routerResolution.availability.status === "ready"
+      ? {}
+      : { code: routerResolution.availability.reason.code }),
+  });
   const conversations = await createConversationRuntime({
     config,
     state,
     stateStore: debouncedStateStore,
     sessions,
     control: conversationKernel(control),
+    messagingNodeId: messagingNodeIdentity.nodeId,
     sqlitePath: resolveConversationStorePath(paths.configPath),
     releaseOwnedSession: createProductionOwnedSessionRelease({ sessions, transport }),
+    ...(routerResolution.router ? { router: routerResolution.router } : {}),
+    routerAvailability: routerResolution.availability,
     onProductEvent: (event) => conversationKernel(control).emitConversationProduct(event),
     onSchedulingFailure: (error) => {
       const code = error instanceof ConversationError ? error.code : undefined;
@@ -2166,6 +2244,7 @@ export async function buildApp(
     autoKick: true,
     stateMutex,
   });
+  conversationRuntimeRef = conversations;
   conversationKernel(control).bindConversationRuntime(conversations);
   controlEvents.subscribe((event) => {
     if (
