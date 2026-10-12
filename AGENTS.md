@@ -30,6 +30,17 @@ node ./dist/cli.js stop    # Stop daemon
 bun run dry-run --chat-key wx:test -- "/session new demo --agent codex --ws backend" "/status"
 ```
 
+**Feature verification on the real surface (isolated daemon + hub + dashboard):**
+
+```bash
+node ./scripts/verify-stack.mjs up --router-ready   # prints dashboard URL + access token
+node ./scripts/verify-stack.mjs status              # what is running, where the logs are
+node ./scripts/verify-stack.mjs down                # teardown: no processes, no port, no files
+node ./scripts/verify-stack.mjs doctor              # stateless leftover check
+```
+
+See [`docs/verification-stack.md`](docs/verification-stack.md). The harness redirects `HOME` and the xacpx state paths into a temp dir, so the operator's `~/.xacpx` is never read or written.
+
 _*Monorepo builds (packages/* are Bun workspaces):_*
 
 ```bash
@@ -90,6 +101,7 @@ There are two session concepts:
 
 - Terminal CLI reference: [`docs/cli-reference.md`](docs/cli-reference.md)
 - Configuration schema and defaults: [`docs/config-reference.md`](docs/config-reference.md)
+- Feature verification stack (isolated daemon + hub + dashboard): [`docs/verification-stack.md`](docs/verification-stack.md)
 - WeChat command surface: [`docs/commands.md`](docs/commands.md)
 - User-facing FAQ: [`docs/faq.md`](docs/faq.md)
 - Daemon subsystem: [`docs/daemon-module.md`](docs/daemon-module.md)

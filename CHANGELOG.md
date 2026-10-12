@@ -1,4 +1,11 @@
 # Changelog
+## [Unreleased]
+
+### Added
+
+- **Automatic collaboration switch in Relay Web settings:** the Settings page now lists a per-instance "Group automatic collaboration" toggle backed by the new instance-scoped `control.conversations.router.set` RPC. The daemon patches only `conversations.router.enabled` in `config.json` through `ConfigStore`, re-resolves availability through the same production path (capability probe included), and hot-applies the router to the live conversation runtime — no daemon restart. The RPC returns the same four-status availability as `.get`, never a boolean, so enabling without a proven restriction surfaces its reason (`command-missing`, `unsupported`, `failed`) instead of a fake success; a write failure propagates. `ConversationRuntime.applyRouterResolution` swaps the single router engine through the unchanged `bindRouter` gate; an in-flight decision settles on the engine it captured, and a surviving automatic Run fails closed with `automatic_unsupported` when the engine is removed. A new `conversation-router-changed` control event keeps other clients' composers and toggles converged. Old connectors surface as `unknown-type` (unavailable), never a silent success.
+- **Reusable full-stack verification harness (`scripts/verify-stack.mjs`):** boots an isolated daemon + relay hub + bundled dashboard under a temp state dir, prints the dashboard URL and an access token, and tears everything down again. `up` redirects `HOME`, `XACPX_PLUGIN_HOME`, `WEACPX_CONFIG` and `WEACPX_STATE` into the state dir and builds the plugin home from the workspace builds of `channel-relay` / `relay-protocol`, so a feature can be driven through the real Web UI without touching the operator's `~/.xacpx`. `down` stops the daemon, kills only the PIDs the manifest recorded (re-identified by command line first), sweeps any process still referencing the state dir, verifies the port is free, diffs the real home against a startup snapshot, and removes the state dir entry by entry so one locked file cannot strand the rest. `doctor` is the stateless leftover check; `status` reports what is running. Opt-in developer tooling, not part of `npm test`.
+
 ## [0.24.8-beta.0] - 2026-10-10
 
 ### Added

@@ -4,7 +4,7 @@ import type { SessionService } from "../sessions/session-service";
 import { AgentCapabilityService, type CapabilityAdvertisement } from "../agents/capability-discovery";
 import { advertisedCommandsFor, hasAdvertisedCommands, rememberAdvertisedCommands, markCommandRevision, markCommandAdapterRevision } from "../conversations/advertised-commands";
 import type { ConversationCompletions } from "@ganglion/xacpx-relay-protocol";
-import type { AgentCapabilityState } from "@ganglion/xacpx-relay-protocol";
+import type { AgentCapabilityState, RouterAvailability } from "@ganglion/xacpx-relay-protocol";
 import type {
   AgentSession,
   ResolvedSession,
@@ -282,6 +282,14 @@ export interface ControlServiceDeps {
       description?: string,
     ): Promise<ControlWorkspaceInfo>;
     remove(name: string): Promise<void>;
+  };
+  // Automatic-collaboration switch. Persists `conversations.router.enabled`,
+  // re-resolves the production router (capability probe included), hot-applies
+  // it to the live conversation runtime, and emits the change event. Wired in
+  // main.ts where ConfigStore, the live config, and the runtime are in scope.
+  // Optional: embeddings that never flip the switch leave it unset.
+  conversationRouter?: {
+    setEnabled(enabled: boolean): Promise<RouterAvailability>;
   };
   uploadStore: UploadStore;
   // Interactive terminal PTY manager (web terminal). Optional gate read from live config.
@@ -2269,8 +2277,25 @@ export class ControlService {
   }
 
   /** Startup router availability. The four statuses are not a boolean. */
-  getConversationRouterAvailability(): import("@ganglion/xacpx-relay-protocol").RouterAvailability {
+  getConversationRouterAvailability(): RouterAvailability {
     return this.requireConversations().routerAvailability;
+  }
+
+  /**
+   * Flip the automatic-collaboration switch. Persistence, re-resolution, the
+   * runtime hot-apply, and the change event all live in the wired dep; the
+   * returned state is the same four-status shape `.get` returns — never a
+   * boolean — so the caller can render the reason when a flip does not reach
+   * `ready` (e.g. enabling before `conversations.router.command` is set).
+   */
+  async setConversationRouterEnabled(enabled: boolean): Promise<RouterAvailability> {
+    if (!this.deps.conversationRouter) {
+      throw new ConversationError(
+        "router_control_unavailable",
+        "the automatic collaboration switch is not available in this embedding",
+      );
+    }
+    return await this.deps.conversationRouter.setEnabled(enabled);
   }
 
   /** Adapter model and effort advertisement for a configured agent and workspace. */

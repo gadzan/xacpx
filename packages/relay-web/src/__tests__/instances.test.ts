@@ -1,6 +1,7 @@
 import { setActivePinia, createPinia } from "pinia";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { RELAY_CAPABILITIES } from "@ganglion/xacpx-relay-protocol";
+import { api } from "../api/client";
 import { supportsRmuxTerminal, useInstancesStore } from "../stores/instances";
 
 beforeEach(() => setActivePinia(createPinia()));
@@ -61,6 +62,47 @@ test("loadRouterAvailability does not treat a boolean as ready", async () => {
     status: "failed",
     reason: { code: "malformed-capabilities" },
   });
+});
+
+test("setConversationRouterEnabled stores the availability the daemon resolved", async () => {
+  const calls: Array<{ type: string; payload: unknown }> = [];
+  vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { body: string }) => {
+    const body = JSON.parse(init.body) as { type: string; payload: unknown };
+    calls.push(body);
+    return new Response(JSON.stringify({
+      result: { status: "ready", configPath: "conversations.router" },
+    }), { status: 200 });
+  }));
+  const store = useInstancesStore();
+  const availability = await store.setConversationRouterEnabled("i1", true);
+  expect(availability).toEqual({ status: "ready", configPath: "conversations.router" });
+  expect(store.routerAvailabilityFor("i1")).toEqual({ status: "ready", configPath: "conversations.router" });
+  expect(calls).toEqual([{ type: "control.conversations.router.set", payload: { enabled: true } }]);
+});
+
+test("setConversationRouterEnabled surfaces a malformed answer as failed, never as ready", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ result: { status: "ready" } }), { status: 200 })));
+  const store = useInstancesStore();
+  await expect(store.setConversationRouterEnabled("i1", true)).rejects.toThrow();
+  expect(store.routerAvailabilityFor("i1")).toEqual({ status: "loading" });
+});
+
+test("conversation-router-changed re-reads the instance availability", async () => {
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({
+    status: "disabled-by-config",
+    configPath: "conversations.router",
+    reason: { code: "disabled", message: "Automatic collaboration is off." },
+  } as never);
+  const store = useInstancesStore();
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "conversation-router-changed" } });
+  await vi.waitFor(() =>
+    expect(rpc).toHaveBeenCalledWith("i1", "control.conversations.router.get", {}));
+  expect(store.routerAvailabilityFor("i1")).toEqual({
+    status: "disabled-by-config",
+    configPath: "conversations.router",
+    reason: { code: "disabled", message: "Automatic collaboration is off." },
+  });
+  vi.restoreAllMocks();
 });
 
 test("supportsRmuxTerminal requires online and both RMUX capabilities", () => {

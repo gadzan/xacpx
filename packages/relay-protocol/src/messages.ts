@@ -111,6 +111,7 @@ export const MSG = {
   sessionModelGet: "control.session.model.get",
   agentsCapabilitiesGet: "control.agents.capabilities.get",
   conversationRouterGet: "control.conversations.router.get",
+  conversationRouterSet: "control.conversations.router.set",
   sessionModelSet: "control.session.model.set",
   sessionEffortGet: "control.session.effort.get",
   sessionEffortSet: "control.session.effort.set",
@@ -1135,6 +1136,18 @@ export interface AgentsCapabilitiesGetPayload {
 /** Empty read. The instance returns its startup router availability. */
 export interface ConversationRouterGetPayload {
   readonly __empty?: never;
+}
+
+/**
+ * Flip the automatic-collaboration switch. The instance persists
+ * `conversations.router.enabled`, re-resolves availability (running the
+ * capability probe when turning on), and returns the resulting state — the
+ * same four-status shape `.get` returns, never a boolean. `command` /
+ * `authEnv` stay config-file concerns; enabling without a command resolves to
+ * `failed` with `command-missing`.
+ */
+export interface ConversationRouterSetPayload {
+  enabled: boolean;
 }
 
 export interface SessionModelSetPayload {

@@ -340,6 +340,7 @@ const CONTROL_EVENT_TYPE_MAP = {
   "queue-updated": true,
   "sessions-changed": true,
   "workspaces-changed": true,
+  "conversation-router-changed": true,
   "scheduled-changed": true,
   "session-history": true,
   "orchestration-changed": true,
@@ -916,6 +917,7 @@ export function validControlEvent(e: unknown): boolean {
       );
     case "sessions-changed":
     case "workspaces-changed":
+    case "conversation-router-changed":
     case "orchestration-changed":
     case "bots-changed":
     case "conversations-changed":

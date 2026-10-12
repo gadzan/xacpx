@@ -345,6 +345,8 @@ Run 卡片列出实际执行的成员。`shared-single-writer` 的 Topic 注明�
 
 Group 作曲器里的“自动协作”来自 `control.conversations.router.get`。只有 `ready` 可以选择。`disabled-by-config`、`unsupported` 和 `failed` 显示原因和配置路径 `conversations.router`，按钮不可选。读取尚未返回时也不可选。Run 卡片显示预算、指派、依赖、`waitingQuestion` 和 `blockedReason`。`waiting-human` 保持等待，界面不会把它改成 running。停止会结束这次 Run。停止之后选择一名成员再发送，那是一次新的请求。此版本没有“由我启动这一步”。
 
+设置页的“群组自动协作”分区按实例列出开关。每行显示实例名、daemon 解析出的状态（已开启/已关闭/检查中/不可用+原因）和开关按钮；离线实例与读取未返回时不可点。点击走 `control.conversations.router.set`，把 daemon 返回的四状态直接写进 `routerAvailabilityById`——开启成功变“已开启”，开启失败（例如未配置 `conversations.router.command`）保留原因并把按钮留成“开启”，不假装成功。RPC 失败时显示错误行并重读可用性。`conversation-router-changed` 事件（其他客户端切换）触发同一 store 重读，因此作曲器与设置页始终收敛。旧连接器的 `unknown-type` 表现为不可用/不可点。
+
 hub 侧配套：tool step 全字段 32K 字符写入截断（见 docs/relay-module.md 的 `TOOL_DETAIL_CAP`）。
 
 ## 流式 Markdown 渲染

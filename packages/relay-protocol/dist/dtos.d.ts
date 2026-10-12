@@ -727,6 +727,8 @@ export type ControlEventDto = {
 } | {
     type: "workspaces-changed";
 } | {
+    type: "conversation-router-changed";
+} | {
     type: "scheduled-changed";
     chatKey: string;
 } | {
