@@ -4,7 +4,13 @@ import type { SessionService } from "../sessions/session-service";
 import { AgentCapabilityService, type CapabilityAdvertisement } from "../agents/capability-discovery";
 import { advertisedCommandsFor, hasAdvertisedCommands, rememberAdvertisedCommands, markCommandRevision, markCommandAdapterRevision } from "../conversations/advertised-commands";
 import type { ConversationCompletions } from "@ganglion/xacpx-relay-protocol";
-import type { AgentCapabilityState, RouterAvailability } from "@ganglion/xacpx-relay-protocol";
+import type {
+  AgentCapabilityState,
+  ConversationRouterConfigState,
+  ConversationRouterState,
+  ConversationRouterUpdatePayload,
+  RouterAvailability,
+} from "@ganglion/xacpx-relay-protocol";
 import type {
   AgentSession,
   ResolvedSession,
@@ -285,10 +291,14 @@ export interface ControlServiceDeps {
   };
   // Automatic-collaboration switch. Persists `conversations.router.enabled`,
   // re-resolves the production router (capability probe included), hot-applies
-  // it to the live conversation runtime, and emits the change event. Wired in
-  // main.ts where ConfigStore, the live config, and the runtime are in scope.
-  // Optional: embeddings that never flip the switch leave it unset.
+  // it to the live conversation runtime, and emits the change event. `update`
+  // patches any router key the same locked way and `readConfig` reports the
+  // persisted section back. Wired in main.ts where ConfigStore, the live
+  // config, and the runtime are in scope. Optional: embeddings that never flip
+  // the switch leave it unset.
   conversationRouter?: {
+    readConfig(): ConversationRouterConfigState;
+    update(patch: ConversationRouterUpdatePayload): Promise<RouterAvailability>;
     setEnabled(enabled: boolean): Promise<RouterAvailability>;
   };
   uploadStore: UploadStore;
@@ -2296,6 +2306,34 @@ export class ControlService {
       );
     }
     return await this.deps.conversationRouter.setEnabled(enabled);
+  }
+
+  /**
+   * Patch the router configuration section, or read it back with an empty
+   * patch. An empty patch is a pure read: it composes the runtime availability
+   * with the persisted config and never touches the dep's write path, so
+   * opening the dialog cannot write, probe, or emit. A non-empty patch is one
+   * locked write plus a re-resolve inside the wired dep, and the answer pairs
+   * the same four-status availability `.set` returns with the section that is
+   * now persisted.
+   */
+  async updateConversationRouter(patch: ConversationRouterUpdatePayload): Promise<ConversationRouterState> {
+    if (!this.deps.conversationRouter) {
+      throw new ConversationError(
+        "router_control_unavailable",
+        "the automatic collaboration switch is not available in this embedding",
+      );
+    }
+    if (Object.keys(patch).length === 0) {
+      return {
+        availability: this.requireConversations().routerAvailability,
+        config: this.deps.conversationRouter.readConfig(),
+      };
+    }
+    return {
+      availability: await this.deps.conversationRouter.update(patch),
+      config: this.deps.conversationRouter.readConfig(),
+    };
   }
 
   /** Adapter model and effort advertisement for a configured agent and workspace. */

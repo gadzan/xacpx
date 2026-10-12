@@ -2104,6 +2104,39 @@ export async function buildApp(
       },
     },
     conversationRouter: {
+      // The persisted section, read off the live config the store mutations
+      // keep current. `enabled` is the intent as written, never a derivation
+      // from availability.
+      readConfig: () => {
+        const router = config.conversations?.router;
+        return {
+          enabled: router?.enabled === true,
+          ...(router?.command ? { command: router.command } : {}),
+          ...(router?.authEnv ? { authEnv: router.authEnv } : {}),
+        };
+      },
+      update: async (patch) => {
+        return await configMutationMutex.run(async () => {
+          // Per-key patch: only the named router keys are touched, so a
+          // hand-edited config.json keeps every unrelated field (same rule as
+          // every other ConfigStore mutation).
+          const updated = await configStore.updateConversationRouter(patch);
+          publishLiveConfig(updated);
+          // Re-resolve from the persisted config exactly like startup — the
+          // capability probe runs when turning on, so a patch that leaves the
+          // router on without a proven restriction resolves to a non-ready
+          // status with its reason.
+          const resolution = await resolveProductionRouter({
+            config: updated,
+            env: process.env,
+          });
+          // The runtime is constructed after ControlService; a patch that lands
+          // before it exists is persisted and reflected at startup instead.
+          conversationRuntimeRef?.applyRouterResolution(resolution);
+          controlEvents.emit({ type: "conversation-router-changed" });
+          return resolution.availability;
+        });
+      },
       setEnabled: async (enabled) => {
         return await configMutationMutex.run(async () => {
           // Raw patch: only the switch subtree is touched, so a hand-edited

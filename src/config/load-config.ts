@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { ROUTER_AUTH_ENV_PATTERN, ROUTER_COMMAND_MAX_LENGTH } from "@ganglion/xacpx-relay-protocol";
 import {
   isExactAdapterVersion,
   isManagedAdapterId,
@@ -618,8 +619,6 @@ function parseRuntimeChannels(rawChannels: unknown, channel: ChannelConfig): Cha
   ];
 }
 
-const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
-
 function parseConversationsConfig(raw: unknown): ConversationsConfig | undefined {
   if (raw === undefined) return undefined;
   if (!isRecord(raw) || Array.isArray(raw)) throw new Error("conversations must be an object");
@@ -631,14 +630,14 @@ function parseConversationsConfig(raw: unknown): ConversationsConfig | undefined
   }
   let command: string | undefined;
   if ("command" in router && router.command !== undefined) {
-    if (typeof router.command !== "string" || !router.command.trim() || router.command.length > 4096 || router.command.includes("\n") || router.command.includes("\0")) {
+    if (typeof router.command !== "string" || !router.command.trim() || router.command.length > ROUTER_COMMAND_MAX_LENGTH || router.command.includes("\n") || router.command.includes("\0")) {
       throw new Error("conversations.router.command must be a command path");
     }
     command = router.command;
   }
   let authEnv: string | undefined;
   if ("authEnv" in router && router.authEnv !== undefined) {
-    if (typeof router.authEnv !== "string" || !ENV_NAME.test(router.authEnv)) {
+    if (typeof router.authEnv !== "string" || !ROUTER_AUTH_ENV_PATTERN.test(router.authEnv)) {
       throw new Error("conversations.router.authEnv must be an environment variable name");
     }
     authEnv = router.authEnv;
