@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { verifyAcpInitialize } from "../../../src/adapters/adapter-verifier";
+import { diagnoseAdapterExit, verifyAcpInitialize } from "../../../src/adapters/adapter-verifier";
 
 const SUCCESS_SCRIPT = String.raw`
 process.stdin.setEncoding("utf8");
@@ -50,4 +50,35 @@ test("npm E404 failures point users to the adapter registry setting", async () =
     ["-e", "console.error('npm ERR! code E404'); process.exit(1)"],
     { adapterRegistry: "https://npm.corp.example/" },
   )).rejects.toThrow("xacpx adapter registry set https://registry.npmjs.org");
+});
+
+// The stdin pipe of an already exited child breaks before `close` lands, so the
+// two signals race. This pins the precedence that keeps the outcome identical
+// either way, without depending on process timing.
+test("diagnoses an exited adapter by precedence, not by event order", () => {
+  expect(diagnoseAdapterExit({
+    code: 1,
+    signal: null,
+    stderr: "npm ERR! code E404",
+    stdinError: new Error("EPIPE: broken pipe, write"),
+    adapterRegistry: "https://npm.corp.example/",
+  }).message).toContain("xacpx adapter registry set https://registry.npmjs.org");
+
+  expect(diagnoseAdapterExit({
+    code: 1,
+    signal: null,
+    stderr: "",
+    stdinError: new Error("EPIPE: broken pipe, write"),
+  }).message).toBe("failed to send ACP initialize: EPIPE: broken pipe, write");
+
+  expect(diagnoseAdapterExit({ code: 1, signal: null, stderr: "boom" }).message)
+    .toBe("adapter exited before ACP initialize completed (code=1, signal=null): boom");
+
+  expect(diagnoseAdapterExit({ code: null, signal: "SIGTERM", stderr: "" }).message)
+    .toBe("adapter exited before ACP initialize completed (code=null, signal=SIGTERM)");
+});
+
+test("registry guidance needs the registry option, like the probe path", () => {
+  expect(diagnoseAdapterExit({ code: 1, signal: null, stderr: "npm ERR! code E404" }).message)
+    .toBe("adapter exited before ACP initialize completed (code=1, signal=null): npm ERR! code E404");
 });
