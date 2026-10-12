@@ -145,6 +145,8 @@ var MSG = {
   gitWorktreeCreate: "control.git.worktree.create",
   upload: "control.upload",
   sessionModelGet: "control.session.model.get",
+  agentsCapabilitiesGet: "control.agents.capabilities.get",
+  conversationRouterGet: "control.conversations.router.get",
   sessionModelSet: "control.session.model.set",
   sessionEffortGet: "control.session.effort.get",
   sessionEffortSet: "control.session.effort.set",
@@ -175,10 +177,19 @@ var MSG = {
   botsCreate: "control.bots.create",
   botsUpdate: "control.bots.update",
   botsDelete: "control.bots.delete",
+  botsRemovePreview: "control.bots.remove.preview",
+  botsRemove: "control.bots.remove",
+  lifecycleOperationsGet: "control.lifecycle.operations.get",
   conversationsList: "control.conversations.list",
   conversationsGet: "control.conversations.get",
   topicsList: "control.topics.list",
   topicsCreate: "control.topics.create",
+  topicsUpdate: "control.topics.update",
+  topicsArchive: "control.topics.archive",
+  topicsRestore: "control.topics.restore",
+  topicsTeardown: "control.topics.teardown",
+  topicsClear: "control.topics.clear",
+  topicsPreview: "control.topics.preview",
   groupsCreate: "control.groups.create",
   groupsUpdate: "control.groups.update",
   groupsDelete: "control.groups.delete",
@@ -187,6 +198,7 @@ var MSG = {
   groupTopicsCreate: "control.group.topics.create",
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
+  conversationCompletionsGet: "control.conversation.completions.get",
   conversationPrompt: "control.conversation.prompt",
   conversationPromptWithPolicy: "control.conversation.prompt-with-policy",
   conversationWorktree: "control.conversation.worktree",
@@ -271,6 +283,22 @@ var DESKTOP_ERROR_CODES = [
   "desktop-credentials-rejected",
   "desktop-permission-denied"
 ];
+// packages/relay-protocol/src/agent-mentions.ts
+var MAX_AGENT_MENTIONS = 16;
+function validAgentMentions(text, value) {
+  if (!Array.isArray(value) || value.length > MAX_AGENT_MENTIONS)
+    return false;
+  let end = -1;
+  for (const raw of value) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).some((key) => key !== "range" && key !== "handle"))
+      return false;
+    const { range, handle } = raw;
+    if (!Array.isArray(range) || range.length !== 2 || !range.every(Number.isSafeInteger) || range[0] < 0 || range[0] >= range[1] || range[1] > text.length || range[0] < end || typeof handle !== "string" || !handle || handle.length > 2048 || handle.includes("\x00"))
+      return false;
+    end = range[1];
+  }
+  return true;
+}
 // packages/relay-protocol/src/validate-primitives.ts
 var isObj = (v) => typeof v === "object" && v !== null;
 var hasOnlyKeys = (value, allowed) => Object.keys(value).every((key) => Object.hasOwn(allowed, key));
@@ -425,7 +453,7 @@ function validAgentCommand(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.name === "string" && c.name.length > 0 && c.name.length <= 128 && (c.description === undefined || typeof c.description === "string" && c.description.length <= 4096) && (c.hasInput === undefined || typeof c.hasInput === "boolean");
+  return typeof c.name === "string" && c.name.length > 0 && c.name.length <= 128 && (c.description === undefined || typeof c.description === "string" && c.description.length <= 4096) && (c.hasInput === undefined || typeof c.hasInput === "boolean") && (c.kind === undefined || c.kind === "command" || c.kind === "skill");
 }
 function validScheduledOrigin(s) {
   return s === undefined || typeof s === "object" && s !== null && isStr(s.taskId) && isStr(s.executeAt);
@@ -525,11 +553,20 @@ function validStateSnapshot(candidate) {
     return c.instanceId === instanceId && typeof c.sessionAlias === "string" && finiteNonNegative(c.used) && finiteNonNegative(c.size) && validUsageCost(c.cost) && validUsageBreakdown(c.breakdown);
   }))
     return false;
-  return Array.isArray(candidate.commands) && candidate.commands.every((entry) => {
+  if (!Array.isArray(candidate.commands) || !candidate.commands.every((entry) => {
     if (typeof entry !== "object" || entry === null)
       return false;
     const c = entry;
     return c.instanceId === instanceId && typeof c.sessionAlias === "string" && Array.isArray(c.commands) && c.commands.every(validAgentCommand);
+  }))
+    return false;
+  if (candidate.conversationCommands === undefined)
+    return true;
+  return Array.isArray(candidate.conversationCommands) && candidate.conversationCommands.every((entry) => {
+    if (typeof entry !== "object" || entry === null)
+      return false;
+    const c = entry;
+    return c.instanceId === instanceId && typeof c.conversationId === "string" && typeof c.topicId === "string" && typeof c.botId === "string" && Array.isArray(c.commands) && c.commands.every(validAgentCommand);
   });
 }
 function validPeerMessageHistoryEntry(m) {
@@ -595,7 +632,7 @@ function validTopicSummary(value) {
   if (typeof value !== "object" || value === null)
     return false;
   const c = value;
-  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string" && validExecutionTarget(c.executionTarget) && (c.maxConcurrentMemberTurns === undefined || typeof c.maxConcurrentMemberTurns === "number" && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64);
+  return typeof c.id === "string" && typeof c.conversationId === "string" && typeof c.title === "string" && (c.status === "active" || c.status === "archived" || c.status === "deleting") && typeof c.createdAt === "string" && typeof c.updatedAt === "string" && validExecutionTarget(c.executionTarget) && (c.maxConcurrentMemberTurns === undefined || typeof c.maxConcurrentMemberTurns === "number" && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64) && (c.contextGeneration === undefined || typeof c.contextGeneration === "number" && Number.isInteger(c.contextGeneration) && c.contextGeneration >= 1) && (c.defaultDirect === undefined || c.defaultDirect === true);
 }
 function validConversationMessage(value) {
   if (typeof value !== "object" || value === null)
@@ -836,6 +873,13 @@ function validInstanceStateSync(p) {
     const commands = entry;
     return typeof commands.sessionAlias === "string" && Array.isArray(commands.commands) && commands.commands.every(validAgentCommand);
   }))
+    return false;
+  if (c.conversationCommands !== undefined && (!Array.isArray(c.conversationCommands) || !c.conversationCommands.every((entry) => {
+    if (typeof entry !== "object" || entry === null)
+      return false;
+    const row = entry;
+    return typeof row.conversationId === "string" && typeof row.topicId === "string" && typeof row.botId === "string" && Array.isArray(row.commands) && row.commands.every(validAgentCommand);
+  })))
     return false;
   return Array.isArray(c.finishedOffline) && c.finishedOffline.every((f) => {
     if (typeof f !== "object" || f === null)
@@ -1170,6 +1214,29 @@ var validateGitWorktreeCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.workspace) && isStr(o.workspaceName) && isStr(o.branch) && optBool(o.createBranch) && optStr(o.startPoint) && o.path === undefined ? o : null;
 };
+var validateConversationRouterGet = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 0)
+    return null;
+  return {};
+};
+var validateAgentsCapabilitiesGet = (p) => {
+  const o = fields(p);
+  if (!o || !isBoundedStr(o.agent, 128) || !isBoundedStr(o.workspace, 256))
+    return null;
+  if (o.botId !== undefined && !isBoundedStr(o.botId, 128))
+    return null;
+  if (o.probe !== undefined && typeof o.probe !== "boolean")
+    return null;
+  if ("sessionAlias" in o || "alias" in o || "transportSession" in o)
+    return null;
+  return {
+    agent: o.agent,
+    workspace: o.workspace,
+    ...o.botId !== undefined ? { botId: o.botId } : {},
+    ...o.probe !== undefined ? { probe: o.probe } : {}
+  };
+};
 var validateSessionModelGet = (p) => {
   const o = fields(p);
   return o && isStr(o.chatKey) && isStr(o.sessionAlias) ? o : null;
@@ -1252,6 +1319,18 @@ var validateBotsDelete = (p) => {
   const o = fields(p);
   return o && isStr(o.id) ? o : null;
 };
+var validateBotsRemovePreview = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) ? o : null;
+};
+var validateBotsRemove = (p) => {
+  const o = fields(p);
+  return o && isStr(o.id) && isBoundedStr(o.requestId, 128) && isBoundedStr(o.previewRevision, 64) && (o.clearDirectHistory === undefined || o.clearDirectHistory === true || o.clearDirectHistory === false) && (o.releaseDirectBindings === undefined || o.releaseDirectBindings === true || o.releaseDirectBindings === false) ? o : null;
+};
+var validateLifecycleOperationsGet = (p) => {
+  const o = fields(p);
+  return o && isBoundedStr(o.id, 220) ? o : null;
+};
 var validateConversationsList = (p) => {
   const o = fields(p);
   return o && optStr(o.botId) ? o : null;
@@ -1267,6 +1346,35 @@ var validateTopicsList = (p) => {
 var validateTopicsCreate = (p) => {
   const o = fields(p);
   return o && isStr(o.conversationId) && isStr(o.title) && validMemberConcurrency(o.maxConcurrentMemberTurns) ? o : null;
+};
+var validateTopicRef = (o) => !!o && isStr(o.conversationId) && isStr(o.topicId);
+var validateConversationCompletionsGet = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.conversationId, 128) && isBoundedStr(o.topicId, 128) && (o.query === undefined || typeof o.query === "string" && o.query.length <= 128) && (o.cursor === undefined || typeof o.cursor === "number" && Number.isSafeInteger(o.cursor) && o.cursor >= 0) && Object.keys(o).every((k) => ["conversationId", "topicId", "query", "cursor"].includes(k)) ? o : null;
+};
+var validateTopicsUpdate = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.title, 200) ? o : null;
+};
+var validateTopicsArchive = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? o : null;
+};
+var validateTopicsRestore = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? o : null;
+};
+var validateTopicsTeardown = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.requestId, 128) && (o.releaseBindings === undefined || o.releaseBindings === true || o.releaseBindings === false) ? o : null;
+};
+var validateTopicsClear = (p) => {
+  const o = fields(p);
+  return o && validateTopicRef(o) && isBoundedStr(o.requestId, 128) && o.confirm === true && (o.releaseBindings === undefined || o.releaseBindings === true || o.releaseBindings === false) ? o : null;
+};
+var validateTopicsPreview = (p) => {
+  const o = fields(p);
+  return validateTopicRef(o) ? o : null;
 };
 var validMemberConcurrency = (v) => v === undefined || typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 64;
 var isCreateIsolation = (v) => v === "shared" || v === "shared-single-writer" || v === "worktree-per-member";
@@ -1345,6 +1453,8 @@ var validateConversationPrompt = (p) => {
   if (!o || !isStr(o.conversationId) || !isStr(o.topicId) || !isStr(o.requestId) || !isStr(o.text)) {
     return null;
   }
+  if (o.agentMentions !== undefined && !validAgentMentions(o.text, o.agentMentions))
+    return null;
   if (o.target !== undefined && !isConversationTarget(o.target)) {
     return null;
   }
@@ -1679,6 +1789,9 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.gitCheckout]: validateGitCheckout,
   [MSG.gitWorktreeCreate]: validateGitWorktreeCreate,
   [MSG.sessionModelGet]: validateSessionModelGet,
+  [MSG.agentsCapabilitiesGet]: validateAgentsCapabilitiesGet,
+  [MSG.conversationCompletionsGet]: validateConversationCompletionsGet,
+  [MSG.conversationRouterGet]: validateConversationRouterGet,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.sessionEffortGet]: validateSessionEffortGet,
   [MSG.sessionEffortSet]: validateSessionEffortSet,
@@ -1694,10 +1807,19 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.botsCreate]: validateBotsCreate,
   [MSG.botsUpdate]: validateBotsUpdate,
   [MSG.botsDelete]: validateBotsDelete,
+  [MSG.botsRemovePreview]: validateBotsRemovePreview,
+  [MSG.botsRemove]: validateBotsRemove,
+  [MSG.lifecycleOperationsGet]: validateLifecycleOperationsGet,
   [MSG.conversationsList]: validateConversationsList,
   [MSG.conversationsGet]: validateConversationsGet,
   [MSG.topicsList]: validateTopicsList,
   [MSG.topicsCreate]: validateTopicsCreate,
+  [MSG.topicsUpdate]: validateTopicsUpdate,
+  [MSG.topicsArchive]: validateTopicsArchive,
+  [MSG.topicsRestore]: validateTopicsRestore,
+  [MSG.topicsTeardown]: validateTopicsTeardown,
+  [MSG.topicsClear]: validateTopicsClear,
+  [MSG.topicsPreview]: validateTopicsPreview,
   [MSG.groupsCreate]: validateGroupsCreate,
   [MSG.groupsUpdate]: validateGroupsUpdate,
   [MSG.groupsDelete]: validateGroupsDelete,
@@ -1797,95 +1919,418 @@ function parseDesktopEventPayload(type, payload) {
   const validate = DESKTOP_EVENT_PAYLOAD_VALIDATORS[type];
   return validate(payload);
 }
+// packages/relay-protocol/src/agent-capability.ts
+var REASON_CODES = new Set([
+  "adapter-cannot-enumerate",
+  "probe-unavailable",
+  "unauthenticated",
+  "discovery-available",
+  "timeout",
+  "transport",
+  "invalid-context",
+  "cleanup",
+  "stale-response"
+]);
+var FETCH_SOURCES = new Set(["runtime", "cache", "session", "probe"]);
+function classifySelection(input) {
+  const selected = normalizeOptional(input.selectedModelId);
+  const applied = normalizeOptional(input.appliedModelId);
+  const advertised = new Set(input.advertisedIds);
+  if (!selected || selected.toLowerCase() === "default") {
+    return applied ? { kind: "default", appliedModelId: applied } : { kind: "default" };
+  }
+  if (applied && applied === selected)
+    return { kind: "in-effect", modelId: selected };
+  if (applied && !advertised.has(selected)) {
+    return { kind: "fell-back", selectedModelId: selected, appliedModelId: applied };
+  }
+  return {
+    kind: "saved",
+    modelId: selected,
+    advertised: advertised.has(selected),
+    ...applied ? { appliedModelId: applied } : {}
+  };
+}
+function adapterModels(ids) {
+  const seen = new Set;
+  const models = [];
+  for (const entry of ids) {
+    const modelId = entry.modelId.trim();
+    if (!modelId || seen.has(modelId))
+      continue;
+    seen.add(modelId);
+    const name = entry.name?.trim();
+    models.push({ modelId, name: name && name.length > 0 ? name : modelId, source: "adapter" });
+  }
+  return models;
+}
+function suggestionModels(ids) {
+  const seen = new Set;
+  const models = [];
+  for (const raw of ids) {
+    const modelId = raw.trim();
+    if (!modelId || seen.has(modelId))
+      continue;
+    seen.add(modelId);
+    models.push({ modelId, name: modelId, source: "suggestion" });
+  }
+  return models;
+}
+function knownEfforts(ids, current) {
+  const seen = new Set;
+  const options = [];
+  for (const raw of ids) {
+    const id = raw.trim();
+    if (!id || seen.has(id))
+      continue;
+    seen.add(id);
+    options.push({ id, name: id, source: "adapter" });
+  }
+  const normalized = normalizeOptional(current);
+  return {
+    status: "known",
+    options,
+    ...normalized && seen.has(normalized) ? { current: normalized } : {}
+  };
+}
+function readyCapability(source, models, draft) {
+  const adapter = adapterModels(models);
+  const first = adapter[0];
+  if (!first)
+    throw new Error("ready capability requires at least one adapter model");
+  const advertisedIds = adapter.map((model) => model.modelId);
+  const appliedModelId = source === "runtime" ? normalizeOptional(draft.appliedModelId) : undefined;
+  const selectedModelId = normalizeOptional(draft.selectedModelId);
+  return {
+    status: "ready",
+    models: adapter,
+    suggestions: suggestionModels(draft.suggestions ?? []).filter((model) => !advertisedIds.includes(model.modelId)),
+    efforts: draft.efforts ?? { status: "unavailable" },
+    fetchedAt: draft.fetchedAt,
+    source,
+    ...appliedModelId ? { appliedModelId } : {},
+    ...selectedModelId ? { selectedModelId } : {},
+    ...normalizeOptional(draft.selectedEffort) ? { selectedEffort: draft.selectedEffort.trim() } : {},
+    effect: classifySelection({ selectedModelId, appliedModelId, advertisedIds })
+  };
+}
+function unsupportedCapability(reason, recovery, draft) {
+  return {
+    status: "unsupported",
+    ...closedFailure(reason, recovery, draft)
+  };
+}
+function needsSetupCapability(reason, recovery, draft) {
+  return {
+    status: "needs-setup",
+    ...closedFailure(reason, recovery, draft)
+  };
+}
+function errorCapability(reason, recovery, draft) {
+  assertReason(reason);
+  if (!recovery.trim())
+    throw new Error("capability error requires a recovery hint");
+  const selectedModelId = normalizeOptional(draft.selectedModelId);
+  const selectedEffort = normalizeOptional(draft.selectedEffort);
+  return {
+    status: "error",
+    reason,
+    recovery,
+    fetchedAt: draft.fetchedAt,
+    ...selectedModelId ? { selectedModelId } : {},
+    ...selectedEffort ? { selectedEffort } : {}
+  };
+}
+var STALE_FETCHED_AT = "1970-01-01T00:00:00.000Z";
+function parseAgentCapabilityState(value) {
+  if (!isRecord(value) || typeof value.status !== "string")
+    return stale("capability response is missing a status");
+  if (value.status === "ready")
+    return parseReady(value);
+  if (value.status === "unsupported" || value.status === "needs-setup")
+    return parseClosed(value.status, value);
+  if (value.status === "error")
+    return parseError(value);
+  return stale(`capability status "${value.status}" is not recognized`);
+}
+function parseReady(value) {
+  if (!isFetchSource(value.source) || typeof value.fetchedAt !== "string")
+    return stale("ready capability is missing source or fetchedAt");
+  if (!Array.isArray(value.models) || value.models.length === 0)
+    return stale("ready capability has no adapter models");
+  const models = [];
+  for (const entry of value.models) {
+    if (!isRecord(entry) || typeof entry.modelId !== "string" || entry.source !== "adapter") {
+      return stale("ready capability contains a non-adapter model");
+    }
+    models.push({ modelId: entry.modelId, ...typeof entry.name === "string" ? { name: entry.name } : {} });
+  }
+  try {
+    return readyCapability(value.source, models, {
+      fetchedAt: value.fetchedAt,
+      suggestions: stringIds(value.suggestions, "modelId"),
+      selectedModelId: optionalString(value.selectedModelId),
+      selectedEffort: optionalString(value.selectedEffort),
+      appliedModelId: value.source === "runtime" ? optionalString(value.appliedModelId) : undefined,
+      efforts: parseEfforts(value.efforts)
+    });
+  } catch {
+    return stale("ready capability could not be constructed");
+  }
+}
+function parseClosed(status, value) {
+  const reason = parseReason(value.reason);
+  if (!reason || typeof value.recovery !== "string" || !value.recovery.trim() || typeof value.fetchedAt !== "string") {
+    return stale(`${status} capability is missing a reason or recovery hint`);
+  }
+  const draft = {
+    fetchedAt: value.fetchedAt,
+    suggestions: stringIds(value.suggestions, "modelId"),
+    selectedModelId: optionalString(value.selectedModelId),
+    selectedEffort: optionalString(value.selectedEffort),
+    efforts: parseEfforts(value.efforts)
+  };
+  return status === "unsupported" ? unsupportedCapability(reason, value.recovery, draft) : needsSetupCapability(reason, value.recovery, draft);
+}
+function parseError(value) {
+  const reason = parseReason(value.reason);
+  if (!reason || typeof value.recovery !== "string" || !value.recovery.trim()) {
+    return stale("error capability is missing a reason or recovery hint");
+  }
+  return errorCapability(reason, value.recovery, {
+    fetchedAt: typeof value.fetchedAt === "string" ? value.fetchedAt : STALE_FETCHED_AT,
+    selectedModelId: optionalString(value.selectedModelId),
+    selectedEffort: optionalString(value.selectedEffort)
+  });
+}
+function stale(message) {
+  return errorCapability({ code: "stale-response", message }, "Reconnect a current connector, or fetch the model list again.", { fetchedAt: STALE_FETCHED_AT });
+}
+function closedFailure(reason, recovery, draft) {
+  assertReason(reason);
+  if (!recovery.trim())
+    throw new Error("capability failure requires a recovery hint");
+  const selectedModelId = normalizeOptional(draft.selectedModelId);
+  const selectedEffort = normalizeOptional(draft.selectedEffort);
+  const advertised = [];
+  return {
+    reason,
+    recovery,
+    fetchedAt: draft.fetchedAt,
+    suggestions: suggestionModels(draft.suggestions ?? []),
+    efforts: draft.efforts ?? { status: "unavailable" },
+    ...selectedModelId ? { selectedModelId } : {},
+    ...selectedEffort ? { selectedEffort } : {},
+    effect: classifySelection({ selectedModelId, advertisedIds: advertised })
+  };
+}
+function assertReason(reason) {
+  if (!REASON_CODES.has(reason.code) || !reason.message.trim()) {
+    throw new Error("capability reason requires a known code and a message");
+  }
+}
+function parseReason(value) {
+  if (!isRecord(value) || typeof value.code !== "string" || typeof value.message !== "string")
+    return;
+  if (!REASON_CODES.has(value.code) || !value.message.trim())
+    return;
+  return { code: value.code, message: value.message };
+}
+function parseEfforts(value) {
+  if (!isRecord(value))
+    return { status: "unavailable" };
+  if (value.status === "unavailable")
+    return { status: "unavailable" };
+  if (value.status !== "known" || !Array.isArray(value.options))
+    return { status: "unavailable" };
+  const ids = [];
+  for (const option of value.options) {
+    if (!isRecord(option) || typeof option.id !== "string" || option.source !== "adapter")
+      continue;
+    ids.push(option.id);
+  }
+  return knownEfforts(ids, optionalString(value.current));
+}
+function stringIds(value, key) {
+  if (!Array.isArray(value))
+    return [];
+  return value.flatMap((entry) => isRecord(entry) && typeof entry[key] === "string" ? [entry[key]] : []);
+}
+function optionalString(value) {
+  return typeof value === "string" ? value : undefined;
+}
+function normalizeOptional(value) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+function isFetchSource(value) {
+  return typeof value === "string" && FETCH_SOURCES.has(value);
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+// packages/relay-protocol/src/router-availability.ts
+var ROUTER_CONFIG_PATH = "conversations.router";
+var UNAVAILABLE = new Set(["restriction-unproven", "not-advertised"]);
+var FAILED = new Set([
+  "command-missing",
+  "auth-missing",
+  "probe-failed",
+  "probe-timeout",
+  "malformed-capabilities",
+  "read-failed"
+]);
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function readReason(value) {
+  if (!isRecord2(value))
+    return;
+  if (typeof value.code !== "string" || typeof value.message !== "string")
+    return;
+  const message = value.message.trim();
+  if (!message || message.length > 500)
+    return;
+  if (Object.keys(value).some((key) => key !== "code" && key !== "message"))
+    return;
+  return { code: value.code, message };
+}
+function parseRouterAvailability(value) {
+  if (!isRecord2(value) || value.configPath !== ROUTER_CONFIG_PATH) {
+    throw new Error("router availability is missing conversations.router");
+  }
+  const extra = Object.keys(value).filter((key) => key !== "status" && key !== "configPath" && key !== "reason");
+  if (extra.length > 0)
+    throw new Error("router availability contains an unsupported field");
+  if (value.status === "ready") {
+    if ("reason" in value)
+      throw new Error("router availability ready has no reason");
+    return { status: "ready", configPath: ROUTER_CONFIG_PATH };
+  }
+  const reason = readReason(value.reason);
+  if (!reason)
+    throw new Error("router availability reason is missing");
+  if (value.status === "disabled-by-config" && reason.code === "disabled") {
+    return { status: "disabled-by-config", configPath: ROUTER_CONFIG_PATH, reason: { code: "disabled", message: reason.message } };
+  }
+  if (value.status === "unsupported" && UNAVAILABLE.has(reason.code)) {
+    return {
+      status: "unsupported",
+      configPath: ROUTER_CONFIG_PATH,
+      reason: { code: reason.code, message: reason.message }
+    };
+  }
+  if (value.status === "failed" && FAILED.has(reason.code)) {
+    return {
+      status: "failed",
+      configPath: ROUTER_CONFIG_PATH,
+      reason: { code: reason.code, message: reason.message }
+    };
+  }
+  throw new Error("router availability status is not recognized");
+}
 export {
-  webEventEnvelope,
-  webClientEnvelope,
-  validateInteractionWithdraw,
-  validateInteractionResponse,
-  validateInteractionRequest,
-  validInstanceStateSync,
-  validControlEvent,
-  parseWebServerEvent,
-  parseWebClientMessage,
-  parseTerminalEventPayload,
-  parseDesktopPrepareResult,
-  parseDesktopEventPayload,
-  parseDesktopCredential,
-  parseControlPayload,
-  parseCanonicalBase64,
-  optStrArr,
-  optStr,
-  optNum,
-  optNonNegInt,
-  optBool,
-  normalizeCapabilities,
-  maxBase64EncodedLength,
-  isStr,
-  isObj,
-  isNonNegInt,
-  isIntInRange,
-  isErrorPayload,
-  isDesktopSecurityKind,
-  isConversationWorktreeStatus,
-  isBoundedStr,
-  hasOnlyKeys,
-  errorPayload,
-  encodeEnvelope,
-  decodeEnvelope,
-  WEB_EVENT_TYPE,
-  WEB_CLIENT_TYPE,
-  TERMINAL_RPC_TIMEOUT_MS,
-  TERMINAL_REBASE_CHUNK_BYTES,
-  TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
-  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
-  TERMINAL_EVENT_PAYLOAD_VALIDATORS,
-  TERMINAL_ERROR_CODES,
-  STATE_SYNC_TEXT_CAP,
-  STATE_SYNC_PARTS_CAP,
-  RELAY_PROTOCOL_VERSION,
-  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
-  RELAY_CAPABILITIES,
-  RECOVERY_RETENTION_MS,
-  REASONING_CAP,
-  MSG,
-  MIN_TERMINAL_ROWS,
-  MIN_TERMINAL_COLS,
-  MAX_WEB_INSTANCE_ID_LENGTH,
-  MAX_TOOL_STEPS,
-  MAX_TERMINAL_VIEWER_ID_LENGTH,
-  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
-  MAX_TERMINAL_ROWS,
-  MAX_TERMINAL_REQUEST_ID_LENGTH,
-  MAX_TERMINAL_REBASE_TOTAL_BYTES,
-  MAX_TERMINAL_INPUT_BYTES,
-  MAX_TERMINAL_ID_LENGTH,
-  MAX_TERMINAL_GENERATION_LENGTH,
-  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
-  MAX_TERMINAL_COLS,
-  MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
-  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
-  MAX_GROUP_TARGET_MEMBERS,
-  MAX_DESKTOP_WS_PATH_LENGTH,
-  MAX_DESKTOP_TICKET_LENGTH,
-  MAX_DESKTOP_STREAM_ID_LENGTH,
-  MAX_DESKTOP_REQUEST_ID_LENGTH,
-  MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
-  MAX_DESKTOP_CREDENTIAL_FIELD_BYTES,
-  MAX_CAPABILITY_LENGTH,
-  MAX_CAPABILITIES,
-  MAX_BOT_ID_LENGTH,
-  INTERACTION_WIRE_LIMITS,
-  DESKTOP_WS_MAX_PAYLOAD_BYTES,
-  DESKTOP_TICKET_TTL_MS,
-  DESKTOP_TCP_CHUNK_BYTES,
-  DESKTOP_RPC_TIMEOUT_MS,
-  DESKTOP_MAX_STREAMS_PER_INSTANCE,
-  DESKTOP_MAX_STREAMS_PER_ACCOUNT,
-  DESKTOP_INNER_RFB_SCHEME,
-  DESKTOP_HUB_REQUEST_TIMEOUT_MS,
-  DESKTOP_EVENT_PAYLOAD_VALIDATORS,
-  DESKTOP_ERROR_CODES,
-  DESKTOP_BUFFERED_SOFT_PAUSE_BYTES,
+  CONTROL_PAYLOAD_VALIDATORS,
   DESKTOP_BUFFERED_HARD_CLOSE_BYTES,
-  CONTROL_PAYLOAD_VALIDATORS
+  DESKTOP_BUFFERED_SOFT_PAUSE_BYTES,
+  DESKTOP_ERROR_CODES,
+  DESKTOP_EVENT_PAYLOAD_VALIDATORS,
+  DESKTOP_HUB_REQUEST_TIMEOUT_MS,
+  DESKTOP_INNER_RFB_SCHEME,
+  DESKTOP_MAX_STREAMS_PER_ACCOUNT,
+  DESKTOP_MAX_STREAMS_PER_INSTANCE,
+  DESKTOP_RPC_TIMEOUT_MS,
+  DESKTOP_TCP_CHUNK_BYTES,
+  DESKTOP_TICKET_TTL_MS,
+  DESKTOP_WS_MAX_PAYLOAD_BYTES,
+  INTERACTION_WIRE_LIMITS,
+  MAX_AGENT_MENTIONS,
+  MAX_BOT_ID_LENGTH,
+  MAX_CAPABILITIES,
+  MAX_CAPABILITY_LENGTH,
+  MAX_DESKTOP_CREDENTIAL_FIELD_BYTES,
+  MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
+  MAX_DESKTOP_REQUEST_ID_LENGTH,
+  MAX_DESKTOP_STREAM_ID_LENGTH,
+  MAX_DESKTOP_TICKET_LENGTH,
+  MAX_DESKTOP_WS_PATH_LENGTH,
+  MAX_GROUP_TARGET_MEMBERS,
+  MAX_TERMINAL_ATTACHMENT_ID_LENGTH,
+  MAX_TERMINAL_ATTACHMENT_QUEUE_BYTES,
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ERROR_MESSAGE_LENGTH,
+  MAX_TERMINAL_GENERATION_LENGTH,
+  MAX_TERMINAL_ID_LENGTH,
+  MAX_TERMINAL_INPUT_BYTES,
+  MAX_TERMINAL_REBASE_TOTAL_BYTES,
+  MAX_TERMINAL_REQUEST_ID_LENGTH,
+  MAX_TERMINAL_ROWS,
+  MAX_TERMINAL_SESSION_ALIAS_LENGTH,
+  MAX_TERMINAL_VIEWER_ID_LENGTH,
+  MAX_TOOL_STEPS,
+  MAX_WEB_INSTANCE_ID_LENGTH,
+  MIN_TERMINAL_COLS,
+  MIN_TERMINAL_ROWS,
+  MSG,
+  REASONING_CAP,
+  RECOVERY_RETENTION_MS,
+  RELAY_CAPABILITIES,
+  RELAY_INTERACTION_RESPONSE_RESERVE_MS,
+  RELAY_PROTOCOL_VERSION,
+  ROUTER_CONFIG_PATH,
+  STATE_SYNC_PARTS_CAP,
+  STATE_SYNC_TEXT_CAP,
+  TERMINAL_ERROR_CODES,
+  TERMINAL_EVENT_PAYLOAD_VALIDATORS,
+  TERMINAL_HUB_REQUEST_TIMEOUT_MS,
+  TERMINAL_KILL_CONFIRM_TIMEOUT_MS,
+  TERMINAL_REBASE_CHUNK_BYTES,
+  TERMINAL_RPC_TIMEOUT_MS,
+  WEB_CLIENT_TYPE,
+  WEB_EVENT_TYPE,
+  adapterModels,
+  classifySelection,
+  decodeEnvelope,
+  encodeEnvelope,
+  errorCapability,
+  errorPayload,
+  hasOnlyKeys,
+  isBoundedStr,
+  isConversationWorktreeStatus,
+  isDesktopSecurityKind,
+  isErrorPayload,
+  isIntInRange,
+  isNonNegInt,
+  isObj,
+  isStr,
+  knownEfforts,
+  maxBase64EncodedLength,
+  needsSetupCapability,
+  normalizeCapabilities,
+  optBool,
+  optNonNegInt,
+  optNum,
+  optStr,
+  optStrArr,
+  parseAgentCapabilityState,
+  parseCanonicalBase64,
+  parseControlPayload,
+  parseDesktopCredential,
+  parseDesktopEventPayload,
+  parseDesktopPrepareResult,
+  parseRouterAvailability,
+  parseTerminalEventPayload,
+  parseWebClientMessage,
+  parseWebServerEvent,
+  readyCapability,
+  suggestionModels,
+  unsupportedCapability,
+  validAgentMentions,
+  validControlEvent,
+  validInstanceStateSync,
+  validateInteractionRequest,
+  validateInteractionResponse,
+  validateInteractionWithdraw,
+  webClientEnvelope,
+  webEventEnvelope
 };

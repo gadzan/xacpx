@@ -1,3 +1,4 @@
+import { validAgentMentions } from "@ganglion/xacpx-relay-protocol";
 import type {
   ControlExecuteCommandInput,
   ControlPromptInput,
@@ -46,6 +47,9 @@ function isTrustedControlMethod(prop: PropertyKey): prop is TrustedControlMethod
 export function sanitizePublicConversationPrompt(
   input: ConversationPromptRequestDto,
 ): ConversationPromptRequestDto {
+  if (input.agentMentions !== undefined && !validAgentMentions(input.text, input.agentMentions)) {
+    throw new ConversationError("invalid-agent-mentions", "invalid UTF-16 reference ranges");
+  }
   const target = input.target;
   let sanitized: ConversationPromptRequestDto["target"];
   if (target !== undefined) {
@@ -91,6 +95,7 @@ export function sanitizePublicConversationPrompt(
     requestId: input.requestId,
     text: input.text,
     ...(sanitized ? { target: sanitized } : {}),
+    ...(input.agentMentions !== undefined ? { agentMentions: input.agentMentions.map(m => ({ range: [...m.range] as [number, number], handle: m.handle })) } : {}),
   };
 }
 

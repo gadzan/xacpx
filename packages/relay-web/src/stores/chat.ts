@@ -1,11 +1,12 @@
 import { defineStore } from "pinia";
 import { computed, markRaw, ref } from "vue";
-import type { AgentCommandDto, AttachmentMetadata, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, QueueItemDto, ScheduledOriginDto, SessionCommandsSnapshotDto, SessionUsageSnapshotDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
+import type { AgentCommandDto, AttachmentMetadata, ConversationCommandsSnapshotDto, LiveTurnSnapshotDto, MessageRecordDto, PlanEntryDto, PromptAttachmentRef, QueueItemDto, ScheduledOriginDto, SessionCommandsSnapshotDto, SessionUsageSnapshotDto, ToolStepDto, TurnPartDto, UsageBreakdownDto, UsageCostDto, WebServerEvent } from "@ganglion/xacpx-relay-protocol";
 import { api, ApiError } from "../api/client";
 import { createDebouncedFlush } from "../lib/debounce-flush";
 import { placeTurnsInSlots, slotAfterIndexFromAnchor } from "../lib/history-turn-slots";
 import * as tailCache from "../lib/session-tail-cache";
 import { useAuthStore } from "./auth";
+import { useConversationCommandsStore } from "./conversation-commands";
 import { useInstancesStore } from "./instances";
 import { useSessionControlsStore } from "./session-controls";
 import { showLocalTurnNotification, isSessionActiveInAnyTab, claimNotificationSlot, recordTabFocus } from "../lib/local-notification";
@@ -808,10 +809,20 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function loadActiveTurns(): Promise<void> {
-    const { turns, usage: usageSnapshot, commands: commandsSnapshot } = await api.get<{ turns: LiveTurnSnapshotDto[]; usage?: SessionUsageSnapshotDto[]; commands?: SessionCommandsSnapshotDto[] }>("/api/active-turns");
+    const { turns, usage: usageSnapshot, commands: commandsSnapshot, conversationCommands } = await api.get<{ turns: LiveTurnSnapshotDto[]; usage?: SessionUsageSnapshotDto[]; commands?: SessionCommandsSnapshotDto[]; conversationCommands?: ConversationCommandsSnapshotDto[] }>("/api/active-turns");
     seedActiveTurns(turns);
     if (usageSnapshot) seedUsage(usageSnapshot);
     if (commandsSnapshot) seedCommands(commandsSnapshot);
+    if (conversationCommands) {
+      const commands = useConversationCommandsStore();
+      const byInstance = new Map<string, ConversationCommandsSnapshotDto[]>();
+      for (const row of conversationCommands) {
+        const list = byInstance.get(row.instanceId) ?? [];
+        list.push(row);
+        byInstance.set(row.instanceId, list);
+      }
+      for (const [instanceId, rows] of byInstance) commands.replaceInstance(instanceId, rows);
+    }
   }
 
   function applyEvent(event: WebServerEvent): void {

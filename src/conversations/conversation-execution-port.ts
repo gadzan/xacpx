@@ -13,6 +13,8 @@ export interface ConversationExecutionPromptInput {
   chatKey: string;
   sessionAlias: string;
   groupExecutionToken?: string;
+  directExecutionToken?: string;
+  directMentionContext?: import("./direct-input-metadata").ResolvedDirectMention[];
   text: string;
   accountId?: string;
   senderId: string;

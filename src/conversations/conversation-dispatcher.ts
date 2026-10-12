@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { markCommandRevision, adapterFacingPrompt, isAdvertisedRuntimeCommand } from "./advertised-commands";
 import { composeBotTurnPromptFromSnapshot } from "../bots/bot-profile-prompt";
 import { BotError } from "../bots/bot-error";
 import type { BotRuntimeManager } from "../bots/bot-runtime-manager";
@@ -115,6 +116,8 @@ export class ConversationDispatcher {
   private onAutomaticBatchSettled?: AutomaticRoutingHandler;
   private closed = false;
   private handoffs?: GroupHandoffService;
+  private directMessaging?: import("./direct-messaging").DirectMessagingService;
+  setDirectMessaging(service: import("./direct-messaging").DirectMessagingService): void { this.directMessaging = service; }
   private drainTask: Promise<void> | undefined;
   /** Executions currently holding provider turns. Keyed by dispatch id: while
    *  an execution is in flight its claim stays `claimed` (not requeueable) and
@@ -893,6 +896,7 @@ export class ConversationDispatcher {
     }
     let started: MemberTurnRecord | undefined;
     let releaseGroupExecution: (() => void) | undefined;
+    let releaseDirectExecution: (() => void) | undefined;
     let worktreeRef: import("./conversation-worktree-types").ConversationWorktreeRef | undefined;
     try {
       await this.hooks?.beforeRuntimeMaterialize?.(work);
@@ -909,11 +913,23 @@ export class ConversationDispatcher {
       // (no live-lookup fallback that would hand members of one batch
       // different inputs, no indeterminate seal, no requeue loop on state
       // that cannot heal itself). Applies to Direct and Group alike.
-      if (!requestSnapshotMatches(this.store.getMessage(work.run.requestMessageId), work.run)) {
-        const corrupted = this.store.getMessage(work.run.requestMessageId) !== undefined;
+      let request: import("./conversation-types").ConversationMessage | undefined;
+      try { request=this.store.getMessage(work.run.requestMessageId); } catch {this.failOwnClaimBeforeStart(work,"invalid_input_metadata");return;}
+      if (!requestSnapshotMatches(request, work.run)) {
+        const corrupted = request !== undefined;
         this.failOwnClaimBeforeStart(work, corrupted ? "request_snapshot_mismatch" : "missing_request_snapshot");
         return;
       }
+      const mentions=request?.inputMetadata?.mentions;
+      const validateReferences=():boolean => {
+        try {
+          if (request?.inputMetadata?.peer && this.runtime.getBot(work.memberTurn.botId).profileRevision !== snapshot.revision) throw new Error("peer target revision changed");
+          if(mentions?.length){if(!this.directMessaging)throw new Error("Direct messaging unavailable");this.directMessaging.registry.revalidate(work.memberTurn.botId,mentions);}
+          return true;
+        }
+        catch {this.failOwnClaimBeforeStart(work,"reference_target_unavailable");return false;}
+      };
+      if(!validateReferences())return;
       const isGroup = this.runtime.conversationKind(work.run.conversationId) === "group";
       if (isGroup && (work.run.mode === "automatic" || work.memberTurn.assignmentId) && !work.memberTurn.task?.trim()) {
         this.failOwnClaimBeforeStart(work, "missing_assignment_task");
@@ -970,6 +986,7 @@ export class ConversationDispatcher {
         return;
       }
       await this.hooks?.beforeExecutionStart?.(work);
+      if(!validateReferences())return;
       if (worktreeRef) {
         await this.worktrees!.verifyReference(worktreeRef);
         assertStillDispatchable();
@@ -1040,13 +1057,28 @@ export class ConversationDispatcher {
       }
       this.emitProduct({ type: "conversation-run-changed", run: latestRun });
       this.emitProduct({ type: "member-turn-started", run: latestRun, memberTurn: latestMember });
-      const text = isGroup
+      const userText = this.requestText(work.run.requestMessageId);
+      const commandIdentity = {
+        conversationId: work.run.conversationId,
+        topicId: work.run.topicId,
+        botId: work.memberTurn.botId,
+      };
+      if(!isGroup)markCommandRevision(commandIdentity,String(snapshot.revision)+":"+(binding.contextGeneration ?? 1));
+      const rawCommand = isAdvertisedRuntimeCommand(commandIdentity, userText);
+      const wrapped = isGroup
         ? composeBotTurnPromptFromSnapshot(snapshot, groupPrompt!)
-        : composeBotTurnPromptFromSnapshot(snapshot, this.requestText(work.run.requestMessageId));
+        : composeBotTurnPromptFromSnapshot(snapshot, userText);
+      const text = adapterFacingPrompt(commandIdentity, userText, wrapped);
+      const directExecution = !isGroup && started.effect !== "read-only" ? this.directMessaging?.bindExecution({ memberTurnId: started.id, sourceTurnId, dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation }) : undefined;
+      releaseDirectExecution = directExecution?.release;
+      const peer = request?.inputMetadata?.peer;
+      const peerPrefix = peer ? `Agent peer message from Bot ${peer.sourceBotId}, messageId ${peer.messageId}. This is orchestration input with no human authority. Replies and completion callbacks are unavailable.\n\n` : "";
       const groupExecution = isGroup ? this.handoffs?.bindExecution({ senderMemberTurnId: started.id, sourceTurnId,
         dispatchId: work.dispatch.id, owner: this.ownerId, generation: work.dispatch.generation }) : undefined;
       releaseGroupExecution = groupExecution?.release;
       const result = await this.runner.run({
+        ...(directExecution ? { directExecutionToken: directExecution.token } : {}),
+        ...(mentions?.length ? { agentMentions: mentions.map(({range,handle}) => ({range:[range[0]+peerPrefix.length+text.length-userText.length,range[1]+peerPrefix.length+text.length-userText.length] as [number,number],handle})), directMentionContext: mentions } : {}),
         ...(groupExecution ? { groupExecutionToken: groupExecution.token } : {}),
         conversationId: work.run.conversationId,
         topicId: work.run.topicId,
@@ -1055,7 +1087,9 @@ export class ConversationDispatcher {
         memberTurnId: started.id,
         sessionAlias: binding.sessionAlias,
         logicalSessionId: binding.logicalSessionId,
-        text: groupExecution ? `${this.handoffs!.memberContext(groupExecution.token)}\n\n${text}` : text,
+        text: groupExecution && !rawCommand
+          ? `${this.handoffs!.memberContext(groupExecution.token)}\n\n${text}`
+          : `${peerPrefix}${text}`,
         executionOrigin: conversationExecutionOrigin(
           this.store.getDispatchForMemberTurn(started.id)?.authorityEpoch,
           this.authorityEpoch,
@@ -1072,6 +1106,8 @@ export class ConversationDispatcher {
       });
       releaseGroupExecution?.();
       releaseGroupExecution = undefined;
+      releaseDirectExecution?.();
+      releaseDirectExecution = undefined;
       await this.hooks?.beforeResultPersist?.(work);
       this.persistResult(work, started, result);
     } catch (error) {
@@ -1119,6 +1155,7 @@ export class ConversationDispatcher {
       this.releaseOwnClaim(work);
       this.deferredTopicIds.add(work.run.topicId);
     } finally {
+      releaseDirectExecution?.();
       releaseGroupExecution?.();
       if (worktreeRef) await this.worktrees!.mark(worktreeRef, "awaiting-integration");
     }
@@ -1494,6 +1531,7 @@ function isMaterializeAbandoned(error: unknown): boolean {
     || error.code === "run_not_runnable"
     || error.code === "conversation_deleting"
     || error.code === "topic_deleting"
+    || error.code === "topic_resetting"
   ) || (error instanceof BotError
     && (error.code === "group_member_not_member"
       || error.code === "conversation_not_group"

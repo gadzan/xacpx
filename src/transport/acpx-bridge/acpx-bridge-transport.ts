@@ -9,6 +9,8 @@ import type {
   ResolvedSession,
   SessionMessageInput,
   SessionMessageReceipt,
+  AgentCapabilityProbeRequest,
+  AgentCapabilityProbeResult,
   SessionTransport,
   SessionEffortState,
 } from "../types";
@@ -257,8 +259,25 @@ export class AcpxBridgeTransport implements SessionTransport {
     });
   }
 
+  async prepareSessionCommands(session: ResolvedSession): Promise<import("../types").AgentCommand[] | undefined> {
+    return this.client.request("prepareSessionCommands", this.toParams(session));
+  }
+
   async getSessionModel(session: ResolvedSession): Promise<{ current?: string; available: string[] }> {
     return await this.client.request("getSessionModel", this.toParams(session));
+  }
+
+  async probeAgentCapabilities(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult> {
+    return await this.client.request("probeAgentCapabilities", {
+      agent: input.agent,
+      cwd: input.cwd,
+      ...(input.driver ? { driver: input.driver } : {}),
+      ...(input.settingsPolicy ? { settingsPolicy: input.settingsPolicy } : {}),
+      ...(input.agentCommand ? { agentCommand: input.agentCommand } : {}),
+      ...(input.acpxAgent ? { acpxAgent: input.acpxAgent } : {}),
+      ...(input.rawCommand ? { rawCommand: input.rawCommand } : {}),
+      ...(input.agentArgv ? { agentArgv: [...input.agentArgv] } : {}),
+    });
   }
 
   async setSessionEffort(session: ResolvedSession, effort: string): Promise<void> {

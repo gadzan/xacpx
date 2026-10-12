@@ -102,6 +102,8 @@ interface BotRuntimeBindingBase {
   sessionAlias: string;
   createdAt: string;
   updatedAt: string;
+  /** Topic context generation at publish. Absent matches generation 1. */
+  contextGeneration?: number;
 }
 
 export type BotRuntimeBinding =

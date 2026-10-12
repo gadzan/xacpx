@@ -539,3 +539,11 @@ Stop-Process -Id $parent.Id -Force
 # After waiting 2-3 seconds, confirm there are no leftover xacpx mcp-stdio processes.
 Get-CimInstance Win32_Process | ? { $_.CommandLine -like "*xacpx* mcp-stdio*" } | Select-Object ProcessId,CommandLine
 ```
+
+## Direct Bot Agent Messaging (Issue #399)
+
+An unrestricted live Direct launch exposes agent_list and agent_send through its private Direct execution identity. The sender is derived from the current durable execution, not model-supplied metadata. The same registry feeds the Web @ candidates, tool directory, admission validation, and send-time authorization. A selected reference tells the Bot the real target; whether the model chooses to call agent_send remains model behavior, tested deterministically with fake adapters.
+
+V1 lists enabled receiving Bots on the same instance, excludes the sender, and advertises queue=true with steer/interrupt/conversation/completion=false. agent_send requires one exact handle and explicit message; only auto/queue with completion=none are supported. The receipt is queued after durable admission, not a completion or reply. Delivery runs through a private Conversation peer Topic and the existing dispatcher; it neither injects the target's human Direct history nor inherits human approval. ACK/depth/message budgets limit loops. Revoked or copied launch metadata cannot send.
+
+Group launches continue exposing only group_send. Restricted read-only launches still have no MCP, skills, or slash capability. Ordinary public Session messaging retains its existing path; product-owned hidden sessions are not ordinary public Endpoint targets. No Task/delegate API, offline mailbox, cross-instance Bot delivery, or replyTo support is introduced.

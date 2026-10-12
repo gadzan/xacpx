@@ -122,11 +122,13 @@ import {
   resolveConversationStorePath,
   type ConversationRuntime,
 } from "./conversations/conversation-composition";
+import { resolveProductionRouter } from "./conversations/production-router";
 import { ConversationError } from "./conversations/conversation-error";
 import { SessionWarmthTracker } from "./control/session-warmth-tracker";
 import { createTerminalService } from "./control/terminal-service";
 import { UploadStore } from "./control/upload-store.js";
 import { listAgentCatalog } from "./config/agent-catalog";
+import { resolveConfiguredAgentLaunch } from "./config/resolve-agent-command";
 import { createAcpxAgentRegistryLoader } from "./transport/agent-registry";
 import { startConfigWatcher } from "./config/config-watcher";
 import type {
@@ -1863,7 +1865,14 @@ export async function buildApp(
         return { runId: receipt.run.id, assignmentId: receipt.memberTurn.assignmentId!,
           memberTurnId: receipt.memberTurn.id, messageId: receipt.message.id };
       }),
-      agentMessaging,
+      agentMessaging: {
+        listReachable: async binding => binding.sourceHandle?.startsWith('direct-execution:')
+          ? conversations.withOperation(async () => conversations.directMessaging.listReachable(binding))
+          : agentMessaging.listReachable(binding),
+        send: async (binding, message) => binding.sourceHandle?.startsWith('direct-execution:')
+          ? conversations.withOperation(async () => conversations.directMessaging.send(binding, message))
+          : agentMessaging.send(binding, message),
+      },
       onSocketHardenError: (error) => {
         void logger.error(
           "orchestration.socket.chmod_failed",
@@ -1999,6 +2008,26 @@ export async function buildApp(
           name,
           driver: agentConfig.driver,
         })),
+      resolveCapabilityContext: (agent, workspace) => {
+        const agentConfig = config.agents[agent];
+        const workspaceConfig = config.workspaces[workspace];
+        if (!agentConfig || !workspaceConfig) {
+          return { error: "choose a configured agent and workspace" };
+        }
+        try {
+          const launch = resolveConfiguredAgentLaunch(agentConfig, config.transport);
+          return {
+            cwd: workspaceConfig.cwd,
+            driver: agentConfig.driver,
+            ...(agentConfig.settingsPolicy ? { settingsPolicy: agentConfig.settingsPolicy } : {}),
+            launch,
+            suggestions: agentConfig.modelCandidates ?? [],
+            ...(agentConfig.model ? { configuredModel: agentConfig.model } : {}),
+          };
+        } catch (error) {
+          return { error: error instanceof Error ? error.message : String(error) };
+        }
+      },
       catalog: () =>
         listAgentCatalog(config, { registry: loadAgentRegistry() }),
       create: async (name, driver) => {
@@ -2143,14 +2172,25 @@ export async function buildApp(
     },
   });
   controlRef = control;
+  const routerResolution = await resolveProductionRouter({ config, env: process.env });
+  void logger.info("conversations.router", "conversation router availability", {
+    status: routerResolution.availability.status,
+    configPath: routerResolution.availability.configPath,
+    ...(routerResolution.availability.status === "ready"
+      ? {}
+      : { code: routerResolution.availability.reason.code }),
+  });
   const conversations = await createConversationRuntime({
     config,
     state,
     stateStore: debouncedStateStore,
     sessions,
     control: conversationKernel(control),
+    messagingNodeId: messagingNodeIdentity.nodeId,
     sqlitePath: resolveConversationStorePath(paths.configPath),
     releaseOwnedSession: createProductionOwnedSessionRelease({ sessions, transport }),
+    ...(routerResolution.router ? { router: routerResolution.router } : {}),
+    routerAvailability: routerResolution.availability,
     onProductEvent: (event) => conversationKernel(control).emitConversationProduct(event),
     onSchedulingFailure: (error) => {
       const code = error instanceof ConversationError ? error.code : undefined;

@@ -142,6 +142,16 @@ export interface SessionCommandsSnapshotDto {
   commands: AgentCommandDto[];
 }
 
+/** Latest adapter slash commands for one Bot runtime on one Topic.
+ *  Restored on reconnect. The hidden session alias is not part of this row. */
+export interface ConversationCommandsSnapshotDto {
+  instanceId: string;
+  conversationId: string;
+  topicId: string;
+  botId: string;
+  commands: AgentCommandDto[];
+}
+
 /** Authoritative per-instance state sent on the same WebSocket immediately after
  *  a browser subscription is installed. Because the snapshot and later deltas
  *  share one ordered channel, the browser can safely replace stale pre-disconnect
@@ -150,6 +160,8 @@ export interface InstanceStateSnapshotDto {
   turns: LiveTurnSnapshotDto[];
   usage: SessionUsageSnapshotDto[];
   commands: SessionCommandsSnapshotDto[];
+  /** Absent on hubs that predate conversation slash restore. */
+  conversationCommands?: ConversationCommandsSnapshotDto[];
 }
 
 /** Dashboard instance row (HTTP `/api/instances` and web store seed). */
@@ -393,7 +405,8 @@ function validAgentCommand(value: unknown): boolean {
   const c = value as Record<string, unknown>;
   return typeof c.name === "string" && c.name.length > 0 && c.name.length <= 128
     && (c.description === undefined || (typeof c.description === "string" && c.description.length <= 4096))
-    && (c.hasInput === undefined || typeof c.hasInput === "boolean");
+    && (c.hasInput === undefined || typeof c.hasInput === "boolean")
+    && (c.kind === undefined || c.kind === "command" || c.kind === "skill");
 }
 
 /** Shared shape check for `scheduled` origins (turn-started events, state-sync turns
@@ -500,11 +513,22 @@ function validStateSnapshot(candidate: Record<string, unknown>): boolean {
       && validUsageCost(c.cost)
       && validUsageBreakdown(c.breakdown);
   })) return false;
-  return Array.isArray(candidate.commands) && candidate.commands.every((entry) => {
+  if (!Array.isArray(candidate.commands) || !candidate.commands.every((entry) => {
     if (typeof entry !== "object" || entry === null) return false;
     const c = entry as Record<string, unknown>;
     return c.instanceId === instanceId
       && typeof c.sessionAlias === "string"
+      && Array.isArray(c.commands)
+      && c.commands.every(validAgentCommand);
+  })) return false;
+  if (candidate.conversationCommands === undefined) return true;
+  return Array.isArray(candidate.conversationCommands) && candidate.conversationCommands.every((entry) => {
+    if (typeof entry !== "object" || entry === null) return false;
+    const c = entry as Record<string, unknown>;
+    return c.instanceId === instanceId
+      && typeof c.conversationId === "string"
+      && typeof c.topicId === "string"
+      && typeof c.botId === "string"
       && Array.isArray(c.commands)
       && c.commands.every(validAgentCommand);
   });
@@ -578,7 +602,10 @@ function validTopicSummary(value: unknown): boolean {
     && typeof c.updatedAt === "string"
     && validExecutionTarget(c.executionTarget)
     && (c.maxConcurrentMemberTurns === undefined || (typeof c.maxConcurrentMemberTurns === "number"
-      && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64));
+      && Number.isInteger(c.maxConcurrentMemberTurns) && c.maxConcurrentMemberTurns >= 1 && c.maxConcurrentMemberTurns <= 64))
+    && (c.contextGeneration === undefined || (typeof c.contextGeneration === "number"
+      && Number.isInteger(c.contextGeneration) && c.contextGeneration >= 1))
+    && (c.defaultDirect === undefined || c.defaultDirect === true);
 }
 
 function validConversationMessage(value: unknown): boolean {
@@ -955,6 +982,15 @@ export function validInstanceStateSync(p: unknown): boolean {
     return typeof commands.sessionAlias === "string"
       && Array.isArray(commands.commands) && commands.commands.every(validAgentCommand);
   })) return false;
+  if (c.conversationCommands !== undefined && (!Array.isArray(c.conversationCommands) || !c.conversationCommands.every((entry) => {
+    if (typeof entry !== "object" || entry === null) return false;
+    const row = entry as Record<string, unknown>;
+    return typeof row.conversationId === "string"
+      && typeof row.topicId === "string"
+      && typeof row.botId === "string"
+      && Array.isArray(row.commands)
+      && row.commands.every(validAgentCommand);
+  }))) return false;
   return Array.isArray(c.finishedOffline) && c.finishedOffline.every((f) => {
     if (typeof f !== "object" || f === null) return false;
     const finished = f as Record<string, unknown>;

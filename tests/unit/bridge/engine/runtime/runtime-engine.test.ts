@@ -1179,3 +1179,19 @@ test("buildEnsureParams passes state ROOT (not sessions dir) to runtime store", 
   // Sessions dir itself is unchanged for disk helpers
   expect(engine["sessionsDir"]()).toBe(sessionsDir);
 });
+
+
+test("cold commands read Runtime status under one worker owner without a prompt",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"rt-commands-"));let engine:RuntimeEngine|undefined;
+ try{
+  const entry=join(dir,"worker.mjs"),calls=join(dir,"calls.jsonl");
+  await writeFile(entry,[
+   "import {appendFileSync} from 'node:fs';import {createInterface} from 'node:readline';",
+   "createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);appendFileSync("+JSON.stringify(calls)+",m.method+'\\n');const result=m.method==='status'?{availableCommands:[{name:'review',description:'runtime adapter',kind:'skill'}]}:m.method==='ensure'?{sessionKey:m.params.sessionKey}:{};process.stdout.write(JSON.stringify({id:m.id,ok:true,result})+'\\n');if(m.method==='shutdown')process.exit(0);});"
+  ].join("\n"));
+  const stateDir=join(dir,"state","sessions");await mkdir(stateDir,{recursive:true});
+  engine=new RuntimeEngine({workerEntryPath:entry,permissionMode:"approve-all",stateDir,durableRootDir:join(dir,"durable")});
+  expect(await engine.prepareSessionCommands(sessionInput)).toEqual([{name:"review",description:"runtime adapter",kind:"skill"}]);
+  const methods=(await readFile(calls,"utf8")).trim().split("\n");expect(methods).toEqual(["ensure","status"]);
+ }finally{await engine?.shutdown();await rm(dir,{recursive:true,force:true});}
+},15000);

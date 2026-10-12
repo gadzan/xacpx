@@ -28,6 +28,7 @@ import { isProcessAlive } from "../daemon/daemon-files";
 import { runAgentSessionList } from "../transport/agent-session-list";
 import { CODEX_AGENT_NAME, codexSubagentPredicate } from "../transport/codex-subagent-filter";
 import { deleteAcpxSessionFiles } from "../transport/acpx-session-files";
+import { CAPABILITY_PROBE_BUDGET_MS, executeCapabilityProbe } from "../agents/capability-probe";
 import {
   CommandTimeoutError,
   DEFAULT_MANAGEMENT_COMMAND_TIMEOUT_MS,
@@ -39,8 +40,7 @@ import type {
   EnsureSessionProgress,
   MissingOptionalDepErrorData,
 } from "../transport/acpx-bridge/acpx-bridge-protocol";
-import type { AgentSessionListResult, PromptMediaInput } from "../transport/types";
-import type { SessionEffortState } from "../transport/types";
+import type { AgentCapabilityProbeRequest, AgentCapabilityProbeResult, AgentSessionListResult, PromptMediaInput, SessionEffortState } from "../transport/types";
 import type { ToolEventMode } from "../transport/tool-event-mode.js";
 import type { PlanEntry, ToolUseEvent } from "../channels/types.js";
 import {
@@ -881,6 +881,15 @@ export class BridgeRuntime {
     return {};
   }
 
+  async prepareSessionCommands(input: import('./engine/bridge-engine').EngineSessionInput): Promise<import('../transport/types').AgentCommand[] | undefined> {
+    await this.ensureSession(input);
+    const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs(input, ['status','-s',input.name], {format:'json'}));
+    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {timeoutMs:this.managementCommandTimeoutMs(),stage:'get-session-model'}));
+    if(result.code !== 0) throw new Error('command advertisement read failed');
+    const raw = JSON.parse(result.stdout) as {availableCommands?: import('../transport/types').AgentCommand[]};
+    return raw.availableCommands;
+  }
+
   async getSessionModel(input: {
     agent: string;
     agentCommand?: string;
@@ -915,6 +924,30 @@ export class BridgeRuntime {
     } catch {
       return { available: [] };
     }
+  }
+
+  async probeAgentCapabilities(input: AgentCapabilityProbeRequest): Promise<AgentCapabilityProbeResult> {
+    const budgetMs = Math.min(this.sessionInitTimeoutMs(), CAPABILITY_PROBE_BUDGET_MS);
+    return executeCapabilityProbe({
+      run: async (stage, tail, timeoutMs) => {
+        const spawnSpec = resolveSpawnCommand(this.command, this.buildSessionArgs({
+          agent: input.agent,
+          cwd: input.cwd,
+          agentCommand: input.agentCommand,
+          acpxAgent: input.acpxAgent,
+          rawCommand: input.rawCommand,
+          ...(input.agentArgv ? { agentArgv: [...input.agentArgv] } : {}),
+        }, tail, {
+          format: "json",
+          authPolicy: "fail",
+        }));
+        return await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+          timeoutMs,
+          stage,
+        }));
+      },
+      deleteRecord: (acpxRecordId) => deleteAcpxSessionFiles({ acpxRecordId }),
+    }, budgetMs);
   }
 
   async getSessionEffort(input: {
@@ -1203,7 +1236,7 @@ export class BridgeRuntime {
       model?: string;
     },
     tail: string[],
-    options: { verbose?: boolean; format?: "quiet" | "json" } = {},
+    options: { verbose?: boolean; format?: "quiet" | "json"; authPolicy?: "skip" | "fail" } = {},
   ): string[] {
     return sharedBuildSessionArgs(
       {

@@ -8,6 +8,7 @@ import {
   MSG,
   parseControlPayload,
   type ControlEventDto,
+  type ConversationCommandsSnapshotDto,
   type InteractionResponseDto,
   type LiveTurnSnapshotDto,
   type PublishedAgentEndpointDto,
@@ -63,6 +64,8 @@ export interface AppDeps {
   sessionUsage?: (instanceId: string) => SessionUsageSnapshotDto[];
   /** Snapshot the latest per-session agent-advertised commands for an instance (for the active-turns endpoint). */
   sessionCommands?: (instanceId: string) => SessionCommandsSnapshotDto[];
+  /** Snapshot adapter slash commands for Bot runtimes, keyed by conversation, topic, and bot. */
+  conversationCommands?: (instanceId: string) => ConversationCommandsSnapshotDto[];
   webRoot?: string;
   sessionTtlMs?: number;
   pairingTtlMs?: number;
@@ -622,12 +625,14 @@ export function createApp(deps: AppDeps): Hono<Vars> {
     const turns: LiveTurnSnapshotDto[] = [];
     const usage: SessionUsageSnapshotDto[] = [];
     const commands: SessionCommandsSnapshotDto[] = [];
+    const conversationCommands: ConversationCommandsSnapshotDto[] = [];
     for (const inst of deps.instances.listByAccount(account.id)) {
       for (const t of deps.activeTurns?.(inst.id) ?? []) turns.push(t);
       for (const u of deps.sessionUsage?.(inst.id) ?? []) usage.push(u);
       for (const cmd of deps.sessionCommands?.(inst.id) ?? []) commands.push(cmd);
+      for (const row of deps.conversationCommands?.(inst.id) ?? []) conversationCommands.push(row);
     }
-    return c.json({ turns, usage, commands });
+    return c.json({ turns, usage, commands, conversationCommands });
   });
 
   app.get("/api/instances/:id/sessions/:alias/messages/:messageId", (c) => {

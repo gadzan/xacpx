@@ -36,6 +36,33 @@ test("loadInstances keeps capabilities from the dashboard DTO (missing → empty
   expect(store.instances[1]?.capabilities ?? []).toEqual([]);
 });
 
+test("loadRouterAvailability keeps disabled distinct from a boolean", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+    result: {
+      status: "disabled-by-config",
+      configPath: "conversations.router",
+      reason: { code: "disabled", message: "Automatic collaboration is off." },
+    },
+  }), { status: 200 })));
+  const store = useInstancesStore();
+  await store.loadRouterAvailability("i1");
+  expect(store.routerAvailabilityFor("i1")).toEqual({
+    status: "disabled-by-config",
+    configPath: "conversations.router",
+    reason: { code: "disabled", message: "Automatic collaboration is off." },
+  });
+});
+
+test("loadRouterAvailability does not treat a boolean as ready", async () => {
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ result: true }), { status: 200 })));
+  const store = useInstancesStore();
+  await store.loadRouterAvailability("i1");
+  expect(store.routerAvailabilityFor("i1")).toMatchObject({
+    status: "failed",
+    reason: { code: "malformed-capabilities" },
+  });
+});
+
 test("supportsRmuxTerminal requires online and both RMUX capabilities", () => {
   const both = [RELAY_CAPABILITIES.terminalRmuxRecoveryV1, RELAY_CAPABILITIES.terminalMultiViewV1];
   expect(supportsRmuxTerminal({ online: true, capabilities: both })).toBe(true);
@@ -383,68 +410,36 @@ describe("agent catalog + management actions", () => {
   });
 });
 
-describe("listModelSuggestions adapter-consensus gate", () => {
+describe("getAgentCapabilities", () => {
   beforeEach(() => setActivePinia(createPinia()));
 
-  function seedSessions(sessions: unknown[]) {
+  test("parses a ready payload and keeps the model id intact", async () => {
     const store = useInstancesStore();
-    store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: sessions as never, sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] }];
-    return store;
-  }
-
-  test("reuses a single same-agent+workspace session's advertised models", async () => {
-    const store = seedSessions([
-      { alias: "a", agent: "codex", workspace: "w", transportSession: "t", running: true, archived: false, agentCommand: "npx codex-acp@new" },
-    ]);
+    store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] }];
     const { api } = await import("../api/client");
-    vi.spyOn(api, "rpc").mockResolvedValue({ current: "gpt-5.5[high]", available: ["gpt-5.5[high]", "gpt-5.5[low]"] });
-    await expect(store.listModelSuggestions("i1", "codex", "w")).resolves.toEqual(["gpt-5.5[high]", "gpt-5.5[low]"]);
+    vi.spyOn(api, "rpc").mockResolvedValue({
+      status: "ready",
+      source: "session",
+      fetchedAt: "2026-10-09T00:00:00.000Z",
+      models: [{ modelId: "gpt-5.5[high]", name: "gpt-5.5[high]", source: "adapter" }],
+      suggestions: [],
+      efforts: { status: "known", options: [], },
+      effect: { kind: "default" },
+    });
+    const state = await store.getAgentCapabilities("i1", { agent: "codex", workspace: "w" });
+    expect(state.status).toBe("ready");
+    if (state.status === "ready") expect(state.models[0]?.modelId).toBe("gpt-5.5[high]");
     vi.restoreAllMocks();
   });
 
-  test("suppresses suggestions when same-agent sessions run different adapters", async () => {
-    const store = seedSessions([
-      { alias: "old", agent: "codex", workspace: "w", transportSession: "t1", running: true, archived: false, agentCommand: "npx @zed-industries/codex-acp@0.10.0" },
-      { alias: "new", agent: "codex", workspace: "w", transportSession: "t2", running: true, archived: false, agentCommand: "npx @agentclientprotocol/codex-acp@^0.0.44" },
-    ]);
+  test("an old model-list payload is an error, not an empty catalog", async () => {
+    const store = useInstancesStore();
+    store.instances = [{ id: "i1", name: "pc", online: true, lastSeenAt: null, sessions: [], sessionsLoaded: true, agents: [], workspaces: [], agentCatalog: [] }];
     const { api } = await import("../api/client");
-    const rpc = vi.spyOn(api, "rpc");
-    await expect(store.listModelSuggestions("i1", "codex", "w")).resolves.toEqual([]);
-    // Ambiguous adapter → never query a live session for its (wrong-adapter) models.
-    expect(rpc).not.toHaveBeenCalled();
-    vi.restoreAllMocks();
-  });
-
-  test("reuses when same-agent sessions share one adapter", async () => {
-    const store = seedSessions([
-      { alias: "a", agent: "codex", workspace: "w", transportSession: "t1", running: true, archived: false, agentCommand: "npx codex-acp@new" },
-      { alias: "b", agent: "codex", workspace: "w", transportSession: "t2", running: false, archived: false, agentCommand: "npx codex-acp@new" },
-    ]);
-    const { api } = await import("../api/client");
-    vi.spyOn(api, "rpc").mockResolvedValue({ current: "gpt-5.5[high]", available: ["gpt-5.5[high]"] });
-    await expect(store.listModelSuggestions("i1", "codex", "w")).resolves.toEqual(["gpt-5.5[high]"]);
-    vi.restoreAllMocks();
-  });
-
-  test("ignores archived sessions when judging adapter consensus", async () => {
-    const store = seedSessions([
-      { alias: "live", agent: "codex", workspace: "w", transportSession: "t1", running: true, archived: false, agentCommand: "npx codex-acp@new" },
-      { alias: "old", agent: "codex", workspace: "w", transportSession: "t2", running: false, archived: true, agentCommand: "npx @zed-industries/codex-acp@0.10.0" },
-    ]);
-    const { api } = await import("../api/client");
-    vi.spyOn(api, "rpc").mockResolvedValue({ current: "gpt-5.5[high]", available: ["gpt-5.5[high]"] });
-    await expect(store.listModelSuggestions("i1", "codex", "w")).resolves.toEqual(["gpt-5.5[high]"]);
-    vi.restoreAllMocks();
-  });
-
-  test("reuses when adapter is unknown on all sessions (legacy state, no field)", async () => {
-    const store = seedSessions([
-      { alias: "a", agent: "codex", workspace: "w", transportSession: "t1", running: true, archived: false },
-      { alias: "b", agent: "codex", workspace: "w", transportSession: "t2", running: false, archived: false },
-    ]);
-    const { api } = await import("../api/client");
-    vi.spyOn(api, "rpc").mockResolvedValue({ current: "gpt-5.5[high]", available: ["gpt-5.5[high]"] });
-    await expect(store.listModelSuggestions("i1", "codex", "w")).resolves.toEqual(["gpt-5.5[high]"]);
+    vi.spyOn(api, "rpc").mockResolvedValue({ current: "gpt-5.5[high]", available: [] });
+    const state = await store.getAgentCapabilities("i1", { agent: "codex", workspace: "w" });
+    expect(state.status).toBe("error");
+    if (state.status === "error") expect(state.reason.code).toBe("stale-response");
     vi.restoreAllMocks();
   });
 });

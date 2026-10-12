@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, flushPromises } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
+import { needsSetupCapability, readyCapability } from "@ganglion/xacpx-relay-protocol";
 import NewSessionDialog from "../components/NewSessionDialog.vue";
 import { useInstancesStore } from "../stores/instances";
 import { i18n } from "../i18n";
@@ -11,7 +12,7 @@ interface DialogOptions {
   agentCatalog?: Array<{ driver: string; configured: boolean; installed: "builtin" | "yes" | "unknown" }>;
   sessions?: Array<{ alias: string }>;
   nativeSessions?: Array<{ sessionId: string; title?: string | null; updatedAt?: string; cwd?: string }>;
-  modelSuggestions?: string[];
+  capabilityModels?: string[];
 }
 
 function mountDialog(opts: DialogOptions = {}) {
@@ -31,7 +32,18 @@ function mountDialog(opts: DialogOptions = {}) {
   // Returns true (alias accepted); duplicate-alias handling is covered by its own test.
   vi.spyOn(store, "beginSessionCreation").mockReturnValue(true);
   vi.spyOn(store, "listNativeSessions").mockResolvedValue(opts.nativeSessions ?? []);
-  vi.spyOn(store, "listModelSuggestions").mockResolvedValue(opts.modelSuggestions ?? []);
+  vi.spyOn(store, "getAgentCapabilities").mockResolvedValue(
+    opts.capabilityModels
+      ? readyCapability("session", opts.capabilityModels.map((modelId) => ({ modelId })), {
+          fetchedAt: "2026-10-09T00:00:00.000Z",
+          efforts: { status: "unavailable" },
+        })
+      : needsSetupCapability(
+          { code: "discovery-available", message: "no saved model list" },
+          "Fetch the model list.",
+          { fetchedAt: "2026-10-09T00:00:00.000Z" },
+        ),
+  );
   // Stub <Teleport> so the dialog renders in-place and wrapper.find() reaches it
   // (in the app it teleports to body to escape the mobile drawer's transform).
   const wrapper = mount(NewSessionDialog, {
@@ -231,19 +243,17 @@ describe("NewSessionDialog", () => {
       workspaces: [{ name: "backend", cwd: "/b" }],
       agentCatalog: [{ driver: "codex", configured: true, installed: "builtin" }],
       sessions: [],
-      modelSuggestions: ["gpt-5.2[high]", "gpt-5.2[low]"],
+      capabilityModels: ["gpt-5.2[high]", "gpt-5.2[low]"],
     });
     await flushPromises();
     await wrapper.get('[data-test="ns-model"]').trigger("focus");
     const list = wrapper.find('[data-test="ns-model-list"]');
     expect(list.exists()).toBe(true);
-    // "default" is always offered first, then the suggestions.
-    const items = list.findAll("li");
-    expect(items).toHaveLength(3);
-    expect(items[0].text()).toContain("default");
-    expect(items[1].text()).toBe("gpt-5.2[high]");
-    expect(items[2].text()).toBe("gpt-5.2[low]");
-    await items[1].trigger("mousedown");
+    const items = list.findAll('[data-test="model-option"]');
+    expect(items).toHaveLength(2);
+    expect(items[0].attributes("data-model-id")).toBe("gpt-5.2[high]");
+    expect(items[1].attributes("data-model-id")).toBe("gpt-5.2[low]");
+    await items[0].trigger("mousedown");
     await wrapper.get('[data-test="ns-create"]').trigger("click");
     await flushPromises();
     expect(store.beginSessionCreation).toHaveBeenCalledWith("i1", "backend-codex", "codex", "backend", undefined, "gpt-5.2[high]");

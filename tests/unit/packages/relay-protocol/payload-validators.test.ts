@@ -317,3 +317,25 @@ test("parseControlPayload validates group RPC shapes and rejects junk isolation"
   })).not.toBeNull();
   expect(parseControlPayload(MSG.groupTopicsTeardown, { conversationId: "conversation_g" })).toBeNull();
 });
+
+test("bot removal payloads keep the request id and preview revision", () => {
+  expect(parseControlPayload(MSG.botsRemovePreview, { id: "bot_a" })?.id).toBe("bot_a");
+  expect(parseControlPayload(MSG.botsRemovePreview, {})).toBeNull();
+  const removal = parseControlPayload(MSG.botsRemove, {
+    id: "bot_a",
+    requestId: "req-1",
+    previewRevision: "abc123",
+    clearDirectHistory: true,
+    releaseDirectBindings: false,
+  });
+  expect(removal).toEqual({
+    id: "bot_a",
+    requestId: "req-1",
+    previewRevision: "abc123",
+    clearDirectHistory: true,
+    releaseDirectBindings: false,
+  });
+  expect(parseControlPayload(MSG.botsRemove, { id: "bot_a", requestId: "req-1" })).toBeNull();
+  expect(parseControlPayload(MSG.lifecycleOperationsGet, { id: "bot-remove:req-1" })?.id).toBe("bot-remove:req-1");
+  expect(parseControlPayload(MSG.lifecycleOperationsGet, { id: "" })).toBeNull();
+});

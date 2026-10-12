@@ -12,7 +12,7 @@ import { validateWeacpxPlugin } from "../../../../src/plugins/validate-plugin";
 
 test("@ganglion/xacpx-channel-discord exports a valid plugin definition", () => {
   const validated = validateWeacpxPlugin(plugin, "@ganglion/xacpx-channel-discord", {
-    currentXacpxVersion: "0.24.7-beta.0",
+    currentXacpxVersion: "0.24.8-beta.0",
   });
 
   expect(validated.name).toBe("@ganglion/xacpx-channel-discord");
@@ -32,7 +32,7 @@ test("discord's core floor covers the runtime plugin-api exports it imports", ()
   const pkg = JSON.parse(readFileSync("packages/channel-discord/package.json", "utf8")) as {
     peerDependencies: { xacpx: string };
   };
-  expect(pkg.peerDependencies.xacpx).toBe(">=0.24.7-beta.0");
+  expect(pkg.peerDependencies.xacpx).toBe(">=0.24.8-beta.0");
 
   const source = readFileSync("packages/channel-discord/src/elicitation-limits.ts", "utf8");
   expect(source).toContain('from "xacpx/plugin-api"');
@@ -41,7 +41,7 @@ test("discord's core floor covers the runtime plugin-api exports it imports", ()
   // A core predating the export is rejected before the plugin is evaluated.
   expect(() => validateWeacpxPlugin(plugin, "@ganglion/xacpx-channel-discord", { currentXacpxVersion: "0.23.0" }))
     .toThrow();
-  expect(() => validateWeacpxPlugin(plugin, "@ganglion/xacpx-channel-discord", { currentXacpxVersion: "0.24.7-beta.0" }))
+  expect(() => validateWeacpxPlugin(plugin, "@ganglion/xacpx-channel-discord", { currentXacpxVersion: "0.24.8-beta.0" }))
     .not.toThrow();
 });
 

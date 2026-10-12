@@ -7,6 +7,7 @@ export function replaceRuntimeState(target: AppState, source: AppState): void {
   target.orchestration = source.orchestration;
   target.scheduled_tasks = source.scheduled_tasks;
   target.bots = source.bots;
+  target.bot_removals = source.bot_removals;
   target.conversations = source.conversations;
   target.conversation_topics = source.conversation_topics;
   target.bot_runtime_bindings = source.bot_runtime_bindings;

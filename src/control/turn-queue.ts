@@ -89,6 +89,8 @@ export interface PeerInterruptEvent {
 
 export interface SubmitParams {
   groupExecutionToken?: string;
+  directExecutionToken?: string;
+  directMentionContext?: import("../conversations/direct-input-metadata").ResolvedDirectMention[];
   chatKey: string;
   sessionAlias: string;
   boundSessionAlias?: string;
@@ -711,6 +713,7 @@ export class TurnQueue {
           chatKey: params.chatKey,
           sessionAlias: params.sessionAlias,
           boundSessionAlias: params.boundSessionAlias,
+          ...(params.directExecutionToken ? { directExecutionToken: params.directExecutionToken, directMentionContext: params.directMentionContext } : {}),
           ...(params.groupExecutionToken ? { groupExecutionToken: params.groupExecutionToken } : {}),
           text: params.text,
           senderId: params.senderId,

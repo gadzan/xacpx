@@ -26,7 +26,9 @@ import type {
   UsageCostDto,
   WorkspaceDto,
   BotDetailDto,
+  BotRemovalPreviewDto,
   BotSummaryDto,
+  LifecycleOperationDto,
   ConversationDetailDto,
   ConversationHistoryResponseDto,
   ConversationPromptResponseDto,
@@ -39,6 +41,7 @@ import type {
   GroupDetailDto,
   GroupSummaryDto,
   GroupTopicCreateTargetDto,
+  TopicImpactDto,
   TopicSummaryDto,
 } from "./dtos.js";
 
@@ -106,6 +109,8 @@ export const MSG = {
   gitWorktreeCreate: "control.git.worktree.create",
   upload: "control.upload",
   sessionModelGet: "control.session.model.get",
+  agentsCapabilitiesGet: "control.agents.capabilities.get",
+  conversationRouterGet: "control.conversations.router.get",
   sessionModelSet: "control.session.model.set",
   sessionEffortGet: "control.session.effort.get",
   sessionEffortSet: "control.session.effort.set",
@@ -143,10 +148,19 @@ export const MSG = {
   botsCreate: "control.bots.create",
   botsUpdate: "control.bots.update",
   botsDelete: "control.bots.delete",
+  botsRemovePreview: "control.bots.remove.preview",
+  botsRemove: "control.bots.remove",
+  lifecycleOperationsGet: "control.lifecycle.operations.get",
   conversationsList: "control.conversations.list",
   conversationsGet: "control.conversations.get",
   topicsList: "control.topics.list",
   topicsCreate: "control.topics.create",
+  topicsUpdate: "control.topics.update",
+  topicsArchive: "control.topics.archive",
+  topicsRestore: "control.topics.restore",
+  topicsTeardown: "control.topics.teardown",
+  topicsClear: "control.topics.clear",
+  topicsPreview: "control.topics.preview",
   groupsCreate: "control.groups.create",
   groupsUpdate: "control.groups.update",
   groupsDelete: "control.groups.delete",
@@ -155,6 +169,7 @@ export const MSG = {
   groupTopicsCreate: "control.group.topics.create",
   groupTopicsArchive: "control.group.topics.archive",
   groupTopicsTeardown: "control.group.topics.teardown",
+  conversationCompletionsGet: "control.conversation.completions.get",
   conversationPrompt: "control.conversation.prompt",
   conversationPromptWithPolicy: "control.conversation.prompt-with-policy",
   conversationWorktree: "control.conversation.worktree",
@@ -321,6 +336,17 @@ export interface InstanceStateSyncPayload {
     breakdown?: UsageBreakdownDto;
   }>;
   commands: Array<{ sessionAlias: string; commands: AgentCommandDto[] }>;
+  /**
+   * Adapter slash advertisements for product-owned Bot runtimes.
+   * Keyed by conversation, topic, and bot. Absent on older connectors.
+   * These rows are not ordinary Session commands and must not be keyed by alias.
+   */
+  conversationCommands?: Array<{
+    conversationId: string;
+    topicId: string;
+    botId: string;
+    commands: AgentCommandDto[];
+  }>;
   /** Turns that finished and are still awaiting the hub's persistence ack — this
    *  includes turns that finished while the hub was unreachable AND live turns that
    *  finished moments ago (the connector forwards the live `turn-finished` and keeps
@@ -523,6 +549,28 @@ export interface BotsUpdateResult {
 export interface BotsDeletePayload {
   id: string;
 }
+export interface BotsRemovePreviewPayload {
+  id: string;
+}
+export interface BotsRemovePreviewResult {
+  impact: BotRemovalPreviewDto;
+}
+export interface BotsRemovePayload {
+  id: string;
+  requestId: string;
+  previewRevision: string;
+  clearDirectHistory?: boolean;
+  releaseDirectBindings?: boolean;
+}
+export interface BotsRemoveResult {
+  operation: LifecycleOperationDto;
+}
+export interface LifecycleOperationsGetPayload {
+  id: string;
+}
+export interface LifecycleOperationsGetResult {
+  operation: LifecycleOperationDto;
+}
 export interface ConversationsListPayload {
   botId?: string;
 }
@@ -548,6 +596,58 @@ export interface TopicsCreatePayload {
 }
 export interface TopicsCreateResult {
   topic: TopicSummaryDto;
+}
+export interface TopicsUpdatePayload {
+  conversationId: string;
+  topicId: string;
+  title: string;
+}
+export interface TopicsUpdateResult {
+  topic: TopicSummaryDto;
+}
+export interface TopicsArchivePayload {
+  conversationId: string;
+  topicId: string;
+}
+export interface TopicsArchiveResult {
+  topic: TopicSummaryDto;
+}
+export interface TopicsRestorePayload {
+  conversationId: string;
+  topicId: string;
+}
+export interface TopicsRestoreResult {
+  topic: TopicSummaryDto;
+}
+export interface TopicsTeardownPayload {
+  conversationId: string;
+  topicId: string;
+  requestId: string;
+  releaseBindings?: boolean;
+}
+export interface TopicsTeardownResult {
+  ok: true;
+  requestId: string;
+}
+export interface TopicsClearPayload {
+  conversationId: string;
+  topicId: string;
+  requestId: string;
+  confirm: true;
+  releaseBindings?: boolean;
+}
+export interface TopicsClearResult {
+  ok: true;
+  requestId: string;
+  contextGeneration: number;
+  topic: TopicSummaryDto;
+}
+export interface TopicsPreviewPayload {
+  conversationId: string;
+  topicId: string;
+}
+export interface TopicsPreviewResult {
+  impact: TopicImpactDto;
 }
 export interface GroupsCreatePayload {
   title: string;
@@ -595,6 +695,7 @@ export interface GroupTopicsTeardownPayload {
   topicId: string;
 }
 export interface ConversationPromptPayload {
+  agentMentions?: import("./agent-mentions.js").AgentMention[];
   conversationId: string;
   topicId: string;
   requestId: string;
@@ -1021,6 +1122,19 @@ export interface FsWriteResult {
 export interface SessionModelGetPayload {
   chatKey: string;
   sessionAlias: string;
+}
+
+/** Configured agent and workspace, plus an optional product bot id. No session alias. */
+export interface AgentsCapabilitiesGetPayload {
+  agent: string;
+  workspace: string;
+  botId?: string;
+  probe?: boolean;
+}
+
+/** Empty read. The instance returns its startup router availability. */
+export interface ConversationRouterGetPayload {
+  readonly __empty?: never;
 }
 
 export interface SessionModelSetPayload {

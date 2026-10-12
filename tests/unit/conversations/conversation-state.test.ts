@@ -95,6 +95,11 @@ test("replaceRuntimeState copies Bot collections and leaves native session cache
     createdAt: NOW,
     updatedAt: NOW,
   };
+  source.bot_removals.bot_a = {
+    botId: "bot_a",
+    phase: "deleting",
+    updatedAt: NOW,
+  };
   source.conversations.conv_a = {
     id: "conv_a",
     kind: "bot",
@@ -119,6 +124,7 @@ test("replaceRuntimeState copies Bot collections and leaves native session cache
   replaceRuntimeState(target, source);
 
   expect(target.bots.bot_a?.name).toBe("Reviewer");
+  expect(target.bot_removals.bot_a?.phase).toBe("deleting");
   expect(target.conversations.conv_a?.kind).toBe("bot");
   expect(target.native_session_lists["wx:live"]?.agent).toBe("claude");
   expect(target.native_session_lists["wx:user"]).toBeUndefined();

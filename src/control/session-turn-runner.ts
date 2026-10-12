@@ -1,3 +1,4 @@
+import { bindDirectExecutionMetadata } from "../conversations/group-execution-metadata";
 import path from "node:path";
 import type { ControlServiceDeps } from "./control-service";
 import type { ConversationTurnCorrelation } from "./conversation-control-dtos";
@@ -10,6 +11,7 @@ import { ToolEventBatcher } from "./tool-event-batcher";
 import type { AgentMessageCompletion } from "../orchestration/agent-messaging-types";
 import type { PermissionInteractionOrigin } from "../permissions/permission-types.js";
 import { buildPeerCompletionPrompt } from "../orchestration/agent-message-completion";
+import { commandEpoch, rememberAdvertisedCommands } from "../conversations/advertised-commands";
 import { markTrustedConversationAgentRequest } from "../conversations/trusted-conversation-agent-request";
 import {
   toErrorMessage,
@@ -20,6 +22,8 @@ import {
 
 export interface TurnRequest {
   groupExecutionToken?: string;
+  directExecutionToken?: string;
+  directMentionContext?: import("../conversations/direct-input-metadata").ResolvedDirectMention[];
   chatKey: string;
   sessionAlias: string;
   boundSessionAlias?: string;
@@ -319,7 +323,9 @@ export class SessionTurnRunner {
         if (!mention.handle || seen.has(mention.handle)) continue;
         seen.add(mention.handle);
         try {
-          const target = await this.resolveMentionTarget(mention.handle);
+          const target = req.directMentionContext !== undefined
+            ? req.directMentionContext.find(m => m.handle === mention.handle)
+            : await this.resolveMentionTarget(mention.handle);
           if (target) {
             resolvedTargets.push(target);
           }
@@ -355,14 +361,22 @@ export class SessionTurnRunner {
         });
       },
     }, (event) => event.toolCallId, (event) => event.status, (event) => toolEventPayloadSize(event));
+    const advertisementIdentity=req.conversation?.botId ? {conversationId:req.conversation.conversationId,topicId:req.conversation.topicId,botId:req.conversation.botId} : undefined;
+    const advertisementEpoch=advertisementIdentity ? commandEpoch(advertisementIdentity) : undefined;
     let releaseGroupMetadata: (() => void) | undefined;
     try {
       const metadata = {
         ...buildControlMetadata(req.senderId, req.isOwner, req.boundSessionAlias ?? (req.conversation ? internalAlias : undefined), req.preserveCoordinatorRoute, req.turnOrigin),
         ...(req.permissionChatKey ? { permissionChatKey: req.permissionChatKey } : {}),
         ...(req.senderName ? { senderName: req.senderName } : {}),
+        ...(req.directExecutionToken ? { directExecutionToken: req.directExecutionToken } : {}),
         ...(req.groupExecutionToken ? { groupExecutionToken: req.groupExecutionToken } : {}),
       };
+      if (req.directExecutionToken && req.conversation && req.boundSessionAlias) {
+        const owned = this.deps.sessions.getLogicalSessionRecord?.(req.boundSessionAlias);
+        if (!owned?.logical_session_id) throw new Error("Direct execution lost logical identity");
+        releaseGroupMetadata = bindDirectExecutionMetadata(metadata, {...req.conversation, sessionAlias: req.boundSessionAlias, logicalSessionId: owned.logical_session_id, executionToken: req.directExecutionToken});
+      }
       if (req.groupExecutionToken && req.conversation && req.boundSessionAlias) {
         const owned = this.deps.sessions.getLogicalSessionRecord?.(req.boundSessionAlias);
         if (!owned?.logical_session_id) throw new Error("Group execution lost its logical session identity");
@@ -418,7 +432,16 @@ export class SessionTurnRunner {
           });
         },
         onCommands: (commands) => {
+          if(signal.aborted || advertisementIdentity && commandEpoch(advertisementIdentity)!==advertisementEpoch)return;
           onActivity?.();
+          const correlation = req.conversation;
+          if (correlation?.botId) {
+            rememberAdvertisedCommands({
+              conversationId: correlation.conversationId,
+              topicId: correlation.topicId,
+              botId: correlation.botId,
+            }, commands);
+          }
           this.deps.events.emit({
             type: "agent-commands",
             chatKey: req.chatKey,

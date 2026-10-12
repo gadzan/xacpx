@@ -905,7 +905,7 @@ function normalizeAgentCommands(value: unknown): AgentCommand[] {
     const name = readString(entry, "name");
     if (!name) continue;
     const description = readString(entry, "description");
-    out.push({ name, ...(description ? { description } : {}), hasInput: entry.input != null });
+    out.push({ name, ...(description ? { description } : {}), hasInput: entry.input != null, ...(entry.kind === 'skill' || entry.kind === 'command' ? { kind: entry.kind } : {}) });
   }
   return out;
 }

@@ -1,29 +1,34 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { useI18n } from "vue-i18n";
 import {
   Bot,
   ChevronDown,
   Folder,
-  MessageSquare,
   Pencil,
-  Plus,
   Trash2,
   X,
 } from "lucide-vue-next";
 import { useDirectBotsStore } from "../stores/direct-bots";
+import { useGroupsStore } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
 import type { InteractionValueDto } from "@ganglion/xacpx-relay-protocol";
-import { confirm } from "../lib/use-confirm";
 import AgentIcon from "./AgentIcon.vue";
 import ConversationMessageList from "./ConversationMessageList.vue";
 import ConversationPromptInput from "./ConversationPromptInput.vue";
 import BotDialog from "./BotDialog.vue";
+import BotRemovalDialog from "./BotRemovalDialog.vue";
 import NewTopicDialog from "./NewTopicDialog.vue";
+import TopicManager from "./TopicManager.vue";
 
-const { t } = useI18n();
+const emit = defineEmits<{
+  navigateBot: [instanceId: string, botId: string];
+  navigateGroup: [instanceId: string, groupId: string];
+}>();
+
 const directBotsStore = useDirectBotsStore();
+const groupsStore = useGroupsStore();
 const instancesStore = useInstancesStore();
+const navOpen = ref(false);
 
 const bot = computed(() => directBotsStore.currentBot);
 const instance = computed(() =>
@@ -38,39 +43,82 @@ const botDriver = computed(() => {
 const editDialogOpen = ref(false);
 const newTopicDialogOpen = ref(false);
 
-const botHasRuntime = computed(() =>
-  (bot.value && "hasRuntime" in bot.value && bot.value.hasRuntime) === true,
-);
+function requireTopicContext(): { instanceId: string; conversationId: string } | null {
+  const instanceId = directBotsStore.instanceId;
+  const conversationId = directBotsStore.activeConversationId;
+  if (!instanceId || !conversationId) return null;
+  return { instanceId, conversationId };
+}
 
-async function handleDeleteBot(): Promise<void> {
-  if (!bot.value || !directBotsStore.instanceId) return;
-  // Fail-closed backends reject deleting a used Bot (bot_in_use).
-  // Teardown/rebind is a later lifecycle surface, so say so before confirming
-  // instead of failing after.
-  if (botHasRuntime.value) {
-    directBotsStore.generalError = t("bot.lifecycle.deleteBlocked");
-    return;
-  }
-  const confirmed = await confirm({
-    title: t("bot.delete.confirmTitle"),
-    message: t("bot.delete.confirmMessage", { name: bot.value.name }),
-    confirmLabel: t("common.delete"),
-    tone: "danger",
-  });
-  if (!confirmed) return;
+async function previewTopic(topicId: string) {
+  const ctx = requireTopicContext();
+  if (!ctx) throw new Error("topic unavailable");
+  return directBotsStore.previewTopic(ctx.instanceId, ctx.conversationId, topicId);
+}
 
-  try {
-    await directBotsStore.deleteBot(directBotsStore.instanceId, bot.value.id);
-  } catch (err: unknown) {
-    // A Bot with only a persisted Conversation row (topic created, never run)
-    // has hasRuntime=false yet still fails closed backend-side (bot_in_use).
-    // Map that code to the explanatory deleteBlocked copy instead of a raw
-    // backend message.
-    const code = err instanceof Error && "code" in err ? String(err.code ?? "") : "";
-    directBotsStore.generalError = code === "bot_in_use"
-      ? t("bot.lifecycle.deleteBlocked")
-      : err instanceof Error ? err.message : String(err);
-  }
+const otherBots = computed(() => {
+  const instanceId = directBotsStore.instanceId;
+  const currentId = bot.value?.id;
+  if (!instanceId || !currentId) return [];
+  return (directBotsStore.botsByInstance[instanceId] ?? []).filter((row) => row.id !== currentId);
+});
+
+const memberGroups = computed(() => {
+  const instanceId = directBotsStore.instanceId;
+  const currentId = bot.value?.id;
+  if (!instanceId || !currentId) return [];
+  return (groupsStore.groupsByInstance[instanceId] ?? []).filter((group) => group.botIds.includes(currentId));
+});
+
+function openOtherBot(botId: string): void {
+  const instanceId = directBotsStore.instanceId;
+  if (!instanceId) return;
+  navOpen.value = false;
+  emit("navigateBot", instanceId, botId);
+}
+
+function openGroup(groupId: string): void {
+  const instanceId = directBotsStore.instanceId;
+  if (!instanceId) return;
+  navOpen.value = false;
+  emit("navigateGroup", instanceId, groupId);
+}
+
+async function renameTopic(topicId: string, title: string) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await directBotsStore.updateTopic(ctx.instanceId, ctx.conversationId, topicId, title);
+}
+
+async function archiveTopic(topicId: string) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await directBotsStore.archiveTopic(ctx.instanceId, ctx.conversationId, topicId);
+}
+
+async function restoreTopic(topicId: string) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await directBotsStore.restoreTopic(ctx.instanceId, ctx.conversationId, topicId);
+}
+
+async function teardownTopic(topicId: string, requestId: string, releaseBindings: boolean) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await directBotsStore.teardownTopic(ctx.instanceId, ctx.conversationId, topicId, requestId, releaseBindings);
+}
+
+async function clearTopic(topicId: string, requestId: string, releaseBindings: boolean) {
+  const ctx = requireTopicContext();
+  if (!ctx) return;
+  await directBotsStore.clearTopic(ctx.instanceId, ctx.conversationId, topicId, requestId, releaseBindings);
+}
+
+const removalOpen = ref(false);
+
+function openRemoval(): void {
+  if (!bot.value || bot.value.retired) return;
+  removalOpen.value = true;
 }
 </script>
 
@@ -115,6 +163,46 @@ async function handleDeleteBot(): Promise<void> {
 
       <!-- Actions: Edit, Delete -->
       <div class="flex items-center gap-1">
+        <div class="relative">
+          <button
+            type="button"
+            data-test="direct-nav-button"
+            class="rounded-lg px-2 py-1 text-xs font-medium text-fg-muted transition-colors hover:bg-raised hover:text-fg"
+            @click="navOpen = !navOpen"
+          >
+            {{ $t("bot.nav.talkWith") }}
+          </button>
+          <div
+            v-if="navOpen"
+            data-test="direct-nav-menu"
+            class="absolute right-0 z-20 mt-1 w-64 overflow-hidden rounded-xl border border-border bg-surface shadow-xl"
+          >
+            <div class="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.talkWith") }}</div>
+            <button
+              v-for="other in otherBots"
+              :key="other.id"
+              type="button"
+              data-test="direct-nav-bot"
+              class="block w-full truncate px-3 py-1.5 text-left text-xs hover:bg-raised"
+              @click="openOtherBot(other.id)"
+            >
+              {{ other.name }}
+            </button>
+            <p v-if="otherBots.length === 0" class="px-3 py-1.5 text-xs text-fg-muted">{{ $t("bot.nav.noOtherBot") }}</p>
+            <div class="border-t border-border px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-fg-muted">{{ $t("bot.nav.collaborate") }}</div>
+            <button
+              v-for="group in memberGroups"
+              :key="group.id"
+              type="button"
+              data-test="direct-nav-group"
+              class="block w-full truncate px-3 py-1.5 text-left text-xs hover:bg-raised"
+              @click="openGroup(group.id)"
+            >
+              {{ group.title }}
+            </button>
+            <p v-if="memberGroups.length === 0" class="px-3 py-1.5 text-xs text-fg-muted">{{ $t("bot.nav.noGroup") }}</p>
+          </div>
+        </div>
         <button
           type="button"
           data-test="edit-bot-button"
@@ -128,51 +216,35 @@ async function handleDeleteBot(): Promise<void> {
         <button
           type="button"
           data-test="delete-bot-button"
-          :title="botHasRuntime ? $t('bot.lifecycle.deleteBlocked') : $t('bot.actions.delete')"
-          :aria-label="$t('bot.actions.delete')"
-          :disabled="botHasRuntime"
+          :title="bot?.retired ? $t('bot.removal.removed') : $t('bot.removal.action')"
+          :aria-label="$t('bot.removal.action')"
+          :disabled="bot?.retired === true"
           class="grid h-8 w-8 place-items-center rounded-lg text-fg-muted transition-colors hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-40"
-          @click="handleDeleteBot"
+          @click="openRemoval"
         >
           <Trash2 :size="14" />
         </button>
       </div>
     </header>
 
-    <!-- Topic Strip -->
-    <div class="flex items-center justify-between border-b border-border bg-surface/50 px-4 py-1.5 text-xs">
-      <div class="flex items-center gap-1.5 overflow-x-auto thin-scroll min-w-0 flex-1 py-0.5">
-        <span class="text-fg-muted shrink-0 flex items-center gap-1 text-[11px] font-medium mr-1">
-          <MessageSquare :size="12" />
-          <span>{{ $t("bot.topic.label") }}:</span>
-        </span>
+    <div v-if="bot?.retired" data-test="removed-bot-banner" class="border-b border-border bg-surface px-4 py-2 text-xs text-fg-muted">
+      {{ $t("bot.removal.removedBanner") }}
+    </div>
 
-        <!-- Topic Pills -->
-        <button
-          v-for="t in directBotsStore.currentTopics"
-          :key="t.id"
-          type="button"
-          data-test="topic-pill"
-          class="flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors shrink-0"
-          :class="directBotsStore.activeTopicId === t.id
-            ? 'bg-accent/15 text-accent font-semibold'
-            : 'text-fg-muted hover:bg-raised hover:text-fg'"
-          @click="directBotsStore.switchTopic(t.id)"
-        >
-          <span class="truncate max-w-[140px]">{{ t.title || $t("bot.topic.default") }}</span>
-        </button>
-      </div>
-
-      <!-- New Topic Button -->
-      <button
-        type="button"
-        data-test="new-topic-button"
-        class="ml-2 flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-accent hover:bg-accent/10 transition-colors shrink-0"
-        @click="newTopicDialogOpen = true"
-      >
-        <Plus :size="13" />
-        <span>{{ $t("bot.topic.new") }}</span>
-      </button>
+    <div class="flex items-center border-b border-border bg-surface/50 px-4 py-1.5 text-xs">
+      <TopicManager
+        variant="direct"
+        :topics="directBotsStore.currentTopics"
+        :active-topic-id="directBotsStore.activeTopicId"
+        :preview-topic="previewTopic"
+        :rename-topic="renameTopic"
+        :archive-topic="archiveTopic"
+        :restore-topic="restoreTopic"
+        :teardown-topic="teardownTopic"
+        :clear-topic="clearTopic"
+        @select="directBotsStore.switchTopic"
+        @create="newTopicDialogOpen = true"
+      />
     </div>
 
     <!-- Error Banner if any general error -->
@@ -209,8 +281,8 @@ async function handleDeleteBot(): Promise<void> {
 
     <!-- Prompt Composer -->
     <ConversationPromptInput
-      :disabled="!directBotsStore.activeTopicId || !directBotsStore.topicReady"
-      @send="(text) => directBotsStore.sendPrompt(text)"
+      :disabled="bot?.retired === true || !directBotsStore.activeTopicId || !directBotsStore.topicReady || directBotsStore.currentTopic?.status !== 'active'"
+      :deliver="(text, mentions) => directBotsStore.sendPrompt(text, mentions)"
       @cancel="directBotsStore.cancelCurrentRun"
     />
     <!-- History failure: Retry reloads the topic (history + durable run
@@ -232,6 +304,16 @@ async function handleDeleteBot(): Promise<void> {
       :instance-name="instance?.name ?? directBotsStore.instanceId"
       :bot="bot"
       @close="editDialogOpen = false"
+    />
+
+    <BotRemovalDialog
+      v-if="removalOpen && directBotsStore.instanceId && bot"
+      :bot-name="bot.name"
+      :preview="() => directBotsStore.previewBotRemoval(directBotsStore.instanceId!, bot!.id)"
+      :remove="(input) => directBotsStore.removeBot(directBotsStore.instanceId!, { botId: bot!.id, ...input })"
+      :get-operation="(id) => directBotsStore.getLifecycleOperation(directBotsStore.instanceId!, id)"
+      @close="removalOpen = false"
+      @removed="removalOpen = false"
     />
 
     <NewTopicDialog

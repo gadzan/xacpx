@@ -887,12 +887,15 @@ test("retrying an accepted request after disable reuses the durable Run", async 
   const retry = await first.service.acceptDirectPrompt({
     botId: BOT_ID,
     requestId: "req-disable-retry",
-    content: "hello again",
+    content: "hello",
   });
   expect(retry.reused).toBe(true);
   expect(retry.run.id).toBe(accepted.run.id);
   expect(retry.message.id).toBe(accepted.message.id);
   expect(retry.dispatch.id).toBe(accepted.dispatch.id);
+  await expect(first.service.acceptDirectPrompt({
+    botId: BOT_ID, requestId: "req-disable-retry", content: "hello again",
+  })).rejects.toMatchObject({ code: "request_payload_conflict" });
   await expect(first.service.acceptDirectPrompt({
     botId: BOT_ID,
     requestId: "req-disable-new",
@@ -938,13 +941,16 @@ test("retrying an accepted extra-Topic request after deleting reuses the durable
   const retry = await first.service.acceptDirectPrompt({
     botId: BOT_ID,
     requestId: "req-deleting-retry",
-    content: "hello again",
+    content: "hello",
     topicId: extra.id,
   });
   expect(retry.reused).toBe(true);
   expect(retry.run.id).toBe(accepted.run.id);
   expect(retry.message.id).toBe(accepted.message.id);
   expect(retry.dispatch.id).toBe(accepted.dispatch.id);
+  await expect(first.service.acceptDirectPrompt({
+    botId: BOT_ID, requestId: "req-deleting-retry", content: "hello again", topicId: extra.id,
+  })).rejects.toMatchObject({ code: "request_payload_conflict" });
   await expect(first.service.acceptDirectPrompt({
     botId: BOT_ID,
     requestId: "req-deleting-new",

@@ -20,6 +20,11 @@ Group PR9：Conversation history/message event 透传公开 `handoff` envelope�
 - 会话级模型与推理强度分别通过 `control.session.model.get/set` 和
   `control.session.effort.get/set` 暴露。Hub 会为这些 RPC 覆写可信的 `chatKey`；effort 的配置 id
   与可选值由实例侧 adapter 广告，实例 transport 会拒绝未广告值，Hub/Web 不硬编码上游实现细节。
+- `control.conversations.router.get` 是 instance-scoped，不进入 `CHAT_SCOPED_TYPES`。载荷必须是空对象。连接器把 daemon 启动时的 Router 可用性原样返回。状态是 `ready`、`disabled-by-config`、`unsupported` 或 `failed`。旧连接器的 `unknown-type` 在 Web 上显示为不可选，不会在发送时才变成 `automatic_unsupported`。
+- `control.agents.capabilities.get` 是 instance-scoped，不进入 `CHAT_SCOPED_TYPES`。
+  载荷只有已配置 agent、workspace、可选 Bot id 和 `probe`。带 `sessionAlias` 的载荷在连接器被拒绝。
+  冷探测可能接近 session init 的耗时，因此连接器不对这个 RPC 套 60 秒提前超时，仍受 Hub 120 秒预算约束。
+  旧连接器的 `unknown-type` 在 Web 上显示为不可用，不会变成空模型列表。
 - 安全：登录令牌（login token）以 sha256 哈希落盘（高熵随机令牌，无需 scrypt；scrypt 密码哈希已随密码登录一并移除）；所有 token/凭证哈希存储；登录限流按客户端 IP + 全局失败上限（有界，见阶段五）；
   凭证比较定时安全（`hashEquals`，见 src/auth.ts）；RPC 代理只放行
   control.* 且服务端覆写 chatKey(`relay:<accountId>`)/senderId/isOwner。
@@ -333,6 +338,11 @@ interface TurnAccumulator { text: string; steps: Map<string, ToolStepDto>; reaso
 - 带 `conversation` 的 live Control event 仍携带 `sessionAlias`（旧客户端兼容）。那是
   **legacy transport plumbing**，不得再用于产品 liveness / ownership / routing；产品身份是
   `conversationId` / `topicId` / `botId` / `runId` / `memberTurnId`。
+- 带 `conversation.botId` 的 `agent-commands` 不进入 ordinary `commands` / `sessionCommands`。
+  connector 把它记在 `conversationCommands`（`conversationId × topicId × botId`），随
+  `instance.state.sync` 的可选字段恢复。Hub 用同一字段填 Web `state-snapshot.conversationCommands`
+  和 `GET /api/active-turns` 的 `conversationCommands`。字段缺失表示旧 connector，Hub 保留已有产品缓存。
+  实例离线时清空该实例的产品缓存。隐藏 alias 不出现在这条快照里。
 - `PendingFinishedTurn` 优先从 running `MirrorTurn` 拷贝 `conversation`；若 mirror 没看到
   `turn-started`（例如 connector 在 core turn 中途重启），则回退到 `turn-finished` 事件上的
   `event.conversation`。finishedOffline 快照同样带上这五个 id，hub validator / accumulator /
@@ -443,6 +453,10 @@ fields; requesting read-only on an unsupported adapter fails before durable acce
 There is no Web policy selector in this slice; programmatic callers use the new RPC.
 See [Enforced execution effects](conversation-runtime.md#enforced-execution-effects-phase-10b).
 
+Topic management RPCs are `control.topics.update`, `control.topics.archive`, `control.topics.restore`, `control.topics.teardown`, `control.topics.clear`, and `control.topics.preview`. Update accepts only `title` (1–200 characters). Teardown and clear require `requestId` (1–128 characters). Clear also requires `confirm: true`. `releaseBindings` is optional. Without it, a topic that still has external bindings fails `topic_bindings_present`. `control.group.topics.archive` and `control.group.topics.teardown` remain. They call the same phase change. The group teardown RPC still releases bindings, matching older clients. Teardown, clear, and group delete responses include `operationId`. `control.lifecycle.operations.get` reads that record.
+
+Bot removal RPCs are `control.bots.remove.preview`, `control.bots.remove`, and `control.lifecycle.operations.get`. Preview takes `{ id }`. Remove takes `{ id, requestId, previewRevision, clearDirectHistory?, releaseDirectBindings? }`. `requestId` is 1–128 characters. `previewRevision` is 1–64 characters. `control.bots.delete` is unchanged and still deletes only a bot with no dependencies. A removal response is `{ operation }`. Repeating the same `requestId` returns the stored operation. See [Conversation runtime](conversation-runtime.md).
+
 Phase 10A Topic creation RPCs (`control.topics.create`, `control.group.topics.create`)
 accept optional top-level `maxConcurrentMemberTurns` (integer 1–64), returned on
 Topic summaries/events. The field is separate from `target`; omission preserves
@@ -470,3 +484,36 @@ operations. They configure exact external channel routes and cannot supply
 human ingress or execution capabilities. Actual messages still pass the external
 adapter's own admission before reaching the existing Conversation dispatcher.
 See [Conversation runtime](conversation-runtime.md#external-channel-bindings-pr10).
+
+## Bot / Group beta acceptance (PR8)
+
+Cross-PR acceptance for the bot/group beta stack (not a release gate by itself; parent issue #385 stays open).
+
+```bash
+bun run test:acceptance:bot-group-beta
+```
+
+The harness uses a temporary xacpx home, SQLite file, and workspace under the OS temp directory. It does not touch `~/.xacpx`, does not WeChat-login, and does not run `tests/smoke`.
+
+Measured today (Control + Relay layers, written to `PR8_ARTIFACT_DIR` default `/opt/cursor/artifacts/pr8/steps.json`):
+
+- empty bot catalog, pairing, two-bot create/list via relay RPC
+- instructions round-trip on `control.bots.update` / `get`
+- group + topic create, lead and multi-member prompts, group refresh
+- topic rename / archive / restore, extra topic teardown, default direct topic clear
+- bot disable + re-enable, removal preview, router default `disabled-by-config`, `automatic` target rejected
+- direct conversation prompt
+
+Skipped in this harness (documented in `steps.json`):
+
+- public handoff (needs a live member-turn mock runner)
+- full Web UI walkthrough (Playwright `mock-hub` has no honest bot/group RPC yet)
+- restricted Router binary path (no live router in CI)
+
+## Direct completions and reference compatibility (Issue #399)
+
+control.conversation.completions.get is instance-scoped and uses the existing authenticated instance ownership check. It is not in CHAT_SCOPED_TYPES, takes no client chatKey or hidden alias, and is forwarded by channel-relay to public Control. The protocol exposes versioned public scope/status/revision plus bounded command and authorized endpoint rows; a query may include a 128-character search and numeric page cursor.
+
+control.conversation.prompt and the policy-aware variant carry optional agentMentions, preserving original text and UTF-16 ranges through the connector and public sanitizer. Structured references are rejected if the daemon does not implement completion capability discovery; an old response/unknown-type disables selecting references in the new client. Missing metadata on legacy prompts means no references. The ordinary authenticated humanIngress path is unchanged and Direct peer delivery never fabricates it.
+
+Private peer product events are suppressed by core Control. channel-relay also omits correlated private peer streams before state-mirror ingestion, so reconnect state does not copy one Bot's peer history into another human Direct Topic. The public IDs returned by completion discovery never include hidden session aliases or MCP launch tokens.
