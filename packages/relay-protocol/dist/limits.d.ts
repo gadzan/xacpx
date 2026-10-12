@@ -92,5 +92,12 @@ export declare const DESKTOP_TCP_CHUNK_BYTES: number;
 export declare const DESKTOP_BUFFERED_SOFT_PAUSE_BYTES: number;
 /** Destination bufferedAmount that closes both sides (hub never queues unbounded). */
 export declare const DESKTOP_BUFFERED_HARD_CLOSE_BYTES: number;
+/** Upper bound on `conversations.router.command`. The wire rejects anything longer
+ *  before the config layer parses it, so an overlong path can never be persisted. */
+export declare const ROUTER_COMMAND_MAX_LENGTH = 4096;
+/** Legal environment variable name for `conversations.router.authEnv`. The wire bounds
+ *  the length only (the pattern's ceiling is 128 characters); the pattern itself is a
+ *  semantic check that stays in `parseConversationsConfig`. */
+export declare const ROUTER_AUTH_ENV_PATTERN: RegExp;
 /** Max base64 wire length that can decode to `maxDecodedBytes` (with padding). */
 export declare function maxBase64EncodedLength(maxDecodedBytes: number): number;

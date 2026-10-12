@@ -91,3 +91,51 @@ export function parseRouterAvailability(value: unknown): RouterAvailability {
   }
   throw new Error("router availability status is not recognized");
 }
+
+/**
+ * The persisted `conversations.router` section as the wire reports it back.
+ *
+ * `command` / `authEnv` are ABSENT, never empty, when unset: the dialog seeds its
+ * fields from this, so an absent key is the honest form of "nothing configured"
+ * and is what distinguishes `command-missing` from a configured-but-broken probe.
+ */
+export interface ConversationRouterConfigState {
+  enabled: boolean;
+  command?: string;
+  authEnv?: string;
+}
+
+/** The `.get` / `.update` answer: how the router resolves, plus what is configured. */
+export interface ConversationRouterState {
+  availability: RouterAvailability;
+  config: ConversationRouterConfigState;
+}
+
+/** Parse a `.get` / `.update` response. Throws when the shape is not a state. */
+export function parseConversationRouterState(value: unknown): ConversationRouterState {
+  if (!isRecord(value)) throw new Error("router state is missing");
+  const extra = Object.keys(value).filter((key) => key !== "availability" && key !== "config");
+  if (extra.length > 0) throw new Error("router state contains an unsupported field");
+  const availability = parseRouterAvailability(value.availability);
+  const config = value.config;
+  if (!isRecord(config)) throw new Error("router state config is missing");
+  if (typeof config.enabled !== "boolean") throw new Error("router state config.enabled must be a boolean");
+  const configExtra = Object.keys(config).filter(
+    (key) => key !== "enabled" && key !== "command" && key !== "authEnv",
+  );
+  if (configExtra.length > 0) throw new Error("router state config contains an unsupported field");
+  if (config.command !== undefined && typeof config.command !== "string") {
+    throw new Error("router state config.command must be a string");
+  }
+  if (config.authEnv !== undefined && typeof config.authEnv !== "string") {
+    throw new Error("router state config.authEnv must be a string");
+  }
+  return {
+    availability,
+    config: {
+      enabled: config.enabled,
+      ...(config.command !== undefined ? { command: config.command } : {}),
+      ...(config.authEnv !== undefined ? { authEnv: config.authEnv } : {}),
+    },
+  };
+}

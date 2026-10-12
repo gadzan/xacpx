@@ -112,6 +112,7 @@ export const MSG = {
   agentsCapabilitiesGet: "control.agents.capabilities.get",
   conversationRouterGet: "control.conversations.router.get",
   conversationRouterSet: "control.conversations.router.set",
+  conversationRouterUpdate: "control.conversations.router.update",
   sessionModelSet: "control.session.model.set",
   sessionEffortGet: "control.session.effort.get",
   sessionEffortSet: "control.session.effort.set",
@@ -1148,6 +1149,24 @@ export interface ConversationRouterGetPayload {
  */
 export interface ConversationRouterSetPayload {
   enabled: boolean;
+}
+
+/**
+ * Patch the router configuration section. An empty payload is a pure read; a
+ * non-empty payload is one locked config write (`null` removes the key), then a
+ * re-resolve, and the resulting `ConversationRouterState`. Only the keys named
+ * here are touched, so a hand-added key inside `conversations.router` survives.
+ *
+ * This validator bounds `command` / `authEnv` length only. Blank, newline, NUL,
+ * and the environment-name pattern stay in `parseConversationsConfig`, the
+ * single semantic authority.
+ */
+export interface ConversationRouterUpdatePayload {
+  enabled?: boolean;
+  /** Absolute command path. `null` removes the key. */
+  command?: string | null;
+  /** Environment variable that must be non-empty before the probe. `null` removes the key. */
+  authEnv?: string | null;
 }
 
 export interface SessionModelSetPayload {
