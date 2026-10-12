@@ -458,3 +458,101 @@ test("a probe timeout is failed and does not decide", async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Runtime switch — `control.conversations.router.set` hot-applies a re-resolved
+// router to the LIVE runtime. No restart, and the same capability gate as
+// startup: an unproven resolution never installs an engine.
+// ---------------------------------------------------------------------------
+
+test("the runtime switch turns automatic collaboration on without a restart", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-router-switch-on-"));
+  try {
+    const { control, runtime } = await wire({ dir });
+    expect(control.getConversationRouterAvailability().status).toBe("disabled-by-config");
+    const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
+    const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
+    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+    const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" });
+    await expect(runtime.runs.acceptGroupPrompt({
+      conversationId: group.id, topicId: topic.id, requestId: "before", text: "go", target: { mode: "automatic" },
+    })).rejects.toMatchObject({ code: "automatic_unsupported" });
+
+    // The switch: re-resolve from the config that carries the command, then
+    // apply to the live runtime.
+    const router = await writeRouter(dir, "dispatch");
+    const resolution = await resolveProductionRouter({ config: createConfig(router.command), env: router.env });
+    expect(resolution.availability.status).toBe("ready");
+    runtime.applyRouterResolution(resolution);
+    expect(control.getConversationRouterAvailability()).toEqual({
+      status: "ready", configPath: "conversations.router",
+    });
+
+    const accepted = await conversationKernel(control).promptConversationFromHumanIngress({
+      conversationId: group.id, topicId: topic.id, requestId: "after", text: "review the patch",
+      target: { mode: "automatic" },
+    }, INGRESS);
+    await waitUntil(() => control.getRun(accepted.run.id).state === "completed");
+    expect(runtime.store.listMemberTurns(accepted.run.id)[0]).toMatchObject({
+      origin: "router", task: "Review the patch", assignmentId: "step-1",
+    });
+    expect(await readLog(router.log)).toContain("--decide");
+    await runtime.shutdown();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the runtime switch turns automatic collaboration off and refuses the next automatic accept", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-router-switch-off-"));
+  try {
+    const router = await writeRouter(dir, "dispatch");
+    const { control, runtime } = await wire({ dir, command: router.command, env: router.env });
+    expect(control.getConversationRouterAvailability().status).toBe("ready");
+    const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
+    const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
+    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+    const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" });
+
+    runtime.applyRouterResolution(await resolveProductionRouter({ config: createConfig(), env: router.env }));
+    expect(control.getConversationRouterAvailability()).toEqual({
+      status: "disabled-by-config",
+      configPath: "conversations.router",
+      reason: { code: "disabled", message: "Automatic collaboration is off." },
+    });
+    await expect(runtime.runs.acceptGroupPrompt({
+      conversationId: group.id, topicId: topic.id, requestId: "after-off", text: "go", target: { mode: "automatic" },
+    })).rejects.toMatchObject({ code: "automatic_unsupported" });
+    await runtime.shutdown();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an in-flight decision finishes on the engine it captured when the switch flips", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "xacpx-router-switch-inflight-"));
+  try {
+    const router = await writeRouter(dir, "hang-decide");
+    const { control, runtime } = await wire({
+      dir, command: router.command, env: router.env, decisionTimeoutMs: 300,
+    });
+    const a = await control.createBot({ name: "A", agent: "codex", workspace: "backend" });
+    const b = await control.createBot({ name: "B", agent: "codex", workspace: "backend" });
+    const group = await control.createGroup({ title: "G", botIds: [a.id, b.id] });
+    const topic = await control.createGroupTopic(group.id, "T", { workspace: "backend", isolation: "shared" });
+    const accepted = await runtime.runs.acceptGroupPrompt({
+      conversationId: group.id, topicId: topic.id, requestId: "inflight", text: "go", target: { mode: "automatic" },
+    });
+    // Flip off WHILE the decision process is running: the step already captured
+    // its engine, so it settles on that engine's deadline — it must not be
+    // re-interpreted as "router removed" mid-flight.
+    runtime.applyRouterResolution(await resolveProductionRouter({ config: createConfig(), env: router.env }));
+    await runtime.runs.awaitRouting();
+    expect(runtime.store.getRun(accepted.run.id)).toMatchObject({
+      state: "failed", completionReason: "router_timeout",
+    });
+    await runtime.shutdown();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

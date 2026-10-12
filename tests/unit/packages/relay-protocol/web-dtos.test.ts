@@ -118,6 +118,8 @@ test("accepts well-formed control-events and notices", () => {
   expect(parseWebServerEvent(webEventEnvelope({ kind: "control-event", instanceId: "i", event: { type: "turn-output", chatKey: "c", sessionAlias: "s", chunk: "x" } }))).not.toBeNull();
   expect(parseWebServerEvent(webEventEnvelope({ kind: "control-event", instanceId: "i", event: { type: "turn-finished", chatKey: "c", sessionAlias: "s", ok: true } }))).not.toBeNull();
   expect(parseWebServerEvent(webEventEnvelope({ kind: "control-event", instanceId: "i", event: { type: "sessions-changed" } }))).not.toBeNull();
+  expect(parseWebServerEvent(webEventEnvelope({ kind: "control-event", instanceId: "i", event: { type: "workspaces-changed" } }))).not.toBeNull();
+  expect(parseWebServerEvent(webEventEnvelope({ kind: "control-event", instanceId: "i", event: { type: "conversation-router-changed" } }))).not.toBeNull();
   expect(parseWebServerEvent(webEventEnvelope({ kind: "control-event", instanceId: "i", event: { type: "scheduled-changed", chatKey: "c" } }))).not.toBeNull();
   expect(parseWebServerEvent(webEventEnvelope({ kind: "control-event", instanceId: "i", event: { type: "orchestration-changed" } }))).not.toBeNull();
   expect(parseWebServerEvent(webEventEnvelope({ kind: "notice", instanceId: "i", notice: { kind: "task-completion", text: "done" } }))).not.toBeNull();

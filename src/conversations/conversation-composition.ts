@@ -22,7 +22,7 @@ import { ConversationDispatcher, type LeaseScheduler } from "./conversation-disp
 import { conversationExecutionOrigin } from "./conversation-execution";
 import { bindRouter } from "./conversation-router-gate";
 import { ConversationRouterEngine } from "./conversation-router-engine";
-import { disabledRouterAvailability, unprovenRouterAvailability } from "./production-router";
+import { disabledRouterAvailability, unprovenRouterAvailability, type ProductionRouterResolution } from "./production-router";
 import { ConversationRunService } from "./conversation-run-service";
 import { ControlConversationTurnRunner } from "./conversation-turn-runner";
 import { SqliteConversationStore } from "./sqlite-conversation-store";
@@ -60,8 +60,16 @@ export interface ConversationRuntime {
   removals: BotRemovalService;
   handoffs: GroupHandoffService;
   bindings: ConversationBindingService;
-  /** Startup snapshot. The composer reads this instead of guessing. */
+  /** Router availability. Starts as the resolver's snapshot and is replaced by
+   *  `applyRouterResolution`; the composer reads this instead of guessing. */
   routerAvailability: RouterAvailability;
+  /**
+   * Hot-apply a re-resolved production router (the automatic-collaboration
+   * switch). Rebuilds the engine from the same capability gate as startup, so
+   * a router that cannot prove its restriction leaves automatic mode
+   * unsupported. In-flight routing steps finish on the engine they captured.
+   */
+  applyRouterResolution(resolution: ProductionRouterResolution): void;
   authorityEpoch: string;
   kick(): Promise<void>;
   /**
@@ -173,22 +181,25 @@ export async function createConversationRuntime(
   // unsupported (`automatic_unsupported`), which preserves PR7 behavior for
   // every deployment that has not opted in. `bindRouter` refuses any object
   // that cannot prove its restriction up front — never a permissive default.
+  // The runtime switch reuses these exact options, so a hot-applied router is
+  // bound by the same reads, gates, and deadline as the startup path.
+  const routerEngineOptions = {
+    store,
+    readGroup: (conversationId: string) => input.state.conversations[conversationId],
+    readTopic: (conversationId: string, topicId: string) => {
+      const topic = input.state.conversation_topics[topicId];
+      return topic?.conversationId === conversationId ? topic : undefined;
+    },
+    readBot: (botId: string) => bots.getBot(botId),
+    runLifecycleAll: <T>(botIds: readonly string[], critical: () => Promise<T>) => bots.runLifecycleAll(botIds, critical),
+    now: input.now ?? (() => new Date()),
+    decisionTimeoutMs: input.routerDecisionTimeoutMs,
+  };
   const settled = settleRouter(input.router, input.routerAvailability);
-  const router = settled.router;
-  const routerEngine = router
-    ? new ConversationRouterEngine(router, {
-      store,
-      readGroup: (conversationId) => input.state.conversations[conversationId],
-      readTopic: (conversationId, topicId) => {
-        const topic = input.state.conversation_topics[topicId];
-        return topic?.conversationId === conversationId ? topic : undefined;
-      },
-      readBot: (botId) => bots.getBot(botId),
-      runLifecycleAll: (botIds, critical) => bots.runLifecycleAll(botIds, critical),
-      now: input.now ?? (() => new Date()),
-      decisionTimeoutMs: input.routerDecisionTimeoutMs,
-    })
-    : undefined;
+  const routerEngine = settled.router ? new ConversationRouterEngine(settled.router, routerEngineOptions) : undefined;
+  // Replaced wholesale by applyRouterResolution below; the getter keeps the
+  // published surface read-only for consumers.
+  let routerAvailability: RouterAvailability = settled.availability;
   const dispatcher = new ConversationDispatcher(store, botRuntime, runner, input.sessions, {
     authorityEpoch: input.authorityEpoch ?? randomUUID(),
     ...(input.ownerId ? { ownerId: input.ownerId } : {}),
@@ -292,7 +303,19 @@ export async function createConversationRuntime(
     removals,
     handoffs,
     bindings: new ConversationBindingService(store, runs, bots, input.config),
-    routerAvailability: settled.availability,
+    get routerAvailability() {
+      return routerAvailability;
+    },
+    applyRouterResolution: (resolution) => {
+      // A closed runtime keeps its frozen snapshot: swapping the engine without
+      // the availability (or the reverse) would make the two disagree.
+      if (lifecycle !== "open") return;
+      const next = settleRouter(resolution.router, resolution.availability);
+      // Swap before publishing availability so a reader that sees `ready`
+      // also sees the engine that makes it true.
+      runs.setRouterEngine(next.router ? new ConversationRouterEngine(next.router, routerEngineOptions) : undefined);
+      routerAvailability = next.availability;
+    },
     authorityEpoch: dispatcher.authorityEpoch,
     kick: () => dispatcher.kick(),
     activateAfterConsumerLock: () => runs.activateAfterConsumerLock(),

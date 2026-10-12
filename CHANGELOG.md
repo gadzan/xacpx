@@ -1,4 +1,10 @@
 # Changelog
+## [Unreleased]
+
+### Added
+
+- **Automatic collaboration switch in Relay Web settings:** the Settings page now lists a per-instance "Group automatic collaboration" toggle backed by the new instance-scoped `control.conversations.router.set` RPC. The daemon patches only `conversations.router.enabled` in `config.json` through `ConfigStore`, re-resolves availability through the same production path (capability probe included), and hot-applies the router to the live conversation runtime — no daemon restart. The RPC returns the same four-status availability as `.get`, never a boolean, so enabling without a proven restriction surfaces its reason (`command-missing`, `unsupported`, `failed`) instead of a fake success; a write failure propagates. `ConversationRuntime.applyRouterResolution` swaps the single router engine through the unchanged `bindRouter` gate; an in-flight decision settles on the engine it captured, and a surviving automatic Run fails closed with `automatic_unsupported` when the engine is removed. A new `conversation-router-changed` control event keeps other clients' composers and toggles converged. Old connectors surface as `unknown-type` (unavailable), never a silent success.
+
 ## [0.24.8-beta.0] - 2026-10-10
 
 ### Added

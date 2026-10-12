@@ -146,6 +146,7 @@ var MSG = {
   sessionModelGet: "control.session.model.get",
   agentsCapabilitiesGet: "control.agents.capabilities.get",
   conversationRouterGet: "control.conversations.router.get",
+  conversationRouterSet: "control.conversations.router.set",
   sessionModelSet: "control.session.model.set",
   sessionEffortGet: "control.session.effort.get",
   sessionEffortSet: "control.session.effort.set",
@@ -372,6 +373,7 @@ var CONTROL_EVENT_TYPE_MAP = {
   "queue-updated": true,
   "sessions-changed": true,
   "workspaces-changed": true,
+  "conversation-router-changed": true,
   "scheduled-changed": true,
   "session-history": true,
   "orchestration-changed": true,
@@ -801,6 +803,7 @@ function validControlEvent(e) {
       return typeof c.sessionAlias === "string" && optStr(c.messageId) && (c.completionStatus === "completed" || c.completionStatus === "failed" || c.completionStatus === "cancelled");
     case "sessions-changed":
     case "workspaces-changed":
+    case "conversation-router-changed":
     case "orchestration-changed":
     case "bots-changed":
     case "conversations-changed":
@@ -1190,6 +1193,12 @@ var validateConversationRouterGet = (p) => {
   if (!o || Object.keys(o).length !== 0)
     return null;
   return {};
+};
+var validateConversationRouterSet = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 1 || typeof o.enabled !== "boolean")
+    return null;
+  return { enabled: o.enabled };
 };
 var validateAgentsCapabilitiesGet = (p) => {
   const o = fields(p);
@@ -1749,6 +1758,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.agentsCapabilitiesGet]: validateAgentsCapabilitiesGet,
   [MSG.conversationCompletionsGet]: validateConversationCompletionsGet,
   [MSG.conversationRouterGet]: validateConversationRouterGet,
+  [MSG.conversationRouterSet]: validateConversationRouterSet,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.sessionEffortGet]: validateSessionEffortGet,
   [MSG.sessionEffortSet]: validateSessionEffortSet,

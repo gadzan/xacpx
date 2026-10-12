@@ -132,8 +132,10 @@ export class ConversationRunService {
   private readonly afterTeardownMarkedDeleting?: () => Promise<void>;
   private readonly autoKick: boolean;
   /** Present only when a capability-provable Router is configured; automatic
-   *  mode is unsupported without it (fail closed). */
-  private readonly routerEngine?: ConversationRouterEngine;
+   *  mode is unsupported without it (fail closed). Replaced wholesale by
+   *  `setRouterEngine` when the switch flips at runtime; an in-flight routing
+   *  step keeps the engine it captured, and the next one sees the new value. */
+  private routerEngine?: ConversationRouterEngine;
   /** `pending` until the first successful post-lock kick; `unavailable` is sticky
    *  fail-closed after that kick throws so accept cannot pile up unconsumed work. */
   private activation: "pending" | "activated" | "unavailable" = "pending";
@@ -1712,6 +1714,20 @@ export class ConversationRunService {
    */
   trackAutomaticRouting(runId: string): void {
     this.trackRouting(runId, /* kick */ true);
+  }
+
+  /**
+   * Swap the automatic Router at runtime (`control.conversations.router.set`).
+   * The accept path and the next routing step observe the new engine
+   * immediately; a step already in flight finishes on the engine it captured.
+   * Installing `undefined` is the documented disabled state: a surviving
+   * automatic Run fails closed with `automatic_unsupported` instead of sitting
+   * nonterminal, exactly as when the config is removed while the daemon is
+   * down.
+   */
+  setRouterEngine(engine: ConversationRouterEngine | undefined): void {
+    if (this.closed) return;
+    this.routerEngine = engine;
   }
 
   /**
