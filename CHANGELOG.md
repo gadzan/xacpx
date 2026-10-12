@@ -1,4 +1,10 @@
 # Changelog
+## [Unreleased]
+
+### Added
+
+- **Automatic collaboration configuration in the instance dialog (PR #402 follow-up):** the per-instance switch moved out of Relay Web Settings into the instance-management dialog on the session tab, and the dialog can now complete the configuration that blocked it. A new `control.conversations.router.update` RPC patches `conversations.router` (`enabled`, `command`, `authEnv`) and answers with the four-status availability plus the persisted section, so the command field is seeded from what the instance actually has instead of being blank. An empty patch is a pure read, so opening the dialog never writes, probes, or fans out a change event. The switch binds the persisted intent rather than the resolved availability, so an instance whose router fails the probe still shows that the switch is on and offers the form that fixes it. `.get` and `.set` keep their exact wire shapes, so released dashboards and the Group composer are unaffected; an older daemon answers `unknown-type` and the dialog falls back to `.get` with a read-only panel and an upgrade notice.
+
 ## [0.24.9-beta.0] - 2026-10-12
 
 ### Added

@@ -22,6 +22,7 @@ Group PR9：Conversation history/message event 透传公开 `handoff` envelope�
   与可选值由实例侧 adapter 广告，实例 transport 会拒绝未广告值，Hub/Web 不硬编码上游实现细节。
 - `control.conversations.router.get` 是 instance-scoped，不进入 `CHAT_SCOPED_TYPES`。载荷必须是空对象。连接器把 daemon 的 Router 可用性原样返回。状态是 `ready`、`disabled-by-config`、`unsupported` 或 `failed`。旧连接器的 `unknown-type` 在 Web 上显示为不可选，不会在发送时才变成 `automatic_unsupported`。
 - `control.conversations.router.set` 是 instance-scoped，不进入 `CHAT_SCOPED_TYPES`。载荷只有一个布尔字段 `enabled`。连接器把它交给 ControlService：实例侧持久化 `conversations.router.enabled`、重新解析（开启时含能力探测）、热应用到运行中的 runtime，并回同四状态可用性。Web 设置页的“群组自动协作”开关走这条 RPC；切换成功后 daemon 发 `conversation-router-changed`（无载荷）控制事件，其他客户端据此重读可用性。旧连接器的 `unknown-type` 在设置页显示为不可用，不会假装切换成功。
+- `control.conversations.router.update` 是 instance-scoped，载荷是 `conversations.router` 段的补丁（`enabled`、`command`、`authEnv` 三个可选键，`null` 删除），响应是 `{ availability, config }`。空补丁是纯读。连接器把解析后的补丁交给 ControlService：按键落盘、合并后校验、重新解析、热应用、发 `conversation-router-changed`，回四状态可用性加持久化段。Relay Web 的实例管理弹层走这条 RPC，因此补全缺失的 `conversations.router.command` 不需要手改文件。旧 daemon 答 `unknown-type`，Web 回落到 `.get` 并显示只读面板与升级提示，不会留下空白表单。
 - `control.agents.capabilities.get` 是 instance-scoped，不进入 `CHAT_SCOPED_TYPES`。
   载荷只有已配置 agent、workspace、可选 Bot id 和 `probe`。带 `sessionAlias` 的载荷在连接器被拒绝。
   冷探测可能接近 session init 的耗时，因此连接器不对这个 RPC 套 60 秒提前超时，仍受 Hub 120 秒预算约束。

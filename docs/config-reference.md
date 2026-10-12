@@ -821,7 +821,7 @@ File tree operations configuration for relay-web file browser.
 
 ## `conversations.router`
 
-Automatic collaboration for a Group Run. The section is optional. Omitted, or `enabled` other than `true`, leaves the feature off. Relay Web's Settings page flips `enabled` through `control.conversations.router.set`: the daemon patches this field, re-resolves availability, and hot-applies it without a restart. Editing the file by hand keeps working and is picked up on the next daemon start (or the next switch flip).
+Automatic collaboration for a Group Run. The section is optional. Omitted, or `enabled` other than `true`, leaves the feature off. Relay Web's instance-management dialog (the gear on the session tab) is the control surface: it flips `enabled` through `control.conversations.router.set` and completes `command` / `authEnv` through `control.conversations.router.update`. Both patch only the keys they name, re-resolve availability, and hot-apply without a restart, so a hand-edited config.json keeps every unrelated field. Editing the file by hand keeps working and is picked up on the next daemon start (or the next write).
 
 | Field | Type | Required | Description |
 |------|------|------|------|
@@ -841,7 +841,7 @@ Automatic collaboration for a Group Run. The section is optional. Omitted, or `e
 
 A prompt that tells a model not to use tools is not this proof. The startup status is one of `disabled-by-config`, `unsupported`, `ready`, or `failed`. `unsupported` means the report did not prove the limit. `failed` means the command is missing, auth is empty, the probe failed, the probe timed out, or the report could not be read. `xacpx doctor` reports the same status. `ready` and the default off state pass. `unsupported` warns. `failed` fails the check.
 
-`control.conversations.router.get` returns that availability to Relay Web. `control.conversations.router.set` flips `enabled` and re-resolves it in place. Do not write a release note that says automatic collaboration is available. This repository does not ship a restricted router binary. A deployment is `ready` only after its own command proves the limit.
+`control.conversations.router.get` returns that availability to Relay Web. `control.conversations.router.set` flips `enabled` and re-resolves it in place. `control.conversations.router.update` patches any of the three fields and answers with the availability plus the persisted section, which is how the dialog can show what is configured instead of offering a blank field. Do not write a release note that says automatic collaboration is available. This repository does not ship a restricted router binary. A deployment is `ready` only after its own command proves the limit.
 
 ### Example
 
