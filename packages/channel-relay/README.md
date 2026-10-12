@@ -36,8 +36,8 @@ Defaults, TTL meanings, and security notes: [`docs/config-reference.md`](../../d
 ## Instance desktop over RFB/VNC (opt-in)
 
 Watch and control the local graphical desktop of a paired instance from
-relay-web. **Off by default** — enabling advertises `desktop.rfb.v1` and nothing
-else about xacpx core changes.
+relay-web. **Off by default** — enabling advertises `desktop.rfb.v1` and
+`desktop.ard-auth.v1`. Nothing else about xacpx core changes.
 
 ```json
 {
@@ -57,9 +57,11 @@ else about xacpx core changes.
   `0.0.0.0`. Keeping 5900 unreachable from outside is a deployment requirement
   (loopback-only bind, or loopback-only access control plus firewall) — see the
   platform notes in [`docs/desktop-rfb-setup.md`](../../docs/desktop-rfb-setup.md).
-- Only **outer VNC Auth (RFB security type 2)** is accepted in Phase A
-  (Linux + Windows, single viewer). `None`, VeNCrypt/TLS-only, proprietary auth,
-  and macOS ARD are rejected fail-closed with `desktop-auth-unsupported`.
+- **Outer VNC Auth (RFB type 2)** and **Apple Remote Desktop (type 30)** are
+  accepted. A server that offers both uses VncAuth. `None`, Tight-only,
+  VeNCrypt/TLS-only, and proprietary auth are rejected with
+  `desktop-auth-unsupported`. macOS Screen Sharing asks for an account name and
+  password in the tab; they are sent once and not stored. Single viewer.
 - Framebuffer/keyboard/mouse bytes ride an independent binary WebSocket, never
   the control plane or RelayEnvelope.
 - Setup, per-platform VNC server notes (TightVNC / TigerVNC / x11vnc / WayVNC)

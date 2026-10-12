@@ -137,7 +137,56 @@ describe("DesktopTab", () => {
       rfb._rfbAuthScheme = scheme;
       rfb._failReason = undefined;
       expect(rfb._negotiateAuthentication()).toBe(false);
-      expect(rfb._failReason).toMatch(/only outer VncAuth is allowed/);
+      expect(rfb._failReason).toMatch(/Refusing desktop auth scheme/);
+    }
+    conn.dispose();
+  });
+
+  it("an ard stream admits only None and fails closed on VncAuth and ARD", async () => {
+    interface FakeInstance {
+      _rfbAuthScheme: number;
+      _failReason?: string;
+      check: (type: number) => boolean;
+      _negotiateAuthentication: () => boolean;
+    }
+    const instances: FakeInstance[] = [];
+    const FakeRfb = function FakeRfb(this: unknown) {
+      const self = this as unknown as FakeInstance & {
+        _isSupportedSecurityType: (type: number) => boolean;
+        _fail: (details: string) => boolean;
+      };
+      self._isSupportedSecurityType = () => true;
+      self._rfbAuthScheme = -1;
+      self._negotiateAuthentication = () => true;
+      self._fail = (details: string) => { self._failReason = details; return false; };
+      self.check = (type: number) => self._isSupportedSecurityType(type);
+      instances.push(self);
+    } as unknown as new (
+      target: HTMLElement,
+      url: string,
+      options: Record<string, unknown>,
+    ) => NoVncRfb;
+    const { connectDesktopRfb: mocked } = await import("../lib/desktop-client");
+    const real = (mocked as unknown as MockedFunction<(input: DesktopRfbConnectInput) => DesktopRfbConnection>).getMockImplementation?.();
+    if (!real) throw new Error("connectDesktopRfb mock missing passthrough");
+    const conn = real({
+      url: "wss://hub/desktop/observe?ticket=t",
+      security: "ard",
+      loadNoVnc: async () => ({ default: FakeRfb }),
+    });
+    await vi.waitFor(() => expect(instances.length).toBe(1));
+    const rfb = instances[0];
+    if (!rfb) throw new Error("no tunneled session captured");
+    expect(rfb.check(1)).toBe(true);
+    expect(rfb.check(2)).toBe(false);
+    expect(rfb.check(30)).toBe(false);
+    rfb._rfbAuthScheme = 1;
+    expect(rfb._negotiateAuthentication()).toBe(true);
+    for (const scheme of [2, 30, 16]) {
+      rfb._rfbAuthScheme = scheme;
+      rfb._failReason = undefined;
+      expect(rfb._negotiateAuthentication()).toBe(false);
+      expect(rfb._failReason).toMatch(/Refusing desktop auth scheme/);
     }
     conn.dispose();
   });
@@ -390,7 +439,6 @@ describe("DesktopTab error i18n", () => {
       store.sessions.set("i1", {
         instanceId: "i1",
         status: "error",
-        needsPassword: false,
         fit: true,
         lastErrorCode: code,
         lastErrorMessage: "hub detail",

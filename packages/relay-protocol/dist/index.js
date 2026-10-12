@@ -76,6 +76,7 @@ var MAX_DESKTOP_STREAM_ID_LENGTH = 128;
 var MAX_DESKTOP_TICKET_LENGTH = 128;
 var MAX_DESKTOP_WS_PATH_LENGTH = 512;
 var MAX_DESKTOP_ERROR_MESSAGE_LENGTH = 512;
+var MAX_DESKTOP_CREDENTIAL_FIELD_BYTES = 63;
 var DESKTOP_TICKET_TTL_MS = 60000;
 var DESKTOP_HUB_REQUEST_TIMEOUT_MS = 1e4;
 var DESKTOP_RPC_TIMEOUT_MS = 15000;
@@ -246,6 +247,7 @@ var RELAY_CAPABILITIES = {
   terminalRmuxRecoveryV1: "terminal.rmux.recovery.v1",
   terminalMultiViewV1: "terminal.multi-view.v1",
   desktopRfbV1: "desktop.rfb.v1",
+  desktopArdAuthV1: "desktop.ard-auth.v1",
   interactionElicitationFormV1: "interaction.elicitation.form.v1"
 };
 var RELAY_INTERACTION_RESPONSE_RESERVE_MS = 5000;
@@ -265,6 +267,10 @@ var TERMINAL_ERROR_CODES = [
   "terminal-timeout",
   "instance-offline"
 ];
+var DESKTOP_INNER_RFB_SCHEME = { "vnc-auth": 2, ard: 1 };
+function isDesktopSecurityKind(value) {
+  return typeof value === "string" && Object.hasOwn(DESKTOP_INNER_RFB_SCHEME, value);
+}
 var DESKTOP_ERROR_CODES = [
   "desktop-disabled",
   "desktop-busy",
@@ -273,7 +279,10 @@ var DESKTOP_ERROR_CODES = [
   "desktop-auth-unsupported",
   "desktop-stream-timeout",
   "desktop-instance-offline",
-  "desktop-protocol-error"
+  "desktop-protocol-error",
+  "desktop-credentials-required",
+  "desktop-credentials-rejected",
+  "desktop-permission-denied"
 ];
 // packages/relay-protocol/src/agent-mentions.ts
 var MAX_AGENT_MENTIONS = 16;
@@ -293,6 +302,7 @@ function validAgentMentions(text, value) {
 }
 // packages/relay-protocol/src/validate-primitives.ts
 var isObj = (v) => typeof v === "object" && v !== null;
+var hasOnlyKeys = (value, allowed) => Object.keys(value).every((key) => Object.hasOwn(allowed, key));
 var isStr = (v) => typeof v === "string";
 var optStr = (v) => v === undefined || typeof v === "string";
 var optNum = (v) => v === undefined || typeof v === "number";
@@ -334,6 +344,20 @@ function parseCanonicalBase64(encoded, maxDecodedBytes) {
   } catch {
     return null;
   }
+}
+
+// packages/relay-protocol/src/desktop-credential.ts
+var CREDENTIAL_KEYS = { kind: true, username: true, password: true };
+var utf8 = new TextEncoder;
+function parseDesktopCredential(value) {
+  if (!isObj(value) || !hasOnlyKeys(value, CREDENTIAL_KEYS))
+    return null;
+  if (value.kind !== "ard" || !isCredentialField(value.username) || !isCredentialField(value.password))
+    return null;
+  return { kind: "ard", username: value.username, password: value.password };
+}
+function isCredentialField(value) {
+  return typeof value === "string" && value.length > 0 && !value.includes("\x00") && utf8.encode(value).byteLength <= MAX_DESKTOP_CREDENTIAL_FIELD_BYTES;
 }
 
 // packages/relay-protocol/src/web-dtos.ts
@@ -876,9 +900,6 @@ function validNotice(n) {
 function expectedRebaseChunkCount(totalBytes) {
   return totalBytes === 0 ? 0 : Math.ceil(totalBytes / TERMINAL_REBASE_CHUNK_BYTES);
 }
-function validDesktopSecurity(value) {
-  return value === "vnc-auth" || value === "ard";
-}
 function validTerminalRole(value) {
   return value === "controller" || value === "spectator";
 }
@@ -909,7 +930,7 @@ function validTargetedTerminalEvent(candidate) {
 function validDesktopServerEvent(candidate) {
   switch (candidate.kind) {
     case "desktop-opened":
-      return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(candidate.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && isBoundedStr(candidate.wsPath, MAX_DESKTOP_WS_PATH_LENGTH) && candidate.wsPath.startsWith("/desktop/observe?ticket=") && isNonNegInt(candidate.expiresAt) && validDesktopSecurity(candidate.security);
+      return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(candidate.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && isBoundedStr(candidate.wsPath, MAX_DESKTOP_WS_PATH_LENGTH) && candidate.wsPath.startsWith("/desktop/observe?ticket=") && isNonNegInt(candidate.expiresAt) && isDesktopSecurityKind(candidate.security);
     case "desktop-request-failed":
       return isBoundedStr(candidate.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && isBoundedStr(candidate.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(candidate.code, 128) && typeof candidate.message === "string" && candidate.message.length <= MAX_DESKTOP_ERROR_MESSAGE_LENGTH;
     default:
@@ -962,6 +983,7 @@ var MAX_WEB_INSTANCE_ID_LENGTH = 128;
 function webClientEnvelope(msg) {
   return { protocolVersion: RELAY_PROTOCOL_VERSION, kind: "event", type: WEB_CLIENT_TYPE, payload: msg };
 }
+var DESKTOP_OPEN_KEYS = { kind: true, requestId: true, instanceId: true, credential: true };
 function rejectsBrowserStampedIdentity(c) {
   return c.viewerId !== undefined || c.cwd !== undefined;
 }
@@ -1015,8 +1037,15 @@ function parseWebClientMessage(envelope) {
       return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.attachmentId, MAX_TERMINAL_ATTACHMENT_ID_LENGTH) ? p : null;
     case "terminal-close":
       return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && isBoundedStr(c.terminalId, MAX_TERMINAL_ID_LENGTH) ? p : null;
-    case "desktop-open":
-      return isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && c.streamId === undefined && c.wsPath === undefined ? p : null;
+    case "desktop-open": {
+      if (!hasOnlyKeys(c, DESKTOP_OPEN_KEYS) || !isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) || !isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH))
+        return null;
+      const open = { kind: "desktop-open", requestId: c.requestId, instanceId: c.instanceId };
+      if (c.credential === undefined)
+        return open;
+      const credential = parseDesktopCredential(c.credential);
+      return credential ? { ...open, credential } : null;
+    }
     case "desktop-close":
       return isBoundedStr(c.instanceId, MAX_WEB_INSTANCE_ID_LENGTH) && (isBoundedStr(c.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && c.requestId === undefined || isBoundedStr(c.requestId, MAX_DESKTOP_REQUEST_ID_LENGTH) && c.streamId === undefined) ? p : null;
     default:
@@ -1257,10 +1286,24 @@ var validateTerminalTerminate = (p) => {
   const o = fields(p);
   return o && isBoundedStr(o.terminalId, MAX_TERMINAL_ID_LENGTH) && isBoundedStr(o.generation, MAX_TERMINAL_GENERATION_LENGTH) ? o : null;
 };
+var DESKTOP_PREPARE_KEYS = { streamId: true, ticket: true, expiresAt: true, credential: true };
 var validateDesktopPrepare = (p) => {
   const o = fields(p);
-  return o && isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && isBoundedStr(o.ticket, MAX_DESKTOP_TICKET_LENGTH) && isNonNegInt(o.expiresAt) && o.host === undefined && o.port === undefined && o.target === undefined ? o : null;
+  if (!o || !hasOnlyKeys(o, DESKTOP_PREPARE_KEYS))
+    return null;
+  if (!isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) || !isBoundedStr(o.ticket, MAX_DESKTOP_TICKET_LENGTH) || !isNonNegInt(o.expiresAt))
+    return null;
+  const prepare = { streamId: o.streamId, ticket: o.ticket, expiresAt: o.expiresAt };
+  if (o.credential === undefined)
+    return prepare;
+  const credential = parseDesktopCredential(o.credential);
+  return credential ? { ...prepare, credential } : null;
 };
+var DESKTOP_PREPARE_RESULT_KEYS = { streamId: true, security: true };
+function parseDesktopPrepareResult(payload) {
+  const o = fields(payload);
+  return o && hasOnlyKeys(o, DESKTOP_PREPARE_RESULT_KEYS) && isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) && isDesktopSecurityKind(o.security) ? { streamId: o.streamId, security: o.security } : null;
+}
 var validateDesktopCancelEvent = (p) => {
   const o = fields(p);
   return o && isBoundedStr(o.streamId, MAX_DESKTOP_STREAM_ID_LENGTH) ? o : null;
@@ -2203,6 +2246,7 @@ export {
   DESKTOP_ERROR_CODES,
   DESKTOP_EVENT_PAYLOAD_VALIDATORS,
   DESKTOP_HUB_REQUEST_TIMEOUT_MS,
+  DESKTOP_INNER_RFB_SCHEME,
   DESKTOP_MAX_STREAMS_PER_ACCOUNT,
   DESKTOP_MAX_STREAMS_PER_INSTANCE,
   DESKTOP_RPC_TIMEOUT_MS,
@@ -2214,6 +2258,7 @@ export {
   MAX_BOT_ID_LENGTH,
   MAX_CAPABILITIES,
   MAX_CAPABILITY_LENGTH,
+  MAX_DESKTOP_CREDENTIAL_FIELD_BYTES,
   MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
   MAX_DESKTOP_REQUEST_ID_LENGTH,
   MAX_DESKTOP_STREAM_ID_LENGTH,
@@ -2259,8 +2304,10 @@ export {
   encodeEnvelope,
   errorCapability,
   errorPayload,
+  hasOnlyKeys,
   isBoundedStr,
   isConversationWorktreeStatus,
+  isDesktopSecurityKind,
   isErrorPayload,
   isIntInRange,
   isNonNegInt,
@@ -2278,7 +2325,9 @@ export {
   parseAgentCapabilityState,
   parseCanonicalBase64,
   parseControlPayload,
+  parseDesktopCredential,
   parseDesktopEventPayload,
+  parseDesktopPrepareResult,
   parseRouterAvailability,
   parseTerminalEventPayload,
   parseWebClientMessage,

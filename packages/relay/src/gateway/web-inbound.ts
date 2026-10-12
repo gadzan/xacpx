@@ -4,9 +4,11 @@ import {
   DESKTOP_HUB_REQUEST_TIMEOUT_MS,
   MAX_DESKTOP_ERROR_MESSAGE_LENGTH,
   MSG,
+  parseDesktopPrepareResult,
   parseTerminalEventPayload,
   parseWebClientMessage,
-  type DesktopPrepareResult,
+  RELAY_CAPABILITIES,
+  type DesktopCredential,
   type InteractionRequestDto,
   type ControlEventDto,
   type InstanceStateSnapshotDto,
@@ -492,7 +494,7 @@ async function handleDesktopOpen(
   deps: WebClientDeps,
   accountId: string,
   socket: WebSocketLike,
-  msg: { requestId: string; instanceId: string },
+  msg: { requestId: string; instanceId: string; credential?: DesktopCredential },
 ): Promise<void> {
   if (!deps.desktop) {
     failDesktop(deps, socket, msg.requestId, msg.instanceId, "desktop-protocol-error", "desktop is not enabled on this hub");
@@ -511,6 +513,17 @@ async function handleDesktopOpen(
   }
   if (!owned.capabilities?.includes("desktop.rfb.v1")) {
     failDesktop(deps, socket, msg.requestId, msg.instanceId, "desktop-disabled", "desktop is not enabled on this instance");
+    return;
+  }
+  if (msg.credential && !owned.capabilities?.includes(RELAY_CAPABILITIES.desktopArdAuthV1)) {
+    failDesktop(
+      deps,
+      socket,
+      msg.requestId,
+      msg.instanceId,
+      "desktop-auth-unsupported",
+      "this instance cannot sign in to macOS Screen Sharing",
+    );
     return;
   }
   const reserved = deps.desktop.reserve(accountId, msg.instanceId);
@@ -544,13 +557,26 @@ async function handleDesktopOpen(
     failDesktop(deps, socket, msg.requestId, msg.instanceId, code, message);
   };
   const connectorTicket = deps.desktop.mintConnectorTicket(streamId, accountId, msg.instanceId);
+  const preparePayload: {
+    streamId: string;
+    ticket: string;
+    expiresAt: number;
+    credential?: DesktopCredential;
+  } = {
+    streamId,
+    ticket: connectorTicket.ticket,
+    expiresAt: connectorTicket.expiresAt,
+  };
+  if (msg.credential) {
+    preparePayload.credential = {
+      kind: "ard",
+      username: msg.credential.username,
+      password: msg.credential.password,
+    };
+  }
   let payload: unknown;
   try {
-    payload = await deps.gateway.sendRequest(msg.instanceId, MSG.desktopPrepare, {
-      streamId,
-      ticket: connectorTicket.ticket,
-      expiresAt: connectorTicket.expiresAt,
-    }, { timeoutMs: DESKTOP_HUB_REQUEST_TIMEOUT_MS });
+    payload = await deps.gateway.sendRequest(msg.instanceId, MSG.desktopPrepare, preparePayload, { timeoutMs: DESKTOP_HUB_REQUEST_TIMEOUT_MS });
   } catch (err) {
     const mapped = mapDesktopConnectorError(err);
     failWith(mapped.code, mapped.message);
@@ -571,13 +597,13 @@ async function handleDesktopOpen(
     failWith(code, payload.error.message.slice(0, MAX_DESKTOP_ERROR_MESSAGE_LENGTH));
     return;
   }
-  const result = payload as DesktopPrepareResult;
-  if (!result || result.streamId !== streamId || (result.security !== "vnc-auth" && result.security !== "ard")) {
+  const result = parseDesktopPrepareResult(payload);
+  if (!result || result.streamId !== streamId) {
     failWith("desktop-protocol-error", "malformed prepare result");
     return;
   }
-  if (result.security !== "vnc-auth") {
-    failWith("desktop-auth-unsupported", "Apple Remote Desktop auth needs Phase B");
+  if (result.security === "ard" && !msg.credential) {
+    failWith("desktop-protocol-error", "ARD stream without a credential");
     return;
   }
   // The requesting socket may have closed (or been superseded) during the

@@ -17,10 +17,19 @@ import {
   parseControlPayload,
   parseDesktopEventPayload,
   type DesktopPrepareResult,
+  type DesktopSecurityKind,
   type RelayEnvelope,
 } from "@ganglion/xacpx-relay-protocol";
 
 import type { RelayDesktopConfig } from "../config.js";
+import {
+  ARD_BROWSER_GREETING,
+  ArdSecret,
+  createArdBrowserReplyFilter,
+  preauthArd,
+  type ArdPhase,
+  type ArdRefusalCode,
+} from "./ard-auth.js";
 import { desktopSetupGuidance } from "./platform-guidance.js";
 import { parseBanner, probeLoopbackRfb, RFB_LOOPBACK_HOST } from "./rfb-probe.js";
 
@@ -99,6 +108,24 @@ interface PendingTunnel {
 /** A socket owned by an in-flight prepare, tagged so teardown closes it right. */
 type OpenedSocket = { kind: "tcp"; sock: net.Socket } | { kind: "ws"; sock: WebSocket };
 
+/** How this tunnel authenticates. Fixed by the probe before the tunnel socket opens. */
+export type TunnelAuth =
+  | { security: "vnc-auth" }
+  | { security: "ard"; secret: ArdSecret };
+
+function chooseTunnelAuth(security: DesktopSecurityKind, secret: ArdSecret | undefined): TunnelAuth | null {
+  if (security === "vnc-auth") return { security: "vnc-auth" };
+  if (!secret) return null;
+  return { security: "ard", secret };
+}
+
+class DesktopPrepareRefusal extends Error {
+  constructor(readonly code: ArdRefusalCode, readonly phase: ArdPhase, readonly detail: string) {
+    super(detail);
+    this.name = "DesktopPrepareRefusal";
+  }
+}
+
 function toBinaryWsUrl(hubUrl: string, ticket: string): string {
   const url = new URL(hubUrl);
   url.protocol = url.protocol === "wss:" ? "wss:" : "ws:";
@@ -132,11 +159,14 @@ export class DesktopTunnelRuntime {
   /** Connector dispatch arm for `instance.desktop.prepare` (hub → connector req). */
   async handlePrepare(envelope: RelayEnvelope, respond: (payload: unknown) => void): Promise<boolean> {
     if (envelope.type !== MSG.desktopPrepare) return false;
-    const input = parseControlPayload(MSG.desktopPrepare, envelope.payload);
-    if (!input) {
+    const parsed = parseControlPayload(MSG.desktopPrepare, envelope.payload);
+    if (!parsed) {
       respond(errorPayload("desktop-protocol-error", "malformed desktop prepare payload"));
       return true;
     }
+    const input = { streamId: parsed.streamId, ticket: parsed.ticket, expiresAt: parsed.expiresAt };
+    const secret = parsed.credential ? new ArdSecret(parsed.credential) : undefined;
+    try {
     const config = this.deps.config;
     if (!config.enabled) {
       respond(errorPayload("desktop-disabled", "desktop is not enabled on this instance"));
@@ -222,16 +252,39 @@ export class DesktopTunnelRuntime {
         streamId: input.streamId,
         security: verdict.security,
       });
+      const auth = chooseTunnelAuth(verdict.security, secret);
+      if (!auth) {
+        this.deps.logger?.info?.("relay.desktop.credentials_required", "ARD server needs a macOS account", {
+          streamId: input.streamId,
+        });
+        respond(errorPayload("desktop-credentials-required", "macOS Screen Sharing needs an account name and password"));
+        return true;
+      }
       security = verdict.security;
-      await this.openTunnel(input.streamId, input.ticket, generation, pending, opened);
+      if (auth.security === "ard") {
+        await this.openArdTunnel(input.streamId, input.ticket, generation, pending, opened, auth.secret);
+      } else {
+        await this.openTunnel(input.streamId, input.ticket, generation, pending, opened);
+      }
       if (isRetired()) return true;
     } catch (err) {
       if (!isRetired()) {
-        this.deps.logger?.error("relay.desktop.tunnel_failed", "desktop tunnel failed", {
-          streamId: input.streamId,
-          detail: err instanceof Error ? err.message : String(err),
-        });
-        respond(errorPayload("desktop-stream-timeout", err instanceof Error ? err.message : "desktop tunnel failed"));
+        if (err instanceof DesktopPrepareRefusal) {
+          this.deps.logger?.info?.("relay.desktop.ard_refused", "ARD sign-in refused", {
+            streamId: input.streamId,
+            code: err.code,
+            phase: err.phase,
+            detail: err.detail,
+          });
+          const guidance = desktopSetupGuidance(this.deps.platform ?? process.platform, err.code, config.port);
+          respond(errorPayload(err.code, `${err.detail}. ${guidance}`));
+        } else {
+          this.deps.logger?.error("relay.desktop.tunnel_failed", "desktop tunnel failed", {
+            streamId: input.streamId,
+            detail: err instanceof Error ? err.message : String(err),
+          });
+          respond(errorPayload("desktop-stream-timeout", err instanceof Error ? err.message : "desktop tunnel failed"));
+        }
       }
       return true;
     } finally {
@@ -244,6 +297,9 @@ export class DesktopTunnelRuntime {
     const result: DesktopPrepareResult = { streamId: input.streamId, security };
     respond(result);
     return true;
+    } finally {
+      secret?.wipe();
+    }
   }
 
   /** Connector dispatch arm for `instance.desktop.cancel` (hub → connector event). */
@@ -284,34 +340,7 @@ export class DesktopTunnelRuntime {
     sockets: OpenedSocket[],
   ): Promise<void> {
     const config = this.deps.config;
-    const tcp = net.createConnection({ host: RFB_LOOPBACK_HOST, port: config.port });
-    // Publish to the pending record the instant the socket exists: an abort
-    // that lands between here and the first await must still close it.
-    sockets.push({ kind: "tcp", sock: tcp });
-    // Any throw below must not leak the loopback socket: openHubSocket can
-    // reject after the banner was already read (hub down / bad ticket).
-    // closeActive only drops this.active, so destroy explicitly on failure.
-    await new Promise<void>((resolve, reject) => {
-      // An abort that lands mid-connect cuts the dial immediately instead of
-      // leaving the socket alive until connectTimeoutMs fires.
-      const timer = setTimeout(() => {
-        tcp.destroy();
-        reject(new Error(`RFB connect timed out after ${config.connectTimeoutMs}ms`));
-      }, config.connectTimeoutMs);
-      pending.signal.addEventListener("abort", () => {
-        clearTimeout(timer);
-        tcp.destroy();
-        reject(new Error(`desktop tunnel retired before open (${streamId})`));
-      }, { once: true });
-      tcp.once("connect", () => {
-        clearTimeout(timer);
-        resolve();
-      });
-      tcp.once("error", (err) => {
-        clearTimeout(timer);
-        reject(err instanceof Error ? err : new Error(String(err)));
-      });
-    });
+    const tcp = await this.connectLoopback(streamId, pending, sockets);
     // Re-verify ONLY the 12-byte server banner on the real tunnel socket: the
     // probe ran earlier and the port may have been rebound since. Never forward
     // non-RFB bytes — but never consume security state either: noVNC owns the
@@ -348,20 +377,92 @@ export class DesktopTunnelRuntime {
     tcp.on("data", (chunk: Buffer) => {
       earlyChunks.push(chunk);
     });
+    const { socket, tunnel } = await this.openHubPlane(streamId, ticket, generation, pending, sockets, tcp);
+    tcp.removeAllListeners("data");
+    tcp.resume();
+    // Replay what the banner preflight consumed, IN ORDER, before live
+    // forwarding resumes: the hub socket just opened, so forwardToWs now
+    // delivers. Without this noVNC never sees "RFB 003.xxx" and both sides
+    // deadlock (server waits for the client version, noVNC waits for banner).
+    for (const replay of earlyChunks) {
+      forwardToWs(socket, tcp, replay);
+    }
+    this.spliceRaw(tunnel, (chunk) => chunk);
+  }
+
+  private async openArdTunnel(
+    streamId: string,
+    ticket: string,
+    generation: number,
+    pending: PendingTunnel,
+    sockets: OpenedSocket[],
+    secret: ArdSecret,
+  ): Promise<void> {
+    const tcp = await this.connectLoopback(streamId, pending, sockets);
+    const outcome = await preauthArd(tcp, secret, { signal: pending.signal });
+    if (this.generation !== generation || this.pending.get(streamId) !== pending) {
+      tcp.destroy();
+      throw new Error(`desktop tunnel retired before open (${streamId})`);
+    }
+    if (!outcome.ok) {
+      tcp.destroy();
+      throw new DesktopPrepareRefusal(outcome.code, outcome.phase, outcome.detail);
+    }
+    const { socket, tunnel } = await this.openHubPlane(streamId, ticket, generation, pending, sockets, tcp);
+    this.spliceRaw(tunnel, createArdBrowserReplyFilter());
+    try {
+      socket.send(ARD_BROWSER_GREETING, { binary: true });
+    } catch {
+      this.closeTunnel(tunnel, "hub-error");
+      throw new Error("desktop hub socket closed before greeting");
+    }
+    tcp.resume();
+  }
+
+  private async connectLoopback(
+    streamId: string,
+    pending: PendingTunnel,
+    sockets: OpenedSocket[],
+  ): Promise<net.Socket> {
+    const config = this.deps.config;
+    const tcp = net.createConnection({ host: RFB_LOOPBACK_HOST, port: config.port });
+    sockets.push({ kind: "tcp", sock: tcp });
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        tcp.destroy();
+        reject(new Error(`RFB connect timed out after ${config.connectTimeoutMs}ms`));
+      }, config.connectTimeoutMs);
+      pending.signal.addEventListener("abort", () => {
+        clearTimeout(timer);
+        tcp.destroy();
+        reject(new Error(`desktop tunnel retired before open (${streamId})`));
+      }, { once: true });
+      tcp.once("connect", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      tcp.once("error", (err) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      });
+    });
+    return tcp;
+  }
+
+  private async openHubPlane(
+    streamId: string,
+    ticket: string,
+    generation: number,
+    pending: PendingTunnel,
+    sockets: OpenedSocket[],
+    tcp: net.Socket,
+  ): Promise<{ socket: WebSocket; tunnel: ActiveTunnel }> {
+    const config = this.deps.config;
     const url = toBinaryWsUrl(this.deps.hubUrl, ticket);
-    // The hub socket is created and IMMEDIATELY published to the pending
-    // record, before awaiting the upgrade. That ordering is the whole point:
-    // while `ws`'s upgrade is in flight (up to connectTimeoutMs = 10s) the
-    // object already exists, and a `closeAll()`/`handleCancel()` landing in
-    // that window must close it now — not wait for the upgrade to settle or
-    // time out. Registering only after the await left precisely that hole.
     const createSocket = this.deps.createSocket
       ?? ((u: string, options: WebSocketConnectOptions) => new WebSocket(u, options));
     let socket: WebSocket;
-    // Temporary error swallow covering the gap before openHubSocket attaches its
-    // own one-shot 'error' listener. `ws` emits 'error' on a rejected upgrade,
-    // and an emitter 'error' with no listener throws — which `bun test` would
-    // attribute to this file. Detached inside openHubSocket on first settle.
+    // `ws` emits 'error' on a rejected upgrade, and an 'error' with no listener throws.
     const guard = () => {};
     try {
       socket = createSocket(url, { maxPayload: DESKTOP_WS_MAX_PAYLOAD_BYTES });
@@ -379,13 +480,7 @@ export class DesktopTunnelRuntime {
       tcp.destroy();
       throw err;
     }
-    // LAST lifecycle check before publishing. Between the await above and this
-    // line nothing yields, but closeAll()/handleCancel() can have run in an
-    // earlier task and left the attempt retired; publishing then would install
-    // a tunnel whose owner is gone and that nobody will ever close.
     if (this.generation !== generation || this.pending.get(streamId) !== pending) {
-      // The abort already destroyed these sockets (openHubSocket detaches its
-      // one-shot listeners on settle), so nothing survives this teardown.
       try { socket.close(); } catch { /* gone */ }
       try { tcp.destroy(); } catch { /* gone */ }
       throw new Error(`desktop tunnel retired before open (${streamId})`);
@@ -393,21 +488,14 @@ export class DesktopTunnelRuntime {
     const tunnel: ActiveTunnel = { streamId, ticket, socket, tcp, closed: false };
     this.active = tunnel;
     pending.tunnel = tunnel;
-    tcp.removeAllListeners("data");
-    tcp.resume();
-    // Replay what the banner preflight consumed, IN ORDER, before live
-    // forwarding resumes: the hub socket just opened, so forwardToWs now
-    // delivers. Without this noVNC never sees "RFB 003.xxx" and both sides
-    // deadlock (server waits for the client version, noVNC waits for banner).
-    for (const replay of earlyChunks) {
-      forwardToWs(socket, tcp, replay);
-    }
-    // Every transport listener below targets THIS tunnel object, never whatever
-    // `this.active` happens to be when the event lands. A is registered while
-    // active; a close/cancel then clears `active` and starts closing A's
-    // sockets; a reconnect can publish B before A's close handshake completes.
-    // A's late `close`/`error` must not find `this.active === B` and tear down a
-    // healthy replacement, so the guard is object identity, not stream name.
+    return { socket, tunnel };
+  }
+
+  private spliceRaw(
+    tunnel: ActiveTunnel,
+    fromBrowser: (chunk: Buffer) => Buffer | "mismatch",
+  ): void {
+    const { socket, tcp } = tunnel;
     socket.on("message", (data, isBinary) => {
       if (tunnel.closed) return;
       if (!isBinary || !(data instanceof Buffer)) {
@@ -418,12 +506,13 @@ export class DesktopTunnelRuntime {
         this.closeTunnel(tunnel, "oversize-frame");
         return;
       }
-      const ok = tcp.write(data);
-      // Only wait for drain when the socket actually applied backpressure.
-      // Registering a one-shot listener on every frame leaks: with a healthy
-      // loopback RFB server write() keeps returning true, no drain ever fires,
-      // and a long session trips MaxListenersExceededWarning while holding the
-      // references alive.
+      const bytes = fromBrowser(data);
+      if (bytes === "mismatch") {
+        this.closeTunnel(tunnel, "ard-reply-mismatch");
+        return;
+      }
+      if (bytes.byteLength === 0) return;
+      const ok = tcp.write(bytes);
       if (!ok) {
         socket.pause?.();
         tcp.once("drain", () => {
@@ -431,10 +520,6 @@ export class DesktopTunnelRuntime {
         });
       }
     });
-    // A persistent error swallow MUST exist alongside the close handler: the
-    // `ws` client emits 'error' (with a bare ErrorEvent) before 'close' on
-    // every abnormal shutdown, and an 'error' with no listener throws — which
-    // under `bun test` fails the entire file even when the close is handled.
     socket.on("error", () => {});
     socket.on("close", () => this.closeTunnel(tunnel, "hub-close"));
     socket.on("error", () => this.closeTunnel(tunnel, "hub-error"));

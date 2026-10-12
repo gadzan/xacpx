@@ -374,30 +374,35 @@ export function requestDesktop(
   msg: Extract<WebClientMessage, { kind: "desktop-open" }>,
   options: { timeoutMs?: number } = {},
 ): Promise<DesktopOpenedResult> {
+  const requestId = msg.requestId;
   const timeoutMs = options.timeoutMs ?? DESKTOP_RPC_TIMEOUT_MS;
   if (!isEventsSocketOpen()) {
     return Promise.reject(new DesktopRequestError("events-offline", "events socket is offline"));
   }
-  if (pending.has(msg.requestId) || desktopPending.has(msg.requestId)) {
+  if (pending.has(requestId) || desktopPending.has(requestId)) {
     return Promise.reject(new DesktopRequestError("desktop-protocol-error", "duplicate requestId"));
   }
-  return new Promise((resolve, reject) => {
+  const promise = new Promise<DesktopOpenedResult>((resolve, reject) => {
     const timer = setTimeout(() => {
-      desktopPending.delete(msg.requestId);
+      desktopPending.delete(requestId);
       reject(new DesktopRequestError("desktop-stream-timeout", "desktop request timed out"));
     }, timeoutMs);
-    desktopPending.set(msg.requestId, { expect: "desktop-opened", resolve, reject, timer });
-    try {
-      sendWebClientMessage(msg);
-    } catch (err) {
-      clearTimeout(timer);
-      desktopPending.delete(msg.requestId);
-      reject(new DesktopRequestError(
+    desktopPending.set(requestId, { expect: "desktop-opened", resolve, reject, timer });
+  });
+  try {
+    sendWebClientMessage(msg);
+  } catch (err) {
+    const entry = desktopPending.get(requestId);
+    if (entry) {
+      clearTimeout(entry.timer);
+      desktopPending.delete(requestId);
+      entry.reject(new DesktopRequestError(
         "desktop-protocol-error",
         err instanceof Error ? err.message : "send failed",
       ));
     }
-  });
+  }
+  return promise;
 }
 
 /** Connects to the relay /ws fan-out and invokes `onEvent` for each web event. Auto-reconnects. */

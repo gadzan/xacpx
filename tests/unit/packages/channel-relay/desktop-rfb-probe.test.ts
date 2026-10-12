@@ -28,6 +28,7 @@ function handshake33(type: number): Uint8Array {
 test("outer VncAuth is accepted; servers also offering Tight use the VncAuth leg", () => {
   expect(evaluateRfbHandshake(handshake37(2))).toEqual({ ok: true, version: "RFB 003.008", security: "vnc-auth" });
   expect(evaluateRfbHandshake(handshake37(16, 2))).toEqual({ ok: true, version: "RFB 003.008", security: "vnc-auth" });
+  expect(evaluateRfbHandshake(handshake37(2, 30))).toEqual({ ok: true, version: "RFB 003.008", security: "vnc-auth" });
   expect(evaluateRfbHandshake(handshake33(2))).toEqual({ ok: true, version: "RFB 003.003", security: "vnc-auth" });
 });
 
@@ -35,7 +36,7 @@ test("Tight-only endpoints fail closed: outer 16 cannot prove password auth", ()
   // Tight (16) is a sub-auth container: the server may select STDVNOAUTH__
   // (or an empty sub-auth list, also no auth), and noVNC completes either.
   // A "vnc-auth" verdict here could not constrain the real tunnel.
-  for (const verdict of [evaluateRfbHandshake(handshake37(16)), evaluateRfbHandshake(handshake33(16))]) {
+  for (const verdict of [evaluateRfbHandshake(handshake37(16)), evaluateRfbHandshake(handshake37(16, 30)), evaluateRfbHandshake(handshake33(16))]) {
     expect(verdict?.ok).toBe(false);
     if (verdict && !verdict.ok) {
       expect(verdict.code).toBe("desktop-auth-unsupported");
@@ -57,18 +58,17 @@ test("None-only servers are rejected (unauthenticated VNC never served)", () => 
   });
 });
 
-test("VeNCrypt/TLS/ARD/proprietary offers fail with desktop-auth-unsupported", () => {
-  for (const type of [19, 18, 30, 5, 6, 17]) {
+test("VeNCrypt/TLS/proprietary offers fail with desktop-auth-unsupported", () => {
+  for (const type of [19, 18, 5, 6, 17]) {
     const verdict = evaluateRfbHandshake(handshake37(type));
     expect(verdict?.ok).toBe(false);
     if (verdict && !verdict.ok) expect(verdict.code).toBe("desktop-auth-unsupported");
   }
-  // ARD mention stays explicit for the Phase B follow-up.
-  expect(evaluateRfbHandshake(handshake37(30))).toEqual({
-    ok: false,
-    code: "desktop-auth-unsupported",
-    detail: expect.stringContaining("Phase B"),
-  });
+});
+
+test("Apple Remote Desktop without VncAuth is accepted as ard", () => {
+  expect(evaluateRfbHandshake(handshake37(30))).toEqual({ ok: true, version: "RFB 003.008", security: "ard" });
+  expect(evaluateRfbHandshake(handshake37(30, 19))).toEqual({ ok: true, version: "RFB 003.008", security: "ard" });
 });
 
 test("non-RFB greetings and invalid security fail closed", () => {
@@ -255,7 +255,9 @@ test("platform guidance names the right server per OS", () => {
   expect(win).toContain("LoopbackOnly");
   expect(desktopSetupGuidance("linux", "desktop-rfb-unavailable")).toContain("TigerVNC");
   expect(desktopSetupGuidance("linux", "desktop-rfb-unavailable")).toContain("relax_encryption");
-  expect(desktopSetupGuidance("darwin", "desktop-auth-unsupported")).toContain("Phase B");
+  const darwinAuth = desktopSetupGuidance("darwin", "desktop-auth-unsupported");
+  expect(darwinAuth).not.toContain("Phase B");
+  expect(darwinAuth).toContain("Apple Remote Desktop");
   expect(desktopSetupGuidance("win32", "desktop-not-rfb")).toContain("options.desktop.port");
 });
 

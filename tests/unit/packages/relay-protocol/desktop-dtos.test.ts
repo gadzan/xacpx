@@ -16,8 +16,11 @@ import {
   MSG,
   RELAY_CAPABILITIES,
   DESKTOP_ERROR_CODES,
+  isDesktopSecurityKind,
   parseControlPayload,
+  parseDesktopCredential,
   parseDesktopEventPayload,
+  parseDesktopPrepareResult,
   parseWebClientMessage,
   parseWebServerEvent,
   webClientEnvelope,
@@ -37,8 +40,9 @@ test("desktop MSG types live in the instance.desktop namespace", () => {
   expect(new Set(values).size).toBe(values.length);
 });
 
-test("desktop capability constant matches the release-gate string", () => {
+test("desktop capability constants match the release-gate strings", () => {
   expect(RELAY_CAPABILITIES.desktopRfbV1).toBe("desktop.rfb.v1");
+  expect(RELAY_CAPABILITIES.desktopArdAuthV1).toBe("desktop.ard-auth.v1");
 });
 
 test("stable desktop error codes are fixed", () => {
@@ -51,6 +55,9 @@ test("stable desktop error codes are fixed", () => {
     "desktop-stream-timeout",
     "desktop-instance-offline",
     "desktop-protocol-error",
+    "desktop-credentials-required",
+    "desktop-credentials-rejected",
+    "desktop-permission-denied",
   ];
   expect([...DESKTOP_ERROR_CODES]).toEqual(expected);
 });
@@ -225,4 +232,102 @@ test("desktop server events reject bad paths, tickets-in-disguise, and oversized
   }))).toBeNull();
   // Unknown desktop kinds fail closed.
   expect(parseWebServerEvent(webEventEnvelope({ kind: "desktop-bytes", instanceId: "i1" } as never))).toBeNull();
+});
+
+test("parseDesktopCredential caps each field at 63 UTF-8 bytes, not 63 characters", () => {
+  expect(parseDesktopCredential({ kind: "ard", username: "dana", password: "密".repeat(21) }))
+    .toEqual({ kind: "ard", username: "dana", password: "密".repeat(21) });
+  expect(parseDesktopCredential({ kind: "ard", username: "dana", password: "密".repeat(22) })).toBeNull();
+  expect(parseDesktopCredential({ kind: "ard", username: "a".repeat(63), password: "secret" }))
+    .toEqual({ kind: "ard", username: "a".repeat(63), password: "secret" });
+  expect(parseDesktopCredential({ kind: "ard", username: "a".repeat(64), password: "secret" })).toBeNull();
+});
+
+test("parseDesktopCredential refuses NUL, empty fields, unknown kinds, and extra keys", () => {
+  expect(parseDesktopCredential({ kind: "ard", username: "da\0na", password: "secret" })).toBeNull();
+  expect(parseDesktopCredential({ kind: "ard", username: "dana", password: "sec\0ret" })).toBeNull();
+  expect(parseDesktopCredential({ kind: "ard", username: "", password: "secret" })).toBeNull();
+  expect(parseDesktopCredential({ kind: "ard", username: "dana", password: "" })).toBeNull();
+  expect(parseDesktopCredential({ kind: "vnc", username: "dana", password: "secret" })).toBeNull();
+  expect(parseDesktopCredential({ kind: "ard", username: "dana", password: "secret", domain: "corp" })).toBeNull();
+  expect(parseDesktopCredential(JSON.parse('{"kind":"ard","username":"dana","password":"secret","__proto__":{}}'))).toBeNull();
+  expect(parseDesktopCredential(["ard", "dana", "secret"])).toBeNull();
+  expect(parseDesktopCredential({ kind: "ard", username: 7, password: "secret" })).toBeNull();
+});
+
+test("parseDesktopCredential returns a fresh object, not the input", () => {
+  const input = { kind: "ard", username: "dana", password: "secret" };
+  const parsed = parseDesktopCredential(input);
+  expect(parsed).toEqual({ kind: "ard", username: "dana", password: "secret" });
+  input.password = "changed";
+  expect(parsed?.password).toBe("secret");
+});
+
+test("desktop-open carries a parsed credential and refuses a top-level password", () => {
+  expect(parseWebClientMessage(webClientEnvelope({
+    kind: "desktop-open", requestId: "r1", instanceId: "i1",
+    credential: { kind: "ard", username: "dana", password: "secret" },
+  }))).toEqual({
+    kind: "desktop-open", requestId: "r1", instanceId: "i1",
+    credential: { kind: "ard", username: "dana", password: "secret" },
+  });
+  expect(parseWebClientMessage(webClientEnvelope({
+    kind: "desktop-open", requestId: "r1", instanceId: "i1", password: "secret",
+  } as never))).toBeNull();
+  expect(parseWebClientMessage(webClientEnvelope({
+    kind: "desktop-open", requestId: "r1", instanceId: "i1",
+    credential: { kind: "ard", username: "dana", password: "secret", extra: 1 },
+  } as never))).toBeNull();
+  expect(parseWebClientMessage(webClientEnvelope({
+    kind: "desktop-open", requestId: "r1", instanceId: "i1",
+    credential: { kind: "ard", username: "dana", password: "密".repeat(22) },
+  }))).toBeNull();
+});
+
+test("desktop prepare is a closed schema and rebuilds the credential", () => {
+  expect(parseControlPayload(MSG.desktopPrepare, {
+    streamId: "s1", ticket: "t", expiresAt: 5,
+    credential: { kind: "ard", username: "dana", password: "secret" },
+  })).toEqual({
+    streamId: "s1", ticket: "t", expiresAt: 5,
+    credential: { kind: "ard", username: "dana", password: "secret" },
+  });
+  expect(parseControlPayload(MSG.desktopPrepare, { streamId: "s1", ticket: "t", expiresAt: 5, note: "x" })).toBeNull();
+  expect(parseControlPayload(MSG.desktopPrepare, {
+    streamId: "s1", ticket: "t", expiresAt: 5,
+    credential: { kind: "ard", username: "dana" },
+  })).toBeNull();
+  expect(parseControlPayload(MSG.desktopPrepare, {
+    streamId: "s1", ticket: "t", expiresAt: 5, credential: null,
+  })).toBeNull();
+});
+
+test("parseDesktopPrepareResult accepts both security kinds and nothing else", () => {
+  expect(parseDesktopPrepareResult({ streamId: "s1", security: "ard" })).toEqual({ streamId: "s1", security: "ard" });
+  expect(parseDesktopPrepareResult({ streamId: "s1", security: "vnc-auth" })).toEqual({ streamId: "s1", security: "vnc-auth" });
+  expect(parseDesktopPrepareResult({ streamId: "s1", security: "none" })).toBeNull();
+  expect(parseDesktopPrepareResult({ streamId: "s1", security: "toString" })).toBeNull();
+  expect(parseDesktopPrepareResult({ streamId: "", security: "ard" })).toBeNull();
+  expect(parseDesktopPrepareResult({ streamId: "s1", security: "ard", credential: {} })).toBeNull();
+  expect(parseDesktopPrepareResult(null)).toBeNull();
+});
+
+test("isDesktopSecurityKind does not admit prototype keys", () => {
+  expect(isDesktopSecurityKind("ard")).toBe(true);
+  expect(isDesktopSecurityKind("vnc-auth")).toBe(true);
+  expect(isDesktopSecurityKind("constructor")).toBe(false);
+  expect(isDesktopSecurityKind(2)).toBe(false);
+});
+
+test("desktop-opened round-trips an ard stream", () => {
+  const opened: WebServerEvent = {
+    kind: "desktop-opened",
+    requestId: "r1",
+    instanceId: "i1",
+    streamId: "s1",
+    wsPath: "/desktop/observe?ticket=browser-ticket",
+    expiresAt: 1_700_000_000_000,
+    security: "ard",
+  };
+  expect(parseWebServerEvent(webEventEnvelope(opened))).toEqual(opened);
 });

@@ -1,7 +1,8 @@
 # 实例桌面（RFB/VNC）配置指南
 
-> 状态：Phase A（Linux + Windows VncAuth，单 viewer）。设计依据
-> `docs/superpowers/specs/2026-09-24-relay-web-desktop-rfb-design.md`，
+> 状态：Linux / Windows 的 outer VncAuth，以及 macOS Screen Sharing（connector 侧 ARD）。单 viewer。设计依据
+> `docs/superpowers/specs/2026-09-24-relay-web-desktop-rfb-design.md` 与
+> `docs/superpowers/specs/2026-10-02-relay-web-desktop-phase-b-macos-ard-design.md`，
 > 后端语义见 `docs/relay-module.md`。
 
 本文只讲一件事：让在线实例的本地图形桌面能通过 relay-web 观看与控制，同时
@@ -9,19 +10,19 @@
 
 ## 1. 边界（Phase A 不支持）
 
-| 能力 | Phase A |
+| 能力 | 当前 |
 | --- | --- |
-| 平台 | Linux、Windows |
-| 认证 | 仅 outer VNC Auth（RFB security type 2） |
+| 平台 | Linux、Windows、macOS |
+| 认证 | outer VNC Auth（type 2），或 macOS Screen Sharing 的 Apple Remote Desktop（type 30） |
 | Viewer 数 | 1（第二个 viewer 收到 `desktop-busy`） |
 | 桌面旋转 | 不支持（`desktop.remote-resize.v1` 未实现） |
 | viewer/controller | 不支持（`desktop.multi-view.v1` 未实现） |
-| macOS ARD 预认证 | 不支持（Phase B） |
+| macOS ARD | connector 在本机完成 type 30，浏览器看到 RFB 3.8 None |
 | 任意 TCP 转发 | 永远不支持；目标固定 `127.0.0.1:<port>` |
 
-None（无认证）、VeNCrypt/TLS-only、专有认证与 macOS ARD 认证一律
-fail closed，报 `desktop-auth-unsupported`。这不是部署失误，是刻意的安全边界：
-connector 拒绝让弱认证平面成为 xacpx 连接面的旁路。
+None（无认证）、Tight-only、VeNCrypt/TLS-only 与专有认证一律 fail closed，报
+`desktop-auth-unsupported`。这不是部署失误，是刻意的安全边界：connector 拒绝让弱认证平面成为 xacpx 连接面的旁路。
+一台同时提供 type 2 和 type 30 的 Mac 走 VNC 密码，不走账户登录。
 
 ## 2. 配置
 
@@ -179,10 +180,15 @@ x11vnc 或 TigerVNC。
 
 ## 5. macOS
 
-Phase A 只接标准 VncAuth RFB server。Apple Screen Sharing 默认 ARD auth，
-报 `desktop-auth-unsupported`（需 Phase B 的 connector 侧预认证）。
+打开 系统设置 › 通用 › 共享 › 屏幕共享，并允许你要登录的账户。按系统提示给屏幕共享授予屏幕录制和辅助功能。除非你就是想走 VNC 密码，否则关掉「VNC 观看者可以使用密码控制屏幕」：一台同时提供 VNC 密码的 Mac 会用那条路径打开。
 
-临时方案：安装 TightVNC Viewer/Server 或 TigerVNC，配置为纯 VNC password + loopback。
+在 relay-web 点 **Desktop**。标签页要 macOS 账户名（短名或全名）和密码。它们经你已登录的控制连接送到这台 Mac 的 connector，只用于 Apple Remote Desktop 握手，然后丢掉。什么都不保存。每次重连都会再问一次，账户名会在这个标签页里预填。
+
+| 你看到 | 含义 |
+| --- | --- |
+| macOS 拒绝了该账户名或密码 | 名字或密码错了，或者屏幕共享没有允许这个账户。表单保持打开。 |
+| macOS 拒绝共享屏幕 | 登录成功，但 macOS 没有开始会话。检查屏幕共享权限，以及屏幕录制 / 辅助功能。 |
+| 不支持该认证方式 | 这台 Mac 上的 connector 还不会做 macOS 登录。更新 `@ganglion/xacpx-channel-relay`。 |
 
 ## 6. 排障
 
@@ -194,8 +200,11 @@ Open 失败时错误码与含义：
 | `desktop-busy` | 已有 viewer | 关掉另一个 Desktop 标签页 |
 | `desktop-rfb-unavailable` | 连不上 loopback 端口 | RFB server 没启动/端口不对 |
 | `desktop-not-rfb` | 端口在监听但不是 RFB | `desktop.port` 指向别的服务了 |
-| `desktop-auth-unsupported` | 认证方式不被接受 | 见下 |
-| `desktop-stream-timeout` | tunnel/upgrade 超时 | 网络抖动；可重试 |
+| `desktop-auth-unsupported` | 认证方式不被接受 | 见下。None、Tight-only、VeNCrypt 走这里 |
+| `desktop-credentials-required` | macOS 要账户名和密码 | 表单，不是错误横幅 |
+| `desktop-credentials-rejected` | macOS 拒绝了账户名或密码 | 表单保持打开 |
+| `desktop-permission-denied` | 登录成功但 macOS 没有开始会话 | 检查屏幕共享、屏幕录制、辅助功能 |
+| `desktop-stream-timeout` | tunnel/upgrade 超时，或 ARD 停在 ServerInit | 可重试 |
 | `desktop-instance-offline` | 实例掉线 | 等实例回来；可重试 |
 | `desktop-auth-failed` | 密码被 VNC server 拒绝 | 换个密码重试 |
 
@@ -206,7 +215,7 @@ Open 失败时错误码与含义：
 1. TightVNC 只给了 outer **Tight (16)**，没给 **type 2**——请在 Authentication 里
    选 VNC password 模式。outer 16 + type 2 同时存在时正常接受，且永不进入 Tight
    子协商。
-2. GNOME Screen Sharing（VeNCrypt）、macOS Screen Sharing（ARD）——见 §4/§5。
+2. GNOME Screen Sharing（VeNCrypt）——见 §4。macOS Screen Sharing 见 §5，不再报这条。
 3. RFB server 允许 None 但 connector 策略拒绝（默认策略就是拒绝 None）。
 
 ### 诊断信息在哪

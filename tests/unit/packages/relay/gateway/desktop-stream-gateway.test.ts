@@ -43,6 +43,18 @@ function setup() {
   return { tickets, streams, gateway, closed };
 }
 
+test("ard reportConnectorReady waits for the browser the same way VncAuth does", () => {
+  const { tickets, streams, gateway } = setup();
+  const reserved = streams.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
+  expect(reserved.ok).toBe(true);
+  if (!reserved.ok) return;
+  const connectorTicket = tickets.mintTicket({ streamId: reserved.record.streamId, accountId: "a1", instanceId: "i1", side: "connector" });
+  const connector = new FakeBinarySocket();
+  expect(gateway.attachConnector(connectorTicket.ticket, connector as unknown as DesktopBinarySocket).ok).toBe(true);
+  expect(gateway.reportConnectorReady(reserved.record.streamId, "ard")).toBe(true);
+  expect(gateway.streamState(reserved.record.streamId)).toBe("waiting-browser");
+});
+
 test("binary frames pipe both ways byte-identical", () => {
   const { tickets, streams, gateway } = setup();
   const reserved = streams.reserve({ accountId: "a1", instanceId: "i1", ttlMs: 60_000 });
