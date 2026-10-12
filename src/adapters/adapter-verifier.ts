@@ -26,6 +26,35 @@ interface JsonRpcResponse {
   error?: { message?: unknown; data?: unknown };
 }
 
+/**
+ * Diagnosis for an adapter that ended without answering initialize.
+ *
+ * Precedence is deliberate and order-independent, because the events that feed
+ * it race: a child that already exited breaks its stdin pipe milliseconds
+ * before `close` lands. The registry E404 guidance is the actionable message
+ * for that exact failure, so it wins even when the write also failed; a broken
+ * stdin then outranks the generic exit line because the request never reached
+ * the adapter.
+ */
+export function diagnoseAdapterExit(input: {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stderr: string;
+  stdinError?: Error;
+  adapterRegistry?: string;
+}): Error {
+  if (input.adapterRegistry && isAdapterRegistryNotFoundOutput(input.stderr)) {
+    return new Error(adapterRegistryE404Guidance(effectiveAdapterRegistry(input.adapterRegistry)));
+  }
+  if (input.stdinError) {
+    return new Error(`failed to send ACP initialize: ${input.stdinError.message}`);
+  }
+  const suffix = input.stderr.trim() ? `: ${input.stderr.trim()}` : "";
+  return new Error(
+    `adapter exited before ACP initialize completed (code=${String(input.code)}, signal=${String(input.signal)})${suffix}`,
+  );
+}
+
 /** Runs a structured ACP initialize probe and tears down the process tree afterward. */
 export async function verifyAcpInitialize(
   command: string,
@@ -41,6 +70,7 @@ export async function verifyAcpInitialize(
   });
   let stderr = "";
   let stdoutBuffer = "";
+  let stdinError: Error | undefined;
   let settled = false;
   let timer: NodeJS.Timeout | undefined;
   // Probe concurrently with the initialize wait: awaiting it up front would
@@ -107,15 +137,24 @@ export async function verifyAcpInitialize(
       child.once("error", (error) => finish(new Error(`failed to start adapter: ${error.message}`)));
       child.once("close", (code, signal) => {
         if (settled) return;
-        if (options.adapterRegistry && isAdapterRegistryNotFoundOutput(stderr)) {
-          finish(new Error(adapterRegistryE404Guidance(effectiveAdapterRegistry(options.adapterRegistry))));
-          return;
-        }
-        const suffix = stderr.trim() ? `: ${stderr.trim()}` : "";
-        finish(new Error(`adapter exited before ACP initialize completed (code=${String(code)}, signal=${String(signal)})${suffix}`));
+        finish(diagnoseAdapterExit({
+          code,
+          signal,
+          stderr,
+          stdinError,
+          adapterRegistry: options.adapterRegistry,
+        }));
       });
 
-      child.stdin.on("error", (error) => finish(new Error(`failed to send ACP initialize: ${error.message}`)));
+      // Never terminal on its own. A child that already exited breaks the pipe
+      // milliseconds before `close` lands, so finishing here would preempt the
+      // close diagnosis — including the registry E404 guidance, which is the
+      // actionable message for that exact failure. `close` always follows an
+      // exited child; a child that outlives its own stdin is caught by the
+      // timeout above.
+      child.stdin.on("error", (error) => {
+        stdinError = error;
+      });
       // Keep stdin open until the response arrives. ACP adapters treat EOF as client
       // disconnect; ending immediately can race an async initialize and yield code 0
       // with no response (observed with codex-acp 1.x).
