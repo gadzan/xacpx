@@ -770,6 +770,23 @@ export const useInstancesStore = defineStore("instances", () => {
     }
   }
 
+  /**
+   * Flip the instance's automatic-collaboration switch. The daemon persists the
+   * setting, re-probes, and answers with the resulting availability — the same
+   * four-status shape `.get` returns, so a failed enable surfaces its reason
+   * instead of a silent no-op. A rejected RPC leaves the previous state in
+   * place; callers re-read to recover.
+   */
+  async function setConversationRouterEnabled(instanceId: string, enabled: boolean): Promise<RouterAvailability> {
+    const raw = unwrap(await api.rpc(instanceId, "control.conversations.router.set", { enabled }));
+    const availability = parseRouterAvailability(raw);
+    routerAvailabilityById.value = {
+      ...routerAvailabilityById.value,
+      [instanceId]: availability,
+    };
+    return availability;
+  }
+
   async function getAgentCapabilities(
     instanceId: string,
     input: { agent: string; workspace: string; botId?: string; probe?: boolean },
@@ -976,6 +993,10 @@ export const useInstancesStore = defineStore("instances", () => {
       // A workspace was added/removed/edited on the instance (e.g. `xacpx workspace add`
       // from the terminal) — re-fetch so the file browser + create-session form reflect it.
       void loadWorkspaces(event.instanceId).catch(() => {});
+    } else if (event.kind === "control-event" && event.event.type === "conversation-router-changed") {
+      // Automatic collaboration was switched on another client/surface — re-read so the
+      // composer's automatic target and the settings toggle converge.
+      void loadRouterAvailability(event.instanceId).catch(() => {});
     } else if (event.kind === "agent-directory") {
       agentDirectory.value = event.endpoints;
     }
@@ -1002,5 +1023,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return undefined;
   }
 
-  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
+  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, setConversationRouterEnabled, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
 });

@@ -1969,6 +1969,10 @@ export async function buildApp(
     }
   };
 
+  // The Conversation runtime is constructed AFTER ControlService (it needs the
+  // bound kernel), but the router switch applies to the live runtime. This ref
+  // is the seam: set once the runtime exists, read by the switch.
+  let conversationRuntimeRef: ConversationRuntime | undefined;
   const control = new ControlService({
     logger,
     agent,
@@ -2099,6 +2103,40 @@ export async function buildApp(
         });
       },
     },
+    conversationRouter: {
+      setEnabled: async (enabled) => {
+        return await configMutationMutex.run(async () => {
+          // Raw patch: only the switch subtree is touched, so a hand-edited
+          // config.json keeps every unrelated field (same rule as every other
+          // ConfigStore mutation).
+          const updated = await configStore.setRawValue(
+            ["conversations", "router", "enabled"],
+            enabled,
+          );
+          publishLiveConfig(updated);
+          // Re-resolve from the persisted config exactly like startup — the
+          // capability probe runs when turning on, so a flip without a proven
+          // restriction resolves to a non-ready status with its reason.
+          const resolution = await resolveProductionRouter({
+            config: updated,
+            env: process.env,
+          });
+          // The runtime is constructed after ControlService; a flip that lands
+          // before it exists is persisted and reflected at startup instead.
+          conversationRuntimeRef?.applyRouterResolution(resolution);
+          void logger.info("conversations.router", "automatic collaboration switch", {
+            enabled,
+            status: resolution.availability.status,
+            configPath: resolution.availability.configPath,
+            ...(resolution.availability.status === "ready"
+              ? {}
+              : { code: resolution.availability.reason.code }),
+          });
+          controlEvents.emit({ type: "conversation-router-changed" });
+          return resolution.availability;
+        });
+      },
+    },
     uploadStore,
     terminal: terminalService,
     terminalEnabled: () => terminalEnabled(config),
@@ -2206,6 +2244,7 @@ export async function buildApp(
     autoKick: true,
     stateMutex,
   });
+  conversationRuntimeRef = conversations;
   conversationKernel(control).bindConversationRuntime(conversations);
   controlEvents.subscribe((event) => {
     if (

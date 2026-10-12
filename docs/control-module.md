@@ -67,7 +67,9 @@ PR9 公开 handoff 走 execution-bound `group_send({to, task, expectedOutput?})`
 
 `getAgentCapabilities({ agent, workspace, botId?, probe? })` 返回适配器模型与 effort 的状态，而不是字符串数组。状态是 `ready`、`unsupported`、`needs-setup` 或 `error`。`ready` 至少有一个适配器公布的 model id，id 原样传递。`unsupported`、`needs-setup` 和 `error` 都带原因和恢复提示。上下文只接受已配置的 agent、workspace，以及可选的 Bot id。返回体不含 hidden alias、启动命令或密钥。`probe: true` 才通过 transport 做冷探测。探测不发送用户任务，也不创建 Bot topic。没有探测入口时返回 `unsupported` / `probe-unavailable`。
 
-`getConversationRouterAvailability()` 对应 `control.conversations.router.get`。它返回 daemon 启动时的 Router 可用性，不是布尔值。状态是 `ready`、`disabled-by-config`、`unsupported` 或 `failed`。`ready` 没有 reason。其余状态带 reason 和固定的 `configPath` `conversations.router`。读取不重新探测，也不启动 `--decide`。配置变更要重启 daemon 后才会反映到下一次启动快照。
+`getConversationRouterAvailability()` 对应 `control.conversations.router.get`。它返回 daemon 当前的 Router 可用性，不是布尔值。状态是 `ready`、`disabled-by-config`、`unsupported` 或 `failed`。`ready` 没有 reason。其余状态带 reason 和固定的 `configPath` `conversations.router`。读取不重新探测，也不启动 `--decide`。
+
+`setConversationRouterEnabled(enabled)` 对应 `control.conversations.router.set`，是“群组自动协作”开关。它经 `ConfigStore` 原始补丁只写 `conversations.router.enabled`（不重排整个 config.json），随后按启动时的同一条路径重新解析（开启时跑能力探测），把结果热应用到运行中的 Conversation runtime，并发 `conversation-router-changed` 事件。返回值与 `.get` 同为四状态，不是布尔值：开启时若没有通过限制证明的 Router（例如未配置 `conversations.router.command`），返回 `failed` 并带 reason，Web 因此能显示原因而不是假装成功。写入失败会原样抛出，不会报告假成功。未接入该开关的嵌入环境抛 `router_control_unavailable`。
 
 Bot 上保存的 model / effort 进入之后 `accept` 的 profile snapshot。已经接受的 Run 保留自己的 snapshot。运行时若退回适配器默认模型，状态里的 `effect.kind` 是 `fell-back`，选出的 id 不会显示成已经生效。
 

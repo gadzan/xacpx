@@ -706,6 +706,9 @@ export type ControlEventDto =
   // The configured workspace set changed (out-of-band CLI edit or `/config`); the web
   // re-fetches the workspace list. No payload.
   | { type: "workspaces-changed" }
+  // Automatic collaboration was switched on/off through the control API; the web
+  // re-reads `conversations.router` availability. No payload.
+  | { type: "conversation-router-changed" }
   | { type: "scheduled-changed"; chatKey: string }
   // Recovered prior conversation for a freshly-attached native session; the hub seeds
   // these rows into the session's history so the dashboard isn't blank.

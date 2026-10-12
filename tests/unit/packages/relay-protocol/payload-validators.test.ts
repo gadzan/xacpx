@@ -37,6 +37,18 @@ test("Topic concurrency limits validate on both creation RPCs without changing e
   }
 });
 
+test("the automatic-collaboration switch payload is a single boolean", () => {
+  expect(MSG.conversationRouterSet).toBe("control.conversations.router.set");
+  expect(parseControlPayload(MSG.conversationRouterGet, {})).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationRouterGet, { enabled: true })).toBeNull();
+  for (const enabled of [true, false]) {
+    expect(parseControlPayload(MSG.conversationRouterSet, { enabled })).toEqual({ enabled });
+  }
+  for (const bad of [{}, { enabled: "true" }, { enabled: 1 }, { enabled: null }, { enabled: true, command: "x" }, null, "on"]) {
+    expect(parseControlPayload(MSG.conversationRouterSet, bad)).toBeNull();
+  }
+});
+
 test("parseControlPayload accepts a well-formed fsWrite payload", () => {
   const ok = parseControlPayload(MSG.fsWrite, {
     workspace: "home", path: "a.txt", content: "hi",

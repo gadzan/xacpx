@@ -58,6 +58,9 @@ export type ControlEvent =
   // CLI process edited config.json, or a `/config` mutation). Carries no payload;
   // structured consumers re-fetch the workspace list.
   | { type: "workspaces-changed" }
+  // Automatic collaboration was switched through `control.conversations.router.set`.
+  // Carries no payload; structured consumers re-read the router availability.
+  | { type: "conversation-router-changed" }
   | { type: "scheduled-changed"; chatKey: string }
   // Recovered prior conversation for a freshly-attached native session, so the hub can
   // seed it into history. `sessionAlias` is the display alias the web loads history by.

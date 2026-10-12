@@ -247,6 +247,26 @@ test("conversation router get returns the availability and rejects extra fields"
   expect(await dispatch(bridge, req(MSG.conversationRouterGet, {}))).toEqual(availability);
 });
 
+test("conversation router set forwards only the boolean and returns the resolved availability", async () => {
+  const seen: unknown[] = [];
+  const ready = { status: "ready", configPath: "conversations.router" };
+  const { control } = makeFakeControl({
+    setConversationRouterEnabled: async (enabled: unknown) => {
+      seen.push(enabled);
+      return ready;
+    },
+  });
+  const bridge = createControlBridge(control as never);
+  for (const payload of [{}, { enabled: "true" }, { enabled: true, command: "/tmp/router" }, null]) {
+    expect(await dispatch(bridge, req(MSG.conversationRouterSet, payload))).toMatchObject({
+      error: { code: "invalid-payload" },
+    });
+  }
+  expect(await dispatch(bridge, req(MSG.conversationRouterSet, { enabled: true }))).toEqual(ready);
+  expect(await dispatch(bridge, req(MSG.conversationRouterSet, { enabled: false }))).toEqual(ready);
+  expect(seen).toEqual([true, false]);
+});
+
 test("agent capability get forwards only agent, workspace, bot id, and probe", async () => {
   const seen: unknown[] = [];
   const { control } = makeFakeControl({
@@ -1237,10 +1257,15 @@ test("subscribeControlEvents forwards events and unsubscribes", () => {
     sent.push({ type, payload }),
   );
   emit({ type: "sessions-changed" });
+  emit({ type: "conversation-router-changed" });
   expect(sent).toEqual([
     {
       type: MSG.instanceEvent,
       payload: { event: { type: "sessions-changed" } },
+    },
+    {
+      type: MSG.instanceEvent,
+      payload: { event: { type: "conversation-router-changed" } },
     },
   ]);
 });

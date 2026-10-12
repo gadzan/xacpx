@@ -69,6 +69,7 @@ import {
   type ScheduledListPayload,
   type AgentsCapabilitiesGetPayload,
   type ConversationRouterGetPayload,
+  type ConversationRouterSetPayload,
   type SessionModelGetPayload,
   type SessionModelSetPayload,
   type SessionEffortGetPayload,
@@ -348,6 +349,11 @@ const validateConversationRouterGet: Validator<ConversationRouterGetPayload> = (
   const o = fields(p);
   if (!o || Object.keys(o).length !== 0) return null;
   return {};
+};
+const validateConversationRouterSet: Validator<ConversationRouterSetPayload> = (p) => {
+  const o = fields(p);
+  if (!o || Object.keys(o).length !== 1 || typeof o.enabled !== "boolean") return null;
+  return { enabled: o.enabled };
 };
 const validateAgentsCapabilitiesGet: Validator<AgentsCapabilitiesGetPayload> = (p) => {
   const o = fields(p);
@@ -1008,6 +1014,7 @@ export type ControlRpcType =
   | typeof MSG.agentsCapabilitiesGet
   | typeof MSG.conversationCompletionsGet
   | typeof MSG.conversationRouterGet
+  | typeof MSG.conversationRouterSet
   | typeof MSG.sessionEffortGet | typeof MSG.sessionEffortSet
   | typeof MSG.gitStatus | typeof MSG.gitStage | typeof MSG.gitUnstage
   | typeof MSG.gitUntrack | typeof MSG.gitDiscard | typeof MSG.gitCommit
@@ -1084,6 +1091,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.agentsCapabilitiesGet]: validateAgentsCapabilitiesGet,
   [MSG.conversationCompletionsGet]: validateConversationCompletionsGet,
   [MSG.conversationRouterGet]: validateConversationRouterGet,
+  [MSG.conversationRouterSet]: validateConversationRouterSet,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.sessionEffortGet]: validateSessionEffortGet,
   [MSG.sessionEffortSet]: validateSessionEffortSet,
