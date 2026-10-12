@@ -830,3 +830,91 @@ test("a handoff failure that lands after a wake still rejects the drain", async 
   await rm(dirB, { recursive: true, force: true });
   h.store.close();
 });
+
+// --- Review round 7: a cross-cohort failure must report in LAUNCH order -------
+
+test("a failure in an earlier cohort wins attribution over a later one", async () => {
+  // Round-7 review: `awaitCohortInFlight` used to throw the failure found in the
+  // CURRENT pass's cohort slice before consulting the whole-drain registry. The
+  // slice is a consumption queue — a handoff launched earlier is already spliced
+  // out of it — so when two cohorts both failed, the LATER launch was reported.
+  // Nothing was lost and no resource was mis-admitted, but the reported failure
+  // was not the earliest, which is the contract the registry exists to keep.
+  //
+  // Sequence: A2 is launched (and spliced out of its cohort) in an earlier pass;
+  // B is launched in a later one; BOTH then fail with distinguishable errors.
+  // The drain must report A2's, because launch order decides attribution.
+  const dirA = await mkdtemp(join(tmpdir(), "xacpx-r7-a-"));
+  const dirB = await mkdtemp(join(tmpdir(), "xacpx-r7-b-"));
+  const boomEarly = new Error("earlier-cohort failure");
+  const boomLate = new Error("later-cohort failure");
+  const h = await harness({ workspaceCwd: dirA, altWorkspaceCwd: dirB });
+  const a = await h.group(2);
+  // Topic B on the second physical directory, so it is genuinely concurrent
+  // with A2 rather than serialized behind it by resource admission.
+  const b = await h.group(1, "alt");
+  // Both failures are injected AFTER execute() resolved, so its own catch never
+  // digests them: only the drain's guard records them. That is the failure class
+  // under test — a post-start infrastructure error, not a Provider rejection.
+  //
+  // The wrapper is installed BEFORE the first kick, because A2 is a handoff
+  // launched in the drain's first pass; installing it later would leave A2 on
+  // the real execute and the earlier-cohort failure would never be recorded.
+  // It is armed per member-turn id so A1 still completes: the handoff only
+  // happens once A1 settles, and failing A1 too would end the drain before A2
+  // is ever launched.
+  const dispatcher = h.dispatcher as unknown as {
+    execute: (work: { run: { topicId: string }; memberTurn: { id: string } }) => Promise<void>;
+  };
+  const originalExecute = dispatcher.execute.bind(dispatcher);
+  let armedSibling = "";
+  dispatcher.execute = (work) => {
+    const inner = originalExecute(work);
+    return inner.then(
+      () => {
+        if (armedSibling && work.memberTurn.id === armedSibling) throw boomEarly;
+        if (work.run.topicId === b.topic.id) throw boomLate;
+      },
+      (error: unknown) => {
+        throw error;
+      },
+    );
+  };
+  h.accept(a.group.id, a.topic.id, 2, false, "r7-a1", undefined, a.members);
+  const drain = h.dispatcher.kick().then(
+    () => "resolved",
+    (error: unknown) => error,
+  );
+  await until(() => h.runner.calls.length === 1);
+  const runA = h.store.listRuns(a.group.id, a.topic.id)[0]!;
+  const sibling = h.store.listMemberTurns(runA.id).find((m) => m.startedAt === undefined)!;
+  // Arm the handoff sibling before A1 settles, so the wrapper is in place by the
+  // time A2's execute starts.
+  armedSibling = sibling.id;
+  // Settle A1 so A2 is handed into the Provider and keeps running.
+  h.runner.finish(h.runner.calls.findIndex((c) => c.runId === runA.id));
+  await until(() => h.runner.calls.some((c) => c.memberTurnId === sibling.id));
+  expect(h.store.getRun(runA.id)?.state).toBe("running");
+  h.accept(b.group.id, b.topic.id, 1, true, "r7-b", undefined, b.members);
+  // Join the still-running drain (bump + return) and let B reach the Provider.
+  void h.dispatcher.kick();
+  await until(() => h.runner.calls.some((c) => c.topicId === b.topic.id));
+  // Settle A2 first, then B: A2's guard settles and its failure is recorded
+  // while the drain is parked in the claim loop's wake race, which is the window
+  // where no failure check runs. B then settles into the pass's own cohort.
+  h.runner.finish(h.runner.calls.findIndex((c) => c.memberTurnId === sibling.id));
+  h.runner.finish(h.runner.calls.findIndex((c) => c.topicId === b.topic.id));
+  const reported = await Promise.race([
+    drain,
+    new Promise<string>((resolve) => setTimeout(() => resolve("TIMEOUT"), 10_000)),
+  ]);
+  expect(reported).toBe(boomEarly);
+  // NOTE: no Run-state assertion here. The injected failure lands AFTER
+  // execute() already persisted and sealed its Run, which is precisely the
+  // "post-start infrastructure error" class: the durable outcome is already
+  // written and only the drain's attribution is under test. Asserting a sealed
+  // state would test the persist path, not the ordering contract.
+  await rm(dirA, { recursive: true, force: true });
+  await rm(dirB, { recursive: true, force: true });
+  h.store.close();
+});

@@ -1011,6 +1011,13 @@ that history. Pending cells stay — a pending cell may still reject, which is t
 late-failure case the registry exists for — and a rejection ends the drain at the
 next check, so neither class accumulates.
 
+The registry is also the ONLY source of attribution. The pass's cohort slice is a
+consumption queue — a handoff launched earlier is already spliced out of it — so
+consulting the slice first would report a LATER launch's failure whenever two
+cohorts both failed. `awaitCohortInFlight` therefore settles its guards and then
+calls the registry directly; launch order decides which failure is reported, never
+the order the guards happened to settle in.
+
 The handoff's guards are **spliced** out of the drain's cohort array before that
 wait, never copied. They stay in `inFlightExecutions`, so the next wait that
 re-collects them still awaits them and a rejecting guard still rejects it — an

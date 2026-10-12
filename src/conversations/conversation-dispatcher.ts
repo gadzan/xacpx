@@ -485,11 +485,12 @@ export class ConversationDispatcher {
         return;
       }
       await Promise.allSettled(launched.map((entry) => entry.guard));
-      const failure = launched.find((entry) => entry.outcome.status === "rejected");
-      if (failure) {
-        throw failure.outcome.reason;
-      }
-      // A guard outside this slice (already spliced out) may also have failed.
+      // Report the earliest failure in LAUNCH order across the WHOLE drain, not
+      // this pass's slice. The slice is this pass's consumption queue: a guard
+      // launched earlier — a handoff already spliced out — is absent from it, so
+      // checking the slice first would attribute the failure to a LATER launch
+      // whenever two cohorts both fail. The registry holds every launch in
+      // launch order (this pass's included), so it alone decides attribution.
       raiseIfFailed();
     };
     /**
