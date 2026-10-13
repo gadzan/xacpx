@@ -15,7 +15,7 @@ import { loadConfig } from "./config/load-config";
 import { resolveAcpxCommandMetadata } from "./config/resolve-acpx-command";
 import { ConsoleAgent } from "./console-agent";
 import { isRestartRequiredTransportChange } from "./config/transport-topology";
-import type { AppConfig, LoggingLevel } from "./config/types";
+import type { AppConfig, ConversationRouterConfigPatch, LoggingLevel } from "./config/types";
 import {
   terminalEnabled,
   terminalIdleTimeoutSeconds,
@@ -123,6 +123,7 @@ import {
   type ConversationRuntime,
 } from "./conversations/conversation-composition";
 import { resolveProductionRouter } from "./conversations/production-router";
+import { resolveDefaultRouterEntry } from "./conversations/default-router";
 import { ConversationError } from "./conversations/conversation-error";
 import { SessionWarmthTracker } from "./control/session-warmth-tracker";
 import { createTerminalService } from "./control/terminal-service";
@@ -1973,6 +1974,34 @@ export async function buildApp(
   // bound kernel), but the router switch applies to the live runtime. This ref
   // is the seam: set once the runtime exists, read by the switch.
   let conversationRuntimeRef: ConversationRuntime | undefined;
+  // The switch must enable automatic collaboration on a fresh install with no
+  // operator-supplied command, so the daemon itself writes the bundled default
+  // router entry when a patch would otherwise leave the feature on with nothing
+  // to probe. An operator-configured command always wins: the default is only
+  // the fallback for a config that has none, and it is the same external entry
+  // `production-router.ts` probes and bounds, never a second routing path.
+  const withDefaultRouterCommand = async (
+    patch: ConversationRouterConfigPatch,
+  ): Promise<ConversationRouterConfigPatch> => {
+    // A patch that names `command` (including `null`, an explicit removal) is
+    // the operator speaking; the daemon never overrides it.
+    if (patch.command !== undefined) return patch;
+    if ((patch.enabled ?? config.conversations?.router?.enabled) !== true) return patch;
+    // The persisted value, not the startup snapshot: a config.json hand-edited
+    // after boot is live on disk, and overwriting an operator's own command
+    // with the default would be a silent downgrade of their router.
+    const persisted = await configStore.getRawValue(["conversations", "router", "command"]);
+    if (persisted.present && typeof persisted.value === "string" && persisted.value.trim() !== "") {
+      return patch;
+    }
+    try {
+      return { ...patch, command: resolveDefaultRouterEntry() };
+    } catch {
+      // An unresolvable entry is applied as the patch arrived: the probe then
+      // fails and Relay Web shows its generic failure, never a placeholder.
+      return patch;
+    }
+  };
   const control = new ControlService({
     logger,
     agent,
@@ -2119,8 +2148,10 @@ export async function buildApp(
         return await configMutationMutex.run(async () => {
           // Per-key patch: only the named router keys are touched, so a
           // hand-edited config.json keeps every unrelated field (same rule as
-          // every other ConfigStore mutation).
-          const updated = await configStore.updateConversationRouter(patch);
+          // every other ConfigStore mutation). A patch that turns the feature
+          // on with no command of its own carries the bundled default router,
+          // so the switch alone is enough to enable it.
+          const updated = await configStore.updateConversationRouter(await withDefaultRouterCommand(patch));
           publishLiveConfig(updated);
           // Re-resolve from the persisted config exactly like startup — the
           // capability probe runs when turning on, so a patch that leaves the
@@ -2151,11 +2182,16 @@ export async function buildApp(
         return await configMutationMutex.run(async () => {
           // Raw patch: only the switch subtree is touched, so a hand-edited
           // config.json keeps every unrelated field (same rule as every other
-          // ConfigStore mutation).
-          const updated = await configStore.setRawValue(
-            ["conversations", "router", "enabled"],
-            enabled,
-          );
+          // ConfigStore mutation). Turning the switch on with no configured
+          // command writes the bundled default router alongside it, so the
+          // single-key write stays the path whenever there is nothing to add.
+          const patch = await withDefaultRouterCommand({ enabled });
+          const updated = patch.command === undefined
+            ? await configStore.setRawValue(
+              ["conversations", "router", "enabled"],
+              enabled,
+            )
+            : await configStore.updateConversationRouter(patch);
           publishLiveConfig(updated);
           // Re-resolve from the persisted config exactly like startup — the
           // capability probe runs when turning on, so a flip without a proven

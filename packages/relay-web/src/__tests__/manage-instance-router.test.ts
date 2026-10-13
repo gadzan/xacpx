@@ -18,14 +18,11 @@ const UNSUPPORTED = {
   configPath: "conversations.router",
   reason: { code: "not-advertised", message: "This instance does not advertise automatic collaboration." },
 };
-const COMMAND_MISSING = {
+const PROBE_FAILED = {
   status: "failed",
   configPath: "conversations.router",
   reason: { code: "command-missing", message: "conversations.router.command is missing." },
 };
-
-const unavailableText = (reason: string) =>
-  i18n.global.t("instance.autoCollabUnavailable", { reason, path: "conversations.router" });
 
 /** Answer every router RPC from `state` and record each call. `state.update` may be
  *  an `{error:{code}}` payload to exercise the older-daemon fallback; mutate the
@@ -84,19 +81,19 @@ afterEach(() => {
   i18n.global.locale.value = "en";
 });
 
-test("the status line reports each of the four availability statuses", async () => {
+test("the status line maps every availability status to one line of copy", async () => {
   const cases = [
     { availability: READY, config: { enabled: true }, expected: i18n.global.t("instance.autoCollabOn") },
     { availability: DISABLED, config: { enabled: false }, expected: i18n.global.t("instance.autoCollabOff") },
     {
       availability: UNSUPPORTED,
       config: { enabled: false },
-      expected: unavailableText(UNSUPPORTED.reason.message),
+      expected: i18n.global.t("instance.autoCollabFailed"),
     },
     {
-      availability: COMMAND_MISSING,
+      availability: PROBE_FAILED,
       config: { enabled: true },
-      expected: unavailableText(COMMAND_MISSING.reason.message),
+      expected: i18n.global.t("instance.autoCollabFailed"),
     },
   ];
   for (const c of cases) {
@@ -111,95 +108,39 @@ test("the status line reports each of the four availability statuses", async () 
   }
 });
 
-test("a command-missing failure shows the reason and keeps the form enabled", async () => {
-  stubRouter({ update: { availability: COMMAND_MISSING, config: { enabled: true } } });
+test("the control is a switch bound to the persisted config, with no config fields", async () => {
+  stubRouter({ update: { availability: DISABLED, config: { enabled: false } } });
+  const { w } = mountDialog();
+  await flushPromises();
+  const toggle = w.get('[data-test="router-toggle"]');
+  expect(toggle.attributes("role")).toBe("switch");
+  expect(toggle.attributes("aria-checked")).toBe("false");
+  // Track + thumb: the one child is the thumb, so the control reads as a switch
+  // rather than a labelled button.
+  expect(toggle.element.childElementCount).toBe(1);
+  expect(w.find('[data-test="router-command"]').exists()).toBe(false);
+  expect(w.find('[data-test="router-auth-env"]').exists()).toBe(false);
+  expect(w.find('[data-test="router-save"]').exists()).toBe(false);
+});
+
+test("a failed probe shows no config path and no daemon reason", async () => {
+  stubRouter({ update: { availability: PROBE_FAILED, config: { enabled: true } } });
   const { w } = mountDialog();
   await flushPromises();
   const status = w.get('[data-test="router-status"]').text();
-  expect(status).toContain(COMMAND_MISSING.reason.message);
-  expect(status).toContain(COMMAND_MISSING.configPath);
-  expect(w.get('[data-test="router-toggle"]').attributes("disabled")).toBeUndefined();
-  expect(w.get('[data-test="router-command"]').attributes("disabled")).toBeUndefined();
-  expect(w.get('[data-test="router-auth-env"]').attributes("disabled")).toBeUndefined();
-});
-
-test("typing a command and saving sends only that key and the status becomes On", async () => {
-  const state: { update: unknown } = { update: { availability: COMMAND_MISSING, config: { enabled: true } } };
-  const calls = stubRouter(state);
-  const { w } = mountDialog();
-  await flushPromises();
-
-  await w.get('[data-test="router-command"]').setValue("/usr/bin/router");
-  state.update = { availability: READY, config: { enabled: true, command: "/usr/bin/router" } };
-  await w.get('[data-test="router-save"]').trigger("click");
-  await flushPromises();
-
-  expect(writes(calls).at(-1)).toEqual({
-    type: "control.conversations.router.update",
-    payload: { command: "/usr/bin/router" },
-  });
-  expect(w.get('[data-test="router-status"]').text()).toBe(i18n.global.t("instance.autoCollabOn"));
-  // The answered config matches the draft, so the form is clean again.
-  expect((w.get('[data-test="router-command"]').element as HTMLInputElement).value).toBe("/usr/bin/router");
-  expect(w.get('[data-test="router-save"]').attributes("disabled")).toBeDefined();
-});
-
-test("a form the user never touched sends nothing", async () => {
-  const calls = stubRouter({
-    update: {
-      availability: DISABLED,
-      config: { enabled: false, command: "/usr/bin/router", authEnv: "ROUTER_TOKEN" },
-    },
-  });
-  const { w } = mountDialog();
-  await flushPromises();
-  expect((w.get('[data-test="router-command"]').element as HTMLInputElement).value).toBe("/usr/bin/router");
-  expect((w.get('[data-test="router-auth-env"]').element as HTMLInputElement).value).toBe("ROUTER_TOKEN");
-  expect(w.get('[data-test="router-save"]').attributes("disabled")).toBeDefined();
-  expect(writes(calls)).toEqual([{ type: "control.conversations.router.update", payload: {} }]);
-});
-
-test("an unknown-type answer renders the upgrade notice and no form", async () => {
-  stubRouter({
-    update: { error: { code: "unknown-type", message: "unsupported rpc type: control.conversations.router.update" } },
-    get: READY,
-  });
-  const { w } = mountDialog();
-  await flushPromises();
-  expect(w.find('[data-test="router-command"]').exists()).toBe(false);
-  expect(w.find('[data-test="router-auth-env"]').exists()).toBe(false);
-  expect(w.find('[data-test="router-toggle"]').exists()).toBe(false);
-  expect(w.find('[data-test="router-save"]').exists()).toBe(false);
-  expect(w.get('[data-test="router-hint"]').text()).toBe(i18n.global.t("instance.autoCollabUpgradeNotice"));
-  // The fallback `.get` still reports the real availability.
-  expect(w.get('[data-test="router-status"]').text()).toBe(i18n.global.t("instance.autoCollabOn"));
-});
-
-test("a failed save shows the daemon's message verbatim and keeps the draft", async () => {
-  const state: { update: unknown } = { update: { availability: COMMAND_MISSING, config: { enabled: true } } };
-  stubRouter(state);
-  const { w } = mountDialog();
-  await flushPromises();
-
-  await w.get('[data-test="router-command"]').setValue("/nope/router");
-  state.update = {
-    error: { code: "invalid-config", message: "conversations.router.command must be a command path" },
-  };
-  await w.get('[data-test="router-save"]').trigger("click");
-  await flushPromises();
-
-  expect(w.get('[data-test="router-error"]').text()).toBe("conversations.router.command must be a command path");
-  expect((w.get('[data-test="router-command"]').element as HTMLInputElement).value).toBe("/nope/router");
-  expect(w.get('[data-test="router-save"]').attributes("disabled")).toBeUndefined();
+  expect(status).toBe(i18n.global.t("instance.autoCollabFailed"));
+  expect(status).not.toContain(PROBE_FAILED.configPath);
+  expect(status).not.toContain(PROBE_FAILED.reason.message);
+  // A failed probe is not a reason to lock the feature: the switch stays usable.
   expect(w.get('[data-test="router-toggle"]').attributes("disabled")).toBeUndefined();
 });
 
-test("the switch writes { enabled } through the same RPC as the form", async () => {
+test("the switch writes { enabled } through the router update RPC", async () => {
   const state: { update: unknown } = { update: { availability: READY, config: { enabled: true } } };
   const calls = stubRouter(state);
   const { w } = mountDialog();
   await flushPromises();
-  expect(w.get('[data-test="router-toggle"]').text()).toBe(i18n.global.t("instance.autoCollabDisable"));
+  expect(w.get('[data-test="router-toggle"]').attributes("aria-checked")).toBe("true");
 
   state.update = { availability: DISABLED, config: { enabled: false } };
   await w.get('[data-test="router-toggle"]').trigger("click");
@@ -209,8 +150,39 @@ test("the switch writes { enabled } through the same RPC as the form", async () 
     type: "control.conversations.router.update",
     payload: { enabled: false },
   });
-  expect(w.get('[data-test="router-toggle"]').text()).toBe(i18n.global.t("instance.autoCollabEnable"));
+  expect(w.get('[data-test="router-toggle"]').attributes("aria-checked")).toBe("false");
   expect(w.get('[data-test="router-status"]').text()).toBe(i18n.global.t("instance.autoCollabOff"));
+});
+
+test("a rejected toggle shows the daemon's message and leaves the switch flippable", async () => {
+  const state: { update: unknown } = { update: { availability: DISABLED, config: { enabled: false } } };
+  stubRouter(state);
+  const { w } = mountDialog();
+  await flushPromises();
+
+  state.update = {
+    error: { code: "invalid-config", message: "conversations.router.command must be a command path" },
+  };
+  await w.get('[data-test="router-toggle"]').trigger("click");
+  await flushPromises();
+
+  expect(w.get('[data-test="router-error"]').text()).toBe("conversations.router.command must be a command path");
+  // The rejected write leaves the last known state in place: still off, still enabled.
+  expect(w.get('[data-test="router-toggle"]').attributes("aria-checked")).toBe("false");
+  expect(w.get('[data-test="router-toggle"]').attributes("disabled")).toBeUndefined();
+});
+
+test("an unknown-type answer renders the upgrade notice and no switch", async () => {
+  stubRouter({
+    update: { error: { code: "unknown-type", message: "unsupported rpc type: control.conversations.router.update" } },
+    get: READY,
+  });
+  const { w } = mountDialog();
+  await flushPromises();
+  expect(w.find('[data-test="router-toggle"]').exists()).toBe(false);
+  expect(w.get('[data-test="router-hint"]').text()).toBe(i18n.global.t("instance.autoCollabUpgradeNotice"));
+  // The fallback `.get` still reports the real availability.
+  expect(w.get('[data-test="router-status"]').text()).toBe(i18n.global.t("instance.autoCollabOn"));
 });
 
 test("an offline instance cannot flip the switch", async () => {

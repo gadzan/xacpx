@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import { X } from "lucide-vue-next";
 import type { ConversationRouterUpdatePayload } from "@ganglion/xacpx-relay-protocol";
@@ -83,23 +83,15 @@ const routerErrorText = computed(() => {
 });
 const instanceOnline = computed(() => store.byId(props.instanceId)?.online ?? false);
 
-const commandDraft = ref("");
-const authEnvDraft = ref("");
-// Seed the fields from the persisted section. Watching the config object rather than
-// the panel keeps a failed save's draft intact. Only a fresh read re-seeds.
-watch(routerConfig, (config) => {
-  if (!config) return;
-  commandDraft.value = config.command ?? "";
-  authEnvDraft.value = config.authEnv ?? "";
-}, { immediate: true });
-
 const routerStatus = computed(() => {
   const state = panel.value;
   if (state.phase === "loading") return t("instance.autoCollabChecking");
   const availability = state.availability;
   if (availability.status === "ready") return t("instance.autoCollabOn");
   if (availability.status === "disabled-by-config") return t("instance.autoCollabOff");
-  return t("instance.autoCollabUnavailable", { reason: availability.reason.message, path: availability.configPath });
+  // Every other status (`unsupported`, `failed`) reads as one fixed sentence: the
+  // daemon's reason text and config path are implementation detail, not product copy.
+  return t("instance.autoCollabFailed");
 });
 
 const routerHint = computed(() => {
@@ -107,31 +99,8 @@ const routerHint = computed(() => {
   return state.phase === "read-only" && state.notice ? t(state.notice) : t("instance.autoCollabBody");
 });
 
-const routerDirty = computed(() => {
-  const config = routerConfig.value;
-  if (!config) return false;
-  return commandDraft.value !== (config.command ?? "") || authEnvDraft.value !== (config.authEnv ?? "");
-});
-
-/** Only the fields the user changed. An edited field left empty sends `null`, which
- *  removes the key; a field never touched is never sent. */
-function routerPatch(): ConversationRouterUpdatePayload | null {
-  const config = routerConfig.value;
-  if (!config) return null;
-  const patch: ConversationRouterUpdatePayload = {};
-  if (commandDraft.value !== (config.command ?? "")) {
-    const command = commandDraft.value.trim();
-    patch.command = command ? command : null;
-  }
-  if (authEnvDraft.value !== (config.authEnv ?? "")) {
-    const authEnv = authEnvDraft.value.trim();
-    patch.authEnv = authEnv ? authEnv : null;
-  }
-  return Object.keys(patch).length > 0 ? patch : null;
-}
-
-/** One write path for the switch and the form. The store keeps the panel's config
- *  untouched when the RPC throws, so the draft and the daemon's message survive. */
+/** One write path for the switch. The store keeps the panel's config untouched when
+ *  the RPC throws, so the switch and the daemon's message survive. */
 async function writeRouter(patch: ConversationRouterUpdatePayload): Promise<void> {
   store.setRouterSaveState(props.instanceId, { kind: "saving" });
   try {
@@ -142,11 +111,6 @@ async function writeRouter(patch: ConversationRouterUpdatePayload): Promise<void
       message: error instanceof Error ? error.message : String(error),
     });
   }
-}
-
-async function saveRouterConfig(): Promise<void> {
-  const patch = routerPatch();
-  if (patch) await writeRouter(patch);
 }
 
 async function toggleRouter(): Promise<void> {
@@ -220,32 +184,19 @@ onMounted(async () => {
             </section>
             <section class="space-y-2">
               <h3 class="text-sm font-semibold uppercase text-fg-muted">{{ $t("instance.autoCollabTitle") }}</h3>
-              <p data-test="router-status" class="text-sm text-fg-muted">{{ routerStatus }}</p>
-              <button v-if="panel.phase !== 'read-only'" data-test="router-toggle" type="button" role="switch"
-                      :aria-checked="routerEnabled" :disabled="!routerEditable || routerSaving || !instanceOnline"
-                      class="rounded bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent-hover disabled:opacity-50"
-                      @click="toggleRouter">
-                {{ routerEnabled ? $t("instance.autoCollabDisable") : $t("instance.autoCollabEnable") }}
-              </button>
-              <template v-if="panel.phase !== 'read-only'">
-                <label class="block text-xs text-fg-muted">
-                  {{ $t("instance.autoCollabCommandLabel") }}
-                  <input v-model="commandDraft" data-test="router-command" :disabled="!routerEditable || routerSaving"
-                         :placeholder="$t('instance.autoCollabCommandPlaceholder')"
-                         class="mt-1 block w-full rounded border border-border bg-bg px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50" />
-                </label>
-                <label class="block text-xs text-fg-muted">
-                  {{ $t("instance.autoCollabAuthEnvLabel") }}
-                  <input v-model="authEnvDraft" data-test="router-auth-env" :disabled="!routerEditable || routerSaving"
-                         :placeholder="$t('instance.autoCollabAuthEnvPlaceholder')"
-                         class="mt-1 block w-full rounded border border-border bg-bg px-2 py-1 text-sm text-fg placeholder:text-fg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50" />
-                </label>
-                <button v-if="panel.phase === 'editable'" data-test="router-save"
-                        class="rounded bg-accent px-3 py-1.5 text-sm text-white hover:bg-accent-hover disabled:opacity-50"
-                        :disabled="routerSaving || !routerDirty" @click="saveRouterConfig">
-                  {{ routerSaving ? $t("instance.autoCollabSaving") : $t("instance.autoCollabSave") }}
+              <div class="flex items-center gap-3">
+                <button v-if="panel.phase !== 'read-only'" data-test="router-toggle" type="button" role="switch"
+                        :aria-checked="routerEnabled"
+                        :aria-label="routerEnabled ? $t('instance.autoCollabDisable') : $t('instance.autoCollabEnable')"
+                        :disabled="!routerEditable || routerSaving || !instanceOnline"
+                        class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+                        :class="routerEnabled ? 'border-accent bg-accent' : 'border-border bg-bg'"
+                        @click="toggleRouter">
+                  <span class="pointer-events-none inline-block h-5 w-5 rounded-full shadow-e1 transition-transform"
+                        :class="routerEnabled ? 'translate-x-5 bg-white' : 'translate-x-0.5 bg-fg-muted'" />
                 </button>
-              </template>
+                <p data-test="router-status" class="text-sm text-fg-muted">{{ routerStatus }}</p>
+              </div>
               <p data-test="router-hint" class="text-xs text-fg-muted">{{ routerHint }}</p>
               <p v-if="routerErrorText" data-test="router-error" class="text-xs text-error">{{ routerErrorText }}</p>
             </section>
