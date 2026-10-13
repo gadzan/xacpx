@@ -821,12 +821,12 @@ File tree operations configuration for relay-web file browser.
 
 ## `conversations.router`
 
-Automatic collaboration for a Group Run. The section is optional. Omitted, or `enabled` other than `true`, leaves the feature off. Relay Web's instance-management dialog (the gear on the session tab) is the control surface: it flips `enabled` through `control.conversations.router.set` and completes `command` / `authEnv` through `control.conversations.router.update`. Both patch only the keys they name, re-resolve availability, and hot-apply without a restart, so a hand-edited config.json keeps every unrelated field. Editing the file by hand keeps working and is picked up on the next daemon start (or the next write).
+Automatic collaboration for a Group Run. The section is optional. Omitted, or `enabled` other than `true`, leaves the feature off. Relay Web's instance-management dialog (the gear on the session tab) is the control surface: it flips `enabled` through `control.conversations.router.set`, and the daemon fills in `command` itself when there is none, so a fresh install needs no operator-supplied router. `control.conversations.router.update` patches any of the three fields for operators who bring their own router. Every patch touches only the keys it names, re-resolves availability, and hot-applies without a restart, so a hand-edited config.json keeps every unrelated field. Editing the file by hand keeps working and is picked up on the next daemon start (or the next write).
 
 | Field | Type | Required | Description |
 |------|------|------|------|
 | `enabled` | `boolean` | No | `true` runs the capability probe when availability is resolved — at daemon start and whenever the switch is flipped. Any other value leaves automatic collaboration off |
-| `command` | `string` | When `enabled` is `true` | Executable. It must answer `--capabilities` and exit before any `--decide` process starts |
+| `command` | `string` | No | Executable. It must answer `--capabilities` and exit before any `--decide` process starts. When it is absent and the switch is turned on, the daemon writes the bundled default router (below) |
 | `authEnv` | `string` | No | Name of an environment variable. The variable must be non-empty before the probe runs. The value is not written to logs |
 
 `--capabilities` prints one JSON object. Every field below must be `true`.
@@ -841,7 +841,15 @@ Automatic collaboration for a Group Run. The section is optional. Omitted, or `e
 
 A prompt that tells a model not to use tools is not this proof. The startup status is one of `disabled-by-config`, `unsupported`, `ready`, or `failed`. `unsupported` means the report did not prove the limit. `failed` means the command is missing, auth is empty, the probe failed, the probe timed out, or the report could not be read. `xacpx doctor` reports the same status. `ready` and the default off state pass. `unsupported` warns. `failed` fails the check.
 
-`control.conversations.router.get` returns that availability to Relay Web. `control.conversations.router.set` flips `enabled` and re-resolves it in place. `control.conversations.router.update` patches any of the three fields and answers with the availability plus the persisted section, which is how the dialog can show what is configured instead of offering a blank field. Do not write a release note that says automatic collaboration is available. This repository does not ship a restricted router binary. A deployment is `ready` only after its own command proves the limit.
+`control.conversations.router.get` returns that availability to Relay Web. `control.conversations.router.set` flips `enabled` and re-resolves it in place. `control.conversations.router.update` patches any of the three fields and answers with the availability plus the persisted section, which is how the dialog can show what is configured instead of offering a blank field.
+
+### The bundled default router
+
+Turning the switch on with no `command` configured writes this repository's own router, `dist/conversations/default-router-main.js`, and probes it. It is a real decision process held to the same contract as any operator's: it reports all seven restrictions above, and `production-router.ts` installs the engine only after that report is proven, so the default earns `ready` through the identical proof rather than a special case.
+
+Its decisions are deterministic, because it has no model, filesystem, or tools to reason with: it fans the Run's request out to every enabled member once, in parallel, then completes. It never synthesizes. An operator who wants model-driven routing configures their own `command`; a configured command always wins, and the daemon only writes the default when none is present.
+
+The `unsupported` status still means the report did not prove the limit, and `failed` still means the command is missing, auth is empty, the probe failed, the probe timed out, or the report could not be read.
 
 ### Example
 

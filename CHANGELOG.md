@@ -1,4 +1,10 @@
 # Changelog
+## [Unreleased]
+
+### Added
+
+- **Configless automatic collaboration switch in the instance dialog (PR #402 follow-up):** the per-instance control on the session tab is now the only control surface for group automatic collaboration, and it needs no operator-supplied router. Turning the switch on with no `command` configured writes this repository's own bundled router (`dist/conversations/default-router-main.js`) and probes it, so a fresh install enables the feature on its own — the same `--capabilities` proof and the same `production-router.ts` bounds as any operator-supplied router, never a second routing path. The bundled router is deterministic: it fans the Run's request out to every enabled member once, in parallel, then completes, and never synthesizes. The dialog drops the command and auth-environment fields entirely and never shows a config path: a status short of `ready` reads as one fixed sentence. `.get` and `.set` keep their exact wire shapes, so released dashboards and the Group composer are unaffected; an older daemon answers `unknown-type` and the dialog falls back to `.get` with a read-only panel and an upgrade notice.
+
 ## [0.24.10-beta.0] - 2026-10-13
 
 ### Added
