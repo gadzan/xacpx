@@ -4,7 +4,13 @@ import { withPrivateFileLock } from "../util/private-file.js";
 
 import { loadConfig, parseConfig } from "./load-config";
 import type { AdapterVersionOverrides } from "../adapters/adapter-catalog";
-import type { AgentConfig, AppConfig, ChannelRuntimeConfig, PluginConfig } from "./types";
+import type {
+  AgentConfig,
+  AppConfig,
+  ChannelRuntimeConfig,
+  ConversationRouterConfigPatch,
+  PluginConfig,
+} from "./types";
 
 /**
  * Raw-patch config persistence.
@@ -118,6 +124,16 @@ export class ConfigStore {
   async updateChannel(patch: Partial<AppConfig["channel"]>): Promise<AppConfig> {
     return await this.patchRaw((raw) => {
       applyRecordPatch(ensureRecordAt(raw, "channel"), patch);
+    });
+  }
+
+  /** Sets only the given router keys; `null` (or an explicit `undefined`) removes the key. */
+  async updateConversationRouter(patch: ConversationRouterConfigPatch): Promise<AppConfig> {
+    return await this.patchRaw((raw) => {
+      applyConversationRouterPatch(
+        ensureRecordAt(ensureRecordAt(raw, "conversations"), "router"),
+        patch,
+      );
     });
   }
 
@@ -338,6 +354,22 @@ function deleteRecordEntry(raw: RawConfig, section: string, name: string): void 
 function applyRecordPatch(target: RawConfig, patch: Record<string, unknown>): void {
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) {
+      delete target[key];
+    } else {
+      target[key] = value;
+    }
+  }
+}
+
+// The router keys are literals, never taken from the patch object, so a
+// caller-supplied property name can never become a config key.
+const CONVERSATION_ROUTER_PATCH_KEYS = ["enabled", "command", "authEnv"] as const;
+
+function applyConversationRouterPatch(target: RawConfig, patch: ConversationRouterConfigPatch): void {
+  for (const key of CONVERSATION_ROUTER_PATCH_KEYS) {
+    if (!(key in patch)) continue;
+    const value = patch[key];
+    if (value === null || value === undefined) {
       delete target[key];
     } else {
       target[key] = value;

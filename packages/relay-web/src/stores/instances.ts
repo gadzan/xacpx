@@ -5,12 +5,17 @@ import {
   errorCapability,
   isErrorPayload,
   parseAgentCapabilityState,
+  parseConversationRouterState,
   parseRouterAvailability,
+  ROUTER_CONFIG_PATH,
   type RouterAvailability,
   unsupportedCapability,
   type AgentCapabilityState,
   type AgentCatalogEntryDto,
   type AgentDto,
+  type ConversationRouterConfigState,
+  type ConversationRouterState,
+  type ConversationRouterUpdatePayload,
   type NativeSessionDto,
   type PublishedAgentEndpointDto,
   type SessionDto,
@@ -130,6 +135,34 @@ export function parseGroupArchivedKey(key: string): { mode: GroupArchivedMode; g
   if (mode !== "workspace" && mode !== "agent") return null;
   return { mode, groupKey: key.slice(sep + 1) };
 }
+
+/** The write state of one router form, kept beside the config it writes. */
+export type RouterSaveState =
+  | { kind: "idle" }
+  | { kind: "saving" }
+  | { kind: "failed"; message: string };
+
+/**
+ * The instance dialog's automatic-collaboration panel: one discriminated model
+ * per instance instead of scattered booleans. `loading` has no config to show,
+ * `read-only` has an availability but no writable form (an older daemon, or a
+ * read that failed), and `editable` pairs the availability with the persisted
+ * section the form edits. The switch reads `config.enabled`, the persisted
+ * intent, and never derives itself from `availability.status`.
+ */
+export type RouterPanelModel =
+  | { phase: "loading" }
+  | { phase: "read-only"; availability: RouterAvailability; notice: string }
+  | {
+      phase: "editable";
+      availability: RouterAvailability;
+      config: ConversationRouterConfigState;
+      save: RouterSaveState;
+    };
+
+/** The read-only notice shown for an older daemon. The store carries the i18n
+ *  key, not translated copy, so the view renders it in the active locale. */
+const ROUTER_UPGRADE_NOTICE = "instance.autoCollabUpgradeNotice";
 
 export const useInstancesStore = defineStore("instances", () => {
   const agentDirectory = ref<WebAgentDirectoryEndpointDto[]>([]);
@@ -738,53 +771,143 @@ export const useInstancesStore = defineStore("instances", () => {
     return routerAvailabilityById.value[instanceId] ?? { status: "loading" };
   }
 
-  async function loadRouterAvailability(instanceId: string): Promise<void> {
-    try {
-      const raw = unwrap(await api.rpc(instanceId, "control.conversations.router.get", {}));
-      routerAvailabilityById.value = {
-        ...routerAvailabilityById.value,
-        [instanceId]: parseRouterAvailability(raw),
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "";
-      routerAvailabilityById.value = {
-        ...routerAvailabilityById.value,
-        [instanceId]: message.includes("newer connector")
-          ? {
-              status: "unsupported",
-              configPath: "conversations.router",
-              reason: { code: "not-advertised", message: "This instance does not advertise automatic collaboration." },
-            }
-          : message.includes("router availability")
-            ? {
-                status: "failed",
-                configPath: "conversations.router",
-                reason: { code: "malformed-capabilities", message: "The router availability read was not a recognized state." },
-              }
-            : {
-                status: "failed",
-                configPath: "conversations.router",
-                reason: { code: "read-failed", message: "The router availability read failed." },
-              },
+  /** The one degradation mapping every router read path lands on, so a failed read
+   *  never becomes a fake `ready` (or a boolean). */
+  function routerReadFailure(error: unknown): RouterAvailability {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("newer connector")) {
+      return {
+        status: "unsupported",
+        configPath: ROUTER_CONFIG_PATH,
+        reason: { code: "not-advertised", message: "This instance does not advertise automatic collaboration." },
       };
     }
+    if (message.includes("router availability")) {
+      return {
+        status: "failed",
+        configPath: ROUTER_CONFIG_PATH,
+        reason: { code: "malformed-capabilities", message: "The router availability read was not a recognized state." },
+      };
+    }
+    return {
+      status: "failed",
+      configPath: ROUTER_CONFIG_PATH,
+      reason: { code: "read-failed", message: "The router availability read failed." },
+    };
   }
 
-  /**
-   * Flip the instance's automatic-collaboration switch. The daemon persists the
-   * setting, re-probes, and answers with the resulting availability — the same
-   * four-status shape `.get` returns, so a failed enable surfaces its reason
-   * instead of a silent no-op. A rejected RPC leaves the previous state in
-   * place; callers re-read to recover.
-   */
-  async function setConversationRouterEnabled(instanceId: string, enabled: boolean): Promise<RouterAvailability> {
-    const raw = unwrap(await api.rpc(instanceId, "control.conversations.router.set", { enabled }));
-    const availability = parseRouterAvailability(raw);
+  /** Mirror a resolved availability into the composer-facing map so the Group
+   *  composer's automatic option converges without waiting for its event. */
+  function publishRouterAvailability(instanceId: string, availability: RouterAvailability): void {
     routerAvailabilityById.value = {
       ...routerAvailabilityById.value,
       [instanceId]: availability,
     };
-    return availability;
+  }
+
+  async function loadRouterAvailability(instanceId: string): Promise<void> {
+    try {
+      const raw = unwrap(await api.rpc(instanceId, "control.conversations.router.get", {}));
+      publishRouterAvailability(instanceId, parseRouterAvailability(raw));
+    } catch (error) {
+      publishRouterAvailability(instanceId, routerReadFailure(error));
+    }
+  }
+
+  /** One panel per instance, keyed by id; the dialog reads it through
+   *  {@link routerPanelFor}. */
+  const routerPanelById = ref<Record<string, RouterPanelModel>>({});
+
+  function routerPanelFor(instanceId: string): RouterPanelModel {
+    return routerPanelById.value[instanceId] ?? { phase: "loading" };
+  }
+
+  function storeRouterPanel(instanceId: string, panel: RouterPanelModel): void {
+    routerPanelById.value = { ...routerPanelById.value, [instanceId]: panel };
+  }
+
+  /** Land a parsed state as an editable panel and mirror its availability. */
+  function applyRouterState(instanceId: string, state: ConversationRouterState): void {
+    storeRouterPanel(instanceId, {
+      phase: "editable",
+      availability: state.availability,
+      config: state.config,
+      save: { kind: "idle" },
+    });
+    publishRouterAvailability(instanceId, state.availability);
+  }
+
+  /**
+   * Read the router section for the instance dialog. `.update` with an empty
+   * payload is a pure read that answers with the persisted config, so the form
+   * can show what is already configured. An older daemon answers `unknown-type`
+   * for it; `.get` still carries the real availability, so fall back to that and
+   * render the section read-only with an upgrade notice. Any other failure
+   * degrades exactly like every other router read.
+   */
+  async function loadRouterPanel(instanceId: string): Promise<void> {
+    // A re-read never clears an open form. The loading phase is only stored while
+    // nothing has been read for this instance yet.
+    if (!routerPanelById.value[instanceId]) storeRouterPanel(instanceId, { phase: "loading" });
+    let notice = "";
+    let availability: RouterAvailability;
+    try {
+      const raw = unwrap(await api.rpc(instanceId, "control.conversations.router.update", {}));
+      applyRouterState(instanceId, parseConversationRouterState(raw));
+      return;
+    } catch (error) {
+      availability = routerReadFailure(error);
+      // An older daemon answers `unknown-type` for `.update`, which `unwrap` turns
+      // into the upgrade hint; `.get` still carries the real availability.
+      if (error instanceof Error && error.message.includes("newer connector")) {
+        notice = ROUTER_UPGRADE_NOTICE;
+        try {
+          availability = parseRouterAvailability(
+            unwrap(await api.rpc(instanceId, "control.conversations.router.get", {})),
+          );
+        } catch (fallbackError) {
+          availability = routerReadFailure(fallbackError);
+          notice = "";
+        }
+      }
+    }
+    storeRouterPanel(instanceId, { phase: "read-only", availability, notice });
+    publishRouterAvailability(instanceId, availability);
+  }
+
+  /**
+   * Write a patch to the router section and store the state the daemon answers
+   * with. A rejected RPC leaves the previous panel in place. The caller marks the
+   * failure so the form keeps the user's draft and the daemon's reason stays
+   * visible.
+   */
+  async function saveRouterPanel(
+    instanceId: string,
+    patch: ConversationRouterUpdatePayload,
+  ): Promise<ConversationRouterState> {
+    const raw = unwrap(await api.rpc(instanceId, "control.conversations.router.update", patch));
+    const state = parseConversationRouterState(raw);
+    applyRouterState(instanceId, state);
+    return state;
+  }
+
+  /** Mark a write in flight or failed without touching the stored config, so a
+   *  failed save keeps the last known state and the user's draft. */
+  function setRouterSaveState(instanceId: string, save: RouterSaveState): void {
+    const current = routerPanelById.value[instanceId];
+    if (current?.phase !== "editable") return;
+    storeRouterPanel(instanceId, { ...current, save });
+  }
+
+  /**
+   * Flip the automatic-collaboration switch. The write goes through the same
+   * `.update` RPC the form uses, so the panel and the Group composer converge on
+   * the state the daemon resolved instead of the state the user asked for. A
+   * rejected RPC propagates and leaves the previous state in place.
+   */
+  async function setRouterEnabled(instanceId: string, enabled: boolean): Promise<RouterAvailability> {
+    const state = await saveRouterPanel(instanceId, { enabled });
+    return state.availability;
   }
 
   async function getAgentCapabilities(
@@ -995,8 +1118,11 @@ export const useInstancesStore = defineStore("instances", () => {
       void loadWorkspaces(event.instanceId).catch(() => {});
     } else if (event.kind === "control-event" && event.event.type === "conversation-router-changed") {
       // Automatic collaboration was switched on another client/surface — re-read so the
-      // composer's automatic target and the settings toggle converge.
+      // composer's automatic target and the instance dialog's panel converge. The panel
+      // is only re-read once a dialog has asked for it, so a client with no dialog
+      // open still pays the single `.get`.
       void loadRouterAvailability(event.instanceId).catch(() => {});
+      if (routerPanelById.value[event.instanceId]) void loadRouterPanel(event.instanceId).catch(() => {});
     } else if (event.kind === "agent-directory") {
       agentDirectory.value = event.endpoints;
     }
@@ -1023,5 +1149,5 @@ export const useInstancesStore = defineStore("instances", () => {
     return undefined;
   }
 
-  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, setConversationRouterEnabled, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
+  return { agentDirectory, loadAgentDirectory, instances, groupModes, groupModeFor, setGroupMode, loadInstances, loadSessions, loadMoreSessions, loadSessionsForOnlineInstances, loadArchivedSessions, loadGroupArchivedSessions, refreshLoadedGroupArchivedSessions, loadWorkspaces, loadFormOptions, loadAgentCatalog, createWorkspace, createAgent, removeAgent, removeWorkspace, createSession, beginSessionCreation, cancelSessionCreation, listNativeSessions, getAgentCapabilities, routerAvailabilityById, routerAvailabilityFor, loadRouterAvailability, routerPanelFor, loadRouterPanel, saveRouterPanel, setRouterSaveState, setRouterEnabled, removeSession, archiveSession, unarchiveSession, renameSession, renameInstance, applyEvent, byId, findSessionRow };
 });

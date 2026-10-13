@@ -86,6 +86,8 @@ var DESKTOP_WS_MAX_PAYLOAD_BYTES = 1 * 1024 * 1024;
 var DESKTOP_TCP_CHUNK_BYTES = 64 * 1024;
 var DESKTOP_BUFFERED_SOFT_PAUSE_BYTES = 2 * 1024 * 1024;
 var DESKTOP_BUFFERED_HARD_CLOSE_BYTES = 4 * 1024 * 1024;
+var ROUTER_COMMAND_MAX_LENGTH = 4096;
+var ROUTER_AUTH_ENV_PATTERN = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 function maxBase64EncodedLength(maxDecodedBytes) {
   return 4 * Math.ceil(Math.max(0, maxDecodedBytes) / 3);
 }
@@ -148,6 +150,7 @@ var MSG = {
   agentsCapabilitiesGet: "control.agents.capabilities.get",
   conversationRouterGet: "control.conversations.router.get",
   conversationRouterSet: "control.conversations.router.set",
+  conversationRouterUpdate: "control.conversations.router.update",
   sessionModelSet: "control.session.model.set",
   sessionEffortGet: "control.session.effort.get",
   sessionEffortSet: "control.session.effort.set",
@@ -317,11 +320,11 @@ function decodeCanonicalBase64(encoded) {
     const binary = globalThis.atob(encoded);
     if (globalThis.btoa(binary) !== encoded)
       return null;
-    const decoded2 = new Uint8Array(binary.length);
+    const decoded = new Uint8Array(binary.length);
     for (let i = 0;i < binary.length; i++) {
-      decoded2[i] = binary.charCodeAt(i) & 255;
+      decoded[i] = binary.charCodeAt(i) & 255;
     }
-    return decoded2;
+    return decoded;
   }
   const BufferCtor = globalThis.Buffer;
   if (!BufferCtor)
@@ -1054,6 +1057,7 @@ function parseWebClientMessage(envelope) {
 }
 // packages/relay-protocol/src/payload-validators.ts
 var fields = (p) => isObj(p) ? p : null;
+var isArr = (v) => Array.isArray(v);
 var optArr = (v) => v === undefined || Array.isArray(v);
 var isStrArr = (v) => Array.isArray(v) && v.every(isStr);
 var optStrOrNull = (v) => v === undefined || v === null || typeof v === "string";
@@ -1228,6 +1232,20 @@ var validateConversationRouterSet = (p) => {
   if (!o || Object.keys(o).length !== 1 || typeof o.enabled !== "boolean")
     return null;
   return { enabled: o.enabled };
+};
+var ROUTER_AUTH_ENV_MAX_LENGTH = 128;
+var ROUTER_UPDATE_KEYS = { enabled: true, command: true, authEnv: true };
+var optRouterCommand = (v) => v === undefined || v === null || typeof v === "string" && v.length <= ROUTER_COMMAND_MAX_LENGTH;
+var optRouterAuthEnv = (v) => v === undefined || v === null || typeof v === "string" && v.length <= ROUTER_AUTH_ENV_MAX_LENGTH;
+var validateConversationRouterUpdate = (p) => {
+  const o = fields(p);
+  if (!o || isArr(o) || !hasOnlyKeys(o, ROUTER_UPDATE_KEYS))
+    return null;
+  if (o.enabled !== undefined && typeof o.enabled !== "boolean")
+    return null;
+  if (!optRouterCommand(o.command) || !optRouterAuthEnv(o.authEnv))
+    return null;
+  return o;
 };
 var validateAgentsCapabilitiesGet = (p) => {
   const o = fields(p);
@@ -1802,6 +1820,7 @@ var CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationCompletionsGet]: validateConversationCompletionsGet,
   [MSG.conversationRouterGet]: validateConversationRouterGet,
   [MSG.conversationRouterSet]: validateConversationRouterSet,
+  [MSG.conversationRouterUpdate]: validateConversationRouterUpdate,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.sessionEffortGet]: validateSessionEffortGet,
   [MSG.sessionEffortSet]: validateSessionEffortSet,
@@ -2239,6 +2258,36 @@ function parseRouterAvailability(value) {
   }
   throw new Error("router availability status is not recognized");
 }
+function parseConversationRouterState(value) {
+  if (!isRecord2(value))
+    throw new Error("router state is missing");
+  const extra = Object.keys(value).filter((key) => key !== "availability" && key !== "config");
+  if (extra.length > 0)
+    throw new Error("router state contains an unsupported field");
+  const availability = parseRouterAvailability(value.availability);
+  const config = value.config;
+  if (!isRecord2(config))
+    throw new Error("router state config is missing");
+  if (typeof config.enabled !== "boolean")
+    throw new Error("router state config.enabled must be a boolean");
+  const configExtra = Object.keys(config).filter((key) => key !== "enabled" && key !== "command" && key !== "authEnv");
+  if (configExtra.length > 0)
+    throw new Error("router state config contains an unsupported field");
+  if (config.command !== undefined && typeof config.command !== "string") {
+    throw new Error("router state config.command must be a string");
+  }
+  if (config.authEnv !== undefined && typeof config.authEnv !== "string") {
+    throw new Error("router state config.authEnv must be a string");
+  }
+  return {
+    availability,
+    config: {
+      enabled: config.enabled,
+      ...config.command !== undefined ? { command: config.command } : {},
+      ...config.authEnv !== undefined ? { authEnv: config.authEnv } : {}
+    }
+  };
+}
 export {
   CONTROL_PAYLOAD_VALIDATORS,
   DESKTOP_BUFFERED_HARD_CLOSE_BYTES,
@@ -2287,6 +2336,8 @@ export {
   RELAY_CAPABILITIES,
   RELAY_INTERACTION_RESPONSE_RESERVE_MS,
   RELAY_PROTOCOL_VERSION,
+  ROUTER_AUTH_ENV_PATTERN,
+  ROUTER_COMMAND_MAX_LENGTH,
   ROUTER_CONFIG_PATH,
   STATE_SYNC_PARTS_CAP,
   STATE_SYNC_TEXT_CAP,
@@ -2325,6 +2376,7 @@ export {
   parseAgentCapabilityState,
   parseCanonicalBase64,
   parseControlPayload,
+  parseConversationRouterState,
   parseDesktopCredential,
   parseDesktopEventPayload,
   parseDesktopPrepareResult,

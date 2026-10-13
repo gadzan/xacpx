@@ -167,6 +167,16 @@ export interface ConversationRouterConfig {
   authEnv?: string;
 }
 
+/**
+ * Per-key patch of the router section. An absent key is left as-is, so a
+ * hand-added key inside `conversations.router` survives; `null` removes the key.
+ */
+export interface ConversationRouterConfigPatch {
+  enabled?: boolean;
+  command?: string | null;
+  authEnv?: string | null;
+}
+
 export interface ConversationsConfig {
   router: ConversationRouterConfig;
 }

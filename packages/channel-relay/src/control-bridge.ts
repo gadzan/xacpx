@@ -847,6 +847,16 @@ async function dispatchControlRequest(
       }
       return await control.setConversationRouterEnabled(input.enabled);
     }
+    case MSG.conversationRouterUpdate: {
+      const input = parseControlPayload(MSG.conversationRouterUpdate, payload);
+      if (!input) {
+        return errorPayload(
+          "invalid-payload",
+          `${MSG.conversationRouterUpdate}: malformed payload`,
+        );
+      }
+      return await control.updateConversationRouter(input);
+    }
     case MSG.agentsCapabilitiesGet: {
       const input = parseControlPayload(MSG.agentsCapabilitiesGet, payload);
       if (!input) {

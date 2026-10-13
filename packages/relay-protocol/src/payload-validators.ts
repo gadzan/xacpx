@@ -72,6 +72,7 @@ import {
   type AgentsCapabilitiesGetPayload,
   type ConversationRouterGetPayload,
   type ConversationRouterSetPayload,
+  type ConversationRouterUpdatePayload,
   type SessionModelGetPayload,
   type SessionModelSetPayload,
   type SessionEffortGetPayload,
@@ -126,6 +127,7 @@ import {
   MAX_TERMINAL_VIEWER_ID_LENGTH,
   MIN_TERMINAL_COLS,
   MIN_TERMINAL_ROWS,
+  ROUTER_COMMAND_MAX_LENGTH,
   TERMINAL_REBASE_CHUNK_BYTES,
 } from "./limits.js";
 import {
@@ -358,6 +360,24 @@ const validateConversationRouterSet: Validator<ConversationRouterSetPayload> = (
   const o = fields(p);
   if (!o || Object.keys(o).length !== 1 || typeof o.enabled !== "boolean") return null;
   return { enabled: o.enabled };
+};
+/** Wire bound on `authEnv` length: the ceiling `ROUTER_AUTH_ENV_PATTERN` allows. The
+ *  pattern itself is semantic and stays in `parseConversationsConfig`. */
+const ROUTER_AUTH_ENV_MAX_LENGTH = 128;
+const ROUTER_UPDATE_KEYS = { enabled: true, command: true, authEnv: true } satisfies Record<keyof ConversationRouterUpdatePayload, true>;
+/** Optional `command`: absent, `null` (removes the key), or a string within the cap.
+ *  A blank string passes the wire on purpose — an emptied field must reach the config
+ *  layer, which rejects it with the better message. */
+const optRouterCommand = (v: unknown): boolean =>
+  v === undefined || v === null || (typeof v === "string" && v.length <= ROUTER_COMMAND_MAX_LENGTH);
+const optRouterAuthEnv = (v: unknown): boolean =>
+  v === undefined || v === null || (typeof v === "string" && v.length <= ROUTER_AUTH_ENV_MAX_LENGTH);
+const validateConversationRouterUpdate: Validator<ConversationRouterUpdatePayload> = (p) => {
+  const o = fields(p);
+  if (!o || isArr(o) || !hasOnlyKeys(o, ROUTER_UPDATE_KEYS)) return null;
+  if (o.enabled !== undefined && typeof o.enabled !== "boolean") return null;
+  if (!optRouterCommand(o.command) || !optRouterAuthEnv(o.authEnv)) return null;
+  return o as unknown as ConversationRouterUpdatePayload;
 };
 const validateAgentsCapabilitiesGet: Validator<AgentsCapabilitiesGetPayload> = (p) => {
   const o = fields(p);
@@ -1033,6 +1053,7 @@ export type ControlRpcType =
   | typeof MSG.conversationCompletionsGet
   | typeof MSG.conversationRouterGet
   | typeof MSG.conversationRouterSet
+  | typeof MSG.conversationRouterUpdate
   | typeof MSG.sessionEffortGet | typeof MSG.sessionEffortSet
   | typeof MSG.gitStatus | typeof MSG.gitStage | typeof MSG.gitUnstage
   | typeof MSG.gitUntrack | typeof MSG.gitDiscard | typeof MSG.gitCommit
@@ -1110,6 +1131,7 @@ export const CONTROL_PAYLOAD_VALIDATORS = {
   [MSG.conversationCompletionsGet]: validateConversationCompletionsGet,
   [MSG.conversationRouterGet]: validateConversationRouterGet,
   [MSG.conversationRouterSet]: validateConversationRouterSet,
+  [MSG.conversationRouterUpdate]: validateConversationRouterUpdate,
   [MSG.sessionModelSet]: validateSessionModelSet,
   [MSG.sessionEffortGet]: validateSessionEffortGet,
   [MSG.sessionEffortSet]: validateSessionEffortSet,

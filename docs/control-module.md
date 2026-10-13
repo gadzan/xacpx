@@ -71,6 +71,8 @@ PR9 公开 handoff 走 execution-bound `group_send({to, task, expectedOutput?})`
 
 `setConversationRouterEnabled(enabled)` 对应 `control.conversations.router.set`，是“群组自动协作”开关。它经 `ConfigStore` 原始补丁只写 `conversations.router.enabled`（不重排整个 config.json），随后按启动时的同一条路径重新解析（开启时跑能力探测），把结果热应用到运行中的 Conversation runtime，并发 `conversation-router-changed` 事件。返回值与 `.get` 同为四状态，不是布尔值：开启时若没有通过限制证明的 Router（例如未配置 `conversations.router.command`），返回 `failed` 并带 reason，Web 因此能显示原因而不是假装成功。写入失败会原样抛出，不会报告假成功。未接入该开关的嵌入环境抛 `router_control_unavailable`。
 
+`updateConversationRouter(patch)` 对应 `control.conversations.router.update`，一次补丁写整个 `conversations.router` 段并读回全量状态。`patch` 只有 `enabled`、`command`、`authEnv` 三个可选键；缺席的键保持磁盘值不变，`command` / `authEnv` 传 `null` 删除该键。空补丁是纯读：取运行中的可用性快照加持久化配置，不写盘、不探测、不发事件，因此打开管理弹层不会产生副作用。非空补丁走与 `.set` 同一条 `ConfigStore` 路径（整文件锁 + 合并后 `parseConfig` 校验），随后重新解析、热应用、发事件，返回 `{ availability, config }`。`config` 是持久化段原样回显，`command` 与 `authEnv` 未配置时缺席而不是空串。线只校验帧型和长度；空串、换行、NUL 和环境变量名规则仍由 `parseConversationsConfig` 独占。旧 daemon 对它答 `unknown-type`，Web 回落到 `.get` 并显示只读面板。
+
 Bot 上保存的 model / effort 进入之后 `accept` 的 profile snapshot。已经接受的 Run 保留自己的 snapshot。运行时若退回适配器默认模型，状态里的 `effect.kind` 是 `fell-back`，选出的 id 不会显示成已经生效。
 
 Phase 10A：`createTopic(conversationId, title, options?)` 与

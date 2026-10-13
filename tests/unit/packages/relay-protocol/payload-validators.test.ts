@@ -49,6 +49,50 @@ test("the automatic-collaboration switch payload is a single boolean", () => {
   }
 });
 
+test("the router update payload is a per-key patch bounded on the wire only", () => {
+  expect(MSG.conversationRouterUpdate).toBe("control.conversations.router.update");
+  expect(parseControlPayload(MSG.conversationRouterUpdate, {})).toEqual({});
+  for (const ok of [
+    { enabled: true },
+    { enabled: false },
+    { command: "/usr/bin/router" },
+    { command: "" },
+    { command: null },
+    { authEnv: "ROUTER_TOKEN" },
+    { authEnv: null },
+    { enabled: false, command: null, authEnv: null },
+  ]) {
+    expect(parseControlPayload(MSG.conversationRouterUpdate, ok)).toEqual(ok);
+  }
+  const full = { enabled: true, command: "/usr/bin/router", authEnv: "ROUTER_TOKEN" };
+  expect(parseControlPayload(MSG.conversationRouterUpdate, full)).toEqual(full);
+  // Blank strings, newlines, and non-matching env names are the config layer's call.
+  expect(parseControlPayload(MSG.conversationRouterUpdate, { command: "   " })).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationRouterUpdate, { command: "/usr/bin/router\n" })).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationRouterUpdate, { authEnv: "9token" })).not.toBeNull();
+  // Length bounds are the wire's call.
+  expect(parseControlPayload(MSG.conversationRouterUpdate, { command: "x".repeat(4096) })).not.toBeNull();
+  expect(parseControlPayload(MSG.conversationRouterUpdate, { authEnv: "A".repeat(128) })).not.toBeNull();
+  for (const bad of [
+    { enabled: "true" },
+    { enabled: null },
+    { enabled: 1 },
+    { command: 5 },
+    { command: true },
+    { authEnv: [] },
+    { authEnv: 5 },
+    { enabled: true, extra: 1 },
+    { command: "/usr/bin/router", extra: 1 },
+    { command: "x".repeat(4097) },
+    { authEnv: "A".repeat(129) },
+    null,
+    "on",
+    [],
+  ]) {
+    expect(parseControlPayload(MSG.conversationRouterUpdate, bad)).toBeNull();
+  }
+});
+
 test("parseControlPayload accepts a well-formed fsWrite payload", () => {
   const ok = parseControlPayload(MSG.fsWrite, {
     workspace: "home", path: "a.txt", content: "hi",

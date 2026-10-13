@@ -64,27 +64,114 @@ test("loadRouterAvailability does not treat a boolean as ready", async () => {
   });
 });
 
-test("setConversationRouterEnabled stores the availability the daemon resolved", async () => {
-  const calls: Array<{ type: string; payload: unknown }> = [];
-  vi.stubGlobal("fetch", vi.fn(async (_url: string, init: { body: string }) => {
-    const body = JSON.parse(init.body) as { type: string; payload: unknown };
-    calls.push(body);
-    return new Response(JSON.stringify({
-      result: { status: "ready", configPath: "conversations.router" },
-    }), { status: 200 });
-  }));
+test("loadRouterPanel stores the availability and config .update answers with an empty payload", async () => {
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({
+    availability: {
+      status: "failed",
+      configPath: "conversations.router",
+      reason: { code: "command-missing", message: "conversations.router.command is missing." },
+    },
+    config: { enabled: true, command: "/usr/bin/router" },
+  } as never);
   const store = useInstancesStore();
-  const availability = await store.setConversationRouterEnabled("i1", true);
-  expect(availability).toEqual({ status: "ready", configPath: "conversations.router" });
-  expect(store.routerAvailabilityFor("i1")).toEqual({ status: "ready", configPath: "conversations.router" });
-  expect(calls).toEqual([{ type: "control.conversations.router.set", payload: { enabled: true } }]);
+  await store.loadRouterPanel("i1");
+  expect(rpc).toHaveBeenCalledWith("i1", "control.conversations.router.update", {});
+  expect(store.routerPanelFor("i1")).toEqual({
+    phase: "editable",
+    availability: {
+      status: "failed",
+      configPath: "conversations.router",
+      reason: { code: "command-missing", message: "conversations.router.command is missing." },
+    },
+    config: { enabled: true, command: "/usr/bin/router" },
+    save: { kind: "idle" },
+  });
+  vi.restoreAllMocks();
 });
 
-test("setConversationRouterEnabled surfaces a malformed answer as failed, never as ready", async () => {
-  vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ result: { status: "ready" } }), { status: 200 })));
+test("loadRouterPanel falls back to .get on an unknown-type answer and stays read-only", async () => {
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) =>
+    (type === "control.conversations.router.update"
+      ? { error: { code: "unknown-type", message: "unsupported rpc type: control.conversations.router.update" } }
+      : { status: "disabled-by-config", configPath: "conversations.router", reason: { code: "disabled", message: "Automatic collaboration is off." } }) as never);
   const store = useInstancesStore();
-  await expect(store.setConversationRouterEnabled("i1", true)).rejects.toThrow();
-  expect(store.routerAvailabilityFor("i1")).toEqual({ status: "loading" });
+  await store.loadRouterPanel("i1");
+  expect(rpc).toHaveBeenCalledWith("i1", "control.conversations.router.update", {});
+  expect(rpc).toHaveBeenCalledWith("i1", "control.conversations.router.get", {});
+  expect(store.routerPanelFor("i1")).toEqual({
+    phase: "read-only",
+    availability: {
+      status: "disabled-by-config",
+      configPath: "conversations.router",
+      reason: { code: "disabled", message: "Automatic collaboration is off." },
+    },
+    notice: "instance.autoCollabUpgradeNotice",
+  });
+  vi.restoreAllMocks();
+});
+
+test("loadRouterPanel degrades a transport failure to read-only failed/read-failed", async () => {
+  vi.spyOn(api, "rpc").mockRejectedValue(new Error("network down"));
+  const store = useInstancesStore();
+  await store.loadRouterPanel("i1");
+  expect(store.routerPanelFor("i1")).toEqual({
+    phase: "read-only",
+    availability: {
+      status: "failed",
+      configPath: "conversations.router",
+      reason: { code: "read-failed", message: "The router availability read failed." },
+    },
+    notice: "",
+  });
+  vi.restoreAllMocks();
+});
+
+test("loadRouterPanel never turns a malformed answer into an editable panel", async () => {
+  vi.spyOn(api, "rpc").mockResolvedValue({ availability: { status: "ready" }, config: { enabled: true } } as never);
+  const store = useInstancesStore();
+  await store.loadRouterPanel("i1");
+  const panel = store.routerPanelFor("i1");
+  expect(panel.phase).toBe("read-only");
+  expect(panel.phase === "read-only" && panel.availability).toMatchObject({
+    status: "failed",
+    reason: { code: "malformed-capabilities" },
+  });
+  vi.restoreAllMocks();
+});
+
+test("the switch write sends { enabled } through .update and returns the resolved availability", async () => {
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({
+    availability: { status: "ready", configPath: "conversations.router" },
+    config: { enabled: true, command: "/usr/bin/router" },
+  } as never);
+  const store = useInstancesStore();
+  const availability = await store.setRouterEnabled("i1", true);
+  expect(rpc).toHaveBeenCalledWith("i1", "control.conversations.router.update", { enabled: true });
+  expect(availability).toEqual({ status: "ready", configPath: "conversations.router" });
+  expect(store.routerPanelFor("i1")).toMatchObject({
+    phase: "editable",
+    availability: { status: "ready", configPath: "conversations.router" },
+    config: { enabled: true, command: "/usr/bin/router" },
+  });
+  vi.restoreAllMocks();
+});
+
+test("a rejected write leaves the previous panel intact", async () => {
+  const rpc = vi.spyOn(api, "rpc").mockResolvedValue({
+    availability: {
+      status: "failed",
+      configPath: "conversations.router",
+      reason: { code: "command-missing", message: "conversations.router.command is missing." },
+    },
+    config: { enabled: false },
+  } as never);
+  const store = useInstancesStore();
+  await store.loadRouterPanel("i1");
+  const before = store.routerPanelFor("i1");
+  rpc.mockRejectedValueOnce(new Error("conversations.router.command must be a command path"));
+  await expect(store.saveRouterPanel("i1", { command: "/wrong/path" })).rejects.toThrow(/command path/);
+  expect(store.routerPanelFor("i1")).toEqual(before);
+  vi.restoreAllMocks();
 });
 
 test("conversation-router-changed re-reads the instance availability", async () => {
@@ -102,6 +189,27 @@ test("conversation-router-changed re-reads the instance availability", async () 
     configPath: "conversations.router",
     reason: { code: "disabled", message: "Automatic collaboration is off." },
   });
+  vi.restoreAllMocks();
+});
+
+test("conversation-router-changed re-reads an open panel through .update", async () => {
+  const rpc = vi.spyOn(api, "rpc").mockImplementation(async (_id: string, type: string) =>
+    (type === "control.conversations.router.update"
+      ? {
+          availability: { status: "ready", configPath: "conversations.router" },
+          config: { enabled: true },
+        }
+      : {
+          status: "disabled-by-config",
+          configPath: "conversations.router",
+          reason: { code: "disabled", message: "Automatic collaboration is off." },
+        }) as never);
+  const store = useInstancesStore();
+  await store.loadRouterPanel("i1");
+  rpc.mockClear();
+  store.applyEvent({ kind: "control-event", instanceId: "i1", event: { type: "conversation-router-changed" } });
+  await vi.waitFor(() => expect(rpc).toHaveBeenCalledWith("i1", "control.conversations.router.update", {}));
+  expect(store.routerPanelFor("i1")).toMatchObject({ phase: "editable", availability: { status: "ready" } });
   vi.restoreAllMocks();
 });
 

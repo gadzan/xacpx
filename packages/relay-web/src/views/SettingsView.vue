@@ -9,7 +9,6 @@ import { useLocaleStore } from "../stores/locale";
 import { useI18n } from "vue-i18n";
 import { SUPPORTED_LOCALES } from "../i18n";
 import { confirm } from "../lib/use-confirm";
-import { useInstancesStore, type InstanceView } from "../stores/instances";
 import {
   pushSupported,
   fetchVapidPublicKey,
@@ -24,16 +23,11 @@ const theme = useThemeStore();
 const router = useRouter();
 const locale = useLocaleStore();
 const { t } = useI18n();
-const instances = useInstancesStore();
 const localeLabels: Record<string, string> = { en: "English", "zh-CN": "中文" };
 const retention = ref<{ days: number; maxPerSession: number } | null>(null);
 const pairing = ref("");
 const pairingName = ref("");
 const relay = ref<{ current: string; latest: string | null; updateAvailable: boolean } | null>(null);
-/** Per-instance in-flight guard for the automatic-collaboration switch. */
-const routerBusy = ref<Record<string, boolean>>({});
-/** Per-instance failure text from the last switch attempt; cleared on retry. */
-const routerError = ref<Record<string, string>>({});
 
 onMounted(async () => {
   try {
@@ -43,42 +37,7 @@ onMounted(async () => {
   try {
     relay.value = await api.get<{ current: string; latest: string | null; updateAvailable: boolean }>("/api/version");
   } catch { /* leave null; relay section shows a dash */ }
-  try {
-    await instances.loadInstances();
-  } catch { /* leave the section empty; it renders no rows */ }
-  // The switch state is instance-side, not hub-side: read it per instance so the
-  // toggle shows the daemon's resolved availability rather than a guess.
-  for (const inst of instances.instances) void instances.loadRouterAvailability(inst.id);
 });
-
-/** The daemon's four-status availability, never a boolean. */
-function routerStatusLabel(id: string): string {
-  const state = instances.routerAvailabilityFor(id);
-  if (state.status === "loading") return t("settings.autoCollabChecking");
-  if (state.status === "ready") return t("settings.autoCollabOn");
-  if (state.status === "disabled-by-config") return t("settings.autoCollabOff");
-  return t("settings.autoCollabUnavailable", { reason: state.reason.message, path: state.configPath });
-}
-
-async function toggleRouter(inst: InstanceView): Promise<void> {
-  if (routerBusy.value[inst.id]) return;
-  const next = instances.routerAvailabilityFor(inst.id).status !== "ready";
-  routerBusy.value = { ...routerBusy.value, [inst.id]: true };
-  try {
-    await instances.setConversationRouterEnabled(inst.id, next);
-    routerError.value = Object.fromEntries(Object.entries(routerError.value).filter(([key]) => key !== inst.id));
-  } catch (error) {
-    // The daemon answers with the reason (e.g. command not configured); show it
-    // and re-read so the toggle converges to the persisted truth.
-    routerError.value = {
-      ...routerError.value,
-      [inst.id]: error instanceof Error ? error.message : String(error),
-    };
-    await instances.loadRouterAvailability(inst.id).catch(() => {});
-  } finally {
-    routerBusy.value = { ...routerBusy.value, [inst.id]: false };
-  }
-}
 
 async function genPairing() {
   const r = await api.post<{ token: string }>("/api/instances/pairing-token", { name: pairingName.value });
@@ -219,24 +178,6 @@ void onMounted(() => { void probeNotifications(); });
       <div v-if="pairing" class="mt-2 rounded bg-bg border border-border p-2 text-xs text-fg">
         <div>{{ $t("settings.runOnHost") }}</div>
         <code class="block break-all">xacpx channel add relay --url &lt;this-relay-ws-url&gt; --token {{ pairing }}</code>
-      </div>
-    </section>
-
-    <section class="mb-8" data-test="auto-collab-setting">
-      <h2 class="mb-2 text-sm font-semibold uppercase text-fg-muted">{{ $t("settings.autoCollabTitle") }}</h2>
-      <p class="text-sm text-fg-muted">{{ $t("settings.autoCollabBody") }}</p>
-      <div v-for="inst in instances.instances" :key="inst.id" class="mt-3 flex flex-wrap items-center gap-3" :data-test="`auto-collab-row-${inst.id}`">
-        <span class="text-sm text-fg">{{ inst.name }}</span>
-        <span data-test="auto-collab-state" class="text-sm text-fg-muted">{{ routerStatusLabel(inst.id) }}</span>
-        <button
-          data-test="auto-collab-toggle"
-          class="rounded bg-accent px-3 py-1 text-sm text-white hover:bg-accent-hover disabled:opacity-50"
-          :disabled="routerBusy[inst.id] || !inst.online || instances.routerAvailabilityFor(inst.id).status === 'loading'"
-          @click="toggleRouter(inst)"
-        >{{ instances.routerAvailabilityFor(inst.id).status === "ready" ? $t("settings.autoCollabDisable") : $t("settings.autoCollabEnable") }}</button>
-        <p v-if="routerError[inst.id]" data-test="auto-collab-error" class="w-full text-xs text-error">
-          {{ $t("settings.autoCollabFailed", { message: routerError[inst.id] }) }}
-        </p>
       </div>
     </section>
 

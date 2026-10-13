@@ -371,6 +371,90 @@ test("updates channel reply mode while preserving channel ownerIds and unknown k
   await rm(dir, { recursive: true, force: true });
 });
 
+test("updateConversationRouter writes only the router subtree and keeps a hand-written conversations key", async () => {
+  const { dir, path } = await makeConfigFile({
+    transport: { type: "acpx-bridge" },
+    channel: { type: "weixin" },
+    conversations: {
+      router: { enabled: true, command: "/usr/bin/router" },
+      myNote: "hand-written",
+    },
+    agents: { codex: { driver: "codex" } },
+    workspaces: { backend: { cwd: "/tmp/backend" } },
+  });
+
+  const store = new ConfigStore(path);
+  const config = await store.updateConversationRouter({ authEnv: "ROUTER_TOKEN" });
+
+  expect(config.conversations).toEqual({
+    router: { enabled: true, command: "/usr/bin/router", authEnv: "ROUTER_TOKEN" },
+  });
+  const saved = await readRaw(path);
+  expect(saved.conversations).toEqual({
+    router: { enabled: true, command: "/usr/bin/router", authEnv: "ROUTER_TOKEN" },
+    myNote: "hand-written",
+  });
+  expect(saved.channel).toEqual({ type: "weixin" });
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("updateConversationRouter removes a key when the patch value is null", async () => {
+  const { dir, path } = await makeConfigFile({
+    transport: { type: "acpx-bridge" },
+    conversations: {
+      router: { enabled: true, command: "/usr/bin/router", authEnv: "ROUTER_TOKEN" },
+    },
+    agents: { codex: { driver: "codex" } },
+    workspaces: {},
+  });
+
+  const store = new ConfigStore(path);
+  const config = await store.updateConversationRouter({ authEnv: null });
+
+  expect(config.conversations).toEqual({ router: { enabled: true, command: "/usr/bin/router" } });
+  expect((await readRaw(path)).conversations).toEqual({
+    router: { enabled: true, command: "/usr/bin/router" },
+  });
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("updateConversationRouter rejects a blank command before anything is written", async () => {
+  const { dir, path } = await makeConfigFile({
+    transport: { type: "acpx-bridge" },
+    conversations: { router: { enabled: true, command: "/usr/bin/router" } },
+    agents: { codex: { driver: "codex" } },
+    workspaces: {},
+  });
+  const before = await readFile(path, "utf8");
+
+  const store = new ConfigStore(path);
+  await expect(store.updateConversationRouter({ command: "   " })).rejects.toThrow(
+    "conversations.router.command must be a command path",
+  );
+
+  expect(await readFile(path, "utf8")).toBe(before);
+
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("updateConversationRouter refuses a non-object conversations section", async () => {
+  const { dir, path } = await makeConfigFile({
+    transport: { type: "acpx-bridge" },
+    conversations: "on",
+    agents: { codex: { driver: "codex" } },
+    workspaces: {},
+  });
+
+  const store = new ConfigStore(path);
+  await expect(store.updateConversationRouter({ enabled: true })).rejects.toThrow(
+    /refusing to overwrite config key "conversations": it is not a JSON object/,
+  );
+
+  await rm(dir, { recursive: true, force: true });
+});
+
 test("replacePlugins only touches the plugins subtree", async () => {
   const { dir, path } = await makeConfigFile({
     transport: { type: "acpx-bridge" },

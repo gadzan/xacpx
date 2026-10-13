@@ -267,6 +267,35 @@ test("conversation router set forwards only the boolean and returns the resolved
   expect(seen).toEqual([true, false]);
 });
 
+test("conversation router update forwards the parsed patch and returns the state", async () => {
+  const seen: unknown[] = [];
+  const state = {
+    availability: { status: "ready", configPath: "conversations.router" },
+    config: { enabled: true, command: "/usr/bin/router", authEnv: "ROUTER_TOKEN" },
+  };
+  const { control } = makeFakeControl({
+    updateConversationRouter: async (patch: unknown) => {
+      seen.push(patch);
+      return state;
+    },
+  });
+  const bridge = createControlBridge(control as never);
+
+  // An empty patch is the pure read; a blank command still crosses the wire so
+  // the config layer can reject it with the better message.
+  for (const payload of [{}, { command: "" }, { command: "/opt/router", authEnv: null }, { enabled: false }]) {
+    expect(await dispatch(bridge, req(MSG.conversationRouterUpdate, payload))).toEqual(state);
+  }
+  expect(seen).toEqual([{}, { command: "" }, { command: "/opt/router", authEnv: null }, { enabled: false }]);
+
+  for (const bad of [null, undefined, [], { enabled: "true" }, { command: 5 }, { command: "/x", extra: 1 }]) {
+    expect(await dispatch(bridge, req(MSG.conversationRouterUpdate, bad))).toMatchObject({
+      error: { code: "invalid-payload" },
+    });
+  }
+  expect(seen).toHaveLength(4);
+});
+
 test("agent capability get forwards only agent, workspace, bot id, and probe", async () => {
   const seen: unknown[] = [];
   const { control } = makeFakeControl({
