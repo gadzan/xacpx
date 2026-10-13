@@ -125,6 +125,19 @@ export function isMissingAcpxSessionError(stderr: string, stdout: string): boole
   );
 }
 
+/** acpx 0.19.x keeps the queue-owner lease alive while the owner process shuts
+ *  down (idle-TTL exit), and rejects control requests that land in that window
+ *  with a retryable QUEUE_OWNER_CLOSED. 0.16 answered the same window with a
+ *  no-op ("nothing to cancel"). Matches the acpx error text, which carries the
+ *  RUNTIME detail code in the message. */
+export function isAcpxQueueOwnerShuttingDownError(stderr: string, stdout: string): boolean {
+  const combined = `${stderr}\n${stdout}`.toLowerCase();
+  return (
+    combined.includes("queue_owner_closed") ||
+    combined.includes("queue owner is shutting down")
+  );
+}
+
 export function parseAcpxSessionRecordId(
   stdout: string,
 ): { acpxRecordId: string; agentSessionId?: string } | undefined {

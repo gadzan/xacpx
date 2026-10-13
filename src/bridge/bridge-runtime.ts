@@ -53,6 +53,7 @@ import {
   DEFAULT_NON_INTERACTIVE,
 } from "../transport/acpx-command-builder";
 import { parseSessionEffortRecord, requireAdvertisedSessionEffort, sessionEffortToReapply } from "../transport/session-effort";
+import { runAcpxControlCommand } from "../transport/acpx-owner-control-retry";
 import { MessageInjectionError } from "../transport/message-injection";
 
 type BridgePromptStreamEvent =
@@ -837,10 +838,10 @@ export class BridgeRuntime {
       input.name,
       input.modeId,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "set-mode",
-    }));
+    })));
 
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "set-mode failed");
@@ -869,10 +870,10 @@ export class BridgeRuntime {
       "model",
       input.modelId,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment({ ...input, model: input.modelId }, {
+    const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment({ ...input, model: input.modelId }, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "set-model",
-    }));
+    })));
 
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "set-model failed");
@@ -1058,10 +1059,10 @@ export class BridgeRuntime {
       advertised.configId,
       effort,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "set-session-effort",
-    }));
+    })));
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "set effort failed");
     }
@@ -1083,10 +1084,10 @@ export class BridgeRuntime {
       "-s",
       input.name,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "cancel",
-    }));
+    })));
 
     if (result.code !== 0) {
       throw new Error(result.stderr || result.stdout || "cancel failed");
@@ -1115,10 +1116,10 @@ export class BridgeRuntime {
       "close",
       input.name,
     ]));
-    const result = await this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
+    const result = await runAcpxControlCommand(() => this.run(spawnSpec.command, spawnSpec.args, this.withSpawnEnvironment(input, {
       timeoutMs: this.managementCommandTimeoutMs(),
       stage: "remove-session",
-    }));
+    })));
 
     if (result.code === 0) {
       return {};

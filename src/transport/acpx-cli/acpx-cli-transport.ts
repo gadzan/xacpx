@@ -28,6 +28,7 @@ import type {
   SessionEffortState,
 } from "../types";
 import { getPromptText, normalizeCommandError } from "../prompt-output";
+import { runAcpxControlCommand } from "../acpx-owner-control-retry";
 import { isModelNotAdvertisedError } from "../model-not-advertised";
 import { createStructuredPromptFile } from "../prompt-media";
 import { createStreamingPromptState, parseStreamingDataChunk } from "../streaming-prompt";
@@ -550,7 +551,7 @@ export class AcpxCliTransport implements SessionTransport {
 
   async setMode(session: ResolvedSession, modeId: string): Promise<void> {
     this.assertCliAffinity(session);
-    await this.run(this.buildArgs(session, [
+    await this.runControl(this.buildArgs(session, [
       "set-mode",
       "-s",
       session.transportSession,
@@ -567,7 +568,7 @@ export class AcpxCliTransport implements SessionTransport {
   // a live queue owner immediately (or persists it for the next turn when idle).
   async setModel(session: ResolvedSession, modelId: string): Promise<void> {
     this.assertCliAffinity(session);
-    await this.run(this.buildArgs({ ...session, model: modelId }, [
+    await this.runControl(this.buildArgs({ ...session, model: modelId }, [
       "set",
       "-s",
       session.transportSession,
@@ -741,7 +742,7 @@ export class AcpxCliTransport implements SessionTransport {
     record: string,
   ): Promise<void> {
     const advertised = requireAdvertisedSessionEffort(record, effort);
-    await this.run(this.buildArgs(session, [
+    await this.runControl(this.buildArgs(session, [
       "set",
       "-s",
       session.transportSession,
@@ -755,7 +756,7 @@ export class AcpxCliTransport implements SessionTransport {
 
   async cancel(session: ResolvedSession): Promise<{ cancelled: boolean; message: string }> {
     this.assertCliAffinity(session);
-    const output = await this.run(this.buildArgs(session, [
+    const output = await this.runControl(this.buildArgs(session, [
       "cancel",
       "-s",
       session.transportSession,
@@ -797,14 +798,14 @@ export class AcpxCliTransport implements SessionTransport {
   async removeSession(session: ResolvedSession): Promise<void> {
     this.assertCliAffinity(session);
     this.invalidateRecordIdCache(session);
-    const result = await this.runCommandWithTimeout(this.runCommand, this.buildArgs(session, [
+    const result = await runAcpxControlCommand(() => this.runCommandWithTimeout(this.runCommand, this.buildArgs(session, [
       "sessions",
       "close",
       session.transportSession,
     ]), this.withSpawnEnvironment(session, {
       timeoutMs: this.managementCommandTimeoutMs,
       stage: "remove-session",
-    }));
+    })));
     if (result.code === 0) {
       return;
     }
@@ -1005,6 +1006,20 @@ export class AcpxCliTransport implements SessionTransport {
 
   private async run(args: string[], options?: RunOptions): Promise<string> {
     const result = await this.runCommandWithTimeout(this.runCommand, args, options);
+    if (result.code !== 0) {
+      const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
+      throw new Error(detail);
+    }
+    return result.stdout;
+  }
+
+  /** `run` for owner-IPC control commands (cancel / sessions close / set-mode /
+   *  set), retrying the acpx 0.19.x queue-owner shutdown race. See
+   *  runAcpxControlCommand. */
+  private async runControl(args: string[], options?: RunOptions): Promise<string> {
+    const result = await runAcpxControlCommand(() =>
+      this.runCommandWithTimeout(this.runCommand, args, options),
+    );
     if (result.code !== 0) {
       const detail = normalizeCommandError(result) ?? `command failed with exit code ${result.code}`;
       throw new Error(detail);
