@@ -116,16 +116,15 @@ test("read-only classification requires trusted executor metadata as well as the
   }
 });
 
-test("the installed-but-unverified bundled executor cannot mint read-only proof yet", () => {
-  // The dependency pin moved to 0.19.5 while this contract is verified only on
-  // ENFORCED_READ_ONLY_EXECUTOR_VERSION. Until the vendored native-SDK compat
-  // run passes against 0.19.5, the gate fails closed for the real bundled
-  // executor: read-only Runs are rejected instead of under-attested.
+test("the installed bundled executor is the attested read-only executor", () => {
+  // The gate is re-attested by the vendored native-SDK compat run
+  // (tests/compat/conversation-read-only.test.ts), which CI runs on Linux and
+  // macOS against the real pinned SDK driven by the real bundled executor.
   const installed = resolveAcpxCommandMetadata();
   const agent = { driver: "claude" }, transport = { adapterVersions: { claude: "0.78.0" } };
   expect(installed.source).toBe("bundled");
-  expect(installed.packageVersion).not.toBe(ENFORCED_READ_ONLY_EXECUTOR_VERSION);
-  expect(supportsEnforcedReadOnly(agent, transport, installed)).toBe(false);
+  expect(installed.packageVersion).toBe(ENFORCED_READ_ONLY_EXECUTOR_VERSION);
+  expect(supportsEnforcedReadOnly(agent, transport, installed)).toBe(true);
 });
 
 test("executor snapshot cannot be upgraded by mutating the startup metadata object", async () => {
@@ -202,7 +201,7 @@ for (const source of ["config", "PATH"] as const) {
   });
 }
 
-for (const version of [undefined, "0.15.0", "0.17.0"]) {
+for (const version of [undefined, "0.15.0", "0.17.0", "0.19.4"]) {
   test(`bundled executor version ${version ?? "missing"} cannot mint read-only proof`, async () => {
     const startup = resolveAcpxCommandMetadata({ resolvePackageJson: () => "/installed/acpx/package.json",
       readPackageJson: () => ({ version, bin: "dist/cli.js" }) });
