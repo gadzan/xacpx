@@ -24,6 +24,8 @@ import { useDirectBotsStore } from "../stores/direct-bots";
 import { useInstancesStore } from "../stores/instances";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import TurnParts from "./TurnParts.vue";
+import TranscriptRow from "./TranscriptRow.vue";
+import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
 import CopyButton from "./CopyButton.vue";
 import AgentIcon from "./AgentIcon.vue";
 import PlanPanel from "./PlanPanel.vue";
@@ -279,7 +281,7 @@ async function handleLoadOlder(): Promise<void> {
 </script>
 
 <template>
-  <div ref="scroller" data-test="group-transcript-scroller" class="thin-scroll relative flex-1 overflow-y-auto px-3 py-4 sm:px-6" @scroll.passive="onScroll">
+  <div ref="scroller" data-test="group-transcript-scroller" class="thin-scroll relative flex-1 overflow-y-auto py-4 pl-3 pr-3 lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
     <div v-if="!groupsStore.loadingHistory && groupsStore.messages.length === 0 && turns.length === 0 && !(run && (run.state === 'failed' || run.state === 'cancelled' || run.state === 'indeterminate'))" class="my-auto flex flex-col items-center justify-center py-12 text-center">
       <div class="mb-3 grid h-12 w-12 place-items-center rounded-2xl bg-accent/10 text-accent">
         <Users :size="22" />
@@ -288,64 +290,71 @@ async function handleLoadOlder(): Promise<void> {
       <p class="mt-4 text-xs text-fg-muted">{{ $t("group.chat.emptyHint") }}</p>
     </div>
 
-    <div class="space-y-4">
-      <div
+    <div v-if="groupsStore.loadingOlder || groupsStore.hasMoreBefore" class="mb-4 flex justify-center">
+      <button
+        type="button"
+        data-test="group-load-older-button"
+        :disabled="groupsStore.loadingOlder"
+        class="flex items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1 text-xs font-medium text-fg-muted shadow-sm transition-colors hover:bg-raised hover:text-fg disabled:opacity-50"
+        @click="handleLoadOlder"
+      >
+        <Loader2 v-if="groupsStore.loadingOlder" :size="12" class="animate-spin" />
+        <span>{{ groupsStore.loadingOlder ? $t("common.loading") : $t("chat.loadOlder") }}</span>
+      </button>
+    </div>
+
+    <div class="mx-auto max-w-3xl space-y-5">
+      <TranscriptRow
         v-for="m in groupsStore.messages"
         :key="m.id"
         :data-message-id="m.id"
-        class="group flex flex-col"
-        :class="m.role === 'human' ? 'items-end' : 'items-start'"
+        :row-id="m.id"
+        :own="m.role === 'human'"
+        :driver="m.role === 'bot' && m.senderBotId ? driverForBot(m.senderBotId) : undefined"
+        :speaker="m.role === 'bot' ? senderName(m.senderBotId) : undefined"
       >
-        <div v-if="m.role === 'human'" class="flex max-w-[85%] items-start gap-2.5 sm:max-w-[75%]">
-          <div class="flex min-w-0 flex-col items-end">
-            <div class="whitespace-pre-wrap break-words rounded-2xl bg-accent px-3.5 py-2 text-sm leading-relaxed text-accent-fg shadow-sm">
-              {{ m.content }}
-            </div>
-            <div class="mt-1 flex items-center gap-2 px-1 text-[11px] text-fg-muted">
-              <span>{{ fmtTime(m.createdAt) }}</span>
-              <CopyButton :text="m.content" class="opacity-0 transition-opacity group-hover:opacity-100" />
-            </div>
+        <template v-if="m.role === 'human'">
+          <div class="whitespace-pre-wrap break-words rounded-2xl rounded-tr-md border border-accent/15 bg-accent/10 px-3.5 py-2 text-[14px] leading-relaxed text-fg">
+            {{ m.content }}
           </div>
-        </div>
+          <div class="mt-0.5 flex items-center gap-1.5 text-fg-muted">
+            <CopyButton :text="m.content" />
+            <span class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
+          </div>
+        </template>
 
-        <div v-else-if="m.role === 'bot'" class="flex max-w-[95%] items-start gap-3 sm:max-w-[85%]">
-          <div class="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full border border-border bg-surface text-accent">
-            <AgentIcon v-if="m.senderBotId && driverForBot(m.senderBotId)" :driver="driverForBot(m.senderBotId)!" :title="senderName(m.senderBotId)" :size="15" />
-            <Bot v-else :size="15" />
+        <template v-else-if="m.role === 'bot'">
+          <div v-if="partsForMessage(m)" class="w-full">
+            <TurnParts
+              :parts="partsForMessage(m)!"
+              :collapse-trace="true"
+              :trace-key="traceKeyForMessage(m)"
+            />
           </div>
-          <div class="flex min-w-0 flex-1 flex-col items-start">
-            <div class="mb-1 flex items-center gap-2">
-              <span class="text-xs font-semibold text-fg">{{ senderName(m.senderBotId) }}</span>
-            </div>
-            <div v-if="partsForMessage(m)" class="w-full rounded-xl border border-border bg-surface/40 p-3 shadow-sm">
-              <TurnParts
-                :parts="partsForMessage(m)!"
-                :collapse-trace="true"
-                :trace-key="traceKeyForMessage(m)"
-              />
-            </div>
-            <div v-else class="w-full rounded-2xl border border-border bg-surface/50 px-4 py-3 text-sm leading-relaxed text-fg shadow-sm">
-              <StreamMarkdown :text="m.content" />
-            </div>
-            <div class="mt-1 flex items-center gap-2 px-1 text-[11px] text-fg-muted">
-              <span>{{ fmtTime(m.createdAt) }}</span>
-              <CopyButton :text="m.content" class="opacity-0 transition-opacity group-hover:opacity-100" />
-            </div>
+          <div v-else class="w-full text-[14px] leading-relaxed text-fg">
+            <StreamMarkdown :text="m.content" />
           </div>
-        </div>
+          <div class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
+            <CopyButton :text="m.content" />
+            <span class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
+          </div>
+        </template>
 
-        <div v-else-if="m.handoff" data-test="group-handoff" class="mx-auto w-full max-w-xl rounded-xl border border-border bg-surface/70 px-3 py-2 text-left text-xs text-fg">
-          <p class="font-medium">{{ $t("group.handoff.relationship", { from: senderName(m.senderBotId), to: senderName(m.handoff.to) }) }}</p>
-          <p class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.task") }}: </span>{{ m.handoff.task }}</p>
-          <p v-if="m.handoff.expectedOutput" class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.expected") }}: </span>{{ m.handoff.expectedOutput }}</p>
-          <p v-if="handoffResult(m)" class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.result") }}: </span>{{ handoffResult(m) }}</p>
-          <p v-else class="mt-1 text-fg-muted">{{ $t("group.handoff.pending", { name: senderName(m.handoff.to) }) }}</p>
-          <p class="mt-1 text-fg-muted">{{ $t("group.handoff.hint") }}</p>
-        </div>
-        <div v-else class="w-full py-1 text-center text-xs italic text-fg-muted">
-          {{ m.content }}
-        </div>
-      </div>
+        <template v-else-if="m.handoff">
+          <div data-test="group-handoff" class="w-full rounded-xl border border-border bg-surface/70 px-3 py-2 text-left text-xs text-fg">
+            <p class="font-medium">{{ $t("group.handoff.relationship", { from: senderName(m.senderBotId), to: senderName(m.handoff.to) }) }}</p>
+            <p class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.task") }}: </span>{{ m.handoff.task }}</p>
+            <p v-if="m.handoff.expectedOutput" class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.expected") }}: </span>{{ m.handoff.expectedOutput }}</p>
+            <p v-if="handoffResult(m)" class="mt-1"><span class="text-fg-muted">{{ $t("group.handoff.result") }}: </span>{{ handoffResult(m) }}</p>
+            <p v-else class="mt-1 text-fg-muted">{{ $t("group.handoff.pending", { name: senderName(m.handoff.to) }) }}</p>
+            <p class="mt-1 text-fg-muted">{{ $t("group.handoff.hint") }}</p>
+          </div>
+        </template>
+
+        <template v-else>
+          <p class="w-full py-1 text-center text-xs italic text-fg-muted">{{ m.content }}</p>
+        </template>
+      </TranscriptRow>
 
       <!-- Collaboration Run card: one card per Run aggregating member turns -->
       <div
@@ -478,17 +487,6 @@ async function handleLoadOlder(): Promise<void> {
         <PlanPanel v-if="groupsStore.planEntries.length > 0" :entries="groupsStore.planEntries" class="mt-2 w-full" />
       </div>
 
-      <div v-if="groupsStore.loadingOlder || groupsStore.hasMoreBefore" class="flex justify-center">
-        <button
-          type="button"
-          data-test="group-load-older-button"
-          :disabled="groupsStore.loadingOlder"
-          class="rounded-full border border-border bg-surface px-3 py-1 text-xs font-medium text-fg-muted shadow-sm transition-colors hover:bg-raised hover:text-fg disabled:opacity-50"
-          @click="handleLoadOlder"
-        >
-          {{ $t("chat.loadOlder") }}
-        </button>
-      </div>
     </div>
 
     <div v-if="run?.state === 'failed'" class="mt-3 flex items-center gap-2 rounded-xl border border-danger/30 bg-danger/10 p-3 text-xs text-danger">
@@ -509,5 +507,7 @@ async function handleLoadOlder(): Promise<void> {
         <span>{{ $t("bot.run.indeterminateHint") }}</span>
       </div>
     </div>
+
+    <TranscriptJumpLatest :visible="!atBottom" @jump="scrollToBottom()" />
   </div>
 </template>

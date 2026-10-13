@@ -1,10 +1,26 @@
 import { mount } from "@vue/test-utils";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import PromptInput from "../components/PromptInput.vue";
 import { useInstancesStore } from "../stores/instances";
+import { useComposerStore } from "../stores/composer";
 // PromptInput now uses the composer store, which needs an active pinia.
 beforeEach(() => setActivePinia(createPinia()));
+
+// The drag handle sets a fixed textarea height on desktop. jsdom has no
+// matchMedia, so stub it to report the desktop breakpoint.
+function stubDesktop(): void {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: true,
+    media: query,
+    onchange: null,
+    addEventListener() {},
+    removeEventListener() {},
+    addListener() {},
+    removeListener() {},
+    dispatchEvent: () => false,
+  }));
+}
 
 describe("PromptInput composer", () => {
   it("does not surface an xacpx slash-command popover (web forwards `/` to the agent)", async () => {
@@ -45,8 +61,15 @@ describe("PromptInput composer", () => {
     const w = mount(PromptInput);
     const ta = w.find("textarea");
     await ta.setValue("你好");
-    await ta.trigger("keydown", { key: "Enter", isComposing: true });
+    // The composition flag lives on the component, not the event: a real IME
+    // fires compositionstart before Enter, and the event itself may carry
+    // isComposing false on some engines.
+    await ta.trigger("compositionstart");
+    await ta.trigger("keydown", { key: "Enter", isComposing: false });
     expect(w.emitted("send")).toBeFalsy(); // composition confirm, not submit
+    await ta.trigger("compositionend");
+    await ta.trigger("keydown", { key: "Enter", isComposing: false });
+    expect(w.emitted("send")?.[0]).toEqual(["你好", []]);
   });
 
   it("persists a per-session draft and restores it when the key returns", async () => {
@@ -1550,5 +1573,29 @@ describe("PromptInput busy placeholder", () => {
     await w.setProps({ busy: false });
     await w.vm.$nextTick();
     expect(ta()).toBe("Message");
+  });
+
+  it("binds the drag-resize height to the textarea on desktop", async () => {
+    stubDesktop();
+    useComposerStore();
+    const w = mount(PromptInput);
+    await w.vm.$nextTick();
+    const ta = w.find("textarea");
+    // The default height lands on the textarea, so the handle is not a dead control.
+    expect((ta.element as HTMLElement).style.height).toBe("120px");
+    // A drag writes the new height, and it survives a remount via localStorage.
+    const handle = w.find('[data-test="composer-resize"]');
+    expect(handle.exists()).toBe(true);
+    await handle.trigger("pointerdown", { clientY: 300 });
+    await window.dispatchEvent(new MouseEvent("pointermove", { bubbles: true, clientY: 200 }));
+    await window.dispatchEvent(new MouseEvent("pointerup", { bubbles: true }));
+    await w.vm.$nextTick();
+    const dragged = (ta.element as HTMLElement).style.height;
+    expect(dragged).not.toBe("120px");
+    expect(dragged).toMatch(/px$/);
+    w.unmount();
+    const w2 = mount(PromptInput);
+    await w2.vm.$nextTick();
+    expect((w2.find("textarea").element as HTMLElement).style.height).toBe(dragged);
   });
 });

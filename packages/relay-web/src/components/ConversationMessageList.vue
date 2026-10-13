@@ -10,7 +10,6 @@ import {
   Clock,
   HelpCircle,
   Loader2,
-  User,
 } from "lucide-vue-next";
 import type {
   BotDetailDto,
@@ -26,6 +25,8 @@ import type { DirectBotLiveTurn, PendingInteractionState } from "../stores/direc
 import { useInstancesStore } from "../stores/instances";
 import StreamMarkdown from "./StreamMarkdown.vue";
 import TurnParts from "./TurnParts.vue";
+import TranscriptRow from "./TranscriptRow.vue";
+import TranscriptJumpLatest from "./TranscriptJumpLatest.vue";
 import CopyButton from "./CopyButton.vue";
 import AgentIcon from "./AgentIcon.vue";
 import PlanPanel from "./PlanPanel.vue";
@@ -174,7 +175,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
 </script>
 
 <template>
-  <div ref="scroller" class="thin-scroll relative flex-1 overflow-y-auto px-3 py-4 sm:px-6" @scroll.passive="onScroll">
+  <div ref="scroller" class="thin-scroll relative flex-1 overflow-y-auto py-4 pl-3 pr-3 lg:py-5 lg:pl-5 lg:pr-5" @scroll.passive="onScroll">
     <!-- Load Older Button -->
     <div v-if="hasMoreOlder" class="mb-4 flex justify-center">
       <button
@@ -206,8 +207,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
       <p class="mt-4 text-xs text-fg-muted">{{ $t("bot.chat.emptyHint") }}</p>
     </div>
 
-    <!-- Messages List -->
-    <div class="space-y-4">
+    <div class="mx-auto max-w-3xl space-y-5">
       <div
         v-for="m in messages"
         :key="m.id"
@@ -215,53 +215,38 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
         :class="m.role === 'human' ? 'items-end' : 'items-start'"
       >
         <!-- Human Message -->
-        <div v-if="m.role === 'human'" class="flex max-w-[85%] items-start gap-2.5 sm:max-w-[75%]">
-          <div class="flex flex-col items-end min-w-0">
-            <div class="rounded-2xl bg-accent px-3.5 py-2 text-sm text-accent-fg shadow-sm leading-relaxed whitespace-pre-wrap break-words">
-              {{ m.content }}
-            </div>
-            <div class="mt-1 flex items-center gap-2 px-1 text-[11px] text-fg-muted">
-              <span>{{ fmtTime(m.createdAt) }}</span>
-              <CopyButton :text="m.content" class="opacity-0 group-hover:opacity-100 transition-opacity" />
-            </div>
+        <TranscriptRow v-if="m.role === 'human'" own :row-id="m.id">
+          <div class="min-w-0 max-w-full rounded-2xl rounded-tr-md border border-accent/15 bg-accent/10 px-3.5 py-2 text-[14px] leading-relaxed text-fg">
+            <StreamMarkdown :text="m.content" />
           </div>
-          <div class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-fg/10 text-fg-muted">
-            <User :size="14" />
+          <div class="mt-0.5 flex items-center gap-1.5 text-fg-muted">
+            <CopyButton :text="m.content" />
+            <span class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
           </div>
-        </div>
+        </TranscriptRow>
 
         <!-- Bot Message -->
-        <div v-else-if="m.role === 'bot'" class="flex max-w-[95%] sm:max-w-[85%] items-start gap-3">
-          <div class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface border border-border text-accent mt-0.5">
-            <AgentIcon v-if="botDriver" :driver="botDriver" :title="bot?.name ?? 'Bot'" :size="15" />
-            <Bot v-else :size="15" />
+        <TranscriptRow v-else-if="m.role === 'bot'" :driver="botDriver" :row-id="m.id"
+                       :speaker="bot?.name ?? 'Bot'" :speaker-role="bot?.role">
+          <!-- Rich TurnParts if preserved from live stream -->
+          <div v-if="partsForMessage(m)" class="w-full">
+            <TurnParts
+              :parts="partsForMessage(m)!"
+              :collapse-trace="true"
+              :trace-key="`conv:${m.conversationId}:run:${m.runId}`"
+            />
           </div>
-          <div class="flex flex-col items-start min-w-0 flex-1">
-            <div class="flex items-center gap-2 mb-1">
-              <span class="text-xs font-semibold text-fg">{{ bot?.name ?? "Bot" }}</span>
-              <span v-if="bot?.role" class="text-[10px] text-fg-muted font-normal">{{ bot.role }}</span>
-            </div>
 
-            <!-- Rich TurnParts if preserved from live stream -->
-            <div v-if="partsForMessage(m)" class="w-full rounded-xl border border-border bg-surface/40 p-3 shadow-sm">
-              <TurnParts
-                :parts="partsForMessage(m)!"
-                :collapse-trace="true"
-                :trace-key="`conv:${m.conversationId}:run:${m.runId}`"
-              />
-            </div>
-
-            <!-- Plain StreamMarkdown fallback -->
-            <div v-else class="w-full rounded-2xl border border-border bg-surface/50 px-4 py-3 text-sm text-fg shadow-sm leading-relaxed">
-              <StreamMarkdown :text="m.content" />
-            </div>
-
-            <div class="mt-1 flex items-center gap-2 px-1 text-[11px] text-fg-muted">
-              <span>{{ fmtTime(m.createdAt) }}</span>
-              <CopyButton :text="m.content" class="opacity-0 group-hover:opacity-100 transition-opacity" />
-            </div>
+          <!-- Plain StreamMarkdown fallback -->
+          <div v-else class="w-full text-[14px] leading-relaxed text-fg">
+            <StreamMarkdown :text="m.content" />
           </div>
-        </div>
+
+          <div class="flex items-center gap-1.5 pt-0.5 text-fg-muted">
+            <CopyButton :text="m.content" />
+            <span class="font-mono text-[10.5px] tabular-nums">{{ fmtTime(m.createdAt) }}</span>
+          </div>
+        </TranscriptRow>
 
         <!-- System Message -->
         <div v-else class="w-full py-1 text-center text-xs text-fg-muted italic">
@@ -270,15 +255,11 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
       </div>
 
       <!-- Live Active Turn -->
-      <div v-if="liveTurn || (activeRun && (activeRun.state === 'queued' || activeRun.state === 'running' || activeRun.state === 'waiting-human'))"
+      <TranscriptRow v-if="liveTurn || (activeRun && (activeRun.state === 'queued' || activeRun.state === 'running' || activeRun.state === 'waiting-human'))"
            data-test="live-turn-container"
-           class="flex max-w-[95%] sm:max-w-[85%] items-start gap-3 pt-2">
-        <div class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface border border-border text-accent mt-0.5">
-          <AgentIcon v-if="botDriver" :driver="botDriver" :title="bot?.name ?? 'Bot'" :size="15" />
-          <Bot v-else :size="15" />
-        </div>
-
-        <div class="flex flex-col items-start min-w-0 flex-1 space-y-2">
+           :driver="botDriver"
+           :speaker="bot?.name ?? 'Bot'" :speaker-role="bot?.role">
+        <div class="flex flex-col items-start min-w-0 w-full space-y-2">
           <!-- Open interaction: rendered inside the turn's own banner so the form
             belongs to the turn that asked. A form belongs to one exact turn, and
             showing it anywhere else invites answering a turn that has moved on. -->
@@ -340,7 +321,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
             <span>{{ $t("bot.chat.working") }}…</span>
           </div>
         </div>
-      </div>
+      </TranscriptRow>
 
       <!-- Run Terminated State Banners (when not completed normally) -->
       <div v-if="activeRun?.state === 'failed'" class="flex items-center gap-2 rounded-xl border border-danger/30 bg-danger/10 p-3 text-xs text-danger">
@@ -364,5 +345,7 @@ function partsForMessage(m: ConversationMessageDto): TurnPartDto[] | undefined {
         </div>
       </div>
     </div>
+
+    <TranscriptJumpLatest :visible="!atBottom" @jump="scrollToBottom()" />
   </div>
 </template>

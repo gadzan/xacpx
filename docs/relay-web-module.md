@@ -387,6 +387,18 @@ DOMPurify（svg profile）净化，并按 `theme+源码` 缓存；`StreamMarkdow
   桌面 16px / 窄屏 12px）实现，内容不被裁切；递进缩进让下层卡片边缘露出。消息列表与底部 stack 分栏，
   气泡不被遮挡。`PlanPanel variant="stack"` 限制最大高度并独立滚动；`TransitionGroup` 负责出现/消失动画。
   `PromptInput` 自身结构与样式尽量保持不变，只由外层 stack 包裹。
+- **三个对话面板共用一套组件**：会话（`ChatPane`）、Direct Bot（`DirectBotPane`）、Group（`GroupPane`）
+  共用 `TranscriptRow.vue`（消息行：sticky agent 头像、说话人标签、`content-visibility` 虚拟化）、
+  `ConversationComposer.vue`（输入卡片：圆角卡片、自增高 textarea、发送/停止按钮）与
+  `TranscriptJumpLatest.vue`（回到底部 pill + 底部渐变）。三者共享同一套气泡、头像、时间戳、
+  复制按钮、滚动内边距与 `max-w-3xl` 居中列语法。面板各自的特有控件（附件、model/effort、目标选择器、
+  斜杠与 @ 补全菜单）通过 `ConversationComposer` 的 `menus` / `controls-top` / `controls` / `actions`
+  slot 挂载；各自的 `data-test` 通过 `sendTestId` / `stopTestId` / `textareaTestId` 透传，
+  因此测试选择器没有移动。
+- **Composer 的 caret 契约**：textarea 归 `ConversationComposer` 所有，面板侧键盘逻辑不再直接读
+  `selectionStart` / `selectionEnd`，改听 `caret` 事件。该事件在 input、keyup、click、select 以及
+  外部值变更（发送清空、历史召回填充）时都会发出，所以面板不会读到过期 caret。`onInput` 在 jsdom 下
+  （`setValue` 不移动选区）按值长度推导 caret。
 
 ## 文件地图
 

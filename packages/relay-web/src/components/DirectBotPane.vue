@@ -125,18 +125,18 @@ function openRemoval(): void {
 <template>
   <div class="flex h-full flex-col bg-bg text-fg">
     <!-- Top Header: Bot metadata & Actions -->
-    <header class="flex shrink-0 items-center justify-between border-b border-border bg-surface px-4 py-2.5">
+    <header class="flex shrink-0 min-h-11 lg:h-11 items-center gap-2.5 border-b border-border bg-surface/60 px-3 lg:px-5 py-1.5 lg:py-0 backdrop-blur-md">
       <div class="flex items-center gap-3 min-w-0">
         <!-- Bot Icon / Avatar -->
-        <div class="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent/10 text-accent border border-accent/20">
-          <AgentIcon v-if="botDriver" :driver="botDriver" :title="bot?.name ?? 'Bot'" :size="18" />
-          <Bot v-else :size="18" />
+        <div class="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-accent/10 text-accent border border-accent/20">
+          <AgentIcon v-if="botDriver" :driver="botDriver" :title="bot?.name ?? 'Bot'" :size="15" />
+          <Bot v-else :size="15" />
         </div>
 
         <!-- Name, Role & Chips -->
-        <div class="flex flex-col min-w-0">
+        <div class="flex min-w-0 flex-col">
           <div class="flex items-center gap-2">
-            <h2 class="text-sm font-semibold truncate">{{ bot?.name ?? $t("bot.nav.title") }}</h2>
+            <h2 class="truncate text-[14px] font-semibold tracking-tight text-fg">{{ bot?.name ?? $t("bot.nav.title") }}</h2>
             <span
               class="h-2 w-2 rounded-full shrink-0"
               :class="bot?.enabled ? 'bg-run' : 'bg-fg-muted'"
@@ -147,11 +147,11 @@ function openRemoval(): void {
             </span>
           </div>
 
-          <div class="flex items-center gap-2 text-xs text-fg-muted flex-wrap">
+          <div class="flex items-center gap-2 text-[10.5px] text-fg-muted flex-wrap">
             <span v-if="bot?.role" class="truncate font-medium text-fg/80">{{ bot.role }}</span>
             <span v-if="bot?.role">·</span>
             <span class="flex items-center gap-1">
-              <Folder :size="11" />
+              <Folder :size="10" />
               <span>{{ bot?.workspace }}</span>
             </span>
             <span>·</span>
@@ -162,7 +162,7 @@ function openRemoval(): void {
       </div>
 
       <!-- Actions: Edit, Delete -->
-      <div class="flex items-center gap-1">
+      <div class="ml-auto flex shrink-0 items-center gap-0.5">
         <div class="relative">
           <button
             type="button"
@@ -227,11 +227,11 @@ function openRemoval(): void {
       </div>
     </header>
 
-    <div v-if="bot?.retired" data-test="removed-bot-banner" class="border-b border-border bg-surface px-4 py-2 text-xs text-fg-muted">
+    <div v-if="bot?.retired" data-test="removed-bot-banner" class="border-b border-border bg-surface/60 px-3 lg:px-5 py-1.5 text-xs text-fg-muted">
       {{ $t("bot.removal.removedBanner") }}
     </div>
 
-    <div class="flex items-center border-b border-border bg-surface/50 px-4 py-1.5 text-xs">
+    <div class="flex shrink-0 items-center border-b border-border bg-surface/60 px-3 lg:px-5 py-1 text-xs backdrop-blur-md">
       <TopicManager
         variant="direct"
         :topics="directBotsStore.currentTopics"
@@ -248,7 +248,7 @@ function openRemoval(): void {
     </div>
 
     <!-- Error Banner if any general error -->
-    <div v-if="directBotsStore.generalErrorCode || directBotsStore.generalError" class="flex items-center justify-between border-b border-danger/20 bg-danger/10 px-4 py-2 text-xs text-danger">
+    <div v-if="directBotsStore.generalErrorCode || directBotsStore.generalError" class="flex items-center justify-between border-b border-danger/20 bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ directBotsStore.generalErrorCode ? $t(`bot.errors.${directBotsStore.generalErrorCode}`) : directBotsStore.generalError }}</span>
       <button type="button" @click="directBotsStore.generalError = null; directBotsStore.generalErrorCode = null">
         <X :size="14" />
@@ -289,7 +289,7 @@ function openRemoval(): void {
       discovery). Shown whenever the transcript failed to converge — the
       composer may still be enabled, but the newest window is stale/holed. -->
     <div v-if="directBotsStore.historyError && directBotsStore.activeTopicId"
-         class="flex items-center justify-between border-t border-danger/20 bg-danger/10 px-4 py-2 text-xs text-danger">
+         class="flex items-center justify-between border-t border-danger/20 bg-danger/10 px-3 lg:px-5 py-2 text-xs text-danger">
       <span>{{ $t(`bot.errors.${directBotsStore.historyError}`) }}</span>
       <button type="button"
               class="rounded bg-danger/20 px-2 py-0.5 font-medium hover:bg-danger/30 transition-colors"

@@ -1,12 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch, onBeforeUnmount } from "vue";
-import {
-  AlertCircle,
-  ArrowUp,
-  CircleStop,
-  Loader2,
-  RotateCcw,
-} from "lucide-vue-next";
+import { useI18n } from "vue-i18n";
+import { AlertCircle, Loader2, RotateCcw } from "lucide-vue-next";
 import {
   MSG,
   isErrorPayload,
@@ -24,6 +19,7 @@ import { api } from "../api/client";
 import { useConversationCommandsStore } from "../stores/conversation-commands";
 import { useDirectBotsStore } from "../stores/direct-bots";
 import { useDirectComposerStore } from "../stores/direct-composer";
+import ConversationComposer from "./ConversationComposer.vue";
 const props = defineProps<{
   disabled?: boolean;
   deliver?: (
@@ -35,11 +31,12 @@ const emit = defineEmits<{
   send: [text: string, mentions?: AgentMention[]];
   cancel: [];
 }>();
+const { t } = useI18n();
 const directBotsStore = useDirectBotsStore(),
   commandStore = useConversationCommandsStore(),
   drafts = useDirectComposerStore();
-const textareaEl = ref<HTMLTextAreaElement | null>(null),
-  composing = ref(false),
+const composer = ref<InstanceType<typeof ConversationComposer> | null>(null);
+const composing = ref(false),
   caret = ref(0),
   collapsed = ref(true),
   cmdActiveIdx = ref(0),
@@ -73,6 +70,15 @@ const blocked = computed(
     isPromptInFlight.value ||
     isRunActive.value ||
     isTopicRecovering.value,
+);
+const composerPlaceholder = computed(() =>
+  isBotDisabled.value
+    ? t("bot.prompt.botDisabledPlaceholder")
+    : isTopicRecovering.value
+      ? t("bot.prompt.recoveringPlaceholder")
+      : isRunActive.value
+        ? t("bot.prompt.runActivePlaceholder")
+        : t("bot.prompt.placeholder"),
 );
 const snapshot = ref<ConversationCompletions | null>(null),
   fetchStatus = ref<"loading" | "unavailable" | "error">("loading");
@@ -263,11 +269,9 @@ onBeforeUnmount(() => {
   generation++;
   clearTimeout(retryTimer);
 });
-function updateCaret(): void {
-  caret.value = textareaEl.value?.selectionStart ?? promptText.value.length;
-  collapsed.value =
-    (textareaEl.value?.selectionStart ?? 0) ===
-    (textareaEl.value?.selectionEnd ?? 0);
+function updateCaret(selection: { start: number; end: number }): void {
+  caret.value = selection.start;
+  collapsed.value = selection.start === selection.end;
 }
 function nextPage(): void {
   if ((page.value + 1) * 8 < candidates.value.length) {
@@ -309,13 +313,11 @@ function pickRow(index: number): void {
   cmdDismissed.value = true;
   caret.value = replaced.cursor;
   void nextTick(() => {
-    textareaEl.value?.focus();
-    textareaEl.value?.setSelectionRange(replaced.cursor, replaced.cursor);
-    resize();
+    composer.value?.focus();
+    composer.value?.setSelectionRange(replaced.cursor, replaced.cursor);
   });
 }
 function onKeydown(e: KeyboardEvent): void {
-  updateCaret();
   const action = completionKey({
     key: e.key,
     shiftKey: e.shiftKey,
@@ -371,7 +373,6 @@ async function handleSend(): Promise<void> {
   } else emit("send", text, mentions);
   if (key === scope.value) {
     cmdDismissed.value = false;
-    resize();
   }
 }
 function handleCancel(): void {
@@ -380,23 +381,14 @@ function handleCancel(): void {
 function handleRetry(): void {
   void handleSend();
 }
-function resize(): void {
-  if (textareaEl.value) {
-    textareaEl.value.style.height = "auto";
-    textareaEl.value.style.height =
-      Math.min(textareaEl.value.scrollHeight, 200) + "px";
-  }
-}
 function onInput(): void {
   cmdDismissed.value = false;
   cmdActiveIdx.value = 0;
   page.value = 0;
-  updateCaret();
-  resize();
 }
 </script>
 <template>
-  <div class="border-t border-border bg-surface px-3 py-2.5 sm:px-4">
+  <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
     <!-- Disabled bot warning -->
     <div
       v-if="isBotDisabled"
@@ -439,145 +431,88 @@ function onInput(): void {
       </button>
     </div>
 
-    <!-- Main Input Box -->
-    <div
-      class="relative flex items-end gap-2 rounded-xl border border-border bg-bg p-1.5 focus-within:border-accent transition-colors"
+    <ConversationComposer
+      v-model="promptText"
+      :busy="isRunActive"
+      :disabled="blocked"
+      :sending="isPromptInFlight"
+      :cancelling="isCancelling"
+      :placeholder="composerPlaceholder"
+      send-test-id="send-prompt-button"
+      stop-test-id="stop-run-button"
+      combobox
+      combobox-list-id="direct-completion-menu"
+      :combobox-expanded="menuOpen"
+      :combobox-active-id="menuOpen && rows.length ? 'direct-completion-' + cmdActiveIdx : undefined"
+      @send="handleSend"
+      @cancel="handleCancel"
+      @keydown="onKeydown"
+      @caret="updateCaret"
+      @compositionstart="composing = true"
+      @compositionend="
+        composing = false;
+        onInput();
+      "
     >
-      <div
-        v-if="menuOpen"
-        id="direct-completion-menu"
-        role="listbox"
-        :aria-label="$t('bot.prompt.completions')"
-        data-test="direct-cmd-menu"
-        class="absolute bottom-full left-0 z-20 mb-1.5 w-full max-h-72 overflow-y-auto rounded-xl border border-border bg-surface shadow-xl"
-      >
-        <button
-          v-for="(row, index) in rows"
-          :id="'direct-completion-' + index"
-          :key="row.key"
-          type="button"
-          role="option"
-          :aria-selected="index === cmdActiveIdx"
-          data-test="direct-cmd-item"
-          class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-xs hover:bg-raised"
-          :class="index === cmdActiveIdx ? 'bg-accent/10' : ''"
-          @pointerdown.prevent
-          @click="pickRow(index)"
-        >
-          <span v-if="row.kind === 'skill'" class="text-accent">{{
-            $t("bot.prompt.skillCompletion")
-          }}</span>
-          <span class="font-medium text-fg">{{ row.label }}</span
-          ><span class="truncate text-fg-muted">{{ row.detail }}</span>
-        </button>
+      <template #menus>
         <div
-          v-if="!rows.length"
-          role="status"
-          class="px-3 py-2 text-xs text-fg-muted"
+          v-if="menuOpen"
+          id="direct-completion-menu"
+          role="listbox"
+          :aria-label="$t('bot.prompt.completions')"
+          data-test="direct-cmd-menu"
+          class="absolute bottom-full left-0 z-20 mb-2 max-h-72 w-full overflow-y-auto rounded-xl border border-border bg-raised py-1 shadow-e2"
         >
-          {{ $t("bot.prompt.completion" + status) }}
+          <button
+            v-for="(row, index) in rows"
+            :id="'direct-completion-' + index"
+            :key="row.key"
+            type="button"
+            role="option"
+            :aria-selected="index === cmdActiveIdx"
+            data-test="direct-cmd-item"
+            class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-raised"
+            :class="index === cmdActiveIdx ? 'bg-accent/10' : ''"
+            @pointerdown.prevent
+            @click="pickRow(index)"
+          >
+            <span v-if="row.kind === 'skill'" class="text-accent">{{
+              $t("bot.prompt.skillCompletion")
+            }}</span>
+            <span class="font-medium text-fg">{{ row.label }}</span
+            ><span class="truncate text-fg-muted">{{ row.detail }}</span>
+          </button>
+          <div
+            v-if="!rows.length"
+            role="status"
+            class="px-3 py-2 text-xs text-fg-muted"
+          >
+            {{ $t("bot.prompt.completion" + status) }}
+          </div>
+          <button
+            v-if="more"
+            type="button"
+            class="px-3 py-2 text-xs text-accent"
+            @pointerdown.prevent
+            @click="nextPage"
+          >
+            {{ $t("bot.prompt.moreCompletions") }}
+          </button>
+          <button
+            v-if="
+              status === 'error' ||
+              status === 'loading' ||
+              status === 'unavailable'
+            "
+            type="button"
+            class="px-3 py-2 text-xs text-accent"
+            @pointerdown.prevent
+            @click="refresh()"
+          >
+            {{ $t("bot.prompt.retry") }}
+          </button>
         </div>
-        <button
-          v-if="more"
-          type="button"
-          class="px-3 py-2 text-xs text-accent"
-          @pointerdown.prevent
-          @click="nextPage"
-        >
-          {{ $t("bot.prompt.moreCompletions") }}
-        </button>
-        <button
-          v-if="
-            status === 'error' ||
-            status === 'loading' ||
-            status === 'unavailable'
-          "
-          type="button"
-          class="px-3 py-2 text-xs text-accent"
-          @pointerdown.prevent
-          @click="refresh()"
-        >
-          {{ $t("bot.prompt.retry") }}
-        </button>
-      </div>
-      <textarea
-        ref="textareaEl"
-        v-model="promptText"
-        role="combobox"
-        aria-autocomplete="list"
-        aria-controls="direct-completion-menu"
-        :aria-expanded="menuOpen"
-        :aria-activedescendant="
-          menuOpen && rows.length
-            ? 'direct-completion-' + cmdActiveIdx
-            : undefined
-        "
-        :disabled="
-          disabled ||
-          isBotDisabled ||
-          isPromptInFlight ||
-          isRunActive ||
-          isTopicRecovering
-        "
-        :placeholder="
-          isBotDisabled
-            ? $t('bot.prompt.botDisabledPlaceholder')
-            : isTopicRecovering
-              ? $t('bot.prompt.recoveringPlaceholder')
-              : isRunActive
-                ? $t('bot.prompt.runActivePlaceholder')
-                : $t('bot.prompt.placeholder')
-        "
-        class="min-h-[38px] max-h-[200px] w-full resize-none bg-transparent px-2.5 py-2 text-sm text-fg outline-none placeholder:text-fg-muted disabled:cursor-not-allowed disabled:opacity-50"
-        @keydown="onKeydown"
-        @input="onInput"
-        @click="updateCaret"
-        @select="updateCaret"
-        @keyup="updateCaret"
-        @compositionstart="composing = true"
-        @compositionend="
-          composing = false;
-          onInput();
-        "
-      />
-
-      <div class="flex shrink-0 items-center gap-1 pb-1 pr-1">
-        <!-- Stop Run Button (When run is active) -->
-        <button
-          v-if="isRunActive"
-          type="button"
-          data-test="stop-run-button"
-          :title="$t('bot.prompt.stopRun')"
-          :aria-label="$t('bot.prompt.stopRun')"
-          :disabled="isCancelling"
-          class="grid h-8 w-8 place-items-center rounded-lg bg-danger text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-          @click="handleCancel"
-        >
-          <Loader2 v-if="isCancelling" :size="15" class="animate-spin" />
-          <CircleStop v-else :size="16" />
-        </button>
-
-        <!-- Send Button -->
-        <button
-          v-else
-          type="button"
-          data-test="send-prompt-button"
-          :title="$t('bot.prompt.send')"
-          :aria-label="$t('bot.prompt.send')"
-          :disabled="
-            disabled ||
-            isBotDisabled ||
-            isPromptInFlight ||
-            isTopicRecovering ||
-            !promptText.trim()
-          "
-          class="grid h-8 w-8 place-items-center rounded-lg bg-accent text-accent-fg transition-opacity hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
-          @click="handleSend"
-        >
-          <Loader2 v-if="isPromptInFlight" :size="15" class="animate-spin" />
-          <ArrowUp v-else :size="16" :stroke-width="2.5" />
-        </button>
-      </div>
-    </div>
+      </template>
+    </ConversationComposer>
   </div>
 </template>

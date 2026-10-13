@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { AtSign, Bot, Check, ChevronDown, Users, X } from "lucide-vue-next";
+import { AtSign, Bot, Check, ChevronDown, Users } from "lucide-vue-next";
 import type { BotSummaryDto } from "@ganglion/xacpx-relay-protocol";
 import { completionKey, replaceRange, slashQuery } from "../lib/composer-completion";
 import {
@@ -16,6 +16,7 @@ import { useConversationCommandsStore } from "../stores/conversation-commands";
 import { useGroupsStore, type GroupSendOutcome } from "../stores/groups";
 import { useInstancesStore } from "../stores/instances";
 import AgentIcon from "./AgentIcon.vue";
+import ConversationComposer from "./ConversationComposer.vue";
 const props = defineProps<{
   bots: BotSummaryDto[];
   disabled?: boolean;
@@ -39,8 +40,9 @@ const instancesStore = useInstancesStore();
 const commandStore = useConversationCommandsStore();
 const promptText = ref("");
 const menuOpen = ref(false);
-const textareaEl = ref<HTMLTextAreaElement | null>(null);
+const composer = ref<InstanceType<typeof ConversationComposer> | null>(null);
 const composing = ref(false);
+const collapsedCaret = ref(true);
 const mentionBindings = ref<MentionBinding[]>([]);
 const mentionOwned = ref(false);
 const mentionActiveIdx = ref(0);
@@ -97,7 +99,6 @@ function clearSentDraft(): void {
   mentionOwned.value = false;
   cmdDismissed.value = false;
   mentionDismissed.value = false;
-  if (textareaEl.value) textareaEl.value.style.height = "auto";
   closeMenu();
 }
 
@@ -251,22 +252,26 @@ function applyMention(text: string, endOfTextTerminates: boolean): boolean {
   return true;
 }
 
-function onInput(): void {
+function onInput(text: string): void {
   cmdDismissed.value = false;
   mentionDismissed.value = false;
   cmdActiveIdx.value = 0;
   mentionActiveIdx.value = 0;
-  caret.value = textareaEl.value?.selectionStart ?? promptText.value.length;
-  const el = textareaEl.value;
-  if (!el) return;
-  applyMention(el.value, false);
-  onInputResize();
+  applyMention(text, false);
 }
 
 function commitMentionAtBoundary(): boolean {
-  const el = textareaEl.value;
-  if (!el) return true;
-  return applyMention(el.value, true);
+  return applyMention(promptText.value, true);
+}
+
+function onCaret(selection: { start: number; end: number }): void {
+  caret.value = selection.start;
+  collapsedCaret.value = selection.start === selection.end;
+}
+
+function onCompositionEnd(): void {
+  composing.value = false;
+  onInput(promptText.value);
 }
 
 function pickMention(member: GroupMentionMember): void {
@@ -282,8 +287,8 @@ function pickMention(member: GroupMentionMember): void {
   mentionDismissed.value = true;
   applyMention(replaced.text, false);
   void nextTick(() => {
-    textareaEl.value?.focus();
-    textareaEl.value?.setSelectionRange(replaced.cursor, replaced.cursor);
+    composer.value?.focus();
+    composer.value?.setSelectionRange(replaced.cursor, replaced.cursor);
   });
 }
 
@@ -293,9 +298,8 @@ function pickSlash(name: string): void {
   promptText.value = replaced.text;
   cmdDismissed.value = true;
   void nextTick(() => {
-    textareaEl.value?.focus();
-    textareaEl.value?.setSelectionRange(replaced.cursor, replaced.cursor);
-    onInputResize();
+    composer.value?.focus();
+    composer.value?.setSelectionRange(replaced.cursor, replaced.cursor);
   });
 }
 
@@ -309,7 +313,6 @@ function slashBroadcastBlocked(text: string): boolean {
 }
 
 function onKeydown(e: KeyboardEvent): void {
-  const collapsed = (textareaEl.value?.selectionStart ?? 0) === (textareaEl.value?.selectionEnd ?? 0);
   const mentionOpen = mentionMatches.value.length > 0;
   const slashOpen = !mentionOpen && slashMatches.value.length > 0;
   const action = completionKey({
@@ -321,7 +324,7 @@ function onKeydown(e: KeyboardEvent): void {
     itemCount: mentionOpen ? mentionMatches.value.length : slashOpen ? slashMatches.value.length : 0,
     activeIndex: mentionOpen ? mentionActiveIdx.value : cmdActiveIdx.value,
     holdKeys: slashHint.value && !mentionOpen,
-    collapsedCaret: collapsed,
+    collapsedCaret: collapsedCaret.value,
     busy: false,
     caretAtStart: false,
     historyArmed: false,
@@ -440,16 +443,10 @@ function handleCancel(): void {
 function handleRetry(): void {
   void groupsStore.retryUncertainPrompt();
 }
-
-function onInputResize(): void {
-  if (!textareaEl.value) return;
-  textareaEl.value.style.height = "auto";
-  textareaEl.value.style.height = `${Math.min(textareaEl.value.scrollHeight, 200)}px`;
-}
 </script>
 
 <template>
-  <div class="border-t border-border bg-surface px-3 py-2.5 sm:px-4">
+  <div class="shrink-0 bg-gradient-to-t from-bg to-transparent px-2 lg:px-5 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1.5">
     <div v-if="groupsStore.promptError" data-test="group-prompt-error" class="mb-2 flex items-center justify-between gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs text-danger">
       <span class="truncate">{{ groupsStore.promptErrorDetail ?? $t(`bot.errors.${groupsStore.promptError}`) }}</span>
       <button
@@ -479,7 +476,7 @@ function onInputResize(): void {
         <div
           v-if="menuOpen"
           data-test="group-target-menu"
-          class="absolute bottom-full left-0 z-20 mb-1.5 w-64 overflow-hidden rounded-xl border border-border bg-surface shadow-xl"
+          class="absolute bottom-full left-0 z-20 mb-1.5 w-64 overflow-hidden rounded-xl border border-border bg-raised shadow-e2"
         >
           <div class="max-h-64 overflow-y-auto p-1.5">
             <button
@@ -542,91 +539,77 @@ function onInputResize(): void {
       <span class="hidden text-[11px] text-fg-muted sm:inline">{{ $t("group.target.hint") }}</span>
     </div>
 
-    <div class="relative flex items-end gap-2 rounded-xl border border-border bg-bg p-1.5 transition-colors focus-within:border-accent">
-      <div
-        v-if="slashHint"
-        data-test="group-slash-hint"
-        class="absolute bottom-full left-0 z-20 mb-1.5 w-full rounded-xl border border-border bg-surface px-3 py-2 text-xs text-fg-muted shadow-xl"
-      >
-        {{ $t("bot.errors.slashSelectMember") }}
-      </div>
-      <div
-        v-else-if="slashMatches.length > 0"
-        data-test="group-cmd-menu"
-        class="absolute bottom-full left-0 z-20 mb-1.5 max-h-56 w-full overflow-y-auto rounded-xl border border-border bg-surface shadow-xl"
-      >
-        <button
-          v-for="(command, index) in slashMatches"
-          :key="command.name"
-          type="button"
-          data-test="group-cmd-item"
-          class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-xs hover:bg-raised"
-          :class="index === cmdActiveIdx ? 'bg-accent/10' : ''"
-          @mousedown.prevent="pickSlash(command.name)"
+    <ConversationComposer
+      ref="composer"
+      v-model="promptText"
+      :busy="groupsStore.isRunActive"
+      :disabled="disabled || groupsStore.promptInFlight || groupsStore.isRunActive || !groupsStore.topicReady"
+      :sending="groupsStore.promptInFlight"
+      :send-disabled="!canSend"
+      :placeholder="$t('group.prompt.placeholder')"
+      textarea-test-id="group-composer-textarea"
+      send-test-id="group-send-prompt-button"
+      stop-test-id="group-stop-run-button"
+      @send="handleSend"
+      @cancel="handleCancel"
+      @keydown="onKeydown"
+      @input="onInput"
+      @caret="onCaret"
+      @compositionstart="composing = true"
+      @compositionend="onCompositionEnd"
+      @blur="commitMentionAtBoundary"
+    >
+      <template #menus>
+        <div
+          v-if="slashHint"
+          data-test="group-slash-hint"
+          class="absolute bottom-full left-0 z-20 mb-2 w-full rounded-xl border border-border bg-raised px-3 py-2 text-xs text-fg-muted shadow-e2"
         >
-          <span class="font-medium text-fg">/{{ command.name }}</span>
-          <span v-if="command.description" class="truncate text-fg-muted">{{ command.description }}</span>
-        </button>
-      </div>
-      <div
-        v-if="mentionMatches.length > 0"
-        data-test="group-mention-menu"
-        class="absolute bottom-full left-0 z-20 mb-1.5 max-h-56 w-full overflow-y-auto rounded-xl border border-border bg-surface shadow-xl"
-      >
-        <button
-          v-for="(member, index) in mentionMatches"
-          :key="member.botId"
-          type="button"
-          data-test="group-mention-item"
-          :data-bot-id="member.botId"
-          class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-raised"
-          :class="index === mentionActiveIdx ? 'bg-accent/10' : ''"
-          @mousedown.prevent="pickMention(member)"
+          {{ $t("bot.errors.slashSelectMember") }}
+        </div>
+        <div
+          v-else-if="slashMatches.length > 0"
+          data-test="group-cmd-menu"
+          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-xl border border-border bg-raised py-1 shadow-e2"
         >
-          <span class="min-w-0 flex-1 truncate font-medium text-fg">@{{ member.name }}</span>
-          <span v-if="member.lead" class="shrink-0 text-[10px] text-accent">{{ $t("group.target.lead") }}</span>
-          <span v-if="member.role" class="shrink-0 truncate text-[10px] text-fg-muted">{{ member.role }}</span>
-          <span class="shrink-0 text-[10px]" :class="member.enabled ? 'text-fg-muted' : 'text-warning'">
-            {{ member.enabled ? $t("bot.status.enabled") : $t("bot.status.disabled") }}
-          </span>
-          <span class="shrink-0 font-mono text-[10px] text-fg-muted">{{ member.botId }}</span>
-        </button>
-      </div>
-      <textarea
-        ref="textareaEl"
-        data-test="group-composer-textarea"
-        v-model="promptText"
-        :disabled="disabled || groupsStore.promptInFlight || groupsStore.isRunActive || !groupsStore.topicReady"
-        :placeholder="$t('group.prompt.placeholder')"
-        class="max-h-[200px] min-h-[38px] w-full resize-none bg-transparent px-2.5 py-2 text-sm text-fg outline-none placeholder:text-fg-muted disabled:cursor-not-allowed disabled:opacity-50"
-        @keydown="onKeydown"
-        @input="onInput"
-        @compositionstart="composing = true"
-        @compositionend="composing = false"
-        @blur="commitMentionAtBoundary"
-      />
-      <div class="flex shrink-0 items-center gap-1 pb-1 pr-1">
-        <button
-          v-if="groupsStore.isRunActive"
-          type="button"
-          data-test="group-stop-run-button"
-          :disabled="!!groupsStore.cancellingRunId"
-          class="grid h-8 w-8 place-items-center rounded-lg bg-danger text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-          @click="handleCancel"
+          <button
+            v-for="(command, index) in slashMatches"
+            :key="command.name"
+            type="button"
+            data-test="group-cmd-item"
+            class="flex w-full items-baseline gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-raised"
+            :class="index === cmdActiveIdx ? 'bg-accent/10' : ''"
+            @mousedown.prevent="pickSlash(command.name)"
+          >
+            <span class="font-medium text-fg">/{{ command.name }}</span>
+            <span v-if="command.description" class="truncate text-fg-muted">{{ command.description }}</span>
+          </button>
+        </div>
+        <div
+          v-if="mentionMatches.length > 0"
+          data-test="group-mention-menu"
+          class="absolute bottom-full left-0 z-20 mb-2 max-h-56 w-full overflow-y-auto rounded-xl border border-border bg-raised py-1 shadow-e2"
         >
-          <X :size="16" />
-        </button>
-        <button
-          v-else
-          type="button"
-          data-test="group-send-prompt-button"
-          :disabled="!canSend"
-          class="grid h-8 w-8 place-items-center rounded-lg bg-accent text-accent-fg transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-          @click="handleSend"
-        >
-          <Check :size="16" :stroke-width="2.5" />
-        </button>
-      </div>
-    </div>
+          <button
+            v-for="(member, index) in mentionMatches"
+            :key="member.botId"
+            type="button"
+            data-test="group-mention-item"
+            :data-bot-id="member.botId"
+            class="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[13px] hover:bg-raised"
+            :class="index === mentionActiveIdx ? 'bg-accent/10' : ''"
+            @mousedown.prevent="pickMention(member)"
+          >
+            <span class="min-w-0 flex-1 truncate font-medium text-fg">@{{ member.name }}</span>
+            <span v-if="member.lead" class="shrink-0 text-[10px] text-accent">{{ $t("group.target.lead") }}</span>
+            <span v-if="member.role" class="shrink-0 truncate text-[10px] text-fg-muted">{{ member.role }}</span>
+            <span class="shrink-0 text-[10px]" :class="member.enabled ? 'text-fg-muted' : 'text-warning'">
+              {{ member.enabled ? $t("bot.status.enabled") : $t("bot.status.disabled") }}
+            </span>
+            <span class="shrink-0 font-mono text-[10px] text-fg-muted">{{ member.botId }}</span>
+          </button>
+        </div>
+      </template>
+    </ConversationComposer>
   </div>
 </template>
