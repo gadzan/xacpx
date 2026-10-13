@@ -1,8 +1,8 @@
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { ToolUseEvent, ToolUseKind } from "../channels/types";
+import { scanAcpxSessionRecords } from "./acpx-record-discovery";
+import { resolveAcpxHomeDir } from "./acpx-session-files";
 
 // Neutral (channel-agnostic) representation of a recovered native-session turn. The
 // relay connector maps this to wire DTOs; WeChat etc. could render it differently.
@@ -20,19 +20,12 @@ export interface NativeHistoryMessage {
 }
 
 // --- acpx on-disk shapes (the subset we read) -------------------------------------
-// acpx persists a faithful conversation in its session record. We read it directly
-// because the bundled acpx CLI can't address a record by acp_session_id (`sessions
-// show` is name-scoped and `sessions list` drops both the name and the messages).
-// Shapes mirror acpx `src/types.ts` (SessionMessage union). Treated defensively —
-// any shape drift just yields fewer/zero messages, never a throw that breaks attach.
-
-interface AcpxIndexEntry {
-  file: string;
-  acpxRecordId?: string;
-  acpSessionId?: string;
-  agentCommand?: string;
-  cwd?: string;
-}
+// acpx persists a faithful conversation in its session record. Records are
+// discovered by the canonical scan in acpx-record-discovery.ts (acpx 0.19 ignores
+// the legacy index.json); the snake_case field names there mirror acpx
+// `src/session/persistence/serialize.ts`. Shapes mirror acpx `src/types.ts`
+// (SessionMessage union). Treated defensively — any shape drift just yields
+// fewer/zero messages, never a throw that breaks attach.
 
 function classifyToolKind(name: string): ToolUseKind {
   const n = name.toLowerCase();
@@ -127,36 +120,53 @@ export function mapAcpxMessagesToHistory(raw: unknown): NativeHistoryMessage[] {
 export interface ReadNativeHistoryOptions {
   agentSessionId: string;
   agentCommand?: string;
-  /** Override for the acpx sessions dir (tests). Defaults to `<home>/.acpx/sessions`. */
+  /** Override for the acpx sessions dir (tests). Defaults to `<acpx home>/.acpx/sessions`. */
   sessionsDir?: string;
   homeDir?: string;
+  /** Observability seam for scan diagnostics (unreadable dir, skipped records). */
+  onDiagnostic?: (diagnostic: string) => void;
 }
 
 /** Recover a native (agent-side) session's prior conversation from acpx's own persisted
  *  record. Best-effort: any I/O or shape problem yields `[]` so a native attach never
- *  fails just because history couldn't be read. When several records share the same
- *  acp_session_id (the source record + the freshly-created empty attach record), the
- *  one with the most messages wins — i.e. the real history, not the empty stub. */
+ *  fails just because history couldn't be read. Discovery is the canonical record scan
+ *  (acpx 0.19 ignores the legacy index.json), matching the acpx session id that
+ *  `--resume-session` accepts. When several records share that id (the source record
+ *  plus the freshly-created empty attach record), the one with the most messages wins —
+ *  i.e. the real history, not the empty stub. */
 export async function readNativeSessionHistory(opts: ReadNativeHistoryOptions): Promise<NativeHistoryMessage[]> {
+  const onDiagnostic = (diagnostic: string): void => {
+    opts.onDiagnostic?.(diagnostic);
+  };
   try {
-    const dir = opts.sessionsDir ?? join(opts.homeDir ?? homedir(), ".acpx", "sessions");
-    const indexRaw = await readFile(join(dir, "index.json"), "utf8").catch(() => null);
-    if (!indexRaw) return [];
-    const index = JSON.parse(indexRaw) as { entries?: AcpxIndexEntry[] };
-    const candidates = (index.entries ?? []).filter(
-      (e) => e.acpSessionId === opts.agentSessionId && (!opts.agentCommand || !e.agentCommand || e.agentCommand === opts.agentCommand),
+    const dir = opts.sessionsDir ?? join(opts.homeDir ?? resolveAcpxHomeDir(), ".acpx", "sessions");
+    const records = await scanAcpxSessionRecords({ sessionsDir: dir, onDiagnostic });
+    const candidates = records.filter(
+      (record) =>
+        record.acpSessionId === opts.agentSessionId &&
+        (!opts.agentCommand || record.agentCommand === opts.agentCommand),
     );
+    if (candidates.length === 0) {
+      onDiagnostic(
+        `no acpx record matches acp session id "${opts.agentSessionId}" in "${dir}" (${records.length} record(s) scanned)`,
+      );
+      return [];
+    }
     let best: NativeHistoryMessage[] = [];
-    for (const entry of candidates) {
-      if (!entry.file) continue;
-      const recRaw = await readFile(join(dir, entry.file), "utf8").catch(() => null);
-      if (!recRaw) continue;
-      const record = JSON.parse(recRaw) as { messages?: unknown };
+    for (const record of candidates) {
       const mapped = mapAcpxMessagesToHistory(record.messages);
       if (mapped.length > best.length) best = mapped;
     }
+    if (best.length === 0) {
+      onDiagnostic(
+        `acpx record(s) for acp session id "${opts.agentSessionId}" in "${dir}" hold no mappable messages`,
+      );
+    }
     return best;
-  } catch {
+  } catch (error) {
+    onDiagnostic(
+      `native history read failed for acp session id "${opts.agentSessionId}": ${error instanceof Error ? error.message : String(error)}`,
+    );
     return [];
   }
 }

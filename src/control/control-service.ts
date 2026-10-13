@@ -196,7 +196,7 @@ export interface ControlWorkspaceInfo {
 }
 
 export interface ControlServiceDeps {
-  logger?: Pick<AppLogger, "error">;
+  logger?: Pick<AppLogger, "error" | "debug">;
   /** Test seam for queue-deadline decisions. */
   now?: () => number;
   agent: Pick<ChatAgent, "chat">;
@@ -1252,7 +1252,16 @@ export class ControlService {
     let nativeHistory: NativeHistoryMessage[] = [];
     if (agentSessionId) {
       try {
-        nativeHistory = await readNativeSessionHistory({ agentSessionId });
+        nativeHistory = await readNativeSessionHistory({
+          agentSessionId,
+          // Diagnostics keep a missing record, an unreadable sessions dir, and
+          // a real I/O failure distinguishable in the log instead of all
+          // silently looking like "this session has no history".
+          onDiagnostic: (diagnostic) =>
+            this.deps.logger?.debug("control.session.native_history", diagnostic, {
+              agentSessionId,
+            }),
+        });
       } catch {
         /* best-effort history seed */
       }

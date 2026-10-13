@@ -57,6 +57,13 @@ function makeDeps() {
       ) => {
         logs.push({ event, message, context });
       },
+      debug: async (
+        event: string,
+        message: string,
+        context?: Record<string, unknown>,
+      ) => {
+        logs.push({ event, message, context });
+      },
     },
     events: { emit: () => {} },
   };

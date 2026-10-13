@@ -8,6 +8,7 @@ import { raceWithTimeout } from "../../util/async.js";
 import { normalizePathForComparison, physicalFenceKeyForSession } from "./runtime/physical-session-identity";
 
 import { deleteAcpxSessionFiles, resolveAcpxHomeDir } from "../../transport/acpx-session-files";
+import { acpxRecordFileNameMatches } from "../../transport/acpx-record-discovery";
 import type {
   AgentSessionListResult,
   SessionEffortState,
@@ -156,6 +157,9 @@ export async function findAcpxRecordIdFromDisk(
       const parsed = JSON.parse(content) as Record<string, unknown>;
       const matchResult = matchSessionRecord(parsed, matchCriteria);
       if (matchResult === "match") {
+        // acpx ignores a record whose filename does not match its encoded id;
+        // a mismatched copy is not the canonical record for this session.
+        if (!acpxRecordFileNameMatches(file, parsed.acpx_record_id as string)) continue;
         matches.push({ recordId: parsed.acpx_record_id as string, file });
       } else if (matchResult === "indeterminate") {
         indeterminateCandidates.push(file);

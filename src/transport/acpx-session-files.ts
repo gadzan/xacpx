@@ -22,9 +22,9 @@ export interface DeleteAcpxSessionFilesOptions {
  *  (`<encodeURIComponent(acpxRecordId)>.json` + `<safeId>.stream.*`). Idempotent —
  *  missing files are ignored.
  *
- *  Deleting the `.json` record leaves a dangling index.json entry, but acpx rebuilds
- *  its index from the surviving `.json` files on its next `sessions` operation, so we
- *  do not rewrite the index ourselves.
+ *  Deleting the `.json` record can leave a dangling legacy `index.json` entry.
+ *  acpx 0.19 ignores that index entirely (canonical discovery scans the
+ *  surviving `.json` records), so xacpx does not rewrite it.
  *
  *  The `.stream.*` unlinks are NOT guaranteed to take effect: acpx keeps a warm
  *  queue-owner alive via `--ttl`, so `sessions close` returning does not mean the
