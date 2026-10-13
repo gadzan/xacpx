@@ -1,9 +1,39 @@
 # Changelog
-## [Unreleased]
+## [0.24.10-beta.0] - 2026-10-13
 
 ### Added
 
-- **Automatic collaboration configuration in the instance dialog (PR #402 follow-up):** the per-instance switch moved out of Relay Web Settings into the instance-management dialog on the session tab, and the dialog can now complete the configuration that blocked it. A new `control.conversations.router.update` RPC patches `conversations.router` (`enabled`, `command`, `authEnv`) and answers with the four-status availability plus the persisted section, so the command field is seeded from what the instance actually has instead of being blank. An empty patch is a pure read, so opening the dialog never writes, probes, or fans out a change event. The switch binds the persisted intent rather than the resolved availability, so an instance whose router fails the probe still shows that the switch is on and offers the form that fixes it. `.get` and `.set` keep their exact wire shapes, so released dashboards and the Group composer are unaffected; an older daemon answers `unknown-type` and the dialog falls back to `.get` with a read-only panel and an upgrade notice.
+- **Automatic collaboration configuration in the instance dialog (PR #405):** new `control.conversations.router.update` RPC patches `conversations.router` (`enabled`, `command`, `authEnv`) via `ConfigStore` and returns the four-status availability plus the persisted section; empty patch acts as a pure read without probing or fan-out; `.get` and `.set` retain their wire shapes.
+
+## [relay-protocol 0.6.4-beta.0] - 2026-10-13
+
+### Added
+
+- `control.conversations.router.update` wire message, limits, payload validators, and `RouterConfigState` types (PR #405).
+
+## [relay 0.14.12-beta.0] - 2026-10-13
+
+### Added
+
+- Relay Web: move Group automatic collaboration configuration from Settings into `ManageInstanceDialog` (`enabled`, `command`, `authEnv` editing with fallback to `.get` on older daemons, PR #405).
+
+## [channel-relay 0.7.8-beta.0] - 2026-10-13
+
+### Added
+
+- Bridge `control.conversations.router.update` RPC (PR #405); `minXacpxVersion` raised to `0.24.10-beta.0`.
+
+## [channel-feishu 0.8.7-beta.0] - 2026-10-13
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.0` with no behavior change (peer + `minXacpxVersion` only, released so the published floor tracks core).
+
+## [channel-discord 0.8.7-beta.0] - 2026-10-13
+
+### Changed
+
+- Compatibility floor raised to `0.24.10-beta.0` with no behavior change (peer + `minXacpxVersion` only, released so the published floor tracks core).
 
 ## [0.24.9-beta.0] - 2026-10-12
 
