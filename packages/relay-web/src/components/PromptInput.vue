@@ -573,6 +573,13 @@ watch(
 const history = ref<string[]>([]);
 let historyIdx = -1; // -1 = editing a fresh line
 
+// A keystroke means the user is writing a new line, so the recall cursor goes
+// back to rest. Without this, ArrowUp then typing keeps ArrowDown navigating
+// history the user already left.
+function onInput(): void {
+  historyIdx = -1;
+}
+
 function submit() {
   if (composer.uploading) return;
   const value = text.value.trim();
@@ -744,6 +751,7 @@ function onKeydown(e: KeyboardEvent) {
       @send="submit"
       @cancel="emit('cancel')"
       @keydown="onKeydown"
+      @input="onInput"
       @paste="onPaste"
       @caret="onCaret"
       @compositionstart="composing = true"

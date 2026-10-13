@@ -447,6 +447,7 @@ function onInput(): void {
       @send="handleSend"
       @cancel="handleCancel"
       @keydown="onKeydown"
+      @input="onInput"
       @caret="updateCaret"
       @compositionstart="composing = true"
       @compositionend="

@@ -57,6 +57,26 @@ describe("PromptInput composer", () => {
     expect((ta.element as HTMLTextAreaElement).value).toBe("hello there");
   });
 
+  it("disarms history recall once the user types a new line", async () => {
+    const w = mount(PromptInput);
+    const ta = w.find("textarea");
+    await ta.setValue("first line");
+    await ta.trigger("keydown", { key: "Enter" });
+    // Recall the sent line, then start typing something else.
+    await ta.trigger("keydown", { key: "ArrowUp" });
+    expect((ta.element as HTMLTextAreaElement).value).toBe("first line");
+    await ta.setValue("brand new");
+    // Park the caret at the start the way a real Home press does, so ArrowDown
+    // would fire if the recall cursor were still armed.
+    (ta.element as HTMLTextAreaElement).setSelectionRange(0, 0);
+    await ta.trigger("keyup");
+    await ta.trigger("keydown", { key: "ArrowDown" });
+    // The recall cursor rests on a new keystroke, so the draft survives.
+    expect((ta.element as HTMLTextAreaElement).value).toBe("brand new");
+    await ta.trigger("keydown", { key: "Enter" });
+    expect(w.emitted("send")?.at(-1)?.[0]).toBe("brand new");
+  });
+
   it("ignores Enter mid-IME-composition (CJK input)", async () => {
     const w = mount(PromptInput);
     const ta = w.find("textarea");
