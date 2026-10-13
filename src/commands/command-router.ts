@@ -8,7 +8,7 @@ import type { AgentCommand, PromptMediaInput, PromptUsage, SessionTransport } fr
 import type { AgentSession, ResolvedSession } from "../transport/types";
 import type { PerfSpan } from "../perf/perf-tracer";
 import type { QuotaManager } from "../weixin/messaging/quota-manager.js";
-import { resolveSessionAgentCommandFromIndex, type SessionAgentCommandResolver } from "../transport/acpx-session-index";
+import { resolveSessionAgentCommandFromRecord, type SessionAgentCommandResolver } from "../transport/acpx-session-agent-command";
 import { parseCommand } from "./parse-command";
 import { authorizeCommandForChat, renderCommandAccessDenied, withEffectiveOwner } from "./command-policy";
 import type { ChatRequestMetadata } from "../weixin/agent/interface";
@@ -114,7 +114,7 @@ export class CommandRouter {
     private readonly config?: AppConfig,
     private readonly configStore?: WritableConfigStore,
     logger?: AppLogger,
-    private readonly resolveSessionAgentCommand: SessionAgentCommandResolver = resolveSessionAgentCommandFromIndex,
+    private readonly resolveSessionAgentCommand: SessionAgentCommandResolver = resolveSessionAgentCommandFromRecord,
     private readonly orchestration?: OrchestrationRouterOps,
     private readonly quota?: QuotaManager,
     private readonly scheduled?: ScheduledRouterOps,

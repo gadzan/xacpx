@@ -3,7 +3,7 @@ import { SessionService } from "../../../../src/sessions/session-service";
 import { createEmptyState } from "../../../../src/state/types";
 import type { AppLogger } from "../../../../src/logging/app-logger";
 import type { SessionTransport, ResolvedSession } from "../../../../src/transport/types";
-import type { SessionAgentCommandResolver } from "../../../../src/transport/acpx-session-index";
+import type { SessionAgentCommandResolver } from "../../../../src/transport/acpx-session-agent-command";
 import type { OrchestrationRouterOps } from "../../../../src/commands/router-types";
 import type { PerfSpan } from "../../../../src/perf/perf-tracer";
 import { createConfig } from "../command-router-test-support";
